@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any, cast
+from types import ModuleType
+from typing import cast
 from unittest.mock import MagicMock
 
 import pytest
@@ -11,6 +12,7 @@ from polylogue.sources.drive_gateway import (
     DEFAULT_DRIVE_RETRIES,
     DEFAULT_DRIVE_RETRY_BASE,
     DriveServiceGateway,
+    _DriveService,
     _import_module,
     _resolve_retries,
     _resolve_retry_base,
@@ -149,7 +151,7 @@ def test_service_handle_returns_cached_service_when_not_expired(monkeypatch: pyt
     gw = _gateway()
     service = MagicMock()
     service._http.credentials.expired = False
-    cast(Any, gw)._service = service
+    gw._service = cast(_DriveService, service)
     assert gw._service_handle() is service
 
 
@@ -157,16 +159,16 @@ def test_service_handle_rebuilds_on_expired_credentials(monkeypatch: pytest.Monk
     gw = _gateway()
     expired = MagicMock()
     expired._http.credentials.expired = True
-    cast(Any, gw)._service = expired
+    gw._service = cast(_DriveService, expired)
     creds = object()
     rebuilt = object()
     load_credentials = cast(MagicMock, gw._auth_manager.load_credentials)
     load_credentials.return_value = creds
     build = MagicMock(return_value=rebuilt)
 
-    def fake_import(name: str) -> Any:
+    def fake_import(name: str) -> ModuleType:
         if name == "googleapiclient.discovery":
-            return MagicMock(build=build)
+            return cast(ModuleType, MagicMock(build=build))
         raise AssertionError(name)
 
     monkeypatch.setattr("polylogue.sources.drive_gateway._import_module", fake_import)
@@ -183,9 +185,9 @@ def test_service_handle_builds_and_caches_service(monkeypatch: pytest.MonkeyPatc
     load_credentials.return_value = creds
     build = MagicMock(return_value=built)
 
-    def fake_import(name: str) -> Any:
+    def fake_import(name: str) -> ModuleType:
         if name == "googleapiclient.discovery":
-            return MagicMock(build=build)
+            return cast(ModuleType, MagicMock(build=build))
         raise AssertionError(name)
 
     monkeypatch.setattr("polylogue.sources.drive_gateway._import_module", fake_import)
@@ -208,7 +210,7 @@ def test_download_file_writes_content(monkeypatch: pytest.MonkeyPatch) -> None:
     import io
 
     gw = _gateway()
-    cast(Any, gw)._service = MockDriveService(file_content={"file-1": b"hello-bytes"})
+    gw._service = cast(_DriveService, MockDriveService(file_content={"file-1": b"hello-bytes"}))
 
     monkeypatch.setattr(
         "polylogue.sources.drive_gateway._import_module",

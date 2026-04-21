@@ -3,16 +3,35 @@
 from __future__ import annotations
 
 import json
-from typing import Any, cast
+from collections.abc import Callable, Mapping, Sequence
+from typing import TypeAlias
 
 import pytest
 
 from polylogue.scenarios import CorpusSpec
+from polylogue.sources.parsers.base import ParsedConversation
 from polylogue.sources.parsers.chatgpt import _coerce_float, extract_messages_from_mapping
 from polylogue.sources.parsers.chatgpt import looks_like as chatgpt_looks_like
 from polylogue.sources.parsers.chatgpt import parse as chatgpt_parse
 from polylogue.sources.parsers.claude import looks_like_ai, looks_like_code
 from tests.infra.source_builders import make_chatgpt_node
+
+ProviderCheck: TypeAlias = Callable[[object], bool]
+ProviderDetectionCase: TypeAlias = tuple[object, bool, ProviderCheck, str]
+CoerceFloatCase: TypeAlias = tuple[object, float | None, str]
+ChatGPTMapping: TypeAlias = dict[str, object]
+ExtractMessagesCase: TypeAlias = tuple[ChatGPTMapping, int, str]
+ParentBranchCase: TypeAlias = tuple[ChatGPTMapping, list[str | None], list[int], str]
+MetadataCase: TypeAlias = tuple[object, str | None, str]
+ParseFn: TypeAlias = Callable[[Mapping[str, object], str], ParsedConversation]
+ParseConversationCase: TypeAlias = tuple[ParseFn, ChatGPTMapping, str, str]
+
+
+def _looks_like_code_payload(data: object) -> bool:
+    if not isinstance(data, Sequence) or isinstance(data, (str, bytes, bytearray)):
+        return False
+    return looks_like_code(data)
+
 
 # =============================================================================
 # CHATGPT PARSER TESTS
@@ -20,7 +39,7 @@ from tests.infra.source_builders import make_chatgpt_node
 
 
 # MERGED FORMAT + COERCE DETECTION
-PROVIDER_FORMAT_DETECTION_CASES = [
+PROVIDER_FORMAT_DETECTION_CASES: list[ProviderDetectionCase] = [
     # ChatGPT
     ({"mapping": {}}, True, chatgpt_looks_like, "ChatGPT: valid empty mapping"),
     ({"mapping": {"node1": {}}}, True, chatgpt_looks_like, "ChatGPT: valid with nodes"),
@@ -31,14 +50,14 @@ PROVIDER_FORMAT_DETECTION_CASES = [
     ({}, False, looks_like_ai, "Claude AI: missing chat_messages"),
     (None, False, looks_like_ai, "Claude AI: None"),
     # Claude Code
-    ([{"parentUuid": "123"}], True, looks_like_code, "Claude Code: parentUuid"),
-    ([], False, looks_like_code, "Claude Code: empty list"),
-    (None, False, looks_like_code, "Claude Code: None"),
+    ([{"parentUuid": "123"}], True, _looks_like_code_payload, "Claude Code: parentUuid"),
+    ([], False, _looks_like_code_payload, "Claude Code: empty list"),
+    (None, False, _looks_like_code_payload, "Claude Code: None"),
 ]
 
 
 @pytest.mark.parametrize("data,expected,check_fn,desc", PROVIDER_FORMAT_DETECTION_CASES)
-def test_provider_format_detection(data: Any, expected: Any, check_fn: Any, desc: Any) -> None:
+def test_provider_format_detection(data: object, expected: bool, check_fn: ProviderCheck, desc: str) -> None:
     """Unified format detection across all providers."""
     result = check_fn(data)
     assert result == expected, f"Failed {desc}"
@@ -46,7 +65,7 @@ def test_provider_format_detection(data: Any, expected: Any, check_fn: Any, desc
 
 # COERCE FLOAT - MERGED WITH FORMAT DETECTION ABOVE
 
-COERCE_FLOAT_CASES = [
+COERCE_FLOAT_CASES: list[CoerceFloatCase] = [
     (42, 42.0, "int"),
     (3.14, 3.14, "float"),
     ("2.5", 2.5, "string number"),
@@ -56,7 +75,7 @@ COERCE_FLOAT_CASES = [
 
 
 @pytest.mark.parametrize("input_val,expected,desc", COERCE_FLOAT_CASES)
-def test_coerce_float(input_val: Any, expected: Any, desc: Any) -> None:
+def test_coerce_float(input_val: object, expected: float | None, desc: str) -> None:
     """Test _coerce_float conversion."""
     result = _coerce_float(input_val)
     assert result == expected, f"Failed {desc}"
@@ -65,7 +84,7 @@ def test_coerce_float(input_val: Any, expected: Any, desc: Any) -> None:
 # MESSAGE EXTRACTION - PARAMETRIZED (1 test replacing 17)
 
 
-CHATGPT_EXTRACT_MESSAGES_CASES = [
+CHATGPT_EXTRACT_MESSAGES_CASES: list[ExtractMessagesCase] = [
     # Basic extraction
     ({"node1": make_chatgpt_node("msg1", "user", ["Hello"])}, 1, "basic message"),
     # Timestamp handling
@@ -84,7 +103,19 @@ CHATGPT_EXTRACT_MESSAGES_CASES = [
     ),
     # Content variants
     ({"node1": make_chatgpt_node("msg1", "user", ["Part1", "Part2"])}, 1, "multiple parts"),
-    ({"node1": make_chatgpt_node("msg1", "user", cast(Any, [None, "Valid"]))}, 1, "parts with None"),
+    (
+        {
+            "node1": {
+                "message": {
+                    "id": "msg1",
+                    "author": {"role": "user"},
+                    "content": {"parts": [None, "Valid"]},
+                }
+            }
+        },
+        1,
+        "parts with None",
+    ),
     ({"node1": {"message": {"id": "1", "author": {"role": "user"}, "content": {"parts": []}}}}, 0, "empty parts"),
     # Role normalization
     ({"node1": make_chatgpt_node("msg1", "human", ["Hi"])}, 1, "human role alias"),
@@ -103,7 +134,7 @@ CHATGPT_EXTRACT_MESSAGES_CASES = [
 
 
 @pytest.mark.parametrize("mapping,expected_count,desc", CHATGPT_EXTRACT_MESSAGES_CASES)
-def test_chatgpt_extract_messages_comprehensive(mapping: Any, expected_count: Any, desc: Any) -> None:
+def test_chatgpt_extract_messages_comprehensive(mapping: ChatGPTMapping, expected_count: int, desc: str) -> None:
     """Comprehensive message extraction test.
 
     Replaces 17 individual extraction tests.
@@ -123,7 +154,7 @@ def test_chatgpt_extract_messages_comprehensive(mapping: Any, expected_count: An
 # -----------------------------------------------------------------------------
 
 
-CHATGPT_PARENT_BRANCH_CASES = [
+CHATGPT_PARENT_BRANCH_CASES: list[ParentBranchCase] = [
     # No parent (root message)
     ({"node1": make_chatgpt_node("msg1", "user", ["Hello"])}, [None], [0], "root message no parent"),
     # Simple linear chain
@@ -185,7 +216,10 @@ CHATGPT_PARENT_BRANCH_CASES = [
 
 @pytest.mark.parametrize("mapping,expected_parents,expected_indexes,desc", CHATGPT_PARENT_BRANCH_CASES)
 def test_chatgpt_extract_parent_and_branch_index(
-    mapping: Any, expected_parents: Any, expected_indexes: Any, desc: Any
+    mapping: ChatGPTMapping,
+    expected_parents: list[str | None],
+    expected_indexes: list[int],
+    desc: str,
 ) -> None:
     """Test extraction of parent_message_provider_id and branch_index.
 
@@ -213,7 +247,7 @@ def test_chatgpt_extract_parent_and_branch_index(
 # -----------------------------------------------------------------------------
 
 
-CHATGPT_METADATA_CASES = [
+CHATGPT_METADATA_CASES: list[MetadataCase] = [
     # Attachments
     ({"attachments": [{"id": "att1", "name": "file.pdf"}]}, "attachments", "attachments field"),
     ({"image_asset_pointer": "asset_123"}, None, "image asset pointer metadata ignored"),
@@ -230,7 +264,7 @@ CHATGPT_METADATA_CASES = [
 
 
 @pytest.mark.parametrize("metadata,expected_type,desc", CHATGPT_METADATA_CASES)
-def test_chatgpt_metadata_extraction(metadata: Any, expected_type: Any, desc: Any) -> None:
+def test_chatgpt_metadata_extraction(metadata: object, expected_type: str | None, desc: str) -> None:
     """Test metadata extraction from message metadata field.
 
     Explicit tests for attachment/cost/thinking metadata.
@@ -267,7 +301,7 @@ def test_chatgpt_metadata_extraction(metadata: Any, expected_type: Any, desc: An
 # -----------------------------------------------------------------------------
 
 
-PARSE_CONVERSATION_CASES = [
+PARSE_CONVERSATION_CASES: list[ParseConversationCase] = [
     # ChatGPT title extraction
     (chatgpt_parse, {"title": "My Conv", "mapping": {}}, "title", "ChatGPT: title field"),
     (chatgpt_parse, {"name": "Conv Name", "mapping": {}}, "name", "ChatGPT: name field"),
@@ -277,7 +311,7 @@ PARSE_CONVERSATION_CASES = [
 
 
 @pytest.mark.parametrize("parse_fn,conv_data,check_type,desc", PARSE_CONVERSATION_CASES)
-def test_parse_conversation(parse_fn: Any, conv_data: Any, check_type: Any, desc: Any) -> None:
+def test_parse_conversation(parse_fn: ParseFn, conv_data: ChatGPTMapping, check_type: str, desc: str) -> None:
     """Unified conversation parsing across providers."""
     result = parse_fn(conv_data, "fallback-id")
 
