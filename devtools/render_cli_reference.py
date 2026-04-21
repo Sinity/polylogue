@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 from devtools.command_catalog import control_plane_command
+from devtools.render_support import write_if_changed
 
 SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Top-Level Command", ()),
@@ -55,19 +56,6 @@ def build_document(sections: list[tuple[str, str]]) -> str:
     for title, body in sections:
         parts.extend([f"## {title}", "", "```text", body, "```", ""])
     return "\n".join(parts).rstrip() + "\n"
-
-
-def write_if_changed(output_path: Path, content: str) -> None:
-    try:
-        current = output_path.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        current = None
-    if current == content:
-        return
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = output_path.with_suffix(output_path.suffix + ".tmp")
-    tmp_path.write_text(content, encoding="utf-8")
-    tmp_path.replace(output_path)
 
 
 def main(argv: list[str] | None = None) -> int:
