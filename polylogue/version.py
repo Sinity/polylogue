@@ -71,6 +71,23 @@ def _read_packed_ref(git_dir: Path, ref_name: str) -> str | None:
     return None
 
 
+def _resolve_common_git_dir(git_dir: Path) -> Path:
+    """Return the common git directory for normal and linked worktree checkouts."""
+    common_dir_path = git_dir / "commondir"
+    if not common_dir_path.exists():
+        return git_dir
+    try:
+        common_dir_text = common_dir_path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return git_dir
+    if not common_dir_text:
+        return git_dir
+    common_dir = Path(common_dir_text)
+    if not common_dir.is_absolute():
+        common_dir = (git_dir / common_dir).resolve()
+    return common_dir
+
+
 def _read_head_commit(repo_root: Path) -> str | None:
     git_dir = _resolve_git_dir(repo_root)
     if git_dir is None:
@@ -90,14 +107,17 @@ def _read_head_commit(repo_root: Path) -> str | None:
     ref_name = head_text[len(prefix) :].strip()
     if not ref_name:
         return None
-    ref_path = git_dir / ref_name
-    if ref_path.exists():
+    for ref_root in (git_dir, _resolve_common_git_dir(git_dir)):
+        ref_path = ref_root / ref_name
+        if not ref_path.exists():
+            continue
         try:
             commit = ref_path.read_text(encoding="utf-8").strip()
         except OSError:
-            return None
-        return commit if re.fullmatch(r"[0-9a-f]{40}", commit) else None
-    return _read_packed_ref(git_dir, ref_name)
+            continue
+        if re.fullmatch(r"[0-9a-f]{40}", commit):
+            return commit
+    return _read_packed_ref(_resolve_common_git_dir(git_dir), ref_name)
 
 
 def _detect_git_dirty(repo_root: Path) -> bool:

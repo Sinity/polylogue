@@ -60,7 +60,7 @@ def generate_qa_markdown(
     lines.append("")
 
     if result.audit_report is not None:
-        audit_summary = result.audit_report.to_json()["summary"]
+        audit_summary = _payload_mapping(result.audit_report.to_json().get("summary", {}))
         lines.append("## Schema Audit")
         lines.append("")
         lines.append(f"- Passed: {audit_summary['passed']}")

@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
 
 from polylogue.lib.outcomes import OutcomeCheck, OutcomeReport, OutcomeStatus
+from polylogue.schemas.json_types import JSONDocument, json_document
 
 
 @dataclass
@@ -63,25 +63,27 @@ class AuditReport(OutcomeReport):
                 lines.append(f"      {d}")
         return "\n".join(lines)
 
-    def to_json(self) -> dict[str, Any]:
-        return {
-            "provider": self.provider,
-            "summary": {
-                "passed": self.passed,
-                "warned": self.warned,
-                "failed": self.failed,
-            },
-            "checks": [
-                {
-                    "name": c.name,
-                    "provider": getattr(c, "provider", None),
-                    "status": self._LABELS[c.status],
-                    "message": c.summary,
-                    "details": c.details,
-                }
-                for c in self.checks
-            ],
-        }
+    def to_json(self) -> JSONDocument:
+        return json_document(
+            {
+                "provider": self.provider,
+                "summary": {
+                    "passed": self.passed,
+                    "warned": self.warned,
+                    "failed": self.failed,
+                },
+                "checks": [
+                    {
+                        "name": c.name,
+                        "provider": getattr(c, "provider", None),
+                        "status": self._LABELS[c.status],
+                        "message": c.summary,
+                        "details": c.details,
+                    }
+                    for c in self.checks
+                ],
+            }
+        )
 
 
 __all__ = ["AuditCheck", "AuditReport"]

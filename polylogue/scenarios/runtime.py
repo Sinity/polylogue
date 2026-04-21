@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import inspect
 import os
 import subprocess
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 from .execution import ExecutionSpec
 
@@ -104,14 +102,16 @@ async def dispatch_execution(
     runner_resolver: ExecutionRunnerResolver | None = None,
     runner_args: Sequence[object] = (),
     runner_kwargs: Mapping[str, object] | None = None,
-) -> Any:
+) -> object:
     """Dispatch one authored execution through either subprocess or runner runtime."""
     if execution.is_runner:
         if runner_resolver is None:
             raise ValueError("runner execution requires a runner_resolver")
         runner = resolve_execution_runner(execution, runner_resolver=runner_resolver)
         dispatched = runner(*runner_args, **dict(runner_kwargs or {}))
-        return await dispatched if inspect.isawaitable(dispatched) else dispatched
+        if isinstance(dispatched, Awaitable):
+            return await dispatched
+        return dispatched
     return run_execution(
         execution,
         cwd=cwd,
