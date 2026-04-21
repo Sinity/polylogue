@@ -6,7 +6,6 @@ from collections import deque
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import cast
 
 import questionary
 from rich import box
@@ -72,7 +71,10 @@ class ConsoleFacade:
         if self.plain:
             self.console = PlainConsole()
         else:
-            self.console = cast(ConsoleLike, Console(no_color=False, force_terminal=True, theme=self.theme))
+            rich_console = Console(no_color=False, force_terminal=True, theme=self.theme)
+            if not isinstance(rich_console, ConsoleLike):
+                raise TypeError("rich Console no longer satisfies ConsoleLike")
+            self.console = rich_console
         self._panel_box = box.ROUNDED
         self._banner_box = box.DOUBLE
         self._prompt_responses = load_prompt_responses(UIError, prompt_stub_path=self.prompt_stub_path)

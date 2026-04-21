@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 from pathlib import Path
 
 import pytest
@@ -12,7 +13,7 @@ class TestVerifyShowcaseImportable:
 
     def test_module_imports(self) -> None:
         """devtools.verify_showcase is importable."""
-        import devtools.verify_showcase  # noqa: F401
+        assert importlib.import_module("devtools.verify_showcase") is not None
 
     def test_main_callable(self) -> None:
         """main() function exists and is callable."""

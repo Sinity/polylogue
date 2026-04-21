@@ -451,6 +451,7 @@ class TestRuntimeHealthToDict:
         assert "checks" in data
         assert "summary" in data
         assert "timestamp" in data
-        assert isinstance(data["checks"], list)
-        assert all("name" in c for c in data["checks"])
-        assert all("status" in c for c in data["checks"])
+        checks = data["checks"]
+        assert isinstance(checks, list)
+        assert all(isinstance(check, dict) and "name" in check for check in checks)
+        assert all(isinstance(check, dict) and "status" in check for check in checks)

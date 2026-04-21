@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import TypeAlias, TypedDict, cast
+from typing import TypeAlias, TypedDict
 
 import pytest
 from hypothesis import given, settings
@@ -259,7 +259,7 @@ def test_provider_looks_like_accepts_generated_payloads(case: ParserCase, data: 
 @given(st.lists(message_strategy(), min_size=0, max_size=20))
 @settings(max_examples=50)
 def test_extract_messages_from_list_never_invents_messages(messages: list[JSONDocument]) -> None:
-    result = extract_messages_from_list(cast(list[object], messages))
+    result = extract_messages_from_list(messages)
     expected = sum(1 for msg in messages if isinstance(msg, dict) and (msg.get("text") or msg.get("content")))
     assert len(result) <= expected
 
@@ -267,7 +267,7 @@ def test_extract_messages_from_list_never_invents_messages(messages: list[JSONDo
 @given(message_strategy())
 @settings(max_examples=50)
 def test_extract_messages_from_list_normalizes_role(msg: JSONDocument) -> None:
-    result = extract_messages_from_list(cast(list[object], [msg]))
+    result = extract_messages_from_list([msg])
     if result:
         assert result[0].role in {"user", "assistant", "system", "tool", "message"}
 
@@ -283,7 +283,7 @@ def test_chatgpt_node_contract(node: JSONDocument) -> None:
 @given(claude_code_message_strategy())
 @settings(max_examples=30)
 def test_claude_code_message_type_contract(msg: JSONDocument) -> None:
-    result = claude.parse_code(cast(list[object], [msg]), "fallback")
+    result = claude.parse_code([msg], "fallback")
     if not result.messages:
         return
     parsed = result.messages[0]
@@ -304,13 +304,10 @@ def test_claude_code_message_type_contract(msg: JSONDocument) -> None:
 @given(codex_message_strategy())
 @settings(max_examples=30)
 def test_codex_message_text_contract(msg: JSONDocument) -> None:
-    session = cast(
-        list[object],
-        [
-            {"type": "session_meta", "payload": {"id": "test", "timestamp": "2024-01-01"}},
-            {"type": "response_item", "payload": msg},
-        ],
-    )
+    session: list[object] = [
+        {"type": "session_meta", "payload": {"id": "test", "timestamp": "2024-01-01"}},
+        {"type": "response_item", "payload": msg},
+    ]
     result = codex.parse(session, "fallback")
     if not result.messages:
         return
@@ -400,9 +397,11 @@ def provider_conversations(
     """Parse synthetic data for each available provider."""
     provider = str(request.param)
     try:
-        source = cast(Source, synthetic_source(provider, count=3, seed=42))
+        source = synthetic_source(provider, count=3, seed=42)
     except FileNotFoundError:
         pytest.skip(f"No schema for {provider}")
+    if not isinstance(source, Source):
+        raise TypeError(f"expected Source, got {type(source).__name__}")
 
     convos = list(iter_source_conversations(source))
     if not convos:

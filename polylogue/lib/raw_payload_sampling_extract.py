@@ -4,9 +4,8 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Callable, Iterable
-from io import BytesIO, StringIO
 from pathlib import Path
-from typing import IO, Literal
+from typing import Literal
 
 from polylogue.lib.json import JSONDocument, JSONValue, json_document, loads
 from polylogue.lib.raw_payload_sampling_buckets import (
@@ -15,6 +14,7 @@ from polylogue.lib.raw_payload_sampling_buckets import (
     record_bucket_key,
     take_bucketed_samples,
 )
+from polylogue.lib.raw_payload_streams import raw_line_stream
 
 
 def limit_samples(
@@ -157,18 +157,11 @@ def extract_record_samples_from_raw_content(
             record_type_key=record_type_key,
         )
 
-    stream: IO[bytes] | IO[str]
-    if isinstance(raw_content, Path):
-        stream = open(raw_content, "rb")  # noqa: SIM115 — caller-managed context
-    else:
-        raw = raw_content if isinstance(raw_content, (bytes, str)) else str(raw_content)
-        stream = BytesIO(raw) if isinstance(raw, bytes) else StringIO(raw)
-
-    # Full-corpus mode: collect everything without caps.
-    if max_samples is None:
-        all_records: list[JSONDocument] = []
-        first_line = True
-        try:
+    with raw_line_stream(raw_content) as stream:
+        # Full-corpus mode: collect everything without caps.
+        if max_samples is None:
+            all_records: list[JSONDocument] = []
+            first_line = True
             for raw_line in stream:
                 line = raw_line.decode("utf-8") if isinstance(raw_line, bytes) else raw_line
                 if first_line:
@@ -184,19 +177,15 @@ def extract_record_samples_from_raw_content(
                 record = json_document(parsed)
                 if record and is_record_candidate(record):
                     all_records.append(record)
-        finally:
-            if isinstance(raw_content, Path):
-                stream.close()
-        return all_records
+            return all_records
 
-    lines: list[JSONDocument] = []
-    buckets: dict[str, list[JSONDocument]] = {}
-    dict_count = 0
-    scan_cap = max(1024, max_samples * 64)
-    per_bucket_cap = 8
-    first_line = True
+        lines: list[JSONDocument] = []
+        buckets: dict[str, list[JSONDocument]] = {}
+        dict_count = 0
+        scan_cap = max(1024, max_samples * 64)
+        per_bucket_cap = 8
+        first_line = True
 
-    try:
         for raw_line in stream:
             line = raw_line.decode("utf-8") if isinstance(raw_line, bytes) else raw_line
             if first_line:
@@ -221,15 +210,12 @@ def extract_record_samples_from_raw_content(
                 bucket.append(record)
             if dict_count >= scan_cap:
                 break
-    finally:
-        if isinstance(raw_content, Path):
-            stream.close()
 
-    if dict_count == 0:
-        return []
-    if dict_count <= max_samples:
-        return lines
-    return take_bucketed_samples(buckets, max_samples)
+        if dict_count == 0:
+            return []
+        if dict_count <= max_samples:
+            return lines
+        return take_bucketed_samples(buckets, max_samples)
 
 
 __all__ = [

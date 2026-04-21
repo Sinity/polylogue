@@ -20,7 +20,7 @@ import json
 import random
 from datetime import datetime
 from pathlib import Path
-from typing import Protocol, cast
+from typing import Protocol
 
 import pytest
 
@@ -31,7 +31,7 @@ from polylogue.schemas.synthetic import (
     SyntheticCorpus,
     WireFormat,
 )
-from polylogue.schemas.synthetic.models import SchemaRecord
+from polylogue.schemas.synthetic.models import SchemaRecord, SchemaValue
 from polylogue.schemas.synthetic.semantic_values import (
     _ROLE_TEXTS,
     SemanticValueGenerator,
@@ -42,7 +42,17 @@ from polylogue.sources.dispatch import parse_payload
 
 
 def _schema(value: object) -> SchemaRecord:
-    return cast(SchemaRecord, value)
+    assert isinstance(value, dict)
+    return {str(key): _schema_value(item) for key, item in value.items()}
+
+
+def _schema_value(value: object) -> SchemaValue:
+    if value is None or isinstance(value, str | int | float | bool):
+        return value
+    if isinstance(value, list):
+        return [_schema_value(item) for item in value]
+    assert isinstance(value, dict)
+    return {str(key): _schema_value(item) for key, item in value.items()}
 
 
 def _float_value(value: object) -> float:

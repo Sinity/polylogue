@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
-from typing import cast
 
 import pytest
 from hypothesis import HealthCheck, given, settings
@@ -105,7 +104,8 @@ async def test_empty_string_parameters_handled(temp_repo: ConversationRepository
 
 async def test_none_parameters_handled(temp_repo: ConversationRepository) -> None:
     try:
-        conv = await temp_repo.view(cast(str, None))
+        view_method = "view"
+        conv = await getattr(temp_repo, view_method)(None)
         assert conv is None
     except (TypeError, ValueError):
         pass

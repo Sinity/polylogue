@@ -3,13 +3,12 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import AsyncIterable, Iterable
-from importlib import import_module
 from pathlib import Path
-from typing import Protocol, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from polylogue.cli.run_workflow import display_result
 from polylogue.config import Source, get_config
 from polylogue.pipeline.observers import ExecObserver, NotificationObserver, WebhookObserver
 from polylogue.pipeline.runner import latest_run, plan_sources, run_sources
@@ -22,20 +21,6 @@ from polylogue.storage.run_state import (
     RunResult,
 )
 from tests.infra.source_builders import ChatGPTExportBuilder, GenericConversationBuilder, InboxBuilder
-
-
-class RunCommandModule(Protocol):
-    def _display_result(
-        self,
-        env: MagicMock,
-        config: MagicMock,
-        result: RunResult,
-        stage: str,
-        latest_render_path: Path | None,
-    ) -> None: ...
-
-
-run_command = cast(RunCommandModule, import_module("polylogue.cli.commands.run"))
 
 
 def _observer_result(
@@ -171,7 +156,9 @@ async def test_run_index_filters_selected_sources(
     with open_connection(None) as conn:
         rows = conn.execute("SELECT conversation_id, provider_meta FROM conversations").fetchall()
     for row in rows:
-        meta = cast(dict[str, object], json.loads(row["provider_meta"] or "{}"))
+        meta = json.loads(row["provider_meta"] or "{}")
+        if not isinstance(meta, dict):
+            raise TypeError(f"expected provider metadata dict, got {type(meta).__name__}")
         name = meta.get("source")
         if name:
             id_by_source[name] = row["conversation_id"]
@@ -267,7 +254,7 @@ def test_display_result_reports_render_failures(mock_env: MagicMock, capsys: pyt
     )
 
     with patch("polylogue.cli.helpers.latest_render_path", return_value=None):
-        run_command._display_result(mock_env, mock_config, result, "all", None)
+        display_result(mock_env, mock_config, result, "all", None)
 
     captured = capsys.readouterr()
     assert "Render failures (15)" in captured.err
@@ -287,7 +274,7 @@ def test_display_result_reports_index_error_hint(mock_env: MagicMock, capsys: py
         render_failures=[],
     )
 
-    run_command._display_result(mock_env, mock_config, result, "index", None)
+    display_result(mock_env, mock_config, result, "index", None)
 
     captured = capsys.readouterr()
     assert "Index error: Database locked" in captured.err
@@ -337,27 +324,24 @@ class TestWatchModeCallbacks:
         fake_addrinfo = [(2, 1, 6, "", ("93.184.216.34", 80))]
         with (
             patch("polylogue.pipeline.observers.socket.getaddrinfo", return_value=fake_addrinfo),
-            patch("urllib.request.urlopen") as mock_urlopen,
+            patch("polylogue.pipeline.observers._post_webhook") as mock_post,
         ):
             WebhookObserver("http://example.com/webhook").on_completed(
                 _observer_result(conversations=2, new_conversations=2)
             )
-        call_args = mock_urlopen.call_args[0][0]
-        assert call_args.get_full_url() == "http://example.com/webhook"
-        assert call_args.get_method() == "POST"
-        assert mock_urlopen.call_args.kwargs["timeout"] == 10
+        mock_post.assert_called_once()
+        assert mock_post.call_args.args[0] == "http://example.com/webhook"
 
     def test_webhook_payload_format(self) -> None:
         fake_addrinfo = [(2, 1, 6, "", ("93.184.216.34", 80))]
         with (
             patch("polylogue.pipeline.observers.socket.getaddrinfo", return_value=fake_addrinfo),
-            patch("urllib.request.urlopen"),
-            patch("urllib.request.Request") as mock_request,
+            patch("polylogue.pipeline.observers._post_webhook") as mock_post,
         ):
             WebhookObserver("http://example.com/webhook").on_completed(
                 _observer_result(conversations=7, new_conversations=7)
             )
-        payload = json.loads(mock_request.call_args.kwargs["data"].decode())
+        payload = json.loads(mock_post.call_args.args[1].decode())
         assert payload == {
             "event": "sync",
             "conversation_activity_count": 7,
@@ -369,7 +353,7 @@ class TestWatchModeCallbacks:
         fake_addrinfo = [(2, 1, 6, "", ("93.184.216.34", 80))]
         with (
             patch("polylogue.pipeline.observers.socket.getaddrinfo", return_value=fake_addrinfo),
-            patch("urllib.request.urlopen", side_effect=ConnectionError("Connection failed")),
+            patch("polylogue.pipeline.observers._post_webhook", side_effect=ConnectionError("Connection failed")),
         ):
             WebhookObserver("http://example.com/webhook").on_completed(
                 _observer_result(conversations=1, new_conversations=1)

@@ -12,7 +12,7 @@ pure output formatting, independent of path caching).
 from __future__ import annotations
 
 import json
-from typing import TypeAlias, cast
+from typing import TypeAlias
 
 import pytest
 from click.testing import CliRunner
@@ -82,13 +82,13 @@ def _parse_json_output(output: str) -> JSONEnvelope:
     parsed = json.loads(json_text)
     if not isinstance(parsed, dict):
         raise ValueError(f"Expected object envelope, got {type(parsed).__name__}")
-    return cast(JSONEnvelope, parsed)
+    return dict(parsed)
 
 
 def _result_payload(data: JSONEnvelope) -> JSONEnvelope:
     result = data["result"]
     assert isinstance(result, dict)
-    return cast(JSONEnvelope, result)
+    return dict(result)
 
 
 def _invoke_json_command(args: list[str], monkeypatch: pytest.MonkeyPatch) -> JSONEnvelope | None:

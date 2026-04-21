@@ -7,12 +7,12 @@ import sys
 from collections.abc import Mapping, Sequence
 from datetime import datetime
 from enum import Enum
-from typing import TYPE_CHECKING, Literal, NotRequired, cast
+from typing import TYPE_CHECKING, Literal, NotRequired
 
 from pydantic import BaseModel, ConfigDict, Field
 from typing_extensions import TypedDict
 
-from polylogue.lib.json import JSONDocument, JSONValue
+from polylogue.lib.json import JSONDocument, JSONValue, require_json_document
 
 if TYPE_CHECKING:
     from collections.abc import Container
@@ -27,7 +27,10 @@ def serialize_surface_payload(payload: BaseModel, *, exclude_none: bool = False)
 
 def model_json_document(payload: BaseModel, *, exclude_none: bool = False) -> JSONDocument:
     """Return a model dump constrained to the shared JSON document type."""
-    return cast(JSONDocument, payload.model_dump(mode="json", exclude_none=exclude_none))
+    return require_json_document(
+        payload.model_dump(mode="json", exclude_none=exclude_none),
+        context=f"{payload.__class__.__name__} JSON payload",
+    )
 
 
 class SurfacePayloadModel(BaseModel):
@@ -74,7 +77,7 @@ class MachineErrorPayload(SurfacePayloadModel):
         if self.command:
             payload["command"] = list(self.command)
         if self.details:
-            payload["details"] = cast(JSONDocument, dict(self.details))
+            payload["details"] = require_json_document(dict(self.details), context="machine error details")
         return payload
 
     def to_json(self, *, exclude_none: bool = False) -> str:
@@ -93,12 +96,12 @@ class MachineSuccessPayload(SurfacePayloadModel):
     """Structured success payload for machine-readable CLI surfaces."""
 
     status: Literal["ok"] = "ok"
-    result: dict[str, object] = Field(default_factory=dict)
+    result: Mapping[str, object] = Field(default_factory=dict)
 
     def to_dict(self) -> MachineSuccessEnvelope:
         return {
             "status": self.status,
-            "result": cast(JSONDocument, dict(self.result)),
+            "result": require_json_document(dict(self.result), context="machine success result"),
         }
 
 

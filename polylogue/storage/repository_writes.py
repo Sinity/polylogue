@@ -42,6 +42,11 @@ class RepositoryWriteMixin:
         content_blocks: builtins.list[ContentBlockRecord] | None = None,
     ) -> dict[str, int]:
         if isinstance(conversation, Conversation):
+            if conversation.messages and not messages:
+                raise ValueError(
+                    "save_conversation() received a domain Conversation with messages but no "
+                    "MessageRecord rows; pass transformed records instead of risking runtime-state loss"
+                )
             conv_record = self._conversation_to_record(conversation)
         else:
             conv_record = conversation

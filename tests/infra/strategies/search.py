@@ -6,7 +6,7 @@ unicode handling, operator injection, and ranking edge cases.
 
 from __future__ import annotations
 
-from typing import Literal, cast
+from typing import Literal
 
 from hypothesis import strategies as st
 
@@ -40,46 +40,45 @@ def search_query_strategy(draw: st.DrawFn) -> str:
     - SQL injection payloads
     - Empty/whitespace
     """
-    return cast(
-        str,
-        draw(
-            st.one_of(
-                # Simple terms
+    value = draw(
+        st.one_of(
+            # Simple terms
+            st.text(
+                min_size=1,
+                max_size=50,
+                alphabet=st.characters(whitelist_categories=_LETTER_NUMBER_CATEGORIES),
+            ),
+            # FTS5 operators as literals
+            st.sampled_from(FTS5_OPERATORS),
+            # SQL injection payloads
+            st.sampled_from(SQL_INJECTION_PAYLOADS),
+            # Unicode text
+            st.text(min_size=1, max_size=30),
+            # Quoted strings with internal quotes
+            st.builds(
+                lambda t: f'"{t}"',
                 st.text(
                     min_size=1,
-                    max_size=50,
+                    max_size=20,
+                    alphabet=st.characters(whitelist_categories=_LETTER_NUMBER_PUNCT_SPACE_CATEGORIES),
+                ),
+            ),
+            # Operator-prefix patterns (e.g. "NOT foo", "NEAR bar")
+            st.builds(
+                lambda op, term: f"{op} {term}",
+                st.sampled_from(["NOT", "NEAR", "AND", "OR"]),
+                st.text(
+                    min_size=1,
+                    max_size=20,
                     alphabet=st.characters(whitelist_categories=_LETTER_NUMBER_CATEGORIES),
                 ),
-                # FTS5 operators as literals
-                st.sampled_from(FTS5_OPERATORS),
-                # SQL injection payloads
-                st.sampled_from(SQL_INJECTION_PAYLOADS),
-                # Unicode text
-                st.text(min_size=1, max_size=30),
-                # Quoted strings with internal quotes
-                st.builds(
-                    lambda t: f'"{t}"',
-                    st.text(
-                        min_size=1,
-                        max_size=20,
-                        alphabet=st.characters(whitelist_categories=_LETTER_NUMBER_PUNCT_SPACE_CATEGORIES),
-                    ),
-                ),
-                # Operator-prefix patterns (e.g. "NOT foo", "NEAR bar")
-                st.builds(
-                    lambda op, term: f"{op} {term}",
-                    st.sampled_from(["NOT", "NEAR", "AND", "OR"]),
-                    st.text(
-                        min_size=1,
-                        max_size=20,
-                        alphabet=st.characters(whitelist_categories=_LETTER_NUMBER_CATEGORIES),
-                    ),
-                ),
-                # Empty and whitespace
-                st.sampled_from(["", " ", "  \t  ", "\n"]),
-            )
-        ),
+            ),
+            # Empty and whitespace
+            st.sampled_from(["", " ", "  \t  ", "\n"]),
+        )
     )
+    assert isinstance(value, str)
+    return value
 
 
 @st.composite

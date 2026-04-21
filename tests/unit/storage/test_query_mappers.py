@@ -7,7 +7,6 @@ Functions: _parse_json, _row_get, _row_to_conversation, _row_to_message, _row_to
 from __future__ import annotations
 
 import sqlite3
-from typing import cast
 
 import pytest
 
@@ -50,7 +49,8 @@ def make_row(columns: dict[str, object]) -> sqlite3.Row:
     row = conn.execute("SELECT * FROM t").fetchone()
     conn.close()
     assert row is not None
-    return cast(sqlite3.Row, row)
+    assert isinstance(row, sqlite3.Row)
+    return row
 
 
 # =============================================================================

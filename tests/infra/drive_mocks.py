@@ -8,6 +8,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import ParamSpec, Protocol, TypeVar
 
+from polylogue.lib.json import json_document, json_document_list
+from polylogue.sources.drive_gateway import DriveListFilesResponse, DrivePayloadRecord
 from polylogue.sources.drive_types import DriveError, DriveNotFoundError
 
 P = ParamSpec("P")
@@ -286,6 +288,8 @@ class MockFilesResource:
 class MockDriveService:
     """Mock Google Drive service."""
 
+    _http: object | None = None
+
     def __init__(
         self, files_data: dict[str, MockDriveFile] | None = None, file_content: dict[str, bytes | str] | None = None
     ):
@@ -325,8 +329,9 @@ class FakeDriveServiceGateway:
     def _service_handle(self) -> MockDriveService:
         return self._mock_service
 
-    def get_file(self, file_id: str, fields: str) -> dict[str, object]:
-        return self._mock_service.files().get(fileId=file_id, fields=fields).execute()
+    def get_file(self, file_id: str, fields: str) -> DrivePayloadRecord:
+        payload = self._mock_service.files().get(fileId=file_id, fields=fields).execute()
+        return json_document(payload)
 
     def list_files(
         self,
@@ -335,8 +340,17 @@ class FakeDriveServiceGateway:
         fields: str,
         page_token: str | None,
         page_size: int,
-    ) -> dict[str, object]:
-        return self._mock_service.files().list(q=q, fields=fields, pageToken=page_token, pageSize=page_size).execute()
+    ) -> DriveListFilesResponse:
+        payload = json_document(
+            self._mock_service.files().list(q=q, fields=fields, pageToken=page_token, pageSize=page_size).execute()
+        )
+        response: DriveListFilesResponse = {}
+        if "files" in payload:
+            response["files"] = json_document_list(payload["files"])
+        next_page_token = payload.get("nextPageToken")
+        if isinstance(next_page_token, str):
+            response["nextPageToken"] = next_page_token
+        return response
 
     def download_file(self, file_id: str, handle: BinaryWritable) -> None:
         if self._download_error is not None:

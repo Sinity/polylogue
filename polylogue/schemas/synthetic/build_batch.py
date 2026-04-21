@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import random
-from typing import Protocol, cast
+from typing import Protocol
 
-from polylogue.lib.raw_payload_decode import JSONValue
+from polylogue.lib.json import JSONValue, is_json_value
 from polylogue.schemas.synthetic.models import (
     SchemaRecord,
     SyntheticArtifact,
@@ -58,13 +58,17 @@ class _SyntheticBatchContext(Protocol):
 
 
 def _resolve_style(style: str) -> SyntheticStyle:
-    if style not in {"default", "showcase"}:
-        raise ValueError(f"Unknown synthetic style: {style}")
-    return cast(SyntheticStyle, style)
+    if style == "default":
+        return "default"
+    if style == "showcase":
+        return "showcase"
+    raise ValueError(f"Unknown synthetic style: {style}")
 
 
 def _as_json_value(value: object) -> JSONValue:
-    return cast(JSONValue, value)
+    if is_json_value(value):
+        return value
+    raise TypeError(f"Generated payload is not JSON-compatible: {type(value).__name__}")
 
 
 def generate_batch(

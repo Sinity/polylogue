@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from os import PathLike
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 from ..errors import PolylogueError
 
@@ -54,6 +54,7 @@ class DriveConsoleLike(Protocol):
     def print(self, *args: object, **kwargs: object) -> None: ...
 
 
+@runtime_checkable
 class DriveUILike(Protocol):
     @property
     def plain(self) -> bool: ...
@@ -91,7 +92,7 @@ class DriveCredentialsFactory(Protocol):
 
 
 class DriveAuthFlowLike(Protocol):
-    credentials: object
+    credentials: DriveCredentialLike
 
     def authorization_url(self, *, prompt: str, access_type: str) -> tuple[str, object]: ...
 

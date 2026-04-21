@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Callable, Iterator, Mapping
 from datetime import datetime
-from typing import TYPE_CHECKING, Self, cast
+from typing import TYPE_CHECKING, Self
 
 from polylogue.lib.branch_type import BranchType
 from polylogue.lib.message_models import DialoguePair, Message
@@ -13,7 +13,6 @@ from polylogue.lib.messages import MessageCollection
 from polylogue.types import ConversationId
 
 if TYPE_CHECKING:
-    from polylogue.lib.conversation_models import Conversation
     from polylogue.lib.projections import ConversationProjection
 
 
@@ -193,9 +192,12 @@ class ConversationRuntimeMixin:
         return _coerce_optional_int(self.provider_meta.get("total_duration_ms")) or 0
 
     def project(self) -> ConversationProjection:
+        from polylogue.lib.conversation_models import Conversation
         from polylogue.lib.projections import ConversationProjection
 
-        return ConversationProjection(cast("Conversation", self))
+        if not isinstance(self, Conversation):
+            raise TypeError(f"projection requires Conversation, got {type(self).__name__}")
+        return ConversationProjection(self)
 
 
 __all__ = ["ConversationRuntimeMixin"]

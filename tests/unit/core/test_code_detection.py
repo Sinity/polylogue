@@ -10,6 +10,7 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
+from polylogue.lib.json import JSONDocument
 from polylogue.schemas.code_detection import (
     LANGUAGE_PATTERNS,
     _regex_scores,
@@ -85,29 +86,31 @@ class TestRegexScores:
 
 class TestExtractCodeBlockFromDict:
     def test_fenced_with_language(self) -> None:
-        block = {"type": "text", "text": "```python\ndef hello(): pass\n```"}
+        block: JSONDocument = {"type": "text", "text": "```python\ndef hello(): pass\n```"}
         result = extract_code_block_from_dict(block)
         assert result is not None
         assert result["type"] == "code"
         assert result["language"] == "python"
         assert result["declared_language"] == "python"
-        assert "def hello" in result["text"]
+        text = result["text"]
+        assert isinstance(text, str)
+        assert "def hello" in text
 
     def test_fenced_without_language(self) -> None:
-        block = {"type": "text", "text": "```\ndef hello(): pass\n```"}
+        block: JSONDocument = {"type": "text", "text": "```\ndef hello(): pass\n```"}
         result = extract_code_block_from_dict(block)
         assert result is not None
         assert result["type"] == "code"
 
     def test_non_code_text(self) -> None:
-        block = {"type": "text", "text": "Just a short note"}
+        block: JSONDocument = {"type": "text", "text": "Just a short note"}
         result = extract_code_block_from_dict(block)
         assert result is None
 
     def test_code_without_fence(self) -> None:
         # Long enough text that looks like code
         code_text = 'def hello():\n    print("world")\n\nclass Foo:\n    pass'
-        block = {"type": "text", "text": code_text}
+        block: JSONDocument = {"type": "text", "text": code_text}
         result = extract_code_block_from_dict(block)
         assert result is not None
         assert result["language"] == "python"

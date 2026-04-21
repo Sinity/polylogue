@@ -16,11 +16,12 @@ from collections.abc import Iterator
 from contextlib import contextmanager, redirect_stdout
 from dataclasses import replace
 from pathlib import Path
-from typing import NotRequired, Protocol, TypeAlias
+from typing import NotRequired, Protocol
 
 from typing_extensions import TypedDict
 
 from polylogue.config import Config, Source
+from polylogue.lib.json import JSONDocument, JSONValue, is_json_document, json_document, loads, require_json_document
 from polylogue.paths import blob_store_root, db_path
 from polylogue.pipeline.runner import RUN_STAGE_CHOICES, run_sources
 from polylogue.scenarios import (
@@ -63,11 +64,6 @@ _SOURCE_BACKED_PROBE_STAGE_SEQUENCES: dict[str, tuple[str, ...]] = {
     "reprocess": ("acquire", "parse", "materialize", "render", "index"),
     "all": ("acquire", "parse", "materialize", "render", "index"),
 }
-
-JsonScalar: TypeAlias = str | int | float | bool | None
-JsonValue: TypeAlias = JsonScalar | dict[str, "JsonValue"] | list["JsonValue"]
-JsonObject: TypeAlias = dict[str, JsonValue]
-ProbeSummary: TypeAlias = dict[str, object]
 
 
 class _RawConversationStore(Protocol):
@@ -128,7 +124,7 @@ class ArchiveManifest(TypedDict):
     missing_blob_count: int
     available_by_provider: dict[str, int]
     sampled_by_provider: dict[str, int]
-    records: list[JsonObject]
+    records: list[JSONDocument]
 
 
 class ArchiveSubsetSampleSummary(TypedDict):
@@ -147,10 +143,24 @@ class ArchiveSubsetSampleSummary(TypedDict):
 class BudgetReport(TypedDict):
     ok: bool
     max_total_ms: float | None
-    observed_total_ms: JsonValue
+    observed_total_ms: JSONValue
     max_peak_rss_mb: float | None
-    observed_peak_rss_mb: JsonValue
+    observed_peak_rss_mb: JSONValue
     violations: list[str]
+
+
+class ProbeSummary(TypedDict):
+    probe: JSONDocument
+    paths: JSONDocument
+    provenance: ProbeProvenance
+    result: JSONDocument
+    run_payload: JSONDocument
+    db_stats: dict[str, int]
+    raw_fanout: list[RawFanoutEntry]
+    source_files: NotRequired[JSONDocument]
+    source_inputs: NotRequired[SourceInputsSummary]
+    sample: NotRequired[ArchiveSubsetSampleSummary]
+    budgets: NotRequired[BudgetReport]
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -738,8 +748,75 @@ def _persist_manifest(manifest: ArchiveManifest, destination: Path) -> Path:
 
 
 def _load_manifest(manifest_path: Path) -> ArchiveManifest:
-    manifest: ArchiveManifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    return manifest
+    payload = require_json_document(loads(manifest_path.read_text(encoding="utf-8")), context="archive subset manifest")
+    return _archive_manifest_from_payload(payload)
+
+
+def _string_value(document: JSONDocument, key: str) -> str:
+    value = document.get(key)
+    if not isinstance(value, str):
+        raise TypeError(f"manifest field {key!r} must be a string")
+    return value
+
+
+def _int_value(document: JSONDocument, key: str) -> int:
+    value = document.get(key)
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"manifest field {key!r} must be an integer")
+    return value
+
+
+def _string_list_value(document: JSONDocument, key: str) -> list[str]:
+    value = document.get(key)
+    if not isinstance(value, list):
+        raise TypeError(f"manifest field {key!r} must be a list of strings")
+    result: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            raise TypeError(f"manifest field {key!r} must be a list of strings")
+        result.append(item)
+    return result
+
+
+def _int_map_value(document: JSONDocument, key: str) -> dict[str, int]:
+    value = document.get(key)
+    if not isinstance(value, dict):
+        raise TypeError(f"manifest field {key!r} must be an object")
+    result: dict[str, int] = {}
+    for item_key, item_value in value.items():
+        if isinstance(item_value, bool) or not isinstance(item_value, int):
+            raise TypeError(f"manifest field {key!r}.{item_key} must be an integer")
+        result[str(item_key)] = item_value
+    return result
+
+
+def _document_list_value(document: JSONDocument, key: str) -> list[JSONDocument]:
+    value = document.get(key)
+    if not isinstance(value, list):
+        raise TypeError(f"manifest field {key!r} must be a list of JSON objects")
+    result: list[JSONDocument] = []
+    for item in value:
+        if not is_json_document(item):
+            raise TypeError(f"manifest field {key!r} must be a list of JSON objects")
+        result.append(item)
+    return result
+
+
+def _archive_manifest_from_payload(payload: JSONDocument) -> ArchiveManifest:
+    return {
+        "input_mode": _string_value(payload, "input_mode"),
+        "source_db": _string_value(payload, "source_db"),
+        "source_blob_root": _string_value(payload, "source_blob_root"),
+        "seed": _int_value(payload, "seed"),
+        "sample_per_provider": _int_value(payload, "sample_per_provider"),
+        "provider_filters": _string_list_value(payload, "provider_filters"),
+        "source_filters": _string_list_value(payload, "source_filters"),
+        "candidate_count": _int_value(payload, "candidate_count"),
+        "missing_blob_count": _int_value(payload, "missing_blob_count"),
+        "available_by_provider": _int_map_value(payload, "available_by_provider"),
+        "sampled_by_provider": _int_map_value(payload, "sampled_by_provider"),
+        "records": _document_list_value(payload, "records"),
+    }
 
 
 def _build_archive_manifest(
@@ -812,8 +889,12 @@ def _build_archive_manifest(
         "missing_blob_count": missing_blob_count,
         "available_by_provider": available_by_provider,
         "sampled_by_provider": sampled_by_provider,
-        "records": [record.model_dump(mode="json") for record in sampled_records],
+        "records": [_raw_record_payload(record) for record in sampled_records],
     }
+
+
+def _raw_record_payload(record: RawConversationRecord) -> JSONDocument:
+    return require_json_document(record.model_dump(mode="json"), context="archive subset raw record")
 
 
 def _resolve_archive_manifest(
@@ -916,11 +997,10 @@ def _probe_mode(args: argparse.Namespace | PipelineProbeRequest) -> str:
     return str(getattr(args, "input_mode", "synthetic"))
 
 
-def _load_run_payload(run_path: str | None) -> JsonObject:
+def _load_run_payload(run_path: str | None) -> JSONDocument:
     if not run_path:
         return {}
-    payload: JsonObject = json.loads(Path(run_path).read_text(encoding="utf-8"))
-    return payload
+    return require_json_document(loads(Path(run_path).read_text(encoding="utf-8")), context="pipeline run payload")
 
 
 def _path_size_bytes(path: Path) -> int:
@@ -990,7 +1070,7 @@ async def _run_probe_pipeline(
     source_names: list[str] | None,
     backend: SQLiteBackend | None = None,
     repository: ConversationRepository | None = None,
-) -> tuple[RunResult, JsonObject]:
+) -> tuple[RunResult, JSONDocument]:
     result = await run_sources(
         config=config,
         stage=request.stage,
@@ -1011,11 +1091,8 @@ def _probe_stage_sequence(probe_mode: str, stage: str) -> list[str] | None:
     return list(_SOURCE_BACKED_PROBE_STAGE_SEQUENCES[stage])
 
 
-def _json_object_or_empty(value: object | None) -> JsonObject:
-    if isinstance(value, dict):
-        payload: JsonObject = value
-        return payload
-    return {}
+def _json_object_or_empty(value: object | None) -> JSONDocument:
+    return json_document(value)
 
 
 def _json_float_or_none(value: object | None) -> float | None:
@@ -1029,6 +1106,18 @@ def _json_float_or_none(value: object | None) -> float | None:
         except ValueError:
             return None
     return None
+
+
+def _run_result_payload(result: RunResult) -> JSONDocument:
+    return require_json_document(result.model_dump(mode="json"), context="pipeline probe result")
+
+
+def _json_string_sequence(value: list[str] | None) -> list[JSONValue] | None:
+    if value is None:
+        return None
+    result: list[JSONValue] = []
+    result.extend(value)
+    return result
 
 
 async def run_probe(request: PipelineProbeRequest) -> ProbeSummary:
@@ -1076,7 +1165,7 @@ async def run_probe(request: PipelineProbeRequest) -> ProbeSummary:
                 stage_sequence=stage_sequence,
                 source_names=[provider_name],
             )
-        result_payload = result.model_dump()
+        result_payload = _run_result_payload(result)
 
         summary = {
             "probe": {
@@ -1084,7 +1173,7 @@ async def run_probe(request: PipelineProbeRequest) -> ProbeSummary:
                 "provider": provider_name,
                 "corpus_source": corpus_request.source_kind.value,
                 "stage": request.stage,
-                "stage_sequence": stage_sequence,
+                "stage_sequence": _json_string_sequence(stage_sequence),
                 "count": corpus_request.count,
                 "messages_min": corpus_request.messages_min,
                 "messages_max": corpus_request.messages_max,
@@ -1139,14 +1228,14 @@ async def run_probe(request: PipelineProbeRequest) -> ProbeSummary:
                 stage_sequence=stage_sequence,
                 source_names=[source_name],
             )
-        result_payload = result.model_dump()
+        result_payload = _run_result_payload(result)
 
         summary = {
             "probe": {
                 "input_mode": "source-subset",
                 "source_name": source_name,
                 "stage": request.stage,
-                "stage_sequence": stage_sequence,
+                "stage_sequence": _json_string_sequence(stage_sequence),
                 "raw_batch_size": request.raw_batch_size,
                 "ingest_workers": request.ingest_workers,
                 "measure_ingest_result_size": request.measure_ingest_result_size,
@@ -1213,7 +1302,7 @@ async def run_probe(request: PipelineProbeRequest) -> ProbeSummary:
                 )
             finally:
                 await repository.close()
-        result_payload = result.model_dump()
+        result_payload = _run_result_payload(result)
 
         summary = {
             "probe": {
@@ -1221,8 +1310,8 @@ async def run_probe(request: PipelineProbeRequest) -> ProbeSummary:
                 "stage": request.stage,
                 "seed": resolved_corpus_request.seed,
                 "sample_per_provider": sample_per_provider,
-                "provider_filters": provider_filters,
-                "source_filters": source_filters,
+                "provider_filters": _json_string_sequence(provider_filters),
+                "source_filters": _json_string_sequence(source_filters),
                 "raw_batch_size": request.raw_batch_size,
                 "ingest_workers": request.ingest_workers,
                 "measure_ingest_result_size": request.measure_ingest_result_size,

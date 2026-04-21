@@ -16,6 +16,7 @@ from click.testing import CliRunner
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 from rich.console import Console
+from rich.progress import TaskID
 
 from polylogue.cli.commands.run import run_command
 from polylogue.cli.run_observers import (
@@ -351,12 +352,13 @@ def test_plain_progress_observer_completion_contract() -> None:
 
 def test_rich_progress_observer_parses_explicit_totals() -> None:
     progress = MagicMock()
-    observer = _RichProgressObserver(progress, task_id="task-1")
+    task_id = TaskID(1)
+    observer = _RichProgressObserver(progress, task_id=task_id)
 
     observer.on_progress(200, "Indexing: full-text search 1,000/10,153")
 
     progress.update.assert_called_once_with(
-        "task-1",
+        task_id,
         description="Indexing: full-text search 1,000/10,153",
         total=10153,
         completed=1000,

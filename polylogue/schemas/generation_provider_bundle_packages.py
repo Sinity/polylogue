@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import cast
 
 from polylogue.lib.json import JSONDocument, JSONValue
 from polylogue.schemas.generation_cluster_support import (
@@ -48,6 +48,10 @@ class ProviderCatalogArtifacts:
     package_schemas: dict[str, dict[str, JSONDocument]]
     package_reports: dict[str, dict[str, SchemaReport | None]]
     manifest: ClusterManifest
+
+
+def _json_text_values(values: Iterable[str]) -> list[JSONValue]:
+    return list(values)
 
 
 def build_provider_catalog_artifacts(
@@ -119,11 +123,9 @@ def build_provider_catalog_artifacts(
                 artifact_kind=element_kind,
                 observed_artifact_count=len(kind_memberships),
             )
-            profile_family_ids_json = [cast(JSONValue, profile_id) for profile_id in profile_family_ids]
-            exact_structure_ids_json = [cast(JSONValue, structure_id) for structure_id in exact_structure_ids]
-            package_profile_family_ids_json = [
-                cast(JSONValue, profile_id) for profile_id in sorted(package_acc.profile_family_ids)
-            ]
+            profile_family_ids_json = _json_text_values(profile_family_ids)
+            exact_structure_ids_json = _json_text_values(exact_structure_ids)
+            package_profile_family_ids_json = _json_text_values(sorted(package_acc.profile_family_ids))
             schema["x-polylogue-package-version"] = version
             schema["x-polylogue-profile-family-ids"] = profile_family_ids_json
             schema["x-polylogue-exact-structure-ids"] = exact_structure_ids_json

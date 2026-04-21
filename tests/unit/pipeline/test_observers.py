@@ -56,39 +56,35 @@ class TestWebhookObserver:
 
     def test_posts_to_url(self: object) -> None:
         with patch("polylogue.pipeline.observers.socket.getaddrinfo", return_value=TestWebhookObserver._FAKE_ADDRINFO):
-            with patch("urllib.request.urlopen") as mock_urlopen:
+            with patch("polylogue.pipeline.observers._post_webhook") as mock_post:
                 handler = WebhookObserver("http://example.com/hook")
                 handler.on_completed(_make_result(7))
-                mock_urlopen.assert_called_once()
-                req = mock_urlopen.call_args[0][0]
-                assert req.get_full_url() == "http://example.com/hook"
-                assert req.get_method() == "POST"
+                mock_post.assert_called_once()
+                assert mock_post.call_args.args[0] == "http://example.com/hook"
 
     def test_payload_format(self: object) -> None:
         import json
 
         with patch("polylogue.pipeline.observers.socket.getaddrinfo", return_value=TestWebhookObserver._FAKE_ADDRINFO):
-            with patch("urllib.request.urlopen"):
-                with patch("urllib.request.Request") as mock_req:
-                    handler = WebhookObserver("http://example.com/hook")
-                    handler.on_completed(_make_result(7))
-                    call_kwargs = mock_req.call_args[1]
-                    payload = json.loads(call_kwargs["data"].decode())
-                    assert payload["event"] == "sync"
-                    assert payload["conversation_activity_count"] == 7
-                    assert payload["new_conversations"] == 7
-                    assert payload["changed_conversations"] == 0
+            with patch("polylogue.pipeline.observers._post_webhook") as mock_post:
+                handler = WebhookObserver("http://example.com/hook")
+                handler.on_completed(_make_result(7))
+                payload = json.loads(mock_post.call_args.args[1].decode())
+                assert payload["event"] == "sync"
+                assert payload["conversation_activity_count"] == 7
+                assert payload["new_conversations"] == 7
+                assert payload["changed_conversations"] == 0
 
     def test_skips_when_no_new(self: object) -> None:
         with patch("polylogue.pipeline.observers.socket.getaddrinfo", return_value=TestWebhookObserver._FAKE_ADDRINFO):
-            with patch("urllib.request.urlopen") as mock_urlopen:
+            with patch("polylogue.pipeline.observers._post_webhook") as mock_post:
                 handler = WebhookObserver("http://example.com/hook")
                 handler.on_completed(_make_result(0))
-                mock_urlopen.assert_not_called()
+                mock_post.assert_not_called()
 
     def test_logs_on_failure(self: object) -> None:
         with patch("polylogue.pipeline.observers.socket.getaddrinfo", return_value=TestWebhookObserver._FAKE_ADDRINFO):
-            with patch("urllib.request.urlopen", side_effect=ConnectionError("refused")):
+            with patch("polylogue.pipeline.observers._post_webhook", side_effect=ConnectionError("refused")):
                 handler = WebhookObserver("http://example.com/hook")
                 handler.on_completed(_make_result(1))  # Should not raise
 

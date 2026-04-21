@@ -13,11 +13,11 @@ import copy
 import json
 from collections.abc import Callable
 from pathlib import Path
-from typing import cast
 
 import pytest
 
 from polylogue.lib.json import JSONDocument, JSONValue
+from polylogue.paths import Source
 from polylogue.schemas.registry import SCHEMA_DIR, SchemaRegistry
 from polylogue.schemas.synthetic.core import SyntheticCorpus
 from polylogue.schemas.synthetic.semantic_values import SemanticValueGenerator
@@ -33,6 +33,12 @@ EXPECTED_ANNOTATIONS: dict[str, list[str]] = {
     "codex": ["conversation_title", "message_body", "message_container", "message_role", "message_timestamp"],
     "gemini": ["conversation_title", "message_body", "message_container", "message_role", "message_timestamp"],
 }
+
+
+def _synthetic_source(factory: Callable[..., object], provider: str, *, count: int, seed: int) -> Source:
+    source = factory(provider, count=count, seed=seed)
+    assert isinstance(source, Source)
+    return source
 
 
 def _collect_semantic_roles(schema: JSONValue, *, roles: list[str] | None = None) -> list[str]:
@@ -151,10 +157,9 @@ class TestSemanticRoundtrip:
         synthetic_source: Callable[..., object],
     ) -> None:
         """Synthetic data with semantic annotations roundtrips through parsers."""
-        from polylogue.paths import Source
         from polylogue.sources import iter_source_conversations
 
-        source = cast(Source, synthetic_source(provider, count=3, seed=42))
+        source = _synthetic_source(synthetic_source, provider, count=3, seed=42)
         convos = list(iter_source_conversations(source))
         assert convos, f"No conversations parsed for {provider}"
 
@@ -165,10 +170,9 @@ class TestSemanticRoundtrip:
         synthetic_source: Callable[..., object],
     ) -> None:
         """Roundtrip with a different seed to catch seed-dependent issues."""
-        from polylogue.paths import Source
         from polylogue.sources import iter_source_conversations
 
-        source = cast(Source, synthetic_source(provider, count=2, seed=99))
+        source = _synthetic_source(synthetic_source, provider, count=2, seed=99)
         convos = list(iter_source_conversations(source))
         assert convos, f"No conversations parsed for {provider} (seed=99)"
 

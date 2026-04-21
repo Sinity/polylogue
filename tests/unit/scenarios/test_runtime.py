@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
-from typing import cast
 
 import pytest
 
@@ -14,6 +13,16 @@ from polylogue.scenarios import (
     runner_execution,
 )
 from polylogue.scenarios.runtime import ExecutionRunner
+
+
+def _string_env(value: object) -> dict[str, str]:
+    assert isinstance(value, dict)
+    env: dict[str, str] = {}
+    for key, item in value.items():
+        assert isinstance(key, str)
+        assert isinstance(item, str)
+        env[key] = item
+    return env
 
 
 def test_resolve_execution_command_applies_binary_overrides() -> None:
@@ -56,7 +65,7 @@ def test_run_execution_merges_env_and_captures_output(
     assert captured_kwargs["capture_output"] is True
     assert captured_kwargs["timeout"] == 15.0
     assert captured_kwargs["text"] is True
-    env = cast(dict[str, str], captured_kwargs["env"])
+    env = _string_env(captured_kwargs["env"])
     assert env["POLYLOGUE_FORCE_PLAIN"] == "1"
 
 

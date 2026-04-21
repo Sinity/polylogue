@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import cast
 
 from polylogue.lib.json import JSONDocument, JSONValue, json_document
 from polylogue.schemas.operator_models import (
@@ -19,6 +18,7 @@ from polylogue.schemas.operator_models import (
     SchemaReviewProof,
     SchemaRoleAssignment,
     SchemaRoleProofEntry,
+    operator_json_document,
 )
 
 
@@ -41,7 +41,7 @@ def _schema_node(value: JSONValue | object) -> JSONDocument | None:
 
 
 def _node_evidence(node: Mapping[str, object]) -> OperatorJSONDocument:
-    return cast(OperatorJSONDocument, json_document(node.get("x-polylogue-evidence")))
+    return operator_json_document(json_document(node.get("x-polylogue-evidence")))
 
 
 def _score_value(value: object) -> float:

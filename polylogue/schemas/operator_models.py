@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TypeAlias, cast
+from typing import TypeAlias, TypeGuard
 
 from polylogue.scenarios import CorpusScenario, CorpusSpec
 from polylogue.schemas.generation_models import GenerationResult
@@ -21,8 +21,27 @@ JSONDocument: TypeAlias = dict[str, JSONValue]
 JSONDocumentList: TypeAlias = list[JSONDocument]
 
 
+def _is_operator_json_value(value: object) -> TypeGuard[JSONValue]:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return True
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return all(_is_operator_json_value(item) for item in value)
+    if isinstance(value, Mapping):
+        return all(isinstance(key, str) and _is_operator_json_value(item) for key, item in value.items())
+    return False
+
+
+def _is_operator_json_document(value: object) -> TypeGuard[JSONDocument]:
+    return isinstance(value, dict) and all(
+        isinstance(key, str) and _is_operator_json_value(item) for key, item in value.items()
+    )
+
+
 def operator_json_document(payload: Mapping[str, object]) -> JSONDocument:
-    return cast(JSONDocument, dict(payload))
+    document = dict(payload)
+    if _is_operator_json_document(document):
+        return document
+    raise TypeError("operator payload is not JSON-compatible")
 
 
 def _corpus_spec_payloads(specs: tuple[CorpusSpec, ...]) -> JSONDocumentList:

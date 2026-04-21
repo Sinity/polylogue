@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-from typing import cast
 
 import pytest
 
@@ -23,4 +22,6 @@ def mcp_server() -> MCPServerUnderTest:
 
     from polylogue.mcp.server import build_server
 
-    return cast(MCPServerUnderTest, build_server())
+    server = build_server()
+    assert isinstance(server, MCPServerUnderTest)
+    return server

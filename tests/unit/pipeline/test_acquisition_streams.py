@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Callable, Iterator
+from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
-from typing import cast
 
 import pytest
 
@@ -62,7 +61,8 @@ async def test_iter_raw_record_stream_forwards_source_status_progress(
 
     def _iter_source_raw_data(*args: object, **kwargs: object) -> Iterator[RawConversationData]:
         del args
-        status_callback = cast(Callable[[str], None], kwargs["status_callback"])
+        status_callback = kwargs["status_callback"]
+        assert callable(status_callback)
         status_callback("Scanning [chatgpt] reading export.json")
         yield RawConversationData(
             raw_bytes=b'{"mapping": {}, "id": "ok"}',

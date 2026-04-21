@@ -37,6 +37,20 @@ def json_document(value: object) -> JSONDocument:
     return value if is_json_document(value) else {}
 
 
+def require_json_value(value: object, *, context: str = "JSON value") -> JSONValue:
+    """Return a JSON value or raise when a producer violates the contract."""
+    if is_json_value(value):
+        return value
+    raise TypeError(f"{context} is not JSON-compatible")
+
+
+def require_json_document(value: object, *, context: str = "JSON document") -> JSONDocument:
+    """Return a JSON document or raise when a producer violates the contract."""
+    if is_json_document(value):
+        return value
+    raise TypeError(f"{context} is not a JSON object")
+
+
 def json_document_list(value: object) -> JSONDocumentList:
     """Coerce a value into a list of string-keyed JSON objects."""
     if not isinstance(value, list):
@@ -121,4 +135,6 @@ __all__ = [
     "json_document",
     "json_document_list",
     "loads",
+    "require_json_document",
+    "require_json_value",
 ]

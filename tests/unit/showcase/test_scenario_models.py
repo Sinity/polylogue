@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
-from typing import cast
-
 from polylogue.scenarios import AssertionSpec, ScenarioProjectionSourceKind, polylogue_execution
 from polylogue.showcase.exercise_models import Exercise
+
+
+def _dict_payload(value: object) -> dict[str, object]:
+    assert isinstance(value, dict)
+    return {str(key): item for key, item in value.items()}
 
 
 def test_exercise_scenario_compiles_to_exercise() -> None:
@@ -58,5 +61,5 @@ def test_exercise_scenario_compiles_its_own_projection_entry() -> None:
     assert projection.operation_targets == ("cli.json-contract",)
     assert projection.tags == ("generated", "json-contract")
     source_payload = projection.source_payload
-    execution_payload = cast(dict[str, object], source_payload["execution"])
+    execution_payload = _dict_payload(source_payload["execution"])
     assert execution_payload["kind"] == "polylogue"

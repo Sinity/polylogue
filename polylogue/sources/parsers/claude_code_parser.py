@@ -11,6 +11,7 @@ from pydantic import ValidationError
 from polylogue.lib.branch_type import BranchType
 from polylogue.lib.roles import Role
 from polylogue.logging import get_logger
+from polylogue.pipeline.semantic_capture import detect_context_compaction
 from polylogue.sources.providers.claude_code import ClaudeCodeRecord
 from polylogue.types import ContentBlockType, Provider
 
@@ -91,9 +92,6 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedCo
     has_sidechain = False
     cwds: set[str] = set()
     models: set[str] = set()
-
-    # Deferred import avoids circular dependency via pipeline/__init__.py.
-    from polylogue.pipeline.semantic_capture import detect_context_compaction  # noqa: PLC0415
 
     for index, item in enumerate(records, start=1):
         if not isinstance(item, dict):

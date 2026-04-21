@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import shutil
 import sqlite3
@@ -104,6 +105,10 @@ def _open_readiness_probe_connection(db_path: Path) -> AbstractContextManager[sq
     from polylogue.storage.backends.connection import open_read_connection
 
     return open_read_connection(db_path)
+
+
+def _module_available(module_name: str) -> bool:
+    return importlib.util.find_spec(module_name) is not None
 
 
 def _config_path_checks(config: Config) -> list[ReadinessCheck]:
@@ -409,11 +414,9 @@ def run_runtime_readiness(config: Config) -> ReadinessReport:
             ReadinessCheck("fts_tables", VerifyStatus.ERROR, summary=f"FTS check failed: {_summarize_db_error(exc)}")
         )
 
-    try:
-        import sqlite_vec  # noqa: F401
-
+    if _module_available("sqlite_vec"):
         checks.append(ReadinessCheck("sqlite_vec", VerifyStatus.OK, summary="sqlite-vec extension available"))
-    except ImportError:
+    else:
         checks.append(
             ReadinessCheck(
                 "sqlite_vec", VerifyStatus.WARNING, summary="sqlite-vec not installed (vector search unavailable)"
@@ -470,18 +473,8 @@ def run_runtime_readiness(config: Config) -> ReadinessReport:
         term_detail += ", POLYLOGUE_FORCE_PLAIN=1"
     checks.append(ReadinessCheck("terminal", VerifyStatus.OK, summary=term_detail))
 
-    try:
-        import rich  # noqa: F401
-
-        rich_ok = True
-    except ImportError:
-        rich_ok = False
-    try:
-        import textual  # noqa: F401
-
-        textual_ok = True
-    except ImportError:
-        textual_ok = False
+    rich_ok = _module_available("rich")
+    textual_ok = _module_available("textual")
     checks.append(
         ReadinessCheck(
             "ui_libraries",

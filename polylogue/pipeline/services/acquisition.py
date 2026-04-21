@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 from polylogue.lib.json import JSONDocument
 from polylogue.lib.metrics import read_peak_rss_self_mb
@@ -14,13 +14,13 @@ from polylogue.pipeline.services.acquisition_records import ScanResult
 from polylogue.pipeline.services.acquisition_streams import iter_raw_record_stream
 from polylogue.pipeline.stage_models import AcquireResult
 from polylogue.protocols import ProgressCallback
+from polylogue.sources.drive_types import DriveUILike
 from polylogue.sources.source_acquisition import iter_source_raw_data
 from polylogue.storage.cursor_state import CursorStatePayload
 from polylogue.storage.store import RawConversationRecord
 
 if TYPE_CHECKING:
     from polylogue.config import DriveConfig, Source
-    from polylogue.sources.drive_types import DriveUILike
     from polylogue.storage.backends.async_sqlite import SQLiteBackend
     from polylogue.storage.repository import ConversationRepository
 
@@ -74,7 +74,9 @@ class AcquisitionService:
         """Visit source raw payloads incrementally without forcing list materialization."""
         result = ScanResult()
         known_mtimes = await self.repository.get_known_source_mtimes()
-        drive_ui = cast("DriveUILike | None", ui)
+        if ui is not None and not isinstance(ui, DriveUILike):
+            raise TypeError(f"Drive acquisition UI must satisfy DriveUILike, got {type(ui).__name__}")
+        drive_ui = ui
 
         async def _consume(record: RawConversationRecord) -> None:
             if on_record is not None:

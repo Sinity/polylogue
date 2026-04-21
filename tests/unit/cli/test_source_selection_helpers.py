@@ -7,7 +7,6 @@ from collections.abc import Iterable
 from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
-from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import click
@@ -18,7 +17,7 @@ from polylogue.cli import helpers
 from polylogue.cli.types import AppEnv
 from polylogue.config import Config, Source
 from polylogue.services import build_runtime_services
-from polylogue.ui import UI
+from polylogue.ui import UI, ConsoleLike
 
 
 @pytest.fixture
@@ -322,15 +321,57 @@ class SummaryRunResult(TypedDict):
     mock_get_readiness: MagicMock
 
 
-def _make_env(config: Config, *, plain: bool) -> tuple[AppEnv, StringIO, MagicMock]:
-    from rich.console import Console
+class _SummaryUI(UI):
+    def __init__(self, *, plain: bool, console: ConsoleLike) -> None:
+        self._plain = plain
+        self._console = console
+        self.summary_mock = MagicMock()
 
+    @property
+    def plain(self) -> bool:
+        return self._plain
+
+    @property
+    def console(self) -> ConsoleLike:
+        return self._console
+
+    @console.setter
+    def console(self, value: ConsoleLike) -> None:
+        self._console = value
+
+    def summary(self, title: str, lines: Iterable[str]) -> None:
+        self.summary_mock(title, list(lines))
+
+
+class _BufferConsole:
+    def __init__(self, buffer: StringIO) -> None:
+        self._buffer = buffer
+
+    def print(self, *objects: object, **kwargs: object) -> None:
+        del kwargs
+        self._buffer.write(" ".join(str(obj) for obj in objects))
+        self._buffer.write("\n")
+
+
+def _make_env(config: Config, *, plain: bool) -> tuple[AppEnv, StringIO, MagicMock]:
     buffer = StringIO()
-    ui = MagicMock()
-    ui.plain = plain
-    ui.console = Console(file=buffer, width=120, force_terminal=False, color_system=None)
-    env = AppEnv(ui=cast(UI, ui), services=build_runtime_services(config=config, backend=MagicMock()))
-    return env, buffer, ui
+    ui = _SummaryUI(
+        plain=plain,
+        console=_BufferConsole(buffer),
+    )
+    env = AppEnv(ui=ui, services=build_runtime_services(config=config, backend=MagicMock()))
+    return env, buffer, ui.summary_mock
+
+
+def _summary_call(summary_mock: MagicMock) -> tuple[str, list[str]]:
+    args = summary_mock.call_args.args
+    title = args[0]
+    lines = args[1]
+    if not isinstance(title, str):
+        raise TypeError(f"expected summary title str, got {type(title).__name__}")
+    if not isinstance(lines, list) or not all(isinstance(line, str) for line in lines):
+        raise TypeError("expected summary lines list[str]")
+    return title, lines
 
 
 def _health_report(*, source: str = "live", checks: list[SimpleNamespace] | None = None) -> SimpleNamespace:
@@ -414,9 +455,7 @@ def _run_summary(
     ):
         print_summary(env, verbose=verbose)
 
-    summary_mock = cast(MagicMock, ui.summary)
-    title = cast(str, summary_mock.call_args.args[0])
-    lines = cast(list[str], summary_mock.call_args.args[1])
+    title, lines = _summary_call(ui)
     return {
         "title": title,
         "lines": lines,

@@ -149,7 +149,7 @@ def run_manual_auth_flow(
     *,
     flow: DriveAuthFlowLike,
     prompter: DriveAuthPrompter | None,
-) -> object:
+) -> DriveCredentialLike:
     auth_url, _ = flow.authorization_url(prompt="consent", access_type="offline")
     if prompter is not None:
         prompter.announce_auth_url(auth_url)

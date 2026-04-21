@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import inspect
 from collections.abc import Awaitable, Iterable, Sequence
-from typing import TYPE_CHECKING, Protocol, TypeVar, cast
+from typing import TYPE_CHECKING, Protocol, TypeVar, overload
 
 import click
 
@@ -58,10 +58,18 @@ class ShowStatsCallback(Protocol):
     def __call__(self, env: AppEnv, *, verbose: bool = False) -> None: ...
 
 
-async def _resolve_maybe_awaitable(value: _T | object) -> _T:
+@overload
+async def _resolve_maybe_awaitable(value: Awaitable[_T]) -> _T: ...
+
+
+@overload
+async def _resolve_maybe_awaitable(value: _T) -> _T: ...
+
+
+async def _resolve_maybe_awaitable(value: Awaitable[_T] | _T) -> _T:
     if inspect.isawaitable(value):
-        return await cast(Awaitable[_T], value)
-    return cast(_T, value)
+        return await value
+    return value
 
 
 def no_results(
@@ -317,7 +325,7 @@ async def async_execute_query_request(env: AppEnv, request: RootModeRequest) -> 
     except ConfigError as exc:
         fail("query", str(exc))
 
-    repo = cast("QueryExecutionStore", env.repository)
+    repo: QueryExecutionStore = env.repository
 
     vector_provider = _create_query_vector_provider(config)
 

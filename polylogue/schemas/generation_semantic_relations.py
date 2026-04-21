@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import cast, overload
+from typing import overload
 
-from polylogue.lib.json import JSONDocument, JSONDocumentList, JSONValue, json_document
+from polylogue.lib.json import JSONDocument, JSONDocumentList, JSONValue, json_document, require_json_value
 from polylogue.schemas.field_stats import FieldStats
 from polylogue.schemas.relational_inference import infer_relations
 from polylogue.schemas.relational_inference_models import RelationalAnnotations
@@ -17,7 +17,7 @@ def _schema_node(value: JSONValue | object) -> JSONDocument | None:
 
 
 def _json_value(value: object) -> JSONValue:
-    return cast(JSONValue, value)
+    return require_json_value(value, context="semantic relation annotation")
 
 
 def _relation_payloads(

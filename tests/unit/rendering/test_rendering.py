@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
-from typing import cast
 
 import pytest
 
@@ -32,6 +31,16 @@ from tests.infra.builders import make_conv, make_msg
 # =============================================================================
 
 MessagePayload = dict[str, object]
+
+
+def _branches(payload: MessagePayload) -> list[MessagePayload]:
+    value = payload["branches"]
+    assert isinstance(value, list)
+    branches: list[MessagePayload] = []
+    for item in value:
+        assert isinstance(item, dict)
+        branches.append({str(key): field for key, field in item.items()})
+    return branches
 
 
 def _make_msg(
@@ -94,7 +103,7 @@ class TestAttachBranches:
         assert len(result) == 2
         m2 = next(m for m in result if m["id"] == "m2")
         assert "branches" in m2
-        branches = cast(list[MessagePayload], m2["branches"])
+        branches = _branches(m2)
         assert len(branches) == 1
         assert branches[0]["id"] == "m3"
 
@@ -109,7 +118,7 @@ class TestAttachBranches:
         result = _attach_branches(msgs)
         assert len(result) == 2
         m2 = next(m for m in result if m["id"] == "m2")
-        assert len(cast(list[MessagePayload], m2["branches"])) == 2
+        assert len(_branches(m2)) == 2
 
     def test_orphan_branch_becomes_standalone(self) -> None:
         """Branch without mainline sibling is included as standalone."""

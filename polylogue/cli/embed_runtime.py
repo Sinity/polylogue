@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Protocol, cast
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 import click
 
@@ -34,6 +34,7 @@ class _EmbedUI(Protocol):
     def progress(self, description: str, total: int = 0) -> _ProgressHandle: ...
 
 
+@runtime_checkable
 class _HasUI(Protocol):
     ui: _EmbedUI
 
@@ -96,7 +97,9 @@ def embed_batch(
     from polylogue.storage.backends.connection import open_read_connection
     from polylogue.sync_bridge import run_coroutine_sync
 
-    ui = cast(_HasUI, env).ui
+    if not isinstance(env, _HasUI):
+        raise TypeError(f"Embedding environment must expose ui, got {type(env).__name__}")
+    ui = env.ui
     backend = repo.backend
     conv_ids: list[tuple[str, str | None]] = []
     with open_read_connection(backend.db_path) as conn:

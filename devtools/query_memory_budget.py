@@ -11,7 +11,15 @@ import json
 import subprocess
 import time
 from pathlib import Path
-from typing import cast
+from typing import TypedDict
+
+
+class MemoryBudgetResult(TypedDict):
+    command: list[str]
+    exit_code: int
+    max_rss_mb: int
+    peak_rss_mb: float
+    within_budget: bool
 
 
 def _read_vm_rss_kb(pid: int) -> int:
@@ -28,7 +36,7 @@ def _read_vm_rss_kb(pid: int) -> int:
     return 0
 
 
-def run_memory_budget(command: list[str], *, max_rss_mb: int, poll_interval_s: float = 0.05) -> dict[str, object]:
+def run_memory_budget(command: list[str], *, max_rss_mb: int, poll_interval_s: float = 0.05) -> MemoryBudgetResult:
     """Execute a command and track peak RSS."""
     proc = subprocess.Popen(command)
     peak_rss_kb = 0
@@ -75,8 +83,8 @@ def main(argv: list[str] | None = None) -> int:
     result = run_memory_budget(command, max_rss_mb=args.max_rss_mb)
     print(json.dumps(result, indent=2, sort_keys=True))
 
-    exit_code = cast(int, result["exit_code"])
-    within_budget = cast(bool, result["within_budget"])
+    exit_code = result["exit_code"]
+    within_budget = result["within_budget"]
     if exit_code != 0:
         return exit_code
     return 0 if within_budget else 3

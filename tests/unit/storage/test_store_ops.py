@@ -11,8 +11,6 @@ import tempfile
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from types import SimpleNamespace
-from typing import cast
 from unittest.mock import AsyncMock
 
 import pytest
@@ -197,13 +195,13 @@ def _conversation_model(conversation_id: str) -> Conversation:
 
 
 def _conversation_row(conn: sqlite3.Connection, conversation_id: str) -> sqlite3.Row | None:
-    return cast(
-        sqlite3.Row | None,
-        conn.execute(
-            "SELECT * FROM conversations WHERE conversation_id = ?",
-            (conversation_id,),
-        ).fetchone(),
-    )
+    row = conn.execute(
+        "SELECT * FROM conversations WHERE conversation_id = ?",
+        (conversation_id,),
+    ).fetchone()
+    if row is not None and not isinstance(row, sqlite3.Row):
+        raise TypeError(f"expected sqlite3.Row, got {type(row).__name__}")
+    return row
 
 
 def _message_count(conn: sqlite3.Connection, conversation_id: str) -> int:
@@ -216,13 +214,24 @@ def _message_count(conn: sqlite3.Connection, conversation_id: str) -> int:
 
 
 def _attachment_row(conn: sqlite3.Connection, attachment_id: str) -> sqlite3.Row | None:
-    return cast(
-        sqlite3.Row | None,
-        conn.execute(
-            "SELECT * FROM attachments WHERE attachment_id = ?",
-            (attachment_id,),
-        ).fetchone(),
-    )
+    row = conn.execute(
+        "SELECT * FROM attachments WHERE attachment_id = ?",
+        (attachment_id,),
+    ).fetchone()
+    if row is not None and not isinstance(row, sqlite3.Row):
+        raise TypeError(f"expected sqlite3.Row, got {type(row).__name__}")
+    return row
+
+
+def _message_payloads(value: object) -> list[dict[str, object]]:
+    if not isinstance(value, list):
+        return []
+    payloads: list[dict[str, object]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            raise TypeError(f"expected message payload dict, got {type(item).__name__}")
+        payloads.append(dict(item))
+    return payloads
 
 
 def _record_query(**kwargs: Unpack[RecordQueryKwargs]) -> ConversationRecordQuery:
@@ -1157,7 +1166,7 @@ class TestCrudLaws:
             )
 
             messages: list[MessageRecord] = []
-            message_payloads = cast(list[dict[str, object]], conv_data.get("messages", []))
+            message_payloads = _message_payloads(conv_data.get("messages", []))
             for i, msg_data in enumerate(message_payloads):
                 raw_role = msg_data.get("role", "user")
                 assert isinstance(raw_role, str)
@@ -1745,8 +1754,12 @@ class _VectorSpy:
 
 
 class TestRepositoryVectorAsyncBoundary:
-    async def test_search_similar_offloads_vector_query(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        backend = cast(SQLiteBackend, SimpleNamespace(queries=SimpleNamespace()))
+    async def test_search_similar_offloads_vector_query(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        backend = SQLiteBackend(db_path=tmp_path / "vectors.db")
         repo = ConversationRepository(backend=backend)
         provider = _VectorSpy()
         monkeypatch.setattr(repo, "_get_message_conversation_mapping", AsyncMock(return_value={"msg-1": "conv-1"}))
@@ -1771,12 +1784,12 @@ class TestRepositoryVectorAsyncBoundary:
     async def test_embed_conversation_offloads_vector_upsert(
         self,
         monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
     ) -> None:
         messages = [make_message("msg-embed", "conv-embed", text="Message long enough to embed.")]
-        backend = cast(
-            SQLiteBackend, SimpleNamespace(queries=SimpleNamespace(get_messages=AsyncMock(return_value=messages)))
-        )
+        backend = SQLiteBackend(db_path=tmp_path / "vectors.db")
         repo = ConversationRepository(backend=backend)
+        monkeypatch.setattr(repo.queries, "get_messages", AsyncMock(return_value=messages))
         provider = _VectorSpy()
 
         to_thread_calls: list[tuple[Callable[..., object], tuple[object, ...], dict[str, object]]] = []
@@ -1798,8 +1811,9 @@ class TestRepositoryVectorAsyncBoundary:
     async def test_similarity_search_offloads_vector_query(
         self,
         monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
     ) -> None:
-        backend = cast(SQLiteBackend, SimpleNamespace(queries=SimpleNamespace()))
+        backend = SQLiteBackend(db_path=tmp_path / "vectors.db")
         repo = ConversationRepository(backend=backend)
         provider = _VectorSpy()
         monkeypatch.setattr(repo, "_get_message_conversation_mapping", AsyncMock(return_value={"msg-1": "conv-1"}))

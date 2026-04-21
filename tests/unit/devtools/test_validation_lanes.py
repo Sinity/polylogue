@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import importlib
+
 import pytest
 
 from devtools.lane_models import LaneEntry
@@ -18,7 +20,7 @@ from polylogue.scenarios import AssertionSpec, ExecutionKind, polylogue_executio
 
 class TestValidationLanesImportable:
     def test_module_imports(self) -> None:
-        import devtools.run_validation_lanes  # noqa: F401
+        assert importlib.import_module("devtools.run_validation_lanes") is not None
 
     def test_main_callable(self) -> None:
         assert callable(main)
