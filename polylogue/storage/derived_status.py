@@ -3,33 +3,38 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Mapping
+from typing import TypeAlias
 
 from polylogue.maintenance_models import DerivedModelStatus
 from polylogue.storage.action_event_status import action_event_read_model_status_sync
 from polylogue.storage.derived_status_products import build_archive_product_statuses, pending_docs, pending_rows
 from polylogue.storage.embedding_stats import read_embedding_stats_sync
+from polylogue.storage.embedding_stats_models import EmbeddingStatsSnapshot
 from polylogue.storage.fts_lifecycle import message_fts_readiness_sync
+from polylogue.storage.session_product_runtime import SessionProductStatusSnapshot
 from polylogue.storage.session_product_status import session_product_status_sync
 
+MetricValue: TypeAlias = int | bool
+Metrics: TypeAlias = dict[str, MetricValue]
+StatusMap: TypeAlias = Mapping[str, MetricValue]
 
-def collect_derived_model_statuses_sync(
-    conn: sqlite3.Connection,
-    *,
-    verify_full: bool = True,
-) -> dict[str, DerivedModelStatus]:
-    total_conversations = int(conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0] or 0)
 
-    fts_status = message_fts_readiness_sync(conn, verify_total_rows=verify_full)
-    action_status = action_event_read_model_status_sync(conn, verify_source_alignment=verify_full)
-    session_status = session_product_status_sync(conn, verify_freshness=verify_full)
-    embedding_stats = read_embedding_stats_sync(conn, include_retrieval_bands=False)
+def _total_conversations(conn: sqlite3.Connection) -> int:
+    return int(conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0] or 0)
 
-    metrics: dict[str, int | bool] = {
-        "total_conversations": total_conversations,
+
+def _message_fts_metrics(fts_status: StatusMap, *, verify_full: bool) -> Metrics:
+    return {
         "message_fts_exact_counts": verify_full,
         "message_source_rows": int(fts_status["total_rows"]),
         "message_fts_rows": int(fts_status["indexed_rows"]),
         "message_fts_ready": bool(fts_status["ready"]),
+    }
+
+
+def _action_event_metrics(action_status: StatusMap) -> Metrics:
+    return {
         "action_rows": int(action_status["count"]),
         "action_documents": int(action_status["materialized_conversation_count"]),
         "action_source_documents": int(action_status["valid_source_conversation_count"]),
@@ -40,6 +45,11 @@ def collect_derived_model_statuses_sync(
         "action_fts_ready": bool(action_status["action_fts_ready"]),
         "action_stale_rows": int(action_status["stale_count"]),
         "action_matches_version": bool(action_status["matches_version"]),
+    }
+
+
+def _session_product_metrics(session_status: SessionProductStatusSnapshot) -> Metrics:
+    return {
         "profile_rows": session_status.profile_row_count,
         "profile_merged_fts_rows": session_status.profile_merged_fts_count,
         "profile_merged_fts_duplicates": session_status.profile_merged_fts_duplicate_count,
@@ -87,6 +97,11 @@ def collect_derived_model_statuses_sync(
         "tag_rollups_ready": session_status.tag_rollups_ready,
         "day_summaries_ready": session_status.day_summaries_ready,
         "week_summaries_ready": session_status.week_summaries_ready,
+    }
+
+
+def _embedding_metrics(total_conversations: int, embedding_stats: EmbeddingStatsSnapshot) -> Metrics:
+    metrics: Metrics = {
         "embedded_conversations": embedding_stats.embedded_conversations,
         "embedded_messages": embedding_stats.embedded_messages,
         "pending_conversations": embedding_stats.pending_conversations,
@@ -99,25 +114,65 @@ def collect_derived_model_statuses_sync(
         and int(metrics["stale_messages"]) == 0
         and int(metrics["missing_provenance"]) == 0
     )
-    metrics["evidence_retrieval_rows"] = int(metrics["profile_evidence_fts_rows"]) + int(metrics["action_fts_rows"])
-    metrics["expected_evidence_retrieval_rows"] = int(metrics["profile_rows"]) + int(metrics["action_rows"])
-    metrics["evidence_retrieval_ready"] = session_status.profile_evidence_fts_ready and bool(
-        action_status["action_fts_ready"]
-    )
-    metrics["inference_retrieval_rows"] = (
+    return metrics
+
+
+def _retrieval_metrics(
+    metrics: StatusMap,
+    *,
+    action_status: StatusMap,
+    session_status: SessionProductStatusSnapshot,
+) -> Metrics:
+    evidence_rows = int(metrics["profile_evidence_fts_rows"]) + int(metrics["action_fts_rows"])
+    expected_evidence_rows = int(metrics["profile_rows"]) + int(metrics["action_rows"])
+    inference_rows = (
         int(metrics["profile_inference_fts_rows"]) + int(metrics["work_event_fts_rows"]) + int(metrics["phase_rows"])
     )
-    metrics["expected_inference_retrieval_rows"] = (
+    expected_inference_rows = (
         int(metrics["profile_rows"]) + int(metrics["work_event_rows"]) + int(metrics["phase_rows"])
     )
-    metrics["inference_retrieval_ready"] = (
-        session_status.profile_inference_fts_ready
+    return {
+        "evidence_retrieval_rows": evidence_rows,
+        "expected_evidence_retrieval_rows": expected_evidence_rows,
+        "evidence_retrieval_ready": session_status.profile_evidence_fts_ready
+        and bool(action_status["action_fts_ready"]),
+        "inference_retrieval_rows": inference_rows,
+        "expected_inference_retrieval_rows": expected_inference_rows,
+        "inference_retrieval_ready": session_status.profile_inference_fts_ready
         and session_status.work_event_inference_fts_ready
-        and session_status.phase_inference_rows_ready
+        and session_status.phase_inference_rows_ready,
+        "enrichment_retrieval_rows": int(metrics["profile_enrichment_fts_rows"]),
+        "expected_enrichment_retrieval_rows": int(metrics["profile_rows"]),
+        "enrichment_retrieval_ready": session_status.profile_enrichment_fts_ready,
+    }
+
+
+def collect_derived_model_statuses_sync(
+    conn: sqlite3.Connection,
+    *,
+    verify_full: bool = True,
+) -> dict[str, DerivedModelStatus]:
+    total_conversations = _total_conversations(conn)
+
+    fts_status = message_fts_readiness_sync(conn, verify_total_rows=verify_full)
+    action_status = action_event_read_model_status_sync(conn, verify_source_alignment=verify_full)
+    session_status = session_product_status_sync(conn, verify_freshness=verify_full)
+    embedding_stats = read_embedding_stats_sync(conn, include_retrieval_bands=False)
+
+    metrics: Metrics = {
+        "total_conversations": total_conversations,
+    }
+    metrics.update(_message_fts_metrics(fts_status, verify_full=verify_full))
+    metrics.update(_action_event_metrics(action_status))
+    metrics.update(_session_product_metrics(session_status))
+    metrics.update(_embedding_metrics(total_conversations, embedding_stats))
+    metrics.update(
+        _retrieval_metrics(
+            metrics,
+            action_status=action_status,
+            session_status=session_status,
+        )
     )
-    metrics["enrichment_retrieval_rows"] = int(metrics["profile_enrichment_fts_rows"])
-    metrics["expected_enrichment_retrieval_rows"] = int(metrics["profile_rows"])
-    metrics["enrichment_retrieval_ready"] = session_status.profile_enrichment_fts_ready
 
     return {
         **build_archive_product_statuses(metrics),
@@ -130,7 +185,7 @@ def collect_derived_model_statuses_sync(
 # ---------------------------------------------------------------------------
 
 
-def build_retrieval_statuses(metrics: dict[str, int | bool]) -> dict[str, DerivedModelStatus]:
+def build_retrieval_statuses(metrics: Metrics) -> dict[str, DerivedModelStatus]:
     return {
         "transcript_embeddings": DerivedModelStatus(
             name="transcript_embeddings",
