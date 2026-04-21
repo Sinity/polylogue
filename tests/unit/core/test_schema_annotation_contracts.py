@@ -18,7 +18,6 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Mapping
-from typing import Any
 
 import pytest
 
@@ -637,11 +636,11 @@ def _load_schema(provider: str) -> JSONDocument | None:
 def _find_annotations(
     schema: Mapping[str, object],
     prefix: str = "x-polylogue-",
-) -> dict[str, list[tuple[str, Any]]]:
+) -> dict[str, list[tuple[str, object]]]:
     """Walk the schema tree and collect all x-polylogue-* annotations by key."""
-    result: dict[str, list[tuple[str, Any]]] = {}
+    result: dict[str, list[tuple[str, object]]] = {}
 
-    def _walk(obj: Any, path: str) -> None:
+    def _walk(obj: object, path: str) -> None:
         if not isinstance(obj, Mapping):
             return
         for key, value in obj.items():
@@ -779,7 +778,8 @@ class TestSchemaAnnotations:
             pytest.skip(f"{provider} schema not available")
 
         for path, frequency in _find_annotations(schema).get("x-polylogue-frequency", []):
-            assert 0.0 < frequency < 1.0, f"{provider} {path}: frequency {frequency} not in (0, 1)"
+            assert not isinstance(frequency, bool) and isinstance(frequency, (int, float))
+            assert 0.0 < float(frequency) < 1.0, f"{provider} {path}: frequency {frequency} not in (0, 1)"
 
     @pytest.mark.parametrize("provider", ["chatgpt", "claude-code", "claude-ai", "codex"])
     def test_numeric_ranges_plausible(self, provider: str) -> None:
