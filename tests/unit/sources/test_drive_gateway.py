@@ -167,22 +167,26 @@ def test_call_with_retry_contract(
 
 def test_service_handle_returns_cached_service_when_not_expired(monkeypatch: pytest.MonkeyPatch) -> None:
     gw = _gateway()
-    service = MagicMock()
+    service = MockDriveService()
+    service._http = MagicMock()
     service._http.credentials.expired = False
-    gw._service = _as_drive_service(service)
-    assert gw._service_handle() is service
+    cached_service = _as_drive_service(service)
+    gw._service = cached_service
+    assert gw._service_handle() is cached_service
 
 
 def test_service_handle_rebuilds_on_expired_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
     gw = _gateway()
-    expired = MagicMock()
+    expired = MockDriveService()
+    expired._http = MagicMock()
     expired._http.credentials.expired = True
     gw._service = _as_drive_service(expired)
     creds = object()
-    rebuilt = object()
+    rebuilt = MockDriveService()
     load_credentials = _as_mock(gw._auth_manager.load_credentials)
     load_credentials.return_value = creds
-    build = MagicMock(return_value=rebuilt)
+    rebuilt_service = _as_drive_service(rebuilt)
+    build = MagicMock(return_value=rebuilt_service)
 
     def fake_import(name: str) -> ModuleType:
         if name == "googleapiclient.discovery":
@@ -190,7 +194,7 @@ def test_service_handle_rebuilds_on_expired_credentials(monkeypatch: pytest.Monk
         raise AssertionError(name)
 
     monkeypatch.setattr("polylogue.sources.drive_gateway._import_module", fake_import)
-    assert gw._service_handle() is rebuilt
+    assert gw._service_handle() is rebuilt_service
     load_credentials.assert_called_once_with()
     build.assert_called_once_with("drive", "v3", credentials=creds, cache_discovery=False)
 
