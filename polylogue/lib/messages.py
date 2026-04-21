@@ -9,7 +9,7 @@ used in production.
 from __future__ import annotations
 
 from collections.abc import Iterator, Sized
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol, cast
 
 from pydantic import GetCoreSchemaHandler, GetJsonSchemaHandler
 from pydantic_core import core_schema
@@ -18,6 +18,11 @@ if TYPE_CHECKING:
     from pydantic.json_schema import JsonSchemaValue
 
     from polylogue.lib.message_models import Message
+
+    class _MessageJsonSchemaHandler(Protocol):
+        def generate(self, schema_type: type[Message]) -> JsonSchemaValue: ...
+
+        def resolve_ref_schema(self, maybe_ref_json_schema: JsonSchemaValue) -> JsonSchemaValue: ...
 
 
 class MessageCollection(Sized):
@@ -121,7 +126,8 @@ class MessageCollection(Sized):
         """JSON schema: array of Message objects."""
         from polylogue.lib.message_models import Message
 
-        return {"type": "array", "items": handler.resolve_ref_schema(handler.generate(Message))}  # type: ignore[attr-defined]
+        message_handler = cast("_MessageJsonSchemaHandler", handler)
+        return {"type": "array", "items": message_handler.resolve_ref_schema(message_handler.generate(Message))}
 
 
 __all__ = ["MessageCollection"]

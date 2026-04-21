@@ -8,7 +8,6 @@ from __future__ import annotations
 import sys
 from io import StringIO
 from pathlib import Path
-from typing import Any
 
 import pytest
 
@@ -20,7 +19,7 @@ from polylogue.paths import DriveConfig, IndexConfig, Source
 class TestConfig:
     """Tests for Config dataclass."""
 
-    def test_config_basic_construction(self, tmp_path: Any) -> None:
+    def test_config_basic_construction(self, tmp_path: Path) -> None:
         """Config can be constructed with required fields."""
         config = Config(
             archive_root=tmp_path / "archive",
@@ -31,7 +30,7 @@ class TestConfig:
         assert config.render_root == tmp_path / "render"
         assert config.sources == []
 
-    def test_config_with_sources(self, tmp_path: Any) -> None:
+    def test_config_with_sources(self, tmp_path: Path) -> None:
         """Config stores source list."""
         sources = [
             Source(name="inbox", path=tmp_path / "inbox"),
@@ -46,7 +45,7 @@ class TestConfig:
         assert config.sources[0].name == "inbox"
         assert config.sources[1].name == "claude-code"
 
-    def test_config_db_path_property(self, workspace_env: Any) -> None:
+    def test_config_db_path_property(self, workspace_env: dict[str, Path]) -> None:
         """db_path property returns paths.DB_PATH."""
         config = Config(
             archive_root=Path(workspace_env["archive_root"]),
@@ -56,7 +55,7 @@ class TestConfig:
         assert config.db_path.name == "polylogue.db"
         assert "polylogue" in str(config.db_path)
 
-    def test_config_optional_fields_default_none(self, tmp_path: Any) -> None:
+    def test_config_optional_fields_default_none(self, tmp_path: Path) -> None:
         """Optional fields default to None."""
         config = Config(
             archive_root=tmp_path,
@@ -90,7 +89,7 @@ class TestConfigError:
 class TestSource:
     """Tests for Source dataclass validation."""
 
-    def test_source_with_path(self, tmp_path: Any) -> None:
+    def test_source_with_path(self, tmp_path: Path) -> None:
         """Source with path is valid."""
         src = Source(name="test", path=tmp_path)
         assert src.name == "test"
@@ -158,14 +157,14 @@ class TestDriveConfig:
 class TestIndexConfig:
     """Tests for IndexConfig from environment."""
 
-    def test_from_env_defaults(self, monkeypatch: Any) -> None:
+    def test_from_env_defaults(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Default IndexConfig has FTS enabled and no vector provider configured."""
         monkeypatch.delenv("VOYAGE_API_KEY", raising=False)
         config = IndexConfig.from_env()
         assert config.fts_enabled is True
         assert config.voyage_api_key is None
 
-    def test_from_env_voyage_key(self, monkeypatch: Any) -> None:
+    def test_from_env_voyage_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """VOYAGE_API_KEY is used for embeddings."""
         monkeypatch.setenv("VOYAGE_API_KEY", "voyage-key")
         config = IndexConfig.from_env()
@@ -175,7 +174,7 @@ class TestIndexConfig:
 class TestXDGPaths:
     """Tests for XDG path resolution."""
 
-    def test_xdg_data_home_respected(self, monkeypatch: Any) -> None:
+    def test_xdg_data_home_respected(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """XDG_DATA_HOME env var overrides default."""
         monkeypatch.setenv("XDG_DATA_HOME", "/custom/data")
 
@@ -185,7 +184,7 @@ class TestXDGPaths:
 
         monkeypatch.delenv("XDG_DATA_HOME", raising=False)
 
-    def test_db_path_under_data_home(self, workspace_env: Any) -> None:
+    def test_db_path_under_data_home(self, workspace_env: dict[str, Path]) -> None:
         """DB_PATH is under XDG_DATA_HOME/polylogue/."""
         import polylogue.paths
 
@@ -194,7 +193,11 @@ class TestXDGPaths:
 
 
 class TestConfiguredSources:
-    def test_get_sources_skips_drive_source_without_cache_or_credentials(self, monkeypatch: Any, tmp_path: Any) -> None:
+    def test_get_sources_skips_drive_source_without_cache_or_credentials(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
         monkeypatch.setenv("HOME", str(tmp_path / "home"))
         monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
         monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
@@ -205,7 +208,11 @@ class TestConfiguredSources:
         sources = get_sources()
         assert [source.name for source in sources] == ["inbox"]
 
-    def test_get_sources_includes_drive_source_when_credentials_exist(self, monkeypatch: Any, tmp_path: Any) -> None:
+    def test_get_sources_includes_drive_source_when_credentials_exist(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
         home = tmp_path / "home"
         data = tmp_path / "data"
         state = tmp_path / "state"
@@ -235,7 +242,7 @@ class TestConfiguredSources:
 
 
 class TestRuntimeServices:
-    def test_repository_is_cached_per_runtime_scope(self, workspace_env: Any) -> None:
+    def test_repository_is_cached_per_runtime_scope(self, workspace_env: dict[str, Path]) -> None:
         from polylogue.services import build_runtime_services
 
         services = build_runtime_services()
@@ -243,7 +250,7 @@ class TestRuntimeServices:
         repo2 = services.get_repository()
         assert repo1 is repo2
 
-    def test_backend_is_cached_per_runtime_scope(self, workspace_env: Any) -> None:
+    def test_backend_is_cached_per_runtime_scope(self, workspace_env: dict[str, Path]) -> None:
         from polylogue.services import build_runtime_services
 
         services = build_runtime_services()
@@ -251,14 +258,14 @@ class TestRuntimeServices:
         backend2 = services.get_backend()
         assert backend1 is backend2
 
-    def test_repository_uses_runtime_backend(self, workspace_env: Any) -> None:
+    def test_repository_uses_runtime_backend(self, workspace_env: dict[str, Path]) -> None:
         from polylogue.services import build_runtime_services
 
         services = build_runtime_services()
         repo = services.get_repository()
         assert repo.backend is services.get_backend()
 
-    def test_distinct_runtime_scopes_do_not_share_instances(self, workspace_env: Any) -> None:
+    def test_distinct_runtime_scopes_do_not_share_instances(self, workspace_env: dict[str, Path]) -> None:
         from polylogue.services import build_runtime_services
 
         services1 = build_runtime_services()

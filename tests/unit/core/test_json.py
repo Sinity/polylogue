@@ -10,8 +10,9 @@ example tests.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from decimal import Decimal
-from typing import Any, Literal
+from typing import Literal
 
 import orjson
 import pytest
@@ -61,7 +62,7 @@ def _loaded_document(payload: str | bytes) -> core_json.JSONDocument:
 
 @given(_json_value)
 def test_json_roundtrip_basic_types(value: object) -> None:
-    """Any JSON-serializable value survives a dumps/loads roundtrip."""
+    """Every JSON-serializable value survives a dumps/loads roundtrip."""
     output = core_json.dumps(value)
     result = core_json.loads(output)
     assert result == value
@@ -167,14 +168,14 @@ def test_provider_from_string_idempotent(value: str) -> None:
 # =============================================================================
 
 
-def test_dumps_custom_type_default_handler() -> Any:
+def test_dumps_custom_type_default_handler() -> None:
     """Custom default handler serializes custom types."""
 
     class CustomType:
-        def __init__(self: Any, value: Any) -> None:
+        def __init__(self, value: object) -> None:
             self.value = value
 
-    def custom_handler(obj: Any) -> Any:
+    def custom_handler(obj: object) -> object:
         if isinstance(obj, CustomType):
             return {"custom": obj.value}
         raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
@@ -188,7 +189,7 @@ def test_dumps_custom_type_default_handler() -> Any:
 def test_dumps_custom_fallback_to_encoder() -> None:
     """When custom handler raises, built-in encoder handles known types like Decimal."""
 
-    def custom_handler(obj: Any) -> Any:
+    def custom_handler(obj: object) -> object:
         raise TypeError("Not handled")
 
     payload = {"decimal": Decimal("1.5")}
@@ -197,10 +198,10 @@ def test_dumps_custom_fallback_to_encoder() -> None:
     assert data["decimal"] == 1.5
 
 
-def test_dumps_custom_handler_takes_precedence_for_decimal() -> Any:
+def test_dumps_custom_handler_takes_precedence_for_decimal() -> None:
     """Custom handlers can override Decimal serialization instead of falling through."""
 
-    def custom_handler(obj: Any) -> Any:
+    def custom_handler(obj: object) -> object:
         if isinstance(obj, Decimal):
             return f"decimal:{obj}"
         raise TypeError("Not handled")
@@ -213,7 +214,7 @@ def test_dumps_custom_handler_takes_precedence_for_decimal() -> Any:
 def test_dumps_preserves_non_type_errors_from_custom_handler() -> None:
     """Only TypeError falls through to built-in encoding."""
 
-    def custom_handler(obj: Any) -> Any:
+    def custom_handler(obj: object) -> object:
         raise ValueError("boom")
 
     with pytest.raises(ValueError, match="boom"):
@@ -238,14 +239,14 @@ def test_dumps_bytes_roundtrips_as_utf8_json() -> None:
     assert core_json.loads(output) == {"a": 2.5, "b": 1}
 
 
-def test_dumps_fallback_uses_stdlib_encoder_when_orjson_option_rejects_object() -> Any:
+def test_dumps_fallback_uses_stdlib_encoder_when_orjson_option_rejects_object() -> None:
     """The stdlib fallback still uses the combined encoder contract."""
 
     class CustomType:
-        def __init__(self: Any, value: int) -> None:
+        def __init__(self, value: int) -> None:
             self.value = value
 
-    def custom_handler(obj: Any) -> Any:
+    def custom_handler(obj: object) -> object:
         if isinstance(obj, CustomType):
             return {"custom": obj.value}
         raise TypeError("Not handled")
@@ -259,14 +260,14 @@ def test_dumps_fallback_uses_stdlib_encoder_when_orjson_option_rejects_object() 
     assert data == {"payload": {"custom": 7}}
 
 
-def test_dumps_bytes_fallback_uses_stdlib_encoder_when_orjson_option_rejects_object() -> Any:
+def test_dumps_bytes_fallback_uses_stdlib_encoder_when_orjson_option_rejects_object() -> None:
     """dumps_bytes preserves the same semantic encoder contract as dumps."""
 
     class CustomType:
-        def __init__(self: Any, value: int) -> None:
+        def __init__(self, value: int) -> None:
             self.value = value
 
-    def custom_handler(obj: Any) -> Any:
+    def custom_handler(obj: object) -> object:
         if isinstance(obj, CustomType):
             return {"custom": obj.value}
         raise TypeError("Not handled")
@@ -296,7 +297,7 @@ def test_encoder_unhandled_type_raises_type_error() -> None:
     class UnhandledType:
         pass
 
-    def custom_handler(obj: Any) -> Any:
+    def custom_handler(obj: object) -> object:
         raise TypeError("Not handled by custom handler")
 
     obj = UnhandledType()
@@ -304,10 +305,10 @@ def test_encoder_unhandled_type_raises_type_error() -> None:
         core_json.dumps(obj, default=custom_handler)
 
 
-def test_encoder_decimal_serialized_when_custom_fails() -> Any:
+def test_encoder_decimal_serialized_when_custom_fails() -> None:
     """Built-in encoder handles Decimal even when custom handler raises for other types."""
 
-    def custom_handler(obj: Any) -> Any:
+    def custom_handler(obj: object) -> object:
         if isinstance(obj, str):
             return obj.upper()
         raise TypeError("Not handled")
@@ -326,11 +327,12 @@ def test_encoder_decimal_serialized_when_custom_fails() -> Any:
 # All NewType string wrappers share identical runtime behavior
 NEWTYPE_WRAPPERS = [ConversationId, MessageId, AttachmentId, ContentHash]
 NEWTYPE_IDS = ["ConversationId", "MessageId", "AttachmentId", "ContentHash"]
+IdWrapper = Callable[[str], str]
 
 
 @pytest.mark.parametrize("wrapper", NEWTYPE_WRAPPERS, ids=NEWTYPE_IDS)
 @given(st.text())
-def test_newtype_preserves_string_semantics(wrapper: Any, text: str) -> None:
+def test_newtype_preserves_string_semantics(wrapper: IdWrapper, text: str) -> None:
     """NewType wrappers are str at runtime - all string operations work."""
     wrapped = wrapper(text)
 
@@ -346,7 +348,7 @@ def test_newtype_preserves_string_semantics(wrapper: Any, text: str) -> None:
 
 @pytest.mark.parametrize("wrapper", NEWTYPE_WRAPPERS, ids=NEWTYPE_IDS)
 @given(st.text(), st.text())
-def test_newtype_equality_reflects_string(wrapper: Any, a: str, b: str) -> None:
+def test_newtype_equality_reflects_string(wrapper: IdWrapper, a: str, b: str) -> None:
     """Equality between wrapped values reflects underlying string equality."""
     wrapped_a = wrapper(a)
     wrapped_b = wrapper(b)
@@ -357,7 +359,7 @@ def test_newtype_equality_reflects_string(wrapper: Any, a: str, b: str) -> None:
 
 @pytest.mark.parametrize("wrapper", NEWTYPE_WRAPPERS, ids=NEWTYPE_IDS)
 @given(st.text())
-def test_newtype_hashable_as_string(wrapper: Any, text: str) -> None:
+def test_newtype_hashable_as_string(wrapper: IdWrapper, text: str) -> None:
     """NewType values hash identically to their underlying string."""
     wrapped = wrapper(text)
 
@@ -374,7 +376,7 @@ def test_newtype_hashable_as_string(wrapper: Any, text: str) -> None:
 
 @pytest.mark.parametrize("wrapper", NEWTYPE_WRAPPERS, ids=NEWTYPE_IDS)
 @given(st.lists(st.text(), min_size=0, max_size=20))
-def test_newtype_set_deduplication(wrapper: Any, texts: list[str]) -> None:
+def test_newtype_set_deduplication(wrapper: IdWrapper, texts: list[str]) -> None:
     """Set deduplication works correctly with NewType values."""
     wrapped_values = [wrapper(t) for t in texts]
     wrapped_set = set(wrapped_values)
@@ -435,13 +437,13 @@ def test_provider_from_string_unknown_fallback(value: str) -> None:
 
 
 @pytest.mark.parametrize("empty_value", [None, "", "   ", "\t\n"])
-def test_provider_from_string_empty_returns_unknown(empty_value: Any) -> None:
+def test_provider_from_string_empty_returns_unknown(empty_value: str | None) -> None:
     """Empty/None values return UNKNOWN."""
     assert Provider.from_string(empty_value) == Provider.UNKNOWN
 
 
 @given(st.data())
-def test_all_id_types_as_dict_keys(data: Any) -> None:
+def test_all_id_types_as_dict_keys(data: st.DataObject) -> None:
     """All ID types work together as dict keys."""
     conv_str = data.draw(st.text(min_size=1, max_size=50), label="conv_str")
     msg_str = data.draw(st.text(min_size=1, max_size=50), label="msg_str")
