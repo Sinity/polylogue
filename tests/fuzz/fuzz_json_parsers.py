@@ -15,7 +15,6 @@ from __future__ import annotations
 import json
 import os
 import sys
-from typing import Any
 
 # Check if atheris is available
 try:
@@ -310,21 +309,21 @@ class TestParserFuzz:
     """Pytest-compatible fuzz tests using seed corpus."""
 
     @pytest.mark.parametrize("data", CHATGPT_CORPUS + MALFORMED_CORPUS)
-    def test_chatgpt_parser_corpus(self: Any, data: bytes) -> None:
+    def test_chatgpt_parser_corpus(self, data: bytes) -> None:
         """Run ChatGPT parser fuzz with seed corpus."""
         fuzz_chatgpt_parser(data)
 
     @pytest.mark.parametrize("data", CODEX_CORPUS + MALFORMED_CORPUS)
-    def test_codex_parser_corpus(self: Any, data: bytes) -> None:
+    def test_codex_parser_corpus(self, data: bytes) -> None:
         """Run Codex parser fuzz with seed corpus."""
         fuzz_codex_parser(data)
 
     @pytest.mark.parametrize("data", CLAUDE_CODE_CORPUS + MALFORMED_CORPUS)
-    def test_claude_code_parser_corpus(self: Any, data: bytes) -> None:
+    def test_claude_code_parser_corpus(self, data: bytes) -> None:
         """Run Claude Code parser fuzz with seed corpus."""
         fuzz_claude_code_parser(data)
 
-    def test_chatgpt_parser_random(self: Any) -> None:
+    def test_chatgpt_parser_random(self) -> None:
         """Run ChatGPT parser with random bytes."""
         import random
 
@@ -333,7 +332,7 @@ class TestParserFuzz:
             data = bytes(random.randint(0, 255) for _ in range(length))
             fuzz_chatgpt_parser(data)
 
-    def test_codex_parser_random(self: Any) -> None:
+    def test_codex_parser_random(self) -> None:
         """Run Codex parser with random bytes."""
         import random
 
@@ -342,7 +341,7 @@ class TestParserFuzz:
             data = bytes(random.randint(0, 255) for _ in range(length))
             fuzz_codex_parser(data)
 
-    def test_claude_code_parser_random(self: Any) -> None:
+    def test_claude_code_parser_random(self) -> None:
         """Run Claude Code parser with random bytes."""
         import random
 

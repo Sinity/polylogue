@@ -11,7 +11,8 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from typing import Any
+from pathlib import Path
+from typing import cast
 from unittest.mock import MagicMock
 
 from hypothesis import given, settings
@@ -42,7 +43,7 @@ from polylogue.showcase.showcase_report_payloads import (
 # ---------------------------------------------------------------------------
 
 
-def _make_exercise(name: str = "ex", group: str = "structural", tier: int = 1) -> Any:
+def _make_exercise(name: str = "ex", group: str = "structural", tier: int = 1) -> Exercise:
     ex = MagicMock()
     ex.name = name
     ex.group = group
@@ -50,7 +51,7 @@ def _make_exercise(name: str = "ex", group: str = "structural", tier: int = 1) -
     ex.description = "A test exercise"
     ex.args = []
     ex.output_ext = ".txt"
-    return ex
+    return cast(Exercise, ex)
 
 
 def _make_result(passed: bool = True, skipped: bool = False, error: str | None = None) -> ExerciseResult:
@@ -186,7 +187,7 @@ def test_generate_json_report_always_valid_json(n: int) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_write_qa_session_creates_one_file(tmp_path: Any) -> None:
+def test_write_qa_session_creates_one_file(tmp_path: Path) -> None:
     """write_showcase_session writes exactly one JSON file to the audit dir."""
     results = [_make_result(passed=True), _make_result(passed=False, error="boom")]
     sr = _make_showcase(results)
@@ -199,7 +200,7 @@ def test_write_qa_session_creates_one_file(tmp_path: Any) -> None:
     assert data["summary"]["failed"] == 1
 
 
-def test_write_qa_session_creates_audit_dir_if_missing(tmp_path: Any) -> None:
+def test_write_qa_session_creates_audit_dir_if_missing(tmp_path: Path) -> None:
     """write_showcase_session creates the audit directory if it does not exist."""
     audit_dir = tmp_path / "deep" / "nested" / "audit"
     assert not audit_dir.exists()

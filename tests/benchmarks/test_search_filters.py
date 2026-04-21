@@ -10,17 +10,16 @@ Run with:
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
 import pytest
 
 from polylogue.lib.filters import ConversationFilter
 from polylogue.storage.query_models import ConversationRecordQuery
-from tests.benchmarks.helpers import benchmark_store_call
+from tests.benchmarks.helpers import BenchmarkFixture, benchmark_store_call
 
 
 @pytest.mark.benchmark
-def test_bench_fts_search_common_term(benchmark: Any, bench_db_5k: Path) -> None:
+def test_bench_fts_search_common_term(benchmark: BenchmarkFixture, bench_db_5k: Path) -> None:
     """FTS5 search for common word — many results, measures BM25 scoring cost."""
     benchmark_store_call(
         benchmark,
@@ -30,7 +29,7 @@ def test_bench_fts_search_common_term(benchmark: Any, bench_db_5k: Path) -> None
 
 
 @pytest.mark.benchmark
-def test_bench_fts_search_rare_term(benchmark: Any, bench_db_5k: Path) -> None:
+def test_bench_fts_search_rare_term(benchmark: BenchmarkFixture, bench_db_5k: Path) -> None:
     """FTS5 search for rare term — fast empty result path."""
     benchmark_store_call(
         benchmark,
@@ -40,7 +39,7 @@ def test_bench_fts_search_rare_term(benchmark: Any, bench_db_5k: Path) -> None:
 
 
 @pytest.mark.benchmark
-def test_bench_fts_search_multi_word(benchmark: Any, bench_db_5k: Path) -> None:
+def test_bench_fts_search_multi_word(benchmark: BenchmarkFixture, bench_db_5k: Path) -> None:
     """FTS5 multi-term AND search — intersection cost."""
     benchmark_store_call(
         benchmark,
@@ -50,7 +49,7 @@ def test_bench_fts_search_multi_word(benchmark: Any, bench_db_5k: Path) -> None:
 
 
 @pytest.mark.benchmark
-def test_bench_filter_provider(benchmark: Any, bench_db_5k: Path) -> None:
+def test_bench_filter_provider(benchmark: BenchmarkFixture, bench_db_5k: Path) -> None:
     """ConversationFilter + provider=chatgpt on 5k DB."""
     benchmark_store_call(
         benchmark,
@@ -60,7 +59,7 @@ def test_bench_filter_provider(benchmark: Any, bench_db_5k: Path) -> None:
 
 
 @pytest.mark.benchmark
-def test_bench_filter_has_tool_use(benchmark: Any, bench_db_5k: Path) -> None:
+def test_bench_filter_has_tool_use(benchmark: BenchmarkFixture, bench_db_5k: Path) -> None:
     """ConversationFilter + has_tool_use() — stats LEFT JOIN path."""
     benchmark_store_call(
         benchmark,
@@ -70,7 +69,7 @@ def test_bench_filter_has_tool_use(benchmark: Any, bench_db_5k: Path) -> None:
 
 
 @pytest.mark.benchmark
-def test_bench_filter_semantic_file_ops(benchmark: Any, bench_db_5k: Path) -> None:
+def test_bench_filter_semantic_file_ops(benchmark: BenchmarkFixture, bench_db_5k: Path) -> None:
     """ConversationFilter + has_file_operations() — EXISTS subquery path (schema v3)."""
     benchmark_store_call(
         benchmark,
@@ -80,7 +79,7 @@ def test_bench_filter_semantic_file_ops(benchmark: Any, bench_db_5k: Path) -> No
 
 
 @pytest.mark.benchmark
-def test_bench_filter_count(benchmark: Any, bench_db_5k: Path) -> None:
+def test_bench_filter_count(benchmark: BenchmarkFixture, bench_db_5k: Path) -> None:
     """ConversationFilter.count() — single COUNT(*) query, no data fetch."""
     benchmark_store_call(
         benchmark,
@@ -90,7 +89,7 @@ def test_bench_filter_count(benchmark: Any, bench_db_5k: Path) -> None:
 
 
 @pytest.mark.benchmark
-def test_bench_filter_combined(benchmark: Any, bench_db_10k: Path) -> None:
+def test_bench_filter_combined(benchmark: BenchmarkFixture, bench_db_10k: Path) -> None:
     """Stacked: provider + has_tool_use + min_messages — worst-case filter stack."""
     benchmark_store_call(
         benchmark,
@@ -103,7 +102,7 @@ def test_bench_filter_combined(benchmark: Any, bench_db_10k: Path) -> None:
 
 @pytest.mark.benchmark
 @pytest.mark.parametrize("limit", [10, 50, 200])
-def test_bench_filter_limit_scaling(benchmark: Any, bench_db_10k: Path, limit: int) -> None:
+def test_bench_filter_limit_scaling(benchmark: BenchmarkFixture, bench_db_10k: Path, limit: int) -> None:
     """How does result count affect list_conversations cost? Tests LIMIT effect."""
     benchmark_store_call(
         benchmark,
