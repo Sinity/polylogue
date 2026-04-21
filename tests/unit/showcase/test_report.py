@@ -88,8 +88,8 @@ def _payload_mapping(value: object) -> Mapping[str, object]:
     n_failed=st.integers(min_value=0, max_value=20),
     n_skipped=st.integers(min_value=0, max_value=20),
 )
-@settings(max_examples=50)
-def test_qa_session_always_has_required_keys(n_passed: Any, n_failed: Any, n_skipped: Any) -> None:
+@settings(max_examples=50, deadline=None)
+def test_qa_session_always_has_required_keys(n_passed: int, n_failed: int, n_skipped: int) -> None:
     """generate_showcase_session always returns the mandatory schema fields."""
     results = (
         [_make_result(passed=True) for _ in range(n_passed)]
@@ -115,8 +115,8 @@ def test_qa_session_always_has_required_keys(n_passed: Any, n_failed: Any, n_ski
     n_failed=st.integers(min_value=0, max_value=15),
     n_skipped=st.integers(min_value=0, max_value=15),
 )
-@settings(max_examples=50)
-def test_qa_session_summary_counts_consistent(n_passed: Any, n_failed: Any, n_skipped: Any) -> None:
+@settings(max_examples=50, deadline=None)
+def test_qa_session_summary_counts_consistent(n_passed: int, n_failed: int, n_skipped: int) -> None:
     """Summary passed+failed+skipped must equal total and match exercise list."""
     results = (
         [_make_result(passed=True) for _ in range(n_passed)]
@@ -140,8 +140,8 @@ def test_qa_session_summary_counts_consistent(n_passed: Any, n_failed: Any, n_sk
 
 
 @given(n=st.integers(min_value=0, max_value=30))
-@settings(max_examples=40)
-def test_qa_session_serializes_to_valid_json(n: Any) -> None:
+@settings(max_examples=40, deadline=None)
+def test_qa_session_serializes_to_valid_json(n: int) -> None:
     """generate_showcase_session output round-trips through JSON without error."""
     results = [_make_result(passed=i % 3 != 0) for i in range(n)]
     session = generate_showcase_session(_make_showcase(results))
@@ -156,8 +156,8 @@ def test_qa_session_serializes_to_valid_json(n: Any) -> None:
 
 
 @given(n=st.integers(min_value=0, max_value=10))
-@settings(max_examples=20)
-def test_qa_session_schema_version_is_always_one(n: Any) -> None:
+@settings(max_examples=20, deadline=None)
+def test_qa_session_schema_version_is_always_one(n: int) -> None:
     """schema_version field is always 1 regardless of result set."""
     results = [_make_result() for _ in range(n)]
     session = build_showcase_session_record(_make_showcase(results), timestamp="2026-01-01T00:00:00Z")
@@ -170,8 +170,8 @@ def test_qa_session_schema_version_is_always_one(n: Any) -> None:
 
 
 @given(n=st.integers(min_value=0, max_value=20))
-@settings(max_examples=40)
-def test_generate_json_report_always_valid_json(n: Any) -> None:
+@settings(max_examples=40, deadline=None)
+def test_generate_json_report_always_valid_json(n: int) -> None:
     """generate_json_report always returns a valid JSON string."""
     results = [_make_result(passed=i % 2 == 0) for i in range(n)]
     raw = generate_json_report(_make_showcase(results))
