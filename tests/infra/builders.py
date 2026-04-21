@@ -18,7 +18,6 @@ Usage:
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Any
 
 from polylogue.lib.messages import MessageCollection
 from polylogue.lib.models import Conversation, Message
@@ -30,7 +29,7 @@ def make_msg(
     id: str = "m1",
     role: Role | str = Role.USER,
     text: str | None = "hello",
-    **kwargs: Any,
+    **kwargs: object,
 ) -> Message:
     """Build a Message with sensible defaults for testing.
 
@@ -38,13 +37,15 @@ def make_msg(
         id: Message ID (default "m1").
         role: Message role — "user", "assistant", "system", etc. (default "user").
         text: Message text; may be None to exercise None-guard code paths.
-        **kwargs: Any additional Message fields (timestamp, attachments, etc.).
+        **kwargs: Additional Message fields (timestamp, attachments, etc.).
 
     Returns:
         A fully constructed Message domain object.
     """
     role_value = role if isinstance(role, Role) else (Role.normalize(role.strip()) if role.strip() else Role.UNKNOWN)
-    return Message(id=id, role=role_value, text=text, **kwargs)
+    payload: dict[str, object] = {"id": id, "role": role_value, "text": text}
+    payload.update(kwargs)
+    return Message.model_validate(payload)
 
 
 def make_conv(
@@ -52,7 +53,7 @@ def make_conv(
     title: str | None = "Test",
     provider: Provider | str = Provider.UNKNOWN,
     id: str = "test-conv",
-    **kwargs: Any,
+    **kwargs: object,
 ) -> Conversation:
     """Build a Conversation with sensible defaults for testing.
 
@@ -61,7 +62,7 @@ def make_conv(
         title: Conversation title; may be None to exercise None-guard code paths.
         provider: Provider name (default "test").
         id: Conversation ID (default "test-conv").
-        **kwargs: Any additional Conversation fields (created_at, metadata, etc.).
+        **kwargs: Additional Conversation fields (created_at, metadata, etc.).
 
     Returns:
         A fully constructed Conversation domain object with an eager MessageCollection.
@@ -73,10 +74,11 @@ def make_conv(
         message_collection = messages
     else:
         message_collection = MessageCollection(messages=list(messages))
-    return Conversation(
-        id=ConversationId(id),
-        provider=provider_value,
-        title=title,
-        messages=message_collection,
-        **kwargs,
-    )
+    payload: dict[str, object] = {
+        "id": ConversationId(id),
+        "provider": provider_value,
+        "title": title,
+        "messages": message_collection,
+    }
+    payload.update(kwargs)
+    return Conversation.model_validate(payload)

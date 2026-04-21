@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import TypeAlias
 
 from tests.infra.large_batches import (
     corrupt_line_bad_utf8,
@@ -19,6 +19,23 @@ from tests.infra.large_batches import (
     write_jsonl_file,
     write_jsonl_with_bad_utf8,
 )
+
+ChaosFileSpec: TypeAlias = dict[str, object]
+
+
+def _spec_str(spec: ChaosFileSpec, key: str, default: str = "") -> str:
+    value = spec.get(key, default)
+    return value if isinstance(value, str) else default
+
+
+def _spec_int(spec: ChaosFileSpec, key: str, default: int = 0) -> int:
+    value = spec.get(key, default)
+    return value if isinstance(value, int) else default
+
+
+def _spec_indices(spec: ChaosFileSpec) -> list[int]:
+    value = spec.get("corrupt_indices", [])
+    return [item for item in value if isinstance(item, int)] if isinstance(value, list) else []
 
 
 class ChaosInboxBuilder:
@@ -34,7 +51,7 @@ class ChaosInboxBuilder:
     def __init__(self, base_path: Path):
         self.base_path = base_path
         self.base_path.mkdir(parents=True, exist_ok=True)
-        self._files: dict[str, dict[str, Any]] = {}
+        self._files: dict[str, ChaosFileSpec] = {}
 
     def add_valid_jsonl(
         self,
@@ -110,20 +127,22 @@ class ChaosInboxBuilder:
             path = self.base_path / filename
             path.parent.mkdir(parents=True, exist_ok=True)
 
-            if spec["type"] == "empty":
+            spec_type = _spec_str(spec, "type")
+
+            if spec_type == "empty":
                 path.write_bytes(b"")
 
-            elif spec["type"] == "binary_garbage":
-                path.write_bytes(b"\x00\xff\xde\xad\xbe\xef" * (spec["size"] // 6))
+            elif spec_type == "binary_garbage":
+                path.write_bytes(b"\x00\xff\xde\xad\xbe\xef" * (_spec_int(spec, "size") // 6))
 
-            elif spec["type"] == "valid_jsonl":
+            elif spec_type == "valid_jsonl":
                 lines = generate_large_jsonl(
-                    spec["count"],
-                    provider=spec["provider"],
+                    _spec_int(spec, "count"),
+                    provider=_spec_str(spec, "provider", "codex"),
                 )
                 write_jsonl_file(path, lines)
 
-            elif spec["type"] == "jsonl_with_bom":
+            elif spec_type == "jsonl_with_bom":
                 # Valid codex JSONL but with UTF-8 BOM marker
                 lines = generate_large_jsonl(5, provider="codex")
                 path.parent.mkdir(parents=True, exist_ok=True)
@@ -134,20 +153,21 @@ class ChaosInboxBuilder:
                     for line in lines:
                         f.write(line.encode("utf-8") + b"\n")
 
-            elif spec["type"] == "corrupted_jsonl":
+            elif spec_type == "corrupted_jsonl":
                 lines = generate_large_jsonl(
-                    spec["count"],
-                    provider=spec["provider"],
+                    _spec_int(spec, "count"),
+                    provider=_spec_str(spec, "provider", "codex"),
                 )
 
                 # Apply corruptions in reverse order to preserve indices
-                corruption_fn = self._get_corruption_fn(spec["corruption_type"])
-                for idx in sorted(spec["corrupt_indices"], reverse=True):
+                corruption_type = _spec_str(spec, "corruption_type", "malformed")
+                corruption_fn = self._get_corruption_fn(corruption_type)
+                for idx in sorted(_spec_indices(spec), reverse=True):
                     if 0 <= idx < len(lines):
                         lines = corruption_fn(lines, idx)
 
                 # Special handling for bad UTF-8
-                if spec["corruption_type"] == "bad_utf8":
+                if corruption_type == "bad_utf8":
                     write_jsonl_with_bad_utf8(path, lines)
                 else:
                     write_jsonl_file(path, lines)

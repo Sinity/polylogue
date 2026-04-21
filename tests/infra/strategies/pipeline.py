@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Any
+from typing import TypedDict
 
 from hypothesis import strategies as st
 
@@ -34,6 +34,20 @@ class ParseMergeEvent:
     conversation_id: str
     result_counts: dict[str, int]
     content_changed: bool
+
+
+class ValidationContract(TypedDict):
+    parseable: bool
+    status: str
+    invalid_count: int
+    mark_raw_parsed: bool
+    validation_samples_called: bool
+
+
+class ParseMergeTotals(TypedDict):
+    counts: dict[str, int]
+    changed_counts: dict[str, int]
+    processed_ids: set[str]
 
 
 @st.composite
@@ -131,7 +145,7 @@ def build_validation_payload(case: ValidationCase) -> tuple[bytes, str, str]:
     return b'{"id":"doc-1","mapping":{}}', "chatgpt", "/tmp/conversations.json"
 
 
-def expected_validation_contract(case: ValidationCase) -> dict[str, Any]:
+def expected_validation_contract(case: ValidationCase) -> ValidationContract:
     """Return the expected persisted validation outcome for a generated case."""
     malformed_blocks = case.mode == "strict" and case.malformed_jsonl_lines > 0
     schema_invalid = case.invalid_sample_count > 0
@@ -148,7 +162,7 @@ def expected_validation_contract(case: ValidationCase) -> dict[str, Any]:
     }
 
 
-def expected_parse_merge_totals(events: list[ParseMergeEvent]) -> dict[str, Any]:
+def expected_parse_merge_totals(events: list[ParseMergeEvent]) -> ParseMergeTotals:
     """Compute the aggregate ParseResult contract for a generated event list."""
     counts = {
         "conversations": 0,

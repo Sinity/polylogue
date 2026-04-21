@@ -12,10 +12,12 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, cast
+from typing import TypedDict
 
 from hypothesis import strategies as st
 
+from polylogue.lib.json import JSONDocument, json_document
+from polylogue.lib.json import loads as json_loads
 from polylogue.scenarios import CorpusSpec
 from polylogue.schemas.synthetic import SyntheticCorpus
 
@@ -42,11 +44,29 @@ _PROVIDER_HINT_PATHS: dict[str, tuple[str, ...]] = {
 }
 
 
-def decode_provider_payload(provider: str, raw: bytes) -> Any:
+ProviderPayload = JSONDocument | list[JSONDocument]
+
+
+class ProviderSourceCase(TypedDict):
+    provider: str
+    raw: bytes
+    payload: ProviderPayload
+    path: Path
+
+
+def _json_document_from_bytes(raw: bytes) -> JSONDocument:
+    return json_document(json_loads(raw))
+
+
+def _jsonl_documents(raw: bytes) -> list[JSONDocument]:
+    return [json_document(json_loads(line)) for line in raw.decode().splitlines() if line.strip()]
+
+
+def decode_provider_payload(provider: str, raw: bytes) -> ProviderPayload:
     """Decode schema-generated provider bytes into the wire payload type."""
     if provider in _JSONL_PROVIDERS:
-        return [json.loads(line) for line in raw.decode().splitlines() if line.strip()]
-    return cast(dict[str, Any], json.loads(raw))
+        return _jsonl_documents(raw)
+    return _json_document_from_bytes(raw)
 
 
 # =============================================================================
@@ -59,7 +79,7 @@ def chatgpt_export_strategy(
     draw: st.DrawFn,
     min_messages: int = 1,
     max_messages: int = 10,
-) -> dict[str, Any]:
+) -> JSONDocument:
     """Generate a complete ChatGPT export structure from schema.
 
     Returns a dict with id, title, mapping (UUID→node), create_time, etc.
@@ -68,26 +88,26 @@ def chatgpt_export_strategy(
     seed = draw(st.integers(min_value=0, max_value=2**32))
     n = draw(st.integers(min_value=max(min_messages, 2), max_value=max_messages))
     raw = corpus.generate(count=1, messages_per_conversation=range(n, n + 1), seed=seed)[0]
-    return cast(dict[str, Any], json.loads(raw))
+    return _json_document_from_bytes(raw)
 
 
 @st.composite
 def chatgpt_message_node_strategy(
     draw: st.DrawFn,
     with_children: bool = True,
-) -> dict[str, Any]:
+) -> JSONDocument:
     """Generate a single ChatGPT mapping node.
 
     Extracts a random node from a generated export, so the node has
     valid schema-driven field values and realistic structure.
     """
     export = draw(chatgpt_export_strategy(min_messages=2, max_messages=6))
-    nodes = list(export.get("mapping", {}).values())
+    nodes = [json_document(node) for node in json_document(export.get("mapping")).values()]
     if not nodes:
         # Fallback — shouldn't happen with valid generation
         return {"id": "fallback", "message": None, "children": []}
     idx = draw(st.integers(min_value=0, max_value=len(nodes) - 1))
-    return cast(dict[str, Any], nodes[idx])
+    return nodes[idx]
 
 
 # =============================================================================
@@ -100,13 +120,13 @@ def claude_ai_export_strategy(
     draw: st.DrawFn,
     min_messages: int = 1,
     max_messages: int = 10,
-) -> dict[str, Any]:
+) -> JSONDocument:
     """Generate a complete Claude AI export structure from schema."""
     corpus = _corpus_for("claude-ai")
     seed = draw(st.integers(min_value=0, max_value=2**32))
     n = draw(st.integers(min_value=max(min_messages, 2), max_value=max_messages))
     raw = corpus.generate(count=1, messages_per_conversation=range(n, n + 1), seed=seed)[0]
-    return cast(dict[str, Any], json.loads(raw))
+    return _json_document_from_bytes(raw)
 
 
 # =============================================================================
@@ -115,7 +135,7 @@ def claude_ai_export_strategy(
 
 
 @st.composite
-def claude_code_message_strategy(draw: st.DrawFn) -> dict[str, Any]:
+def claude_code_message_strategy(draw: st.DrawFn) -> JSONDocument:
     """Generate a single Claude Code JSONL message entry."""
     session = draw(claude_code_session_strategy(min_messages=2, max_messages=6))
     if not session:
@@ -129,13 +149,13 @@ def claude_code_session_strategy(
     draw: st.DrawFn,
     min_messages: int = 1,
     max_messages: int = 10,
-) -> list[dict[str, Any]]:
+) -> list[JSONDocument]:
     """Generate a complete Claude Code JSONL session (list of messages)."""
     corpus = _corpus_for("claude-code")
     seed = draw(st.integers(min_value=0, max_value=2**32))
     n = draw(st.integers(min_value=max(min_messages, 2), max_value=max_messages))
     raw = corpus.generate(count=1, messages_per_conversation=range(n, n + 1), seed=seed)[0]
-    return [json.loads(line) for line in raw.decode().strip().split("\n") if line.strip()]
+    return _jsonl_documents(raw)
 
 
 # =============================================================================
@@ -148,24 +168,25 @@ def gemini_export_strategy(
     draw: st.DrawFn,
     min_messages: int = 1,
     max_messages: int = 10,
-) -> dict[str, Any]:
+) -> JSONDocument:
     """Generate a complete Gemini export structure from schema."""
     corpus = _corpus_for("gemini")
     seed = draw(st.integers(min_value=0, max_value=2**32))
     n = draw(st.integers(min_value=max(min_messages, 2), max_value=max_messages))
     raw = corpus.generate(count=1, messages_per_conversation=range(n, n + 1), seed=seed)[0]
-    return cast(dict[str, Any], json.loads(raw))
+    return _json_document_from_bytes(raw)
 
 
 @st.composite
-def gemini_message_strategy(draw: st.DrawFn) -> dict[str, Any]:
+def gemini_message_strategy(draw: st.DrawFn) -> JSONDocument:
     """Generate a single Gemini chunk/message entry."""
     export = draw(gemini_export_strategy(min_messages=2, max_messages=6))
-    messages = export.get("chunkedPrompt", {}).get("chunks", [])
+    chunks = json_document(export.get("chunkedPrompt")).get("chunks")
+    messages = [json_document(message) for message in chunks] if isinstance(chunks, list) else []
     if not messages:
         return {"role": "user", "text": "test"}
     idx = draw(st.integers(min_value=0, max_value=len(messages) - 1))
-    return cast(dict[str, Any], messages[idx])
+    return messages[idx]
 
 
 # =============================================================================
@@ -174,7 +195,7 @@ def gemini_message_strategy(draw: st.DrawFn) -> dict[str, Any]:
 
 
 @st.composite
-def codex_message_strategy(draw: st.DrawFn) -> dict[str, Any]:
+def codex_message_strategy(draw: st.DrawFn) -> JSONDocument:
     """Generate a single Codex message entry."""
     session = draw(codex_session_strategy(min_messages=2, max_messages=6))
     if not session:
@@ -189,7 +210,7 @@ def codex_session_strategy(
     min_messages: int = 1,
     max_messages: int = 10,
     use_envelope: bool = True,
-) -> list[dict[str, Any]]:
+) -> list[JSONDocument]:
     """Generate a Codex JSONL session (list of message records).
 
     Args:
@@ -201,13 +222,13 @@ def codex_session_strategy(
     seed = draw(st.integers(min_value=0, max_value=2**32))
     n = draw(st.integers(min_value=max(min_messages, 2), max_value=max_messages))
     raw = corpus.generate(count=1, messages_per_conversation=range(n, n + 1), seed=seed)[0]
-    records = [json.loads(line) for line in raw.decode().strip().split("\n") if line.strip()]
+    records = _jsonl_documents(raw)
 
     if use_envelope and records:
         # Wrap in the envelope format the parser also supports
         import uuid as _uuid
 
-        envelope: list[dict[str, Any]] = [
+        envelope: list[JSONDocument] = [
             {
                 "type": "session_meta",
                 "payload": {
@@ -228,7 +249,7 @@ def codex_session_strategy(
 # =============================================================================
 
 
-_CHATGPT_SEMANTIC_MESSAGES: tuple[dict[str, Any], ...] = (
+_CHATGPT_SEMANTIC_MESSAGES: tuple[JSONDocument, ...] = (
     {
         "id": "chatgpt-text",
         "author": {"role": "user"},
@@ -252,7 +273,7 @@ _CHATGPT_SEMANTIC_MESSAGES: tuple[dict[str, Any], ...] = (
     },
 )
 
-_CLAUDE_AI_SEMANTIC_MESSAGES: tuple[dict[str, Any], ...] = (
+_CLAUDE_AI_SEMANTIC_MESSAGES: tuple[JSONDocument, ...] = (
     {
         "uuid": "claude-ai-human",
         "text": "question",
@@ -269,7 +290,7 @@ _CLAUDE_AI_SEMANTIC_MESSAGES: tuple[dict[str, Any], ...] = (
     },
 )
 
-_CLAUDE_CODE_SEMANTIC_RECORDS: tuple[dict[str, Any], ...] = (
+_CLAUDE_CODE_SEMANTIC_RECORDS: tuple[JSONDocument, ...] = (
     {
         "type": "assistant",
         "uuid": "claude-code-rich",
@@ -300,7 +321,7 @@ _CLAUDE_CODE_SEMANTIC_RECORDS: tuple[dict[str, Any], ...] = (
     },
 )
 
-_GEMINI_SEMANTIC_MESSAGES: tuple[dict[str, Any], ...] = (
+_GEMINI_SEMANTIC_MESSAGES: tuple[JSONDocument, ...] = (
     {
         "role": "model",
         "text": "thinking message",
@@ -319,7 +340,7 @@ _GEMINI_SEMANTIC_MESSAGES: tuple[dict[str, Any], ...] = (
     },
 )
 
-_CODEX_SEMANTIC_RECORDS: tuple[dict[str, Any], ...] = (
+_CODEX_SEMANTIC_RECORDS: tuple[JSONDocument, ...] = (
     {
         "type": "message",
         "id": "codex-direct",
@@ -347,41 +368,41 @@ _CODEX_SEMANTIC_RECORDS: tuple[dict[str, Any], ...] = (
 
 
 @st.composite
-def chatgpt_semantic_message_strategy(draw: st.DrawFn) -> dict[str, Any]:
+def chatgpt_semantic_message_strategy(draw: st.DrawFn) -> JSONDocument:
     """Generate ChatGPT messages with richer semantic content variants."""
     return dict(draw(st.sampled_from(_CHATGPT_SEMANTIC_MESSAGES)))
 
 
 @st.composite
-def claude_ai_semantic_message_strategy(draw: st.DrawFn) -> dict[str, Any]:
+def claude_ai_semantic_message_strategy(draw: st.DrawFn) -> JSONDocument:
     """Generate Claude AI messages with stable semantic metadata variants."""
     return dict(draw(st.sampled_from(_CLAUDE_AI_SEMANTIC_MESSAGES)))
 
 
 @st.composite
-def claude_code_semantic_record_strategy(draw: st.DrawFn) -> dict[str, Any]:
+def claude_code_semantic_record_strategy(draw: st.DrawFn) -> JSONDocument:
     """Generate Claude Code records with text/thinking/tool/code coverage."""
     return dict(draw(st.sampled_from(_CLAUDE_CODE_SEMANTIC_RECORDS)))
 
 
 @st.composite
-def gemini_semantic_message_strategy(draw: st.DrawFn) -> dict[str, Any]:
+def gemini_semantic_message_strategy(draw: st.DrawFn) -> JSONDocument:
     """Generate Gemini messages exercising thought/code/file branches."""
     return dict(draw(st.sampled_from(_GEMINI_SEMANTIC_MESSAGES)))
 
 
 @st.composite
-def codex_semantic_record_strategy(draw: st.DrawFn) -> dict[str, Any]:
+def codex_semantic_record_strategy(draw: st.DrawFn) -> JSONDocument:
     """Generate Codex direct and envelope records with mixed block types."""
     raw = draw(st.sampled_from(_CODEX_SEMANTIC_RECORDS))
-    return cast(dict[str, Any], json.loads(json.dumps(raw)))
+    return json_document(json_loads(json.dumps(raw)))
 
 
 @st.composite
 def provider_semantic_case_strategy(
     draw: st.DrawFn,
     providers: tuple[str, ...] = ("chatgpt", "claude-ai", "claude-code", "codex", "gemini"),
-) -> tuple[str, dict[str, Any]]:
+) -> tuple[str, JSONDocument]:
     """Generate provider/raw pairs for semantically rich viewport laws."""
     provider = draw(st.sampled_from(providers))
     raw = {
@@ -422,7 +443,7 @@ def provider_payload_strategy(
     provider: str,
     min_msgs: int = 1,
     max_msgs: int = 10,
-) -> Any:
+) -> ProviderPayload:
     """Generate and decode a provider wire payload."""
     raw = draw(provider_export_strategy(provider, min_msgs=min_msgs, max_msgs=max_msgs))
     return decode_provider_payload(provider, raw)
@@ -434,7 +455,7 @@ def provider_payload_case_strategy(
     providers: tuple[str, ...] = ("chatgpt", "claude-ai", "claude-code", "codex", "gemini"),
     min_msgs: int = 1,
     max_msgs: int = 10,
-) -> tuple[str, Any]:
+) -> tuple[str, ProviderPayload]:
     """Generate `(provider, payload)` pairs for dispatch/harmonization laws."""
     provider = draw(st.sampled_from(providers))
     payload = draw(provider_payload_strategy(provider, min_msgs=min_msgs, max_msgs=max_msgs))
@@ -453,7 +474,7 @@ def provider_source_case_strategy(
     providers: tuple[str, ...] = ("chatgpt", "claude-ai", "claude-code", "codex", "gemini"),
     min_msgs: int = 1,
     max_msgs: int = 10,
-) -> dict[str, Any]:
+) -> ProviderSourceCase:
     """Generate a provider payload together with a representative hint path."""
     provider = draw(st.sampled_from(providers))
     raw = draw(provider_export_strategy(provider, min_msgs=min_msgs, max_msgs=max_msgs))

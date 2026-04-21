@@ -7,9 +7,11 @@ algebra properties (monotonicity, composition, etc).
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import TypeAlias
 
 from hypothesis import strategies as st
+
+FilterArg: TypeAlias = dict[str, object]
 
 # =============================================================================
 # Filter Type Strategies
@@ -45,7 +47,7 @@ def filter_type_strategy(draw: st.DrawFn) -> str:
 
 
 @st.composite
-def provider_filter_arg_strategy(draw: st.DrawFn) -> dict[str, Any]:
+def provider_filter_arg_strategy(draw: st.DrawFn) -> FilterArg:
     """Generate arguments for provider filter."""
     return {
         "type": "provider",
@@ -54,7 +56,7 @@ def provider_filter_arg_strategy(draw: st.DrawFn) -> dict[str, Any]:
 
 
 @st.composite
-def contains_filter_arg_strategy(draw: st.DrawFn) -> dict[str, Any]:
+def contains_filter_arg_strategy(draw: st.DrawFn) -> FilterArg:
     """Generate arguments for contains (text search) filter."""
     return {
         "type": "contains",
@@ -72,7 +74,7 @@ def contains_filter_arg_strategy(draw: st.DrawFn) -> dict[str, Any]:
 
 
 @st.composite
-def date_filter_arg_strategy(draw: st.DrawFn) -> dict[str, Any]:
+def date_filter_arg_strategy(draw: st.DrawFn) -> FilterArg:
     """Generate arguments for date filters (since/until)."""
     filter_type = draw(st.sampled_from(["since", "until"]))
     base_date = datetime(2024, 1, 1, tzinfo=timezone.utc)
@@ -86,7 +88,7 @@ def date_filter_arg_strategy(draw: st.DrawFn) -> dict[str, Any]:
 
 
 @st.composite
-def limit_filter_arg_strategy(draw: st.DrawFn) -> dict[str, Any]:
+def limit_filter_arg_strategy(draw: st.DrawFn) -> FilterArg:
     """Generate arguments for limit filter."""
     return {
         "type": "limit",
@@ -95,7 +97,7 @@ def limit_filter_arg_strategy(draw: st.DrawFn) -> dict[str, Any]:
 
 
 @st.composite
-def offset_filter_arg_strategy(draw: st.DrawFn) -> dict[str, Any]:
+def offset_filter_arg_strategy(draw: st.DrawFn) -> FilterArg:
     """Generate arguments for offset filter."""
     return {
         "type": "offset",
@@ -104,7 +106,7 @@ def offset_filter_arg_strategy(draw: st.DrawFn) -> dict[str, Any]:
 
 
 @st.composite
-def sort_filter_arg_strategy(draw: st.DrawFn) -> dict[str, Any]:
+def sort_filter_arg_strategy(draw: st.DrawFn) -> FilterArg:
     """Generate arguments for sort filter."""
     return {
         "type": "sort",
@@ -114,7 +116,7 @@ def sort_filter_arg_strategy(draw: st.DrawFn) -> dict[str, Any]:
 
 
 @st.composite
-def role_filter_arg_strategy(draw: st.DrawFn) -> dict[str, Any]:
+def role_filter_arg_strategy(draw: st.DrawFn) -> FilterArg:
     """Generate arguments for role filter."""
     return {
         "type": "role",
@@ -123,7 +125,7 @@ def role_filter_arg_strategy(draw: st.DrawFn) -> dict[str, Any]:
 
 
 @st.composite
-def word_count_filter_arg_strategy(draw: st.DrawFn) -> dict[str, Any]:
+def word_count_filter_arg_strategy(draw: st.DrawFn) -> FilterArg:
     """Generate arguments for word count filters."""
     filter_type = draw(st.sampled_from(["min_words", "max_words"]))
     return {
@@ -137,18 +139,18 @@ def word_count_filter_arg_strategy(draw: st.DrawFn) -> dict[str, Any]:
 # =============================================================================
 
 
-def has_tool_use_filter_arg_strategy() -> st.SearchStrategy[dict[str, Any]]:
+def has_tool_use_filter_arg_strategy() -> st.SearchStrategy[FilterArg]:
     """Generate arguments for has_tool_use filter."""
     return st.just({"type": "has_tool_use"})
 
 
-def has_thinking_filter_arg_strategy() -> st.SearchStrategy[dict[str, Any]]:
+def has_thinking_filter_arg_strategy() -> st.SearchStrategy[FilterArg]:
     """Generate arguments for has_thinking filter."""
     return st.just({"type": "has_thinking"})
 
 
 @st.composite
-def min_messages_filter_arg_strategy(draw: st.DrawFn) -> dict[str, Any]:
+def min_messages_filter_arg_strategy(draw: st.DrawFn) -> FilterArg:
     """Generate arguments for min_messages filter."""
     return {
         "type": "min_messages",
@@ -157,7 +159,7 @@ def min_messages_filter_arg_strategy(draw: st.DrawFn) -> dict[str, Any]:
 
 
 @st.composite
-def max_messages_filter_arg_strategy(draw: st.DrawFn) -> dict[str, Any]:
+def max_messages_filter_arg_strategy(draw: st.DrawFn) -> FilterArg:
     """Generate arguments for max_messages filter."""
     return {
         "type": "max_messages",
@@ -166,7 +168,7 @@ def max_messages_filter_arg_strategy(draw: st.DrawFn) -> dict[str, Any]:
 
 
 @st.composite
-def tag_filter_arg_strategy(draw: st.DrawFn) -> dict[str, Any]:
+def tag_filter_arg_strategy(draw: st.DrawFn) -> FilterArg:
     """Generate arguments for tag filter."""
     return {
         "type": "tag",
@@ -181,7 +183,7 @@ def tag_filter_arg_strategy(draw: st.DrawFn) -> dict[str, Any]:
 
 
 @st.composite
-def exclude_tag_filter_arg_strategy(draw: st.DrawFn) -> dict[str, Any]:
+def exclude_tag_filter_arg_strategy(draw: st.DrawFn) -> FilterArg:
     """Generate arguments for exclude_tag filter."""
     return {
         "type": "exclude_tag",
@@ -201,7 +203,7 @@ def exclude_tag_filter_arg_strategy(draw: st.DrawFn) -> dict[str, Any]:
 
 
 @st.composite
-def filter_arg_strategy(draw: st.DrawFn) -> dict[str, Any]:
+def filter_arg_strategy(draw: st.DrawFn) -> FilterArg:
     """Generate any valid filter argument."""
     return draw(
         st.one_of(
@@ -228,7 +230,7 @@ def filter_chain_strategy(
     draw: st.DrawFn,
     min_filters: int = 1,
     max_filters: int = 5,
-) -> list[dict[str, Any]]:
+) -> list[FilterArg]:
     """Generate a chain of filters for composition testing.
 
     Properties to test with this strategy:
@@ -246,7 +248,7 @@ def filter_chain_strategy(
 
 
 @st.composite
-def pagination_filter_chain_strategy(draw: st.DrawFn) -> list[dict[str, Any]]:
+def pagination_filter_chain_strategy(draw: st.DrawFn) -> list[FilterArg]:
     """Generate pagination filter combinations.
 
     Tests that offset + limit work correctly together.
@@ -261,7 +263,7 @@ def pagination_filter_chain_strategy(draw: st.DrawFn) -> list[dict[str, Any]]:
 
 
 @st.composite
-def date_range_filter_chain_strategy(draw: st.DrawFn) -> list[dict[str, Any]]:
+def date_range_filter_chain_strategy(draw: st.DrawFn) -> list[FilterArg]:
     """Generate date range filter combinations.
 
     Tests that since + until work correctly together.
