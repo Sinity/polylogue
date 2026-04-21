@@ -16,8 +16,9 @@ from tests.infra.archive_scenarios import (
     repository_for_scenario_db,
     seed_workspace_scenarios,
 )
-from tests.infra.oracles import assert_archive_surfaces_agree, assert_conversation_surfaces_agree
+from tests.infra.oracles import assert_conversation_surfaces_agree
 from tests.infra.semantic_facts import ArchiveFacts, ConversationFacts
+from tests.infra.state_machines import RepositoryLifecycleHarness
 
 
 @pytest.mark.asyncio()
@@ -46,48 +47,40 @@ async def test_repository_metadata_tag_and_delete_lifecycle_laws(workspace_env: 
         metadata={"tags": ["initial"], "summary": "before"},
     )
     db_path, _ = seed_workspace_scenarios(workspace_env, [scenario])
-    repository = repository_for_scenario_db(db_path)
+    harness = RepositoryLifecycleHarness.create(
+        db_path=db_path,
+        archive_root=workspace_env["archive_root"],
+        scenarios=(scenario,),
+    )
     try:
-        with open_connection(db_path) as conn:
-            assert_conversation_surfaces_agree(
-                scenario.facts_from_connection(conn),
-                scenario.hydrated_facts_from_connection(conn),
-                await scenario.facts_from_repository(repository),
-            )
+        await harness.assert_conversation_visible(scenario)
 
-        await repository.add_tag(scenario.resolved_conversation_id, "review")
-        await repository.add_tag(scenario.resolved_conversation_id, "review")
-        await repository.update_metadata(scenario.resolved_conversation_id, "summary", "after")
-        await repository.update_metadata(
-            scenario.resolved_conversation_id,
+        await harness.add_tag_and_assert_visible(scenario, "review")
+        await harness.add_tag_and_assert_visible(scenario, "review")
+        await harness.update_metadata_and_assert_visible(scenario, "summary", "after")
+        await harness.update_metadata_and_assert_visible(
+            scenario,
             "audit",
             {"status": "checked", "tooling": ["repository", "scenario"]},
         )
-        await repository.delete_metadata(scenario.resolved_conversation_id, "missing")
+        await harness.delete_metadata_and_assert_visible(scenario, "missing")
 
-        metadata = await repository.get_metadata(scenario.resolved_conversation_id)
+        metadata = await harness.repository.get_metadata(scenario.resolved_conversation_id)
         assert metadata["tags"] == ["initial", "review"]
         assert metadata["summary"] == "after"
         assert metadata["audit"] == {"status": "checked", "tooling": ["repository", "scenario"]}
-        assert await repository.list_tags() == {"initial": 1, "review": 1}
+        await harness.assert_tags({"initial": 1, "review": 1})
 
-        await repository.remove_tag(scenario.resolved_conversation_id, "initial")
-        await repository.remove_tag(scenario.resolved_conversation_id, "initial")
-        metadata_after_remove = await repository.get_metadata(scenario.resolved_conversation_id)
+        await harness.remove_tag_and_assert_visible(scenario, "initial")
+        await harness.remove_tag_and_assert_visible(scenario, "initial")
+        metadata_after_remove = await harness.repository.get_metadata(scenario.resolved_conversation_id)
         assert metadata_after_remove["tags"] == ["review"]
-        assert await repository.list_tags(provider="claude-code") == {"review": 1}
+        await harness.assert_tags({"review": 1}, provider="claude-code")
+        await harness.assert_archive_agrees(total_conversations=1)
 
-        with open_connection(db_path) as conn:
-            db_facts_before_delete = ArchiveFacts.from_db_connection(conn)
-        repo_facts_before_delete = ArchiveFacts.from_conversations(await repository.list(limit=None))
-        assert_archive_surfaces_agree(db_facts_before_delete, repo_facts_before_delete)
-        assert db_facts_before_delete.total_conversations == 1
-
-        assert await repository.delete_conversation(scenario.resolved_conversation_id) is True
-        assert await repository.delete_conversation(scenario.resolved_conversation_id) is False
-        assert await repository.get(scenario.resolved_conversation_id) is None
-        assert await repository.count() == 0
-        assert await repository.list_tags() == {}
+        await harness.delete_conversation_and_assert_absent(scenario)
+        assert await harness.repository.count() == 0
+        await harness.assert_tags({})
 
         with open_connection(db_path) as conn:
             assert ArchiveFacts.from_db_connection(conn) == ArchiveFacts(
@@ -96,11 +89,53 @@ async def test_repository_metadata_tag_and_delete_lifecycle_laws(workspace_env: 
                 total_messages=0,
                 conversation_ids=(),
             )
-            for table_name in ("messages", "content_blocks", "attachment_refs"):
-                count = int(conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0])
-                assert count == 0, f"{table_name} retained rows after repository delete"
     finally:
-        await repository.close()
+        await harness.close()
+
+
+@pytest.mark.asyncio()
+async def test_repository_lifecycle_state_keeps_neighbor_conversations_visible(
+    workspace_env: Mapping[str, Path],
+) -> None:
+    """State transitions for one conversation must not disturb its archive neighbors."""
+    target = ArchiveScenario(
+        name="repo-state-target",
+        provider="claude-code",
+        title="Target lifecycle",
+        messages=(ScenarioMessage(role="user", text="Mutate me", message_id="target-m1"),),
+        metadata={"tags": ["target"]},
+    )
+    neighbor = ArchiveScenario(
+        name="repo-state-neighbor",
+        provider="chatgpt",
+        title="Neighbor lifecycle",
+        messages=(ScenarioMessage(role="assistant", text="Keep me", message_id="neighbor-m1"),),
+        metadata={"tags": ["neighbor"]},
+    )
+    db_path, _ = seed_workspace_scenarios(workspace_env, [target, neighbor])
+    harness = RepositoryLifecycleHarness.create(
+        db_path=db_path,
+        archive_root=workspace_env["archive_root"],
+        scenarios=(target, neighbor),
+    )
+    try:
+        await harness.assert_archive_agrees(total_conversations=2)
+        await harness.add_tag_and_assert_visible(target, "review")
+        await harness.assert_conversation_visible(neighbor)
+        await harness.update_metadata_and_assert_visible(target, "summary", "reviewed")
+        await harness.assert_metadata_contains(
+            target.resolved_conversation_id,
+            {"tags": ["target", "review"], "summary": "reviewed"},
+        )
+        await harness.assert_metadata_contains(neighbor.resolved_conversation_id, {"tags": ["neighbor"]})
+        await harness.delete_conversation_and_assert_absent(target)
+
+        await harness.assert_conversation_visible(neighbor)
+        archive_facts = await harness.assert_archive_agrees(total_conversations=1)
+        assert archive_facts.conversation_ids == (neighbor.resolved_conversation_id,)
+        await harness.assert_tags({"neighbor": 1})
+    finally:
+        await harness.close()
 
 
 @pytest.mark.asyncio()

@@ -101,8 +101,7 @@ class SQLiteHydratedSurface:
     async def archive_facts(self) -> ArchiveFacts:
         with open_connection(self.db_path) as conn:
             conversations = [
-                scenario.hydrated_facts_from_connection(conn)
-                for scenario in sorted(self.scenarios, key=lambda item: item.resolved_conversation_id)
+                scenario.hydrated_facts_from_connection(conn) for scenario in _current_archive_scenarios(conn)
             ]
         return ArchiveFacts(
             total_conversations=len(conversations),
@@ -225,6 +224,11 @@ def _provider_counts(conversations: list[ConversationFacts]) -> dict[str, int]:
     for conversation in conversations:
         counts[conversation.provider] = counts.get(conversation.provider, 0) + 1
     return counts
+
+
+def _current_archive_scenarios(conn: sqlite3.Connection) -> tuple[ArchiveScenario, ...]:
+    rows = conn.execute("SELECT conversation_id FROM conversations ORDER BY conversation_id").fetchall()
+    return tuple(ArchiveScenario(name=str(row["conversation_id"])) for row in rows)
 
 
 __all__ = [
