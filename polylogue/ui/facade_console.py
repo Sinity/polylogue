@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import io
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from rich.console import Console as RichConsole
 from rich.errors import MarkupError
@@ -13,7 +13,7 @@ from rich.text import Text
 
 @runtime_checkable
 class ConsoleLike(Protocol):
-    def print(self, *objects: object, **kwargs: object) -> None: ...
+    def print(self, *objects: object, **kwargs: Any) -> None: ...
 
 
 def _render_plain_object(obj: object) -> str:
