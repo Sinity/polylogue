@@ -5,7 +5,9 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from enum import Enum
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
+
+from polylogue.schemas.operator_registry import SchemaRegistryLike
 
 from .metadata import ScenarioMetadata
 from .payloads import (
@@ -167,7 +169,7 @@ class CorpusRequest:
         *,
         origin: str | None = None,
         tags: tuple[str, ...] | None = None,
-        registry: Any | None = None,
+        registry: SchemaRegistryLike | None = None,
     ) -> tuple[CorpusSpec, ...]:
         return resolve_corpus_specs(
             providers=self.available_providers(),
@@ -188,7 +190,7 @@ class CorpusRequest:
         *,
         origin: str = "compiled.synthetic-corpus-scenario",
         tags: tuple[str, ...] = ("synthetic", "scenario"),
-        registry: Any | None = None,
+        registry: SchemaRegistryLike | None = None,
     ) -> tuple[CorpusScenario, ...]:
         return resolve_corpus_scenarios(
             providers=self.available_providers(),
@@ -521,7 +523,7 @@ def resolve_corpus_specs(
     package_version: str = "default",
     origin: str | None = None,
     tags: tuple[str, ...] | None = None,
-    registry: Any | None = None,
+    registry: SchemaRegistryLike | None = None,
 ) -> tuple[CorpusSpec, ...]:
     source_kind = CorpusSourceKind(source)
     provider_names = tuple(providers) if providers is not None else None
@@ -570,7 +572,7 @@ def resolve_corpus_scenarios(
     package_version: str = "default",
     origin: str = "compiled.synthetic-corpus-scenario",
     tags: tuple[str, ...] = ("synthetic", "scenario"),
-    registry: Any | None = None,
+    registry: SchemaRegistryLike | None = None,
 ) -> tuple[CorpusScenario, ...]:
     specs = resolve_corpus_specs(
         providers=providers,

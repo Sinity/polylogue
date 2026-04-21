@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import threading
-from collections.abc import Awaitable, Coroutine
-from typing import Any, TypeVar, cast
+from collections.abc import Awaitable
+from typing import TypeVar
 
 T = TypeVar("T")
+
+
+async def _await_result(awaitable: Awaitable[T]) -> T:
+    return await awaitable
 
 
 def run_coroutine_sync(coro: Awaitable[T]) -> T:
@@ -13,14 +17,14 @@ def run_coroutine_sync(coro: Awaitable[T]) -> T:
     try:
         asyncio.get_running_loop()
     except RuntimeError:
-        return asyncio.run(cast(Coroutine[Any, Any, T], coro))
+        return asyncio.run(_await_result(coro))
 
     result: list[T] = []
     error: list[BaseException] = []
 
     def _worker() -> None:
         try:
-            result.append(asyncio.run(cast(Coroutine[Any, Any, T], coro)))
+            result.append(asyncio.run(_await_result(coro)))
         except BaseException as exc:  # pragma: no cover - re-raised on caller thread
             error.append(exc)
 

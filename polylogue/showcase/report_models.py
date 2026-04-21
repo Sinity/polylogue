@@ -7,6 +7,7 @@ payload dictionaries.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 from polylogue.scenarios import PayloadDict, ScenarioMetadata
@@ -178,7 +179,7 @@ class ShowcaseSessionRecord:
 class QAAuditRecord:
     status: str
     skipped: bool
-    report: PayloadDict | None = None
+    report: Mapping[str, object] | None = None
     error: str | None = None
 
     def to_payload(self) -> PayloadDict:
@@ -194,7 +195,7 @@ class QAAuditRecord:
 class QAProofRecord:
     status: str
     skipped: bool
-    report: PayloadDict | None = None
+    report: Mapping[str, object] | None = None
     error: str | None = None
 
     def to_payload(self) -> PayloadDict:

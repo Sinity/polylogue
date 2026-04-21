@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch
 
+from polylogue.lib.json import JSONDocument
 from polylogue.schemas.generation_models import GenerationResult
 from polylogue.schemas.operator_inference import (
     infer_schema,
@@ -11,8 +13,100 @@ from polylogue.schemas.operator_inference import (
     list_inferred_corpus_specs,
 )
 from polylogue.schemas.operator_models import SchemaInferRequest
-from polylogue.schemas.packages import SchemaElementManifest, SchemaPackageCatalog, SchemaVersionPackage
-from polylogue.schemas.tooling_models import ClusterManifest, SchemaCluster
+from polylogue.schemas.operator_registry import SchemaRegistryLike
+from polylogue.schemas.packages import (
+    SchemaElementManifest,
+    SchemaPackageCatalog,
+    SchemaResolution,
+    SchemaVersionPackage,
+)
+from polylogue.schemas.tooling_models import ClusterManifest, SchemaCluster, SchemaDiff
+
+
+@dataclass(frozen=True)
+class _ProviderConfig:
+    db_provider_name: str | None
+
+
+class _FakeSchemaRegistry(SchemaRegistryLike):
+    def __init__(
+        self,
+        *,
+        catalogs: dict[str, SchemaPackageCatalog] | None = None,
+        manifests: dict[str, ClusterManifest | None] | None = None,
+        clustered_manifest: ClusterManifest | None = None,
+        manifest_path: Path | None = None,
+    ) -> None:
+        self._catalogs = catalogs or {}
+        self._manifests = manifests or {}
+        self._clustered_manifest = clustered_manifest
+        self._manifest_path = manifest_path or Path("manifest.json")
+
+    def load_package_catalog(self, provider: str) -> SchemaPackageCatalog | None:
+        return self._catalogs.get(provider)
+
+    def get_package(self, provider: str, version: str = "default") -> SchemaVersionPackage | None:
+        catalog = self.load_package_catalog(provider)
+        return catalog.package(version) if catalog is not None else None
+
+    def get_element_schema(
+        self,
+        provider: str,
+        *,
+        version: str = "default",
+        element_kind: str | None = None,
+    ) -> JSONDocument | None:
+        return None
+
+    def list_versions(self, provider: str) -> list[str]:
+        catalog = self.load_package_catalog(provider)
+        return [package.version for package in catalog.packages] if catalog is not None else []
+
+    def list_providers(self) -> list[str]:
+        provider_names = set(self._catalogs) | set(self._manifests)
+        return sorted(provider_names)
+
+    def get_schema_age_days(self, provider: str) -> int | None:
+        return None
+
+    def resolve_payload(
+        self,
+        provider: str,
+        payload: Mapping[str, object],
+        *,
+        source_path: str | None = None,
+    ) -> SchemaResolution | None:
+        return None
+
+    def compare_versions(
+        self,
+        provider: str,
+        v1: str,
+        v2: str,
+        *,
+        element_kind: str | None = None,
+    ) -> SchemaDiff:
+        raise AssertionError("compare_versions should not be called in this test")
+
+    def cluster_samples(self, provider: str, samples: Sequence[Mapping[str, object]]) -> ClusterManifest:
+        if self._clustered_manifest is None:
+            raise AssertionError("cluster_samples should not be called without a manifest")
+        return self._clustered_manifest
+
+    def save_cluster_manifest(self, manifest: ClusterManifest) -> Path:
+        return self._manifest_path
+
+    def load_cluster_manifest(self, provider: str) -> ClusterManifest | None:
+        return self._manifests.get(provider)
+
+    def promote_cluster(
+        self,
+        provider: str,
+        cluster_id: str,
+        *,
+        samples: Sequence[Mapping[str, object]] | None = None,
+    ) -> str:
+        raise AssertionError("promote_cluster should not be called in this test")
 
 
 def test_infer_schema_emits_default_corpus_specs_without_clustering(tmp_path: Path) -> None:
@@ -66,11 +160,11 @@ def test_infer_schema_emits_cluster_backed_corpus_specs_when_manifest_exists(tmp
             )
         ],
     )
-    fake_registry = SimpleNamespace(
-        cluster_samples=lambda provider, samples: manifest,
-        save_cluster_manifest=lambda manifest: tmp_path / "manifest.json",
+    fake_registry = _FakeSchemaRegistry(
+        clustered_manifest=manifest,
+        manifest_path=tmp_path / "manifest.json",
     )
-    fake_provider = SimpleNamespace(db_provider_name="chatgpt")
+    fake_provider = _ProviderConfig(db_provider_name="chatgpt")
 
     with (
         patch("polylogue.schemas.generation_workflow.generate_provider_schema", return_value=generation),
@@ -140,10 +234,9 @@ def test_list_inferred_corpus_specs_reads_registry_catalog_and_manifest() -> Non
             )
         ],
     )
-    fake_registry = SimpleNamespace(
-        list_providers=lambda: ["chatgpt"],
-        load_package_catalog=lambda provider: catalog,
-        load_cluster_manifest=lambda provider: manifest,
+    fake_registry = _FakeSchemaRegistry(
+        catalogs={"chatgpt": catalog},
+        manifests={"chatgpt": manifest},
     )
 
     with patch("polylogue.schemas.operator_inference.schema_registry", return_value=fake_registry):
@@ -201,10 +294,9 @@ def test_list_inferred_corpus_scenarios_groups_specs_by_provider_and_version() -
         ],
         default_version="v7",
     )
-    fake_registry = SimpleNamespace(
-        list_providers=lambda: ["chatgpt"],
-        load_package_catalog=lambda provider: catalog,
-        load_cluster_manifest=lambda provider: manifest,
+    fake_registry = _FakeSchemaRegistry(
+        catalogs={"chatgpt": catalog},
+        manifests={"chatgpt": manifest},
     )
 
     with patch("polylogue.schemas.operator_inference.schema_registry", return_value=fake_registry):
@@ -249,10 +341,9 @@ def test_list_inferred_corpus_specs_can_scope_to_one_provider() -> None:
             )
         ],
     )
-    fake_registry = SimpleNamespace(
-        list_providers=lambda: ["chatgpt", "codex"],
-        load_package_catalog=lambda provider: {"chatgpt": chatgpt_catalog, "codex": codex_catalog}[provider],
-        load_cluster_manifest=lambda provider: None,
+    fake_registry = _FakeSchemaRegistry(
+        catalogs={"chatgpt": chatgpt_catalog, "codex": codex_catalog},
+        manifests={"chatgpt": None, "codex": None},
     )
 
     with patch("polylogue.schemas.operator_inference.schema_registry", return_value=fake_registry):

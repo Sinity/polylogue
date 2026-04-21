@@ -9,7 +9,7 @@ used in production.
 from __future__ import annotations
 
 from collections.abc import Iterator, Sized
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from pydantic import GetCoreSchemaHandler, GetJsonSchemaHandler
 from pydantic_core import core_schema
@@ -85,7 +85,7 @@ class MessageCollection(Sized):
     @classmethod
     def __get_pydantic_core_schema__(
         cls,
-        _source_type: Any,
+        _source_type: object,
         _handler: GetCoreSchemaHandler,
     ) -> core_schema.CoreSchema:
         """Pydantic V2 schema: serialize as list[Message], accept MessageCollection or list."""
@@ -93,14 +93,14 @@ class MessageCollection(Sized):
 
         message_schema = _handler.generate_schema(Message)
 
-        def validate_messages(v: Any) -> MessageCollection:
+        def validate_messages(v: object) -> MessageCollection:
             if isinstance(v, MessageCollection):
                 return v
             if isinstance(v, list):
                 return MessageCollection(messages=v)
             raise ValueError(f"Expected MessageCollection or list, got {type(v)}")
 
-        def serialize_messages(v: MessageCollection) -> list[Any]:
+        def serialize_messages(v: MessageCollection) -> list[Message]:
             return v.to_list()
 
         return core_schema.no_info_plain_validator_function(
