@@ -21,7 +21,7 @@ import os
 import tempfile
 from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import BinaryIO
+from typing import IO, BinaryIO
 
 _CHUNK_SIZE = 128 * 1024  # 128 KB
 Heartbeat = Callable[[], None]
@@ -104,7 +104,7 @@ class BlobStore:
 
     def write_from_fileobj(
         self,
-        source: BinaryIO,
+        source: IO[bytes],
         *,
         heartbeat: Heartbeat | None = None,
     ) -> tuple[str, int]:

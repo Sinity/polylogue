@@ -4,7 +4,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import TypeAlias
 
-from polylogue.lib.json import JSONValue, is_json_value, loads
+from polylogue.lib.json import JSONValue, loads
 from polylogue.logging import get_logger
 
 from .drive_gateway import DriveListFilesResponse, DrivePayloadRecord
@@ -18,20 +18,22 @@ logger = get_logger(__name__)
 
 DriveJSONPayload: TypeAlias = JSONValue
 DriveJSONRecord: TypeAlias = DrivePayloadRecord
-DriveJSONSequence: TypeAlias = list[DriveJSONPayload]
+DriveJSONPayloadSequence: TypeAlias = list[DriveJSONPayload]
+DriveJSONRecordSequence: TypeAlias = list[DriveJSONRecord]
+DriveJSONSequence: TypeAlias = DriveJSONPayloadSequence
 
 
-def _json_sequence(value: object) -> DriveJSONSequence:
+def _json_sequence(value: object) -> DriveJSONRecordSequence:
     if not isinstance(value, list):
         return []
-    items: DriveJSONSequence = []
+    items: DriveJSONRecordSequence = []
     for item in value:
-        if is_json_value(item):
+        if isinstance(item, dict):
             items.append(item)
     return items
 
 
-def _response_files(response: DriveListFilesResponse) -> list[JSONValue]:
+def _response_files(response: DriveListFilesResponse) -> DriveJSONRecordSequence:
     return _json_sequence(response.get("files"))
 
 
@@ -89,7 +91,7 @@ def _is_supported_drive_payload(name: str, mime_type: str) -> bool:
 
 def _parse_downloaded_json_payload(raw: bytes, *, name: str) -> DriveJSONPayload:
     if _is_newline_delimited_json_name(name):
-        items: DriveJSONSequence = []
+        items: DriveJSONPayloadSequence = []
         for line in raw.splitlines():
             line = line.strip()
             if not line:
@@ -146,6 +148,8 @@ def _build_drive_file(meta: DriveJSONRecord, *, file_id_fallback: str = "") -> D
 __all__ = [
     "DriveJSONPayload",
     "DriveJSONRecord",
+    "DriveJSONPayloadSequence",
+    "DriveJSONRecordSequence",
     "DriveJSONSequence",
     "_record_string",
     "_build_drive_file",

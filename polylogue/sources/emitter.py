@@ -6,7 +6,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from io import BytesIO
 from itertools import chain
-from typing import TYPE_CHECKING, BinaryIO
+from typing import IO, TYPE_CHECKING
 
 from polylogue.lib.artifact_taxonomy import ArtifactClassification, classify_artifact
 from polylogue.lib.json import dumps_bytes as json_dumps_bytes
@@ -46,7 +46,7 @@ class _SniffResult:
 
 @dataclass(frozen=True, slots=True)
 class _PreparedJsonlState:
-    sniff_handle: BinaryIO
+    sniff_handle: IO[bytes]
     pre_read_bytes: bytes | None
     stream_start: int | None
 
@@ -76,7 +76,7 @@ class _ConversationEmitter:
 
     def emit(
         self,
-        handle: BinaryIO,
+        handle: IO[bytes],
         stream_name: str,
         *,
         pre_read_bytes: bytes | None = None,
@@ -117,7 +117,7 @@ class _ConversationEmitter:
 
     def _emit_grouped(
         self,
-        handle: BinaryIO,
+        handle: IO[bytes],
         stream_name: str,
         pre_read_bytes: bytes | None,
         *,
@@ -155,7 +155,7 @@ class _ConversationEmitter:
 
     def _emit_individual(
         self,
-        handle: BinaryIO,
+        handle: IO[bytes],
         stream_name: str,
         *,
         pre_read_bytes: bytes | None = None,
@@ -213,7 +213,7 @@ class _ConversationEmitter:
 
     def _sniff_jsonl_payloads(
         self,
-        handle: BinaryIO,
+        handle: IO[bytes],
         stream_name: str,
     ) -> _SniffResult:
         payload_iter = iter(_iter_json_stream(handle, stream_name))
@@ -243,7 +243,7 @@ class _ConversationEmitter:
 
     def _prepare_jsonl_state(
         self,
-        handle: BinaryIO,
+        handle: IO[bytes],
         *,
         pre_read_bytes: bytes | None,
     ) -> _PreparedJsonlState:
@@ -261,7 +261,7 @@ class _ConversationEmitter:
 
     def _non_seekable_jsonl_sniff(
         self,
-        handle: BinaryIO,
+        handle: IO[bytes],
         stream_name: str,
     ) -> tuple[bytes, _SniffResult]:
         sniff_bytes = handle.read()
@@ -269,13 +269,13 @@ class _ConversationEmitter:
 
     def _grouped_jsonl_source(
         self,
-        handle: BinaryIO,
+        handle: IO[bytes],
         state: _PreparedJsonlState,
         *,
         precomputed_raw: RawConversationData | None,
-    ) -> tuple[BinaryIO, bytes | None]:
+    ) -> tuple[IO[bytes], bytes | None]:
         grouped_bytes = state.pre_read_bytes
-        grouped_handle: BinaryIO = state.sniff_handle
+        grouped_handle: IO[bytes] = state.sniff_handle
         if (
             grouped_bytes is None
             and self._ctx.capture_raw
@@ -289,7 +289,7 @@ class _ConversationEmitter:
 
     def _emit_jsonl(
         self,
-        handle: BinaryIO,
+        handle: IO[bytes],
         stream_name: str,
         *,
         pre_read_bytes: bytes | None,
@@ -338,7 +338,7 @@ class _ConversationEmitter:
             stream_name=stream_name,
         )
 
-    def _capture_stream_start(self, handle: BinaryIO) -> int | None:
+    def _capture_stream_start(self, handle: IO[bytes]) -> int | None:
         seekable = getattr(handle, "seekable", None)
         if callable(seekable):
             try:
@@ -351,7 +351,7 @@ class _ConversationEmitter:
         except (AttributeError, OSError, ValueError):
             return None
 
-    def _restore_stream_start(self, handle: BinaryIO, stream_start: int) -> None:
+    def _restore_stream_start(self, handle: IO[bytes], stream_start: int) -> None:
         handle.seek(stream_start)
 
     def _resolve_schema(

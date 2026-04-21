@@ -9,7 +9,7 @@ import zipfile
 from collections.abc import Iterable, Mapping
 from io import BytesIO
 from pathlib import Path
-from typing import IO, BinaryIO, cast
+from typing import IO
 from unittest.mock import MagicMock
 
 import ijson
@@ -19,6 +19,7 @@ from hypothesis import strategies as st
 from typing_extensions import TypedDict
 
 from polylogue.config import Source
+from polylogue.lib.json import is_json_value
 from polylogue.lib.roles import Role, normalize_role
 from polylogue.schemas.json_types import JSONDocument, JSONValue
 from polylogue.sources import decoders as decoders_module
@@ -555,7 +556,7 @@ def test_iter_source_conversations_tracks_file_disappearance_contract(
         encoding: str | None = None,
         errors: str | None = None,
         newline: str | None = None,
-    ) -> IO[str] | BinaryIO:
+    ) -> IO[str] | IO[bytes]:
         if path == second:
             raise FileNotFoundError("deleted")
         return original_open(
@@ -710,7 +711,7 @@ def test_iter_source_conversations_with_raw_streams_grouped_zip_capture_to_blob_
     write_calls = 0
     original_write_from_fileobj = BlobStore.write_from_fileobj
 
-    def tracking_write_from_fileobj(self: BlobStore, source: BinaryIO) -> tuple[str, int]:
+    def tracking_write_from_fileobj(self: BlobStore, source: IO[bytes]) -> tuple[str, int]:
         nonlocal write_calls
         write_calls += 1
         return original_write_from_fileobj(self, source)
@@ -1418,7 +1419,7 @@ def test_conversation_emitter_reuses_jsonl_sniff_payloads_for_grouped_detection(
     original_iter_json_stream = _iter_json_stream
 
     def tracking_iter_json_stream(
-        handle: BinaryIO | IO[bytes],
+        handle: IO[bytes],
         path_name: str,
         unpack_lists: bool = True,
     ) -> Iterable[object]:
@@ -1463,7 +1464,7 @@ def test_conversation_emitter_reuses_jsonl_sniff_payloads_for_individual_detecti
     original_iter_json_stream = _iter_json_stream
 
     def tracking_iter_json_stream(
-        handle: BinaryIO | IO[bytes],
+        handle: IO[bytes],
         path_name: str,
         unpack_lists: bool = True,
     ) -> Iterable[object]:
@@ -1689,7 +1690,9 @@ class _StubDriveRawClient:
 
     def download_json_payload(self, file_id: str, *, name: str) -> JSONValue:
         del name
-        return cast(JSONValue, json.loads(self.download_bytes(file_id)))
+        payload = json.loads(self.download_bytes(file_id))
+        assert is_json_value(payload)
+        return payload
 
     def download_to_path(self, file_id: str, dest: Path) -> DriveFile:
         if file_id in self.failures:

@@ -248,7 +248,7 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedConvers
     )
 
 
-def parse(payload: list[object], fallback_id: str) -> ParsedConversation:
+def parse(payload: Sequence[object], fallback_id: str) -> ParsedConversation:
     return _parse_records(payload, fallback_id)
 
 

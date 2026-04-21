@@ -153,8 +153,8 @@ class DriveAuthManager:
         """Load or acquire Google OAuth credentials. Triggers interactive auth if needed."""
         credentials_module = _import_auth_module("google.oauth2.credentials")
         flow_module = _import_auth_module("google_auth_oauthlib.flow")
-        credentials_cls = cast(DriveCredentialsFactory, credentials_module.Credentials)
-        installed_app_flow_cls = cast(DriveAuthFlowFactory, flow_module.InstalledAppFlow)
+        credentials_cls: DriveCredentialsFactory = credentials_module.Credentials
+        installed_app_flow_cls: DriveAuthFlowFactory = flow_module.InstalledAppFlow
 
         token_path = self._resolved_token_path()
         cached = self._load_cached_credentials(credentials_cls, token_path)

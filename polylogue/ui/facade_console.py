@@ -3,30 +3,27 @@
 from __future__ import annotations
 
 import io
-from contextlib import suppress
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from rich.console import Console as RichConsole
+from rich.errors import MarkupError
 from rich.table import Table
 from rich.text import Text
 
 
 @runtime_checkable
 class ConsoleLike(Protocol):
-    def print(self, *objects: object, **kwargs: object) -> None: ...
-
-
-def _plain_text_from_markup(text: str) -> str:
-    with suppress(Exception):
-        return Text.from_markup(text).plain
-    return text
+    def print(self, *objects: object, **kwargs: Any) -> None: ...
 
 
 def _render_plain_object(obj: object) -> str:
     if isinstance(obj, Text):
         return obj.plain
     if isinstance(obj, str):
-        return _plain_text_from_markup(obj)
+        try:
+            return Text.from_markup(obj).plain
+        except MarkupError:
+            return obj
 
     if isinstance(obj, Table):
         buf = io.StringIO()
@@ -34,8 +31,7 @@ def _render_plain_object(obj: object) -> str:
         tmp.print(obj)
         return buf.getvalue().rstrip()
 
-    raw = str(obj)
-    return _plain_text_from_markup(raw)
+    return str(obj)
 
 
 class PlainConsole:

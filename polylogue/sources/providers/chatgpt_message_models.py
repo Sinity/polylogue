@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -19,6 +19,20 @@ from polylogue.lib.viewports import (
 )
 from polylogue.types import Provider
 
+ChatGPTMetadata: TypeAlias = dict[str, object]
+ChatGPTPartValue: TypeAlias = object
+
+
+def _model_slug(metadata: ChatGPTMetadata) -> str | None:
+    value = metadata.get("model_slug")
+    return value if isinstance(value, str) else None
+
+
+def _content_raw(content: ChatGPTContent) -> ChatGPTMetadata:
+    payload: ChatGPTMetadata = {}
+    payload.update(content.model_dump(mode="python"))
+    return payload
+
 
 class ChatGPTAuthor(BaseModel):
     """Author of a ChatGPT message."""
@@ -27,7 +41,7 @@ class ChatGPTAuthor(BaseModel):
 
     role: str
     name: str | None = None
-    metadata: dict[str, Any] = Field(default_factory=dict)
+    metadata: ChatGPTMetadata = Field(default_factory=dict)
 
 
 class ChatGPTContent(BaseModel):
@@ -36,7 +50,7 @@ class ChatGPTContent(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     content_type: str
-    parts: list[Any] | None = None
+    parts: list[ChatGPTPartValue] | None = None
     text: str | None = None
     language: str | None = None
 
@@ -54,7 +68,7 @@ class ChatGPTMessage(BaseModel):
     status: str | None = None
     end_turn: bool | None = None
     weight: float = 0.0
-    metadata: dict[str, Any] = Field(default_factory=dict)
+    metadata: ChatGPTMetadata = Field(default_factory=dict)
     recipient: str | None = None
 
     @property
@@ -84,7 +98,7 @@ class ChatGPTMessage(BaseModel):
             id=self.id,
             timestamp=self.timestamp,
             role=self.role_normalized,
-            model=self.metadata.get("model_slug"),
+            model=_model_slug(self.metadata),
             provider=Provider.CHATGPT,
         )
 
@@ -95,12 +109,13 @@ class ChatGPTMessage(BaseModel):
             return blocks
 
         content_type = self.content.content_type
+        raw_content = _content_raw(self.content)
         if content_type == "text":
             blocks.append(
                 ContentBlock(
                     type=ContentType.TEXT,
                     text=self.text_content,
-                    raw=self.content.model_dump(),
+                    raw=raw_content,
                 )
             )
         elif content_type == "code":
@@ -109,7 +124,7 @@ class ChatGPTMessage(BaseModel):
                     type=ContentType.CODE,
                     text=self.text_content,
                     language=self.content.language,
-                    raw=self.content.model_dump(),
+                    raw=raw_content,
                 )
             )
         elif "tether" in content_type or "browse" in content_type:
@@ -117,7 +132,7 @@ class ChatGPTMessage(BaseModel):
                 ContentBlock(
                     type=ContentType.TOOL_RESULT,
                     text=self.text_content,
-                    raw=self.content.model_dump(),
+                    raw=raw_content,
                 )
             )
         else:
@@ -125,7 +140,7 @@ class ChatGPTMessage(BaseModel):
                 ContentBlock(
                     type=ContentType.UNKNOWN,
                     text=self.text_content,
-                    raw=self.content.model_dump(),
+                    raw=raw_content,
                 )
             )
 

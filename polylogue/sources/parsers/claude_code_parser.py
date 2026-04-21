@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable
-from typing import Any
+from collections.abc import Iterable, Sequence
+from typing import TypeAlias
 
 from pydantic import ValidationError
 
@@ -25,6 +25,9 @@ from .claude_common import extract_message_text, normalize_timestamp
 
 _TAG_RE = re.compile(r"<[^>]+>")
 _WHITESPACE_RE = re.compile(r"\s+")
+
+ClaudeCodeContextCompaction: TypeAlias = dict[str, object]
+ClaudeCodeProviderMeta: TypeAlias = dict[str, object]
 
 
 def _clean_title_text(text: str) -> str:
@@ -79,7 +82,7 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedCo
     timestamps: list[str] = []
     seen_record_uuids: set[str] = set()
     session_id: str | None = None
-    context_compactions: list[dict[str, Any]] = []
+    context_compactions: list[ClaudeCodeContextCompaction] = []
     provider_events: list[ParsedProviderEvent] = []
     total_cost = 0.0
     total_duration = 0
@@ -176,7 +179,7 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedCo
     else:
         conversation_id = session_id or fallback_id
 
-    provider_meta: dict[str, Any] = {}
+    provider_meta: ClaudeCodeProviderMeta = {}
     if context_compactions:
         provider_meta["context_compactions"] = context_compactions
     if saw_cost_field:
@@ -220,7 +223,7 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedCo
     )
 
 
-def parse_code(payload: list[object], fallback_id: str) -> ParsedConversation:
+def parse_code(payload: Sequence[object], fallback_id: str) -> ParsedConversation:
     return _parse_code_records(payload, fallback_id)
 
 

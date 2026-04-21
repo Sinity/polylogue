@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable
-from typing import IO, BinaryIO, Protocol, TypeAlias, cast
+from typing import IO, Protocol, TypeAlias, TypeGuard
 
 import ijson
 
@@ -25,7 +25,7 @@ ENCODING_GUESSES: tuple[str, ...] = (
 
 JsonScalar: TypeAlias = str | int | float | bool | None
 JsonValue: TypeAlias = dict[str, "JsonValue"] | list["JsonValue"] | JsonScalar
-JsonReadable: TypeAlias = BinaryIO | IO[bytes]
+JsonReadable: TypeAlias = IO[bytes]
 
 
 class LoggerLike(Protocol):
@@ -42,6 +42,16 @@ class IjsonModuleLike(Protocol):
     common: IjsonCommonLike
 
     def items(self, handle: JsonReadable, prefix: str) -> Iterable[JsonValue]: ...
+
+
+def _is_json_value(value: object) -> TypeGuard[JsonValue]:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return True
+    if isinstance(value, list):
+        return all(_is_json_value(item) for item in value)
+    if isinstance(value, dict):
+        return all(isinstance(key, str) and _is_json_value(item) for key, item in value.items())
+    return False
 
 
 def decode_json_bytes_with(logger_obj: LoggerLike, blob: bytes) -> str | None:
@@ -85,12 +95,16 @@ def _yield_jsonl_pending(
         decoded = raw_pending
 
     try:
-        return ([cast(JsonValue, json.loads(decoded))], 0)
+        parsed = json.loads(decoded)
     except json.JSONDecodeError as exc:
         if is_last:
             logger_obj.debug("Skipping truncated trailing line in %s: %s", path_name, exc)
             return ([], 0)
         return ([], 1)
+    if _is_json_value(parsed):
+        return ([parsed], 0)
+    logger_obj.debug("Skipping non-JSON-compatible decoded line from %s", path_name)
+    return ([], 0)
 
 
 def _iter_jsonl_stream(
@@ -196,7 +210,9 @@ def iter_json_stream_with(
 
         handle.seek(0)
 
-    data = cast(JsonValue, json.load(handle))
+    data = json.load(handle)
+    if not _is_json_value(data):
+        raise ValueError(f"decoded payload from {path_name} does not satisfy the JsonValue contract")
     if isinstance(data, dict):
         yield data
     elif isinstance(data, list):

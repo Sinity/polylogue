@@ -6,7 +6,7 @@ import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import cast, overload
+from typing import overload
 
 from polylogue.rendering.block_models import RenderableBlock
 from polylogue.rendering.blocks import (
@@ -41,7 +41,7 @@ def normalize_render_timestamp(timestamp: object) -> str | None:
     if isinstance(timestamp, int | float):
         try:
             return datetime.fromtimestamp(float(timestamp), tz=timezone.utc).isoformat().replace("+00:00", "Z")
-        except (ValueError, OSError):
+        except (OverflowError, ValueError, OSError):
             return None
     return str(timestamp)
 
@@ -79,7 +79,11 @@ def _attach_mapping_message_branches(messages: Sequence[Mapping[str, object]]) -
     if not any(_mapping_branch_index(message) for message in copied_messages):
         return copied_messages
 
-    mainline = [message for message in copied_messages if not _mapping_branch_index(message)]
+    mainline = [
+        message
+        for message in copied_messages
+        if _mapping_branch_index(message) == 0 or _mapping_parent_message_id(message) is None
+    ]
     mainline_by_parent = {
         parent_message_id: message
         for message in mainline
@@ -118,11 +122,13 @@ def attach_rendered_message_branches(
     if not messages:
         return []
     if all(isinstance(message, RenderedMessage) for message in messages):
-        typed_messages = cast(list[RenderedMessage], list(messages))
+        typed_messages = [message for message in messages if isinstance(message, RenderedMessage)]
         if not any(message.branch_index for message in typed_messages):
             return typed_messages
 
-        mainline = [message for message in typed_messages if not message.branch_index]
+        mainline = [
+            message for message in typed_messages if message.branch_index == 0 or message.parent_message_id is None
+        ]
         mainline_by_parent = {
             message.parent_message_id: message for message in mainline if message.parent_message_id is not None
         }
@@ -138,9 +144,7 @@ def attach_rendered_message_branches(
 
         return mainline
 
-    mapping_messages = cast(
-        list[Mapping[str, object]], [message for message in messages if isinstance(message, Mapping)]
-    )
+    mapping_messages = [message for message in messages if isinstance(message, Mapping)]
     return _attach_mapping_message_branches(mapping_messages)
 
 
