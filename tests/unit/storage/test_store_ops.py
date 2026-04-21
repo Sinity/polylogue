@@ -12,14 +12,14 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import cast
 from unittest.mock import AsyncMock
 
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 from pydantic import ValidationError
-from typing_extensions import TypedDict
+from typing_extensions import TypedDict, Unpack
 
 from polylogue.lib.conversation_models import Conversation
 from polylogue.lib.messages import MessageCollection
@@ -77,6 +77,16 @@ class SimpleTagSpec(TypedDict):
 class SimpleTitleSearchSpec(TypedDict):
     title: str
     search_term: str
+
+
+class RecordQueryKwargs(TypedDict, total=False):
+    provider: str
+    path_terms: tuple[str, ...]
+    action_terms: tuple[str, ...]
+    excluded_action_terms: tuple[str, ...]
+    tool_terms: tuple[str, ...]
+    excluded_tool_terms: tuple[str, ...]
+    limit: int
 
 
 def _conversation_id(value: str) -> ConversationId:
@@ -215,8 +225,8 @@ def _attachment_row(conn: sqlite3.Connection, attachment_id: str) -> sqlite3.Row
     )
 
 
-def _record_query(**kwargs: object) -> ConversationRecordQuery:
-    return ConversationRecordQuery(**cast(dict[str, Any], kwargs))
+def _record_query(**kwargs: Unpack[RecordQueryKwargs]) -> ConversationRecordQuery:
+    return ConversationRecordQuery(**kwargs)
 
 
 @pytest.mark.asyncio
@@ -1122,30 +1132,42 @@ class TestCrudLaws:
 
     @given(conversation_strategy(min_messages=1, max_messages=5))
     @settings(max_examples=30, deadline=None)
-    async def test_save_retrieve_roundtrip(self, conv_data: dict[str, Any]) -> None:
+    async def test_save_retrieve_roundtrip(self, conv_data: dict[str, object]) -> None:
         """Saving a strategy-generated conversation and retrieving it preserves identity."""
         with tempfile.TemporaryDirectory() as tmp_dir:
             db_path = Path(tmp_dir) / "roundtrip.db"
             backend = SQLiteBackend(db_path=db_path)
 
-            conv_id = f"test-{conv_data['id'][:16]}"
-            provider = conv_data.get("provider", "test")
+            raw_id = conv_data["id"]
+            assert isinstance(raw_id, str)
+            conv_id = f"test-{raw_id[:16]}"
+            raw_provider = conv_data.get("provider", "test")
+            assert isinstance(raw_provider, str)
+            provider = raw_provider
+            raw_title = conv_data.get("title", "Generated")
+            assert isinstance(raw_title, str)
+            raw_created_at = conv_data.get("created_at")
+            assert raw_created_at is None or isinstance(raw_created_at, str)
 
             conv = make_conversation(
                 conversation_id=conv_id,
                 provider_name=provider,
-                title=conv_data.get("title", "Generated"),
-                created_at=conv_data.get("created_at"),
+                title=raw_title,
+                created_at=raw_created_at,
             )
 
             messages: list[MessageRecord] = []
-            message_payloads = cast(list[dict[str, Any]], conv_data.get("messages", []))
+            message_payloads = cast(list[dict[str, object]], conv_data.get("messages", []))
             for i, msg_data in enumerate(message_payloads):
+                raw_role = msg_data.get("role", "user")
+                assert isinstance(raw_role, str)
+                raw_text = msg_data.get("text", "")
+                assert isinstance(raw_text, str)
                 msg = make_message(
                     message_id=f"{conv_id}-m{i}",
                     conversation_id=conv_id,
-                    role=msg_data.get("role", "user"),
-                    text=msg_data.get("text", ""),
+                    role=raw_role,
+                    text=raw_text,
                 )
                 messages.append(msg)
 
@@ -1165,17 +1187,23 @@ class TestCrudLaws:
 
     @given(conversation_strategy(min_messages=1, max_messages=3))
     @settings(max_examples=20, deadline=None)
-    async def test_save_is_idempotent(self, conv_data: dict[str, Any]) -> None:
+    async def test_save_is_idempotent(self, conv_data: dict[str, object]) -> None:
         """Saving the same conversation twice yields the same stored data."""
         with tempfile.TemporaryDirectory() as tmp_dir:
             db_path = Path(tmp_dir) / "idempotent.db"
             backend = SQLiteBackend(db_path=db_path)
 
-            conv_id = f"idem-{conv_data['id'][:16]}"
+            raw_id = conv_data["id"]
+            assert isinstance(raw_id, str)
+            conv_id = f"idem-{raw_id[:16]}"
+            raw_provider = conv_data.get("provider", "test")
+            assert isinstance(raw_provider, str)
+            raw_title = conv_data.get("title", "Idempotent")
+            assert isinstance(raw_title, str)
             conv = make_conversation(
                 conversation_id=conv_id,
-                provider_name=conv_data.get("provider", "test"),
-                title=conv_data.get("title", "Idempotent"),
+                provider_name=raw_provider,
+                title=raw_title,
             )
 
             # Save twice
