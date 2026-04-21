@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from datetime import datetime, timezone
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -19,6 +18,7 @@ from tests.infra.mcp import (
     EXPECTED_RESOURCE_TEMPLATE_URIS,
     EXPECTED_RESOURCE_URIS,
     EXPECTED_TOOL_NAMES,
+    MCPServerUnderTest,
     invoke_surface,
     invoke_surface_async,
     make_mock_filter,
@@ -97,7 +97,7 @@ def simple_conversation() -> Conversation:
 class TestServerSurfaceRegistration:
     """Server registration should expose the documented MCP surfaces."""
 
-    def testbuild_server_exposes_managers(self: object, mcp_server: Any) -> None:
+    def testbuild_server_exposes_managers(self: object, mcp_server: MCPServerUnderTest) -> None:
         assert mcp_server is not None
         assert hasattr(mcp_server, "_tool_manager")
         assert hasattr(mcp_server, "_resource_manager")
@@ -119,9 +119,9 @@ class TestServerSurfaceRegistration:
     def test_server_surface_contract(
         self: object,
         surface_attr: str,
-        actual_getter: Callable[[Any], set[str]],
+        actual_getter: Callable[[MCPServerUnderTest], set[str]],
         expected: set[str],
-        mcp_server: Any,
+        mcp_server: MCPServerUnderTest,
     ) -> None:
         actual = actual_getter(mcp_server)
         missing = expected - actual
@@ -129,7 +129,7 @@ class TestServerSurfaceRegistration:
 
 
 class TestResourceSurfaces:
-    def test_stats_returns_archive_statistics(self: object, mcp_server: Any) -> None:
+    def test_stats_returns_archive_statistics(self: object, mcp_server: MCPServerUnderTest) -> None:
         from polylogue.lib.stats import ArchiveStats
 
         with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
@@ -153,7 +153,7 @@ class TestResourceSurfaces:
     async def test_conversations_resource_returns_list(
         self: object,
         simple_conversation: Conversation,
-        mcp_server: Any,
+        mcp_server: MCPServerUnderTest,
     ) -> None:
         with patch("polylogue.mcp.server._get_query_store") as mock_get_query_store:
             mock_get_query_store.return_value = MagicMock()
@@ -171,7 +171,7 @@ class TestResourceSurfaces:
     def test_single_conversation_resource(
         self: object,
         simple_conversation: Conversation,
-        mcp_server: Any,
+        mcp_server: MCPServerUnderTest,
     ) -> None:
         with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
             mock_ops = MagicMock()
@@ -187,7 +187,7 @@ class TestResourceSurfaces:
         assert conv["id"] == "test:conv-123"
         assert "messages" in conv
 
-    def test_conversation_resource_not_found(self: object, mcp_server: Any) -> None:
+    def test_conversation_resource_not_found(self: object, mcp_server: MCPServerUnderTest) -> None:
         with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
             mock_ops = MagicMock()
             mock_ops.get_conversation = AsyncMock(return_value=None)
@@ -201,7 +201,7 @@ class TestResourceSurfaces:
         result_dict = json.loads(result)
         assert "error" in result_dict
 
-    def test_tags_resource(self: object, mcp_server: Any) -> None:
+    def test_tags_resource(self: object, mcp_server: MCPServerUnderTest) -> None:
         with patch("polylogue.mcp.server._get_tag_store") as mock_get_tag_store:
             mock_tag_store = make_tag_store_mock()
             mock_tag_store.list_tags.return_value = {"feature": 10, "bug": 5}
@@ -212,7 +212,7 @@ class TestResourceSurfaces:
         parsed = json.loads(result)
         assert parsed == {"feature": 10, "bug": 5}
 
-    def test_readiness_resource(self: object, mcp_server: Any) -> None:
+    def test_readiness_resource(self: object, mcp_server: MCPServerUnderTest) -> None:
         mock_check = MagicMock()
         mock_check.name = "database"
         mock_check.status.value = "ok"
@@ -240,7 +240,7 @@ class TestPromptSurfaces:
     async def test_analyze_errors_with_conversations(
         self: object,
         simple_conversation: Conversation,
-        mcp_server: Any,
+        mcp_server: MCPServerUnderTest,
     ) -> None:
         simple_conversation.messages.to_list()[0].text = "Got an error while running"
 
@@ -249,13 +249,13 @@ class TestPromptSurfaces:
             with patch("polylogue.lib.filters.ConversationFilter") as mock_filter_cls:
                 mock_filter_cls.return_value = make_mock_filter(results=[simple_conversation])
 
-                result = await mcp_server._prompt_manager._prompts["analyze_errors"].fn()
+                result = await invoke_surface_async(mcp_server._prompt_manager._prompts["analyze_errors"].fn)
 
         assert isinstance(result, str)
         assert "error" in result.lower()
 
     @pytest.mark.asyncio
-    async def test_analyze_errors_limits_error_contexts_to_20(self: object, mcp_server: Any) -> None:
+    async def test_analyze_errors_limits_error_contexts_to_20(self: object, mcp_server: MCPServerUnderTest) -> None:
         msgs = [
             make_msg(
                 id=f"m{i}",
@@ -272,35 +272,35 @@ class TestPromptSurfaces:
             with patch("polylogue.lib.filters.ConversationFilter") as mock_filter_cls:
                 mock_filter_cls.return_value = make_mock_filter(results=[big_conv])
 
-                result = await mcp_server._prompt_manager._prompts["analyze_errors"].fn()
+                result = await invoke_surface_async(mcp_server._prompt_manager._prompts["analyze_errors"].fn)
 
         assert "20 error instances" in result
 
     @pytest.mark.asyncio
-    async def test_analyze_errors_no_matches(self: object, mcp_server: Any) -> None:
+    async def test_analyze_errors_no_matches(self: object, mcp_server: MCPServerUnderTest) -> None:
         with patch("polylogue.mcp.server._get_query_store") as mock_get_query_store:
             mock_get_query_store.return_value = MagicMock()
             with patch("polylogue.lib.filters.ConversationFilter") as mock_filter_cls:
                 mock_filter_cls.return_value = make_mock_filter(results=[])
 
-                result = await mcp_server._prompt_manager._prompts["analyze_errors"].fn()
+                result = await invoke_surface_async(mcp_server._prompt_manager._prompts["analyze_errors"].fn)
 
         assert "0 conversations" in result
 
     @pytest.mark.asyncio
-    async def test_summarize_week_empty(self: object, mcp_server: Any) -> None:
+    async def test_summarize_week_empty(self: object, mcp_server: MCPServerUnderTest) -> None:
         with patch("polylogue.mcp.server._get_query_store") as mock_get_query_store:
             mock_get_query_store.return_value = MagicMock()
             with patch("polylogue.lib.filters.ConversationFilter") as mock_filter_cls:
                 mock_filter_cls.return_value = make_mock_filter(results=[])
 
-                result = await mcp_server._prompt_manager._prompts["summarize_week"].fn()
+                result = await invoke_surface_async(mcp_server._prompt_manager._prompts["summarize_week"].fn)
 
         assert "0 conversations" in result
         assert "0 messages" in result
 
     @pytest.mark.asyncio
-    async def test_extract_code_no_code_blocks(self: object, mcp_server: Any) -> None:
+    async def test_extract_code_no_code_blocks(self: object, mcp_server: MCPServerUnderTest) -> None:
         conv = make_conv(
             id="nocode",
             provider=Provider.UNKNOWN,
@@ -313,12 +313,12 @@ class TestPromptSurfaces:
             with patch("polylogue.lib.filters.ConversationFilter") as mock_filter_cls:
                 mock_filter_cls.return_value = make_mock_filter(results=[conv])
 
-                result = await mcp_server._prompt_manager._prompts["extract_code"].fn()
+                result = await invoke_surface_async(mcp_server._prompt_manager._prompts["extract_code"].fn)
 
         assert "0 code blocks" in result
 
     @pytest.mark.asyncio
-    async def test_extract_code_with_language_filter(self: object, mcp_server: Any) -> None:
+    async def test_extract_code_with_language_filter(self: object, mcp_server: MCPServerUnderTest) -> None:
         conv = make_conv(
             id="code",
             provider=Provider.UNKNOWN,
@@ -337,12 +337,15 @@ class TestPromptSurfaces:
             with patch("polylogue.lib.filters.ConversationFilter") as mock_filter_cls:
                 mock_filter_cls.return_value = make_mock_filter(results=[conv])
 
-                result = await mcp_server._prompt_manager._prompts["extract_code"].fn(language="python")
+                result = await invoke_surface_async(
+                    mcp_server._prompt_manager._prompts["extract_code"].fn,
+                    language="python",
+                )
 
         assert "python" in result.lower()
 
     @pytest.mark.asyncio
-    async def test_extract_code_null_message_text(self: object, mcp_server: Any) -> None:
+    async def test_extract_code_null_message_text(self: object, mcp_server: MCPServerUnderTest) -> None:
         conv = make_conv(
             id="nulltext",
             provider=Provider.UNKNOWN,
@@ -355,14 +358,14 @@ class TestPromptSurfaces:
             with patch("polylogue.lib.filters.ConversationFilter") as mock_filter_cls:
                 mock_filter_cls.return_value = make_mock_filter(results=[conv])
 
-                result = await mcp_server._prompt_manager._prompts["extract_code"].fn()
+                result = await invoke_surface_async(mcp_server._prompt_manager._prompts["extract_code"].fn)
 
         assert isinstance(result, str)
 
     def test_compare_conversations_prompt(
         self: object,
         simple_conversation: Conversation,
-        mcp_server: Any,
+        mcp_server: MCPServerUnderTest,
     ) -> None:
         with patch("polylogue.mcp.server._get_query_store") as mock_get_query_store:
             mock_query_store = make_query_store_mock()
@@ -383,7 +386,7 @@ class TestPromptSurfaces:
     async def test_extract_patterns_prompt(
         self: object,
         simple_conversation: Conversation,
-        mcp_server: Any,
+        mcp_server: MCPServerUnderTest,
     ) -> None:
         with (
             patch("polylogue.mcp.server._get_query_store") as mock_get_query_store,
@@ -399,7 +402,7 @@ class TestPromptSurfaces:
 
 
 class TestExportConversationTool:
-    def test_export_markdown(self: object, simple_conversation: Conversation, mcp_server: Any) -> None:
+    def test_export_markdown(self: object, simple_conversation: Conversation, mcp_server: MCPServerUnderTest) -> None:
         with (
             patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops,
             patch("polylogue.rendering.formatting.format_conversation") as mock_format,
@@ -421,7 +424,7 @@ class TestExportConversationTool:
         assert call_args[0][0] == simple_conversation
         assert call_args[0][1] == "markdown"
 
-    def test_export_not_found(self: object, mcp_server: Any) -> None:
+    def test_export_not_found(self: object, mcp_server: MCPServerUnderTest) -> None:
         with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
             mock_ops = MagicMock()
             mock_ops.get_conversation = AsyncMock(return_value=None)
@@ -436,7 +439,7 @@ class TestExportConversationTool:
     def test_export_invalid_format_falls_back_to_markdown(
         self: object,
         simple_conversation: Conversation,
-        mcp_server: Any,
+        mcp_server: MCPServerUnderTest,
     ) -> None:
         with (
             patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops,
