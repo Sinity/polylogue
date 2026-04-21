@@ -50,6 +50,40 @@ if TYPE_CHECKING:
     from polylogue.storage.store import MessageRecord
 
 ConversationStats: TypeAlias = dict[str, int]
+MACHINE_OUTPUT_FORMATS = frozenset({"json", "yaml", "csv"})
+
+
+def _display_date(value: datetime | None, date_format: str = "%Y-%m-%d") -> str:
+    return value.strftime(date_format) if value else ""
+
+
+def _ellipsize(value: str, max_width: int) -> str:
+    return (value[: max_width - 3] + "...") if len(value) > max_width else value
+
+
+def _conversation_list_line(conv: Conversation) -> str:
+    date = _display_date(conv.display_date) or "unknown"
+    title = _ellipsize(conv.display_title or conv.id[:20], 50)
+    return f"{conv.id[:24]:24s}  {date:10s}  {conv.provider:12s}  {title} ({len(conv.messages)} msgs)"
+
+
+def _summary_list_line(summary: ConversationSummary, message_count: int) -> str:
+    date = _display_date(summary.display_date)
+    title = _ellipsize(summary.display_title or str(summary.id)[:20], 50)
+    return f"{str(summary.id)[:24]:24s}  {date:10s}  {summary.provider:12s}  {title} ({message_count} msgs)"
+
+
+def _stream_date_parts(display_date: object | None) -> tuple[str | None, str | None]:
+    if isinstance(display_date, datetime):
+        return display_date.strftime("%Y-%m-%d %H:%M"), display_date.isoformat()
+    if hasattr(display_date, "strftime"):
+        text = display_date.strftime("%Y-%m-%d %H:%M")
+        value = display_date.isoformat() if hasattr(display_date, "isoformat") else str(display_date)
+        return text, value
+    if display_date:
+        value = str(display_date)
+        return value, value
+    return None, None
 
 
 # ---------------------------------------------------------------------------
@@ -74,14 +108,7 @@ def format_list(
     if output_format == "csv":
         return conversations_to_csv(results)
 
-    lines = []
-    for conv in results:
-        date = conv.display_date.strftime("%Y-%m-%d") if conv.display_date else "unknown"
-        raw_title = conv.display_title or conv.id[:20]
-        title = (raw_title[:47] + "...") if len(raw_title) > 50 else raw_title
-        msg_count = len(conv.messages)
-        lines.append(f"{conv.id[:24]:24s}  {date:10s}  {conv.provider:12s}  {title} ({msg_count} msgs)")
-    return "\n".join(lines)
+    return "\n".join(_conversation_list_line(conv) for conv in results)
 
 
 def render_conversation_rich(env: AppEnv, conv: Conversation) -> None:
@@ -293,9 +320,7 @@ def format_summary_list(
     """Format summary-list output for deterministic machine/plain surfaces."""
     message_counts = message_counts or {}
 
-    selected: set[str] | None = None
-    if fields:
-        selected = {field.strip() for field in fields.split(",")}
+    selected = {field.strip() for field in fields.split(",")} if fields else None
 
     data = [summary_to_dict(summary, message_counts.get(str(summary.id), 0)) for summary in summaries]
     if selected:
@@ -317,12 +342,11 @@ def format_summary_list(
         writer = csv.writer(buf)
         writer.writerow(["id", "date", "provider", "title", "messages", "tags", "summary"])
         for summary in summaries:
-            date = summary.display_date.strftime("%Y-%m-%d") if summary.display_date else ""
             tags_str = ",".join(summary.tags) if summary.tags else ""
             writer.writerow(
                 [
                     str(summary.id),
-                    date,
+                    _display_date(summary.display_date),
                     summary.provider,
                     summary.display_title or "",
                     message_counts.get(str(summary.id), 0),
@@ -332,14 +356,7 @@ def format_summary_list(
             )
         return buf.getvalue().rstrip("\r\n")
 
-    lines = []
-    for summary in summaries:
-        date = summary.display_date.strftime("%Y-%m-%d") if summary.display_date else ""
-        raw_title = summary.display_title or str(summary.id)[:20]
-        title = (raw_title[:47] + "...") if len(raw_title) > 50 else raw_title
-        count = message_counts.get(str(summary.id), 0)
-        lines.append(f"{str(summary.id)[:24]:24s}  {date:10s}  {summary.provider:12s}  {title} ({count} msgs)")
-    return "\n".join(lines)
+    return "\n".join(_summary_list_line(summary, message_counts.get(str(summary.id), 0)) for summary in summaries)
 
 
 async def output_summary_list(
@@ -354,13 +371,11 @@ async def output_summary_list(
         ids = [str(summary.id) for summary in summaries]
         msg_counts = await repo.get_message_counts_batch(ids)
 
-    if output.output_format in {"json", "yaml", "csv"} or env.ui.plain:
+    if output.output_format in MACHINE_OUTPUT_FORMATS or env.ui.plain:
         click.echo(
             format_summary_list(
                 summaries,
-                "text"
-                if env.ui.plain and output.output_format not in {"json", "yaml", "csv"}
-                else output.output_format,
+                "text" if env.ui.plain and output.output_format not in MACHINE_OUTPUT_FORMATS else output.output_format,
                 output.fields,
                 message_counts=msg_counts,
             )
@@ -380,9 +395,8 @@ async def output_summary_list(
     table.add_column("Msgs", justify="right")
 
     for summary in summaries:
-        date = summary.display_date.strftime("%Y-%m-%d") if summary.display_date else ""
-        raw_title = summary.display_title or str(summary.id)[:20]
-        title = (raw_title[:60] + "...") if len(raw_title) > 63 else raw_title
+        date = _display_date(summary.display_date)
+        title = _ellipsize(summary.display_title or str(summary.id)[:20], 63)
         count = msg_counts.get(str(summary.id), 0)
         provider_text = Text(summary.provider, style=provider_color(summary.provider).hex)
         table.add_row(str(summary.id)[:24], date, provider_text, title, str(count))
@@ -400,12 +414,11 @@ def conversations_to_csv(results: list[Conversation]) -> str:
     writer.writerow(["id", "date", "provider", "title", "messages", "words", "tags", "summary"])
 
     for conv in results:
-        date = conv.display_date.strftime("%Y-%m-%d") if conv.display_date else ""
         tags_str = ",".join(conv.tags) if conv.tags else ""
         writer.writerow(
             [
                 str(conv.id),
-                date,
+                _display_date(conv.display_date),
                 conv.provider,
                 conv.display_title or "",
                 len(conv.messages),
@@ -465,15 +478,7 @@ def render_stream_header(
     stats: ConversationStats | None,
 ) -> str:
     """Render any stream prelude/header for the selected output format."""
-    if hasattr(display_date, "strftime"):
-        display_date_text = display_date.strftime("%Y-%m-%d %H:%M")
-        display_date_value = display_date.isoformat() if hasattr(display_date, "isoformat") else str(display_date)
-    elif display_date:
-        display_date_text = str(display_date)
-        display_date_value = str(display_date)
-    else:
-        display_date_text = None
-        display_date_value = None
+    display_date_text, display_date_value = _stream_date_parts(display_date)
 
     if output_format == "markdown":
         lines = [f"# {title or conversation_id[:24]}", ""]
