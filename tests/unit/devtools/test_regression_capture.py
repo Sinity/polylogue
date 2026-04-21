@@ -3,11 +3,14 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from devtools import regression_capture
 from devtools.regression_cases import RegressionCase
+from polylogue.lib.json import JSONDocument
 
 
-def _probe_summary() -> dict[str, object]:
+def _probe_summary() -> JSONDocument:
     return {
         "probe": {"input_mode": "archive-subset", "stage": "parse"},
         "paths": {"workdir": "/tmp/polylogue-probe"},
@@ -20,7 +23,7 @@ def _probe_summary() -> dict[str, object]:
     }
 
 
-def test_regression_capture_writes_probe_case(tmp_path: Path, capsys) -> None:
+def test_regression_capture_writes_probe_case(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     input_path = tmp_path / "probe.json"
     output_dir = tmp_path / "cases"
     input_path.write_text(json.dumps(_probe_summary()), encoding="utf-8")
@@ -53,7 +56,7 @@ def test_regression_capture_writes_probe_case(tmp_path: Path, capsys) -> None:
     assert case.summary["result"] == {"ok": False, "error": "parse drift"}
 
 
-def test_regression_capture_json_output_includes_path(tmp_path: Path, capsys) -> None:
+def test_regression_capture_json_output_includes_path(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     input_path = tmp_path / "probe.json"
     output_dir = tmp_path / "cases"
     input_path.write_text(json.dumps(_probe_summary()), encoding="utf-8")
