@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Literal, TextIO, cast
+from typing import Literal, TextIO
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -97,6 +97,12 @@ def _make_env(*, repo: MagicMock | None = None, config: MagicMock | None = None)
         if not isinstance(repo.get_action_event_artifact_state, AsyncMock):
             repo.get_action_event_artifact_state = AsyncMock(return_value=_ready_action_event_state())
     return AppEnv(ui=ui, services=build_runtime_services(config=config, repository=repo))
+
+
+def _as_mock(value: object) -> MagicMock:
+    if not isinstance(value, MagicMock):
+        raise TypeError(f"expected MagicMock, got {type(value).__name__}")
+    return value
 
 
 def _make_params(**overrides: object) -> dict[str, object]:
@@ -820,7 +826,7 @@ def test_open_in_browser_contract(
     from polylogue.cli.query_output import _open_in_browser
 
     env = _make_env(config=MagicMock())
-    mock_print = cast(MagicMock, env.ui.console.print)
+    mock_print = _as_mock(env.ui.console.print)
     created_file = tmp_path / "output.html"
 
     class _TempFile:
@@ -838,7 +844,7 @@ def test_open_in_browser_contract(
         patch("tempfile.NamedTemporaryFile", return_value=_TempFile()),
         patch("webbrowser.open") as mock_open,
     ):
-        mock_open = cast(MagicMock, mock_open)
+        mock_open = _as_mock(mock_open)
         _open_in_browser(env, content, output_format, conv)
 
     assert expected_in_file in created_file.read_text(encoding="utf-8")
@@ -862,10 +868,10 @@ def test_copy_to_clipboard_contract(
     from polylogue.cli.query_output import _copy_to_clipboard
 
     env = _make_env(config=MagicMock())
-    mock_print = cast(MagicMock, env.ui.console.print)
+    mock_print = _as_mock(env.ui.console.print)
 
     with patch("subprocess.run", side_effect=side_effects), patch("click.echo") as mock_echo:
-        mock_echo = cast(MagicMock, mock_echo)
+        mock_echo = _as_mock(mock_echo)
         _copy_to_clipboard(env, "hello")
 
     assert mock_print.called is expect_console
@@ -950,7 +956,7 @@ def test_open_result_contract(
         fallback.write_text("<html></html>", encoding="utf-8")
 
     env = _make_env(config=MagicMock(render_root=render_root))
-    mock_print = cast(MagicMock, env.ui.console.print)
+    mock_print = _as_mock(env.ui.console.print)
     output = QueryOutputSpec.from_params(params)
     with (
         patch("polylogue.cli.helpers.load_effective_config", return_value=MagicMock(render_root=render_root)),
@@ -958,8 +964,8 @@ def test_open_result_contract(
         patch("webbrowser.open") as mock_open,
         patch("click.echo") as mock_echo,
     ):
-        mock_open = cast(MagicMock, mock_open)
-        mock_echo = cast(MagicMock, mock_echo)
+        mock_open = _as_mock(mock_open)
+        mock_echo = _as_mock(mock_echo)
         if expected_exit is not None:
             with pytest.raises(SystemExit) as exc_info:
                 _open_result(env, results, output)
@@ -991,7 +997,7 @@ def test_open_result_no_results_json_contract(capsys: pytest.CaptureFixture[str]
         patch("polylogue.cli.helpers.latest_render_path", return_value=None),
         patch("webbrowser.open") as mock_open,
     ):
-        mock_open = cast(MagicMock, mock_open)
+        mock_open = _as_mock(mock_open)
         with pytest.raises(SystemExit) as exc_info:
             _open_result(env, [], QueryOutputSpec.from_params({"output_format": "json"}))
 

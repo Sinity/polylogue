@@ -6,7 +6,6 @@ import asyncio
 from collections.abc import Iterator
 from contextlib import ExitStack
 from pathlib import Path
-from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -31,7 +30,20 @@ from polylogue.storage.run_state import (
 from polylogue.ui import UI
 from tests.infra.storage_records import DbFactory
 
-PatchMap = dict[str, MagicMock]
+PatchMock = MagicMock | AsyncMock
+PatchMap = dict[str, PatchMock]
+
+
+def _as_mock(value: object) -> MagicMock:
+    if not isinstance(value, MagicMock):
+        raise TypeError(f"expected MagicMock, got {type(value).__name__}")
+    return value
+
+
+def _as_patch_mock(value: object) -> PatchMock:
+    if not isinstance(value, (MagicMock, AsyncMock)):
+        raise TypeError(f"expected MagicMock or AsyncMock, got {type(value).__name__}")
+    return value
 
 
 @pytest.fixture
@@ -167,10 +179,9 @@ def _close_coroutine(coro: object) -> None:
 
 
 def _make_prompt_env(*, plain: bool, choice: str | None = None) -> AppEnv:
-    ui = MagicMock()
-    ui.plain = plain
-    ui.choose = MagicMock(return_value=choice)
-    return AppEnv(ui=cast(UI, ui))
+    ui = UI(plain=plain)
+    object.__setattr__(ui, "choose", MagicMock(return_value=choice))
+    return AppEnv(ui=ui)
 
 
 def _invoke_run_direct(
@@ -188,26 +199,18 @@ def _invoke_run_direct(
         mock_config = MagicMock(sources=[])
         mock_config.render_root = Path("/render")
         stack.enter_context(patch("polylogue.config.get_config", return_value=mock_config))
-        mock_plan = cast(MagicMock, stack.enter_context(patch("polylogue.cli.commands.run.plan_sources")))
-        mock_run = cast(
-            MagicMock,
-            stack.enter_context(patch("polylogue.cli.run_workflow.run_sources", new_callable=AsyncMock)),
+        mock_plan = _as_mock(stack.enter_context(patch("polylogue.cli.commands.run.plan_sources")))
+        mock_run = _as_patch_mock(
+            stack.enter_context(patch("polylogue.cli.run_workflow.run_sources", new_callable=AsyncMock))
         )
-        mock_resolve = cast(
-            MagicMock,
-            stack.enter_context(patch("polylogue.cli.commands.run.resolve_sources", return_value=selected_sources)),
+        mock_resolve = _as_mock(
+            stack.enter_context(patch("polylogue.cli.commands.run.resolve_sources", return_value=selected_sources))
         )
-        mock_stage_prompt = cast(
-            MagicMock,
-            stack.enter_context(
-                patch("polylogue.cli.commands.run.maybe_prompt_run_stage", return_value=prompted_stage)
-            ),
+        mock_stage_prompt = _as_mock(
+            stack.enter_context(patch("polylogue.cli.commands.run.maybe_prompt_run_stage", return_value=prompted_stage))
         )
-        mock_prompt = cast(
-            MagicMock,
-            stack.enter_context(
-                patch("polylogue.cli.commands.run.maybe_prompt_sources", return_value=selected_sources)
-            ),
+        mock_prompt = _as_mock(
+            stack.enter_context(patch("polylogue.cli.commands.run.maybe_prompt_sources", return_value=selected_sources))
         )
         stack.enter_context(
             patch("polylogue.cli.run_workflow.format_plan_counts", return_value="5 conversations, 50 messages")
@@ -218,14 +221,12 @@ def _invoke_run_direct(
             patch("polylogue.cli.run_workflow.format_counts", return_value="3 conversations, 30 messages")
         )
         stack.enter_context(patch("polylogue.cli.run_workflow.format_run_details", return_value=["Indexed: yes"]))
-        mock_format_index = cast(
-            MagicMock,
+        mock_format_index = _as_mock(
             stack.enter_context(
                 patch("polylogue.cli.run_workflow.format_index_status", return_value="Index status: indexed")
             ),
         )
-        mock_latest = cast(
-            MagicMock,
+        mock_latest = _as_mock(
             stack.enter_context(
                 patch("polylogue.cli.helpers.latest_render_path", return_value=Path("/render/latest/conversation.html"))
             ),
@@ -253,7 +254,7 @@ def _invoke_run_direct(
 
 def _invoke_embed(runner: CliRunner, args: list[str]) -> tuple[Result, MagicMock]:
     with patch("polylogue.cli.commands.run._run_embed_standalone") as mock_standalone:
-        mock_standalone = cast(MagicMock, mock_standalone)
+        mock_standalone = _as_mock(mock_standalone)
         result = runner.invoke(
             cli,
             args,
@@ -391,10 +392,7 @@ class TestRunCommand:
                     indexed=False,
                     index_error="Vector database unavailable",
                     duration_ms=900,
-                    render_failures=cast(
-                        list[RenderFailurePayload],
-                        [{"conversation_id": "conv-1", "error": "boom"}],
-                    ),
+                    render_failures=[RenderFailurePayload(conversation_id="conv-1", error="boom")],
                 ),
                 ["Sync", "Render failures (1)", "Index error: Vector database unavailable"],
                 True,
@@ -499,8 +497,8 @@ class TestRunCommand:
             patch("polylogue.cli.run_workflow.format_index_status", return_value="Index status: indexed"),
             patch("polylogue.cli.run_workflow.run_sources", new_callable=AsyncMock, return_value=mock_run_result),
         ):
-            mock_reset_run = cast(MagicMock, mock_reset_run)
-            mock_pipeline_run = cast(MagicMock, mock_pipeline_run)
+            mock_reset_run = _as_mock(mock_reset_run)
+            mock_pipeline_run = _as_mock(mock_pipeline_run)
             result = runner.invoke(cli, ["run", "--reparse"])
 
         assert result.exit_code == 0
@@ -526,8 +524,8 @@ class TestRunCommand:
             patch("polylogue.cli.commands.run.plan_sources", return_value=mock_plan_result) as mock_plan_sources,
             patch("polylogue.cli.run_workflow.run_sources", new_callable=AsyncMock, return_value=mock_run_result),
         ):
-            mock_run_coroutine_sync = cast(MagicMock, mock_run_coroutine_sync)
-            mock_plan_sources = cast(MagicMock, mock_plan_sources)
+            mock_run_coroutine_sync = _as_mock(mock_run_coroutine_sync)
+            mock_plan_sources = _as_mock(mock_plan_sources)
             result = runner.invoke(cli, ["run", "--preview", "--reparse", "--source", "test-inbox", "parse"])
 
         assert result.exit_code == 0
@@ -542,7 +540,7 @@ class TestRunCommand:
         result = maybe_prompt_run_stage(env, stage="parse", prompt=False)
 
         assert result == "parse"
-        cast(MagicMock, env.ui.choose).assert_not_called()
+        _as_mock(env.ui.choose).assert_not_called()
 
     def test_maybe_prompt_run_stage_skips_prompt_in_plain_mode(self) -> None:
         env = _make_prompt_env(plain=True)
@@ -550,7 +548,7 @@ class TestRunCommand:
         result = maybe_prompt_run_stage(env, stage="all", prompt=True)
 
         assert result == "all"
-        cast(MagicMock, env.ui.choose).assert_not_called()
+        _as_mock(env.ui.choose).assert_not_called()
 
     def test_maybe_prompt_run_stage_prompts_for_workflow_choice(self) -> None:
         env = _make_prompt_env(plain=False, choice="reprocess")
@@ -558,7 +556,7 @@ class TestRunCommand:
         result = maybe_prompt_run_stage(env, stage="all", prompt=True)
 
         assert result == "reprocess"
-        cast(MagicMock, env.ui.choose).assert_called_once_with(
+        _as_mock(env.ui.choose).assert_called_once_with(
             "Select workflow for run",
             ["all", "reprocess", "acquire", "schema", "parse", "materialize", "render", "site", "index"],
         )
@@ -748,7 +746,7 @@ class TestEmbedCommand:
             patch("polylogue.cli.commands.run._run_embed_standalone") as mock_standalone,
             patch("polylogue.storage.search_providers.create_vector_provider") as mock_create,
         ):
-            mock_standalone = cast(MagicMock, mock_standalone)
+            mock_standalone = _as_mock(mock_standalone)
             mock_create.return_value = MagicMock()
 
             result = runner.invoke(
