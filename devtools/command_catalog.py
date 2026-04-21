@@ -152,6 +152,11 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "verification",
         "Run typed pipeline probes against synthetic, staged, or archive-subset inputs.",
         "devtools.pipeline_probe",
+        use_when="Exercise real pipeline stages and optionally capture emitted summaries as regression cases.",
+        examples=(
+            "devtools pipeline-probe --provider chatgpt --stage parse",
+            "devtools pipeline-probe --input-mode archive-subset --capture-regression live-parse-drift",
+        ),
     ),
     CommandSpec(
         "query-memory-budget",

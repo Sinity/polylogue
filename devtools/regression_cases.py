@@ -13,6 +13,7 @@ from pathlib import Path
 from polylogue.lib.json import JSONDocument, loads, require_json_document
 
 SCHEMA_VERSION = 1
+DEFAULT_REGRESSION_CASE_DIR = Path(".local/regression-cases")
 DEFAULT_CAPTURE_KEYS: tuple[str, ...] = (
     "probe",
     "paths",
@@ -184,6 +185,7 @@ def json_input_document(raw: str | bytes) -> JSONDocument:
 
 __all__ = [
     "DEFAULT_CAPTURE_KEYS",
+    "DEFAULT_REGRESSION_CASE_DIR",
     "RegressionCase",
     "RegressionCaseStore",
     "json_input_document",

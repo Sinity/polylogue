@@ -8,13 +8,12 @@ import sys
 from pathlib import Path
 
 from devtools.regression_cases import (
+    DEFAULT_REGRESSION_CASE_DIR,
     RegressionCase,
     RegressionCaseStore,
     json_input_document,
     regression_case_path_payload,
 )
-
-DEFAULT_OUTPUT_DIR = Path(".local/regression-cases")
 
 
 def _read_input(input_path: Path | None) -> str:
@@ -38,8 +37,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=DEFAULT_OUTPUT_DIR,
-        help=f"Output directory for captured cases (default: {DEFAULT_OUTPUT_DIR}).",
+        default=DEFAULT_REGRESSION_CASE_DIR,
+        help=f"Output directory for captured cases (default: {DEFAULT_REGRESSION_CASE_DIR}).",
     )
     parser.add_argument("--tag", action="append", default=[], help="Tag to attach to the captured case. Repeatable.")
     parser.add_argument("--note", action="append", default=[], help="Note to attach to the captured case. Repeatable.")
