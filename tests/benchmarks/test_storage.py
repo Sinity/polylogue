@@ -11,12 +11,11 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
-from typing import Any
 
 import pytest
 
 from polylogue.storage.query_models import ConversationRecordQuery
-from tests.benchmarks.helpers import benchmark_store_call, open_bench_store
+from tests.benchmarks.helpers import BenchmarkFixture, benchmark_store_call, open_bench_store
 from tests.infra.storage_records import make_content_block, make_conversation, make_message
 
 
@@ -25,7 +24,7 @@ def _make_hash(s: str) -> str:
 
 
 @pytest.mark.benchmark
-def test_bench_list_conversations_no_filter(benchmark: Any, bench_db_5k: Path) -> None:
+def test_bench_list_conversations_no_filter(benchmark: BenchmarkFixture, bench_db_5k: Path) -> None:
     """list_conversations(limit=50) on 5k-message DB — baseline query cost."""
     benchmark_store_call(
         benchmark,
@@ -35,7 +34,7 @@ def test_bench_list_conversations_no_filter(benchmark: Any, bench_db_5k: Path) -
 
 
 @pytest.mark.benchmark
-def test_bench_list_conversations_provider_filter(benchmark: Any, bench_db_5k: Path) -> None:
+def test_bench_list_conversations_provider_filter(benchmark: BenchmarkFixture, bench_db_5k: Path) -> None:
     """list with provider=chatgpt — tests simple WHERE on indexed column."""
     benchmark_store_call(
         benchmark,
@@ -45,7 +44,7 @@ def test_bench_list_conversations_provider_filter(benchmark: Any, bench_db_5k: P
 
 
 @pytest.mark.benchmark
-def test_bench_list_conversations_has_tool_use(benchmark: Any, bench_db_5k: Path) -> None:
+def test_bench_list_conversations_has_tool_use(benchmark: BenchmarkFixture, bench_db_5k: Path) -> None:
     """list with has_tool_use=True — tests stats LEFT JOIN path."""
     benchmark_store_call(
         benchmark,
@@ -55,7 +54,7 @@ def test_bench_list_conversations_has_tool_use(benchmark: Any, bench_db_5k: Path
 
 
 @pytest.mark.benchmark
-def test_bench_list_conversations_semantic_filter(benchmark: Any, bench_db_5k: Path) -> None:
+def test_bench_list_conversations_semantic_filter(benchmark: BenchmarkFixture, bench_db_5k: Path) -> None:
     """list with action_terms=file_read — tests semantic EXISTS subquery path."""
     benchmark_store_call(
         benchmark,
@@ -67,7 +66,7 @@ def test_bench_list_conversations_semantic_filter(benchmark: Any, bench_db_5k: P
 
 
 @pytest.mark.benchmark
-def test_bench_list_conversations_combined_filter(benchmark: Any, bench_db_10k: Path) -> None:
+def test_bench_list_conversations_combined_filter(benchmark: BenchmarkFixture, bench_db_10k: Path) -> None:
     """provider + has_tool_use + min_messages — combined filter stack."""
     benchmark_store_call(
         benchmark,
@@ -84,7 +83,7 @@ def test_bench_list_conversations_combined_filter(benchmark: Any, bench_db_10k: 
 
 
 @pytest.mark.benchmark
-def test_bench_get_many_100(benchmark: Any, bench_db_5k: Path) -> None:
+def test_bench_get_many_100(benchmark: BenchmarkFixture, bench_db_5k: Path) -> None:
     """get_many() with 100 IDs — parallel batch fetch cost."""
     ids = [f"bench-conv-{i:05d}" for i in range(100)]
     benchmark_store_call(
@@ -96,7 +95,7 @@ def test_bench_get_many_100(benchmark: Any, bench_db_5k: Path) -> None:
 
 @pytest.mark.benchmark
 @pytest.mark.parametrize("n", [100, 500, 1000])
-def test_bench_save_messages_batch(benchmark: Any, tmp_path: Path, n: int) -> None:
+def test_bench_save_messages_batch(benchmark: BenchmarkFixture, tmp_path: Path, n: int) -> None:
     """save_messages() batch insert — measures executemany throughput."""
     db_path = tmp_path / f"save_bench_{n}.db"
     with open_bench_store(db_path) as store:
@@ -130,7 +129,7 @@ def test_bench_save_messages_batch(benchmark: Any, tmp_path: Path, n: int) -> No
 
 @pytest.mark.benchmark
 @pytest.mark.parametrize("n_msgs", [100, 500])
-def test_bench_save_content_blocks(benchmark: Any, tmp_path: Path, n_msgs: int) -> None:
+def test_bench_save_content_blocks(benchmark: BenchmarkFixture, tmp_path: Path, n_msgs: int) -> None:
     """save_content_blocks() — 5 blocks per message (tool_use + thinking mix)."""
     db_path = tmp_path / f"blocks_bench_{n_msgs}.db"
     with open_bench_store(db_path) as store:

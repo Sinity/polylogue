@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+
+import pytest
 
 from devtools import build_package
 
 
-def test_build_package_uses_repo_local_out_link(monkeypatch: Any, tmp_path: Path) -> None:
+def test_build_package_uses_repo_local_out_link(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     calls: list[list[str]] = []
 
     class Result:
@@ -24,7 +25,7 @@ def test_build_package_uses_repo_local_out_link(monkeypatch: Any, tmp_path: Path
     assert calls == [["nix", "build", ".#polylogue", "--out-link", ".local/result"]]
 
 
-def test_build_package_accepts_custom_package_and_out_link(monkeypatch: Any, tmp_path: Path) -> None:
+def test_build_package_accepts_custom_package_and_out_link(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     calls: list[list[str]] = []
 
     class Result:

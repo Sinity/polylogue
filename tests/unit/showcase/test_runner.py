@@ -4,17 +4,16 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from polylogue.scenarios import CorpusSpec, polylogue_execution
+from polylogue.scenarios import CorpusRequest, CorpusSpec, polylogue_execution
 from polylogue.showcase.cli_boundary import ShowcaseCliResult
 from polylogue.showcase.corpus_requests import showcase_corpus_request
 from polylogue.showcase.exercises import Exercise
 from polylogue.showcase.runner import ShowcaseRunner
 
 
-async def _fake_run_sources(**_kwargs: Any) -> Any:  # pragma: no cover - test helper
+async def _fake_run_sources(**_kwargs: object) -> object:  # pragma: no cover - test helper
     return None
 
 
@@ -27,11 +26,11 @@ def _write_min_fixture(fixture_dir: Path, provider: str = "chatgpt") -> None:
 class TestShowcaseRunnerSeeding:
     """Covers synthetic seed behavior in ShowcaseRunner."""
 
-    def test_seed_workspace_generates_synthetic_fixtures(self: Any, tmp_path: Any) -> None:
+    def test_seed_workspace_generates_synthetic_fixtures(self, tmp_path: Path) -> None:
         runner = ShowcaseRunner(corpus_request=showcase_corpus_request(count=7))
         workspace = tmp_path / "workspace"
 
-        def _fake_generate(fixtures_root: Path, *, request: Any) -> None:
+        def _fake_generate(fixtures_root: Path, *, request: CorpusRequest) -> None:
             assert request.count == 7
             assert request.style == "showcase"
             _write_min_fixture(fixtures_root, provider="codex")
@@ -43,7 +42,7 @@ class TestShowcaseRunnerSeeding:
         assert mock_generate.call_count == 1
         assert (workspace / "data" / "polylogue" / "inbox" / "codex" / "sample.json").exists()
 
-    def test_runner_seeds_workspace_with_selected_exercises(self: Any, tmp_path: Any) -> None:
+    def test_runner_seeds_workspace_with_selected_exercises(self, tmp_path: Path) -> None:
         runner = ShowcaseRunner(output_dir=tmp_path / "output")
         selected = [
             Exercise(
@@ -62,7 +61,7 @@ class TestShowcaseRunnerSeeding:
         mock_seed.assert_called_once()
         assert mock_seed.call_args.kwargs["exercises"] == selected
 
-    def test_generate_synthetic_fixtures_uses_showcase_style(self: Any, tmp_path: Any) -> None:
+    def test_generate_synthetic_fixtures_uses_showcase_style(self, tmp_path: Path) -> None:
         request = showcase_corpus_request(count=1)
         runner = ShowcaseRunner(corpus_request=request)
         fixture_root = tmp_path / "fixtures"
@@ -97,7 +96,7 @@ class TestShowcaseRunnerSeeding:
 class TestShowcaseRunnerWorkspaceEnv:
     """Covers pre-configured workspace_env behavior."""
 
-    def test_workspace_env_skips_seeding(self: Any, tmp_path: Any) -> None:
+    def test_workspace_env_skips_seeding(self, tmp_path: Path) -> None:
         """When workspace_env is provided, _seed_workspace should not be called."""
         env_vars = {
             "HOME": str(tmp_path / "home"),
@@ -118,7 +117,7 @@ class TestShowcaseRunnerWorkspaceEnv:
         mock_seed.assert_not_called()
         assert runner._env_vars == env_vars
 
-    def test_no_workspace_env_seeds_normally(self: Any, tmp_path: Any) -> None:
+    def test_no_workspace_env_seeds_normally(self, tmp_path: Path) -> None:
         """Without workspace_env, _seed_workspace should be called."""
         runner = ShowcaseRunner(
             output_dir=tmp_path / "output",
@@ -142,7 +141,7 @@ class TestShowcaseRunnerWorkspaceEnv:
 
 
 class TestShowcaseRunnerExecution:
-    def test_run_exercise_uses_cli_boundary(self: Any, tmp_path: Any) -> None:
+    def test_run_exercise_uses_cli_boundary(self, tmp_path: Path) -> None:
         runner = ShowcaseRunner(
             output_dir=tmp_path / "output",
             workspace_env={"POLYLOGUE_ARCHIVE_ROOT": str(tmp_path / "archive")},

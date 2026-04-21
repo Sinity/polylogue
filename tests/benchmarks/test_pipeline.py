@@ -10,11 +10,12 @@ Run with:
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from sqlite3 import Connection
 
 import pytest
 
 from polylogue.lib.hashing import hash_payload, hash_text
+from polylogue.lib.json import JSONDocument
 from polylogue.lib.viewports import classify_tool
 from polylogue.pipeline.prepare import PrepareCache
 from polylogue.pipeline.semantic_metadata import extract_tool_metadata
@@ -25,14 +26,15 @@ from polylogue.storage.action_event_rebuild_runtime import (
 from polylogue.storage.fts_lifecycle import repair_fts_index_sync
 from polylogue.storage.index import rebuild_index, update_index_for_conversations
 from tests.benchmarks.helpers import (
+    BenchmarkFixture,
     benchmark_connection_call,
     benchmark_store_call,
 )
 
 
-def _make_diverse_tool_inputs(n: int) -> list[tuple[str, dict[str, Any]]]:
+def _make_diverse_tool_inputs(n: int) -> list[tuple[str, JSONDocument]]:
     """Create n diverse (tool_name, tool_input) pairs for classification benchmarks."""
-    patterns: list[tuple[str, dict[str, Any]]] = [
+    patterns: list[tuple[str, JSONDocument]] = [
         ("Read", {"file_path": "/path/to/file.py"}),
         ("Write", {"file_path": "/path/to/output.py", "content": "print('hello')"}),
         ("Edit", {"file_path": "/path/to/file.py", "old_string": "old", "new_string": "new"}),
@@ -53,16 +55,16 @@ def _make_diverse_tool_inputs(n: int) -> list[tuple[str, dict[str, Any]]]:
 
 @pytest.mark.benchmark
 @pytest.mark.parametrize("n_tools", [10, 100, 1000])
-def test_bench_classify_tool_calls(benchmark: Any, n_tools: int) -> None:
+def test_bench_classify_tool_calls(benchmark: BenchmarkFixture, n_tools: int) -> None:
     """classify_tool() throughput across ToolCategory variants."""
     tool_inputs = _make_diverse_tool_inputs(n_tools)
     benchmark(lambda: [classify_tool(name, inp) for name, inp in tool_inputs])
 
 
 @pytest.mark.benchmark
-def test_bench_extract_tool_metadata(benchmark: Any) -> None:
+def test_bench_extract_tool_metadata(benchmark: BenchmarkFixture) -> None:
     """extract_tool_metadata() for git, file, subagent variants."""
-    inputs: list[tuple[str, dict[str, Any]]] = [
+    inputs: list[tuple[str, JSONDocument]] = [
         ("Bash", {"command": "git commit -m 'fix: update schema'"}),
         ("Read", {"file_path": "/workspace/polylogue/polylogue/lib/models.py"}),
         ("Write", {"file_path": "/tmp/output.py", "content": "result = 42"}),
@@ -74,20 +76,20 @@ def test_bench_extract_tool_metadata(benchmark: Any) -> None:
 
 
 @pytest.mark.benchmark
-def test_bench_fts_rebuild_1k(benchmark: Any, bench_db_1k: Path) -> None:
+def test_bench_fts_rebuild_1k(benchmark: BenchmarkFixture, bench_db_1k: Path) -> None:
     """FTS5 full rebuild on 1k messages."""
     benchmark_connection_call(benchmark, bench_db_1k, rebuild_index)
 
 
 @pytest.mark.benchmark
-def test_bench_fts_rebuild_5k(benchmark: Any, bench_db_5k: Path) -> None:
+def test_bench_fts_rebuild_5k(benchmark: BenchmarkFixture, bench_db_5k: Path) -> None:
     """FTS5 full rebuild on 5k messages — shows O(N) scaling."""
     benchmark_connection_call(benchmark, bench_db_5k, rebuild_index)
 
 
 @pytest.mark.benchmark
 @pytest.mark.parametrize("n", [1, 10, 50])
-def test_bench_fts_incremental_update(benchmark: Any, bench_db_5k: Path, n: int) -> None:
+def test_bench_fts_incremental_update(benchmark: BenchmarkFixture, bench_db_5k: Path, n: int) -> None:
     """update_index_for_conversations() for 1, 10, 50 conversations."""
     ids = [f"bench-conv-{i:05d}" for i in range(n)]
     benchmark_connection_call(
@@ -98,10 +100,10 @@ def test_bench_fts_incremental_update(benchmark: Any, bench_db_5k: Path, n: int)
 
 
 @pytest.mark.benchmark
-def test_bench_action_event_repair_rebuild(benchmark: Any, bench_db_5k: Path) -> None:
+def test_bench_action_event_repair_rebuild(benchmark: BenchmarkFixture, bench_db_5k: Path) -> None:
     """Action-event repair loop over a realistic seeded archive."""
 
-    def repair_action_events(conn: Any) -> int:
+    def repair_action_events(conn: Connection) -> int:
         targets = valid_action_event_source_ids_sync(conn)
         conn.execute("DELETE FROM action_events")
         conn.execute("DELETE FROM action_events_fts")
@@ -117,7 +119,7 @@ def test_bench_action_event_repair_rebuild(benchmark: Any, bench_db_5k: Path) ->
 
 @pytest.mark.benchmark
 @pytest.mark.parametrize("size", [100, 1_000, 10_000])
-def test_bench_hash_text(benchmark: Any, size: int) -> None:
+def test_bench_hash_text(benchmark: BenchmarkFixture, size: int) -> None:
     """hash_text() throughput — NFC normalization + SHA-256. Tests text sizes."""
     text = "α" * size  # NFC normalization-heavy Unicode
     benchmark(lambda: hash_text(text))
@@ -125,7 +127,7 @@ def test_bench_hash_text(benchmark: Any, size: int) -> None:
 
 @pytest.mark.benchmark
 @pytest.mark.parametrize("depth", [1, 10, 50])
-def test_bench_hash_payload(benchmark: Any, depth: int) -> None:
+def test_bench_hash_payload(benchmark: BenchmarkFixture, depth: int) -> None:
     """hash_payload() — JSON serialization + SHA-256 for varying object complexity."""
 
     def _make_nested_payload(d: int) -> dict[str, object]:
@@ -140,7 +142,7 @@ def test_bench_hash_payload(benchmark: Any, depth: int) -> None:
 
 @pytest.mark.benchmark
 @pytest.mark.parametrize("n", [100, 500])
-def test_bench_prepare_cache_load(benchmark: Any, bench_db_5k: Path, n: int) -> None:
+def test_bench_prepare_cache_load(benchmark: BenchmarkFixture, bench_db_5k: Path, n: int) -> None:
     """PrepareCache.load() — bulk-loads N existing conversations in 2 queries."""
     cids = {f"bench-conv-{i:05d}" for i in range(n)}
     benchmark_store_call(

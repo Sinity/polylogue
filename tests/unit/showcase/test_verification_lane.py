@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any
+from pathlib import Path
+
+import pytest
 
 
 class TestVerifyShowcaseImportable:
@@ -100,7 +102,7 @@ class TestBaselineComparison:
 class TestBaselinePersistence:
     """Test baseline save/load cycle."""
 
-    def test_save_and_load_roundtrip(self, tmp_path: Any, monkeypatch: Any) -> None:
+    def test_save_and_load_roundtrip(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """Baselines saved to disk can be loaded back identically."""
         import devtools.verify_showcase as mod
 
@@ -115,7 +117,7 @@ class TestBaselinePersistence:
 
         assert loaded == outputs
 
-    def test_load_missing_dir_returns_empty(self, tmp_path: Any, monkeypatch: Any) -> None:
+    def test_load_missing_dir_returns_empty(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """Loading from non-existent directory returns empty dict."""
         import devtools.verify_showcase as mod
 
@@ -123,7 +125,7 @@ class TestBaselinePersistence:
         assert mod.load_baselines() == {}
 
 
-def test_main_returns_1_when_no_baselines_and_no_update(tmp_path: Any, monkeypatch: Any) -> None:
+def test_main_returns_1_when_no_baselines_and_no_update(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """main() exits 1 when baselines directory is empty and --update not passed."""
     import devtools.verify_showcase as mod
 

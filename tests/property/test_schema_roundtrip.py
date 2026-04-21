@@ -23,7 +23,7 @@ def test_chatgpt_schema_payload_parses_without_crash(payload: object) -> None:
     """Schema-conformant ChatGPT payloads must not crash with unhandled exceptions.
 
     ValueError (missing role) and ValidationError are expected for minimal
-    payloads and are caught by the extraction pipeline. Any other exception
+    payloads and are caught by the extraction pipeline. Other exceptions
     is a genuine crash.
     """
     from pydantic import ValidationError

@@ -10,11 +10,34 @@ from __future__ import annotations
 
 import json
 from collections import Counter
-from typing import Any
+from typing import NotRequired, TypedDict
 
 from hypothesis import HealthCheck, given, settings
 
+from polylogue.lib.messages import MessageCollection
+from polylogue.lib.models import Conversation, Message
+from polylogue.lib.roles import Role
+from polylogue.rendering.core_markdown import format_conversation_markdown
+from polylogue.rendering.formatting import format_conversation
+from polylogue.types import ConversationId, Provider
 from tests.infra.strategies.messages import conversation_strategy
+
+
+class RenderMessagePayload(TypedDict):
+    id: str
+    role: str
+    text: str
+    timestamp: NotRequired[object]
+    content_blocks: NotRequired[list[dict[str, object]]]
+
+
+class RenderConversationPayload(TypedDict):
+    id: str
+    provider: str
+    title: str
+    messages: list[RenderMessagePayload]
+    created_at: NotRequired[str]
+
 
 # ---------------------------------------------------------------------------
 # Helpers: extract semantic facts from rendered output
@@ -50,6 +73,15 @@ def _markdown_facts(md: str) -> dict[str, object]:
 def _json_facts(json_str: str) -> dict[str, object]:
     """Extract semantic facts from JSON export."""
     data = json.loads(json_str)
+    if not isinstance(data, dict):
+        return {
+            "conversation_id": "",
+            "provider": "",
+            "title": None,
+            "message_count": 0,
+            "role_counts": {},
+            "timestamped_messages": 0,
+        }
     messages = data.get("messages", [])
     role_counts: Counter[str] = Counter()
     timestamped = 0
@@ -68,24 +100,53 @@ def _json_facts(json_str: str) -> dict[str, object]:
     }
 
 
-def _csv_facts(csv_str: str) -> dict[str, object]:
-    """Extract semantic facts from CSV export."""
-    import csv
-    import io
+def _message_text(payload: RenderMessagePayload, *, placeholder: bool) -> str:
+    text = payload.get("text", "")
+    if not placeholder:
+        return text
+    return text.strip() or "placeholder"
 
-    reader = csv.DictReader(io.StringIO(csv_str))
-    rows = list(reader)
-    role_counts: Counter[str] = Counter()
-    timestamped = 0
-    for row in rows:
-        role_counts[str(row.get("role", "")).lower()] += 1
-        if row.get("timestamp"):
-            timestamped += 1
-    return {
-        "message_count": len(rows),
-        "role_counts": dict(role_counts),
-        "timestamped_messages": timestamped,
-    }
+
+def _messages(
+    payload: RenderConversationPayload,
+    *,
+    placeholder: bool = True,
+    non_empty_only: bool = False,
+    content_blocks: list[dict[str, object]] | None = None,
+) -> list[Message]:
+    messages: list[Message] = []
+    for index, item in enumerate(payload["messages"]):
+        text = _message_text(item, placeholder=placeholder)
+        if non_empty_only and not text.strip():
+            continue
+        blocks = content_blocks if content_blocks is not None and index == 0 and item["role"] == "assistant" else []
+        messages.append(
+            Message(
+                id=item["id"],
+                role=Role.normalize(item["role"]),
+                text=text,
+                timestamp=None,
+                content_blocks=blocks,
+            )
+        )
+    return messages
+
+
+def _conversation(payload: RenderConversationPayload, messages: list[Message]) -> Conversation:
+    return Conversation(
+        id=ConversationId(payload["id"]),
+        provider=Provider.from_string(payload["provider"]),
+        title=payload["title"],
+        messages=MessageCollection(messages=messages),
+    )
+
+
+def _render_json(payload: RenderConversationPayload) -> str:
+    return format_conversation(_conversation(payload, _messages(payload)), "json", None)
+
+
+def _render_yaml(payload: RenderConversationPayload) -> str:
+    return format_conversation(_conversation(payload, _messages(payload)), "yaml", None)
 
 
 # ---------------------------------------------------------------------------
@@ -95,33 +156,13 @@ def _csv_facts(csv_str: str) -> dict[str, object]:
 
 @given(conv_data=conversation_strategy(min_messages=1, max_messages=10))
 @settings(max_examples=30, deadline=5000)
-def test_markdown_preserves_message_count(conv_data: dict[str, Any]) -> None:
+def test_markdown_preserves_message_count(conv_data: RenderConversationPayload) -> None:
     """Every non-empty message must produce a ## section in markdown."""
-    from polylogue.lib.messages import MessageCollection
-    from polylogue.lib.models import Conversation, Message
-    from polylogue.rendering.core_markdown import format_conversation_markdown
-
-    messages = [
-        Message(
-            id=m["id"],
-            role=m["role"],
-            text=m.get("text", ""),
-            timestamp=None,
-        )
-        for m in conv_data["messages"]
-        if m.get("text", "").strip()  # non-empty only
-    ]
+    messages = _messages(conv_data, placeholder=False, non_empty_only=True)
     if not messages:
         return  # skip if all messages empty
 
-    conv = Conversation(
-        id=conv_data["id"],
-        provider=conv_data["provider"],
-        title=conv_data["title"],
-        messages=MessageCollection(messages=messages),
-    )
-
-    md = format_conversation_markdown(conv)
+    md = format_conversation_markdown(_conversation(conv_data, messages))
     facts = _markdown_facts(md)
 
     # Core invariant: renderable messages → ## sections
@@ -132,29 +173,10 @@ def test_markdown_preserves_message_count(conv_data: dict[str, Any]) -> None:
 
 @given(conv_data=conversation_strategy(min_messages=2, max_messages=8))
 @settings(max_examples=30, deadline=5000)
-def test_markdown_preserves_role_distribution(conv_data: dict[str, Any]) -> None:
+def test_markdown_preserves_role_distribution(conv_data: RenderConversationPayload) -> None:
     """Markdown role sections match the input role distribution."""
-    from polylogue.lib.messages import MessageCollection
-    from polylogue.lib.models import Conversation, Message
-    from polylogue.rendering.core_markdown import format_conversation_markdown
-
-    messages = [
-        Message(
-            id=m["id"],
-            role=m["role"],
-            # Ensure text is non-whitespace so the message is renderable
-            text=(m.get("text", "") or "").strip() or "placeholder",
-        )
-        for m in conv_data["messages"]
-    ]
-    conv = Conversation(
-        id=conv_data["id"],
-        provider=conv_data["provider"],
-        title=conv_data["title"],
-        messages=MessageCollection(messages=messages),
-    )
-
-    md = format_conversation_markdown(conv)
+    messages = _messages(conv_data)
+    md = format_conversation_markdown(_conversation(conv_data, messages))
     facts = _markdown_facts(md)
 
     # Build expected role distribution (only renderable messages — non-empty text)
@@ -173,27 +195,9 @@ def test_markdown_preserves_role_distribution(conv_data: dict[str, Any]) -> None
 
 @given(conv_data=conversation_strategy(min_messages=1, max_messages=10))
 @settings(max_examples=30, deadline=5000)
-def test_json_export_preserves_conversation_identity(conv_data: dict[str, Any]) -> None:
+def test_json_export_preserves_conversation_identity(conv_data: RenderConversationPayload) -> None:
     """JSON export must preserve conversation ID, provider, title."""
-    from polylogue.lib.messages import MessageCollection
-    from polylogue.lib.models import Conversation, Message
-    from polylogue.rendering.formatting import format_conversation
-
-    messages = [
-        Message(
-            id=m["id"],
-            role=m["role"],
-            text=m.get("text", "") or "placeholder",
-        )
-        for m in conv_data["messages"]
-    ]
-    conv = Conversation(
-        id=conv_data["id"],
-        provider=conv_data["provider"],
-        title=conv_data["title"],
-        messages=MessageCollection(messages=messages),
-    )
-
+    conv = _conversation(conv_data, _messages(conv_data))
     json_str = format_conversation(conv, "json", None)
     facts = _json_facts(json_str)
 
@@ -204,28 +208,10 @@ def test_json_export_preserves_conversation_identity(conv_data: dict[str, Any]) 
 
 @given(conv_data=conversation_strategy(min_messages=1, max_messages=10))
 @settings(max_examples=30, deadline=5000)
-def test_json_export_preserves_message_count(conv_data: dict[str, Any]) -> None:
+def test_json_export_preserves_message_count(conv_data: RenderConversationPayload) -> None:
     """JSON export must have one message entry per input message."""
-    from polylogue.lib.messages import MessageCollection
-    from polylogue.lib.models import Conversation, Message
-    from polylogue.rendering.formatting import format_conversation
-
-    messages = [
-        Message(
-            id=m["id"],
-            role=m["role"],
-            text=m.get("text", "") or "placeholder",
-        )
-        for m in conv_data["messages"]
-    ]
-    conv = Conversation(
-        id=conv_data["id"],
-        provider=conv_data["provider"],
-        title=conv_data["title"],
-        messages=MessageCollection(messages=messages),
-    )
-
-    json_str = format_conversation(conv, "json", None)
+    messages = _messages(conv_data)
+    json_str = format_conversation(_conversation(conv_data, messages), "json", None)
     facts = _json_facts(json_str)
 
     assert facts["message_count"] == len(messages)
@@ -238,72 +224,37 @@ def test_json_export_preserves_message_count(conv_data: dict[str, Any]) -> None:
 
 @given(conv_data=conversation_strategy(min_messages=1, max_messages=5))
 @settings(max_examples=20, deadline=5000)
-def test_json_yaml_agree_on_message_count(conv_data: dict[str, Any]) -> None:
+def test_json_yaml_agree_on_message_count(conv_data: RenderConversationPayload) -> None:
     """JSON and YAML exports of the same conversation have the same message count."""
     import yaml
 
-    from polylogue.lib.messages import MessageCollection
-    from polylogue.lib.models import Conversation, Message
-    from polylogue.rendering.formatting import format_conversation
-
-    messages = [
-        Message(
-            id=m["id"],
-            role=m["role"],
-            text=m.get("text", "") or "placeholder",
-        )
-        for m in conv_data["messages"]
-    ]
-    conv = Conversation(
-        id=conv_data["id"],
-        provider=conv_data["provider"],
-        title=conv_data["title"],
-        messages=MessageCollection(messages=messages),
-    )
-
-    json_str = format_conversation(conv, "json", None)
-    yaml_str = format_conversation(conv, "yaml", None)
-
-    json_data = json.loads(json_str)
-    yaml_data = yaml.safe_load(yaml_str)
+    json_data = json.loads(_render_json(conv_data))
+    yaml_data = yaml.safe_load(_render_yaml(conv_data))
+    assert isinstance(json_data, dict)
+    assert isinstance(yaml_data, dict)
 
     json_msgs = json_data.get("messages", [])
     yaml_msgs = yaml_data.get("messages", [])
+    assert isinstance(json_msgs, list)
+    assert isinstance(yaml_msgs, list)
 
     assert len(json_msgs) == len(yaml_msgs), f"JSON has {len(json_msgs)} messages, YAML has {len(yaml_msgs)}"
 
 
 @given(conv_data=conversation_strategy(min_messages=1, max_messages=5))
 @settings(max_examples=20, deadline=5000, suppress_health_check=[HealthCheck.filter_too_much])
-def test_json_yaml_agree_on_identity(conv_data: dict[str, Any]) -> None:
+def test_json_yaml_agree_on_identity(conv_data: RenderConversationPayload) -> None:
     """JSON and YAML agree on conversation_id, provider, title."""
     import yaml
     from hypothesis import assume
 
-    from polylogue.lib.messages import MessageCollection
-    from polylogue.lib.models import Conversation, Message
-    from polylogue.rendering.formatting import format_conversation
-
     # YAML has edge cases with certain Unicode control characters
     assume(conv_data["title"].isprintable())
 
-    messages = [
-        Message(
-            id=m["id"],
-            role=m["role"],
-            text=m.get("text", "") or "placeholder",
-        )
-        for m in conv_data["messages"]
-    ]
-    conv = Conversation(
-        id=conv_data["id"],
-        provider=conv_data["provider"],
-        title=conv_data["title"],
-        messages=MessageCollection(messages=messages),
-    )
-
-    json_data = json.loads(format_conversation(conv, "json", None))
-    yaml_data = yaml.safe_load(format_conversation(conv, "yaml", None))
+    json_data = json.loads(_render_json(conv_data))
+    yaml_data = yaml.safe_load(_render_yaml(conv_data))
+    assert isinstance(json_data, dict)
+    assert isinstance(yaml_data, dict)
 
     assert json_data["id"] == yaml_data["id"]
     assert json_data["provider"] == yaml_data["provider"]
@@ -317,37 +268,17 @@ def test_json_yaml_agree_on_identity(conv_data: dict[str, Any]) -> None:
 
 @given(conv_data=conversation_strategy(min_messages=2, max_messages=5))
 @settings(max_examples=20, deadline=5000)
-def test_content_blocks_produce_structured_markdown(conv_data: dict[str, Any]) -> None:
+def test_content_blocks_produce_structured_markdown(conv_data: RenderConversationPayload) -> None:
     """When content blocks are present, markdown should contain structural markers."""
-    from polylogue.lib.messages import MessageCollection
-    from polylogue.lib.models import Conversation, Message
-    from polylogue.rendering.core_markdown import format_conversation_markdown
-
     # Add content blocks to the first message
-    blocks: list[dict[str, Any]] = [
+    blocks: list[dict[str, object]] = [
         {"type": "thinking", "thinking": "Let me analyze this..."},
         {"type": "tool_use", "name": "Read", "id": "tool-1", "input": {"file_path": "/tmp/test.py"}},
         {"type": "text", "text": "Here's what I found."},
     ]
 
-    messages = []
-    for i, m in enumerate(conv_data["messages"]):
-        msg = Message(
-            id=m["id"],
-            role=m["role"],
-            text=m.get("text", "") or "placeholder",
-            content_blocks=blocks if i == 0 and m["role"] == "assistant" else [],
-        )
-        messages.append(msg)
-
-    conv = Conversation(
-        id=conv_data["id"],
-        provider=conv_data["provider"],
-        title=conv_data["title"],
-        messages=MessageCollection(messages=messages),
-    )
-
-    md = format_conversation_markdown(conv)
+    messages = _messages(conv_data, content_blocks=blocks)
+    md = format_conversation_markdown(_conversation(conv_data, messages))
 
     # If first message was assistant and had blocks, check structure
     if messages[0].role.value == "assistant":

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -48,7 +47,7 @@ class TestExecCommandValidation:
             r"echo hello\n",
         ],
     )
-    def test_shell_metacharacters_rejected(self, dangerous_cmd: Any) -> None:
+    def test_shell_metacharacters_rejected(self, dangerous_cmd: str) -> None:
         with pytest.raises(ValueError, match="unsafe shell metacharacters"):
             _validate_exec_command(dangerous_cmd)
 
@@ -88,7 +87,7 @@ class TestWebhookUrlValidation:
             "http://[::1]/webhook",
         ],
     )
-    def test_loopback_rejected(self, private_url: Any) -> None:
+    def test_loopback_rejected(self, private_url: str) -> None:
         with pytest.raises(ValueError, match="private|reserved|loopback"):
             _validate_webhook_url(private_url)
 
@@ -100,7 +99,7 @@ class TestWebhookUrlValidation:
             "http://172.16.0.1/webhook",
         ],
     )
-    def test_private_ip_rejected(self, private_url: Any) -> None:
+    def test_private_ip_rejected(self, private_url: str) -> None:
         with pytest.raises(ValueError, match="private|reserved"):
             _validate_webhook_url(private_url)
 
