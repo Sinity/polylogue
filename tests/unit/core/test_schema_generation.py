@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import json
 from collections.abc import Generator
+from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -39,7 +39,7 @@ class TestProviderSchemaGeneration:
 
     @pytest.mark.slow
     @pytest.mark.parametrize("provider", ["chatgpt", "claude-code", "codex"])
-    def test_generate_schema_from_db(self, seeded_db: Any, provider: Any) -> None:
+    def test_generate_schema_from_db(self, seeded_db: Path, provider: str) -> None:
         result = generate_provider_schema(provider, db_path=seeded_db, max_samples=100)
         if result.sample_count > 0:
             assert result.success, f"Failed: {result.error}"
@@ -65,20 +65,22 @@ class TestProviderSchemaGeneration:
 class TestLoadSamples:
     """Database-backed sample loading behavior."""
 
-    def test_load_limited_samples(self, seeded_db: Any) -> None:
+    def test_load_limited_samples(self, seeded_db: Path) -> None:
         samples = load_samples_from_db("chatgpt", db_path=seeded_db, max_samples=10)
         assert len(samples) <= 10
 
-    def test_load_nonexistent_provider(self, seeded_db: Any) -> None:
+    def test_load_nonexistent_provider(self, seeded_db: Path) -> None:
         assert load_samples_from_db("nonexistent-provider", db_path=seeded_db) == []
 
     def test_load_limited_document_samples_stops_without_full_materialization(
-        self, monkeypatch: Any, tmp_path: Any
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
     ) -> None:
         db_path = tmp_path / "samples.db"
         db_path.write_text("")
 
-        def _iter(*args: Any, **kwargs: Any) -> Generator[dict[str, str], None, None]:
+        def _iter(*args: object, **kwargs: object) -> Generator[dict[str, str], None, None]:
             yield {"id": "one"}
             yield {"id": "two"}
             raise AssertionError("iterator should not be exhausted past the limit")
@@ -98,15 +100,15 @@ def test_remove_nested_required_non_dict_returns_unchanged() -> None:
 class TestLoadSamplesFromSessions:
     """Session-dir sample loading edge cases."""
 
-    def test_nonexistent_dir_returns_empty(self, tmp_path: Any) -> None:
+    def test_nonexistent_dir_returns_empty(self, tmp_path: Path) -> None:
         assert load_samples_from_sessions(tmp_path / "does_not_exist") == []
 
-    def test_empty_dir_returns_empty(self, tmp_path: Any) -> None:
+    def test_empty_dir_returns_empty(self, tmp_path: Path) -> None:
         session_dir = tmp_path / "empty"
         session_dir.mkdir()
         assert load_samples_from_sessions(session_dir) == []
 
-    def test_max_sessions_limits_files(self, tmp_path: Any) -> None:
+    def test_max_sessions_limits_files(self, tmp_path: Path) -> None:
         session_dir = tmp_path / "sessions"
         session_dir.mkdir()
         for i in range(10):
@@ -119,10 +121,10 @@ class TestLoadSamplesFromSessions:
 class TestGetSampleCountFromDb:
     """Sample-count queries against persisted conversations."""
 
-    def test_nonexistent_db_returns_zero(self, tmp_path: Any) -> None:
+    def test_nonexistent_db_returns_zero(self, tmp_path: Path) -> None:
         assert get_sample_count_from_db("chatgpt", db_path=tmp_path / "missing.db") == 0
 
-    def test_empty_db_returns_zero(self, tmp_path: Any) -> None:
+    def test_empty_db_returns_zero(self, tmp_path: Path) -> None:
         from polylogue.storage.backends.connection import open_connection
 
         db_path = tmp_path / "empty.db"
@@ -130,7 +132,7 @@ class TestGetSampleCountFromDb:
             pass
         assert get_sample_count_from_db("chatgpt", db_path=db_path) == 0
 
-    def test_matching_provider_returns_count(self, tmp_path: Any) -> None:
+    def test_matching_provider_returns_count(self, tmp_path: Path) -> None:
         from polylogue.storage.backends.connection import open_connection
 
         db_path = tmp_path / "test.db"
@@ -170,7 +172,7 @@ class TestGetSampleCountFromDb:
 
         assert get_sample_count_from_db("chatgpt", db_path=db_path) == 1
 
-    def test_wrong_provider_returns_zero(self, tmp_path: Any) -> None:
+    def test_wrong_provider_returns_zero(self, tmp_path: Path) -> None:
         from polylogue.storage.backends.connection import open_connection
 
         db_path = tmp_path / "test.db"
@@ -251,7 +253,7 @@ class TestGenerateSchemaFromSamples:
 class TestGenerateAllSchemas:
     """Filesystem effects of schema bundle generation."""
 
-    def test_creates_output_directory(self, tmp_path: Any) -> None:
+    def test_creates_output_directory(self, tmp_path: Path) -> None:
         output_dir = tmp_path / "schemas" / "nested"
         package = SchemaVersionPackage(
             provider="chatgpt",
@@ -312,7 +314,7 @@ class TestGenerateAllSchemas:
             output_dir / "chatgpt" / "versions" / "v1" / "elements" / "conversation_document.schema.json.gz"
         ).exists()
 
-    def test_skips_failed_schemas(self, tmp_path: Any) -> None:
+    def test_skips_failed_schemas(self, tmp_path: Path) -> None:
         failed_result = GenerationResult(provider="broken", sample_count=0, schema=None, error="No samples")
 
         with patch("polylogue.schemas.generation_workflow.generate_provider_schema", return_value=failed_result):
@@ -323,7 +325,11 @@ class TestGenerateAllSchemas:
 
 
 class TestProfileClustering:
-    def test_collect_cluster_accumulators_merges_same_profile_documents(self, monkeypatch: Any, tmp_path: Any) -> None:
+    def test_collect_cluster_accumulators_merges_same_profile_documents(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
         units = [
             SchemaUnit(
                 cluster_payload={"id": "1", "mapping": {"node-1": {"message": {"id": "m1"}}}},
@@ -363,7 +369,9 @@ class TestProfileClustering:
         assert acc.sample_count == 2
 
     def test_build_provider_bundle_captures_element_windows_and_bundle_scopes(
-        self, monkeypatch: Any, tmp_path: Any
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
     ) -> None:
         units = [
             SchemaUnit(
@@ -422,7 +430,7 @@ class TestProfileClustering:
 class TestCliMain:
     """CLI entry point behavior."""
 
-    def test_cli_with_no_db(self, tmp_path: Any) -> None:
+    def test_cli_with_no_db(self, tmp_path: Path) -> None:
         exit_code = cli_main(
             [
                 "--provider",
