@@ -20,6 +20,46 @@ from tests.infra.cli_subprocess import setup_isolated_workspace
 pytestmark = [pytest.mark.integration, pytest.mark.chaos]
 
 
+def _message_count_if_ready(db_path: Path) -> int | None:
+    if not db_path.exists():
+        return None
+    try:
+        with sqlite3.connect(db_path) as conn:
+            has_messages_table = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='messages'"
+            ).fetchone()
+            if has_messages_table is None:
+                return None
+            return int(conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0])
+    except sqlite3.Error:
+        return None
+
+
+def _wait_for_persisted_messages(
+    db_path: Path,
+    process: subprocess.Popen[str],
+    *,
+    timeout_seconds: float,
+) -> int:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        count = _message_count_if_ready(db_path)
+        if count is not None and count > 0:
+            return count
+        if process.poll() is not None:
+            break
+        time.sleep(0.05)
+    return _message_count_if_ready(db_path) or 0
+
+
+def _finish_interrupted_process(process: subprocess.Popen[str], *, timeout_seconds: float) -> tuple[str, str]:
+    try:
+        return process.communicate(timeout=timeout_seconds)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        return process.communicate()
+
+
 # =============================================================================
 # Mid-Run Interruption Tests
 # =============================================================================
@@ -69,20 +109,17 @@ def test_interrupted_pipeline_preserves_partial_progress(tmp_path: Path) -> None
         text=True,
     )
 
-    # Let it run for a bit, then interrupt
-    time.sleep(2.0)
-    process.send_signal(signal.SIGINT)
+    db_path = workspace["paths"]["db_path"]
+    persisted_before_interrupt = _wait_for_persisted_messages(db_path, process, timeout_seconds=15.0)
+    assert persisted_before_interrupt > 0, "Database did not persist messages before interruption"
 
-    # Wait for it to finish (with timeout)
-    try:
-        stdout, stderr = process.communicate(timeout=10.0)
-    except subprocess.TimeoutExpired:
-        process.kill()
-        stdout, stderr = process.communicate()
+    if process.poll() is None:
+        process.send_signal(signal.SIGINT)
+
+    stdout, stderr = _finish_interrupted_process(process, timeout_seconds=10.0)
 
     # Verify DB exists
-    db_path = workspace["paths"]["db_path"]
-    assert db_path.exists(), "Database not created before interruption"
+    assert db_path.exists(), f"Database not created before interruption\nstdout={stdout}\nstderr={stderr}"
 
     # Check that we have partial data (some but not all 500 records)
     with sqlite3.connect(db_path) as conn:
@@ -140,11 +177,7 @@ def test_rerun_after_interruption_completes_remaining(tmp_path: Path) -> None:
     time.sleep(1.0)
     process.send_signal(signal.SIGINT)
 
-    try:
-        process.communicate(timeout=5.0)
-    except subprocess.TimeoutExpired:
-        process.kill()
-        process.communicate()
+    _finish_interrupted_process(process, timeout_seconds=5.0)
 
     db_path = workspace["paths"]["db_path"]
     first_count = 0
