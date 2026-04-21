@@ -3,10 +3,21 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any
+from datetime import datetime
+from typing import ParamSpec, Protocol, TypeVar
 
 from polylogue.sources.drive_types import DriveError, DriveNotFoundError
+
+P = ParamSpec("P")
+T = TypeVar("T")
+
+
+class BinaryWritable(Protocol):
+    """Minimal writable handle contract used by Drive downloads."""
+
+    def write(self, data: bytes) -> object: ...
 
 
 @dataclass
@@ -19,12 +30,13 @@ class MockCredentials:
     client_id: str = "mock_client_id.apps.googleusercontent.com"
     client_secret: str = "mock_client_secret"
     scopes: list[str] = field(default_factory=lambda: ["https://www.googleapis.com/auth/drive.readonly"])
-    expiry: Any = None
+    expiry: datetime | None = None
     valid: bool = True
     expired: bool = False
 
-    def refresh(self, request: Any) -> None:
+    def refresh(self, request: object) -> None:
         """Mock refresh method."""
+        del request
         if not self.refresh_token:
             raise Exception("Refresh token not found")
         self.token = "refreshed_access_token"
@@ -125,7 +137,7 @@ class MockMediaIoBaseDownload:
             status, done = downloader.next_chunk()
     """
 
-    def __init__(self, fd: Any, request: MockGetMediaResponse, chunksize: int = 1024 * 1024):
+    def __init__(self, fd: BinaryWritable, request: MockGetMediaResponse, chunksize: int = 1024 * 1024):
         """Initialize the mock downloader.
 
         Args:
@@ -139,7 +151,7 @@ class MockMediaIoBaseDownload:
         self._done = False
         self._progress = 0.0
 
-    def next_chunk(self) -> tuple[Any, bool]:
+    def next_chunk(self) -> tuple[MockDownloadStatus | None, bool]:
         """Download the next chunk of the file.
 
         Returns:
@@ -188,7 +200,7 @@ class MockFilesResource:
         """
         self.files = files or {}
         self.file_content = file_content or {}
-        self._list_filters: dict[str, Any] = {}
+        self._list_filters: dict[str, object] = {}
 
     def _parse_query(self, q: str) -> dict[str, str]:
         """Parse Drive API query string into filters.
@@ -307,13 +319,13 @@ class FakeDriveServiceGateway:
         self._service = self._mock_service
         self._download_error = download_error
 
-    def call_with_retry(self, func: Any, *args: Any, **kwargs: Any) -> Any:
+    def call_with_retry(self, func: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
         return func(*args, **kwargs)
 
     def _service_handle(self) -> MockDriveService:
         return self._mock_service
 
-    def get_file(self, file_id: str, fields: str) -> dict[str, Any]:
+    def get_file(self, file_id: str, fields: str) -> dict[str, object]:
         return self._mock_service.files().get(fileId=file_id, fields=fields).execute()
 
     def list_files(
@@ -323,10 +335,10 @@ class FakeDriveServiceGateway:
         fields: str,
         page_token: str | None,
         page_size: int,
-    ) -> dict[str, Any]:
+    ) -> dict[str, object]:
         return self._mock_service.files().list(q=q, fields=fields, pageToken=page_token, pageSize=page_size).execute()
 
-    def download_file(self, file_id: str, handle: Any) -> None:
+    def download_file(self, file_id: str, handle: BinaryWritable) -> None:
         if self._download_error is not None:
             raise self._download_error
         content = self._mock_service.files().get_media(fileId=file_id).execute()
@@ -334,9 +346,9 @@ class FakeDriveServiceGateway:
 
     def _download_request(
         self,
-        request: Any,
-        handle: Any,
-        downloader_cls: Any,
+        request: MockGetMediaResponse,
+        handle: BinaryWritable,
+        downloader_cls: type[MockMediaIoBaseDownload],
         *,
         file_id: str,
     ) -> None:

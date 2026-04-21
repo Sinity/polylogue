@@ -8,18 +8,18 @@ metaschema declarations that upset ``hypothesis-jsonschema``.
 from __future__ import annotations
 
 import copy
-from typing import Any
 
 from hypothesis import strategies as st
 from hypothesis_jsonschema import from_schema
 
+from polylogue.lib.json import JSONDocument, JSONValue, json_document
 from polylogue.schemas.registry import SchemaRegistry
 
 
-def strip_schema_extensions(schema: Any, *, is_root: bool = True) -> Any:
+def strip_schema_extensions(schema: JSONValue, *, is_root: bool = True) -> JSONValue:
     """Recursively remove generator-hostile keys from a JSON schema."""
     if isinstance(schema, dict):
-        cleaned: dict[str, Any] = {}
+        cleaned: JSONDocument = {}
         for key, value in schema.items():
             if key.startswith("x-polylogue-"):
                 continue
@@ -35,7 +35,7 @@ def strip_schema_extensions(schema: Any, *, is_root: bool = True) -> Any:
 
 
 @st.composite
-def schema_conformant_payload(draw: st.DrawFn, provider: str) -> Any:
+def schema_conformant_payload(draw: st.DrawFn, provider: str) -> JSONValue:
     """Generate a payload conformant to a provider's JSON schema.
 
     Loads the latest schema for the given provider from the registry,
@@ -53,5 +53,5 @@ def schema_conformant_payload(draw: st.DrawFn, provider: str) -> Any:
     if raw_schema is None:
         # Fall back — draw a minimal valid dict
         return draw(st.fixed_dictionaries({}))
-    cleaned = strip_schema_extensions(copy.deepcopy(raw_schema))
+    cleaned = json_document(strip_schema_extensions(copy.deepcopy(raw_schema)))
     return draw(from_schema(cleaned))

@@ -7,7 +7,7 @@ and the semantic models.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, TypeAlias
 
 from hypothesis import strategies as st
 
@@ -17,13 +17,15 @@ from polylogue.types import ConversationId, Provider
 if TYPE_CHECKING:
     from polylogue.lib.models import Conversation, Message
 
+JSONRecord: TypeAlias = dict[str, object]
+
 # =============================================================================
 # Content Block Strategies
 # =============================================================================
 
 
 @st.composite
-def text_content_strategy(draw: st.DrawFn) -> dict[str, Any]:
+def text_content_strategy(draw: st.DrawFn) -> JSONRecord:
     """Generate a text content block."""
     return {
         "type": "text",
@@ -32,7 +34,7 @@ def text_content_strategy(draw: st.DrawFn) -> dict[str, Any]:
 
 
 @st.composite
-def thinking_block_strategy(draw: st.DrawFn) -> dict[str, Any]:
+def thinking_block_strategy(draw: st.DrawFn) -> JSONRecord:
     """Generate a thinking/reasoning block."""
     thinking_text = draw(st.text(min_size=10, max_size=1000))
     return {
@@ -42,7 +44,7 @@ def thinking_block_strategy(draw: st.DrawFn) -> dict[str, Any]:
 
 
 @st.composite
-def tool_use_block_strategy(draw: st.DrawFn) -> dict[str, Any]:
+def tool_use_block_strategy(draw: st.DrawFn) -> JSONRecord:
     """Generate a tool_use block."""
     tool_names = ["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Task", "WebFetch"]
     return {
@@ -60,7 +62,7 @@ def tool_use_block_strategy(draw: st.DrawFn) -> dict[str, Any]:
 
 
 @st.composite
-def tool_result_block_strategy(draw: st.DrawFn) -> dict[str, Any]:
+def tool_result_block_strategy(draw: st.DrawFn) -> JSONRecord:
     """Generate a tool_result block."""
     return {
         "type": "tool_result",
@@ -70,7 +72,7 @@ def tool_result_block_strategy(draw: st.DrawFn) -> dict[str, Any]:
 
 
 @st.composite
-def code_block_strategy(draw: st.DrawFn) -> dict[str, Any]:
+def code_block_strategy(draw: st.DrawFn) -> JSONRecord:
     """Generate a code content block."""
     return {
         "type": "code",
@@ -80,7 +82,7 @@ def code_block_strategy(draw: st.DrawFn) -> dict[str, Any]:
 
 
 @st.composite
-def content_block_strategy(draw: st.DrawFn) -> dict[str, Any]:
+def content_block_strategy(draw: st.DrawFn) -> JSONRecord:
     """Generate any type of content block."""
     return draw(
         st.one_of(
@@ -104,7 +106,7 @@ def message_strategy(
     roles: list[str] | None = None,
     with_timestamp: bool = True,
     with_content_blocks: bool = False,
-) -> dict[str, Any]:
+) -> JSONRecord:
     """Generate a generic message dict.
 
     Args:
@@ -115,7 +117,7 @@ def message_strategy(
     if roles is None:
         roles = ["user", "assistant"]
 
-    msg: dict[str, Any] = {
+    msg: JSONRecord = {
         "id": draw(st.uuids()).hex[:12],
         "role": draw(st.sampled_from(roles)),
         "text": draw(st.text(min_size=1, max_size=500)),
@@ -164,7 +166,7 @@ def conversation_strategy(
     min_messages: int = 1,
     max_messages: int = 20,
     providers: list[str] | None = None,
-) -> dict[str, Any]:
+) -> JSONRecord:
     """Generate a conversation dict.
 
     Args:
@@ -218,7 +220,7 @@ def message_model_strategy(draw: st.DrawFn, *, role: str | None = None) -> Messa
     text = draw(st.one_of(st.none(), st.text(max_size=200)))
 
     # Optionally add content_blocks in provider_meta
-    provider_meta: dict[str, Any] | None = None
+    provider_meta: JSONRecord | None = None
     block_type = draw(st.sampled_from(["text", "thinking", "tool_use", "none"]))
     if block_type != "none":
         block_text = draw(st.text(max_size=100))
@@ -230,7 +232,7 @@ def message_model_strategy(draw: st.DrawFn, *, role: str | None = None) -> Messa
     )
     duration = draw(st.one_of(st.none(), st.integers(min_value=1, max_value=60000)))
     if cost is not None or duration is not None:
-        raw: dict[str, Any] = {}
+        raw: JSONRecord = {}
         if cost is not None:
             raw["costUSD"] = cost
         if duration is not None:

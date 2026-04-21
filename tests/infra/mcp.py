@@ -6,7 +6,7 @@ import asyncio
 import inspect
 from collections.abc import Awaitable, Callable, Coroutine, Sequence
 from datetime import datetime, timezone
-from typing import Any, TypeVar, cast
+from typing import TypeVar, cast
 from unittest.mock import AsyncMock, MagicMock
 
 from polylogue.lib.models import Conversation
@@ -74,7 +74,7 @@ def invoke_surface(
     """Call an MCP surface whether it is sync or async."""
     result = fn(*args, **kwargs)
     if inspect.iscoroutine(result):
-        return asyncio.run(cast(Coroutine[Any, Any, SurfaceResult], result))
+        return asyncio.run(cast(Coroutine[object, object, SurfaceResult], result))
     return cast(SurfaceResult, result)
 
 
