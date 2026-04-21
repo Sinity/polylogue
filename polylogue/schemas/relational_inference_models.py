@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+
+from polylogue.schemas.json_types import JSONDocument
+
+RelationEvidence = JSONDocument
 
 
 @dataclass(frozen=True, slots=True)
@@ -13,7 +16,7 @@ class ForeignKeyRelation:
     source_path: str
     target_path: str
     match_ratio: float
-    evidence: dict[str, Any] = field(default_factory=dict)
+    evidence: RelationEvidence = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,7 +28,7 @@ class TimeDeltaRelation:
     min_delta: float
     max_delta: float
     avg_delta: float
-    evidence: dict[str, Any] = field(default_factory=dict)
+    evidence: RelationEvidence = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,7 +38,7 @@ class MutualExclusion:
     parent_path: str
     field_names: frozenset[str]
     sample_count: int
-    evidence: dict[str, Any] = field(default_factory=dict)
+    evidence: RelationEvidence = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,7 +50,7 @@ class StringLengthProfile:
     max_length: int
     avg_length: float
     stddev: float
-    evidence: dict[str, Any] = field(default_factory=dict)
+    evidence: RelationEvidence = field(default_factory=dict)
 
 
 @dataclass
@@ -64,6 +67,7 @@ __all__ = [
     "ForeignKeyRelation",
     "MutualExclusion",
     "RelationalAnnotations",
+    "RelationEvidence",
     "StringLengthProfile",
     "TimeDeltaRelation",
 ]
