@@ -35,6 +35,7 @@ class FieldStats:
     co_occurring_fields: Counter[str] = field(default_factory=Counter)
     object_key_counts: list[int] = field(default_factory=list)
     max_depth_seen: int = 0
+    ref_target: str | None = None
 
     @property
     def frequency(self) -> float:

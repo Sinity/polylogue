@@ -7,12 +7,12 @@ properties, and _collect_field_stats() sample collection.
 from __future__ import annotations
 
 from collections import Counter
-from typing import Any
 
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
+from polylogue.lib.json import JSONDocument
 from polylogue.schemas.field_stats import (
     FieldStats,
     _collect_field_stats,
@@ -250,7 +250,7 @@ class TestFieldStatsProperties:
 
 class TestCollectFieldStats:
     def test_discovers_all_top_level_keys(self) -> None:
-        samples: list[dict[str, Any]] = [
+        samples: list[JSONDocument] = [
             {"a": 1, "b": "hello"},
             {"b": "world", "c": True},
             {"a": 2, "c": False, "d": None},
@@ -267,27 +267,27 @@ class TestCollectFieldStats:
             assert s.total_samples == 5
 
     def test_present_count_tracks_non_null(self) -> None:
-        samples: list[dict[str, Any]] = [{"x": 1}, {"x": None}, {"x": 3}]
+        samples: list[JSONDocument] = [{"x": 1}, {"x": None}, {"x": 3}]
         stats = _collect_field_stats(samples)
         assert stats["$.x"].present_count == 2
 
     def test_nested_fields_discovered(self) -> None:
-        samples: list[dict[str, Any]] = [{"outer": {"inner": "value"}}]
+        samples: list[JSONDocument] = [{"outer": {"inner": "value"}}]
         stats = _collect_field_stats(samples)
         assert "$.outer.inner" in stats
 
     def test_array_items_use_wildcard_path(self) -> None:
-        samples: list[dict[str, Any]] = [{"items": [1, 2, 3]}]
+        samples: list[JSONDocument] = [{"items": [1, 2, 3]}]
         stats = _collect_field_stats(samples)
         assert "$.items[*]" in stats
 
     def test_dynamic_keys_use_wildcard(self) -> None:
-        samples: list[dict[str, Any]] = [{"mapping": {"550e8400-e29b-41d4-a716-446655440000": {"v": 1}}}]
+        samples: list[JSONDocument] = [{"mapping": {"550e8400-e29b-41d4-a716-446655440000": {"v": 1}}}]
         stats = _collect_field_stats(samples)
         assert "$.mapping.*" in stats
 
     def test_conversation_ids_tracked(self) -> None:
-        samples: list[dict[str, Any]] = [{"status": "active"}, {"status": "active"}, {"status": "pending"}]
+        samples: list[JSONDocument] = [{"status": "active"}, {"status": "active"}, {"status": "pending"}]
         conv_ids: list[str | None] = ["conv1", "conv1", "conv2"]
         stats = _collect_field_stats(samples, conversation_ids=conv_ids)
         status_stats = stats["$.status"]

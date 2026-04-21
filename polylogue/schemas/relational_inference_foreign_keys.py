@@ -13,12 +13,11 @@ def detect_foreign_keys(stats: dict[str, FieldStats]) -> list[ForeignKeyRelation
     results: list[ForeignKeyRelation] = []
 
     for path, field_stats in stats.items():
-        ref_target = getattr(field_stats, "_ref_target", None)
-        if ref_target:
+        if field_stats.ref_target:
             results.append(
                 ForeignKeyRelation(
                     source_path=path,
-                    target_path=ref_target,
+                    target_path=field_stats.ref_target,
                     match_ratio=1.0,
                     evidence={"source": "field_stats_ref_detection"},
                 )
@@ -40,7 +39,7 @@ def detect_foreign_keys(stats: dict[str, FieldStats]) -> list[ForeignKeyRelation
             "source_id",
         }:
             continue
-        if getattr(field_stats, "_ref_target", None):
+        if field_stats.ref_target:
             continue
 
         observed = set(field_stats.observed_values.keys())

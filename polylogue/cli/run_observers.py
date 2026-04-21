@@ -14,6 +14,7 @@ from polylogue.pipeline.observers import RunObserver
 from polylogue.storage.run_state import RunResult
 
 if TYPE_CHECKING:
+    from rich.console import Console
     from rich.progress import Progress, TaskID
 
 _PROGRESS_FRACTION_RE = re.compile(r"(?P<completed>\d[\d,]*)/(?P<total>\d[\d,]*)")
@@ -152,7 +153,7 @@ def progress_observer(
         BarColumn(),
         TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
         TimeRemainingColumn(),
-        console=env.ui.console,  # type: ignore[arg-type]
+        console=cast("Console", env.ui.console),
         transient=True,
     ) as progress:
         task_id = progress.add_task(initial_desc, total=None)

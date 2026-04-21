@@ -9,15 +9,16 @@ project-level → CLI flags.
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import dataclass, field
 from fnmatch import fnmatch
 from pathlib import Path
 from typing import Literal, TypeAlias
 
-try:
+if sys.version_info >= (3, 11):
     import tomllib
-except ModuleNotFoundError:  # Python <3.11
-    import tomli as tomllib  # type: ignore[no-redef]
+else:
+    import tomli as tomllib
 
 
 # ---------------------------------------------------------------------------
