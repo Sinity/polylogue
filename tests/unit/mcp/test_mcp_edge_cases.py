@@ -7,12 +7,12 @@ and concurrent access patterns.
 from __future__ import annotations
 
 import json
-from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from polylogue.mcp.server_support import _clamp_limit, _safe_call
+from tests.infra.mcp import MCPServerUnderTest, invoke_surface_async
 
 # =============================================================================
 # _clamp_limit boundary tests
@@ -81,15 +81,15 @@ class TestSafeCall:
 # =============================================================================
 
 
-def _invoke_tool(mcp_server: Any, tool_name: str, **kwargs: object) -> Any:
+async def _invoke_tool(mcp_server: MCPServerUnderTest, tool_name: str, **kwargs: object) -> str:
     """Invoke a registered MCP tool by name, matching the existing test pattern."""
     tool = mcp_server._tool_manager._tools[tool_name]
-    return tool.fn(**kwargs)
+    return await invoke_surface_async(tool.fn, **kwargs)
 
 
 class TestUnicodeHandling:
     @pytest.mark.asyncio
-    async def test_unicode_tag(self, mcp_server: Any) -> None:
+    async def test_unicode_tag(self, mcp_server: MCPServerUnderTest) -> None:
         """Unicode characters in tag names don't crash the server."""
         from tests.infra.mcp import make_tag_store_mock
 
@@ -109,7 +109,7 @@ class TestUnicodeHandling:
                 assert isinstance(result, str)
 
     @pytest.mark.asyncio
-    async def test_empty_query(self, mcp_server: Any) -> None:
+    async def test_empty_query(self, mcp_server: MCPServerUnderTest) -> None:
         """Empty query string doesn't crash search."""
         from tests.infra.mcp import make_mock_filter, make_query_store_mock
 
@@ -138,7 +138,7 @@ class TestUnicodeHandling:
 
 class TestBoundaryParameters:
     @pytest.mark.asyncio
-    async def test_limit_zero(self, mcp_server: Any) -> None:
+    async def test_limit_zero(self, mcp_server: MCPServerUnderTest) -> None:
         """limit=0 is clamped to 1 (returns minimal results)."""
         from tests.infra.mcp import make_mock_filter, make_query_store_mock
 
@@ -159,7 +159,7 @@ class TestBoundaryParameters:
             assert isinstance(result, str)
 
     @pytest.mark.asyncio
-    async def test_limit_negative(self, mcp_server: Any) -> None:
+    async def test_limit_negative(self, mcp_server: MCPServerUnderTest) -> None:
         """Negative limit is clamped to 1."""
         from tests.infra.mcp import make_mock_filter, make_query_store_mock
 

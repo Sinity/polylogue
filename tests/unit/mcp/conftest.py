@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import cast
 
 import pytest
 
+from tests.infra.mcp import MCPServerUnderTest
+
 
 @pytest.fixture
-def mcp_server() -> Any:
+def mcp_server() -> MCPServerUnderTest:
     """Build and return an MCP server instance for testing.
 
     Ensures a fresh event loop policy so that stale/closed loops left behind
@@ -21,4 +23,4 @@ def mcp_server() -> Any:
 
     from polylogue.mcp.server import build_server
 
-    return build_server()
+    return cast(MCPServerUnderTest, build_server())

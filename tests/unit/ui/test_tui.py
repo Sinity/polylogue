@@ -1,12 +1,22 @@
-from typing import Any
+from __future__ import annotations
+
+from collections.abc import Callable
+from typing import TYPE_CHECKING, TypeAlias, cast
+from unittest.mock import MagicMock
 
 import pytest
+from textual.pilot import Pilot
 from textual.widgets import DataTable, Input, TabbedContent, Tree
 
+from polylogue.protocols import ConversationArchiveReadStore
 from polylogue.ui.tui.app import PolylogueApp
 from polylogue.ui.tui.screens.base import RepositoryBoundContainer
 from polylogue.ui.tui.screens.dashboard import Dashboard, ProviderBar
 from polylogue.ui.tui.widgets.stats import StatCard
+
+if TYPE_CHECKING:
+    from polylogue.storage.repository import ConversationRepository
+    from tests.infra.storage_records import ConversationBuilder
 
 pytestmark = pytest.mark.tui
 _skip = pytest.mark.skipif(False, reason="Textual not installed")
@@ -17,12 +27,15 @@ _skip = pytest.mark.skipif(False, reason="Textual not installed")
 # ---------------------------------------------------------------------------
 
 
-def _make_app(repo: Any) -> Any:
+ConversationBuilderFactory: TypeAlias = Callable[[str], "ConversationBuilder"]
+
+
+def _make_app(repo: ConversationArchiveReadStore) -> PolylogueApp:
     """Create PolylogueApp with an injected repository."""
     return PolylogueApp(repository=repo)
 
 
-async def _wait_workers(pilot: Any, *, selector: str | None = None, reject: str = "Loading...") -> None:
+async def _wait_workers(pilot: Pilot[None], *, selector: str | None = None, reject: str = "Loading...") -> None:
     """Wait for all thread workers to finish, then flush DOM (Phase 2B fix).
 
     Thread workers schedule call_from_thread() callbacks that haven't been
@@ -59,7 +72,9 @@ async def _wait_workers(pilot: Any, *, selector: str | None = None, reject: str 
 
 @_skip
 @pytest.mark.asyncio
-async def test_dashboard_stats_populated(storage_repository: Any, conversation_builder: Any) -> None:
+async def test_dashboard_stats_populated(
+    storage_repository: ConversationRepository, conversation_builder: ConversationBuilderFactory
+) -> None:
     """Seed data → mount → wait → assert stat card values match seeded counts."""
     conversation_builder("c1").add_message("m1", text="Hello").save()
     conversation_builder("c2").add_message("m2", text="World").add_message("m3", text="!").save()
@@ -76,7 +91,9 @@ async def test_dashboard_stats_populated(storage_repository: Any, conversation_b
 
 @_skip
 @pytest.mark.asyncio
-async def test_dashboard_provider_bars(storage_repository: Any, conversation_builder: Any) -> None:
+async def test_dashboard_provider_bars(
+    storage_repository: ConversationRepository, conversation_builder: ConversationBuilderFactory
+) -> None:
     """Seed 2 providers → assert ProviderBar widgets rendered with correct counts."""
     conversation_builder("c1").provider("chatgpt").add_message("m1", text="A").save()
     conversation_builder("c2").provider("chatgpt").add_message("m2", text="B").save()
@@ -89,7 +106,7 @@ async def test_dashboard_provider_bars(storage_repository: Any, conversation_bui
         bars = pilot.app.query(ProviderBar)
         assert len(bars) >= 2
         # chatgpt should have 2, claude should have 1
-        texts = [bar.render() for bar in bars]
+        texts = [str(bar.render()) for bar in bars]
         chatgpt_bar = [t for t in texts if "chatgpt" in t]
         claude_bar = [t for t in texts if "claude-ai" in t]
         assert len(chatgpt_bar) == 1
@@ -100,7 +117,7 @@ async def test_dashboard_provider_bars(storage_repository: Any, conversation_bui
 
 @_skip
 @pytest.mark.asyncio
-async def test_dashboard_empty_db(storage_repository: Any) -> None:
+async def test_dashboard_empty_db(storage_repository: ConversationRepository) -> None:
     """Empty DB → graceful '0' display, no errors."""
     app = _make_app(storage_repository)
     async with app.run_test() as pilot:
@@ -119,7 +136,9 @@ async def test_dashboard_empty_db(storage_repository: Any) -> None:
 
 @_skip
 @pytest.mark.asyncio
-async def test_browser_tree_populated(storage_repository: Any, conversation_builder: Any) -> None:
+async def test_browser_tree_populated(
+    storage_repository: ConversationRepository, conversation_builder: ConversationBuilderFactory
+) -> None:
     """Seed conversations → switch to browser → wait → assert tree nodes match."""
     conversation_builder("c1").provider("chatgpt").title("My Chat").add_message("m1", text="Hi").save()
 
@@ -144,7 +163,9 @@ async def test_browser_tree_populated(storage_repository: Any, conversation_buil
 
 @_skip
 @pytest.mark.asyncio
-async def test_browser_node_selection(storage_repository: Any, conversation_builder: Any) -> None:
+async def test_browser_node_selection(
+    storage_repository: ConversationRepository, conversation_builder: ConversationBuilderFactory
+) -> None:
     """Click leaf node → assert markdown viewer shows conversation content."""
     conversation_builder("c1").provider("chatgpt").title("Test Chat").add_message("m1", text="Hello World").save()
 
@@ -175,7 +196,7 @@ async def test_browser_node_selection(storage_repository: Any, conversation_buil
 
 @_skip
 @pytest.mark.asyncio
-async def test_browser_empty_db(storage_repository: Any) -> None:
+async def test_browser_empty_db(storage_repository: ConversationRepository) -> None:
     """Empty DB → fallback provider list shown."""
     import asyncio
 
@@ -205,7 +226,9 @@ async def test_browser_empty_db(storage_repository: Any) -> None:
 
 @_skip
 @pytest.mark.asyncio
-async def test_search_flow(storage_repository: Any, conversation_builder: Any) -> None:
+async def test_search_flow(
+    storage_repository: ConversationRepository, conversation_builder: ConversationBuilderFactory
+) -> None:
     """Seed + index → type query → wait → assert DataTable rows."""
     conversation_builder("c1").add_message("m1", text="UniqueSearchTerm123").save()
 
@@ -247,7 +270,9 @@ async def test_search_flow(storage_repository: Any, conversation_builder: Any) -
 
 @_skip
 @pytest.mark.asyncio
-async def test_search_no_results(storage_repository: Any, conversation_builder: Any) -> None:
+async def test_search_no_results(
+    storage_repository: ConversationRepository, conversation_builder: ConversationBuilderFactory
+) -> None:
     """Search non-existent term → empty results, no error."""
     conversation_builder("c1").add_message("m1", text="Hello").save()
 
@@ -276,7 +301,7 @@ async def test_search_no_results(storage_repository: Any, conversation_builder: 
 
 @_skip
 @pytest.mark.asyncio
-async def test_search_empty_db(storage_repository: Any) -> None:
+async def test_search_empty_db(storage_repository: ConversationRepository) -> None:
     """Empty DB with FTS table → 0 results, no crash (messages_fts always exists)."""
     app = _make_app(storage_repository)
     async with app.run_test() as pilot:
@@ -302,7 +327,7 @@ async def test_search_empty_db(storage_repository: Any) -> None:
 
 @_skip
 @pytest.mark.asyncio
-async def test_keyboard_tab_switch(storage_repository: Any) -> None:
+async def test_keyboard_tab_switch(storage_repository: ConversationRepository) -> None:
     """Press Tab key → verify tab changes (basic navigation)."""
     app = _make_app(storage_repository)
     async with app.run_test() as pilot:
@@ -322,7 +347,7 @@ async def test_keyboard_tab_switch(storage_repository: Any) -> None:
 
 @_skip
 @pytest.mark.asyncio
-async def test_dark_mode_toggle(storage_repository: Any) -> None:
+async def test_dark_mode_toggle(storage_repository: ConversationRepository) -> None:
     """Press 'd' → assert dark mode toggles without crashing."""
     app = _make_app(storage_repository)
     async with app.run_test() as pilot:
@@ -337,7 +362,9 @@ async def test_dark_mode_toggle(storage_repository: Any) -> None:
 
 @_skip
 @pytest.mark.asyncio
-async def test_search_missing_index_shows_rebuild_hint(storage_repository: Any, conversation_builder: Any) -> None:
+async def test_search_missing_index_shows_rebuild_hint(
+    storage_repository: ConversationRepository, conversation_builder: ConversationBuilderFactory
+) -> None:
     """Dropping FTS tables yields a direct rebuild hint instead of a crash."""
     from polylogue.storage.backends.connection import open_connection
 
@@ -377,7 +404,7 @@ def test_repository_bound_container_requires_injected_repo() -> None:
 
 @_skip
 @pytest.mark.asyncio
-async def test_quit_action(storage_repository: Any) -> None:
+async def test_quit_action(storage_repository: ConversationRepository) -> None:
     """Press 'q' → app exits cleanly."""
     app = _make_app(storage_repository)
     async with app.run_test() as pilot:
@@ -393,15 +420,15 @@ async def test_quit_action(storage_repository: Any) -> None:
 
 @_skip
 @pytest.mark.asyncio
-async def test_worker_failure_recovery(storage_repository: Any, monkeypatch: Any) -> None:
+async def test_worker_failure_recovery(
+    storage_repository: ConversationRepository, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Inject error in repo → assert app stays usable with error notification."""
-    from unittest.mock import MagicMock
-
     # Create a repo that raises on get_archive_stats
     broken_repo = MagicMock()
     broken_repo.get_archive_stats.side_effect = RuntimeError("DB exploded")
 
-    app = PolylogueApp(repository=broken_repo)
+    app = PolylogueApp(repository=cast(ConversationArchiveReadStore, broken_repo))
     async with app.run_test() as pilot:
         await _wait_workers(pilot)
 
@@ -420,7 +447,7 @@ async def test_worker_failure_recovery(storage_repository: Any, monkeypatch: Any
 
 @_skip
 @pytest.mark.asyncio
-async def test_app_startup(storage_repository: Any) -> None:
+async def test_app_startup(storage_repository: ConversationRepository) -> None:
     """Test that the app starts and loads the dashboard."""
     app = _make_app(storage_repository)
 

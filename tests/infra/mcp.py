@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-from collections.abc import Awaitable, Callable, Coroutine, Sequence
+from collections.abc import Awaitable, Callable, Coroutine, Mapping, Sequence
 from datetime import datetime, timezone
-from typing import TypeVar, cast
+from typing import Protocol, TypeAlias, TypeVar, cast
 from unittest.mock import AsyncMock, MagicMock
 
 from polylogue.lib.models import Conversation
@@ -63,6 +63,30 @@ EXPECTED_PROMPT_NAMES = {
 }
 
 SurfaceResult = TypeVar("SurfaceResult")
+MCPSurfaceHandler: TypeAlias = Callable[..., str | Awaitable[str]]
+
+
+class RegisteredMCPSurface(Protocol):
+    fn: MCPSurfaceHandler
+
+
+class MCPToolManager(Protocol):
+    _tools: Mapping[str, RegisteredMCPSurface]
+
+
+class MCPResourceManager(Protocol):
+    _resources: Mapping[str, RegisteredMCPSurface]
+    _templates: Mapping[str, RegisteredMCPSurface]
+
+
+class MCPPromptManager(Protocol):
+    _prompts: Mapping[str, RegisteredMCPSurface]
+
+
+class MCPServerUnderTest(Protocol):
+    _tool_manager: MCPToolManager
+    _resource_manager: MCPResourceManager
+    _prompt_manager: MCPPromptManager
 
 
 def invoke_surface(
