@@ -9,7 +9,9 @@ from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, TypeAlias
 
+from polylogue.lib.message_roles import MessageRoleFilter, normalize_message_roles
 from polylogue.lib.query_spec import ConversationQuerySpec
+from polylogue.lib.roles import Role
 
 if TYPE_CHECKING:
     from polylogue.lib.models import Conversation, ConversationSummary
@@ -46,6 +48,11 @@ def describe_query_filters(params: QueryParamSource) -> list[str]:
     return coerce_query_spec(params).describe()
 
 
+def normalize_message_role_option(value: object) -> tuple[str, ...]:
+    """Normalize raw Click message-role values to canonical strings."""
+    return tuple(role.value for role in normalize_message_roles(value))
+
+
 @dataclass(frozen=True, slots=True)
 class QueryDeliveryTarget:
     """Single parsed delivery target for query output."""
@@ -74,6 +81,7 @@ class QueryOutputSpec:
     destinations: tuple[QueryDeliveryTarget, ...]
     fields: str | None
     dialogue_only: bool
+    message_roles: MessageRoleFilter
     transform: QueryTransform
     list_mode: bool
     print_path: bool
@@ -89,6 +97,7 @@ class QueryOutputSpec:
             destinations=destinations,
             fields=str(params["fields"]) if params.get("fields") is not None else None,
             dialogue_only=bool(params.get("dialogue_only", False)),
+            message_roles=normalize_message_roles(params.get("message_role") or params.get("message_roles")),
             transform=str(params["transform"]) if params.get("transform") is not None else None,
             list_mode=bool(params.get("list_mode", False)),
             print_path=bool(params.get("print_path", False)),
@@ -103,6 +112,16 @@ class QueryOutputSpec:
 
     def destination_labels(self) -> tuple[str, ...]:
         return tuple(target.raw for target in self.destinations)
+
+    def effective_message_roles(self) -> MessageRoleFilter:
+        if self.message_roles:
+            return self.message_roles
+        if self.dialogue_only:
+            return (Role.USER, Role.ASSISTANT)
+        return ()
+
+    def filters_messages(self) -> bool:
+        return bool(self.effective_message_roles())
 
 
 @dataclass(frozen=True, slots=True)
@@ -212,7 +231,7 @@ class QueryExecutionPlan:
             self.action == QueryAction.SHOW
             and self.output.list_mode
             and self.output.transform is None
-            and not self.output.dialogue_only
+            and not self.output.filters_messages()
         )
 
     def prefers_summary_stats(self) -> bool:

@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     from polylogue.lib.action_events import ActionEvent
     from polylogue.lib.conversation_models import Conversation, ConversationSummary
     from polylogue.lib.message_models import Message
+    from polylogue.lib.message_roles import MessageRoleFilter
     from polylogue.lib.session_profile import SessionProfile
     from polylogue.lib.stats import ArchiveStats
     from polylogue.storage.action_event_artifacts import ActionEventArtifactState
@@ -182,6 +183,7 @@ class ConversationReader(Protocol):
         conversation_id: str,
         *,
         dialogue_only: bool = False,
+        message_roles: MessageRoleFilter = (),
         limit: int | None = None,
     ) -> AsyncIterator[Message]: ...
 

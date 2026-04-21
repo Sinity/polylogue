@@ -17,6 +17,7 @@ from polylogue.lib.messages import MessageCollection
 from polylogue.lib.models import Attachment, Conversation, DialoguePair, Message
 from polylogue.lib.pricing import harmonize_session_cost
 from polylogue.lib.projections import ConversationProjection
+from polylogue.lib.roles import Role
 from tests.infra.assertions import assert_contains_all, assert_not_contains_any
 from tests.infra.builders import make_conv, make_msg
 
@@ -25,8 +26,9 @@ from tests.infra.builders import make_conv, make_msg
 class ViewCase:
     name: str
     messages: list[Message]
-    view: str
     expected_ids: tuple[str, ...]
+    view: str | None = None
+    role_filter: tuple[Role, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -316,18 +318,18 @@ VIEW_CASES = [
             make_msg(id="s1", role="system", text="System prompt"),
             make_msg(id="t1", role="tool", text="tool"),
         ],
-        view="dialogue_only",
         expected_ids=("u1", "a1"),
+        view="dialogue_only",
     ),
     ViewCase(
-        name="assistant_only",
+        name="assistant_role_filter",
         messages=[
             make_msg(id="u1", role="user", text="Question one with enough detail"),
             make_msg(id="a1", role="assistant", text="Answer one with enough detail"),
             make_msg(id="a2", role="assistant", text="Answer two with enough detail"),
         ],
-        view="assistant_only",
         expected_ids=("a1", "a2"),
+        role_filter=(Role.ASSISTANT,),
     ),
     ViewCase(
         name="without_noise",
@@ -363,7 +365,11 @@ class TestConversationViewsAndIteration:
     @pytest.mark.parametrize("case", VIEW_CASES, ids=lambda case: case.name)
     def test_view_projection_contract(self, case: ViewCase) -> None:
         conversation = make_conv(id="c1", provider="test", messages=MessageCollection(messages=case.messages))
-        projected = getattr(conversation, case.view)()
+        if case.role_filter:
+            projected = conversation.with_roles(case.role_filter)
+        else:
+            assert case.view is not None
+            projected = getattr(conversation, case.view)()
         assert tuple(message.id for message in projected.messages) == case.expected_ids
 
     def test_iterators_share_projection_contract(self, dialogue_noise_mix: Conversation) -> None:

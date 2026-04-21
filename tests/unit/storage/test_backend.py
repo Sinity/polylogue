@@ -15,6 +15,7 @@ import aiosqlite
 import pytest
 
 import polylogue.paths
+from polylogue.lib.roles import Role
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.backends.connection import (
     READ_CACHE_SIZE_KIB,
@@ -996,6 +997,34 @@ async def test_backend_delete_contracts(tmp_path: Path) -> None:
         )
         assert conn.execute("SELECT COUNT(*) FROM day_session_summaries").fetchone()[0] == 0
         assert conn.execute("SELECT COUNT(*) FROM session_tag_rollups").fetchone()[0] == 0
+    await backend.close()
+
+
+async def test_backend_stream_messages_accepts_generic_role_filter(tmp_path: Path) -> None:
+    backend = SQLiteBackend(db_path=tmp_path / "role-filter.db")
+    conv = make_conversation("conv-role-filter", title="Role Filter")
+    messages = [
+        make_message("msg-user", "conv-role-filter", role="user", text="User text"),
+        make_message("msg-assistant", "conv-role-filter", role="assistant", text="Assistant text"),
+        make_message("msg-tool", "conv-role-filter", role="tool", text="Tool text"),
+        make_message("msg-system", "conv-role-filter", role="system", text="System text"),
+    ]
+
+    async with backend.transaction():
+        await backend.save_conversation_record(conv)
+        await backend.save_messages(messages)
+
+    user_messages = [message async for message in backend.iter_messages("conv-role-filter", message_roles=(Role.USER,))]
+    dialogue_messages = [message async for message in backend.iter_messages("conv-role-filter", dialogue_only=True)]
+    stats = await backend.get_conversation_stats("conv-role-filter")
+
+    assert [message.message_id for message in user_messages] == ["msg-user"]
+    assert [message.message_id for message in dialogue_messages] == ["msg-user", "msg-assistant"]
+    assert stats["role_user_messages"] == 1
+    assert stats["role_assistant_messages"] == 1
+    assert stats["role_tool_messages"] == 1
+    assert stats["role_system_messages"] == 1
+
     await backend.close()
 
 

@@ -7,6 +7,7 @@ from typing import TypeAlias
 
 import click
 
+from polylogue.cli.query_contracts import normalize_message_role_option
 from polylogue.cli.shell_completion_values import (
     complete_conversation_ids,
     complete_provider_values,
@@ -45,6 +46,17 @@ def _validate_provider_tokens(
             param_hint="--provider",
         )
     return value
+
+
+def _validate_message_role_tokens(
+    ctx: click.Context,
+    _param: click.Parameter,
+    value: tuple[str, ...],
+) -> tuple[str, ...]:
+    try:
+        return normalize_message_role_option(value)
+    except ValueError as exc:
+        raise click.BadParameter(str(exc), param_hint="--message-role") from exc
 
 
 FILTER_OPTION_DECORATORS: tuple[Callable[[ClickCallable], ClickCallable], ...] = (
@@ -181,6 +193,13 @@ STREAMING_OPTION_DECORATORS: tuple[Callable[[ClickCallable], ClickCallable], ...
         help="Stream output (low memory). Requires --latest or -i ID. Incompatible with --transform",
     ),
     click.option("--dialogue-only", "-d", is_flag=True, help="Show only user/assistant messages"),
+    click.option(
+        "--message-role",
+        "message_role",
+        multiple=True,
+        callback=_validate_message_role_tokens,
+        help="Show only selected message roles (repeatable or comma-separated: user, assistant, system, tool, unknown)",
+    ),
 )
 
 MODIFIER_OPTION_DECORATORS: tuple[Callable[[ClickCallable], ClickCallable], ...] = (

@@ -138,6 +138,7 @@ def _make_params(**overrides: object) -> dict[str, object]:
         "output": None,
         "transform": None,
         "dialogue_only": False,
+        "message_role": (),
         "stats_only": False,
         "stats_by": None,
         "set_meta": None,
@@ -262,7 +263,7 @@ async def test_async_execute_query_reports_non_date_query_spec_errors() -> None:
     plan = QueryExecutionPlan(
         selection=selection,
         action=QueryAction.SHOW,
-        output=QueryOutputSpec("markdown", _delivery_targets("stdout"), None, False, None, False, False),
+        output=QueryOutputSpec("markdown", _delivery_targets("stdout"), None, False, (), None, False, False),
         mutation=QueryMutationSpec((), (), False, False, False),
     )
 
@@ -737,12 +738,13 @@ async def test_async_execute_query_uses_session_product_stats_lane_for_repo_stat
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("output_format", "dialogue_only", "limit", "expected_fragments"),
+    ("output_format", "dialogue_only", "message_roles", "limit", "expected_fragments"),
     [
-        ("plaintext", False, None, ["[USER]", "Hello", "[ASSISTANT]", "Hi"]),
+        ("plaintext", False, (), None, ["[USER]", "Hello", "[ASSISTANT]", "Hi"]),
         (
             "markdown",
             True,
+            (),
             1,
             [
                 "# Test Title",
@@ -752,14 +754,32 @@ async def test_async_execute_query_uses_session_product_stats_lane_for_repo_stat
                 "_Streamed 1 messages_",
             ],
         ),
-        ("json-lines", False, None, ['"type": "header"', '"type": "message"', '"type": "footer"']),
+        ("json-lines", False, (), None, ['"type": "header"', '"type": "message"', '"type": "footer"']),
+        (
+            "markdown",
+            False,
+            ("user",),
+            1,
+            [
+                "# Test Title",
+                "_Showing 1 user messages (limit: 1) of 2 total_",
+                "## User",
+                "---",
+                "_Streamed 1 messages_",
+            ],
+        ),
     ],
-    ids=["plaintext", "markdown", "json-lines"],
+    ids=["plaintext", "markdown", "json-lines", "markdown-message-role-user"],
 )
 async def test_stream_conversation_output_contract(
-    output_format: str, dialogue_only: bool, limit: int | None, expected_fragments: list[str]
+    output_format: str,
+    dialogue_only: bool,
+    message_roles: tuple[str, ...],
+    limit: int | None,
+    expected_fragments: list[str],
 ) -> None:
     from polylogue.cli.query_output import stream_conversation
+    from polylogue.lib.message_roles import normalize_message_roles
 
     repo = MagicMock()
     repo.get_render_projection = AsyncMock(
@@ -772,7 +792,9 @@ async def test_stream_conversation_output_contract(
             )
         )
     )
-    repo.get_conversation_stats = AsyncMock(return_value={"dialogue_messages": 1, "total_messages": 2})
+    repo.get_conversation_stats = AsyncMock(
+        return_value={"dialogue_messages": 1, "role_user_messages": 1, "total_messages": 2}
+    )
 
     async def _iter_messages(*_args: object, **_kwargs: object) -> AsyncIterator[MessageModel]:
         messages = [_make_msg("m1", "user", "Hello"), _make_msg("m2", "assistant", "Hi")]
@@ -787,7 +809,13 @@ async def test_stream_conversation_output_contract(
 
     with patch("sys.stdout", stdout):
         count = await stream_conversation(
-            env, repo, "conv-1", output_format=output_format, dialogue_only=dialogue_only, message_limit=limit
+            env,
+            repo,
+            "conv-1",
+            output_format=output_format,
+            dialogue_only=dialogue_only,
+            message_roles=normalize_message_roles(message_roles),
+            message_limit=limit,
         )
 
     output = stdout.getvalue()

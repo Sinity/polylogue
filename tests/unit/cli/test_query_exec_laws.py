@@ -44,6 +44,7 @@ from polylogue.cli.query_output import (
 )
 from polylogue.cli.types import AppEnv
 from polylogue.lib.json import JSONDocument
+from polylogue.lib.message_roles import MessageRoleFilter
 from polylogue.lib.models import Conversation
 from polylogue.lib.query_spec import ConversationQuerySpec, QuerySpecError
 from polylogue.lib.roles import Role
@@ -174,6 +175,7 @@ def _output_spec(
     destinations: tuple[str, ...] = ("stdout",),
     fields: str | None = None,
     dialogue_only: bool = False,
+    message_roles: MessageRoleFilter = (),
     transform: str | None = None,
     list_mode: bool = False,
     print_path: bool = False,
@@ -183,6 +185,7 @@ def _output_spec(
         destinations=_delivery_targets(*destinations),
         fields=fields,
         dialogue_only=dialogue_only,
+        message_roles=message_roles,
         transform=transform,
         list_mode=list_mode,
         print_path=print_path,
@@ -1129,6 +1132,34 @@ def test_project_query_results_contract() -> None:
     ]
 
 
+def test_project_query_results_message_role_contract() -> None:
+    plan = QueryExecutionPlan(
+        selection=ConversationQuerySpec(),
+        action=QueryAction.SHOW,
+        output=_output_spec(message_roles=(Role.USER,)),
+        mutation=_mutation_spec(),
+    )
+    conversation = _sample_conversation()
+
+    projected = project_query_results([conversation], plan)
+
+    assert [message.id for message in projected[0].messages] == ["m-user"]
+
+
+def test_project_query_results_explicit_message_role_supersedes_dialogue_only() -> None:
+    plan = QueryExecutionPlan(
+        selection=ConversationQuerySpec(),
+        action=QueryAction.SHOW,
+        output=_output_spec(dialogue_only=True, message_roles=(Role.TOOL,)),
+        mutation=_mutation_spec(),
+    )
+    conversation = _sample_conversation()
+
+    projected = project_query_results([conversation], plan)
+
+    assert [message.id for message in projected[0].messages] == ["m-tool"]
+
+
 @pytest.mark.parametrize(
     ("case", "expected_helper"),
     [
@@ -1243,6 +1274,7 @@ def test_async_execute_query_action_routing_contract(case: str, expected_helper:
             "conv-stream",
             output_format="json-lines",
             dialogue_only=True,
+            message_roles=(Role.USER, Role.ASSISTANT),
             message_limit=7,
         )
         warnings = [call.args[0] for call in mock_echo.call_args_list if call.args]
