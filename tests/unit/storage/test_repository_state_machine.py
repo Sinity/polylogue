@@ -7,10 +7,7 @@ after arbitrary interleaving.
 
 from __future__ import annotations
 
-import shutil
 import sqlite3
-import tempfile
-from pathlib import Path
 
 from hypothesis import settings
 from hypothesis.stateful import Bundle, RuleBasedStateMachine, rule
@@ -36,11 +33,7 @@ class ArchiveLifecycleStateMachine(RuleBasedStateMachine):
 
         from polylogue.storage.backends.schema import _ensure_schema
 
-        self._tmpdir = tempfile.mkdtemp()
-        self._db_path = Path(self._tmpdir) / "state_machine.db"
-        self._db_path.parent.mkdir(parents=True, exist_ok=True)
-
-        self._conn = sqlite3.connect(self._db_path)
+        self._conn = sqlite3.connect(":memory:")
         self._conn.row_factory = sqlite3.Row
         _ensure_schema(self._conn)
 
@@ -127,7 +120,6 @@ class ArchiveLifecycleStateMachine(RuleBasedStateMachine):
 
     def teardown(self) -> None:
         self._conn.close()
-        shutil.rmtree(self._tmpdir, ignore_errors=True)
 
 
 TestArchiveLifecycle = ArchiveLifecycleStateMachine.TestCase
