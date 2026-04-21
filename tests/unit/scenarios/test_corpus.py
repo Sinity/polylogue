@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
@@ -18,7 +19,12 @@ from polylogue.scenarios import (
     resolve_corpus_specs,
 )
 from polylogue.schemas.operator_registry import SchemaRegistryLike
-from polylogue.schemas.packages import SchemaElementManifest, SchemaPackageCatalog, SchemaVersionPackage
+from polylogue.schemas.packages import (
+    SchemaElementManifest,
+    SchemaPackageCatalog,
+    SchemaResolution,
+    SchemaVersionPackage,
+)
 from polylogue.schemas.tooling_models import ClusterManifest, SchemaCluster, SchemaDiff
 
 
@@ -45,6 +51,15 @@ class _PassiveRegistry(SchemaRegistryLike):
         return []
 
     def get_schema_age_days(self, provider: str) -> int | None:
+        return None
+
+    def resolve_payload(
+        self,
+        provider: str,
+        payload: Mapping[str, object],
+        *,
+        source_path: str | None = None,
+    ) -> SchemaResolution | None:
         return None
 
     def compare_versions(

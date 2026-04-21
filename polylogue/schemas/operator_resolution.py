@@ -8,6 +8,7 @@ from polylogue.schemas.operator_models import (
     SchemaExplainResult,
     SchemaPayloadResolveRequest,
     SchemaPayloadResolveResult,
+    operator_json_document,
 )
 from polylogue.schemas.operator_registry import runtime_schema_registry, schema_registry
 
@@ -31,7 +32,7 @@ def explain_schema(request: SchemaExplainRequest) -> SchemaExplainResult:
         version=request.version,
         element_kind=request.element_kind,
         package=package,
-        schema=schema,
+        schema=operator_json_document(schema),
         annotations=collect_annotation_summary(schema),
         review_proof=proof,
     )

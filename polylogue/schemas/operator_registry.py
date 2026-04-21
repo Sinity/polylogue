@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Protocol
 
 from polylogue.lib.json import JSONDocument
-from polylogue.schemas.packages import SchemaPackageCatalog, SchemaVersionPackage
+from polylogue.schemas.packages import SchemaPackageCatalog, SchemaResolution, SchemaVersionPackage
 from polylogue.schemas.tooling_models import ClusterManifest, SchemaDiff
 
 
@@ -29,6 +29,14 @@ class RuntimeSchemaRegistryLike(Protocol):
     def list_providers(self) -> list[str]: ...
 
     def get_schema_age_days(self, provider: str) -> int | None: ...
+
+    def resolve_payload(
+        self,
+        provider: str,
+        payload: Mapping[str, object],
+        *,
+        source_path: str | None = None,
+    ) -> SchemaResolution | None: ...
 
 
 class SchemaRegistryLike(RuntimeSchemaRegistryLike, Protocol):

@@ -14,7 +14,12 @@ from polylogue.schemas.operator_inference import (
 )
 from polylogue.schemas.operator_models import SchemaInferRequest
 from polylogue.schemas.operator_registry import SchemaRegistryLike
-from polylogue.schemas.packages import SchemaElementManifest, SchemaPackageCatalog, SchemaVersionPackage
+from polylogue.schemas.packages import (
+    SchemaElementManifest,
+    SchemaPackageCatalog,
+    SchemaResolution,
+    SchemaVersionPackage,
+)
 from polylogue.schemas.tooling_models import ClusterManifest, SchemaCluster, SchemaDiff
 
 
@@ -62,6 +67,15 @@ class _FakeSchemaRegistry(SchemaRegistryLike):
         return sorted(provider_names)
 
     def get_schema_age_days(self, provider: str) -> int | None:
+        return None
+
+    def resolve_payload(
+        self,
+        provider: str,
+        payload: Mapping[str, object],
+        *,
+        source_path: str | None = None,
+    ) -> SchemaResolution | None:
         return None
 
     def compare_versions(
