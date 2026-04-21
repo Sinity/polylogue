@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
+from polylogue.lib.json import JSONDocument
 from polylogue.scenarios import CorpusScenario, CorpusSpec, build_corpus_scenarios, build_inferred_corpus_specs
 from polylogue.schemas.audit_models import AuditReport
-from polylogue.schemas.json_types import JSONDocument
 from polylogue.schemas.operator_models import (
     SchemaAuditRequest,
     SchemaCompareRequest,

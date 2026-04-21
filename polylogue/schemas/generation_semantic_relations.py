@@ -5,8 +5,8 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import cast, overload
 
+from polylogue.lib.json import JSONDocument, JSONDocumentList, JSONValue, json_document
 from polylogue.schemas.field_stats import FieldStats
-from polylogue.schemas.json_types import JSONDocument, JSONDocumentList, JSONValue, json_document
 from polylogue.schemas.relational_inference import infer_relations
 from polylogue.schemas.relational_inference_models import RelationalAnnotations
 from polylogue.schemas.semantic_inference import infer_semantic_roles, select_best_roles

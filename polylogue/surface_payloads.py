@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Literal, NotRequired, cast
 from pydantic import BaseModel, ConfigDict, Field
 from typing_extensions import TypedDict
 
-from polylogue.schemas.json_types import JSONDocument, JSONValue
+from polylogue.lib.json import JSONDocument, JSONValue
 
 if TYPE_CHECKING:
     from collections.abc import Container

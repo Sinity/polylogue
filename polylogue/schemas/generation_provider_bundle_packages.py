@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import cast
 
+from polylogue.lib.json import JSONDocument, JSONValue
 from polylogue.schemas.generation_cluster_support import (
     _artifact_priority,
     _cluster_profile_tokens,
@@ -28,7 +29,6 @@ from polylogue.schemas.generation_schema_builder import (
     _generate_cluster_schema,
 )
 from polylogue.schemas.generation_support import PrivacyConfigLike
-from polylogue.schemas.json_types import JSONDocument, JSONValue
 from polylogue.schemas.observation import ProviderConfig
 from polylogue.schemas.packages import (
     SchemaElementManifest,

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from polylogue.lib.json import JSONDocument, json_document
 from polylogue.readiness import ReadinessReport
 from polylogue.schemas.verification_models import ArtifactProofReport, SchemaVerificationReport
 from polylogue.storage.artifact_views import ArtifactCohortSummary
@@ -19,11 +20,11 @@ class VacuumResult:
     detail: str
     preview: bool = False
 
-    def to_dict(self) -> dict[str, str | bool]:
+    def to_dict(self) -> JSONDocument:
         payload: dict[str, str | bool] = {"ok": self.ok, "detail": self.detail}
         if self.preview:
             payload["preview"] = True
-        return payload
+        return json_document(payload)
 
 
 @dataclass

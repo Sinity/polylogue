@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 
-from polylogue.schemas.json_types import JSONDocument, json_document, json_document_list
+from polylogue.lib.json import JSONDocument, json_document, json_document_list
 from polylogue.schemas.runtime_registry import SchemaProvider, canonical_schema_provider
 
 

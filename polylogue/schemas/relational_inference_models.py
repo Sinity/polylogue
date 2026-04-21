@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from polylogue.schemas.json_types import JSONDocument
+from polylogue.lib.json import JSONDocument
 
 RelationEvidence = JSONDocument
 

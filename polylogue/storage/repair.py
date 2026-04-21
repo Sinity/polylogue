@@ -6,9 +6,9 @@ import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TypeAlias
 
 from polylogue.config import Config
+from polylogue.lib.json import JSONDocument, json_document
 from polylogue.logging import get_logger
 from polylogue.maintenance_models import DerivedModelStatus, MaintenanceCategory
 from polylogue.maintenance_targets import (
@@ -23,9 +23,6 @@ from polylogue.storage.session_product_runtime import SessionProductReadyFlag, S
 
 logger = get_logger(__name__)
 _MAINTENANCE_TARGET_CATALOG = build_maintenance_target_catalog()
-
-JSONScalar: TypeAlias = str | int | float | bool | None
-JSONValue: TypeAlias = JSONScalar | list["JSONValue"] | dict[str, "JSONValue"]
 
 _SESSION_PRODUCT_READY_FLAGS: tuple[SessionProductReadyFlag, ...] = (
     "profile_rows_ready",
@@ -60,15 +57,17 @@ class RepairResult:
     success: bool
     detail: str = ""
 
-    def to_dict(self) -> dict[str, object]:
-        return {
-            "name": self.name,
-            "category": self.category.value,
-            "destructive": self.destructive,
-            "repaired_count": self.repaired_count,
-            "success": self.success,
-            "detail": self.detail,
-        }
+    def to_dict(self) -> JSONDocument:
+        return json_document(
+            {
+                "name": self.name,
+                "category": self.category.value,
+                "destructive": self.destructive,
+                "repaired_count": self.repaired_count,
+                "success": self.success,
+                "detail": self.detail,
+            }
+        )
 
 
 @dataclass(slots=True, frozen=True)
@@ -334,16 +333,18 @@ class ArchiveDebtStatus:
     def healthy(self) -> bool:
         return self.issue_count == 0
 
-    def to_dict(self) -> dict[str, object]:
-        return {
-            "name": self.name,
-            "category": self.category.value,
-            "destructive": self.destructive,
-            "issue_count": self.issue_count,
-            "detail": self.detail,
-            "maintenance_target": self.maintenance_target,
-            "healthy": self.healthy,
-        }
+    def to_dict(self) -> JSONDocument:
+        return json_document(
+            {
+                "name": self.name,
+                "category": self.category.value,
+                "destructive": self.destructive,
+                "issue_count": self.issue_count,
+                "detail": self.detail,
+                "maintenance_target": self.maintenance_target,
+                "healthy": self.healthy,
+            }
+        )
 
 
 def _maintenance_target_spec(name: str) -> MaintenanceTargetSpec:

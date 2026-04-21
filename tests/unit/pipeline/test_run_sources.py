@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from polylogue.config import Config, Source
+from polylogue.lib.json import JSONDocument, JSONValue
 from polylogue.pipeline.payload_types import IngestDiagnostics, MaterializeStageObservation
 from polylogue.pipeline.run_stages import (
     IndexStageOutcome,
@@ -22,7 +23,6 @@ from polylogue.pipeline.run_support import expand_requested_stage, normalize_sta
 from polylogue.pipeline.runner import _select_sources, latest_run, plan_sources, run_sources
 from polylogue.pipeline.services.parsing_models import IngestResult, ParseResult
 from polylogue.pipeline.stage_models import AcquireResult
-from polylogue.schemas.json_types import JSONDocument, JSONValue
 from polylogue.sources.parsers.base import RawConversationData
 from polylogue.storage.backends import create_backend
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
