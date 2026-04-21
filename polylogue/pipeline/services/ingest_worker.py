@@ -12,6 +12,7 @@ from __future__ import annotations
 import pickle
 import re
 from dataclasses import dataclass, field
+from datetime import timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
@@ -23,13 +24,21 @@ from polylogue.lib.json import dumps as json_dumps
 from polylogue.lib.raw_payload_decode import RawPayloadEnvelope
 from polylogue.lib.roles import Role
 from polylogue.pipeline.materialization_runtime import (
+    MaterializedContentBlock,
     MaterializedConversation,
+    MaterializedMessage,
     materialize_conversation,
 )
 from polylogue.sources.decoders import _iter_json_stream
 from polylogue.sources.dispatch import STREAM_RECORD_PROVIDERS
 from polylogue.storage.blob_store import BlobStore
-from polylogue.storage.store import RawConversationRecord, _json_or_none
+from polylogue.storage.store import (
+    ACTION_EVENT_MATERIALIZER_VERSION,
+    ContentBlockRecord,
+    MessageRecord,
+    RawConversationRecord,
+    _json_or_none,
+)
 from polylogue.types import (
     AttachmentId,
     ContentBlockType,
@@ -43,6 +52,7 @@ from polylogue.types import (
 )
 
 if TYPE_CHECKING:
+    from polylogue.lib.action_events import ActionEvent
     from polylogue.schemas.packages import SchemaResolution
     from polylogue.schemas.runtime_registry import SchemaRegistry
     from polylogue.sources.parsers.base import ParsedConversation
@@ -674,91 +684,99 @@ def ingest_record(
 # ---------------------------------------------------------------------------
 
 
-def _transform_to_tuples(
-    convo: ParsedConversation,
-    *,
-    source_name: str,
-    archive_root: Path,
-    raw_id: str | None,
-) -> ConversationData:
-    """Convert a ParsedConversation to DB-ready tuples."""
-    materialized = materialize_conversation(
-        convo,
-        source_name=source_name,
-        archive_root=archive_root,
-    )
-
-    conv_tuple: ConversationTuple = (
-        materialized.conversation_id,
-        materialized.provider_name,
-        materialized.provider_conversation_id,
-        materialized.title,
-        materialized.created_at,
-        materialized.updated_at,
-        materialized.sort_key,
-        materialized.content_hash,
-        _json_or_none(materialized.provider_meta),
+def _conversation_tuple(conversation: MaterializedConversation, *, raw_id: str | None) -> ConversationTuple:
+    return (
+        conversation.conversation_id,
+        conversation.provider_name,
+        conversation.provider_conversation_id,
+        conversation.title,
+        conversation.created_at,
+        conversation.updated_at,
+        conversation.sort_key,
+        conversation.content_hash,
+        _json_or_none(conversation.provider_meta),
         "{}",
         1,
-        materialized.parent_conversation_id,
-        materialized.branch_type,
+        conversation.parent_conversation_id,
+        conversation.branch_type,
         raw_id,
     )
 
-    msg_tuples: list[MessageTuple] = [
-        (
-            message.message_id,
-            materialized.conversation_id,
-            message.provider_message_id,
-            message.role,
-            message.text,
-            message.sort_key,
-            message.content_hash,
-            1,
-            message.parent_message_id,
-            message.branch_index,
-            materialized.provider_name,
-            message.word_count,
-            message.has_tool_use,
-            message.has_thinking,
-        )
-        for message in materialized.messages
-    ]
 
-    block_tuples: list[ContentBlockTuple] = []
-    for message in materialized.messages:
-        for block in message.blocks:
-            block_tuples.append(
-                (
-                    block.block_id,
-                    message.message_id,
-                    materialized.conversation_id,
-                    block.block_index,
-                    block.type,
-                    block.text,
-                    block.tool_name,
-                    block.tool_id,
-                    block.tool_input_json,
-                    block.media_type,
-                    block.metadata_json,
-                    block.semantic_type,
-                )
-            )
-
-    stats_tuple: StatsTuple = (
-        materialized.conversation_id,
-        materialized.provider_name,
-        materialized.stats.message_count,
-        materialized.stats.word_count,
-        materialized.stats.tool_use_count,
-        materialized.stats.thinking_count,
+def _message_tuple(conversation: MaterializedConversation, message: MaterializedMessage) -> MessageTuple:
+    return (
+        message.message_id,
+        conversation.conversation_id,
+        message.provider_message_id,
+        message.role,
+        message.text,
+        message.sort_key,
+        message.content_hash,
+        1,
+        message.parent_message_id,
+        message.branch_index,
+        conversation.provider_name,
+        message.word_count,
+        message.has_tool_use,
+        message.has_thinking,
     )
 
-    action_event_tuples = _build_action_event_tuples(materialized)
 
+def _message_tuples(conversation: MaterializedConversation) -> list[MessageTuple]:
+    return [_message_tuple(conversation, message) for message in conversation.messages]
+
+
+def _content_block_tuple(
+    *,
+    conversation_id: ConversationId,
+    message_id: MessageId,
+    block: MaterializedContentBlock,
+) -> ContentBlockTuple:
+    return (
+        block.block_id,
+        message_id,
+        conversation_id,
+        block.block_index,
+        block.type,
+        block.text,
+        block.tool_name,
+        block.tool_id,
+        block.tool_input_json,
+        block.media_type,
+        block.metadata_json,
+        block.semantic_type,
+    )
+
+
+def _content_block_tuples(conversation: MaterializedConversation) -> list[ContentBlockTuple]:
+    return [
+        _content_block_tuple(
+            conversation_id=conversation.conversation_id,
+            message_id=message.message_id,
+            block=block,
+        )
+        for message in conversation.messages
+        for block in message.blocks
+    ]
+
+
+def _stats_tuple(conversation: MaterializedConversation) -> StatsTuple:
+    return (
+        conversation.conversation_id,
+        conversation.provider_name,
+        conversation.stats.message_count,
+        conversation.stats.word_count,
+        conversation.stats.tool_use_count,
+        conversation.stats.thinking_count,
+    )
+
+
+def _attachment_tuples(
+    conversation: MaterializedConversation,
+) -> tuple[list[AttachmentTuple], list[AttachmentRefTuple]]:
     attachment_tuples: list[AttachmentTuple] = []
     attachment_ref_tuples: list[AttachmentRefTuple] = []
-    for attachment in materialized.attachments:
+    for attachment in conversation.attachments:
         meta_json = _json_or_none(attachment.provider_meta)
         attachment_tuples.append(
             (
@@ -774,29 +792,144 @@ def _transform_to_tuples(
             (
                 _make_ref_id(
                     attachment.attachment_id,
-                    materialized.conversation_id,
+                    conversation.conversation_id,
                     attachment.message_id,
                 ),
                 attachment.attachment_id,
-                materialized.conversation_id,
+                conversation.conversation_id,
                 attachment.message_id,
                 meta_json,
             )
         )
+    return attachment_tuples, attachment_ref_tuples
+
+
+def _transform_to_tuples(
+    convo: ParsedConversation,
+    *,
+    source_name: str,
+    archive_root: Path,
+    raw_id: str | None,
+) -> ConversationData:
+    """Convert a ParsedConversation to DB-ready tuples."""
+    materialized = materialize_conversation(
+        convo,
+        source_name=source_name,
+        archive_root=archive_root,
+    )
+
+    attachment_tuples, attachment_ref_tuples = _attachment_tuples(materialized)
 
     return ConversationData(
         conversation_id=materialized.conversation_id,
         content_hash=materialized.content_hash,
         provider_name=materialized.provider_name,
-        conversation_tuple=conv_tuple,
-        message_tuples=msg_tuples,
-        block_tuples=block_tuples,
-        action_event_tuples=action_event_tuples,
-        stats_tuple=stats_tuple,
+        conversation_tuple=_conversation_tuple(materialized, raw_id=raw_id),
+        message_tuples=_message_tuples(materialized),
+        block_tuples=_content_block_tuples(materialized),
+        action_event_tuples=_build_action_event_tuples(materialized),
+        stats_tuple=_stats_tuple(materialized),
         attachment_tuples=attachment_tuples,
         attachment_ref_tuples=attachment_ref_tuples,
         source_name=source_name,
         raw_id=raw_id,
+    )
+
+
+def _content_block_record_for_action_event(
+    *,
+    conversation_id: ConversationId,
+    message_id: MessageId,
+    block: MaterializedContentBlock,
+) -> ContentBlockRecord:
+    return ContentBlockRecord(
+        block_id=block.block_id,
+        message_id=message_id,
+        conversation_id=conversation_id,
+        block_index=block.block_index,
+        type=block.type,
+        text=block.text,
+        tool_name=block.tool_name,
+        tool_id=block.tool_id,
+        tool_input=block.tool_input_json,
+        media_type=block.media_type,
+        metadata=block.metadata_json,
+        semantic_type=block.semantic_type,
+    )
+
+
+def _message_record_for_action_events(
+    conversation: MaterializedConversation,
+    message: MaterializedMessage,
+) -> MessageRecord:
+    return MessageRecord(
+        message_id=message.message_id,
+        conversation_id=conversation.conversation_id,
+        provider_message_id=message.provider_message_id,
+        role=message.role,
+        text=message.text,
+        sort_key=message.sort_key,
+        content_hash=message.content_hash,
+        provider_name=conversation.provider_name,
+        word_count=message.word_count,
+        has_tool_use=message.has_tool_use,
+        has_thinking=message.has_thinking,
+        content_blocks=[
+            _content_block_record_for_action_event(
+                conversation_id=conversation.conversation_id,
+                message_id=message.message_id,
+                block=block,
+            )
+            for block in message.blocks
+        ],
+    )
+
+
+def _timestamp_iso_for_action_event(event: ActionEvent) -> str | None:
+    if event.timestamp is None:
+        return None
+    timestamp = event.timestamp
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=timezone.utc)
+    return timestamp.isoformat()
+
+
+def _action_event_source_block_id(event: ActionEvent) -> str | None:
+    if not isinstance(event.raw, dict):
+        return None
+    block_id = event.raw.get("block_id")
+    return block_id if isinstance(block_id, str) else None
+
+
+def _action_event_tuple(
+    conversation: MaterializedConversation,
+    message: MaterializedMessage,
+    event: ActionEvent,
+) -> ActionEventTuple:
+    affected_paths_json = json_dumps(list(event.affected_paths)) if event.affected_paths else None
+    branch_names_json = json_dumps(list(event.branch_names)) if event.branch_names else None
+    return (
+        event.event_id,
+        conversation.conversation_id,
+        message.message_id,
+        ACTION_EVENT_MATERIALIZER_VERSION,
+        _action_event_source_block_id(event),
+        _timestamp_iso_for_action_event(event),
+        message.sort_key,
+        event.sequence_index,
+        conversation.provider_name,
+        event.kind.value,
+        event.tool_name,
+        event.normalized_tool_name,
+        event.tool_id,
+        affected_paths_json,
+        event.cwd_path,
+        branch_names_json,
+        event.command,
+        event.query,
+        event.url,
+        event.output_text,
+        event.search_text,
     )
 
 
@@ -810,95 +943,25 @@ def _build_action_event_tuples(
     """
     from polylogue.lib.action_events import build_action_events, build_tool_calls_from_content_blocks
     from polylogue.storage.hydrators import message_from_record
-    from polylogue.storage.store import (
-        ACTION_EVENT_MATERIALIZER_VERSION,
-        ContentBlockRecord,
-        MessageRecord,
-    )
-    from polylogue.types import Provider
 
     provider = Provider.from_string(conversation.provider_name)
     action_tuples: list[ActionEventTuple] = []
-    conversation_id_token = conversation.conversation_id
 
     for message in conversation.messages:
         if not message.has_tool_use:
             continue
 
-        msg_record = MessageRecord(
-            message_id=message.message_id,
-            conversation_id=conversation_id_token,
-            provider_message_id=message.provider_message_id,
-            role=message.role,
-            text=message.text,
-            sort_key=message.sort_key,
-            content_hash=message.content_hash,
-            provider_name=conversation.provider_name,
-            word_count=message.word_count,
-            has_tool_use=message.has_tool_use,
-            has_thinking=message.has_thinking,
-            content_blocks=[
-                ContentBlockRecord(
-                    block_id=block.block_id,
-                    message_id=message.message_id,
-                    conversation_id=conversation_id_token,
-                    block_index=block.block_index,
-                    type=block.type,
-                    text=block.text,
-                    tool_name=block.tool_name,
-                    tool_id=block.tool_id,
-                    tool_input=block.tool_input_json,
-                    media_type=block.media_type,
-                    metadata=block.metadata_json,
-                    semantic_type=block.semantic_type,
-                )
-                for block in message.blocks
-            ],
+        domain_message = message_from_record(
+            _message_record_for_action_events(conversation, message),
+            attachments=[],
+            provider=provider,
         )
-
-        domain_message = message_from_record(msg_record, attachments=[], provider=provider)
         tool_calls = build_tool_calls_from_content_blocks(
             provider=provider,
             content_blocks=domain_message.content_blocks,
         )
         for event in build_action_events(domain_message, tool_calls):
-            from datetime import timezone
-
-            timestamp_iso = None
-            if event.timestamp is not None:
-                ts = event.timestamp
-                if ts.tzinfo is None:
-                    ts = ts.replace(tzinfo=timezone.utc)
-                timestamp_iso = ts.isoformat()
-
-            affected_paths_json = json_dumps(list(event.affected_paths)) if event.affected_paths else None
-            branch_names_json = json_dumps(list(event.branch_names)) if event.branch_names else None
-
-            action_tuples.append(
-                (
-                    event.event_id,  # event_id
-                    conversation.conversation_id,  # conversation_id
-                    message.message_id,  # message_id
-                    ACTION_EVENT_MATERIALIZER_VERSION,  # materializer_version
-                    event.raw.get("block_id") if isinstance(event.raw, dict) else None,  # source_block_id
-                    timestamp_iso,  # timestamp
-                    message.sort_key,  # sort_key
-                    event.sequence_index,  # sequence_index
-                    conversation.provider_name,  # provider_name
-                    event.kind.value,  # action_kind
-                    event.tool_name,  # tool_name
-                    event.normalized_tool_name,  # normalized_tool_name
-                    event.tool_id,  # tool_id
-                    affected_paths_json,  # affected_paths_json
-                    event.cwd_path,  # cwd_path
-                    branch_names_json,  # branch_names_json
-                    event.command,  # command
-                    event.query,  # query_text
-                    event.url,  # url
-                    event.output_text,  # output_text
-                    event.search_text,  # search_text
-                )
-            )
+            action_tuples.append(_action_event_tuple(conversation, message, event))
 
     return action_tuples
 
