@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from polylogue.config import Source
@@ -21,9 +22,34 @@ from .planning_models import IngestPlan
 from .validation import ValidationService
 
 if TYPE_CHECKING:
+    from polylogue.storage.cursor_state import CursorStatePayload
+
     from .planning import PlanningService
 
 _SCAN_STATE_BATCH_SIZE = 200  # Metadata-only rows (no BLOBs) — can batch larger
+
+
+@dataclass(frozen=True)
+class _PlanStageFlags:
+    acquire: bool
+    parse: bool
+    materialize: bool
+    render: bool
+    index: bool
+
+    @classmethod
+    def from_stage_names(cls, stage_names: tuple[str, ...]) -> _PlanStageFlags:
+        return cls(
+            acquire="acquire" in stage_names,
+            parse="parse" in stage_names,
+            materialize="materialize" in stage_names,
+            render="render" in stage_names,
+            index="index" in stage_names,
+        )
+
+    @property
+    def has_conversation_products(self) -> bool:
+        return self.materialize or self.render or self.index
 
 
 def _normalize_plan_stage_sequence(normalized_stage_sequence: tuple[str, ...]) -> list[PlanStage]:
@@ -44,6 +70,133 @@ def _summarize_plan_stage(
     return PlanStage.CUSTOM
 
 
+def _apply_conversation_stage_counts(counts: PlanCounts, *, conversation_count: int, flags: _PlanStageFlags) -> None:
+    if flags.materialize and conversation_count:
+        counts.materialize = conversation_count
+    if flags.render and conversation_count:
+        counts.render = conversation_count
+    if flags.index and conversation_count:
+        counts.index = conversation_count
+
+
+def _plan_summary(
+    *,
+    summary_stage: PlanStage,
+    stage_sequence: list[PlanStage],
+    counts: PlanCounts,
+    sources: list[str],
+    details: PlanDetails | None = None,
+    cursors: dict[str, CursorStatePayload] | None = None,
+) -> PlanResult:
+    return PlanResult(
+        timestamp=int(time.time()),
+        stage=summary_stage,
+        stage_sequence=stage_sequence,
+        counts=counts,
+        details=details or PlanDetails(),
+        sources=sources,
+        cursors=cursors or {},
+    )
+
+
+async def _plan_existing_conversation_stages(
+    service: PlanningService,
+    *,
+    source_names: list[str],
+    db_scope_names: list[str] | None,
+    summary_stage: PlanStage,
+    stage_sequence: list[PlanStage],
+    flags: _PlanStageFlags,
+) -> IngestPlan:
+    conversation_count = 0
+    if flags.has_conversation_products:
+        conversation_count = await service.backend.count_conversation_ids(source_names=db_scope_names)
+
+    counts = PlanCounts()
+    _apply_conversation_stage_counts(counts, conversation_count=conversation_count, flags=flags)
+    return IngestPlan(
+        summary=_plan_summary(
+            summary_stage=summary_stage,
+            stage_sequence=stage_sequence,
+            counts=counts,
+            sources=source_names,
+        ),
+        validate_raw_ids=[],
+        parse_ready_raw_ids=[],
+    )
+
+
+async def _plan_parse_backlog(
+    service: PlanningService,
+    *,
+    source_names: list[str],
+    db_scope_names: list[str] | None,
+    summary_stage: PlanStage,
+    stage_sequence: list[PlanStage],
+    flags: _PlanStageFlags,
+    force_reparse: bool,
+) -> IngestPlan:
+    validate_backlog_ids = await collect_validation_backlog(
+        service.backend,
+        source_names=db_scope_names,
+        exclude_raw_ids=[],
+        force_reparse=force_reparse,
+    )
+    parse_backlog_ids = await collect_parse_backlog(
+        service.backend,
+        source_names=db_scope_names,
+        exclude_raw_ids=validate_backlog_ids,
+        force_reparse=force_reparse,
+    )
+    reprocess_raw_ids = dedupe_ids([*validate_backlog_ids, *parse_backlog_ids])
+    counts = PlanCounts()
+    details = PlanDetails()
+    if validate_backlog_ids:
+        counts.validate_count = len(validate_backlog_ids)
+        details.backlog_validate = len(validate_backlog_ids)
+    if reprocess_raw_ids:
+        counts.parse = len(reprocess_raw_ids)
+        details.backlog_parse = len(parse_backlog_ids)
+        _apply_conversation_stage_counts(counts, conversation_count=len(reprocess_raw_ids), flags=flags)
+    return IngestPlan(
+        summary=_plan_summary(
+            summary_stage=summary_stage,
+            stage_sequence=stage_sequence,
+            counts=counts,
+            details=details,
+            sources=source_names,
+        ),
+        validate_raw_ids=validate_backlog_ids,
+        parse_ready_raw_ids=reprocess_raw_ids,
+    )
+
+
+async def _final_scan_counts(
+    service: PlanningService,
+    *,
+    scanned_count: int,
+    plan_details: PlanDetails,
+    validate_raw_ids: list[str],
+    parse_ready_raw_ids: list[str],
+    db_scope_names: list[str] | None,
+    flags: _PlanStageFlags,
+) -> PlanCounts:
+    counts = PlanCounts()
+    if scanned_count:
+        counts.scan = scanned_count
+    if plan_details.int_value("new_raw") and flags.acquire:
+        counts.store_raw = plan_details.int_value("new_raw")
+    if flags.parse and validate_raw_ids:
+        counts.validate_count = len(validate_raw_ids)
+    if flags.parse and parse_ready_raw_ids:
+        counts.parse = len(parse_ready_raw_ids)
+        _apply_conversation_stage_counts(counts, conversation_count=len(parse_ready_raw_ids), flags=flags)
+    elif not flags.parse and flags.has_conversation_products:
+        conversation_count = await service.backend.count_conversation_ids(source_names=db_scope_names)
+        _apply_conversation_stage_counts(counts, conversation_count=conversation_count, flags=flags)
+    return counts
+
+
 async def build_ingest_plan(
     service: PlanningService,
     *,
@@ -60,81 +213,32 @@ async def build_ingest_plan(
 
     normalized_stage_names = normalize_stage_sequence(stage=stage, stage_sequence=stage_sequence)
     normalized_plan_stage_sequence = _normalize_plan_stage_sequence(normalized_stage_names)
+    stage_flags = _PlanStageFlags.from_stage_names(normalized_stage_names)
     summary_stage = _summarize_plan_stage(
         stage=stage,
         normalized_stage_sequence=normalized_stage_names,
         stage_sequence=stage_sequence,
     )
-    has_acquire = "acquire" in normalized_stage_names
-    has_parse = "parse" in normalized_stage_names
-    has_materialize = "materialize" in normalized_stage_names
-    has_render = "render" in normalized_stage_names
-    has_index = "index" in normalized_stage_names
 
-    if not has_acquire and not has_parse:
-        conversation_count = 0
-        if has_materialize or has_render or has_index:
-            conversation_count = await service.backend.count_conversation_ids(source_names=db_scope_names)
-        stage_counts = PlanCounts()
-        if has_materialize and conversation_count:
-            stage_counts.materialize = conversation_count
-        if has_render and conversation_count:
-            stage_counts.render = conversation_count
-        if has_index and conversation_count:
-            stage_counts.index = conversation_count
-        return IngestPlan(
-            summary=PlanResult(
-                timestamp=int(time.time()),
-                stage=summary_stage,
-                stage_sequence=normalized_plan_stage_sequence,
-                counts=stage_counts,
-                sources=source_names,
-                cursors={},
-            ),
-            validate_raw_ids=[],
-            parse_ready_raw_ids=[],
+    if not stage_flags.acquire and not stage_flags.parse:
+        return await _plan_existing_conversation_stages(
+            service,
+            source_names=source_names,
+            db_scope_names=db_scope_names,
+            summary_stage=summary_stage,
+            stage_sequence=normalized_plan_stage_sequence,
+            flags=stage_flags,
         )
 
-    if has_parse and not has_acquire:
-        validate_backlog_ids = await collect_validation_backlog(
-            service.backend,
-            source_names=db_scope_names,
-            exclude_raw_ids=[],
+    if stage_flags.parse and not stage_flags.acquire:
+        return await _plan_parse_backlog(
+            service,
+            source_names=source_names,
+            db_scope_names=db_scope_names,
+            summary_stage=summary_stage,
+            stage_sequence=normalized_plan_stage_sequence,
+            flags=stage_flags,
             force_reparse=force_reparse,
-        )
-        parse_backlog_ids = await collect_parse_backlog(
-            service.backend,
-            source_names=db_scope_names,
-            exclude_raw_ids=validate_backlog_ids,
-            force_reparse=force_reparse,
-        )
-        reprocess_raw_ids = dedupe_ids([*validate_backlog_ids, *parse_backlog_ids])
-        backlog_counts = PlanCounts()
-        backlog_details = PlanDetails()
-        if validate_backlog_ids:
-            backlog_counts.validate_count = len(validate_backlog_ids)
-            backlog_details.backlog_validate = len(validate_backlog_ids)
-        if reprocess_raw_ids:
-            backlog_counts.parse = len(reprocess_raw_ids)
-            backlog_details.backlog_parse = len(parse_backlog_ids)
-            if has_materialize:
-                backlog_counts.materialize = len(reprocess_raw_ids)
-            if has_render:
-                backlog_counts.render = len(reprocess_raw_ids)
-            if has_index:
-                backlog_counts.index = len(reprocess_raw_ids)
-        return IngestPlan(
-            summary=PlanResult(
-                timestamp=int(time.time()),
-                stage=summary_stage,
-                stage_sequence=normalized_plan_stage_sequence,
-                counts=backlog_counts,
-                details=backlog_details,
-                sources=source_names,
-                cursors={},
-            ),
-            validate_raw_ids=validate_backlog_ids,
-            parse_ready_raw_ids=reprocess_raw_ids,
         )
 
     acquisition = AcquisitionService(service.backend)
@@ -150,7 +254,7 @@ async def build_ingest_plan(
         backlog_parse=0,
     )
     pending_records: list[RawConversationRecord] = []
-    preview_validation = ValidateResult() if preview and has_parse else None
+    preview_validation = ValidateResult() if preview and stage_flags.parse else None
     seen_scanned_raw_ids: set[str] = set()
 
     max_preview_validation_records = 50  # Cap preview validation to bound memory
@@ -172,7 +276,7 @@ async def build_ingest_plan(
             state = scanned_states.get(record.raw_id)
             if state is None:
                 plan_details.new_raw = plan_details.int_value("new_raw") + 1
-                if has_parse:
+                if stage_flags.parse:
                     validate_raw_ids.append(record.raw_id)
                     if (
                         preview
@@ -183,7 +287,7 @@ async def build_ingest_plan(
                 continue
 
             plan_details.existing_raw = plan_details.int_value("existing_raw") + 1
-            if not has_parse:
+            if not stage_flags.parse:
                 continue
 
             artifact_state = RawIngestArtifactState.from_state(state)
@@ -218,7 +322,7 @@ async def build_ingest_plan(
     )
     await flush_pending_records()
 
-    if has_parse:
+    if stage_flags.parse:
         backlog_validate_ids = await collect_validation_backlog(
             service.backend,
             source_names=db_scope_names,
@@ -241,7 +345,7 @@ async def build_ingest_plan(
             if preview_validation is not None and preview_validation.counts["skipped_no_schema"]:
                 plan_details.preview_skipped_no_schema = preview_validation.counts["skipped_no_schema"]
 
-    if has_parse:
+    if stage_flags.parse:
         backlog_parse_ids = await collect_parse_backlog(
             service.backend,
             source_names=db_scope_names,
@@ -255,41 +359,24 @@ async def build_ingest_plan(
         parse_ready_raw_ids = dedupe_ids(parse_ready_raw_ids)
         validate_raw_ids = dedupe_ids(validate_raw_ids)
 
-    final_counts = PlanCounts()
-    if scanned_count:
-        final_counts.scan = scanned_count
-    if plan_details.int_value("new_raw") and has_acquire:
-        final_counts.store_raw = plan_details.int_value("new_raw")
-    if has_parse and validate_raw_ids:
-        final_counts.validate_count = len(validate_raw_ids)
-    if has_parse and parse_ready_raw_ids:
-        final_counts.parse = len(parse_ready_raw_ids)
-        if has_materialize:
-            final_counts.materialize = len(parse_ready_raw_ids)
-        if has_render:
-            final_counts.render = len(parse_ready_raw_ids)
-        if has_index:
-            final_counts.index = len(parse_ready_raw_ids)
-    elif not has_parse and (has_materialize or has_render or has_index):
-        conversation_count = await service.backend.count_conversation_ids(source_names=db_scope_names)
-        if has_materialize and conversation_count:
-            final_counts.materialize = conversation_count
-        if has_render and conversation_count:
-            final_counts.render = conversation_count
-        if has_index and conversation_count:
-            final_counts.index = conversation_count
-
-    summary = PlanResult(
-        timestamp=int(time.time()),
-        stage=summary_stage,
-        stage_sequence=normalized_plan_stage_sequence,
-        counts=final_counts,
-        details=plan_details,
-        sources=source_names,
-        cursors=scan_result.cursors,
+    final_counts = await _final_scan_counts(
+        service,
+        scanned_count=scanned_count,
+        plan_details=plan_details,
+        validate_raw_ids=validate_raw_ids,
+        parse_ready_raw_ids=parse_ready_raw_ids,
+        db_scope_names=db_scope_names,
+        flags=stage_flags,
     )
     return IngestPlan(
-        summary=summary,
+        summary=_plan_summary(
+            summary_stage=summary_stage,
+            stage_sequence=normalized_plan_stage_sequence,
+            counts=final_counts,
+            details=plan_details,
+            sources=source_names,
+            cursors=scan_result.cursors,
+        ),
         validate_raw_ids=validate_raw_ids,
         parse_ready_raw_ids=parse_ready_raw_ids,
     )
