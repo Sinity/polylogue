@@ -13,7 +13,6 @@ Covers bugs from:
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any
 
 import pytest
 from hypothesis import example, given
@@ -23,6 +22,9 @@ from polylogue.lib.dates import parse_date
 from polylogue.lib.timestamps import format_timestamp, parse_timestamp
 from polylogue.schemas.schema_inference import _is_safe_enum_value
 from tests.infra.tables import FORMAT_TIMESTAMP_TABLE, PARSE_TIMESTAMP_FORMAT_TABLE
+
+TimestampInput = str | int | float | None
+FormatTimestampInput = int | float | datetime
 
 # =============================================================================
 # Property: parse_timestamp never crashes on any input
@@ -42,7 +44,7 @@ def test_parse_timestamp_never_crashes_on_text(value: str) -> None:
 @given(st.one_of(st.none(), st.text(), st.integers(), st.floats(allow_nan=False, allow_infinity=False)))
 @example(0)
 @example(-1000)
-def test_parse_timestamp_never_crashes_on_mixed_types(value: Any) -> None:
+def test_parse_timestamp_never_crashes_on_mixed_types(value: TimestampInput) -> None:
     """parse_timestamp never raises on any type of input."""
     result = parse_timestamp(value)
     assert result is None or isinstance(result, datetime)
@@ -60,7 +62,7 @@ def test_parse_timestamp_never_crashes_on_mixed_types(value: Any) -> None:
         st.from_regex(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", fullmatch=True),
     )
 )
-def test_parse_timestamp_result_always_utc_aware(value: Any) -> None:
+def test_parse_timestamp_result_always_utc_aware(value: int | float | str) -> None:
     """When parse_timestamp returns a datetime, it is always UTC-aware."""
     result = parse_timestamp(value)
     if result is not None:
@@ -76,7 +78,7 @@ class TestTimestampYearGuard:
     """Year-like strings must NOT be treated as epoch seconds."""
 
     @pytest.mark.parametrize("value", ["2024", "2025", "2026", "1999", "3000"])
-    def test_year_strings_not_treated_as_epoch(self, value: Any) -> None:
+    def test_year_strings_not_treated_as_epoch(self, value: str) -> None:
         result = parse_timestamp(value)
         assert result is None
 
@@ -186,7 +188,13 @@ class TestParseTimestampFormats:
         PARSE_TIMESTAMP_FORMAT_TABLE,
     )
     def test_parse_timestamp_table(
-        self, input_val: Any, exp_year: Any, exp_month: Any, exp_day: Any, exp_micro: Any, desc: Any
+        self,
+        input_val: TimestampInput,
+        exp_year: int | None,
+        exp_month: int | None,
+        exp_day: int | None,
+        exp_micro: int | None,
+        desc: str,
     ) -> None:
         result = parse_timestamp(input_val)
         if exp_year is None:
@@ -207,7 +215,7 @@ class TestParseTimestampFormats:
 
 class TestFormatTimestamp:
     @pytest.mark.parametrize("input_val,expected_prefix,desc", FORMAT_TIMESTAMP_TABLE)
-    def test_format_timestamp_table(self, input_val: Any, expected_prefix: Any, desc: Any) -> None:
+    def test_format_timestamp_table(self, input_val: FormatTimestampInput, expected_prefix: str, desc: str) -> None:
         result = format_timestamp(input_val)
         assert result is not None
         assert expected_prefix in result, f"Expected {expected_prefix!r} in result for {desc!r}"
@@ -271,12 +279,12 @@ SAFE_ENUM_BLOCKED = [
 
 
 @pytest.mark.parametrize("value,category", SAFE_ENUM_ALLOWED)
-def test_safe_enum_value_allowed(value: Any, category: Any) -> None:
+def test_safe_enum_value_allowed(value: str, category: str) -> None:
     assert _is_safe_enum_value(value) is True, f"Should allow {category}: {value!r}"
 
 
 @pytest.mark.parametrize("value,category", SAFE_ENUM_BLOCKED)
-def test_safe_enum_value_blocked(value: Any, category: Any) -> None:
+def test_safe_enum_value_blocked(value: str, category: str) -> None:
     assert _is_safe_enum_value(value) is False, f"Should block {category}: {value!r}"
 
 

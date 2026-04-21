@@ -13,10 +13,11 @@ import copy
 import json
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, cast
+from typing import cast
 
 import pytest
 
+from polylogue.lib.json import JSONDocument, JSONValue
 from polylogue.schemas.registry import SCHEMA_DIR, SchemaRegistry
 from polylogue.schemas.synthetic.core import SyntheticCorpus
 from polylogue.schemas.synthetic.semantic_values import SemanticValueGenerator
@@ -34,25 +35,25 @@ EXPECTED_ANNOTATIONS: dict[str, list[str]] = {
 }
 
 
-def _collect_semantic_roles(schema: dict[str, Any], *, roles: list[str] | None = None) -> list[str]:
+def _collect_semantic_roles(schema: JSONValue, *, roles: list[str] | None = None) -> list[str]:
     """Recursively collect all x-polylogue-semantic-role values from a schema."""
     if roles is None:
         roles = []
     if not isinstance(schema, dict):
         return roles
-    if "x-polylogue-semantic-role" in schema:
-        roles.append(schema["x-polylogue-semantic-role"])
-    for _key, value in schema.items():
+    role = schema.get("x-polylogue-semantic-role")
+    if isinstance(role, str):
+        roles.append(role)
+    for value in schema.values():
         if isinstance(value, dict):
             _collect_semantic_roles(value, roles=roles)
         elif isinstance(value, list):
             for item in value:
-                if isinstance(item, dict):
-                    _collect_semantic_roles(item, roles=roles)
+                _collect_semantic_roles(item, roles=roles)
     return roles
 
 
-def _bundled_schema(provider: str) -> dict[str, Any]:
+def _bundled_schema(provider: str) -> JSONDocument:
     package = _BUNDLED_REGISTRY.get_package(provider, version="default")
     assert package is not None, f"No bundled package for provider {provider}"
     schema = _BUNDLED_REGISTRY.get_element_schema(
@@ -206,7 +207,7 @@ class TestWireFormatFallback:
         assert convos, f"No conversations parsed without annotations for {provider}"
 
 
-def _strip_semantic_roles(schema: dict[str, Any]) -> None:
+def _strip_semantic_roles(schema: JSONValue) -> None:
     """Recursively remove all x-polylogue-semantic-role annotations."""
     if not isinstance(schema, dict):
         return

@@ -8,7 +8,7 @@ filter logic.
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any, Literal, TypeAlias
+from typing import Literal, TypeAlias, cast
 from unittest.mock import patch
 
 import pytest
@@ -38,10 +38,9 @@ from polylogue.schemas.validator import (
 
 
 ProviderName: TypeAlias = Literal["claude-code", "claude-ai", "chatgpt", "gemini", "codex"]
-ProviderPayload: TypeAlias = dict[str, Any]
-ProviderContent: TypeAlias = Any
-UsagePayload: TypeAlias = dict[str, Any] | None
-ExtractTextFn: TypeAlias = Callable[[Any], str]
+ProviderContent: TypeAlias = object
+UsagePayload: TypeAlias = JSONDocument | None
+ExtractTextFn: TypeAlias = Callable[[object], str]
 ReasoningTraceCase: TypeAlias = tuple[ProviderContent, str, int, str | None, str]
 ContentBlocksCase: TypeAlias = tuple[ProviderContent, int, list[str], str]
 ExtractTextCase: TypeAlias = tuple[ExtractTextFn, ProviderContent | UsagePayload, str, str]
@@ -77,12 +76,27 @@ CONTENT_BLOCKS_CASES: list[ContentBlocksCase] = [
 ]
 
 EXTRACT_TEXT_CASES: list[ExtractTextCase] = [
-    (extract_claude_code_text, None, "", "claude_code_none"),
-    (extract_claude_code_text, ["string", 123], "", "claude_code_non_dict"),
-    (extract_chatgpt_text, None, "", "chatgpt_none"),
-    (extract_chatgpt_text, {}, "", "chatgpt_no_parts"),
-    (extract_chatgpt_text, {"parts": "string"}, "string", "chatgpt_parts_as_string"),
-    (extract_chatgpt_text, {"parts": [123, "text", {"key": "val"}]}, "text", "chatgpt_non_string_parts"),
+    (lambda content: extract_claude_code_text(cast(list[JSONDocument] | None, content)), None, "", "claude_code_none"),
+    (
+        lambda content: extract_claude_code_text(cast(list[JSONDocument] | None, content)),
+        ["string", 123],
+        "",
+        "claude_code_non_dict",
+    ),
+    (lambda content: extract_chatgpt_text(cast(JSONDocument | None, content)), None, "", "chatgpt_none"),
+    (lambda content: extract_chatgpt_text(cast(JSONDocument | None, content)), {}, "", "chatgpt_no_parts"),
+    (
+        lambda content: extract_chatgpt_text(cast(JSONDocument | None, content)),
+        {"parts": "string"},
+        "string",
+        "chatgpt_parts_as_string",
+    ),
+    (
+        lambda content: extract_chatgpt_text(cast(JSONDocument | None, content)),
+        {"parts": [123, "text", {"key": "val"}]},
+        "text",
+        "chatgpt_non_string_parts",
+    ),
 ]
 
 HARMONIZED_MESSAGE_PROVIDER_CASES: list[tuple[ProviderName, str, str]] = [
@@ -125,7 +139,7 @@ class TestUnifiedExtractReasoningTraces:
         expected_text: str | None,
         description: str,
     ) -> None:
-        result = extract_reasoning_traces(content, provider)
+        result = extract_reasoning_traces(cast(list[JSONDocument] | None, content), provider)
         assert len(result) == expected_len
         if expected_text is not None:
             assert result[0].text == expected_text
@@ -140,7 +154,7 @@ class TestUnifiedExtractContentBlocks:
         expected_types: list[str],
         description: str,
     ) -> None:
-        result = extract_content_blocks(content)
+        result = extract_content_blocks(cast(list[JSONDocument] | None, content))
         assert len(result) == expected_len
         if expected_types:
             for block, expected_type in zip(result, expected_types, strict=True):

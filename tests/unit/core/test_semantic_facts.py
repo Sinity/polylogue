@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, cast
 
 import pytest
 
@@ -12,8 +11,11 @@ from polylogue.lib import session_profile_runtime, work_event_extraction
 from polylogue.lib.messages import MessageCollection
 from polylogue.lib.models import Conversation as ConversationModel
 from polylogue.lib.models import ConversationSummary
+from polylogue.lib.phase_extraction import SessionPhase
+from polylogue.lib.phase_extraction import extract_phases as phase_extract_phases
 from polylogue.lib.pricing import harmonize_session_cost
 from polylogue.lib.semantic_facts import (
+    ConversationSemanticFacts,
     build_conversation_semantic_facts,
     build_mcp_summary_semantic_facts,
     build_projection_semantic_facts,
@@ -25,6 +27,7 @@ from tests.infra.builders import make_conv, make_msg
 from tests.infra.storage_records import make_attachment, make_conversation, make_message
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+EXPECTED_REPO_NAME = REPO_ROOT.name
 README_PATH = REPO_ROOT / "README.md"
 LIB_PATH = REPO_ROOT / "polylogue" / "lib"
 SHOWCASE_REPORT_PATH = REPO_ROOT / "polylogue" / "showcase" / "report.py"
@@ -256,7 +259,7 @@ def test_build_session_profile_reuses_shared_semantic_facts() -> None:
     assert profile.tool_use_count == 1
     assert profile.thinking_count == 1
     assert profile.tool_categories == {"file_read": 1}
-    assert profile.repo_names == ("polylogue",)
+    assert profile.repo_names == (EXPECTED_REPO_NAME,)
     assert profile.first_message_at == datetime(2026, 3, 23, 9, 0, tzinfo=timezone.utc)
     assert profile.last_message_at == datetime(2026, 3, 23, 9, 4, tzinfo=timezone.utc)
     assert profile.canonical_session_date is not None
@@ -267,16 +270,24 @@ def test_build_session_profile_reuses_shared_semantic_facts() -> None:
 
 def test_build_session_analysis_reuses_precomputed_phases(monkeypatch: pytest.MonkeyPatch) -> None:
     conversation = _semantic_conversation()
-    original_extract_phases = cast(Any, session_profile_runtime).extract_phases
+    original_extract_phases = phase_extract_phases
     runtime_phase_calls = 0
     work_event_phase_calls = 0
 
-    def counting_runtime_extract_phases(conv: object, *, facts: object = None) -> object:
+    def counting_runtime_extract_phases(
+        conv: ConversationModel,
+        *,
+        facts: ConversationSemanticFacts | None = None,
+    ) -> list[SessionPhase]:
         nonlocal runtime_phase_calls
         runtime_phase_calls += 1
         return original_extract_phases(conv, facts=facts)
 
-    def unexpected_work_event_extract_phases(conv: object, *, facts: object = None) -> object:
+    def unexpected_work_event_extract_phases(
+        conv: ConversationModel,
+        *,
+        facts: ConversationSemanticFacts | None = None,
+    ) -> list[SessionPhase]:
         nonlocal work_event_phase_calls
         work_event_phase_calls += 1
         raise AssertionError("work-event extraction should reuse precomputed phases")
@@ -354,7 +365,7 @@ def test_build_conversation_semantic_facts_uses_canonical_db_content_blocks() ->
     assert facts.message_facts[1].affected_paths == (str(README_PATH),)
     assert facts.message_facts[1].tool_calls[0].output == "README contents"
     assert profile.tool_categories == {"file_read": 1}
-    assert profile.repo_names == ("polylogue",)
+    assert profile.repo_names == (EXPECTED_REPO_NAME,)
 
 
 def test_build_conversation_semantic_facts_preserves_tool_results_before_tool_use() -> None:
@@ -490,7 +501,7 @@ def test_action_events_capture_normalized_command_query_branch_and_cwd() -> None
     assert str(LIB_PATH) in search_action.search_text
 
     profile = build_session_profile(conversation)
-    assert profile.repo_names == ("polylogue",)
+    assert profile.repo_names == (EXPECTED_REPO_NAME,)
 
 
 def test_action_events_do_not_treat_checkout_pathspec_as_branch_or_commit_message_words_as_paths() -> None:
@@ -553,7 +564,7 @@ def test_action_events_do_not_treat_checkout_pathspec_as_branch_or_commit_messag
     profile = build_session_profile(conversation)
     assert profile.branch_names == ()
     assert profile.file_paths_touched == ("modules/services/sinex/bridge.nix",)
-    assert profile.repo_names == ("polylogue",)
+    assert profile.repo_names == (EXPECTED_REPO_NAME,)
 
 
 def test_build_session_profile_does_not_infer_repos_from_dialogue_paths() -> None:
@@ -617,7 +628,7 @@ def test_build_session_profile_ignores_persisted_output_paths_in_dialogue_text()
 
     profile = build_session_profile(conversation)
 
-    assert profile.repo_names == ("polylogue",)
+    assert profile.repo_names == (EXPECTED_REPO_NAME,)
     assert profile.repo_paths == (str(REPO_ROOT),)
     assert profile.file_paths_touched == ()
 
@@ -697,7 +708,7 @@ def test_build_session_profile_uses_conversation_level_git_context() -> None:
     profile = build_session_profile(conversation)
 
     assert profile.branch_names == ("feature/runtime-cleanup",)
-    assert profile.repo_names == ("polylogue",)
+    assert profile.repo_names == (EXPECTED_REPO_NAME,)
 
 
 def test_build_session_profile_ignores_context_dump_wrappers_for_work_event_intent() -> None:

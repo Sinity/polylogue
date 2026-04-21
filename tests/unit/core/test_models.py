@@ -7,7 +7,6 @@ regressions and storage-record conversions, code language detection, and provide
 
 from __future__ import annotations
 
-from typing import Any
 from unittest.mock import Mock
 
 import pytest
@@ -87,43 +86,43 @@ def _json_input(payload: dict[str, JSONValue]) -> JSONDocument:
 
 class TestToolCallProperties:
     @pytest.mark.parametrize(("tool_name", "expected"), TOOL_FILE_OPS)
-    def test_is_file_operation(self: Any, tool_name: str, expected: bool) -> None:
+    def test_is_file_operation(self, tool_name: str, expected: bool) -> None:
         assert _make_tool(tool_name).is_file_operation is expected
 
     @pytest.mark.parametrize(("tool_name", "input_data", "expected"), TOOL_GIT_OPS)
-    def test_is_git_operation(self: Any, tool_name: str, input_data: dict[str, object], expected: bool) -> None:
+    def test_is_git_operation(self, tool_name: str, input_data: dict[str, object], expected: bool) -> None:
         assert _make_tool(tool_name, input_data).is_git_operation is expected
 
     @pytest.mark.parametrize(("tool_name", "input_data", "expected"), TOOL_AFFECTED_PATHS)
     def test_affected_paths(
-        self: Any,
+        self,
         tool_name: str,
         input_data: dict[str, object],
         expected: list[str],
     ) -> None:
         assert _make_tool(tool_name, input_data).affected_paths == expected
 
-    def test_affected_paths_bash_extraction(self: Any) -> None:
+    def test_affected_paths_bash_extraction(self) -> None:
         tool = _make_tool("Bash", {"command": "ls /tmp/file1 /tmp/file2"})
         assert "/tmp/file1" in tool.affected_paths
         assert "/tmp/file2" in tool.affected_paths
 
-    def test_affected_paths_bash_skips_flags(self: Any) -> None:
+    def test_affected_paths_bash_skips_flags(self) -> None:
         tool = _make_tool("Bash", {"command": "ls -la /tmp/file"})
         assert "-la" not in tool.affected_paths
         assert "/tmp/file" in tool.affected_paths
 
-    def test_affected_paths_filters_globs_and_noise(self: Any) -> None:
+    def test_affected_paths_filters_globs_and_noise(self) -> None:
         tool = _make_tool("Bash", {"command": "ls /workspace/* /tmp/file ... /dev/null"})
         assert "/tmp/file" in tool.affected_paths
         assert all(path not in tool.affected_paths for path in ("/workspace/*", "...", "/dev/null"))
 
-    def test_affected_paths_filters_shell_suffix_fragments(self: Any) -> None:
+    def test_affected_paths_filters_shell_suffix_fragments(self) -> None:
         tool = _make_tool("Bash", {"command": "tar -xf archive.tar.gz .tar.gz ./fixtures/sample.txt"})
         assert ".tar.gz" not in tool.affected_paths
         assert "./fixtures/sample.txt" in tool.affected_paths
 
-    def test_affected_paths_uses_structured_metadata_files(self: Any) -> None:
+    def test_affected_paths_uses_structured_metadata_files(self) -> None:
         bash_input = _json_input({"command": "git add pyproject.toml README.md"})
         tool = ToolCall(
             name="Bash",
@@ -134,7 +133,7 @@ class TestToolCallProperties:
         )
         assert tool.affected_paths == ["pyproject.toml", "/workspace/polylogue/README.md"]
 
-    def test_affected_paths_filters_noisy_structured_metadata_files(self: Any) -> None:
+    def test_affected_paths_filters_noisy_structured_metadata_files(self) -> None:
         bash_input = _json_input(
             {"command": "git add modules/services/sinex/bridge.nix && git commit -m \"$(cat <<'EOF'\""}
         )
@@ -163,21 +162,21 @@ class TestToolCallProperties:
 
 
 class TestMessageCollectionContracts:
-    def test_is_lazy_is_always_false(self: Any) -> None:
+    def test_is_lazy_is_always_false(self) -> None:
         assert MessageCollection(messages=[]).is_lazy is False
 
-    def test_materialize_is_noop(self: Any) -> None:
+    def test_materialize_is_noop(self) -> None:
         collection = MessageCollection(messages=[make_msg(id="m1", role=Role.USER, text="hello")])
         assert collection.materialize() is collection
 
-    def test_get_pydantic_core_schema(self: Any) -> None:
+    def test_get_pydantic_core_schema(self) -> None:
         handler = Mock()
         handler.generate_schema.return_value = {"type": "object"}
         schema = MessageCollection.__get_pydantic_core_schema__(MessageCollection, handler)
         assert schema is not None
         assert hasattr(schema, "__iter__") or isinstance(schema, dict)
 
-    def test_get_pydantic_json_schema(self: Any) -> None:
+    def test_get_pydantic_json_schema(self) -> None:
         handler = Mock()
         handler.generate.return_value = {"type": "object"}
         handler.resolve_ref_schema.return_value = {"type": "object"}
@@ -187,7 +186,7 @@ class TestMessageCollectionContracts:
 
 
 class TestPinnedSemanticRegressions:
-    def test_extract_thinking_prefers_db_content_blocks(self: Any) -> None:
+    def test_extract_thinking_prefers_db_content_blocks(self) -> None:
         msg = Message(
             id="m1",
             role=Role.ASSISTANT,
@@ -200,7 +199,7 @@ class TestPinnedSemanticRegressions:
         )
         assert msg.extract_thinking() == "db thought 1\n\ndb thought 2"
 
-    def test_extract_thinking_db_blocks_require_thinking_type_and_string_text(self: Any) -> None:
+    def test_extract_thinking_db_blocks_require_thinking_type_and_string_text(self) -> None:
         msg = Message(
             id="m1",
             role=Role.ASSISTANT,
@@ -213,7 +212,7 @@ class TestPinnedSemanticRegressions:
         )
         assert msg.extract_thinking() == "db-only thinking"
 
-    def test_is_tool_use_detection_raw_claude_code(self: Any) -> None:
+    def test_is_tool_use_detection_raw_claude_code(self) -> None:
         msg = Message(
             id="m-tool",
             role=Role.ASSISTANT,
@@ -238,7 +237,7 @@ class TestPinnedSemanticRegressions:
         assert msg.harmonized.tool_calls[0].id == "tool-1"
         assert msg.harmonized.tool_calls[0].input == {"file_path": "README.md"}
 
-    def test_is_thinking_detection_raw_claude_code(self: Any) -> None:
+    def test_is_thinking_detection_raw_claude_code(self) -> None:
         msg = Message(
             id="m-think",
             role=Role.ASSISTANT,
@@ -263,7 +262,7 @@ class TestPinnedSemanticRegressions:
 class TestAttachmentFromRecord:
     @pytest.mark.parametrize(("provider_meta", "expected_name"), ATTACHMENT_NAME_CASES)
     def test_from_record_derives_name(
-        self: Any,
+        self,
         provider_meta: dict[str, object] | None,
         expected_name: str,
     ) -> None:
@@ -278,7 +277,7 @@ class TestAttachmentFromRecord:
 
 class TestMessageFromRecord:
     @pytest.mark.parametrize(("role", "expected_role"), MESSAGE_ROLE_CASES)
-    def test_from_record_normalizes_role(self: Any, role: str, expected_role: str) -> None:
+    def test_from_record_normalizes_role(self, role: str, expected_role: str) -> None:
         record = MessageRecord.model_validate(
             {
                 "message_id": MessageId("m1"),
@@ -291,7 +290,7 @@ class TestMessageFromRecord:
         message = message_from_record(record, [])
         assert message.role == expected_role
 
-    def test_from_record_preserves_structured_content_block_semantics(self: Any) -> None:
+    def test_from_record_preserves_structured_content_block_semantics(self) -> None:
         record = make_message(
             message_id="m1",
             conversation_id="c1",
@@ -329,7 +328,7 @@ class TestMessageFromRecord:
 
 
 class TestConversationSummaryFromRecord:
-    def test_from_record_projects_metadata(self: Any) -> None:
+    def test_from_record_projects_metadata(self) -> None:
         record = make_conversation(
             conversation_id="c1",
             provider_name="claude-ai",
@@ -349,7 +348,7 @@ class TestConversationSummaryFromRecord:
 
 
 class TestConversationFromRecords:
-    def test_from_records_attaches_records_to_messages(self: Any) -> None:
+    def test_from_records_attaches_records_to_messages(self) -> None:
         conversation_record = make_conversation(
             conversation_id="c1",
             provider_name="claude-ai",
