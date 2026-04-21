@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from typing import cast
 
 import aiosqlite
 import pytest
@@ -57,7 +58,7 @@ def test_read_embedding_stats_sync_propagates_non_missing_operational_errors() -
             raise sqlite3.OperationalError("database is locked")
 
     with pytest.raises(sqlite3.OperationalError, match="database is locked"):
-        read_embedding_stats_sync(LockedConnection())  # type: ignore[arg-type]
+        read_embedding_stats_sync(cast(sqlite3.Connection, LockedConnection()))
 
 
 def test_read_embedding_stats_sync_treats_missing_vec_module_as_optional() -> None:
@@ -67,7 +68,7 @@ def test_read_embedding_stats_sync_treats_missing_vec_module_as_optional() -> No
                 raise sqlite3.OperationalError("no such module: vec0")
             raise sqlite3.OperationalError("no such table: embedding_status")
 
-    stats = read_embedding_stats_sync(VeclessConnection())  # type: ignore[arg-type]
+    stats = read_embedding_stats_sync(cast(sqlite3.Connection, VeclessConnection()))
 
     assert stats.embedded_conversations == 0
     assert stats.embedded_messages == 0
