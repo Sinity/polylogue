@@ -5,6 +5,7 @@ from __future__ import annotations
 import sys
 from collections.abc import Mapping
 
+from polylogue.lib.json import JSONDocument, require_json_document
 from polylogue.surface_payloads import (
     MachineErrorPayload,
     MachineSuccessPayload,
@@ -32,12 +33,15 @@ class MachineSuccess(MachineSuccessPayload):
 
 def _normalize_result_payload(
     result: Mapping[str, object] | MachineSuccessPayload | None,
-) -> dict[str, object]:
+) -> JSONDocument:
     if result is None:
         return {}
     if isinstance(result, MachineSuccessPayload):
-        return result.result
-    return {str(key): value for key, value in result.items()}
+        return require_json_document(result.result, context="machine success result")
+    return require_json_document(
+        {str(key): value for key, value in result.items()},
+        context="machine success result",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -51,7 +55,7 @@ def error_invalid_arguments(
     command: list[str] | None = None,
     option: str | None = None,
 ) -> MachineError:
-    details: dict[str, object] = {}
+    details: JSONDocument = {}
     if option:
         details["option"] = option
     return MachineError(
@@ -68,7 +72,7 @@ def error_invalid_path(
     command: list[str] | None = None,
     path: str | None = None,
 ) -> MachineError:
-    details: dict[str, object] = {}
+    details: JSONDocument = {}
     if path:
         details["path"] = path
     return MachineError(
@@ -85,7 +89,7 @@ def error_runtime(
     command: list[str] | None = None,
     exception_type: str | None = None,
 ) -> MachineError:
-    details: dict[str, object] = {}
+    details: JSONDocument = {}
     if exception_type:
         details["exception_type"] = exception_type
     return MachineError(
@@ -102,7 +106,7 @@ def error_dependency_missing(
     command: list[str] | None = None,
     dependency: str | None = None,
 ) -> MachineError:
-    details: dict[str, object] = {}
+    details: JSONDocument = {}
     if dependency:
         details["dependency"] = dependency
     return MachineError(
@@ -131,7 +135,7 @@ def error_no_results(
     command: list[str] | None = None,
     filters: list[str] | None = None,
 ) -> MachineError:
-    details: dict[str, object] = {}
+    details: JSONDocument = {}
     if filters:
         details["filters"] = list(filters)
     return MachineError(

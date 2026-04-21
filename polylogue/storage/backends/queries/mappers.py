@@ -2,157 +2,7 @@
 
 from __future__ import annotations
 
-import json
-import sqlite3
-from typing import TypeVar, cast, overload
-
-from polylogue.errors import DatabaseError
-from polylogue.lib.json import JSONValue, json_document, loads
-
-_T = TypeVar("_T", bound=object)
-_RowValue = str | int | float | bytes | bytearray | None
-_JSONText = str | bytes | bytearray
-JSONObject = dict[str, object]
-
-# ---------------------------------------------------------------------------
-# Shared row-mapper support helpers (formerly mappers_support.py)
-# These MUST be defined before the sub-module imports below, since the
-# sub-modules import _parse_json / _row_get from this module.
-# ---------------------------------------------------------------------------
-
-
-def _parse_json(
-    raw: _RowValue | None,
-    *,
-    field: str = "",
-    record_id: str = "",
-) -> JSONValue | None:
-    """Parse a JSON string with diagnostic context on failure."""
-    if raw is None:
-        return None
-    if not isinstance(raw, _JSONText):
-        raise DatabaseError(f"Corrupt JSON in {field} for {record_id}: expected JSON text, got {type(raw).__name__}")
-    if not raw:
-        return None
-    raw_preview = raw[:80]
-    try:
-        return loads(raw)
-    except json.JSONDecodeError as exc:
-        raise DatabaseError(f"Corrupt JSON in {field} for {record_id}: {exc} (value starts: {raw_preview!r})") from exc
-
-
-@overload
-def _row_get(row: sqlite3.Row, key: str, default: None = None) -> _RowValue | None: ...
-
-
-@overload
-def _row_get(row: sqlite3.Row, key: str, default: _T) -> _T: ...
-
-
-def _row_get(row: sqlite3.Row, key: str, default: _T | None = None) -> _RowValue | _T | None:
-    """Get a column value, returning default if the column doesn't exist."""
-    try:
-        return cast(_RowValue, row[key])
-    except (KeyError, IndexError):
-        return default
-
-
-def _row_text(row: sqlite3.Row, key: str) -> str | None:
-    value = _row_get(row, key)
-    if value is None:
-        return None
-    return value.decode("utf-8", errors="replace") if isinstance(value, (bytes, bytearray)) else str(value)
-
-
-def _row_int(row: sqlite3.Row, key: str, default: int | None = None) -> int | None:
-    value = _row_get(row, key)
-    if value is None:
-        return default
-    if isinstance(value, bool):
-        return int(value)
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float):
-        return int(value)
-    if isinstance(value, (bytes, bytearray)):
-        try:
-            return int(value.decode("utf-8"))
-        except ValueError:
-            return default
-    try:
-        return int(value)
-    except ValueError:
-        return default
-
-
-def _row_float(row: sqlite3.Row, key: str, default: float | None = None) -> float | None:
-    value = _row_get(row, key)
-    if value is None:
-        return default
-    if isinstance(value, bool):
-        return float(int(value))
-    if isinstance(value, (int, float)):
-        return float(value)
-    if isinstance(value, (bytes, bytearray)):
-        try:
-            return float(value.decode("utf-8"))
-        except ValueError:
-            return default
-    try:
-        return float(value)
-    except ValueError:
-        return default
-
-
-def _json_object(value: JSONValue | None) -> JSONObject | None:
-    if value is None:
-        return None
-    document = json_document(value)
-    if not document:
-        return None
-    result: JSONObject = {}
-    for key, item in document.items():
-        result[key] = item
-    return result
-
-
-def _json_text_tuple(value: JSONValue | None) -> tuple[str, ...]:
-    if not isinstance(value, list):
-        return ()
-    items: list[str] = []
-    for item in value:
-        if item is None:
-            continue
-        items.append(str(item))
-    return tuple(items)
-
-
-def _json_int_dict(value: JSONValue | None) -> dict[str, int]:
-    if not isinstance(value, dict):
-        return {}
-    result: dict[str, int] = {}
-    for key, item in value.items():
-        if item is None:
-            continue
-        if isinstance(item, bool):
-            result[key] = int(item)
-            continue
-        if isinstance(item, (int, float)):
-            result[key] = int(item)
-            continue
-        if isinstance(item, str):
-            try:
-                result[key] = int(item)
-            except ValueError:
-                continue
-    return result
-
-
-# ---------------------------------------------------------------------------
-# Re-exports from sub-modules
-# ---------------------------------------------------------------------------
-
-from polylogue.storage.backends.queries.mappers_archive import (  # noqa: E402
+from polylogue.storage.backends.queries.mappers_archive import (
     _row_to_action_event,
     _row_to_artifact_observation,
     _row_to_content_block,
@@ -160,17 +10,27 @@ from polylogue.storage.backends.queries.mappers_archive import (  # noqa: E402
     _row_to_message,
     _row_to_raw_conversation,
 )
-from polylogue.storage.backends.queries.mappers_product_aggregates import (  # noqa: E402
+from polylogue.storage.backends.queries.mappers_product_aggregates import (
     _row_to_day_session_summary_record,
     _row_to_session_tag_rollup_record,
 )
-from polylogue.storage.backends.queries.mappers_product_profiles import (  # noqa: E402
+from polylogue.storage.backends.queries.mappers_product_profiles import (
     _row_to_session_profile_record,
 )
-from polylogue.storage.backends.queries.mappers_product_timelines import (  # noqa: E402
+from polylogue.storage.backends.queries.mappers_product_timelines import (
     _row_to_session_phase_record,
     _row_to_session_work_event_record,
     _row_to_work_thread_record,
+)
+from polylogue.storage.backends.queries.mappers_support import (
+    _json_int_dict,
+    _json_object,
+    _json_text_tuple,
+    _parse_json,
+    _row_float,
+    _row_get,
+    _row_int,
+    _row_text,
 )
 
 __all__ = [

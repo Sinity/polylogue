@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 from collections.abc import Callable, Sequence
 from functools import lru_cache
 from typing import Protocol, cast
@@ -32,12 +33,7 @@ class TreeSitterNodeLike(Protocol):
 @lru_cache(maxsize=1)
 def tree_sitter_available() -> bool:
     """Check if the tree-sitter Python bindings are importable."""
-    try:
-        import tree_sitter  # noqa: F401
-
-        return True
-    except ImportError:
-        return False
+    return importlib.util.find_spec("tree_sitter") is not None
 
 
 @lru_cache(maxsize=32)

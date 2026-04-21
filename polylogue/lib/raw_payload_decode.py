@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from io import BytesIO, StringIO
 from pathlib import Path
-from typing import Literal, TypeAlias
+from typing import IO, Literal, TypeAlias
 
 import orjson
 
@@ -16,6 +18,20 @@ from polylogue.types import Provider
 
 WireFormat = Literal["json", "jsonl"]
 JSONRecord: TypeAlias = JSONDocument
+
+
+@contextmanager
+def _raw_line_stream(raw: Path | bytes | str) -> Iterator[IO[bytes] | IO[str]]:
+    if isinstance(raw, Path):
+        with raw.open("rb") as stream:
+            yield stream
+        return
+    if isinstance(raw, bytes):
+        with BytesIO(raw) as stream:
+            yield stream
+        return
+    with StringIO(raw) as stream:
+        yield stream
 
 
 def _load_json_record(line: str) -> JSONValue:
@@ -50,16 +66,8 @@ def _decode_jsonl_payload(
     first_line = True
     line_number = 0
 
-    fh = (
-        open(raw, "rb")  # noqa: SIM115 — caller-managed context
-        if isinstance(raw, Path)
-        else BytesIO(raw)
-        if isinstance(raw, bytes)
-        else StringIO(raw)
-    )
-
-    try:
-        for raw_line in fh:
+    with _raw_line_stream(raw) as stream:
+        for raw_line in stream:
             line_number += 1
             try:
                 line = raw_line.decode("utf-8") if isinstance(raw_line, bytes) else raw_line
@@ -84,9 +92,6 @@ def _decode_jsonl_payload(
             if jsonl_dict_only and not isinstance(parsed, dict):
                 continue
             lines.append(parsed)
-    finally:
-        if isinstance(raw, Path):
-            fh.close()
 
     if not lines:
         raise ValueError("No valid JSONL records found")
@@ -112,16 +117,8 @@ def _sample_jsonl_payload_with_detail(
     first_line = True
     line_number = 0
 
-    fh = (
-        open(raw, "rb")  # noqa: SIM115 — caller-managed context
-        if isinstance(raw, Path)
-        else BytesIO(raw)
-        if isinstance(raw, bytes)
-        else StringIO(raw)
-    )
-
-    try:
-        for raw_line in fh:
+    with _raw_line_stream(raw) as stream:
+        for raw_line in stream:
             line_number += 1
             try:
                 line = raw_line.decode("utf-8") if isinstance(raw_line, bytes) else raw_line
@@ -148,9 +145,6 @@ def _sample_jsonl_payload_with_detail(
             valid_records += 1
             if len(samples) < max_samples:
                 samples.append(parsed)
-    finally:
-        if isinstance(raw, Path):
-            fh.close()
 
     if valid_records == 0:
         raise ValueError("No valid JSONL records found")

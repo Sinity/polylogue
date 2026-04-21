@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import sys
+from io import TextIOBase
 from typing import Protocol, TextIO, cast
 
 import structlog
@@ -26,7 +27,7 @@ class BoundLoggerLike(Protocol):
     def exception(self, message: str, *args: object, **event_kw: object) -> object: ...
 
 
-class _StderrProxy:
+class _StderrProxy(TextIOBase):
     """File-like proxy that always delegates to the current sys.stderr.
 
     structlog's PrintLoggerFactory captures the file object at creation

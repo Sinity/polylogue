@@ -11,15 +11,6 @@ from polylogue.archive_product_models import (
     WorkEventInferencePayload,
     WorkThreadPayload,
 )
-from polylogue.storage.backends.queries.mappers import (
-    _json_int_dict,
-    _json_text_tuple,
-    _parse_json,
-    _row_float,
-    _row_get,
-    _row_int,
-    _row_text,
-)
 from polylogue.storage.backends.queries.mappers_product_legacy import (
     parse_legacy_payload_dict,
     parse_payload_model,
@@ -27,6 +18,15 @@ from polylogue.storage.backends.queries.mappers_product_legacy import (
     session_phase_inference_from_legacy,
     session_work_event_evidence_from_legacy,
     session_work_event_inference_from_legacy,
+)
+from polylogue.storage.backends.queries.mappers_support import (
+    _json_int_dict,
+    _json_text_tuple,
+    _parse_json,
+    _row_float,
+    _row_get,
+    _row_int,
+    _row_text,
 )
 from polylogue.storage.store import SessionPhaseRecord, SessionWorkEventRecord, WorkThreadRecord
 from polylogue.types import ConversationId

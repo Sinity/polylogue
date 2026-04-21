@@ -7,6 +7,7 @@ factory functions for creating provider instances from configuration.
 
 from __future__ import annotations
 
+import importlib.util
 import os
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -25,6 +26,10 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 _sqlite_vec_missing_warned = False
+
+
+def _sqlite_vec_available() -> bool:
+    return importlib.util.find_spec("sqlite_vec") is not None
 
 
 def create_search_provider(config: Config | None = None, db_path: Path | None = None) -> SearchProvider:
@@ -73,10 +78,7 @@ def create_vector_provider(
     if not voyage_key:
         return None
 
-    # Check if sqlite-vec is available
-    try:
-        import sqlite_vec  # noqa: F401
-    except ImportError:
+    if not _sqlite_vec_available():
         if not _sqlite_vec_missing_warned:
             logger.warning("sqlite-vec not installed, vector search unavailable")
             _sqlite_vec_missing_warned = True

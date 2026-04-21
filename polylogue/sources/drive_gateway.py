@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+# ruff: noqa: N803
 import importlib
 from collections.abc import Callable
 from types import ModuleType
@@ -55,18 +56,18 @@ class _BinaryWritable(Protocol):
 
 
 class _DriveFilesResource(Protocol):
-    def get(self, *, fileId: str, fields: str) -> _ExecutableRequest[DrivePayloadRecord]: ...  # noqa: N803
+    def get(self, *, fileId: str, fields: str) -> _ExecutableRequest[DrivePayloadRecord]: ...
 
     def list(
         self,
         *,
         q: str,
         fields: str,
-        pageToken: str | None,  # noqa: N803
-        pageSize: int,  # noqa: N803
-    ) -> _ExecutableRequest[DriveListFilesResponse]: ...  # noqa: N803
+        pageToken: str | None,
+        pageSize: int,
+    ) -> _ExecutableRequest[DriveListFilesResponse]: ...
 
-    def get_media(self, *, fileId: str) -> object: ...  # noqa: N803
+    def get_media(self, *, fileId: str) -> object: ...
 
 
 class _DriveService(Protocol):

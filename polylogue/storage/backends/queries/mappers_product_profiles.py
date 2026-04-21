@@ -9,20 +9,20 @@ from polylogue.archive_product_models import (
     SessionEvidencePayload,
     SessionInferencePayload,
 )
-from polylogue.storage.backends.queries.mappers import (
-    _json_text_tuple,
-    _parse_json,
-    _row_float,
-    _row_get,
-    _row_int,
-    _row_text,
-)
 from polylogue.storage.backends.queries.mappers_product_legacy import (
     parse_legacy_payload_dict,
     parse_payload_model,
     session_profile_enrichment_from_legacy,
     session_profile_evidence_from_legacy,
     session_profile_inference_from_legacy,
+)
+from polylogue.storage.backends.queries.mappers_support import (
+    _json_text_tuple,
+    _parse_json,
+    _row_float,
+    _row_get,
+    _row_int,
+    _row_text,
 )
 from polylogue.storage.store import SessionProfileRecord
 from polylogue.types import ConversationId
