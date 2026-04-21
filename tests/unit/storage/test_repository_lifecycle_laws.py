@@ -189,3 +189,32 @@ def test_domain_conversation_to_record_generates_content_hash(workspace_env: Map
     domain_conversation = conversation_from_records(conv_record, msg_records, attachment_records)
     record = conversation_to_record(domain_conversation)
     assert record.content_hash
+
+
+@pytest.mark.asyncio()
+async def test_repository_rejects_domain_conversation_without_message_records(
+    workspace_env: Mapping[str, Path],
+) -> None:
+    """A hydrated domain object must not be re-saved as an empty runtime graph."""
+    scenario = ArchiveScenario(
+        name="domain-empty-records",
+        provider="claude-code",
+        title="Domain empty records",
+        messages=(ScenarioMessage(role="user", text="Question", message_id="m1"),),
+    )
+    db_path, _ = seed_workspace_scenarios(workspace_env, [scenario])
+    repository = repository_for_scenario_db(db_path)
+    try:
+        conversation = await repository.get(scenario.resolved_conversation_id)
+        assert conversation is not None
+
+        with pytest.raises(ValueError, match="domain Conversation with messages but no MessageRecord"):
+            await repository.save_conversation(conversation, [], [])
+
+        with open_connection(db_path) as conn:
+            assert_conversation_surfaces_agree(
+                scenario.facts_from_connection(conn),
+                await scenario.facts_from_repository(repository),
+            )
+    finally:
+        await repository.close()
