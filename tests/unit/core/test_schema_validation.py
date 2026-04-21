@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 import pytest
 
+from polylogue.lib.json import json_document
 from polylogue.scenarios import CorpusSpec
 from polylogue.schemas import ValidationResult
 from polylogue.schemas.registry import SchemaRegistry
@@ -89,7 +90,7 @@ def test_schema_validator_loads_canonical_claude_ai_provider(mock_schema_dir: An
         validator = SchemaValidator.for_provider("claude-ai")
 
     assert validator.provider == "claude-ai"
-    assert "uuid" in validator.schema["properties"]
+    assert "uuid" in json_document(validator.schema["properties"])
 
 
 def test_schema_validator_accepts_provider_enum(mock_schema_dir: Any) -> None:
@@ -141,7 +142,7 @@ def test_schema_validator_prefers_registry_latest(monkeypatch: Any) -> Any:
     SchemaValidator._cache.clear()
 
     validator = SchemaValidator.for_provider("chatgpt")
-    assert "from_registry" in validator.schema["properties"]
+    assert "from_registry" in json_document(validator.schema["properties"])
 
 
 def test_dynamic_key_maps_do_not_emit_drift_warnings() -> None:

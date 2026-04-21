@@ -7,6 +7,7 @@ import json
 import subprocess
 import tempfile
 import time
+from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -122,11 +123,14 @@ def _benchmark_key(entry: JSONDocument) -> str:
     return str(entry.get("fullname") or entry.get("fullfunc") or entry.get("name"))
 
 
-def _number_field(payload: JSONDocument, field: str) -> str | int | float:
-    value = payload[field]
+def _number_value(value: object, *, field: str) -> str | int | float:
     if isinstance(value, bool) or not isinstance(value, (str, int, float)):
         raise ValueError(f"Benchmark payload field {field!r} is not numeric: {value!r}")
     return value
+
+
+def _number_field(payload: JSONDocument, field: str) -> str | int | float:
+    return _number_value(payload[field], field=field)
 
 
 def _float_field(payload: JSONDocument, field: str) -> float:
@@ -182,14 +186,14 @@ def _load_campaign_result(path: Path) -> CampaignResult:
     return CampaignResult(**json.loads(path.read_text()))
 
 
-def _compare_results(current: list[BenchmarkStat], baseline: list[BenchmarkStatRecord]) -> list[Regression]:
+def _compare_results(current: list[BenchmarkStat], baseline: Iterable[Mapping[str, object]]) -> list[Regression]:
     baseline_map = {str(item["fullname"]): item for item in baseline}
     regressions: list[Regression] = []
     for bench in current:
         previous = baseline_map.get(bench.fullname)
         if previous is None:
             continue
-        baseline_mean = float(previous["mean"])
+        baseline_mean = float(_number_value(previous["mean"], field="mean"))
         if baseline_mean <= 0:
             continue
         delta_pct = ((bench.mean - baseline_mean) / baseline_mean) * 100.0

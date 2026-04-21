@@ -33,7 +33,7 @@ from .validator_resolution import (
 if TYPE_CHECKING:
     from polylogue.schemas.packages import SchemaResolution
 
-ValidationSchema: TypeAlias = Mapping[str, JSONValue]
+ValidationSchema: TypeAlias = Mapping[str, object]
 ValidationSample: TypeAlias = JSONDocument
 
 

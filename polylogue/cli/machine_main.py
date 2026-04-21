@@ -2,13 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Protocol
+from collections.abc import Callable
 
 import click
-
-
-class ClickEntrypoint(Protocol):
-    def __call__(self, *args: object, **kwargs: object) -> object: ...
 
 
 def extract_option(message: str) -> str | None:
@@ -19,7 +15,7 @@ def extract_option(message: str) -> str | None:
 
 
 def run_machine_entry(
-    cli: ClickEntrypoint,
+    cli: Callable[..., object],
     argv: list[str],
 ) -> None:
     """Run the CLI, emitting JSON machine errors when requested."""

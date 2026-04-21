@@ -9,6 +9,7 @@ from pytest import MonkeyPatch
 
 from devtools.benchmark_campaign import (
     BenchmarkStat,
+    BenchmarkStatRecord,
     CampaignResult,
     Regression,
     _compare_results,
@@ -30,6 +31,21 @@ from polylogue.scenarios import (
     ScenarioProjectionSourceKind,
     pytest_execution,
 )
+
+
+def _benchmark_record(fullname: str, mean: float) -> BenchmarkStatRecord:
+    return {
+        "name": fullname,
+        "fullname": fullname,
+        "group": "group",
+        "mean": mean,
+        "median": mean,
+        "minimum": mean,
+        "maximum": mean,
+        "stddev": 0.0,
+        "rounds": 1,
+        "ops": (1.0 / mean) if mean > 0 else None,
+    }
 
 
 def test_compare_results_orders_regressions_by_worst_delta() -> None:
@@ -63,7 +79,7 @@ def test_compare_artifacts_fails_when_threshold_is_exceeded(tmp_path: Path) -> N
         runtime_seconds=1.0,
         exit_code=0,
         machine_info={},
-        benchmarks=[{"fullname": "bench.a", "mean": 1.0}],
+        benchmarks=[_benchmark_record("bench.a", 1.0)],
         slowest=[],
         compare_to=None,
         warn_pct=10.0,
@@ -85,20 +101,7 @@ def test_compare_artifacts_fails_when_threshold_is_exceeded(tmp_path: Path) -> N
         runtime_seconds=1.0,
         exit_code=0,
         machine_info={},
-        benchmarks=[
-            {
-                "name": "bench.a",
-                "fullname": "bench.a",
-                "group": "group",
-                "mean": 1.5,
-                "median": 1.5,
-                "minimum": 1.4,
-                "maximum": 1.6,
-                "stddev": 0.05,
-                "rounds": 5,
-                "ops": 0.66,
-            }
-        ],
+        benchmarks=[_benchmark_record("bench.a", 1.5)],
         slowest=[],
         compare_to=None,
         warn_pct=10.0,

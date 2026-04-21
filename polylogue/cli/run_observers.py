@@ -6,7 +6,7 @@ import re
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from polylogue.cli.formatting import format_counts
 from polylogue.cli.types import AppEnv
@@ -89,9 +89,9 @@ class RichProgressObserver(RunObserver):
 
     __slots__ = ("_progress", "_task_id")
 
-    def __init__(self, progress: Progress, task_id: TaskID) -> None:
+    def __init__(self, progress: Progress, task_id: object) -> None:
         self._progress = progress
-        self._task_id = task_id
+        self._task_id = cast("TaskID", task_id)
 
     @staticmethod
     def _progress_bounds(desc: str | None) -> tuple[int, int] | None:
