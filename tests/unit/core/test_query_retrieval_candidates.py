@@ -1,18 +1,19 @@
 from __future__ import annotations
 
-from typing import Any
-
 import pytest
 
 from polylogue.errors import DatabaseError
 from polylogue.lib.query_plan import ConversationQueryPlan
 from polylogue.lib.query_retrieval_candidates import fetch_search_results
 from polylogue.storage.backends.connection import open_connection
+from polylogue.storage.repository import ConversationRepository
 from tests.infra.storage_records import ConversationBuilder
 
 
 @pytest.mark.asyncio
-async def test_fetch_search_results_raises_when_message_index_is_incomplete(storage_repository: Any) -> None:
+async def test_fetch_search_results_raises_when_message_index_is_incomplete(
+    storage_repository: ConversationRepository,
+) -> None:
     ConversationBuilder(storage_repository.backend.db_path, "conv-incomplete-search").add_message(
         "m1",
         text="python search contract",

@@ -10,11 +10,10 @@ Covers:
 from __future__ import annotations
 
 from collections import Counter
-from typing import Any
 
 import pytest
 
-from polylogue.lib.json import JSONValue, json_document
+from polylogue.lib.json import JSONDocument, JSONValue, json_document
 from polylogue.lib.raw_payload_sampling_extract import (
     extract_payload_samples,
     extract_record_samples_from_raw_content,
@@ -194,7 +193,7 @@ class TestRecordStreamTitleAbstention:
 
     def test_annotate_semantic_threads_artifact_kind(self) -> None:
         """annotate_semantic_and_relational passes artifact_kind through."""
-        schema: dict[str, Any] = {
+        schema: JSONDocument = {
             "type": "object",
             "properties": {
                 "title": {"type": "string"},
@@ -219,7 +218,7 @@ class TestRecordStreamTitleAbstention:
             artifact_kind="conversation_record_stream",
         )
         # Title should NOT be annotated for record streams
-        title_prop = result.get("properties", {}).get("title", {})
+        title_prop = json_document(json_document(result.get("properties")).get("title"))
         assert title_prop.get("x-polylogue-semantic-role") != "conversation_title"
 
     def test_record_stream_eligible_roles_are_subset_of_semantic_roles(self) -> None:
@@ -236,7 +235,7 @@ class TestProofSurface:
     """Schema review proof surface has required structure."""
 
     @pytest.fixture()
-    def schema_with_roles(self) -> dict[str, Any]:
+    def schema_with_roles(self) -> JSONDocument:
         """A schema with some semantic role annotations."""
         return {
             "type": "object",
@@ -271,13 +270,13 @@ class TestProofSurface:
             },
         }
 
-    def test_proof_contains_all_semantic_roles(self, schema_with_roles: dict[str, Any]) -> None:
+    def test_proof_contains_all_semantic_roles(self, schema_with_roles: JSONDocument) -> None:
         """Proof has an entry for every semantic role."""
         proof = build_review_proof(schema_with_roles)
         proof_roles = {entry.role for entry in proof.roles}
         assert proof_roles == set(SEMANTIC_ROLES)
 
-    def test_proof_entry_fields(self, schema_with_roles: dict[str, Any]) -> None:
+    def test_proof_entry_fields(self, schema_with_roles: JSONDocument) -> None:
         """Each proof entry has required fields."""
         proof = build_review_proof(schema_with_roles)
         for entry in proof.roles:
@@ -287,7 +286,7 @@ class TestProofSurface:
             assert isinstance(entry.competing, list)
             assert isinstance(entry.evidence, dict)
 
-    def test_proof_chosen_path_for_assigned_roles(self, schema_with_roles: dict[str, Any]) -> None:
+    def test_proof_chosen_path_for_assigned_roles(self, schema_with_roles: JSONDocument) -> None:
         """Assigned roles have a chosen_path."""
         proof = build_review_proof(schema_with_roles)
         title_entry = next(e for e in proof.roles if e.role == "conversation_title")
@@ -295,7 +294,7 @@ class TestProofSurface:
         assert title_entry.chosen_score == pytest.approx(0.72)
         assert not title_entry.abstained
 
-    def test_proof_abstained_roles(self, schema_with_roles: dict[str, Any]) -> None:
+    def test_proof_abstained_roles(self, schema_with_roles: JSONDocument) -> None:
         """Roles with no candidates are marked as abstained."""
         proof = build_review_proof(schema_with_roles)
         # message_container and message_timestamp have no assignment in the fixture
@@ -303,7 +302,7 @@ class TestProofSurface:
         assert container_entry.abstained
         assert container_entry.abstain_reason is not None
 
-    def test_proof_to_dict_roundtrip(self, schema_with_roles: dict[str, Any]) -> None:
+    def test_proof_to_dict_roundtrip(self, schema_with_roles: JSONDocument) -> None:
         """to_dict produces JSON-serializable output."""
         import json
 
@@ -318,7 +317,7 @@ class TestProofSurface:
         assert "eligible_roles" in parsed
         assert "ineligible_roles" in parsed
 
-    def test_proof_eligible_roles_for_document(self, schema_with_roles: dict[str, Any]) -> None:
+    def test_proof_eligible_roles_for_document(self, schema_with_roles: JSONDocument) -> None:
         """conversation_document has all roles eligible."""
         proof = build_review_proof(schema_with_roles)
         assert proof.eligible_roles == list(SEMANTIC_ROLES)
@@ -326,7 +325,7 @@ class TestProofSurface:
 
     def test_proof_record_stream_ineligible_roles(self) -> None:
         """Record-stream schemas show title as ineligible."""
-        schema: dict[str, Any] = {
+        schema: JSONDocument = {
             "type": "object",
             "x-polylogue-artifact-kind": "conversation_record_stream",
             "properties": {
@@ -355,7 +354,7 @@ class TestConfidenceToScoreRename:
 
     def test_no_confidence_key_in_annotated_schema(self) -> None:
         """Annotated schema uses x-polylogue-score, not x-polylogue-confidence."""
-        schema: dict[str, Any] = {
+        schema: JSONDocument = {
             "type": "object",
             "properties": {
                 "role": {"type": "string"},
@@ -406,13 +405,14 @@ class TestConfidenceToScoreRename:
         assert not hits, f"Source files still reference old key: {hits}"
 
 
-def _collect_all_keys(obj: Any, _keys: set[str] | None = None) -> set[str]:
+def _collect_all_keys(obj: object, _keys: set[str] | None = None) -> set[str]:
     """Recursively collect all dict keys in a nested structure."""
     if _keys is None:
         _keys = set()
     if isinstance(obj, dict):
         for k, v in obj.items():
-            _keys.add(k)
+            if isinstance(k, str):
+                _keys.add(k)
             _collect_all_keys(v, _keys)
     elif isinstance(obj, list):
         for item in obj:
