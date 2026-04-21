@@ -2,17 +2,24 @@
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Mapping
+from pathlib import Path
+from typing import TypeAlias
 
 from polylogue.archive_products import ProviderAnalyticsProduct
 from polylogue.operations.archive import list_provider_analytics_products
+from polylogue.storage.repository import ConversationRepository
 from tests.infra.storage_records import make_conversation, make_message
+
+ProviderMeta: TypeAlias = Mapping[str, object] | None
+AnalyticsRow: TypeAlias = tuple[str, str, str | None, ProviderMeta]
+AnalyticsRows: TypeAlias = list[AnalyticsRow]
 
 
 class TestProviderAnalyticsProduct:
     """Test ProviderAnalyticsProduct contract."""
 
-    def test_tool_use_percentage_with_data(self: Any) -> None:
+    def test_tool_use_percentage_with_data(self: object) -> None:
         """Tool use percentage is calculated correctly."""
         metrics = ProviderAnalyticsProduct(
             provider_name="test",
@@ -32,7 +39,7 @@ class TestProviderAnalyticsProduct:
         )
         assert metrics.tool_use_percentage == 20.0
 
-    def test_tool_use_percentage_zero_conversations(self: Any) -> None:
+    def test_tool_use_percentage_zero_conversations(self: object) -> None:
         """Tool use percentage returns 0 when no conversations."""
         metrics = ProviderAnalyticsProduct(
             provider_name="empty",
@@ -52,7 +59,7 @@ class TestProviderAnalyticsProduct:
         )
         assert metrics.tool_use_percentage == 0.0
 
-    def test_thinking_percentage_with_data(self: Any) -> None:
+    def test_thinking_percentage_with_data(self: object) -> None:
         """Thinking percentage is calculated correctly."""
         metrics = ProviderAnalyticsProduct(
             provider_name="test",
@@ -72,7 +79,7 @@ class TestProviderAnalyticsProduct:
         )
         assert metrics.thinking_percentage == 20.0
 
-    def test_thinking_percentage_zero_conversations(self: Any) -> None:
+    def test_thinking_percentage_zero_conversations(self: object) -> None:
         """Thinking percentage returns 0 when no conversations."""
         metrics = ProviderAnalyticsProduct(
             provider_name="empty",
@@ -96,13 +103,15 @@ class TestProviderAnalyticsProduct:
 class TestListProviderAnalyticsProducts:
     """Test list_provider_analytics_products function."""
 
-    async def test_empty_database(self: Any, workspace_env: Any) -> None:
+    async def test_empty_database(self: object, workspace_env: dict[str, Path]) -> None:
         """Empty database returns empty list."""
         db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
         result = await list_provider_analytics_products(db_path=db_path)
         assert result == []
 
-    async def test_single_provider(self: Any, workspace_env: Any, storage_repository: Any) -> None:
+    async def test_single_provider(
+        self: object, workspace_env: dict[str, Path], storage_repository: ConversationRepository
+    ) -> None:
         """Single provider aggregation."""
         db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
 
@@ -124,7 +133,9 @@ class TestListProviderAnalyticsProducts:
         assert result[0].user_message_count == 1
         assert result[0].assistant_message_count == 1
 
-    async def test_multiple_providers_sorted(self: Any, workspace_env: Any, storage_repository: Any) -> None:
+    async def test_multiple_providers_sorted(
+        self: object, workspace_env: dict[str, Path], storage_repository: ConversationRepository
+    ) -> None:
         """Multiple providers sorted by conversation count descending."""
         db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
 
@@ -153,7 +164,9 @@ class TestListProviderAnalyticsProducts:
         assert result[1].provider_name == "claude-ai"
         assert result[1].conversation_count == 2
 
-    async def test_user_assistant_segregation(self: Any, workspace_env: Any, storage_repository: Any) -> None:
+    async def test_user_assistant_segregation(
+        self: object, workspace_env: dict[str, Path], storage_repository: ConversationRepository
+    ) -> None:
         """User and assistant messages are counted separately."""
         db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
 
@@ -173,7 +186,9 @@ class TestListProviderAnalyticsProducts:
         assert result[0].assistant_message_count == 2
         assert result[0].message_count == 4
 
-    async def test_avg_messages_per_conversation(self: Any, workspace_env: Any, storage_repository: Any) -> None:
+    async def test_avg_messages_per_conversation(
+        self: object, workspace_env: dict[str, Path], storage_repository: ConversationRepository
+    ) -> None:
         """Average messages per conversation is computed correctly."""
         db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
 
@@ -201,7 +216,9 @@ class TestListProviderAnalyticsProducts:
         # Total 6 messages across 2 conversations = 3.0 average
         assert result[0].avg_messages_per_conversation == 3.0
 
-    async def test_tool_use_detection(self: Any, workspace_env: Any, storage_repository: Any) -> None:
+    async def test_tool_use_detection(
+        self: object, workspace_env: dict[str, Path], storage_repository: ConversationRepository
+    ) -> None:
         """Tool use is detected from content_blocks."""
         db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
 
@@ -226,7 +243,9 @@ class TestListProviderAnalyticsProducts:
         assert result[0].total_conversations_with_tools == 1
         assert result[0].tool_use_percentage == 100.0
 
-    async def test_thinking_detection(self: Any, workspace_env: Any, storage_repository: Any) -> None:
+    async def test_thinking_detection(
+        self: object, workspace_env: dict[str, Path], storage_repository: ConversationRepository
+    ) -> None:
         """Thinking is detected from content_blocks."""
         db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
 
@@ -251,7 +270,9 @@ class TestListProviderAnalyticsProducts:
         assert result[0].total_conversations_with_thinking == 1
         assert result[0].thinking_percentage == 100.0
 
-    async def test_conversations_with_tools_set_dedup(self: Any, workspace_env: Any, storage_repository: Any) -> None:
+    async def test_conversations_with_tools_set_dedup(
+        self: object, workspace_env: dict[str, Path], storage_repository: ConversationRepository
+    ) -> None:
         """Multiple tool uses in same conversation counted once."""
         db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
 
@@ -283,7 +304,9 @@ class TestListProviderAnalyticsProducts:
         assert result[0].total_conversations_with_tools == 1  # But one conversation
         assert result[0].tool_use_percentage == 100.0
 
-    async def test_division_by_zero_protection(self: Any, workspace_env: Any, storage_repository: Any) -> None:
+    async def test_division_by_zero_protection(
+        self: object, workspace_env: dict[str, Path], storage_repository: ConversationRepository
+    ) -> None:
         """Metrics handle zero counts gracefully."""
         db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
 
@@ -307,7 +330,7 @@ class TestListProviderAnalyticsProducts:
 # ============================================================================
 
 
-async def _seed_db(tmp_path: Any, rows: Any) -> Any:
+async def _seed_db(tmp_path: Path, rows: AnalyticsRows) -> Path:
     """Seed database with raw rows: (provider, role, text, provider_meta_or_None).
 
     Returns: db_path (Path)
@@ -326,7 +349,7 @@ async def _seed_db(tmp_path: Any, rows: Any) -> Any:
     repo = ConversationRepository(backend=backend)
 
     # Group rows by provider and conversation
-    convos_by_provider: dict[str, list[tuple[str, str, dict[str, object] | None]]] = {}
+    convos_by_provider: dict[str, list[tuple[str, str | None, ProviderMeta]]] = {}
     for provider, role, text, provider_meta in rows:
         if provider not in convos_by_provider:
             convos_by_provider[provider] = []
@@ -367,7 +390,7 @@ async def _seed_db(tmp_path: Any, rows: Any) -> Any:
 class TestWordCountEdgeCases:
     """Verify word count SQL handles edge cases correctly."""
 
-    async def test_spaces_only_text_counts_zero_words(self: Any, tmp_path: Any) -> None:
+    async def test_spaces_only_text_counts_zero_words(self: object, tmp_path: Path) -> None:
         """Space-only messages should count as 0 words."""
         db = await _seed_db(
             tmp_path,
@@ -380,7 +403,7 @@ class TestWordCountEdgeCases:
         assert len(results) == 1
         assert results[0].avg_user_words == 0.0
 
-    async def test_tabs_newlines_are_stripped(self: Any, tmp_path: Any) -> None:
+    async def test_tabs_newlines_are_stripped(self: object, tmp_path: Path) -> None:
         """Python split() strips all whitespace including tabs/newlines.
 
         word_count is precomputed at insert time via len(text.split()).
@@ -396,7 +419,7 @@ class TestWordCountEdgeCases:
         results = await list_provider_analytics_products(db_path=db)
         assert results[0].avg_user_words == 0.0
 
-    async def test_single_word_counts_one(self: Any, tmp_path: Any) -> None:
+    async def test_single_word_counts_one(self: object, tmp_path: Path) -> None:
         """A single word with no spaces counts as 1."""
         db = await _seed_db(
             tmp_path,
@@ -407,7 +430,7 @@ class TestWordCountEdgeCases:
         results = await list_provider_analytics_products(db_path=db)
         assert results[0].avg_user_words == 1.0
 
-    async def test_multiple_spaces_between_words(self: Any, tmp_path: Any) -> None:
+    async def test_multiple_spaces_between_words(self: object, tmp_path: Path) -> None:
         """Multiple spaces between words count as expected.
 
         word_count is precomputed via len(text.split()), which splits on any
@@ -422,7 +445,7 @@ class TestWordCountEdgeCases:
         results = await list_provider_analytics_products(db_path=db)
         assert results[0].avg_user_words == 2.0
 
-    async def test_empty_text_counts_zero(self: Any, tmp_path: Any) -> None:
+    async def test_empty_text_counts_zero(self: object, tmp_path: Path) -> None:
         """Empty string text counts as 0 words."""
         db = await _seed_db(
             tmp_path,
@@ -433,7 +456,7 @@ class TestWordCountEdgeCases:
         results = await list_provider_analytics_products(db_path=db)
         assert results[0].avg_user_words == 0.0
 
-    async def test_none_text_counts_zero(self: Any, tmp_path: Any) -> None:
+    async def test_none_text_counts_zero(self: object, tmp_path: Path) -> None:
         """NULL text counts as 0 words."""
         db = await _seed_db(
             tmp_path,
@@ -453,7 +476,7 @@ class TestWordCountEdgeCases:
 class TestLikePatternResistance:
     """Verify LIKE-based tool_use/thinking detection doesn't false-positive."""
 
-    async def test_tool_use_in_message_text_not_detected(self: Any, tmp_path: Any) -> None:
+    async def test_tool_use_in_message_text_not_detected(self: object, tmp_path: Path) -> None:
         """Text containing 'tool_use' string should NOT count as tool use."""
         db = await _seed_db(
             tmp_path,
@@ -466,7 +489,7 @@ class TestLikePatternResistance:
         # tool_use_count should be 0 — the LIKE is on provider_meta, not text
         assert results[0].tool_use_count == 0
 
-    async def test_thinking_in_message_text_not_detected(self: Any, tmp_path: Any) -> None:
+    async def test_thinking_in_message_text_not_detected(self: object, tmp_path: Path) -> None:
         """Text containing 'thinking' should NOT count as thinking."""
         db = await _seed_db(
             tmp_path,
@@ -477,7 +500,7 @@ class TestLikePatternResistance:
         results = await list_provider_analytics_products(db_path=db)
         assert results[0].thinking_count == 0
 
-    async def test_tool_role_fallback_detected(self: Any, tmp_path: Any) -> None:
+    async def test_tool_role_fallback_detected(self: object, tmp_path: Path) -> None:
         """Messages with role='tool' should be counted as tool use."""
         db = await _seed_db(
             tmp_path,
@@ -488,7 +511,7 @@ class TestLikePatternResistance:
         results = await list_provider_analytics_products(db_path=db)
         assert results[0].tool_use_count == 1
 
-    async def test_tool_use_in_provider_meta_detected(self: Any, tmp_path: Any) -> None:
+    async def test_tool_use_in_provider_meta_detected(self: object, tmp_path: Path) -> None:
         """Tool use in provider_meta content_blocks is detected."""
         meta = {"content_blocks": [{"type": "tool_use", "name": "search", "id": "t1"}]}
         db = await _seed_db(
@@ -501,7 +524,7 @@ class TestLikePatternResistance:
         assert results[0].tool_use_count == 1
         assert results[0].total_conversations_with_tools == 1
 
-    async def test_thinking_in_provider_meta_detected(self: Any, tmp_path: Any) -> None:
+    async def test_thinking_in_provider_meta_detected(self: object, tmp_path: Path) -> None:
         """Thinking blocks in provider_meta are detected."""
         meta = {"content_blocks": [{"type": "thinking", "thinking": "Let me consider..."}]}
         db = await _seed_db(
@@ -514,7 +537,7 @@ class TestLikePatternResistance:
         assert results[0].thinking_count == 1
         assert results[0].total_conversations_with_thinking == 1
 
-    async def test_mixed_content_blocks_counted_correctly(self: Any, tmp_path: Any) -> None:
+    async def test_mixed_content_blocks_counted_correctly(self: object, tmp_path: Path) -> None:
         """Message with both tool_use and thinking blocks counts both."""
         meta = {
             "content_blocks": [
@@ -542,7 +565,7 @@ class TestLikePatternResistance:
 class TestCrossProviderConsistency:
     """Verify SQL detection works across different provider data structures."""
 
-    async def test_multiple_providers_with_tool_use(self: Any, tmp_path: Any) -> None:
+    async def test_multiple_providers_with_tool_use(self: object, tmp_path: Path) -> None:
         """Tool use is detected correctly across ChatGPT and Claude providers."""
         chatgpt_meta = {"content_blocks": [{"type": "tool_use", "name": "browser"}]}
         claude_meta = {"content_blocks": [{"type": "tool_use", "name": "computer", "id": "toolu_1"}]}

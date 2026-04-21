@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import AsyncIterable, Iterable
 from importlib import import_module
 from pathlib import Path
-from typing import Any, cast
+from typing import Protocol, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -22,7 +23,19 @@ from polylogue.storage.run_state import (
 )
 from tests.infra.source_builders import ChatGPTExportBuilder, GenericConversationBuilder, InboxBuilder
 
-run_command = cast(Any, import_module("polylogue.cli.commands.run"))
+
+class RunCommandModule(Protocol):
+    def _display_result(
+        self,
+        env: MagicMock,
+        config: MagicMock,
+        result: RunResult,
+        stage: str,
+        latest_render_path: Path | None,
+    ) -> None: ...
+
+
+run_command = cast(RunCommandModule, import_module("polylogue.cli.commands.run"))
 
 
 def _observer_result(
@@ -50,7 +63,7 @@ def _observer_result(
 
 
 @pytest.fixture
-def mock_env() -> Any:
+def mock_env() -> MagicMock:
     from rich.console import Console
 
     env = MagicMock()
@@ -63,7 +76,7 @@ def mock_env() -> Any:
 
 
 @pytest.mark.parametrize("with_plan", [True, False])
-async def test_plan_and_run_sources(workspace_env: Any, tmp_path: Any, with_plan: Any) -> None:
+async def test_plan_and_run_sources(workspace_env: dict[str, Path], tmp_path: Path, with_plan: bool) -> None:
     inbox = tmp_path / "inbox"
     source_file = (
         GenericConversationBuilder("conv1")
@@ -97,12 +110,12 @@ async def test_plan_and_run_sources(workspace_env: Any, tmp_path: Any, with_plan
     ],
 )
 async def test_run_sources_filtered_by_stage(
-    workspace_env: Any,
-    tmp_path: Any,
-    setup_type: Any,
-    stage: Any,
-    expected_conv_count: Any,
-    check_render: Any,
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+    setup_type: str,
+    stage: str,
+    expected_conv_count: int,
+    check_render: bool,
 ) -> None:
     if setup_type == "multi_source_filter":
         inbox = (
@@ -135,7 +148,9 @@ async def test_run_sources_filtered_by_stage(
         assert any(config.render_root.rglob("conversation.md"))
 
 
-async def test_run_index_filters_selected_sources(workspace_env: Any, tmp_path: Any, monkeypatch: Any) -> Any:
+async def test_run_index_filters_selected_sources(
+    workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     inbox = (
         InboxBuilder(tmp_path / "inbox")
         .add_json_file("a.json", {"id": "conv-a", "messages": [{"id": "m1", "role": "user", "text": "alpha"}]})
@@ -156,15 +171,15 @@ async def test_run_index_filters_selected_sources(workspace_env: Any, tmp_path: 
     with open_connection(None) as conn:
         rows = conn.execute("SELECT conversation_id, provider_meta FROM conversations").fetchall()
     for row in rows:
-        meta = json.loads(row["provider_meta"] or "{}")
+        meta = cast(dict[str, object], json.loads(row["provider_meta"] or "{}"))
         name = meta.get("source")
         if name:
             id_by_source[name] = row["conversation_id"]
 
-    update_calls = []
+    update_calls: list[list[str]] = []
     from polylogue.pipeline.services.indexing import IndexService
 
-    async def fake_update_method(self: Any, ids: Any) -> Any:
+    async def fake_update_method(self: object, ids: AsyncIterable[str] | Iterable[str]) -> bool:
         if hasattr(ids, "__aiter__"):
             update_calls.append([conversation_id async for conversation_id in ids])
         else:
@@ -176,7 +191,9 @@ async def test_run_index_filters_selected_sources(workspace_env: Any, tmp_path: 
     assert update_calls == [[id_by_source["source-b"]]]
 
 
-async def test_run_writes_unique_report_files(workspace_env: Any, tmp_path: Any, monkeypatch: Any) -> None:
+async def test_run_writes_unique_report_files(
+    workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     inbox = tmp_path / "inbox"
     source_file = GenericConversationBuilder("conv1").add_user("hello").write_to(inbox / "conversation.json")
 
@@ -202,7 +219,7 @@ async def test_run_writes_unique_report_files(workspace_env: Any, tmp_path: Any,
 
 
 @pytest.mark.parametrize("setup_type", ["parsed_json", "null_columns"])
-async def test_latest_run_parsing(workspace_env: Any, tmp_path: Any, setup_type: Any) -> None:
+async def test_latest_run_parsing(workspace_env: dict[str, Path], tmp_path: Path, setup_type: str) -> None:
     if setup_type == "parsed_json":
         inbox = tmp_path / "inbox"
         GenericConversationBuilder("conv-latest-run").add_user("test").write_to(inbox / "conversation.json")
@@ -234,7 +251,7 @@ async def test_latest_run_parsing(workspace_env: Any, tmp_path: Any, setup_type:
         assert result.drift is None
 
 
-def test_display_result_reports_render_failures(mock_env: Any, capsys: Any) -> None:
+def test_display_result_reports_render_failures(mock_env: MagicMock, capsys: pytest.CaptureFixture[str]) -> None:
     mock_config = MagicMock(render_root=Path("/tmp/render"))
     failures: list[RenderFailurePayload] = [
         {"conversation_id": f"conv-{index}", "error": f"error {index}"} for index in range(15)
@@ -258,7 +275,7 @@ def test_display_result_reports_render_failures(mock_env: Any, capsys: Any) -> N
     assert "re-run with `polylogue run render`" in captured.err
 
 
-def test_display_result_reports_index_error_hint(mock_env: Any, capsys: Any) -> None:
+def test_display_result_reports_index_error_hint(mock_env: MagicMock, capsys: pytest.CaptureFixture[str]) -> None:
     mock_config = MagicMock(render_root=Path("/tmp/render"))
     result = RunResult(
         run_id="run-123",
@@ -312,7 +329,7 @@ class TestWatchModeCallbacks:
             "echo $(id)",
         ],
     )
-    def test_exec_callback_rejects_dangerous_commands(self, dangerous_command: Any) -> None:
+    def test_exec_callback_rejects_dangerous_commands(self, dangerous_command: str) -> None:
         with pytest.raises(ValueError, match="unsafe"):
             ExecObserver(dangerous_command)
 
