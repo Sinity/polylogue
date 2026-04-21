@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import builtins
-from typing import cast
 
 from polylogue.lib.conversation_models import Conversation
 from polylogue.lib.json import json_document
@@ -52,7 +51,7 @@ def conversation_to_record(conversation: Conversation) -> ConversationRecord:
     provider_meta.update(json_document(metadata.get("provider_meta")))
 
     return ConversationRecord(
-        conversation_id=cast(ConversationId, str(conversation.id)),
+        conversation_id=ConversationId(str(conversation.id)),
         provider_name=conversation.provider,
         provider_conversation_id=provider_conversation_id(
             conversation_id=str(conversation.id),
@@ -61,7 +60,7 @@ def conversation_to_record(conversation: Conversation) -> ConversationRecord:
         title=conversation.title or "",
         created_at=created_at_str,
         updated_at=updated_at_str,
-        content_hash=cast(ContentHash, metadata_record.get("content_hash", "")),
+        content_hash=ContentHash(str(metadata_record.get("content_hash", ""))),
         provider_meta=provider_meta,
         metadata=metadata_record,
     )

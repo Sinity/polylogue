@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Callable, Iterable, Iterator
-from contextlib import contextmanager
-from io import BytesIO, StringIO
+from collections.abc import Callable, Iterable
 from pathlib import Path
-from typing import IO, Literal
+from typing import Literal
 
 from polylogue.lib.json import JSONDocument, JSONValue, json_document, loads
 from polylogue.lib.raw_payload_sampling_buckets import (
@@ -16,20 +14,7 @@ from polylogue.lib.raw_payload_sampling_buckets import (
     record_bucket_key,
     take_bucketed_samples,
 )
-
-
-@contextmanager
-def _raw_line_stream(raw: Path | bytes | str) -> Iterator[IO[bytes] | IO[str]]:
-    if isinstance(raw, Path):
-        with raw.open("rb") as stream:
-            yield stream
-        return
-    if isinstance(raw, bytes):
-        with BytesIO(raw) as stream:
-            yield stream
-        return
-    with StringIO(raw) as stream:
-        yield stream
+from polylogue.lib.raw_payload_streams import raw_line_stream
 
 
 def limit_samples(
@@ -172,7 +157,7 @@ def extract_record_samples_from_raw_content(
             record_type_key=record_type_key,
         )
 
-    with _raw_line_stream(raw_content) as stream:
+    with raw_line_stream(raw_content) as stream:
         # Full-corpus mode: collect everything without caps.
         if max_samples is None:
             all_records: list[JSONDocument] = []

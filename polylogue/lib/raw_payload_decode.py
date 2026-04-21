@@ -2,36 +2,20 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
-from contextlib import contextmanager
 from dataclasses import dataclass
-from io import BytesIO, StringIO
 from pathlib import Path
-from typing import IO, Literal, TypeAlias
+from typing import Literal, TypeAlias
 
 import orjson
 
 from polylogue.lib.artifact_taxonomy import ArtifactClassification, classify_artifact
 from polylogue.lib.json import JSONDocument, JSONValue, is_json_value, loads
+from polylogue.lib.raw_payload_streams import raw_line_stream
 from polylogue.sources.dispatch import detect_provider
 from polylogue.types import Provider
 
 WireFormat = Literal["json", "jsonl"]
 JSONRecord: TypeAlias = JSONDocument
-
-
-@contextmanager
-def _raw_line_stream(raw: Path | bytes | str) -> Iterator[IO[bytes] | IO[str]]:
-    if isinstance(raw, Path):
-        with raw.open("rb") as stream:
-            yield stream
-        return
-    if isinstance(raw, bytes):
-        with BytesIO(raw) as stream:
-            yield stream
-        return
-    with StringIO(raw) as stream:
-        yield stream
 
 
 def _load_json_record(line: str) -> JSONValue:
@@ -66,7 +50,7 @@ def _decode_jsonl_payload(
     first_line = True
     line_number = 0
 
-    with _raw_line_stream(raw) as stream:
+    with raw_line_stream(raw) as stream:
         for raw_line in stream:
             line_number += 1
             try:
@@ -117,7 +101,7 @@ def _sample_jsonl_payload_with_detail(
     first_line = True
     line_number = 0
 
-    with _raw_line_stream(raw) as stream:
+    with raw_line_stream(raw) as stream:
         for raw_line in stream:
             line_number += 1
             try:

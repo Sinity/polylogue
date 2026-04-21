@@ -21,7 +21,7 @@ import json
 import logging
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Literal, TypeAlias, cast
+from typing import Literal, TypeAlias
 
 from polylogue.lib.json import JSONDocument, json_document, json_document_list
 from polylogue.types import Provider
@@ -62,14 +62,24 @@ def _optional_string(record: JSONDocument, key: str, default: str = "") -> str:
 
 
 def _pin_action(value: object) -> PinAction:
-    if value in ("confirm", "reject"):
-        return cast(PinAction, value)
+    if value == "confirm":
+        return "confirm"
+    if value == "reject":
+        return "reject"
     raise ValueError(f"Pin action must be 'confirm' or 'reject', got {value!r}")
 
 
 def _pin_role(value: object) -> PinnableRole:
-    if value in PINNABLE_ROLES:
-        return cast(PinnableRole, value)
+    if value == "message_role":
+        return "message_role"
+    if value == "message_body":
+        return "message_body"
+    if value == "message_timestamp":
+        return "message_timestamp"
+    if value == "message_container":
+        return "message_container"
+    if value == "conversation_title":
+        return "conversation_title"
     raise ValueError(f"Role {value!r} is not pinnable. Valid: {sorted(PINNABLE_ROLES)}")
 
 
