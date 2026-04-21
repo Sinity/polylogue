@@ -127,6 +127,9 @@ class _IngestWorkerRequest:
     measure_ingest_result_size: bool
 
 
+_ConversationEntry = tuple[str, ConversationData]
+
+
 # ---------------------------------------------------------------------------
 # SQL statements (copied from async query modules — sync versions)
 # ---------------------------------------------------------------------------
@@ -311,12 +314,12 @@ def _conversation_parent_id(cdata: ConversationData) -> str | None:
 
 
 def _topo_sort_conversation_entries(
-    entries: list[tuple[str, ConversationData]],
-) -> list[tuple[str, ConversationData]]:
+    entries: list[_ConversationEntry],
+) -> list[_ConversationEntry]:
     """Sort conversation entries so parents in the same batch precede children."""
     ids_in_batch = {entry[1].conversation_id for entry in entries}
-    no_parent: list[tuple[str, ConversationData]] = []
-    has_parent: list[tuple[str, ConversationData]] = []
+    no_parent: list[_ConversationEntry] = []
+    has_parent: list[_ConversationEntry] = []
 
     for entry in entries:
         parent_id = _conversation_parent_id(entry[1])
@@ -334,7 +337,7 @@ def _topo_sort_conversation_entries(
     for _ in range(len(remaining) + 1):
         if not remaining:
             break
-        next_remaining: list[tuple[str, ConversationData]] = []
+        next_remaining: list[_ConversationEntry] = []
         for entry in remaining:
             parent_id = _conversation_parent_id(entry[1])
             if parent_id in inserted_ids:
@@ -548,11 +551,11 @@ def _write_conversation_entry(
 
 def _drain_ready_conversation_entries(
     conn: sqlite3.Connection,
-    ready_entries: list[tuple[str, ConversationData]],
+    ready_entries: list[_ConversationEntry],
     *,
     summary: _IngestBatchSummary,
     materialized_ids: set[str],
-    pending_by_parent: dict[str, list[tuple[str, ConversationData]]],
+    pending_by_parent: dict[str, list[_ConversationEntry]],
 ) -> None:
     stack = list(reversed(ready_entries))
     while stack:
@@ -572,7 +575,7 @@ def _drain_ready_conversation_entries(
 
 def _flush_pending_conversation_entries(
     conn: sqlite3.Connection,
-    pending_by_parent: dict[str, list[tuple[str, ConversationData]]],
+    pending_by_parent: dict[str, list[_ConversationEntry]],
     *,
     summary: _IngestBatchSummary,
     materialized_ids: set[str],
@@ -661,6 +664,125 @@ def _select_ingest_worker_count(raw_records: Sequence[object], ingest_workers: i
     return base_worker_count
 
 
+def _new_ingest_batch_summary(
+    raw_records: list[RawConversationRecord],
+    *,
+    ingest_workers: int | None,
+) -> _IngestBatchSummary:
+    summary = _IngestBatchSummary()
+    summary.raw_record_count = len(raw_records)
+    summary.worker_count = _select_ingest_worker_count(raw_records, ingest_workers)
+    summary.total_blob_mb = sum(record.blob_size for record in raw_records) / (1024 * 1024)
+    return summary
+
+
+def _make_ingest_worker_request(
+    *,
+    archive_root_str: str,
+    blob_root_str: str,
+    validation_mode: str,
+    measure_ingest_result_size: bool,
+) -> _IngestWorkerRequest:
+    return _IngestWorkerRequest(
+        archive_root_str=archive_root_str,
+        blob_root_str=blob_root_str,
+        validation_mode=validation_mode,
+        measure_ingest_result_size=measure_ingest_result_size,
+    )
+
+
+def _record_failed_ingest_result(summary: _IngestBatchSummary, ir: IngestRecordResult) -> None:
+    logger.error("Failed to ingest raw record", raw_id=ir.raw_id, error=ir.error)
+    summary.parse_failures += 1
+    summary.failed_raw_ids[ir.raw_id] = (ir.error or "unknown worker failure")[:500]
+
+
+def _drain_ingest_result(
+    conn: sqlite3.Connection,
+    ir: IngestRecordResult,
+    *,
+    summary: _IngestBatchSummary,
+    materialized_ids: set[str],
+    pending_by_parent: dict[str, list[_ConversationEntry]],
+) -> None:
+    _record_outcome(summary, ir)
+    _observe_current_rss(summary)
+
+    if ir.error:
+        _record_failed_ingest_result(summary, ir)
+        return
+
+    if not ir.conversations:
+        summary.skipped_raw_ids.add(ir.raw_id)
+        return
+
+    for cdata in ir.conversations:
+        drain_started = time.perf_counter()
+        _drain_ready_conversation_entries(
+            conn,
+            [(ir.raw_id, cdata)],
+            summary=summary,
+            materialized_ids=materialized_ids,
+            pending_by_parent=pending_by_parent,
+        )
+        summary.drain_elapsed_s += time.perf_counter() - drain_started
+        _observe_current_rss(summary)
+
+
+def _consume_ingest_results(
+    conn: sqlite3.Connection,
+    raw_records: list[RawConversationRecord],
+    *,
+    worker_request: _IngestWorkerRequest,
+    summary: _IngestBatchSummary,
+    materialized_ids: set[str],
+    pending_by_parent: dict[str, list[_ConversationEntry]],
+) -> None:
+    result_iterator = iter(
+        _iter_ingest_results_sync(
+            raw_records,
+            request=worker_request,
+            worker_count=summary.worker_count,
+        )
+    )
+    while True:
+        wait_started = time.perf_counter()
+        try:
+            ir = next(result_iterator)
+        except StopIteration:
+            summary.teardown_elapsed_s = time.perf_counter() - wait_started
+            break
+        summary.result_wait_s += time.perf_counter() - wait_started
+        _drain_ingest_result(
+            conn,
+            ir,
+            summary=summary,
+            materialized_ids=materialized_ids,
+            pending_by_parent=pending_by_parent,
+        )
+
+
+def _commit_ingest_results(
+    conn: sqlite3.Connection,
+    *,
+    summary: _IngestBatchSummary,
+    materialized_ids: set[str],
+    pending_by_parent: dict[str, list[_ConversationEntry]],
+) -> None:
+    flush_started = time.perf_counter()
+    _flush_pending_conversation_entries(
+        conn,
+        pending_by_parent,
+        summary=summary,
+        materialized_ids=materialized_ids,
+    )
+    summary.flush_elapsed_s = time.perf_counter() - flush_started
+    _observe_current_rss(summary)
+    commit_started = time.perf_counter()
+    conn.commit()
+    summary.commit_elapsed_s = time.perf_counter() - commit_started
+
+
 def _process_ingest_batch_sync(
     raw_records: list[RawConversationRecord],
     *,
@@ -673,11 +795,8 @@ def _process_ingest_batch_sync(
 ) -> _IngestBatchSummary:
     from polylogue.storage.fts_lifecycle import suspend_fts_triggers_sync
 
-    summary = _IngestBatchSummary()
-    summary.raw_record_count = len(raw_records)
-    summary.worker_count = _select_ingest_worker_count(raw_records, ingest_workers)
-    summary.total_blob_mb = sum(r.blob_size for r in raw_records) / (1024 * 1024)
-    worker_request = _IngestWorkerRequest(
+    summary = _new_ingest_batch_summary(raw_records, ingest_workers=ingest_workers)
+    worker_request = _make_ingest_worker_request(
         archive_root_str=archive_root_str,
         blob_root_str=blob_root_str,
         validation_mode=validation_mode,
@@ -692,62 +811,24 @@ def _process_ingest_batch_sync(
     summary.setup_elapsed_s = time.perf_counter() - setup_started
 
     materialized_ids: set[str] = set()
-    pending_by_parent: dict[str, list[tuple[str, ConversationData]]] = {}
+    pending_by_parent: dict[str, list[_ConversationEntry]] = {}
     _observe_current_rss(summary)
 
     try:
-        result_iterator = iter(
-            _iter_ingest_results_sync(
-                raw_records,
-                request=worker_request,
-                worker_count=summary.worker_count,
-            )
-        )
-        while True:
-            wait_started = time.perf_counter()
-            try:
-                ir = next(result_iterator)
-            except StopIteration:
-                summary.teardown_elapsed_s = time.perf_counter() - wait_started
-                break
-            summary.result_wait_s += time.perf_counter() - wait_started
-            _record_outcome(summary, ir)
-            _observe_current_rss(summary)
-
-            if ir.error:
-                logger.error("Failed to ingest raw record", raw_id=ir.raw_id, error=ir.error)
-                summary.parse_failures += 1
-                summary.failed_raw_ids[ir.raw_id] = ir.error[:500]
-                continue
-
-            if not ir.conversations:
-                summary.skipped_raw_ids.add(ir.raw_id)
-                continue
-
-            for cdata in ir.conversations:
-                drain_started = time.perf_counter()
-                _drain_ready_conversation_entries(
-                    conn,
-                    [(ir.raw_id, cdata)],
-                    summary=summary,
-                    materialized_ids=materialized_ids,
-                    pending_by_parent=pending_by_parent,
-                )
-                summary.drain_elapsed_s += time.perf_counter() - drain_started
-                _observe_current_rss(summary)
-
-        flush_started = time.perf_counter()
-        _flush_pending_conversation_entries(
+        _consume_ingest_results(
             conn,
-            pending_by_parent,
+            raw_records,
+            worker_request=worker_request,
             summary=summary,
             materialized_ids=materialized_ids,
+            pending_by_parent=pending_by_parent,
         )
-        summary.flush_elapsed_s = time.perf_counter() - flush_started
-        _observe_current_rss(summary)
-        commit_started = time.perf_counter()
-        conn.commit()
-        summary.commit_elapsed_s = time.perf_counter() - commit_started
+        _commit_ingest_results(
+            conn,
+            summary=summary,
+            materialized_ids=materialized_ids,
+            pending_by_parent=pending_by_parent,
+        )
     except Exception:
         conn.rollback()
         raise
@@ -803,6 +884,85 @@ def _build_batch_memory_observation(
     return observation
 
 
+def _apply_ingest_batch_summary(result: ParseResult, batch_summary: _IngestBatchSummary) -> None:
+    result.parse_failures += batch_summary.parse_failures
+    result.processed_ids.update(batch_summary.processed_ids)
+    result._changed_conversation_ids.extend(batch_summary.changed_conversation_ids)
+    for key, value in batch_summary.counts.items():
+        if key in result.counts:
+            result.counts[key] += value
+    for key, value in batch_summary.changed_counts.items():
+        if key in result.changed_counts:
+            result.changed_counts[key] += value
+
+
+def _progressed_raw_count(batch_summary: _IngestBatchSummary) -> int:
+    return sum(1 for outcome in batch_summary.outcomes.values() if outcome.had_conversations and outcome.error is None)
+
+
+def _successful_raw_ids(batch_summary: _IngestBatchSummary) -> set[str]:
+    return {
+        raw_id
+        for raw_id, outcome in batch_summary.outcomes.items()
+        if outcome.had_conversations and raw_id not in batch_summary.failed_raw_ids
+    }
+
+
+def _build_parse_batch_observation(
+    *,
+    batch_summary: _IngestBatchSummary,
+    elapsed_s: float,
+    raw_state_update_elapsed_s: float,
+    rss_start_mb: float | None,
+    rss_end_mb: float | None,
+    peak_rss_self_start_mb: float | None,
+    peak_rss_self_end_mb: float | None,
+    peak_rss_children_mb: float | None,
+) -> ParseBatchObservation:
+    observation: ParseBatchObservation = {
+        "records": batch_summary.raw_record_count,
+        "blob_mb": round(batch_summary.total_blob_mb, 1),
+        "result_mb": round(batch_summary.total_result_bytes / (1024 * 1024), 3),
+        "max_result_mb": round(batch_summary.max_result_bytes / (1024 * 1024), 3),
+        "conversations": batch_summary.total_convos,
+        "messages": batch_summary.total_msgs,
+        "changed_conversations": len(batch_summary.changed_conversation_ids),
+        "workers": batch_summary.worker_count,
+        "failed_raw_count": len(batch_summary.failed_raw_ids),
+        "skipped_raw_count": len(batch_summary.skipped_raw_ids),
+        "elapsed_ms": round(elapsed_s * 1000, 1),
+        "sync_ingest_elapsed_ms": round(batch_summary.elapsed_s * 1000, 1),
+        "sync_setup_elapsed_ms": round(batch_summary.setup_elapsed_s * 1000, 1),
+        "result_wait_elapsed_ms": round(batch_summary.result_wait_s * 1000, 1),
+        "drain_elapsed_ms": round(batch_summary.drain_elapsed_s * 1000, 1),
+        "write_elapsed_ms": round(batch_summary.write_elapsed_s * 1000, 1),
+        "max_write_elapsed_ms": round(batch_summary.max_write_elapsed_s * 1000, 1),
+        "flush_elapsed_ms": round(batch_summary.flush_elapsed_s * 1000, 1),
+        "commit_elapsed_ms": round(batch_summary.commit_elapsed_s * 1000, 1),
+        "executor_teardown_elapsed_ms": round(batch_summary.teardown_elapsed_s * 1000, 1),
+        "raw_state_update_elapsed_ms": round(raw_state_update_elapsed_s * 1000, 1),
+    }
+    residual_elapsed_s = _unattributed_batch_elapsed_s(
+        elapsed_s=elapsed_s,
+        batch_summary=batch_summary,
+        raw_state_update_elapsed_s=raw_state_update_elapsed_s,
+    )
+    observation["unattributed_elapsed_ms"] = round(residual_elapsed_s * 1000, 1)
+    observation.update(
+        _build_batch_memory_observation(
+            rss_start_mb=rss_start_mb,
+            rss_end_mb=rss_end_mb,
+            peak_rss_self_start_mb=peak_rss_self_start_mb,
+            peak_rss_self_end_mb=peak_rss_self_end_mb,
+            peak_rss_children_mb=peak_rss_children_mb,
+            max_current_rss_mb=batch_summary.max_current_rss_mb,
+        )
+    )
+    if batch_summary.max_result_raw_id is not None:
+        observation["max_result_raw_id"] = batch_summary.max_result_raw_id
+    return observation
+
+
 # ---------------------------------------------------------------------------
 # Batch processing
 # ---------------------------------------------------------------------------
@@ -847,19 +1007,8 @@ async def process_ingest_batch(
         measure_ingest_result_size=service.measure_ingest_result_size,
     )
 
-    result.parse_failures += batch_summary.parse_failures
-    result.processed_ids.update(batch_summary.processed_ids)
-    result._changed_conversation_ids.extend(batch_summary.changed_conversation_ids)
-    for key, value in batch_summary.counts.items():
-        if key in result.counts:
-            result.counts[key] += value
-    for key, value in batch_summary.changed_counts.items():
-        if key in result.changed_counts:
-            result.changed_counts[key] += value
-
-    progressed_raw_count = sum(
-        1 for outcome in batch_summary.outcomes.values() if outcome.had_conversations and outcome.error is None
-    )
+    _apply_ingest_batch_summary(result, batch_summary)
+    progressed_raw_count = _progressed_raw_count(batch_summary)
     if progress_callback and progressed_raw_count:
         progress_callback(progressed_raw_count)
 
@@ -875,21 +1024,13 @@ async def process_ingest_batch(
             changed=len(batch_summary.changed_conversation_ids),
         )
 
-    succeeded_raw_ids = {
-        raw_id
-        for raw_id, outcome in batch_summary.outcomes.items()
-        if outcome.had_conversations and raw_id not in batch_summary.failed_raw_ids
-    }
-    skipped_raw_ids = batch_summary.skipped_raw_ids
-    failed_raw_ids = batch_summary.failed_raw_ids
-
     raw_state_update_elapsed_s = await _persist_batch_raw_state_updates(
         service,
         backend,
         outcomes=batch_summary.outcomes,
-        succeeded_raw_ids=succeeded_raw_ids,
-        skipped_raw_ids=skipped_raw_ids,
-        failed_raw_ids=failed_raw_ids,
+        succeeded_raw_ids=_successful_raw_ids(batch_summary),
+        skipped_raw_ids=batch_summary.skipped_raw_ids,
+        failed_raw_ids=batch_summary.failed_raw_ids,
         validation_mode=validation_mode,
     )
 
@@ -897,48 +1038,16 @@ async def process_ingest_batch(
     rss_end_mb = read_current_rss_mb()
     peak_rss_self_end_mb = read_peak_rss_self_mb()
     peak_rss_children_mb = read_peak_rss_children_mb()
-    observation: ParseBatchObservation = {
-        "records": batch_summary.raw_record_count,
-        "blob_mb": round(batch_summary.total_blob_mb, 1),
-        "result_mb": round(batch_summary.total_result_bytes / (1024 * 1024), 3),
-        "max_result_mb": round(batch_summary.max_result_bytes / (1024 * 1024), 3),
-        "conversations": batch_summary.total_convos,
-        "messages": batch_summary.total_msgs,
-        "changed_conversations": len(batch_summary.changed_conversation_ids),
-        "workers": batch_summary.worker_count,
-        "failed_raw_count": len(batch_summary.failed_raw_ids),
-        "skipped_raw_count": len(batch_summary.skipped_raw_ids),
-        "elapsed_ms": round(elapsed_s * 1000, 1),
-        "sync_ingest_elapsed_ms": round(batch_summary.elapsed_s * 1000, 1),
-        "sync_setup_elapsed_ms": round(batch_summary.setup_elapsed_s * 1000, 1),
-        "result_wait_elapsed_ms": round(batch_summary.result_wait_s * 1000, 1),
-        "drain_elapsed_ms": round(batch_summary.drain_elapsed_s * 1000, 1),
-        "write_elapsed_ms": round(batch_summary.write_elapsed_s * 1000, 1),
-        "max_write_elapsed_ms": round(batch_summary.max_write_elapsed_s * 1000, 1),
-        "flush_elapsed_ms": round(batch_summary.flush_elapsed_s * 1000, 1),
-        "commit_elapsed_ms": round(batch_summary.commit_elapsed_s * 1000, 1),
-        "executor_teardown_elapsed_ms": round(batch_summary.teardown_elapsed_s * 1000, 1),
-        "raw_state_update_elapsed_ms": round(raw_state_update_elapsed_s * 1000, 1),
-    }
-    residual_elapsed_s = _unattributed_batch_elapsed_s(
-        elapsed_s=elapsed_s,
+    return _build_parse_batch_observation(
         batch_summary=batch_summary,
+        elapsed_s=elapsed_s,
         raw_state_update_elapsed_s=raw_state_update_elapsed_s,
+        rss_start_mb=rss_start_mb,
+        rss_end_mb=rss_end_mb,
+        peak_rss_self_start_mb=peak_rss_self_start_mb,
+        peak_rss_self_end_mb=peak_rss_self_end_mb,
+        peak_rss_children_mb=peak_rss_children_mb,
     )
-    observation["unattributed_elapsed_ms"] = round(max(residual_elapsed_s, 0.0) * 1000, 1)
-    observation.update(
-        _build_batch_memory_observation(
-            rss_start_mb=rss_start_mb,
-            rss_end_mb=rss_end_mb,
-            peak_rss_self_start_mb=peak_rss_self_start_mb,
-            peak_rss_self_end_mb=peak_rss_self_end_mb,
-            peak_rss_children_mb=peak_rss_children_mb,
-            max_current_rss_mb=batch_summary.max_current_rss_mb,
-        )
-    )
-    if batch_summary.max_result_raw_id is not None:
-        observation["max_result_raw_id"] = batch_summary.max_result_raw_id
-    return observation
 
 
 def _successful_raw_state_update(
