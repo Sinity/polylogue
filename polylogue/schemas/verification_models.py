@@ -2,8 +2,90 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Literal, TypeAlias, TypedDict
+
+CountPayload: TypeAlias = dict[str, int]
+AllLiteral: TypeAlias = Literal["all"]
+LimitPayload: TypeAlias = int | AllLiteral
+ArtifactProofCountKind: TypeAlias = Literal[
+    "artifact_counts",
+    "package_versions",
+    "element_kinds",
+    "resolution_reasons",
+]
+
+
+class ProviderSchemaVerificationPayload(TypedDict):
+    provider: str
+    total_records: int
+    valid_records: int
+    invalid_records: int
+    drift_records: int
+    skipped_no_schema: int
+    decode_errors: int
+    quarantined_records: int
+
+
+class SchemaVerificationReportPayload(TypedDict):
+    max_samples: LimitPayload
+    record_limit: LimitPayload
+    record_offset: int
+    total_records: int
+    providers: dict[str, ProviderSchemaVerificationPayload]
+
+
+class ProviderArtifactProofPayload(TypedDict):
+    provider: str
+    total_records: int
+    contract_backed_records: int
+    unsupported_parseable_records: int
+    recognized_non_parseable_records: int
+    unknown_records: int
+    decode_errors: int
+    artifact_counts: CountPayload
+    package_versions: CountPayload
+    element_kinds: CountPayload
+    resolution_reasons: CountPayload
+    linked_sidecars: int
+    orphan_sidecars: int
+    subagent_streams: int
+    streams_with_sidecars: int
+    sidecar_agent_types: CountPayload
+
+
+class ArtifactProofSummaryPayload(TypedDict):
+    contract_backed_records: int
+    unsupported_parseable_records: int
+    recognized_non_parseable_records: int
+    unknown_records: int
+    decode_errors: int
+    linked_sidecars: int
+    orphan_sidecars: int
+    subagent_streams: int
+    streams_with_sidecars: int
+    artifact_counts: CountPayload
+    package_versions: CountPayload
+    element_kinds: CountPayload
+    resolution_reasons: CountPayload
+    clean: bool
+
+
+class ArtifactProofReportPayload(TypedDict):
+    record_limit: LimitPayload
+    record_offset: int
+    total_records: int
+    summary: ArtifactProofSummaryPayload
+    providers: dict[str, ProviderArtifactProofPayload]
+
+
+def _limit_payload(value: int | None) -> LimitPayload:
+    return value if value is not None else "all"
+
+
+def _sorted_counts(counts: Mapping[str, int]) -> CountPayload:
+    return dict(sorted(counts.items()))
 
 
 @dataclass
@@ -19,7 +101,7 @@ class ProviderSchemaVerification:
     decode_errors: int = 0
     quarantined_records: int = 0
 
-    def to_dict(self) -> dict[str, int | str]:
+    def to_dict(self) -> ProviderSchemaVerificationPayload:
         return {
             "provider": self.provider,
             "total_records": self.total_records,
@@ -42,10 +124,10 @@ class SchemaVerificationReport:
     record_limit: int | None = None
     record_offset: int = 0
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> SchemaVerificationReportPayload:
         return {
-            "max_samples": self.max_samples if self.max_samples is not None else "all",
-            "record_limit": self.record_limit if self.record_limit is not None else "all",
+            "max_samples": _limit_payload(self.max_samples),
+            "record_limit": _limit_payload(self.record_limit),
             "record_offset": self.record_offset,
             "total_records": self.total_records,
             "providers": {provider: stats.to_dict() for provider, stats in sorted(self.providers.items())},
@@ -63,17 +145,17 @@ class ProviderArtifactProof:
     recognized_non_parseable_records: int = 0
     unknown_records: int = 0
     decode_errors: int = 0
-    artifact_counts: dict[str, int] = field(default_factory=dict)
-    package_versions: dict[str, int] = field(default_factory=dict)
-    element_kinds: dict[str, int] = field(default_factory=dict)
-    resolution_reasons: dict[str, int] = field(default_factory=dict)
+    artifact_counts: CountPayload = field(default_factory=dict)
+    package_versions: CountPayload = field(default_factory=dict)
+    element_kinds: CountPayload = field(default_factory=dict)
+    resolution_reasons: CountPayload = field(default_factory=dict)
     linked_sidecars: int = 0
     orphan_sidecars: int = 0
     subagent_streams: int = 0
     streams_with_sidecars: int = 0
-    sidecar_agent_types: dict[str, int] = field(default_factory=dict)
+    sidecar_agent_types: CountPayload = field(default_factory=dict)
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> ProviderArtifactProofPayload:
         return {
             "provider": self.provider,
             "total_records": self.total_records,
@@ -82,16 +164,34 @@ class ProviderArtifactProof:
             "recognized_non_parseable_records": self.recognized_non_parseable_records,
             "unknown_records": self.unknown_records,
             "decode_errors": self.decode_errors,
-            "artifact_counts": dict(sorted(self.artifact_counts.items())),
-            "package_versions": dict(sorted(self.package_versions.items())),
-            "element_kinds": dict(sorted(self.element_kinds.items())),
-            "resolution_reasons": dict(sorted(self.resolution_reasons.items())),
+            "artifact_counts": _sorted_counts(self.artifact_counts),
+            "package_versions": _sorted_counts(self.package_versions),
+            "element_kinds": _sorted_counts(self.element_kinds),
+            "resolution_reasons": _sorted_counts(self.resolution_reasons),
             "linked_sidecars": self.linked_sidecars,
             "orphan_sidecars": self.orphan_sidecars,
             "subagent_streams": self.subagent_streams,
             "streams_with_sidecars": self.streams_with_sidecars,
-            "sidecar_agent_types": dict(sorted(self.sidecar_agent_types.items())),
+            "sidecar_agent_types": _sorted_counts(self.sidecar_agent_types),
         }
+
+
+def _provider_artifact_counts(stats: ProviderArtifactProof, *, kind: ArtifactProofCountKind) -> Mapping[str, int]:
+    if kind == "artifact_counts":
+        return stats.artifact_counts
+    if kind == "package_versions":
+        return stats.package_versions
+    if kind == "element_kinds":
+        return stats.element_kinds
+    return stats.resolution_reasons
+
+
+def _aggregate_counts(providers: Mapping[str, ProviderArtifactProof], *, kind: ArtifactProofCountKind) -> CountPayload:
+    aggregated: CountPayload = {}
+    for stats in providers.values():
+        for key, count in _provider_artifact_counts(stats, kind=kind).items():
+            aggregated[key] = aggregated.get(key, 0) + count
+    return _sorted_counts(aggregated)
 
 
 @dataclass
@@ -140,44 +240,28 @@ class ArtifactProofReport:
         return sum(stats.streams_with_sidecars for stats in self.providers.values())
 
     @property
-    def artifact_counts(self) -> dict[str, int]:
-        counts: dict[str, int] = {}
-        for stats in self.providers.values():
-            for kind, count in stats.artifact_counts.items():
-                counts[kind] = counts.get(kind, 0) + count
-        return dict(sorted(counts.items()))
+    def artifact_counts(self) -> CountPayload:
+        return _aggregate_counts(self.providers, kind="artifact_counts")
 
     @property
-    def package_versions(self) -> dict[str, int]:
-        counts: dict[str, int] = {}
-        for stats in self.providers.values():
-            for version, count in stats.package_versions.items():
-                counts[version] = counts.get(version, 0) + count
-        return dict(sorted(counts.items()))
+    def package_versions(self) -> CountPayload:
+        return _aggregate_counts(self.providers, kind="package_versions")
 
     @property
-    def element_kinds(self) -> dict[str, int]:
-        counts: dict[str, int] = {}
-        for stats in self.providers.values():
-            for element_kind, count in stats.element_kinds.items():
-                counts[element_kind] = counts.get(element_kind, 0) + count
-        return dict(sorted(counts.items()))
+    def element_kinds(self) -> CountPayload:
+        return _aggregate_counts(self.providers, kind="element_kinds")
 
     @property
-    def resolution_reasons(self) -> dict[str, int]:
-        counts: dict[str, int] = {}
-        for stats in self.providers.values():
-            for reason, count in stats.resolution_reasons.items():
-                counts[reason] = counts.get(reason, 0) + count
-        return dict(sorted(counts.items()))
+    def resolution_reasons(self) -> CountPayload:
+        return _aggregate_counts(self.providers, kind="resolution_reasons")
 
     @property
     def is_clean(self) -> bool:
         return self.unsupported_parseable_records == 0 and self.unknown_records == 0 and self.decode_errors == 0
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> ArtifactProofReportPayload:
         return {
-            "record_limit": self.record_limit if self.record_limit is not None else "all",
+            "record_limit": _limit_payload(self.record_limit),
             "record_offset": self.record_offset,
             "total_records": self.total_records,
             "summary": {

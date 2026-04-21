@@ -11,13 +11,21 @@ import random
 
 import pytest
 
+from polylogue.schemas.synthetic.build_records import _coerce_schema
 from polylogue.schemas.synthetic.relations import (
     ForeignKeyGraph,
     MutualExclusionGroup,
-    RelationConstraintSolver,
     StringLengthConstraint,
     TimeDeltaConstraint,
 )
+from polylogue.schemas.synthetic.relations import (
+    RelationConstraintSolver as _RelationConstraintSolver,
+)
+
+
+def _solver(schema: object) -> _RelationConstraintSolver:
+    return _RelationConstraintSolver(_coerce_schema(schema))
+
 
 # ---------------------------------------------------------------------------
 # ForeignKeyGraph
@@ -154,7 +162,7 @@ class TestStringLengthConstraint:
 
 class TestRelationConstraintSolverParsing:
     def test_empty_schema_has_no_constraints(self) -> None:
-        solver = RelationConstraintSolver({})
+        solver = _solver({})
         assert not solver.has_constraints
 
     def test_parses_foreign_keys(self) -> None:
@@ -163,7 +171,7 @@ class TestRelationConstraintSolverParsing:
                 {"source": "$.mapping.*.parent", "target": "$.mapping.*.id"},
             ],
         }
-        solver = RelationConstraintSolver(schema)
+        solver = _solver(schema)
         assert solver.has_constraints
         assert "$.mapping.*.parent" in solver.fk_graph.references
         assert solver.fk_graph.references["$.mapping.*.parent"] == "$.mapping.*.id"
@@ -180,7 +188,7 @@ class TestRelationConstraintSolverParsing:
                 },
             ],
         }
-        solver = RelationConstraintSolver(schema)
+        solver = _solver(schema)
         assert solver.has_constraints
         assert len(solver.time_deltas) == 1
         assert solver.time_deltas[0].field_a == "$.create_time"
@@ -191,7 +199,7 @@ class TestRelationConstraintSolverParsing:
                 {"parent": "$.message", "fields": ["content", "parts"]},
             ],
         }
-        solver = RelationConstraintSolver(schema)
+        solver = _solver(schema)
         assert solver.has_constraints
         assert len(solver.mutual_exclusions) == 1
         assert solver.mutual_exclusions[0].field_names == frozenset({"content", "parts"})
@@ -202,7 +210,7 @@ class TestRelationConstraintSolverParsing:
                 {"parent": "$.message", "fields": ["only_one"]},
             ],
         }
-        solver = RelationConstraintSolver(schema)
+        solver = _solver(schema)
         assert len(solver.mutual_exclusions) == 0
 
     def test_parses_string_lengths(self) -> None:
@@ -217,7 +225,7 @@ class TestRelationConstraintSolverParsing:
                 },
             ],
         }
-        solver = RelationConstraintSolver(schema)
+        solver = _solver(schema)
         assert solver.has_constraints
         assert "$.message.text" in solver.string_lengths
         constraint = solver.string_lengths["$.message.text"]
@@ -237,14 +245,14 @@ class TestRelationConstraintSolverForeignKeys:
                 {"source": "$.child.ref", "target": "$.parent.id"},
             ],
         }
-        solver = RelationConstraintSolver(schema)
+        solver = _solver(schema)
         solver.register_generated_id("$.parent.id", "abc")
         rng = random.Random(0)
         ref = solver.resolve_foreign_key("$.child.ref", rng)
         assert ref == "abc"
 
     def test_resolve_returns_none_for_unregistered_path(self) -> None:
-        solver = RelationConstraintSolver({})
+        solver = _solver({})
         rng = random.Random(0)
         assert solver.resolve_foreign_key("$.no.such.path", rng) is None
 
@@ -267,7 +275,7 @@ class TestRelationConstraintSolverTimeDeltas:
                 },
             ],
         }
-        solver = RelationConstraintSolver(schema)
+        solver = _solver(schema)
         rng = random.Random(42)
 
         for _ in range(100):
@@ -288,7 +296,7 @@ class TestRelationConstraintSolverTimeDeltas:
                 },
             ],
         }
-        solver = RelationConstraintSolver(schema)
+        solver = _solver(schema)
         rng = random.Random(0)
 
         # Look up in reverse order
@@ -297,7 +305,7 @@ class TestRelationConstraintSolverTimeDeltas:
         assert 1.0 <= delta <= 10.0
 
     def test_get_time_delta_returns_none_for_unknown_pair(self) -> None:
-        solver = RelationConstraintSolver({})
+        solver = _solver({})
         rng = random.Random(0)
         assert solver.get_time_delta("$.x", "$.y", rng) is None
 
@@ -314,7 +322,7 @@ class TestRelationConstraintSolverTimeDeltas:
                 },
             ],
         }
-        solver = RelationConstraintSolver(schema)
+        solver = _solver(schema)
         rng = random.Random(0)
         delta = solver.get_time_delta("$.a", "$.b", rng)
         assert delta == 42.0
@@ -332,7 +340,7 @@ class TestRelationConstraintSolverMutualExclusion:
                 {"parent": "$", "fields": ["alpha", "beta", "gamma"]},
             ],
         }
-        solver = RelationConstraintSolver(schema)
+        solver = _solver(schema)
         rng = random.Random(0)
 
         candidates = {"alpha", "beta", "gamma", "delta"}
@@ -350,7 +358,7 @@ class TestRelationConstraintSolverMutualExclusion:
                 {"parent": "$.other", "fields": ["a", "b"]},
             ],
         }
-        solver = RelationConstraintSolver(schema)
+        solver = _solver(schema)
         rng = random.Random(0)
 
         candidates = {"a", "b", "c"}
@@ -359,7 +367,7 @@ class TestRelationConstraintSolverMutualExclusion:
         assert filtered == candidates
 
     def test_no_exclusion_groups_returns_all_fields(self) -> None:
-        solver = RelationConstraintSolver({})
+        solver = _solver({})
         rng = random.Random(0)
         candidates = {"x", "y", "z"}
         filtered = solver.filter_mutually_exclusive("$", candidates, rng)
@@ -373,7 +381,7 @@ class TestRelationConstraintSolverMutualExclusion:
                 {"parent": "$", "fields": ["opt_a", "opt_b"]},
             ],
         }
-        solver = RelationConstraintSolver(schema)
+        solver = _solver(schema)
         rng = random.Random(seed)
 
         candidates = {"opt_a", "opt_b", "required"}
@@ -390,7 +398,7 @@ class TestRelationConstraintSolverMutualExclusion:
 
 class TestRelationConstraintSolverStringLength:
     def test_no_constraint_returns_base_text_unchanged(self) -> None:
-        solver = RelationConstraintSolver({})
+        solver = _solver({})
         rng = random.Random(0)
         assert solver.generate_string_with_length("$.any", rng, "hello world") == "hello world"
 
@@ -400,7 +408,7 @@ class TestRelationConstraintSolverStringLength:
                 {"path": "$.short", "min": 3, "max": 10, "avg": 7.0, "stddev": 1.0},
             ],
         }
-        solver = RelationConstraintSolver(schema)
+        solver = _solver(schema)
         rng = random.Random(42)
         result = solver.generate_string_with_length("$.short", rng, "this is a very long text string")
         assert len(result) <= 10
@@ -411,7 +419,7 @@ class TestRelationConstraintSolverStringLength:
                 {"path": "$.long", "min": 50, "max": 100, "avg": 75.0, "stddev": 5.0},
             ],
         }
-        solver = RelationConstraintSolver(schema)
+        solver = _solver(schema)
         rng = random.Random(42)
         result = solver.generate_string_with_length("$.long", rng, "hi")
         assert len(result) >= 50
@@ -422,7 +430,7 @@ class TestRelationConstraintSolverStringLength:
                 {"path": "$.x", "min": 10, "max": 100, "avg": 50.0, "stddev": 5.0},
             ],
         }
-        solver = RelationConstraintSolver(schema)
+        solver = _solver(schema)
         rng = random.Random(0)
         assert solver.generate_string_with_length("$.x", rng, "") == ""
 
@@ -433,7 +441,7 @@ class TestRelationConstraintSolverStringLength:
                 {"path": "$.text", "min": 10, "max": 50, "avg": 30.0, "stddev": 8.0},
             ],
         }
-        solver = RelationConstraintSolver(schema)
+        solver = _solver(schema)
         rng = random.Random(seed)
         result = solver.generate_string_with_length("$.text", rng, "some example text for testing purposes")
         assert len(result) >= 10
@@ -467,7 +475,7 @@ class TestRelationConstraintSolverIntegration:
                 {"path": "$.message.body", "min": 20, "max": 500, "avg": 100.0, "stddev": 40.0},
             ],
         }
-        solver = RelationConstraintSolver(schema)
+        solver = _solver(schema)
         assert solver.has_constraints
 
         # FK
@@ -499,6 +507,6 @@ class TestRelationConstraintSolverIntegration:
         assert len(result) >= 20
 
     def test_path_matches_exact(self) -> None:
-        solver = RelationConstraintSolver({})
+        solver = _solver({})
         assert solver.path_matches("$.a.b", "$.a.b") is True
         assert solver.path_matches("$.a.b", "$.a.c") is False

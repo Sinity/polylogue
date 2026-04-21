@@ -477,7 +477,9 @@ class TestDetectStringLengths:
         assert slp.min_length == 10
         assert slp.max_length == 200
         assert slp.avg_length == 102.0
-        assert slp.evidence["multiline_rate"] > 0
+        multiline_rate = slp.evidence["multiline_rate"]
+        assert isinstance(multiline_rate, (int, float))
+        assert multiline_rate > 0
 
     def test_short_low_variance_excluded(self) -> None:
         """Short fields with low variance skipped."""

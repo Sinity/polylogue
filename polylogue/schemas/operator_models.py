@@ -21,12 +21,12 @@ JSONDocument: TypeAlias = dict[str, JSONValue]
 JSONDocumentList: TypeAlias = list[JSONDocument]
 
 
-def _json_document(payload: Mapping[str, object]) -> JSONDocument:
+def operator_json_document(payload: Mapping[str, object]) -> JSONDocument:
     return cast(JSONDocument, dict(payload))
 
 
 def _corpus_spec_payloads(specs: tuple[CorpusSpec, ...]) -> JSONDocumentList:
-    return [_json_document(spec.to_payload()) for spec in specs]
+    return [operator_json_document(spec.to_payload()) for spec in specs]
 
 
 def _corpus_scenario_payloads(scenarios: tuple[CorpusScenario, ...]) -> JSONDocumentList:
@@ -135,7 +135,7 @@ class SchemaCompareResult:
     diff: SchemaDiff
 
     def to_dict(self) -> JSONDocument:
-        return cast(JSONDocument, self.diff.to_dict())
+        return operator_json_document(self.diff.to_dict())
 
 
 @dataclass(frozen=True)

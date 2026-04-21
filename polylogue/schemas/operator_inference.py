@@ -2,16 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from pathlib import Path
-from typing import Literal, Protocol, cast
+from collections.abc import Mapping
 
 from polylogue.scenarios import CorpusScenario, CorpusSpec, build_corpus_scenarios, build_inferred_corpus_specs
 from polylogue.schemas.audit_models import AuditReport
 from polylogue.schemas.json_types import JSONDocument
-from polylogue.schemas.operator_models import (
-    JSONDocument as OperatorJSONDocument,
-)
 from polylogue.schemas.operator_models import (
     SchemaAuditRequest,
     SchemaCompareRequest,
@@ -23,60 +18,21 @@ from polylogue.schemas.operator_models import (
     SchemaPromoteRequest,
     SchemaPromoteResult,
     SchemaProviderSnapshot,
+    operator_json_document,
 )
-from polylogue.schemas.operator_registry import schema_registry
-from polylogue.schemas.packages import SchemaPackageCatalog, SchemaVersionPackage
-from polylogue.schemas.privacy_config import PrivacyConfig
-from polylogue.schemas.tooling_models import ClusterManifest, SchemaDiff
+from polylogue.schemas.operator_registry import SchemaRegistryLike, schema_registry
+from polylogue.schemas.packages import SchemaPackageCatalog
+from polylogue.schemas.privacy_config import PrivacyConfig, PrivacyLevel
+from polylogue.schemas.tooling_models import ClusterManifest
 from polylogue.types import Provider
 
 
-class _SchemaRegistryLike(Protocol):
-    def load_package_catalog(self, provider: str) -> SchemaPackageCatalog | None: ...
-
-    def cluster_samples(self, provider: str, samples: Sequence[object]) -> ClusterManifest: ...
-
-    def save_cluster_manifest(self, manifest: ClusterManifest) -> Path: ...
-
-    def load_cluster_manifest(self, provider: str) -> ClusterManifest | None: ...
-
-    def list_providers(self) -> list[str]: ...
-
-    def list_versions(self, provider: str) -> list[str]: ...
-
-    def get_schema_age_days(self, provider: str) -> int | None: ...
-
-    def compare_versions(
-        self,
-        provider: str,
-        from_version: str,
-        to_version: str,
-        *,
-        element_kind: str | None = None,
-    ) -> SchemaDiff: ...
-
-    def promote_cluster(
-        self,
-        provider: str,
-        cluster_id: str,
-        *,
-        samples: Sequence[object] | None = None,
-    ) -> str: ...
-
-    def get_package(self, provider: str, *, version: str) -> SchemaVersionPackage | None: ...
-
-    def get_element_schema(self, provider: str, *, version: str) -> JSONDocument | None: ...
+def _typed_registry() -> SchemaRegistryLike:
+    return schema_registry()
 
 
-def _typed_registry() -> _SchemaRegistryLike:
-    return cast(_SchemaRegistryLike, schema_registry())
-
-
-def _registry_catalog(registry: object, provider: str) -> SchemaPackageCatalog | None:
-    load_catalog = getattr(registry, "load_package_catalog", None)
-    if load_catalog is None:
-        return None
-    return cast(SchemaPackageCatalog | None, load_catalog(provider))
+def _registry_catalog(registry: SchemaRegistryLike, provider: str) -> SchemaPackageCatalog | None:
+    return registry.load_package_catalog(provider)
 
 
 def _build_inferred_outputs(
@@ -102,7 +58,27 @@ def _build_inferred_outputs(
     return corpus_specs, corpus_scenarios
 
 
-def _privacy_config(payload: JSONDocument | None) -> PrivacyConfig | None:
+def _privacy_level(value: object) -> PrivacyLevel:
+    if value == "strict":
+        return "strict"
+    if value == "permissive":
+        return "permissive"
+    return "standard"
+
+
+def _string_mapping(value: object) -> dict[str, str]:
+    if not isinstance(value, Mapping):
+        return {}
+    return {key: item for key, item in value.items() if isinstance(key, str) and isinstance(item, str)}
+
+
+def _string_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, str)]
+
+
+def _privacy_config(payload: Mapping[str, object] | None) -> PrivacyConfig | None:
     if payload is None:
         return None
     field_overrides = payload.get("field_overrides")
@@ -112,28 +88,15 @@ def _privacy_config(payload: JSONDocument | None) -> PrivacyConfig | None:
     safe_enum_max_length = payload.get("safe_enum_max_length", 50)
     high_entropy_min_length = payload.get("high_entropy_min_length", 10)
     cross_conv_min_count = payload.get("cross_conv_min_count", 3)
-    config_level: Literal["strict", "standard", "permissive"]
-    if level in {"strict", "standard", "permissive"}:
-        config_level = cast(Literal["strict", "standard", "permissive"], level)
-    else:
-        config_level = "standard"
     return PrivacyConfig(
-        level=config_level,
+        level=_privacy_level(level),
         safe_enum_max_length=safe_enum_max_length if isinstance(safe_enum_max_length, int) else 50,
         high_entropy_min_length=high_entropy_min_length if isinstance(high_entropy_min_length, int) else 10,
         cross_conv_min_count=cross_conv_min_count if isinstance(cross_conv_min_count, int) else 3,
         cross_conv_proportional=bool(payload.get("cross_conv_proportional", False)),
-        field_overrides=(
-            {key: value for key, value in field_overrides.items() if isinstance(key, str) and isinstance(value, str)}
-            if isinstance(field_overrides, dict)
-            else {}
-        ),
-        allow_value_patterns=[value for value in allow_patterns if isinstance(value, str)]
-        if isinstance(allow_patterns, list)
-        else [],
-        deny_value_patterns=[value for value in deny_patterns if isinstance(value, str)]
-        if isinstance(deny_patterns, list)
-        else [],
+        field_overrides=_string_mapping(field_overrides),
+        allow_value_patterns=_string_list(allow_patterns),
+        deny_value_patterns=_string_list(deny_patterns),
     )
 
 
@@ -146,7 +109,7 @@ def infer_schema(request: SchemaInferRequest) -> SchemaInferResult:
         request.provider,
         db_path=request.db_path,
         max_samples=request.max_samples,
-        privacy_config=_privacy_config(cast(JSONDocument | None, request.privacy_config)),
+        privacy_config=_privacy_config(request.privacy_config),
         full_corpus=request.full_corpus,
     )
     package_version = result.default_version or "default"
@@ -218,7 +181,7 @@ def infer_schema(request: SchemaInferRequest) -> SchemaInferResult:
 def list_inferred_corpus_specs(
     *,
     provider: str | None = None,
-    registry: _SchemaRegistryLike | None = None,
+    registry: SchemaRegistryLike | None = None,
 ) -> tuple[CorpusSpec, ...]:
     registry = registry or _typed_registry()
     providers = (provider,) if provider is not None else tuple(registry.list_providers())
@@ -252,7 +215,7 @@ def list_inferred_corpus_specs(
 def list_inferred_corpus_scenarios(
     *,
     provider: str | None = None,
-    registry: _SchemaRegistryLike | None = None,
+    registry: SchemaRegistryLike | None = None,
 ) -> tuple[CorpusScenario, ...]:
     return build_corpus_scenarios(
         list_inferred_corpus_specs(provider=provider, registry=registry),
@@ -346,7 +309,11 @@ def promote_schema_cluster(request: SchemaPromoteRequest) -> SchemaPromoteResult
         cluster_id=request.cluster_id,
         package_version=new_version,
         package=registry.get_package(request.provider, version=new_version),
-        schema=cast(OperatorJSONDocument | None, registry.get_element_schema(request.provider, version=new_version)),
+        schema=(
+            operator_json_document(schema)
+            if (schema := registry.get_element_schema(request.provider, version=new_version)) is not None
+            else None
+        ),
         versions=registry.list_versions(request.provider),
     )
 

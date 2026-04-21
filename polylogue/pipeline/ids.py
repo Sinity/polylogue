@@ -4,16 +4,18 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
-from typing import Any
+from typing import TypeAlias
 
 from polylogue.assets import asset_path
 from polylogue.lib.hashing import hash_file, hash_payload, hash_text
+from polylogue.lib.json import JSONValue
 from polylogue.sources import ParsedAttachment, ParsedConversation, ParsedMessage
 from polylogue.types import ContentHash, ConversationId, MessageId
 
 # Sentinel values to distinguish None from empty in hash computations
 _NULL_SENTINEL = "__POLYLOGUE_NULL__"
 _EMPTY_SENTINEL = "__POLYLOGUE_EMPTY__"
+HashScalar: TypeAlias = str | int | float | bool | None
 
 
 def move_attachment_to_archive(source: Path, dest: Path) -> None:
@@ -55,14 +57,14 @@ def materialize_attachment_path(source: Path, dest: Path) -> None:
     move_attachment_to_archive(source, dest)
 
 
-def _normalize_for_hash(value: Any) -> Any:
+def _normalize_for_hash(value: HashScalar) -> JSONValue:
     """Normalize a value for hashing, distinguishing None from empty.
 
     Args:
-        value: Any value to normalize.
+        value: Hash-compatible scalar value to normalize.
 
     Returns:
-        Normalized value with None → _NULL_SENTINEL and "" → _EMPTY_SENTINEL.
+        Normalized JSON value with None → _NULL_SENTINEL and "" → _EMPTY_SENTINEL.
     """
     if value is None:
         return _NULL_SENTINEL
@@ -164,9 +166,9 @@ def message_content_hash(message: ParsedMessage, provider_message_id: str) -> Co
     Returns:
         Content hash string.
     """
-    payload = {
+    payload: dict[str, JSONValue] = {
         "id": provider_message_id,
-        "role": message.role,
+        "role": str(message.role),
         "text": _normalize_for_hash(message.text),
         "timestamp": _normalize_for_hash(message.timestamp),
     }
@@ -184,13 +186,13 @@ def conversation_content_hash(convo: ParsedConversation) -> ContentHash:
     Returns:
         Content hash string.
     """
-    messages_payload = []
+    messages_payload: list[dict[str, JSONValue]] = []
     for idx, msg in enumerate(convo.messages, start=1):
         message_id = msg.provider_message_id or f"msg-{idx}"
         messages_payload.append(
             {
                 "id": message_id,
-                "role": msg.role,
+                "role": str(msg.role),
                 "text": _normalize_for_hash(msg.text),
                 "timestamp": _normalize_for_hash(msg.timestamp),
             }
