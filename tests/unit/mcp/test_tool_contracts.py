@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -41,6 +40,7 @@ from polylogue.lib.stats import ArchiveStats
 from polylogue.types import ConversationId, Provider
 from tests.infra.builders import make_conv, make_msg
 from tests.infra.mcp import (
+    MCPServerUnderTest,
     invoke_surface,
     invoke_surface_async,
     make_query_store_mock,
@@ -257,14 +257,14 @@ class TestQueryTools:
         tool_name: str,
         args: dict[str, object],
         expected_calls: dict[str, tuple[object, ...]],
-        mcp_server: Any,
+        mcp_server: MCPServerUnderTest,
     ) -> None:
         with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
             mock_ops = MagicMock()
             mock_ops.query_conversations = AsyncMock(return_value=[simple_conversation])
             mock_get_archive_ops.return_value = mock_ops
 
-            raw = await mcp_server._tool_manager._tools[tool_name].fn(**args)
+            raw = await invoke_surface_async(mcp_server._tool_manager._tools[tool_name].fn, **args)
 
         payload = json.loads(raw)
         assert isinstance(payload, list)
@@ -305,7 +305,7 @@ class TestQueryTools:
                 assert spec.limit == expected_value
 
     @pytest.mark.asyncio
-    async def test_search_with_empty_query(self, mcp_server: Any) -> None:
+    async def test_search_with_empty_query(self, mcp_server: MCPServerUnderTest) -> None:
         with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
             mock_ops = MagicMock()
             mock_ops.query_conversations = AsyncMock(return_value=[])
@@ -318,7 +318,7 @@ class TestQueryTools:
 
 
 class TestGetConversationTool:
-    def test_get_returns_conversation(self, simple_conversation: Conversation, mcp_server: Any) -> None:
+    def test_get_returns_conversation(self, simple_conversation: Conversation, mcp_server: MCPServerUnderTest) -> None:
         with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
             mock_ops = MagicMock()
             mock_ops.get_conversation = AsyncMock(return_value=simple_conversation)
@@ -330,7 +330,7 @@ class TestGetConversationTool:
         assert conv["id"] == "test:conv-123"
         assert len(conv["messages"]) == 2
 
-    def test_get_not_found(self, mcp_server: Any) -> None:
+    def test_get_not_found(self, mcp_server: MCPServerUnderTest) -> None:
         with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
             mock_ops = MagicMock()
             mock_ops.get_conversation = AsyncMock(return_value=None)
@@ -342,7 +342,7 @@ class TestGetConversationTool:
         assert "error" in parsed
         assert "not found" in parsed["error"].lower()
 
-    def test_get_returns_full_messages(self, mcp_server: Any) -> None:
+    def test_get_returns_full_messages(self, mcp_server: MCPServerUnderTest) -> None:
         long_text = "A" * 2000
         conv = make_conv(
             id="test:long",
@@ -361,7 +361,7 @@ class TestGetConversationTool:
         assert json.loads(result)["messages"][0]["text"] == long_text
 
     @pytest.mark.asyncio
-    async def test_get_with_nonexistent_id(self, mcp_server: Any) -> None:
+    async def test_get_with_nonexistent_id(self, mcp_server: MCPServerUnderTest) -> None:
         with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
             mock_ops = MagicMock()
             mock_ops.get_conversation = AsyncMock(return_value=None)
@@ -376,7 +376,7 @@ class TestGetConversationTool:
 
 class TestProductTools:
     @pytest.mark.asyncio
-    async def test_session_profile_tool_uses_archive_product_contract(self, mcp_server: Any) -> None:
+    async def test_session_profile_tool_uses_archive_product_contract(self, mcp_server: MCPServerUnderTest) -> None:
         product = SessionProfileProduct(
             conversation_id="conv-1",
             provider_name="claude-code",
@@ -402,7 +402,7 @@ class TestProductTools:
         assert payload["conversation_id"] == "conv-1"
 
     @pytest.mark.asyncio
-    async def test_product_list_tools_use_archive_queries(self, mcp_server: Any) -> None:
+    async def test_product_list_tools_use_archive_queries(self, mcp_server: MCPServerUnderTest) -> None:
         profile = SessionProfileProduct(
             conversation_id="conv-1",
             provider_name="claude-code",
@@ -575,7 +575,7 @@ class TestProductTools:
         assert analytics_payload["items"][0]["product_kind"] == "provider_analytics"
 
     @pytest.mark.asyncio
-    async def test_session_enrichments_tool_rejects_unknown_query_fields(self, mcp_server: Any) -> None:
+    async def test_session_enrichments_tool_rejects_unknown_query_fields(self, mcp_server: MCPServerUnderTest) -> None:
         with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
             mock_ops = MagicMock()
             mock_ops.list_session_enrichment_products = AsyncMock(return_value=[])
@@ -620,7 +620,7 @@ class TestStatsTool:
         db_size: int,
         expected_coverage: float,
         expected_mb: float | int,
-        mcp_server: Any,
+        mcp_server: MCPServerUnderTest,
     ) -> None:
         with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
             mock_ops = MagicMock()
@@ -648,7 +648,7 @@ class TestStatsTool:
 
 
 class TestMutationTools:
-    def test_add_tag_success(self, mcp_server: Any) -> None:
+    def test_add_tag_success(self, mcp_server: MCPServerUnderTest) -> None:
         with patch("polylogue.mcp.server._get_tag_store") as mock_get_tag_store:
             mock_tag_store = make_tag_store_mock()
             mock_tag_store.add_tag.return_value = None
@@ -662,7 +662,7 @@ class TestMutationTools:
         assert parsed == {"status": "ok", "conversation_id": "test:conv-123", "tag": "important"}
         mock_tag_store.add_tag.assert_called_once_with("test:conv-123", "important")
 
-    def test_add_tag_error(self, mcp_server: Any) -> None:
+    def test_add_tag_error(self, mcp_server: MCPServerUnderTest) -> None:
         with patch("polylogue.mcp.server._get_tag_store") as mock_get_tag_store:
             mock_tag_store = make_tag_store_mock()
             mock_tag_store.add_tag.side_effect = ValueError("Invalid tag")
@@ -675,7 +675,7 @@ class TestMutationTools:
         parsed = json.loads(result)
         assert "Invalid tag" in parsed["error"]
 
-    def test_remove_tag_success(self, mcp_server: Any) -> None:
+    def test_remove_tag_success(self, mcp_server: MCPServerUnderTest) -> None:
         with patch("polylogue.mcp.server._get_tag_store") as mock_get_tag_store:
             mock_tag_store = make_tag_store_mock()
             mock_tag_store.remove_tag.return_value = None
@@ -689,7 +689,7 @@ class TestMutationTools:
         assert parsed == {"status": "ok", "conversation_id": "test:conv-123", "tag": "important"}
         mock_tag_store.remove_tag.assert_called_once_with("test:conv-123", "important")
 
-    def test_remove_tag_error(self, mcp_server: Any) -> None:
+    def test_remove_tag_error(self, mcp_server: MCPServerUnderTest) -> None:
         with patch("polylogue.mcp.server._get_tag_store") as mock_get_tag_store:
             mock_tag_store = make_tag_store_mock()
             mock_tag_store.remove_tag.side_effect = RuntimeError("Backend error")
@@ -701,7 +701,7 @@ class TestMutationTools:
 
         assert "error" in json.loads(result)
 
-    def test_list_tags_returns_counts(self, mcp_server: Any) -> None:
+    def test_list_tags_returns_counts(self, mcp_server: MCPServerUnderTest) -> None:
         with patch("polylogue.mcp.server._get_tag_store") as mock_get_tag_store:
             mock_tag_store = make_tag_store_mock()
             mock_tag_store.list_tags.return_value = {"bug": 3, "feature": 5, "urgent": 1}
@@ -711,7 +711,7 @@ class TestMutationTools:
 
         assert json.loads(result) == {"bug": 3, "feature": 5, "urgent": 1}
 
-    def test_list_tags_with_provider(self, mcp_server: Any) -> None:
+    def test_list_tags_with_provider(self, mcp_server: MCPServerUnderTest) -> None:
         with patch("polylogue.mcp.server._get_tag_store") as mock_get_tag_store:
             mock_tag_store = make_tag_store_mock()
             mock_tag_store.list_tags.return_value = {"claude-ai": 2}
@@ -722,7 +722,7 @@ class TestMutationTools:
         assert json.loads(result) == {"claude-ai": 2}
         mock_tag_store.list_tags.assert_called_once_with(provider="claude-ai")
 
-    def test_get_metadata_success(self, mcp_server: Any) -> None:
+    def test_get_metadata_success(self, mcp_server: MCPServerUnderTest) -> None:
         with patch("polylogue.mcp.server._get_tag_store") as mock_get_tag_store:
             mock_tag_store = make_tag_store_mock()
             mock_tag_store.get_metadata.return_value = {"key": "value", "count": 42}
@@ -732,7 +732,7 @@ class TestMutationTools:
 
         assert json.loads(result) == {"key": "value", "count": 42}
 
-    def test_set_metadata_string_value(self, mcp_server: Any) -> None:
+    def test_set_metadata_string_value(self, mcp_server: MCPServerUnderTest) -> None:
         with patch("polylogue.mcp.server._get_tag_store") as mock_get_tag_store:
             mock_tag_store = make_tag_store_mock()
             mock_tag_store.update_metadata.return_value = None
@@ -748,7 +748,7 @@ class TestMutationTools:
         assert json.loads(result)["status"] == "ok"
         mock_tag_store.update_metadata.assert_called_once_with("test:conv-123", "author", "john")
 
-    def test_set_metadata_json_value(self, mcp_server: Any) -> None:
+    def test_set_metadata_json_value(self, mcp_server: MCPServerUnderTest) -> None:
         with patch("polylogue.mcp.server._get_tag_store") as mock_get_tag_store:
             mock_tag_store = make_tag_store_mock()
             mock_tag_store.update_metadata.return_value = None
@@ -764,7 +764,7 @@ class TestMutationTools:
         assert json.loads(result)["status"] == "ok"
         mock_tag_store.update_metadata.assert_called_once_with("test:conv-123", "config", {"nested": True})
 
-    def test_delete_metadata_success(self, mcp_server: Any) -> None:
+    def test_delete_metadata_success(self, mcp_server: MCPServerUnderTest) -> None:
         with patch("polylogue.mcp.server._get_tag_store") as mock_get_tag_store:
             mock_tag_store = make_tag_store_mock()
             mock_tag_store.delete_metadata.return_value = None
@@ -781,7 +781,7 @@ class TestMutationTools:
         assert parsed["key"] == "author"
         mock_tag_store.delete_metadata.assert_called_once_with("test:conv-123", "author")
 
-    def test_delete_requires_confirm(self, mcp_server: Any) -> None:
+    def test_delete_requires_confirm(self, mcp_server: MCPServerUnderTest) -> None:
         with patch("polylogue.mcp.server._get_query_store") as mock_get_query_store:
             mock_query_store = make_query_store_mock()
             mock_get_query_store.return_value = mock_query_store
@@ -796,7 +796,7 @@ class TestMutationTools:
         assert "confirm=true" in parsed["error"]
         mock_query_store.delete_conversation.assert_not_called()
 
-    def test_delete_with_confirm(self, mcp_server: Any) -> None:
+    def test_delete_with_confirm(self, mcp_server: MCPServerUnderTest) -> None:
         with patch("polylogue.mcp.server._get_query_store") as mock_get_query_store:
             mock_query_store = make_query_store_mock()
             mock_query_store.delete_conversation.return_value = True
@@ -811,7 +811,7 @@ class TestMutationTools:
         assert json.loads(result)["status"] == "deleted"
         mock_query_store.delete_conversation.assert_called_once_with("test:conv-123")
 
-    def test_delete_not_found(self, mcp_server: Any) -> None:
+    def test_delete_not_found(self, mcp_server: MCPServerUnderTest) -> None:
         with patch("polylogue.mcp.server._get_query_store") as mock_get_query_store:
             mock_query_store = make_query_store_mock()
             mock_query_store.delete_conversation.return_value = False
@@ -825,7 +825,7 @@ class TestMutationTools:
 
         assert json.loads(result)["status"] == "not_found"
 
-    def test_summary_returns_metadata(self, mcp_server: Any) -> None:
+    def test_summary_returns_metadata(self, mcp_server: MCPServerUnderTest) -> None:
         with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
             mock_ops = MagicMock()
             mock_summary = _make_summary(
@@ -847,7 +847,7 @@ class TestMutationTools:
         assert parsed["title"] == "Test Conv"
         assert parsed["message_count"] == 5
 
-    def test_summary_not_found(self, mcp_server: Any) -> None:
+    def test_summary_not_found(self, mcp_server: MCPServerUnderTest) -> None:
         with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
             mock_ops = MagicMock()
             mock_ops.get_conversation_summary = AsyncMock(return_value=None)
@@ -857,7 +857,7 @@ class TestMutationTools:
 
         assert "not found" in json.loads(result)["error"].lower()
 
-    def test_session_tree_returns_list(self, simple_conversation: Conversation, mcp_server: Any) -> None:
+    def test_session_tree_returns_list(self, simple_conversation: Conversation, mcp_server: MCPServerUnderTest) -> None:
         with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
             mock_ops = MagicMock()
             mock_ops.get_session_tree = AsyncMock(return_value=[simple_conversation])
@@ -878,7 +878,7 @@ class TestMutationTools:
             ("month", {"2024-01": 15, "2024-02": 20}),
         ],
     )
-    def test_stats_by_group(self, group_by: str, expected: dict[str, int], mcp_server: Any) -> None:
+    def test_stats_by_group(self, group_by: str, expected: dict[str, int], mcp_server: MCPServerUnderTest) -> None:
         with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
             mock_ops = MagicMock()
             mock_ops.get_stats_by = AsyncMock(return_value=expected)
@@ -888,7 +888,7 @@ class TestMutationTools:
 
         assert json.loads(result) == expected
 
-    def test_health_check_success(self, mcp_server: Any) -> None:
+    def test_health_check_success(self, mcp_server: MCPServerUnderTest) -> None:
         mock_check = MagicMock()
         mock_check.name = "database"
         mock_check.status.value = "ok"
@@ -913,7 +913,7 @@ class TestMutationTools:
         assert parsed["summary"] == "Healthy"
         assert parsed["checks"][0]["name"] == "database"
 
-    def test_rebuild_index_success(self, mcp_server: Any) -> None:
+    def test_rebuild_index_success(self, mcp_server: MCPServerUnderTest) -> None:
         with (
             patch("polylogue.mcp.server._get_config") as mock_get_config,
             patch("polylogue.mcp.server._get_backend") as mock_get_backend,
@@ -933,7 +933,7 @@ class TestMutationTools:
         assert parsed["index_exists"] is True
         assert parsed["indexed_messages"] == 500
 
-    def test_update_index_success(self, mcp_server: Any) -> None:
+    def test_update_index_success(self, mcp_server: MCPServerUnderTest) -> None:
         with (
             patch("polylogue.mcp.server._get_config") as mock_get_config,
             patch("polylogue.mcp.server._get_backend") as mock_get_backend,
