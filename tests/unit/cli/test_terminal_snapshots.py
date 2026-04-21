@@ -12,8 +12,6 @@ These tests verify:
 
 from __future__ import annotations
 
-from typing import Any
-
 import pytest
 
 syrupy = pytest.importorskip("syrupy")
@@ -27,7 +25,7 @@ pytestmark = pytest.mark.skipif(not HAS_PYTE, reason="pyte not installed")
 class TestHelpOutput:
     """Test --help output rendering."""
 
-    def test_help_output_snapshot(self, snapshot: Any) -> None:
+    def test_help_output_snapshot(self, snapshot: object) -> None:
         """Verify --help output renders correctly."""
         result = run_in_pty(["--help"], rows=80)
         assert result.exit_code == 0
@@ -52,7 +50,7 @@ class TestHelpOutput:
 class TestCommandOutputs:
     """Test individual command outputs."""
 
-    def test_check_output_snapshot(self, snapshot: Any) -> None:
+    def test_check_output_snapshot(self, snapshot: object) -> None:
         """Verify check command output renders correctly."""
         result = run_in_pty(["doctor", "--help"], rows=80)
         assert result.exit_code == 0
@@ -62,7 +60,7 @@ class TestCommandOutputs:
 
         assert output == snapshot
 
-    def test_run_help_output_snapshot(self, snapshot: Any) -> None:
+    def test_run_help_output_snapshot(self, snapshot: object) -> None:
         """Verify run command help renders correctly."""
         result = run_in_pty(["run", "--help"], cols=120, rows=80)
         assert result.exit_code == 0
@@ -79,7 +77,7 @@ class TestCommandOutputs:
 class TestErrorOutput:
     """Test error message rendering."""
 
-    def test_invalid_option_error_output(self, snapshot: Any) -> None:
+    def test_invalid_option_error_output(self, snapshot: object) -> None:
         """Verify invalid option error message."""
         result = run_in_pty(["--bogus"])
         assert result.exit_code != 0
@@ -99,7 +97,7 @@ class TestErrorOutput:
 class TestTerminalDimensions:
     """Test output at different terminal widths."""
 
-    def test_help_at_narrow_width(self, snapshot: Any) -> None:
+    def test_help_at_narrow_width(self, snapshot: object) -> None:
         """Verify help wraps correctly at 60 columns."""
         result = run_in_pty(["--help"], cols=60, rows=80)
         assert result.exit_code == 0
@@ -111,7 +109,7 @@ class TestTerminalDimensions:
         # Verify wrapping occurred (should have lines)
         assert len(output) > 0
 
-    def test_help_at_wide_width(self, snapshot: Any) -> None:
+    def test_help_at_wide_width(self, snapshot: object) -> None:
         """Verify help renders at 120 columns."""
         result = run_in_pty(["--help"], cols=120, rows=80)
         assert result.exit_code == 0

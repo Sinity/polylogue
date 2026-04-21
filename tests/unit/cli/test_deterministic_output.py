@@ -16,7 +16,7 @@ import sys
 from datetime import datetime, timezone
 from io import StringIO
 from pathlib import Path
-from typing import Any, cast
+from typing import TypeAlias, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -35,6 +35,7 @@ from polylogue.showcase.runner import ExerciseResult, ShowcaseResult
 
 # ANSI escape code pattern: ESC[ ... final-byte
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]|\x1b\].*?\x07|\x1b\[.*?m")
+JSONEnvelope: TypeAlias = dict[str, object]
 
 
 # ---------------------------------------------------------------------------
@@ -42,13 +43,22 @@ _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]|\x1b\].*?\x07|\x1b\[.*?m")
 # ---------------------------------------------------------------------------
 
 
-def _extract_json(output: str) -> dict[str, Any]:
+def _extract_json(output: str) -> JSONEnvelope:
     """Extract the first JSON object from CLI output, skipping log/banner lines."""
     lines = output.strip().splitlines()
     for i, line in enumerate(lines):
         if line.strip().startswith("{"):
-            return cast(dict[str, Any], json.loads("\n".join(lines[i:])))
+            parsed = json.loads("\n".join(lines[i:]))
+            if not isinstance(parsed, dict):
+                raise ValueError(f"Expected JSON object in output:\n{output}")
+            return cast(JSONEnvelope, parsed)
     raise ValueError(f"No JSON object in output:\n{output}")
+
+
+def _result_payload(data: JSONEnvelope) -> JSONEnvelope:
+    result = data["result"]
+    assert isinstance(result, dict)
+    return cast(JSONEnvelope, result)
 
 
 def _has_ansi(text: str) -> bool:
@@ -66,10 +76,12 @@ class TestFrozenClockCheckJson:
 
     FROZEN_EPOCH = 1700000000  # 2023-11-14T22:13:20Z
 
-    def test_check_json_timestamp_is_deterministic(self: Any, cli_workspace: Any) -> Any:
+    def test_check_json_timestamp_is_deterministic(
+        self: TestFrozenClockCheckJson, cli_workspace: dict[str, Path]
+    ) -> None:
         """Two runs with same frozen clock produce identical timestamps."""
 
-        def _run_check() -> dict[str, Any]:
+        def _run_check() -> JSONEnvelope:
             runner = CliRunner()
             with patch("time.time", return_value=float(self.FROZEN_EPOCH)):
                 result = runner.invoke(
@@ -86,11 +98,13 @@ class TestFrozenClockCheckJson:
         # Both runs use the same frozen epoch for their timestamp
         assert "result" in data_a
         assert "result" in data_b
-        ts_a = data_a["result"]["timestamp"]
-        ts_b = data_b["result"]["timestamp"]
+        ts_a = _result_payload(data_a)["timestamp"]
+        ts_b = _result_payload(data_b)["timestamp"]
         assert ts_a == ts_b == self.FROZEN_EPOCH
 
-    def test_check_json_timestamp_changes_with_clock(self: Any, cli_workspace: Any) -> None:
+    def test_check_json_timestamp_changes_with_clock(
+        self: TestFrozenClockCheckJson, cli_workspace: dict[str, Path]
+    ) -> None:
         """Different frozen times produce different timestamps."""
         runner = CliRunner()
 
@@ -99,8 +113,8 @@ class TestFrozenClockCheckJson:
         with patch("time.time", return_value=1800000000.0):
             result_b = runner.invoke(cli, ["--plain", "doctor", "--json"], catch_exceptions=False)
 
-        ts_a = _extract_json(result_a.output)["result"]["timestamp"]
-        ts_b = _extract_json(result_b.output)["result"]["timestamp"]
+        ts_a = _result_payload(_extract_json(result_a.output))["timestamp"]
+        ts_b = _result_payload(_extract_json(result_b.output))["timestamp"]
         assert ts_a != ts_b
 
 
@@ -157,7 +171,7 @@ class TestFrozenClockShowcaseReport:
             ],
         )
 
-    def test_qa_session_timestamp_is_deterministic(self: Any) -> None:
+    def test_qa_session_timestamp_is_deterministic(self: TestFrozenClockShowcaseReport) -> None:
         """Two calls with same frozen clock produce identical timestamps."""
         result = self._make_qa_result()
 
@@ -174,7 +188,7 @@ class TestFrozenClockShowcaseReport:
         assert session_a["timestamp"] == session_b["timestamp"]
         assert session_a["timestamp"] == "2024-06-15T12:00:00+00:00"
 
-    def test_qa_session_timestamp_changes_with_clock(self: Any) -> None:
+    def test_qa_session_timestamp_changes_with_clock(self: TestFrozenClockShowcaseReport) -> None:
         """Different frozen times produce different timestamps."""
         result = self._make_qa_result()
 
@@ -215,7 +229,7 @@ class TestPlainModeNoAnsi:
         COMMANDS,
         ids=[" ".join(c) for c in COMMANDS],
     )
-    def test_no_ansi_in_plain_mode(self: Any, args: list[str]) -> None:
+    def test_no_ansi_in_plain_mode(self: object, args: list[str]) -> None:
         """Output with --plain should never contain ANSI escape sequences."""
         runner = CliRunner(env={"POLYLOGUE_FORCE_PLAIN": "1"})
         result = runner.invoke(cli, args, catch_exceptions=True)
@@ -231,7 +245,7 @@ class TestPlainModeNoAnsi:
 class TestJsonOutputValidity:
     """--json commands must emit valid, parseable JSON."""
 
-    def test_check_json_is_valid(self: Any, cli_workspace: Any) -> None:
+    def test_check_json_is_valid(self: object, cli_workspace: dict[str, Path]) -> None:
         """polylogue doctor --json produces parseable JSON."""
         runner = CliRunner()
         result = runner.invoke(cli, ["--plain", "doctor", "--json"], catch_exceptions=False)
@@ -240,7 +254,7 @@ class TestJsonOutputValidity:
         assert isinstance(parsed, dict)
         assert "status" in parsed
 
-    def test_tags_json_is_valid(self: Any, cli_workspace: Any) -> None:
+    def test_tags_json_is_valid(self: object, cli_workspace: dict[str, Path]) -> None:
         """polylogue tags --json produces parseable JSON."""
         runner = CliRunner()
         result = runner.invoke(cli, ["--plain", "tags", "--json"], catch_exceptions=False)
@@ -248,7 +262,7 @@ class TestJsonOutputValidity:
         parsed = _extract_json(result.output)
         assert isinstance(parsed, dict)
         assert parsed["status"] == "ok"
-        assert "tags" in parsed["result"]
+        assert "tags" in _result_payload(parsed)
 
 
 # ---------------------------------------------------------------------------
@@ -268,8 +282,8 @@ class TestJsonEnvelopeParametrized:
         ids=["doctor", "tags"],
     )
     def test_json_envelope_shape(
-        self: Any,
-        cli_workspace: Any,
+        self: object,
+        cli_workspace: dict[str, Path],
         cmd_args: list[str],
         result_key: str | None,
     ) -> None:
@@ -281,12 +295,10 @@ class TestJsonEnvelopeParametrized:
         parsed = _extract_json(result.output)
         assert parsed["status"] == "ok"
         assert "result" in parsed
-        assert isinstance(parsed["result"], dict)
+        result_payload = _result_payload(parsed)
 
         if result_key is not None:
-            assert result_key in parsed["result"], (
-                f"Expected key {result_key!r} in result, got {list(parsed['result'].keys())}"
-            )
+            assert result_key in result_payload, f"Expected key {result_key!r} in result, got {list(result_payload)}"
 
     @pytest.mark.parametrize(
         "cmd_args",
@@ -297,8 +309,8 @@ class TestJsonEnvelopeParametrized:
         ids=["doctor", "tags"],
     )
     def test_json_output_no_ansi(
-        self: Any,
-        cli_workspace: Any,
+        self: object,
+        cli_workspace: dict[str, Path],
         cmd_args: list[str],
     ) -> None:
         """--json output must not contain ANSI escape codes."""
@@ -316,8 +328,8 @@ class TestJsonEnvelopeParametrized:
         ids=["doctor", "tags"],
     )
     def test_json_output_round_trips(
-        self: Any,
-        cli_workspace: Any,
+        self: object,
+        cli_workspace: dict[str, Path],
         cmd_args: list[str],
     ) -> None:
         """--json output can be serialized and deserialized without loss."""
@@ -340,22 +352,26 @@ class TestJsonDeterminism:
     """Same inputs with frozen time must produce byte-identical --json output."""
 
     @staticmethod
-    def _normalize_check_result(data: dict[str, Any]) -> dict[str, Any]:
+    def _normalize_check_result(data: JSONEnvelope) -> JSONEnvelope:
         """Remove provenance fields that legitimately vary between runs.
 
         The health system reports live provenance. That provenance is still a
         runtime artifact, not a determinism issue.
         """
-        result = dict(data.get("result", data))
-        provenance = dict(result.get("provenance") or {})
+        result = dict(_result_payload(data) if "result" in data else data)
+        raw_provenance = result.get("provenance")
+        assert raw_provenance is None or isinstance(raw_provenance, dict)
+        provenance = dict(raw_provenance or {})
         provenance.pop("source", None)
         result["provenance"] = provenance
         return {**data, "result": result}
 
-    def test_check_json_deterministic_with_frozen_time(self: Any, cli_workspace: Any) -> None:
+    def test_check_json_deterministic_with_frozen_time(
+        self: TestJsonDeterminism, cli_workspace: dict[str, Path]
+    ) -> None:
         """Two doctor --json runs with same frozen time produce identical results."""
         runner = CliRunner()
-        parsed: list[dict[str, Any]] = []
+        parsed: list[JSONEnvelope] = []
 
         for _ in range(2):
             with patch("time.time", return_value=1700000000.0):
@@ -369,7 +385,7 @@ class TestJsonDeterminism:
 
         assert parsed[0] == parsed[1]
 
-    def test_tags_json_deterministic(self: Any, cli_workspace: Any) -> None:
+    def test_tags_json_deterministic(self: object, cli_workspace: dict[str, Path]) -> None:
         """Two tags --json runs produce identical output."""
         runner = CliRunner()
         outputs: list[str] = []
