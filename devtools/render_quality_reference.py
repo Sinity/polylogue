@@ -11,6 +11,7 @@ from devtools.command_catalog import control_plane_command
 from devtools.lane_models import LaneEntry
 from devtools.mutation_catalog import MutationCampaignEntry
 from devtools.quality_registry import QualityRegistry, build_quality_registry
+from devtools.render_support import write_if_changed
 from devtools.scenario_coverage import RuntimeScenarioCoverage, build_runtime_scenario_coverage
 from devtools.validation_family_models import ValidationLaneFamily
 from polylogue.scenarios import CorpusScenario, ScenarioProjectionEntry
@@ -362,19 +363,6 @@ def build_document(registry: QualityRegistry, *, runtime_coverage: RuntimeScenar
         "",
     ]
     return "\n".join(parts)
-
-
-def write_if_changed(output_path: Path, content: str) -> None:
-    try:
-        current = output_path.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        current = None
-    if current == content:
-        return
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = output_path.with_suffix(output_path.suffix + ".tmp")
-    tmp_path.write_text(content, encoding="utf-8")
-    tmp_path.replace(output_path)
 
 
 def main(argv: list[str] | None = None) -> int:
