@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from polylogue.pipeline.observers import (
@@ -13,6 +12,7 @@ from polylogue.pipeline.observers import (
     WebhookObserver,
 )
 from polylogue.pipeline.services.rendering import RenderService
+from polylogue.storage.backends.async_sqlite import SQLiteBackend
 
 
 def _make_result(count: int = 5) -> MagicMock:
@@ -28,7 +28,7 @@ def _make_result(count: int = 5) -> MagicMock:
 
 
 class TestNotificationObserver:
-    def test_sends_notification(self: Any) -> None:
+    def test_sends_notification(self: object) -> None:
         with patch("subprocess.run") as mock_run:
             handler = NotificationObserver()
             handler.on_completed(_make_result(3))
@@ -37,13 +37,13 @@ class TestNotificationObserver:
             assert "notify-send" in args
             assert "3" in str(args)
 
-    def test_skips_when_no_new(self: Any) -> None:
+    def test_skips_when_no_new(self: object) -> None:
         with patch("subprocess.run") as mock_run:
             handler = NotificationObserver()
             handler.on_completed(_make_result(0))
             mock_run.assert_not_called()
 
-    def test_handles_missing_notifysend(self: Any) -> None:
+    def test_handles_missing_notifysend(self: object) -> None:
         with patch("subprocess.run", side_effect=FileNotFoundError):
             handler = NotificationObserver()
             handler.on_completed(_make_result(1))  # Should not raise
@@ -54,8 +54,8 @@ class TestWebhookObserver:
 
     _FAKE_ADDRINFO = [(2, 1, 6, "", ("93.184.216.34", 80))]
 
-    def test_posts_to_url(self: Any) -> None:
-        with patch("polylogue.pipeline.observers.socket.getaddrinfo", return_value=self._FAKE_ADDRINFO):
+    def test_posts_to_url(self: object) -> None:
+        with patch("polylogue.pipeline.observers.socket.getaddrinfo", return_value=TestWebhookObserver._FAKE_ADDRINFO):
             with patch("urllib.request.urlopen") as mock_urlopen:
                 handler = WebhookObserver("http://example.com/hook")
                 handler.on_completed(_make_result(7))
@@ -64,10 +64,10 @@ class TestWebhookObserver:
                 assert req.get_full_url() == "http://example.com/hook"
                 assert req.get_method() == "POST"
 
-    def test_payload_format(self: Any) -> None:
+    def test_payload_format(self: object) -> None:
         import json
 
-        with patch("polylogue.pipeline.observers.socket.getaddrinfo", return_value=self._FAKE_ADDRINFO):
+        with patch("polylogue.pipeline.observers.socket.getaddrinfo", return_value=TestWebhookObserver._FAKE_ADDRINFO):
             with patch("urllib.request.urlopen"):
                 with patch("urllib.request.Request") as mock_req:
                     handler = WebhookObserver("http://example.com/hook")
@@ -79,22 +79,22 @@ class TestWebhookObserver:
                     assert payload["new_conversations"] == 7
                     assert payload["changed_conversations"] == 0
 
-    def test_skips_when_no_new(self: Any) -> None:
-        with patch("polylogue.pipeline.observers.socket.getaddrinfo", return_value=self._FAKE_ADDRINFO):
+    def test_skips_when_no_new(self: object) -> None:
+        with patch("polylogue.pipeline.observers.socket.getaddrinfo", return_value=TestWebhookObserver._FAKE_ADDRINFO):
             with patch("urllib.request.urlopen") as mock_urlopen:
                 handler = WebhookObserver("http://example.com/hook")
                 handler.on_completed(_make_result(0))
                 mock_urlopen.assert_not_called()
 
-    def test_logs_on_failure(self: Any) -> None:
-        with patch("polylogue.pipeline.observers.socket.getaddrinfo", return_value=self._FAKE_ADDRINFO):
+    def test_logs_on_failure(self: object) -> None:
+        with patch("polylogue.pipeline.observers.socket.getaddrinfo", return_value=TestWebhookObserver._FAKE_ADDRINFO):
             with patch("urllib.request.urlopen", side_effect=ConnectionError("refused")):
                 handler = WebhookObserver("http://example.com/hook")
                 handler.on_completed(_make_result(1))  # Should not raise
 
 
 class TestExecObserver:
-    def test_executes_command(self: Any) -> None:
+    def test_executes_command(self: object) -> None:
         with patch("subprocess.run") as mock_run:
             handler = ExecObserver("echo hello")
             handler.on_completed(_make_result(3))
@@ -107,7 +107,7 @@ class TestExecObserver:
             assert call_kwargs["env"]["POLYLOGUE_NEW_CONVERSATION_COUNT"] == "3"
             assert call_kwargs["env"]["POLYLOGUE_CHANGED_CONVERSATION_COUNT"] == "0"
 
-    def test_skips_when_no_new(self: Any) -> None:
+    def test_skips_when_no_new(self: object) -> None:
         with patch("subprocess.run") as mock_run:
             handler = ExecObserver("echo hello")
             handler.on_completed(_make_result(0))
@@ -115,7 +115,7 @@ class TestExecObserver:
 
 
 class TestCompositeObserver:
-    def test_dispatches_to_all_observers(self: Any) -> None:
+    def test_dispatches_to_all_observers(self: object) -> None:
         h1 = MagicMock()
         h2 = MagicMock()
         composite = CompositeObserver([h1, h2])
@@ -124,7 +124,7 @@ class TestCompositeObserver:
         h1.on_completed.assert_called_once_with(result)
         h2.on_completed.assert_called_once_with(result)
 
-    def test_continues_on_observer_failure(self: Any) -> None:
+    def test_continues_on_observer_failure(self: object) -> None:
         h1 = MagicMock()
         h1.on_completed.side_effect = RuntimeError("boom")
         h2 = MagicMock()
@@ -134,7 +134,7 @@ class TestCompositeObserver:
         # h2 should still be called even though h1 raised
         h2.on_completed.assert_called_once_with(result)
 
-    def test_empty_observer_list(self: Any) -> None:
+    def test_empty_observer_list(self: object) -> None:
         composite = CompositeObserver([])
         composite.on_completed(_make_result(5))  # Should not raise
 
@@ -147,7 +147,7 @@ class TestCompositeObserver:
 class TestRenderProgressCallback:
     """Verify progress_callback fires during rendering."""
 
-    async def test_callback_called_for_each_conversation(self: Any) -> None:
+    async def test_callback_called_for_each_conversation(self: object) -> None:
         """progress_callback is invoked once per rendered conversation."""
         # Mock renderer that succeeds
         mock_renderer = AsyncMock()
@@ -164,16 +164,17 @@ class TestRenderProgressCallback:
         assert result.rendered_count == 3
         assert callback.call_count == 3
 
-    async def test_callback_desc_format(self: Any) -> None:
+    async def test_callback_desc_format(self: object) -> None:
         """progress_callback desc follows 'Rendering: N/total' format."""
         mock_renderer = AsyncMock()
         mock_renderer.render = AsyncMock()
 
         service = RenderService(renderer=mock_renderer, render_root=Path("/tmp/render"))
 
-        descs = []
+        descs: list[str | None] = []
 
-        def capture_callback(amount: Any, desc: Any = None) -> None:
+        def capture_callback(amount: int, desc: str | None = None) -> None:
+            del amount
             descs.append(desc)
 
         await service.render_conversations(
@@ -184,9 +185,11 @@ class TestRenderProgressCallback:
         # All desc values should match the "Rendering: N/2" pattern
         assert all(d is not None and d.startswith("Rendering:") for d in descs)
         # The last one should show total completed
-        assert "2/2" in descs[-1]
+        last_desc = descs[-1]
+        assert last_desc is not None
+        assert "2/2" in last_desc
 
-    async def test_callback_fires_on_failure_too(self: Any) -> None:
+    async def test_callback_fires_on_failure_too(self: object) -> None:
         """progress_callback fires even when rendering fails."""
         mock_renderer = AsyncMock()
         mock_renderer.render = AsyncMock(side_effect=[None, RuntimeError("render failed"), None])
@@ -204,7 +207,7 @@ class TestRenderProgressCallback:
         assert result.rendered_count == 2
         assert len(result.failures) == 1
 
-    async def test_no_callback_is_safe(self: Any) -> None:
+    async def test_no_callback_is_safe(self: object) -> None:
         """Rendering works without a progress_callback."""
         mock_renderer = AsyncMock()
         mock_renderer.render = AsyncMock()
@@ -214,16 +217,17 @@ class TestRenderProgressCallback:
         result = await service.render_conversations(["conv-1"])
         assert result.rendered_count == 1
 
-    async def test_callback_amount_is_one(self: Any) -> None:
+    async def test_callback_amount_is_one(self: object) -> None:
         """Each callback invocation passes amount=1."""
         mock_renderer = AsyncMock()
         mock_renderer.render = AsyncMock()
 
         service = RenderService(renderer=mock_renderer, render_root=Path("/tmp/render"))
 
-        amounts = []
+        amounts: list[int] = []
 
-        def capture(amount: Any, desc: Any = None) -> None:
+        def capture(amount: int, desc: str | None = None) -> None:
+            del desc
             amounts.append(amount)
 
         await service.render_conversations(
@@ -236,7 +240,7 @@ class TestRenderProgressCallback:
 class TestIndexProgressCallback:
     """Verify progress_callback firing during indexing is safe."""
 
-    async def test_index_update_without_callback_succeeds(self: Any, sqlite_backend: Any) -> None:
+    async def test_index_update_without_callback_succeeds(self: object, sqlite_backend: SQLiteBackend) -> None:
         """Index update works without a progress_callback."""
         from polylogue.config import Config
         from polylogue.pipeline.services.indexing import IndexService
@@ -251,7 +255,7 @@ class TestIndexProgressCallback:
         result = await service.update_index([])
         assert result is True
 
-    async def test_index_rebuild_without_callback_succeeds(self: Any, sqlite_backend: Any) -> None:
+    async def test_index_rebuild_without_callback_succeeds(self: object, sqlite_backend: SQLiteBackend) -> None:
         """Index rebuild works without a progress_callback."""
         from polylogue.config import Config
         from polylogue.pipeline.services.indexing import IndexService
@@ -270,7 +274,7 @@ class TestIndexProgressCallback:
 class TestCallbackEdgeCases:
     """Edge cases for progress callback handling."""
 
-    async def test_null_callback_safety(self: Any) -> None:
+    async def test_null_callback_safety(self: object) -> None:
         """Explicitly passing None as callback doesn't raise."""
         mock_renderer = AsyncMock()
         mock_renderer.render = AsyncMock()
@@ -284,7 +288,7 @@ class TestCallbackEdgeCases:
         )
         assert result.rendered_count == 2
 
-    async def test_callback_exception_does_not_crash_render(self: Any) -> None:
+    async def test_callback_exception_does_not_crash_render(self: object) -> None:
         """If the callback itself raises, rendering should still complete.
 
         Note: Current implementation does NOT catch callback exceptions
@@ -297,7 +301,8 @@ class TestCallbackEdgeCases:
 
         service = RenderService(renderer=mock_renderer, render_root=Path("/tmp/render"))
 
-        def bad_callback(amount: Any, desc: Any = None) -> None:
+        def bad_callback(amount: int, desc: str | None = None) -> None:
+            del amount, desc
             raise RuntimeError("callback exploded")
 
         # The callback exception propagates — verify it raises
@@ -307,7 +312,7 @@ class TestCallbackEdgeCases:
                 progress_callback=bad_callback,
             )
 
-    async def test_empty_conversation_list(self: Any) -> None:
+    async def test_empty_conversation_list(self: object) -> None:
         """Rendering zero conversations returns clean result with no callbacks."""
         mock_renderer = AsyncMock()
         mock_renderer.render = AsyncMock()

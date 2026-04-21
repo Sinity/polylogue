@@ -8,16 +8,21 @@ in the suite — a failure here means the archive silently loses data.
 from __future__ import annotations
 
 import json
+import sqlite3
 from collections import Counter
 from pathlib import Path
-from typing import Any
+from typing import TypeAlias
 
 import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
+from polylogue.lib.conversation_models import Conversation
+from polylogue.pipeline.prepare_models import TransformResult
 from polylogue.pipeline.prepare_transform import transform_to_records
+from polylogue.schemas.synthetic.core import SyntheticCorpus
 from polylogue.sources.dispatch import detect_provider, parse_payload
+from polylogue.sources.parsers.base import ParsedConversation
 from polylogue.storage.hydrators import conversation_from_records
 from polylogue.storage.store import AttachmentRecord
 from tests.infra.storage_records import db_setup
@@ -27,20 +32,22 @@ from tests.infra.storage_records import db_setup
 # ---------------------------------------------------------------------------
 
 PROVIDERS_WITH_SYNTHETIC = ("chatgpt", "claude-code", "claude-ai", "codex", "gemini")
+SyntheticPayload: TypeAlias = tuple[str, bytes, str]
 
-_corpus_cache: dict[str, object] = {}
+_corpus_cache: dict[str, SyntheticCorpus] = {}
 
 
-def _get_corpus(provider: str) -> Any:
+def _get_corpus(provider: str) -> SyntheticCorpus:
     if provider not in _corpus_cache:
-        from polylogue.schemas.synthetic.core import SyntheticCorpus
-
         _corpus_cache[provider] = SyntheticCorpus.for_provider(provider)
     return _corpus_cache[provider]
 
 
 @st.composite
-def synthetic_payload(draw: Any, providers: Any = PROVIDERS_WITH_SYNTHETIC) -> Any:
+def synthetic_payload(
+    draw: st.DrawFn,
+    providers: tuple[str, ...] = PROVIDERS_WITH_SYNTHETIC,
+) -> SyntheticPayload:
     """Generate a (provider_name, raw_bytes, unique_id) tuple from synthetic corpus."""
     provider = draw(st.sampled_from(providers))
     seed = draw(st.integers(min_value=0, max_value=2**16))
@@ -55,7 +62,7 @@ def synthetic_payload(draw: Any, providers: Any = PROVIDERS_WITH_SYNTHETIC) -> A
 # ---------------------------------------------------------------------------
 
 
-def _decode_payload(raw_bytes: bytes) -> Any:
+def _decode_payload(raw_bytes: bytes) -> object:
     """Decode raw bytes, handling both JSON and JSONL (Codex/Claude Code)."""
     text = raw_bytes.decode("utf-8")
     try:
@@ -65,7 +72,12 @@ def _decode_payload(raw_bytes: bytes) -> Any:
         return lines
 
 
-def _parse_and_transform(provider_name: str, raw_bytes: bytes, archive_root: Path, unique_id: str = "default") -> Any:
+def _parse_and_transform(
+    provider_name: str,
+    raw_bytes: bytes,
+    archive_root: Path,
+    unique_id: str = "default",
+) -> tuple[ParsedConversation, TransformResult]:
     """Run the full parse → transform path, returning (parsed, transform_result)."""
     payload = _decode_payload(raw_bytes)
     detected = detect_provider(payload)
@@ -79,7 +91,7 @@ def _parse_and_transform(provider_name: str, raw_bytes: bytes, archive_root: Pat
     return parsed, result
 
 
-def _save_and_hydrate(result: Any, db_conn: Any) -> Any:
+def _save_and_hydrate(result: TransformResult, db_conn: sqlite3.Connection) -> Conversation:
     """Save records to DB and hydrate back to domain model."""
     from polylogue.storage.backends.queries.mappers_archive import (
         _row_to_conversation,
@@ -121,7 +133,7 @@ class TestMessageCountPreservation:
         suppress_health_check=[HealthCheck.too_slow, HealthCheck.function_scoped_fixture],
         deadline=None,
     )
-    def test_message_count_preserved(self: Any, data: Any, workspace_env: Any) -> None:
+    def test_message_count_preserved(self: object, data: SyntheticPayload, workspace_env: dict[str, Path]) -> None:
         provider_name, raw_bytes, unique_id = data
         parsed, result = _parse_and_transform(provider_name, raw_bytes, workspace_env["archive_root"], unique_id)
 
@@ -135,7 +147,9 @@ class TestMessageCountPreservation:
         suppress_health_check=[HealthCheck.too_slow, HealthCheck.function_scoped_fixture],
         deadline=None,
     )
-    def test_message_count_survives_save_hydrate(self: Any, data: Any, workspace_env: Any) -> None:
+    def test_message_count_survives_save_hydrate(
+        self: object, data: SyntheticPayload, workspace_env: dict[str, Path]
+    ) -> None:
         provider_name, raw_bytes, unique_id = data
         db_path = db_setup(workspace_env)
 
@@ -162,7 +176,7 @@ class TestRolePreservation:
         suppress_health_check=[HealthCheck.too_slow, HealthCheck.function_scoped_fixture],
         deadline=None,
     )
-    def test_role_multiset_preserved(self: Any, data: Any, workspace_env: Any) -> None:
+    def test_role_multiset_preserved(self: object, data: SyntheticPayload, workspace_env: dict[str, Path]) -> None:
         provider_name, raw_bytes, unique_id = data
         db_path = db_setup(workspace_env)
 
@@ -189,7 +203,7 @@ class TestTitleStability:
         suppress_health_check=[HealthCheck.too_slow, HealthCheck.function_scoped_fixture],
         deadline=None,
     )
-    def test_title_preserved(self: Any, data: Any, workspace_env: Any) -> None:
+    def test_title_preserved(self: object, data: SyntheticPayload, workspace_env: dict[str, Path]) -> None:
         provider_name, raw_bytes, unique_id = data
         db_path = db_setup(workspace_env)
 
@@ -214,7 +228,7 @@ class TestContentHashDeterminism:
         suppress_health_check=[HealthCheck.too_slow, HealthCheck.function_scoped_fixture],
         deadline=None,
     )
-    def test_same_payload_same_hash(self: Any, data: Any, tmp_path: Any) -> None:
+    def test_same_payload_same_hash(self: object, data: SyntheticPayload, tmp_path: Path) -> None:
         provider_name, raw_bytes, unique_id = data
         _, result1 = _parse_and_transform(provider_name, raw_bytes, tmp_path, unique_id)
         _, result2 = _parse_and_transform(provider_name, raw_bytes, tmp_path, unique_id)
@@ -234,7 +248,7 @@ class TestIdempotentReimport:
         suppress_health_check=[HealthCheck.too_slow, HealthCheck.function_scoped_fixture],
         deadline=None,
     )
-    def test_second_import_is_noop(self: Any, data: Any, workspace_env: Any) -> None:
+    def test_second_import_is_noop(self: object, data: SyntheticPayload, workspace_env: dict[str, Path]) -> None:
         provider_name, raw_bytes, unique_id = data
         db_path = db_setup(workspace_env)
 
@@ -275,7 +289,7 @@ class TestProviderIdentity:
         suppress_health_check=[HealthCheck.too_slow, HealthCheck.function_scoped_fixture],
         deadline=None,
     )
-    def test_provider_preserved(self: Any, data: Any, workspace_env: Any) -> None:
+    def test_provider_preserved(self: object, data: SyntheticPayload, workspace_env: dict[str, Path]) -> None:
         provider_name, raw_bytes, unique_id = data
         db_path = db_setup(workspace_env)
 
@@ -302,7 +316,7 @@ class TestConversationIdDeterminism:
         suppress_health_check=[HealthCheck.too_slow, HealthCheck.function_scoped_fixture],
         deadline=None,
     )
-    def test_same_payload_same_cid(self: Any, data: Any, tmp_path: Any) -> None:
+    def test_same_payload_same_cid(self: object, data: SyntheticPayload, tmp_path: Path) -> None:
         provider_name, raw_bytes, unique_id = data
         _, result1 = _parse_and_transform(provider_name, raw_bytes, tmp_path, unique_id)
         _, result2 = _parse_and_transform(provider_name, raw_bytes, tmp_path, unique_id)
@@ -316,7 +330,7 @@ class TestConversationIdDeterminism:
 
 
 @pytest.mark.parametrize("provider_name", PROVIDERS_WITH_SYNTHETIC)
-def test_provider_completes_full_roundtrip(provider_name: Any, workspace_env: Any) -> None:
+def test_provider_completes_full_roundtrip(provider_name: str, workspace_env: dict[str, Path]) -> None:
     """Each provider can complete generate → parse → transform → save → hydrate."""
     corpus = _get_corpus(provider_name)
     raw_items = corpus.generate(count=1, seed=42)

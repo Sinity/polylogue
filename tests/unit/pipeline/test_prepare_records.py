@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -13,6 +12,7 @@ from polylogue.lib.roles import Role
 from polylogue.pipeline.prepare import prepare_records
 from polylogue.pipeline.prepare_models import PersistedConversationResult
 from polylogue.pipeline.services.validation import ValidationService
+from polylogue.schemas import ValidationResult
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedConversation, ParsedMessage
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.repository import ConversationRepository
@@ -611,7 +611,6 @@ class TestValidationService:
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        from polylogue.schemas import ValidationResult
         from polylogue.storage.blob_store import get_blob_store
 
         raw_content = (
@@ -643,7 +642,7 @@ class TestValidationService:
                 self.max_samples_seen = max_samples
                 return [item for item in payload if isinstance(item, dict)] if isinstance(payload, list) else [payload]
 
-            def validate(self, _sample: object) -> Any:
+            def validate(self, _sample: object) -> ValidationResult:
                 return ValidationResult(is_valid=True)
 
         capturing = _CapturingValidator()
@@ -660,7 +659,6 @@ class TestValidationService:
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        from polylogue.schemas import ValidationResult
         from polylogue.storage.blob_store import get_blob_store
 
         raw_content = (b'{"type":"session_meta"}\n' * 1024) + b"not json at all\n"
@@ -686,7 +684,7 @@ class TestValidationService:
             def validation_samples(self, payload: object, max_samples: int = 16) -> list[object]:
                 return [item for item in payload if isinstance(item, dict)] if isinstance(payload, list) else [payload]
 
-            def validate(self, _sample: object) -> Any:
+            def validate(self, _sample: object) -> ValidationResult:
                 return ValidationResult(is_valid=True)
 
         monkeypatch.setenv("POLYLOGUE_SCHEMA_VALIDATION", "strict")
@@ -706,7 +704,6 @@ class TestValidationService:
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        from polylogue.schemas import ValidationResult
         from polylogue.storage.blob_store import get_blob_store
 
         blob_store = get_blob_store()
@@ -741,7 +738,7 @@ class TestValidationService:
             def validation_samples(self, payload: object, max_samples: int = 16) -> list[object]:
                 return [payload]
 
-            def validate(self, _sample: object) -> Any:
+            def validate(self, _sample: object) -> ValidationResult:
                 return ValidationResult(is_valid=True)
 
         monkeypatch.setattr(
@@ -757,7 +754,6 @@ class TestValidationService:
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        from polylogue.schemas import ValidationResult
         from polylogue.storage.blob_store import get_blob_store
 
         raw_content = b'[{"id":"conv-1","mapping":{}}]'
@@ -784,7 +780,7 @@ class TestValidationService:
             def validation_samples(self, payload: object, max_samples: int = 16) -> list[object]:
                 return [payload]
 
-            def validate(self, _sample: object) -> Any:
+            def validate(self, _sample: object) -> ValidationResult:
                 return ValidationResult(is_valid=True)
 
         monkeypatch.setattr(
