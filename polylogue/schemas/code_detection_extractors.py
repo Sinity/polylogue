@@ -3,37 +3,44 @@
 from __future__ import annotations
 
 import re
-from typing import Any
 
+from polylogue.lib.json import JSONDocument, json_document
 from polylogue.schemas.code_detection_runtime import detect_language
 
 
-def extract_code_block_from_dict(content_block: dict[str, Any]) -> dict[str, Any] | None:
+def extract_code_block_from_dict(content_block: JSONDocument) -> JSONDocument | None:
     """Extract and enrich a code block from a content-block dict."""
     block_type = content_block.get("type")
-    text = content_block.get("text", "")
+    text_value = content_block.get("text", "")
+    if not isinstance(text_value, str):
+        return None
+    text = text_value
 
     fence_match = re.match(r"```(\w*)\n(.*?)\n```", text, re.DOTALL)
     if fence_match:
         declared_lang = fence_match.group(1) or None
         code = fence_match.group(2)
         detected_lang = detect_language(code, declared_lang)
-        return {
-            "type": "code",
-            "language": detected_lang,
-            "text": code,
-            "declared_language": declared_lang,
-        }
+        return json_document(
+            {
+                "type": "code",
+                "language": detected_lang,
+                "text": code,
+                "declared_language": declared_lang,
+            }
+        )
 
     if block_type == "text" and len(text) > 20:
         detected_lang = detect_language(text)
         if detected_lang:
-            return {
-                "type": "code",
-                "language": detected_lang,
-                "text": text,
-                "declared_language": None,
-            }
+            return json_document(
+                {
+                    "type": "code",
+                    "language": detected_lang,
+                    "text": text,
+                    "declared_language": None,
+                }
+            )
     return None
 
 

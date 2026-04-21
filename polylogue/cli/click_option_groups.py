@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
+from typing import TypeAlias
 
 import click
 
@@ -16,7 +16,7 @@ from polylogue.cli.shell_completion_values import (
 from polylogue.lib.provider_identity import CORE_SCHEMA_PROVIDERS
 from polylogue.lib.query_spec import QUERY_ACTION_TYPES, QUERY_RETRIEVAL_LANES
 
-ClickCallable = Callable[..., Any]
+ClickCallable: TypeAlias = Callable[..., object]
 
 # Providers the user can filter by (excludes "unknown" and "drive" which are internal).
 _CLI_PROVIDER_CHOICES: tuple[str, ...] = CORE_SCHEMA_PROVIDERS

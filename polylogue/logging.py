@@ -4,10 +4,26 @@ from __future__ import annotations
 
 import logging
 import sys
-from typing import Any, TextIO
+from typing import Protocol, TextIO, cast
 
 import structlog
 from structlog.types import Processor
+
+
+class BoundLoggerLike(Protocol):
+    """Logger methods used by first-party call sites."""
+
+    def bind(self, **new_values: object) -> BoundLoggerLike: ...
+
+    def debug(self, message: str, *args: object, **event_kw: object) -> object: ...
+
+    def info(self, message: str, *args: object, **event_kw: object) -> object: ...
+
+    def warning(self, message: str, *args: object, **event_kw: object) -> object: ...
+
+    def error(self, message: str, *args: object, **event_kw: object) -> object: ...
+
+    def exception(self, message: str, *args: object, **event_kw: object) -> object: ...
 
 
 class _StderrProxy:
@@ -65,5 +81,5 @@ def configure_logging(verbose: bool = False, json_logs: bool = False) -> None:
     )
 
 
-def get_logger(name: str | None = None) -> Any:
-    return structlog.get_logger(name)
+def get_logger(name: str | None = None) -> BoundLoggerLike:
+    return cast(BoundLoggerLike, structlog.get_logger(name))

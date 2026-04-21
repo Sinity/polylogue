@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
 
 from devtools.scenario_projection_catalog import build_scenario_projection_entries
 from polylogue.artifact_graph import build_artifact_graph
+from polylogue.lib.json import JSONDocument, json_document
 from polylogue.operations import build_declared_operation_catalog
 from polylogue.scenarios import ScenarioProjectionEntry
 
@@ -36,13 +36,15 @@ class RuntimePathCoverage:
     def complete(self) -> bool:
         return not self.uncovered_artifacts and not self.uncovered_operations
 
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "refs": [ref.to_dict() for ref in self.refs],
-            "uncovered_artifacts": list(self.uncovered_artifacts),
-            "uncovered_operations": list(self.uncovered_operations),
-            "complete": self.complete,
-        }
+    def to_dict(self) -> JSONDocument:
+        return json_document(
+            {
+                "refs": [ref.to_dict() for ref in self.refs],
+                "uncovered_artifacts": list(self.uncovered_artifacts),
+                "uncovered_operations": list(self.uncovered_operations),
+                "complete": self.complete,
+            }
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,22 +59,24 @@ class RuntimeScenarioCoverage:
     uncovered_maintenance_targets: tuple[str, ...]
     uncovered_declared_operations: tuple[str, ...]
 
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "artifacts": {name: [ref.to_dict() for ref in refs] for name, refs in self.artifacts.items()},
-            "operations": {name: [ref.to_dict() for ref in refs] for name, refs in self.operations.items()},
-            "maintenance_targets": {
-                name: [ref.to_dict() for ref in refs] for name, refs in self.maintenance_targets.items()
-            },
-            "declared_operations": {
-                name: [ref.to_dict() for ref in refs] for name, refs in self.declared_operations.items()
-            },
-            "paths": {name: path.to_dict() for name, path in self.paths.items()},
-            "uncovered_artifacts": list(self.uncovered_artifacts),
-            "uncovered_operations": list(self.uncovered_operations),
-            "uncovered_maintenance_targets": list(self.uncovered_maintenance_targets),
-            "uncovered_declared_operations": list(self.uncovered_declared_operations),
-        }
+    def to_dict(self) -> JSONDocument:
+        return json_document(
+            {
+                "artifacts": {name: [ref.to_dict() for ref in refs] for name, refs in self.artifacts.items()},
+                "operations": {name: [ref.to_dict() for ref in refs] for name, refs in self.operations.items()},
+                "maintenance_targets": {
+                    name: [ref.to_dict() for ref in refs] for name, refs in self.maintenance_targets.items()
+                },
+                "declared_operations": {
+                    name: [ref.to_dict() for ref in refs] for name, refs in self.declared_operations.items()
+                },
+                "paths": {name: path.to_dict() for name, path in self.paths.items()},
+                "uncovered_artifacts": list(self.uncovered_artifacts),
+                "uncovered_operations": list(self.uncovered_operations),
+                "uncovered_maintenance_targets": list(self.uncovered_maintenance_targets),
+                "uncovered_declared_operations": list(self.uncovered_declared_operations),
+            }
+        )
 
 
 def build_runtime_scenario_coverage(

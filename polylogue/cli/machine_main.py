@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
 
 import click
 
@@ -16,7 +15,7 @@ def extract_option(message: str) -> str | None:
 
 
 def run_machine_entry(
-    cli: Callable[..., Any],
+    cli: Callable[..., object],
     argv: list[str],
 ) -> None:
     """Run the CLI, emitting JSON machine errors when requested."""
