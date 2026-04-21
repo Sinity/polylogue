@@ -2,8 +2,13 @@ from __future__ import annotations
 
 from polylogue.artifact_graph import ArtifactLayer, build_artifact_graph
 from polylogue.artifacts import build_runtime_artifact_nodes, build_runtime_artifact_paths
+from polylogue.lib.json import JSONDocument, JSONDocumentList, json_document_list
 from polylogue.maintenance_targets import MAINTENANCE_TARGET_NAMES
 from polylogue.operations import OperationKind, build_runtime_operation_catalog
+
+
+def _document_list_field(payload: JSONDocument, field: str) -> JSONDocumentList:
+    return json_document_list(payload[field])
 
 
 def test_artifact_graph_contains_the_current_runtime_paths() -> None:
@@ -266,11 +271,14 @@ def test_artifact_graph_nodes_and_paths_come_from_runtime_artifact_specs() -> No
 
 def test_artifact_graph_serializes_layers_as_strings() -> None:
     payload = build_artifact_graph().to_dict()
+    nodes = _document_list_field(payload, "nodes")
+    paths = _document_list_field(payload, "paths")
+    operations = _document_list_field(payload, "operations")
 
-    assert any(node["layer"] == "durable" for node in payload["nodes"])
-    assert any(path["name"] == "raw-reparse-loop" for path in payload["paths"])
-    assert any(operation["name"] == "plan-validation-backlog" for operation in payload["operations"])
-    assert any(operation["kind"] == "planning" for operation in payload["operations"])
+    assert any(node["layer"] == "durable" for node in nodes)
+    assert any(path["name"] == "raw-reparse-loop" for path in paths)
+    assert any(operation["name"] == "plan-validation-backlog" for operation in operations)
+    assert any(operation["kind"] == "planning" for operation in operations)
 
 
 def test_artifact_graph_operations_reference_only_declared_nodes() -> None:

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
+from polylogue.lib.json import JSONDocument, JSONDocumentList, json_document_list
 from polylogue.showcase.report_files import generate_manifest
 from polylogue.showcase.runner import ExerciseResult, ShowcaseResult
 from polylogue.showcase.showcase_report_text import generate_showcase_markdown
@@ -58,6 +59,10 @@ def _make_showcase(results: list[ExerciseResult], output_dir: Path | None = None
     sr.total_duration_ms = sum(r.duration_ms for r in results)
     sr.output_dir = output_dir
     return sr
+
+
+def _manifest_entries(manifest: JSONDocument) -> JSONDocumentList:
+    return json_document_list(manifest["entries"])
 
 
 # ---------------------------------------------------------------------------
@@ -202,11 +207,13 @@ class TestGenerateManifest:
         manifest = generate_manifest(sr, include_hashes=True)
 
         assert manifest["entry_count"] == 2
-        for entry in manifest["entries"]:
+        for entry in _manifest_entries(manifest):
             assert "relative_path" in entry
             assert "size_bytes" in entry
             assert "sha256" in entry
-            assert len(entry["sha256"]) == 64  # SHA-256 hex length
+            sha256 = entry["sha256"]
+            assert isinstance(sha256, str)
+            assert len(sha256) == 64  # SHA-256 hex length
 
     def test_without_hashes(self, tmp_path: Any) -> None:
         (tmp_path / "file.txt").write_text("hello")
@@ -215,7 +222,7 @@ class TestGenerateManifest:
         manifest = generate_manifest(sr, include_hashes=False)
 
         assert manifest["entry_count"] == 1
-        assert "sha256" not in manifest["entries"][0]
+        assert "sha256" not in _manifest_entries(manifest)[0]
 
     def test_manifest_serializes_to_json(self, tmp_path: Any) -> None:
         (tmp_path / "data.json").write_text("{}")
