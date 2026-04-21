@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import cast
 
 from polylogue.showcase.qa_runner_models import QAResult
 from polylogue.showcase.report_common import (
@@ -16,7 +15,9 @@ from polylogue.showcase.report_models import QASessionRecord
 def _payload_mapping(value: object) -> Mapping[str, object]:
     if not isinstance(value, Mapping):
         raise TypeError("Expected mapping payload")
-    return cast(Mapping[str, object], value)
+    if not all(isinstance(key, str) for key in value):
+        raise TypeError("Expected string-keyed mapping payload")
+    return {str(key): item for key, item in value.items()}
 
 
 def _count_value(value: object) -> int:

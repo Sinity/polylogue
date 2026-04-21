@@ -6,7 +6,7 @@ import builtins
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime
-from typing import TYPE_CHECKING, TypeVar, cast
+from typing import TYPE_CHECKING, TypeVar
 
 from polylogue.lib.dates import parse_date
 from polylogue.lib.filter_types import SortField
@@ -125,7 +125,19 @@ def optional_sort_field(value: object) -> SortField | None:
     candidate = optional_text(value)
     if candidate is None:
         return None
-    return cast(SortField, candidate)
+    if candidate == "date":
+        return "date"
+    if candidate == "tokens":
+        return "tokens"
+    if candidate == "messages":
+        return "messages"
+    if candidate == "words":
+        return "words"
+    if candidate == "longest":
+        return "longest"
+    if candidate == "random":
+        return "random"
+    raise QuerySpecError("sort", candidate)
 
 
 # ---------------------------------------------------------------------------

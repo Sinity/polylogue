@@ -11,9 +11,8 @@ import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import cast
 
-from polylogue.lib.json import JSONDocument, JSONValue, is_json_value
+from polylogue.lib.json import JSONDocument, is_json_value, require_json_value
 
 
 def _read_proc_status_kb(field_name: str) -> int | None:
@@ -185,7 +184,7 @@ class PipelineMetrics:
 
     def to_summary(self) -> JSONDocument:
         """Export full metrics for logging/persistence."""
-        slow_items = cast(list[JSONValue], list(self.slow_items.to_list()))
+        slow_items = require_json_value(list(self.slow_items.to_list()), context="pipeline slow-item metrics")
         return {
             "total_duration_ms": round(self.total_elapsed_s * 1000, 1),
             "current_rss_mb": read_current_rss_mb(),

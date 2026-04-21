@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from datetime import datetime, timezone
-from typing import cast
 
 from polylogue.lib.outcomes import OutcomeStatus
 from polylogue.showcase.exercises import GROUPS
@@ -16,7 +15,9 @@ from polylogue.showcase.report_models import QASessionRecord
 def _payload_mapping(value: object) -> Mapping[str, object]:
     if not isinstance(value, Mapping):
         raise TypeError("Expected mapping payload")
-    return cast(Mapping[str, object], value)
+    if not all(isinstance(key, str) for key in value):
+        raise TypeError("Expected string-keyed mapping payload")
+    return {str(key): item for key, item in value.items()}
 
 
 def generate_qa_markdown(
