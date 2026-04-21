@@ -5,8 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 from functools import lru_cache
-from typing import Any
 
+from polylogue.lib.json import JSONDocument, json_document
 from polylogue.lib.outcomes import OutcomeStatus
 from polylogue.maintenance_models import MaintenanceCategory
 
@@ -35,23 +35,25 @@ class MaintenanceTargetSpec:
     archive_readiness_requires_deep: bool = False
     aliases: tuple[str, ...] = ()
 
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "name": self.name,
-            "mode": self.mode.value,
-            "category": self.category.value,
-            "destructive": self.destructive,
-            "description": self.description,
-            "include_preview_when_ready": self.include_preview_when_ready,
-            "doctor_readiness_operation": self.doctor_readiness_operation,
-            "doctor_repair_operation": self.doctor_repair_operation,
-            "include_in_archive_readiness": self.include_in_archive_readiness,
-            "archive_readiness_unready_status": (
-                self.archive_readiness_unready_status.value if self.archive_readiness_unready_status else None
-            ),
-            "archive_readiness_requires_deep": self.archive_readiness_requires_deep,
-            "aliases": list(self.aliases),
-        }
+    def to_dict(self) -> JSONDocument:
+        return json_document(
+            {
+                "name": self.name,
+                "mode": self.mode.value,
+                "category": self.category.value,
+                "destructive": self.destructive,
+                "description": self.description,
+                "include_preview_when_ready": self.include_preview_when_ready,
+                "doctor_readiness_operation": self.doctor_readiness_operation,
+                "doctor_repair_operation": self.doctor_repair_operation,
+                "include_in_archive_readiness": self.include_in_archive_readiness,
+                "archive_readiness_unready_status": (
+                    self.archive_readiness_unready_status.value if self.archive_readiness_unready_status else None
+                ),
+                "archive_readiness_requires_deep": self.archive_readiness_requires_deep,
+                "aliases": list(self.aliases),
+            }
+        )
 
 
 @dataclass(frozen=True, slots=True)
