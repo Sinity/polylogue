@@ -22,15 +22,16 @@ def build_projection_html_messages(
 ) -> list[RenderedMessage]:
     raw_messages: list[RenderedMessage] = []
     for msg in projection.messages:
+        content_blocks = coerce_renderable_blocks(msg.content_blocks)
         text = msg.text or ""
-        if not text:
+        if not text and not content_blocks:
             continue
         payload = build_rendered_message(
             message_id=msg.message_id,
             role=msg.role,
             text=text,
             timestamp=msg.sort_key,
-            content_blocks=coerce_renderable_blocks(msg.content_blocks),
+            content_blocks=content_blocks,
             parent_message_id=msg.parent_message_id,
             branch_index=msg.branch_index,
             render_html=render_html,
@@ -48,14 +49,16 @@ def build_conversation_html_messages(
 ) -> list[RenderedMessage]:
     raw_messages: list[RenderedMessage] = []
     for msg in conversation.messages:
-        if not msg.text:
+        content_blocks = coerce_renderable_blocks(getattr(msg, "content_blocks", None))
+        text = msg.text or ""
+        if not text and not content_blocks:
             continue
         payload = build_rendered_message(
             message_id=msg.id,
             role=msg.role,
-            text=msg.text,
+            text=text,
             timestamp=str(msg.timestamp) if msg.timestamp else None,
-            content_blocks=coerce_renderable_blocks(getattr(msg, "content_blocks", None)),
+            content_blocks=content_blocks,
             parent_message_id=msg.parent_id,
             branch_index=msg.branch_index,
             render_html=render_html,

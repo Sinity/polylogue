@@ -22,7 +22,7 @@ def render_blocks_markdown(blocks: Sequence[RenderableBlock]) -> str:
     - ``tool_use``: tool header with name and input summary
     - ``tool_result``: code-fenced output
     - ``code``: language-tagged code fence
-    - ``image``/``document``: reference with metadata
+    - ``image``/``document``/``file``: reference with metadata
     """
     parts: list[str] = []
     for block in blocks:
@@ -179,6 +179,22 @@ def _render_code_html(block: RenderableBlock) -> str:
     return f'<pre class="code-block"{lang_attr}><code>{escape(text)}</code></pre>'
 
 
+def _render_media_html(block: RenderableBlock) -> str:
+    block_type = escape(block.type)
+    name = escape(block.name or block.type)
+    mime = escape(block.mime_type or "")
+    url = block.url or ""
+    parts = [f'<div class="media-block" data-type="{block_type}">']
+    if url:
+        parts.append(f'<a class="media-link" href="{escape(url)}">{name}</a>')
+    else:
+        parts.append(f'<span class="media-name">{name}</span>')
+    if mime:
+        parts.append(f'<span class="media-mime">{mime}</span>')
+    parts.append("</div>")
+    return "".join(parts)
+
+
 def _render_text_block_html(block: RenderableBlock) -> str:
     # Simple paragraph wrapping for plain text
     if not block.text or not block.text.strip():
@@ -224,10 +240,6 @@ def _strip_text(value: str | None) -> str:
     return (value or "").strip()
 
 
-def _noop_renderer(_block: RenderableBlock) -> str:
-    return ""
-
-
 def _render_block_plaintext(block: RenderableBlock) -> str:
     """Render a single content block to plaintext."""
     return _PLAIN_BLOCK_RENDERERS.get(block.type, _render_text_block_plaintext)(block)
@@ -256,7 +268,7 @@ _HTML_BLOCK_RENDERERS: dict[str, Callable[[RenderableBlock], str]] = {
     ContentBlockType.TOOL_USE.value: _render_tool_use_html,
     ContentBlockType.TOOL_RESULT.value: _render_tool_result_html,
     ContentBlockType.CODE.value: _render_code_html,
-    **dict.fromkeys(_MEDIA_BLOCK_TYPES, _noop_renderer),
+    **dict.fromkeys(_MEDIA_BLOCK_TYPES, _render_media_html),
 }
 
 
@@ -281,10 +293,21 @@ def _render_tool_result_plaintext(block: RenderableBlock) -> str:
     return _strip_text(_extract_block_text(block))
 
 
+def _render_media_plaintext(block: RenderableBlock) -> str:
+    name = block.name or block.type
+    parts = [name]
+    if block.url:
+        parts.append(block.url)
+    if block.mime_type:
+        parts.append(f"({block.mime_type})")
+    return " ".join(parts)
+
+
 _PLAIN_BLOCK_RENDERERS: dict[str, Callable[[RenderableBlock], str]] = {
     ContentBlockType.THINKING.value: _render_thinking_plaintext,
     ContentBlockType.TOOL_USE.value: _render_tool_use_plaintext,
     ContentBlockType.TOOL_RESULT.value: _render_tool_result_plaintext,
+    **dict.fromkeys(_MEDIA_BLOCK_TYPES, _render_media_plaintext),
 }
 
 
@@ -293,7 +316,7 @@ _STRUCTURED_BLOCK_TYPES = {
     ContentBlockType.TOOL_USE.value,
     ContentBlockType.TOOL_RESULT.value,
     ContentBlockType.CODE.value,
-}
+} | set(_MEDIA_BLOCK_TYPES)
 
 
 __all__ = [
