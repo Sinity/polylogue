@@ -38,8 +38,18 @@ logger = get_logger(__name__)
 
 if TYPE_CHECKING:
     from polylogue.config import Config
+    from polylogue.lib.filters import ConversationFilter
     from polylogue.lib.models import Conversation, ConversationSummary
-    from polylogue.protocols import VectorProvider
+    from polylogue.protocols import (
+        ConversationArchiveStatsStore,
+        ConversationQueryRuntimeStore,
+        TagStore,
+        VectorProvider,
+    )
+
+    class QueryExecutionStore(ConversationArchiveStatsStore, ConversationQueryRuntimeStore, TagStore, Protocol):
+        """Repository surface needed by query execution and grouped stats helpers."""
+
 
 _T = TypeVar("_T")
 
@@ -260,6 +270,34 @@ def _create_query_vector_provider(config: Config) -> VectorProvider | None:
         return None
 
 
+def _stats_dimension(plan: QueryExecutionPlan) -> str:
+    return plan.stats_dimension or "all"
+
+
+async def _semantic_stats_summaries(
+    repo: QueryExecutionStore,
+    filter_chain: ConversationFilter,
+) -> list[ConversationSummary] | None:
+    if filter_chain.can_use_summaries():
+        return await filter_chain.list_summaries()
+
+    query_plan = filter_chain.build_query_plan()
+    if await _resolve_maybe_awaitable(query_plan.can_use_action_event_stats_with(repo)) is not True:
+        return None
+    return await repo.list_summaries_by_query(query_plan.record_query.with_limit(query_plan.limit))
+
+
+async def _profile_stats_summaries(
+    repo: QueryExecutionStore,
+    filter_chain: ConversationFilter,
+) -> list[ConversationSummary]:
+    if filter_chain.can_use_summaries():
+        return await filter_chain.list_summaries()
+
+    query_plan = filter_chain.build_query_plan()
+    return await repo.list_summaries_by_query(query_plan.record_query.with_limit(query_plan.limit))
+
+
 async def async_execute_query(env: AppEnv, params: QueryParams) -> None:
     """Async compatibility wrapper for raw param execution."""
     await async_execute_query_request(env, RootModeRequest.from_params(params))
@@ -279,7 +317,7 @@ async def async_execute_query_request(env: AppEnv, request: RootModeRequest) -> 
     except ConfigError as exc:
         fail("query", str(exc))
 
-    repo = env.repository
+    repo = cast("QueryExecutionStore", env.repository)
 
     vector_provider = _create_query_vector_provider(config)
 
@@ -375,56 +413,32 @@ async def async_execute_query_request(env: AppEnv, request: RootModeRequest) -> 
             env,
             summaries,
             msg_counts,
-            plan.stats_dimension or "all",
+            _stats_dimension(plan),
             selection=plan.selection,
             output_format=plan.output.output_format,
         )
         return
 
     if route == QueryRoute.STATS_BY and plan.stats_dimension in {"action", "tool"}:
-        query_plan = filter_chain.build_query_plan()
-        if filter_chain.can_use_summaries():
-            summaries = await filter_chain.list_summaries()
+        semantic_summaries = await _semantic_stats_summaries(repo, filter_chain)
+        if semantic_summaries is not None:
             await _query_output.output_stats_by_semantic_summaries(
                 env,
-                summaries,
+                semantic_summaries,
                 repo,
-                plan.stats_dimension or "all",
-                selection=plan.selection,
-                output_format=plan.output.output_format,
-            )
-            return
-        if await _resolve_maybe_awaitable(query_plan.can_use_action_event_stats_with(repo)) is True:
-            summaries = await repo.list_summaries_by_query(query_plan.record_query.with_limit(query_plan.limit))
-            await _query_output.output_stats_by_semantic_summaries(
-                env,
-                summaries,
-                repo,
-                plan.stats_dimension or "all",
+                _stats_dimension(plan),
                 selection=plan.selection,
                 output_format=plan.output.output_format,
             )
             return
 
     if route == QueryRoute.STATS_BY and plan.stats_dimension in {"repo", "work-kind"}:
-        if filter_chain.can_use_summaries():
-            summaries = await filter_chain.list_summaries()
-            await _query_output.output_stats_by_profile_summaries(
-                env,
-                summaries,
-                repo,
-                plan.stats_dimension or "all",
-                selection=plan.selection,
-                output_format=plan.output.output_format,
-            )
-            return
-        query_plan = filter_chain.build_query_plan()
-        summaries = await repo.list_summaries_by_query(query_plan.record_query.with_limit(query_plan.limit))
+        summaries = await _profile_stats_summaries(repo, filter_chain)
         await _query_output.output_stats_by_profile_summaries(
             env,
             summaries,
             repo,
-            plan.stats_dimension or "all",
+            _stats_dimension(plan),
             selection=plan.selection,
             output_format=plan.output.output_format,
         )
@@ -460,7 +474,7 @@ async def async_execute_query_request(env: AppEnv, request: RootModeRequest) -> 
         _query_output._output_stats_by(
             env,
             projected_results,
-            plan.stats_dimension or "all",
+            _stats_dimension(plan),
             selection=plan.selection,
             output_format=plan.output.output_format,
         )
