@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
+from polylogue.lib.json import JSONDocument, json_document
+
 
 class MaintenanceCategory(str, Enum):
     DERIVED_REPAIR = "derived_repair"
@@ -29,23 +31,25 @@ class DerivedModelStatus:
     materializer_version: int | None = None
     matches_version: bool | None = None
 
-    def to_dict(self) -> dict[str, object]:
-        return {
-            "name": self.name,
-            "ready": self.ready,
-            "detail": self.detail,
-            "source_documents": self.source_documents,
-            "materialized_documents": self.materialized_documents,
-            "source_rows": self.source_rows,
-            "materialized_rows": self.materialized_rows,
-            "pending_documents": self.pending_documents,
-            "pending_rows": self.pending_rows,
-            "stale_rows": self.stale_rows,
-            "orphan_rows": self.orphan_rows,
-            "missing_provenance_rows": self.missing_provenance_rows,
-            "materializer_version": self.materializer_version,
-            "matches_version": self.matches_version,
-        }
+    def to_dict(self) -> JSONDocument:
+        return json_document(
+            {
+                "name": self.name,
+                "ready": self.ready,
+                "detail": self.detail,
+                "source_documents": self.source_documents,
+                "materialized_documents": self.materialized_documents,
+                "source_rows": self.source_rows,
+                "materialized_rows": self.materialized_rows,
+                "pending_documents": self.pending_documents,
+                "pending_rows": self.pending_rows,
+                "stale_rows": self.stale_rows,
+                "orphan_rows": self.orphan_rows,
+                "missing_provenance_rows": self.missing_provenance_rows,
+                "materializer_version": self.materializer_version,
+                "matches_version": self.matches_version,
+            }
+        )
 
 
 __all__ = ["DerivedModelStatus", "MaintenanceCategory"]
