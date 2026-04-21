@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
 
 import pytest
 
@@ -10,6 +9,7 @@ from polylogue.paths import is_within_root
 from polylogue.pipeline.prepare import RecordBundle, save_bundle
 from polylogue.rendering.renderers import HTMLRenderer
 from polylogue.storage.backends.connection import open_connection
+from polylogue.storage.repository import ConversationRepository
 from polylogue.storage.store import ConversationRecord
 from tests.infra.storage_records import make_attachment, make_conversation, make_message
 
@@ -18,7 +18,10 @@ def _conversation_record() -> ConversationRecord:
     return make_conversation("conv:hash", provider_name="codex", title="Demo")
 
 
-async def test_ingest_idempotent(workspace_env: dict[str, Path], storage_repository: Any) -> None:
+async def test_ingest_idempotent(
+    workspace_env: dict[str, Path],
+    storage_repository: ConversationRepository,
+) -> None:
     bundle = RecordBundle(
         conversation=_conversation_record(),
         messages=[make_message("msg:hash", "conv:hash", text="hello")],
@@ -33,7 +36,10 @@ async def test_ingest_idempotent(workspace_env: dict[str, Path], storage_reposit
     assert second.skipped_messages == 1
 
 
-async def test_render_writes_markdown(workspace_env: dict[str, Path], storage_repository: Any) -> None:
+async def test_render_writes_markdown(
+    workspace_env: dict[str, Path],
+    storage_repository: ConversationRepository,
+) -> None:
     archive_root = workspace_env["archive_root"]
     bundle = RecordBundle(
         conversation=_conversation_record(),
@@ -52,7 +58,10 @@ async def test_render_writes_markdown(workspace_env: dict[str, Path], storage_re
     assert "hello" in md_path.read_text(encoding="utf-8")
 
 
-async def test_render_escapes_html(workspace_env: dict[str, Path], storage_repository: Any) -> None:
+async def test_render_escapes_html(
+    workspace_env: dict[str, Path],
+    storage_repository: ConversationRepository,
+) -> None:
     archive_root = workspace_env["archive_root"]
     bundle = RecordBundle(
         conversation=make_conversation("conv-html", provider_name="codex", title="<script>alert(1)</script>"),
@@ -70,7 +79,10 @@ async def test_render_escapes_html(workspace_env: dict[str, Path], storage_repos
     assert "&lt;script&gt;" in html_text
 
 
-async def test_render_sanitizes_paths(workspace_env: dict[str, Path], storage_repository: Any) -> None:
+async def test_render_sanitizes_paths(
+    workspace_env: dict[str, Path],
+    storage_repository: ConversationRepository,
+) -> None:
     """Test that render paths are sanitized even with path-like conversation IDs.
 
     Note: Invalid provider names are now rejected at the validation layer, so we
@@ -94,7 +106,7 @@ async def test_render_sanitizes_paths(workspace_env: dict[str, Path], storage_re
 
 async def test_render_includes_orphan_attachments(
     workspace_env: dict[str, Path],
-    storage_repository: Any,
+    storage_repository: ConversationRepository,
 ) -> None:
     archive_root = workspace_env["archive_root"]
     bundle = RecordBundle(
@@ -122,7 +134,10 @@ async def test_render_includes_orphan_attachments(
     assert "- Attachment: notes.txt" in markdown
 
 
-async def test_ingest_updates_metadata(workspace_env: dict[str, Path], storage_repository: Any) -> None:
+async def test_ingest_updates_metadata(
+    workspace_env: dict[str, Path],
+    storage_repository: ConversationRepository,
+) -> None:
     bundle = RecordBundle(
         conversation=make_conversation(
             "conv-update",
@@ -168,7 +183,7 @@ async def test_ingest_updates_metadata(workspace_env: dict[str, Path], storage_r
 
 async def test_ingest_updates_fields_without_hash_changes(
     workspace_env: dict[str, Path],
-    storage_repository: Any,
+    storage_repository: ConversationRepository,
 ) -> None:
     """Conversation record fields (title, updated_at, provider_meta) should
     update via UPSERT even when the content_hash is unchanged.
@@ -227,7 +242,7 @@ async def test_ingest_updates_fields_without_hash_changes(
 
 async def test_ingest_removes_missing_attachments(
     workspace_env: dict[str, Path],
-    storage_repository: Any,
+    storage_repository: ConversationRepository,
 ) -> None:
     bundle = RecordBundle(
         conversation=_conversation_record(),

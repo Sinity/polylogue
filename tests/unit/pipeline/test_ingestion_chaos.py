@@ -13,11 +13,12 @@ import json
 from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
-from typing import Any
+from typing import cast
 
 from hypothesis import given, settings
 
 from polylogue.lib.timestamps import parse_timestamp
+from polylogue.pipeline.services.parsing import ParsingService
 from polylogue.sources.decoders import _decode_json_bytes, _iter_json_stream
 from polylogue.storage.store import RawConversationRecord
 from tests.infra.large_batches import (
@@ -31,6 +32,8 @@ from tests.infra.large_batches import (
     write_jsonl_with_bad_utf8,
 )
 from tests.infra.strategies import malformed_json_strategy
+
+TimestampInput = str | int | float | None
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -62,7 +65,7 @@ def _make_raw_record(
     )
 
 
-def _make_parsing_service(tmp_path: Path) -> Any:
+def _make_parsing_service(tmp_path: Path) -> ParsingService:
     from polylogue.config import Config
     from polylogue.pipeline.services.parsing import ParsingService
     from polylogue.storage.backends.async_sqlite import SQLiteBackend
@@ -86,13 +89,19 @@ def _jsonl_bytes(lines: list[str]) -> bytes:
     return ("\n".join(lines) + "\n").encode("utf-8")
 
 
-def _iter_jsonl_stream(data: bytes, name: str = "test.jsonl") -> list[Any]:
+def _iter_jsonl_stream(data: bytes, name: str = "test.jsonl") -> list[object]:
     """Convenience: parse JSONL bytes via _iter_json_stream and collect."""
     return list(_iter_json_stream(BytesIO(data), name))
 
 
-def _as_record(value: Any) -> dict[str, Any]:
+def _as_record(value: object) -> dict[str, object]:
     assert isinstance(value, dict)
+    return cast(dict[str, object], value)
+
+
+def _timestamp_value(record: dict[str, object]) -> TimestampInput:
+    value = record.get("timestamp")
+    assert value is None or isinstance(value, str | int | float)
     return value
 
 
@@ -166,7 +175,7 @@ class TestLargeBatchBadUtf8:
     BATCH_SIZE = 500
     CORRUPT_INDEX = 350
 
-    def test_bad_utf8_skipped_rest_processed(self, tmp_path: Any) -> None:
+    def test_bad_utf8_skipped_rest_processed(self, tmp_path: Path) -> None:
         """Pipeline skips the bad UTF-8 line, processes the rest."""
         lines = generate_large_jsonl(self.BATCH_SIZE, provider="codex")
         corrupted = corrupt_line_bad_utf8(lines, self.CORRUPT_INDEX)
@@ -184,7 +193,7 @@ class TestLargeBatchBadUtf8:
         # at least the valid lines.
         assert len(parsed) >= self.BATCH_SIZE - 1
 
-    def test_bad_utf8_no_crash(self, tmp_path: Any) -> None:
+    def test_bad_utf8_no_crash(self, tmp_path: Path) -> None:
         """No exception propagates from bad UTF-8 lines."""
         lines = generate_large_jsonl(self.BATCH_SIZE, provider="codex")
         corrupted = corrupt_line_bad_utf8(lines, self.CORRUPT_INDEX)
@@ -247,7 +256,7 @@ class TestMultipleCorruptionsInBatch:
         parsed = _iter_jsonl_stream(data)
         assert len(parsed) == self.BATCH_SIZE - len(corrupt_indices)
 
-    def test_mixed_corruption_types(self, tmp_path: Any) -> None:
+    def test_mixed_corruption_types(self, tmp_path: Path) -> None:
         """Different corruption types at different positions all handled."""
         lines = generate_large_jsonl(self.BATCH_SIZE, provider="codex")
         # Apply corruptions in reverse to preserve indices
@@ -293,7 +302,7 @@ class TestCorruptionAtBoundaries:
 class TestParsingServiceCorruption:
     """ingest_record handles partial corruption."""
 
-    def test_malformed_jsonl_line_in_codex_raw(self, tmp_path: Any) -> None:
+    def test_malformed_jsonl_line_in_codex_raw(self, tmp_path: Path) -> None:
         """Codex JSONL with 1 bad line: parsing succeeds with fewer messages."""
         from polylogue.pipeline.services.ingest_worker import ingest_record
 
@@ -307,7 +316,7 @@ class TestParsingServiceCorruption:
         if result.conversations:
             assert result.conversations[0].provider_name in ("codex", "codex-cli")
 
-    def test_truncated_jsonl_line_in_codex_raw(self, tmp_path: Any) -> None:
+    def test_truncated_jsonl_line_in_codex_raw(self, tmp_path: Path) -> None:
         """Codex JSONL with 1 truncated line: parsing succeeds."""
         from polylogue.pipeline.services.ingest_worker import ingest_record
 
@@ -319,7 +328,7 @@ class TestParsingServiceCorruption:
         result = ingest_record(record, str(tmp_path / "archive"), "off")
         assert result.error is None
 
-    def test_wrong_envelope_in_codex_raw(self, tmp_path: Any) -> None:
+    def test_wrong_envelope_in_codex_raw(self, tmp_path: Path) -> None:
         """Codex JSONL with 1 wrong-envelope line: parsing still works."""
         from polylogue.pipeline.services.ingest_worker import ingest_record
 
@@ -377,7 +386,7 @@ class TestDecodeRawPayloadCorruption:
         assert isinstance(envelope.payload, list)
         assert len(envelope.payload) == 95
 
-    def test_bad_utf8_lines_are_counted_and_salvaged(self, tmp_path: Any) -> None:
+    def test_bad_utf8_lines_are_counted_and_salvaged(self, tmp_path: Path) -> None:
         """Invalid UTF-8 lines count as malformed JSONL but do not poison the whole file."""
         from polylogue.lib.raw_payload import build_raw_payload_envelope
 
@@ -414,7 +423,7 @@ class TestTimestampEpochNearZero:
         records = patterns["epoch_near_zero"]
         for record in records:
             cast_record = _as_record(record)
-            ts = cast_record["timestamp"]
+            ts = _timestamp_value(cast_record)
             result = parse_timestamp(ts)
             assert result is not None, f"Failed to parse timestamp: {ts}"
             assert isinstance(result, datetime)
@@ -445,7 +454,7 @@ class TestTimestampY2K38:
         records = patterns["y2038_adjacent"]
         for record in records:
             cast_record = _as_record(record)
-            ts = cast_record["timestamp"]
+            ts = _timestamp_value(cast_record)
             result = parse_timestamp(ts)
             assert result is not None, f"Failed to parse timestamp: {ts}"
             assert isinstance(result, datetime)
@@ -480,7 +489,7 @@ class TestTimestampFarFuture:
         records = patterns["far_future"]
         for record in records:
             cast_record = _as_record(record)
-            ts = cast_record["timestamp"]
+            ts = _timestamp_value(cast_record)
             result = parse_timestamp(ts)
             assert result is not None, f"Failed to parse timestamp: {ts}"
             assert isinstance(result, datetime)
@@ -511,7 +520,7 @@ class TestTimestampMixedFormats:
         parsed_timestamps = []
         for record in records:
             cast_record = _as_record(record)
-            ts = cast_record["timestamp"]
+            ts = _timestamp_value(cast_record)
             result = parse_timestamp(ts)
             assert result is not None, f"Failed to parse timestamp: {ts}"
             parsed_timestamps.append(result)
@@ -566,7 +575,7 @@ class TestTimestampMissing:
         results = []
         for record in records:
             cast_record = _as_record(record)
-            ts = cast_record.get("timestamp")  # Key may be absent
+            ts = _timestamp_value(cast_record)
             results.append(parse_timestamp(ts))
 
         # First record has timestamp
@@ -629,7 +638,7 @@ class TestTimestampPatternsInJsonl:
         parsed = [_as_record(record) for record in _iter_jsonl_stream(data)]
         assert len(parsed) == len(records)
         for record in parsed:
-            ts = parse_timestamp(record["timestamp"])
+            ts = parse_timestamp(_timestamp_value(record))
             assert ts is not None
             assert ts.year == 1970
 
@@ -643,7 +652,7 @@ class TestTimestampPatternsInJsonl:
         parsed = [_as_record(record) for record in _iter_jsonl_stream(data)]
         assert len(parsed) == len(records)
         for record in parsed:
-            ts = parse_timestamp(record["timestamp"])
+            ts = parse_timestamp(_timestamp_value(record))
             assert ts is not None
             assert ts.year == 2038
 
@@ -657,7 +666,7 @@ class TestTimestampPatternsInJsonl:
         parsed = [_as_record(record) for record in _iter_jsonl_stream(data)]
         assert len(parsed) == len(records)
         for record in parsed:
-            ts = parse_timestamp(record["timestamp"])
+            ts = parse_timestamp(_timestamp_value(record))
             assert ts is not None
 
     def test_mixed_formats_through_stream(self) -> None:
@@ -670,7 +679,7 @@ class TestTimestampPatternsInJsonl:
         parsed = [_as_record(record) for record in _iter_jsonl_stream(data)]
         assert len(parsed) == len(records)
         for record in parsed:
-            ts = parse_timestamp(record["timestamp"])
+            ts = parse_timestamp(_timestamp_value(record))
             assert ts is not None
 
     def test_missing_timestamps_through_stream(self) -> None:
@@ -683,7 +692,7 @@ class TestTimestampPatternsInJsonl:
         parsed = [_as_record(record) for record in _iter_jsonl_stream(data)]
         assert len(parsed) == len(records)
         # Only records with timestamps should parse; missing should be None
-        timestamps = [parse_timestamp(r.get("timestamp")) for r in parsed]
+        timestamps = [parse_timestamp(_timestamp_value(r)) for r in parsed]
         assert timestamps[0] is not None
         assert timestamps[1] is None
         assert timestamps[2] is not None
@@ -697,7 +706,7 @@ class TestTimestampPatternsInJsonl:
 class TestRerunIdempotency:
     """Running the same batch twice produces identical records, no duplicates."""
 
-    def test_same_batch_twice_produces_same_records(self, tmp_path: Any) -> None:
+    def test_same_batch_twice_produces_same_records(self, tmp_path: Path) -> None:
         """Parsing the same raw record twice yields identical results."""
         from polylogue.pipeline.services.ingest_worker import ingest_record
 
@@ -715,7 +724,7 @@ class TestRerunIdempotency:
             assert conv1.provider_name == conv2.provider_name
             assert len(conv1.message_tuples) == len(conv2.message_tuples)
 
-    def test_reparse_with_corruption_then_clean(self, tmp_path: Any) -> None:
+    def test_reparse_with_corruption_then_clean(self, tmp_path: Path) -> None:
         """First parse with corruption, second with clean data — both succeed."""
         from polylogue.pipeline.services.ingest_worker import ingest_record
 

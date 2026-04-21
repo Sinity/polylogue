@@ -8,7 +8,6 @@ input is handled cleanly.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
 import pytest
 
@@ -57,7 +56,7 @@ class TestAcquisitionStageIndependence:
     """The acquire stage stores raw bytes without parsing."""
 
     @pytest.mark.asyncio
-    async def test_acquire_runs_independently(self, tmp_path: Path, workspace_env: Any) -> None:
+    async def test_acquire_runs_independently(self, tmp_path: Path, workspace_env: dict[str, Path]) -> None:
         """Acquire stage completes without downstream stages."""
         from polylogue.config import Source
         from polylogue.pipeline.services.acquisition import AcquisitionService
@@ -73,7 +72,7 @@ class TestAcquisitionStageIndependence:
         await backend.close()
 
     @pytest.mark.asyncio
-    async def test_acquire_idempotent(self, tmp_path: Path, workspace_env: Any) -> None:
+    async def test_acquire_idempotent(self, tmp_path: Path, workspace_env: dict[str, Path]) -> None:
         """Running acquire twice does not create duplicates."""
         from polylogue.config import Source
         from polylogue.pipeline.services.acquisition import AcquisitionService
@@ -93,7 +92,7 @@ class TestAcquisitionStageIndependence:
         await backend.close()
 
     @pytest.mark.asyncio
-    async def test_acquire_empty_source(self, tmp_path: Path, workspace_env: Any) -> None:
+    async def test_acquire_empty_source(self, tmp_path: Path, workspace_env: dict[str, Path]) -> None:
         """Acquire with no source files completes cleanly."""
         from polylogue.pipeline.services.acquisition import AcquisitionService
 
@@ -115,7 +114,7 @@ class TestValidationStageIndependence:
     """The validate stage runs against raw records in DB."""
 
     @pytest.mark.asyncio
-    async def test_validate_empty(self, tmp_path: Path, workspace_env: Any) -> None:
+    async def test_validate_empty(self, tmp_path: Path, workspace_env: dict[str, Path]) -> None:
         """Validate with no raw IDs completes cleanly."""
         from polylogue.pipeline.services.validation import ValidationService
 
@@ -137,7 +136,7 @@ class TestParseStageIndependence:
     """The parse stage converts raw records to conversations."""
 
     @pytest.mark.asyncio
-    async def test_parse_empty(self, tmp_path: Path, workspace_env: Any) -> None:
+    async def test_parse_empty(self, tmp_path: Path, workspace_env: dict[str, Path]) -> None:
         """Parse with no sources (empty) completes cleanly."""
         from polylogue.config import Config
         from polylogue.pipeline.services.parsing import ParsingService
@@ -166,7 +165,7 @@ class TestParseStageIndependence:
         await backend.close()
 
     @pytest.mark.asyncio
-    async def test_parse_from_raw_empty(self, tmp_path: Path, workspace_env: Any) -> None:
+    async def test_parse_from_raw_empty(self, tmp_path: Path, workspace_env: dict[str, Path]) -> None:
         """Parse from raw with no raw IDs completes cleanly."""
         from polylogue.config import Config
         from polylogue.pipeline.services.parsing import ParsingService
@@ -203,7 +202,7 @@ class TestRenderStageIndependence:
     """The render stage generates output from conversations in DB."""
 
     @pytest.mark.asyncio
-    async def test_render_empty_conversation_list(self, tmp_path: Path, workspace_env: Any) -> None:
+    async def test_render_empty_conversation_list(self, tmp_path: Path, workspace_env: dict[str, Path]) -> None:
         """Render with empty conversation ID list completes cleanly."""
         from polylogue.pipeline.services.rendering import RenderService
         from polylogue.rendering.renderers import MarkdownRenderer
@@ -235,7 +234,7 @@ class TestIndexStageIndependence:
     """The index stage builds FTS and other search indices."""
 
     @pytest.mark.asyncio
-    async def test_index_empty_db(self, tmp_path: Path, workspace_env: Any) -> None:
+    async def test_index_empty_db(self, tmp_path: Path, workspace_env: dict[str, Path]) -> None:
         """Index on empty DB completes cleanly."""
         from polylogue.config import Config
         from polylogue.pipeline.services.indexing import IndexService
@@ -252,7 +251,7 @@ class TestIndexStageIndependence:
         await backend.close()
 
     @pytest.mark.asyncio
-    async def test_index_idempotent(self, tmp_path: Path, workspace_env: Any) -> None:
+    async def test_index_idempotent(self, tmp_path: Path, workspace_env: dict[str, Path]) -> None:
         """Running index twice produces the same result."""
         from polylogue.config import Config
         from polylogue.pipeline.services.indexing import IndexService
@@ -273,7 +272,7 @@ class TestIndexStageIndependence:
         await backend.close()
 
     @pytest.mark.asyncio
-    async def test_update_index_empty_ids(self, tmp_path: Path, workspace_env: Any) -> None:
+    async def test_update_index_empty_ids(self, tmp_path: Path, workspace_env: dict[str, Path]) -> None:
         """Updating index with no conversation IDs succeeds."""
         from polylogue.config import Config
         from polylogue.pipeline.services.indexing import IndexService

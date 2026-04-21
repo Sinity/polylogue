@@ -6,7 +6,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, NoReturn, cast
+from typing import NoReturn, cast
 from unittest.mock import AsyncMock
 
 import pytest
@@ -39,9 +39,12 @@ from polylogue.pipeline.services.ingest_worker import (
     StatsTuple,
     _make_ref_id,
 )
+from polylogue.pipeline.services.parsing import ParsingService
+from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.raw_state_models import RawConversationStateUpdate
 from polylogue.storage.session_product_refresh import SessionProductRefreshChunkObservation
+from polylogue.storage.store import RawConversationRecord
 from polylogue.types import AttachmentId, ContentBlockType, ContentHash, ConversationId, MessageId
 
 
@@ -360,14 +363,26 @@ def test_write_conversation_replaces_runtime_rows_on_content_change(tmp_path: Pa
 def test_iter_ingest_results_sync_runs_inline_for_single_worker(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    raw_records: list[Any] = [
-        SimpleNamespace(raw_id="raw-1"),
-        SimpleNamespace(raw_id="raw-2"),
+    raw_records = [
+        RawConversationRecord(
+            raw_id="raw-1",
+            provider_name="codex",
+            source_path="/tmp/raw-1.jsonl",
+            blob_size=12,
+            acquired_at="2026-04-02T00:00:00Z",
+        ),
+        RawConversationRecord(
+            raw_id="raw-2",
+            provider_name="codex",
+            source_path="/tmp/raw-2.jsonl",
+            blob_size=12,
+            acquired_at="2026-04-02T00:00:00Z",
+        ),
     ]
     seen: list[str] = []
 
     def fake_ingest_record(
-        raw_record: SimpleNamespace,
+        raw_record: RawConversationRecord,
         archive_root_str: str,
         validation_mode: str = "strict",
         measure_ingest_result_size: bool = False,
@@ -473,7 +488,7 @@ async def test_refresh_session_products_bulk_dedupes_related_refreshes(
     async def _connection() -> AsyncIterator[SimpleNamespace]:
         yield fake_conn
 
-    fake_backend = cast(Any, SimpleNamespace(connection=_connection))
+    fake_backend = cast(SQLiteBackend, SimpleNamespace(connection=_connection))
 
     async def _fake_apply(conn: object, conversation_ids: list[str], *, transaction_depth: int) -> object:
         del conn, transaction_depth
@@ -687,13 +702,13 @@ def test_build_batch_memory_observation_separates_lifetime_peak_from_batch_growt
 async def test_persist_batch_raw_state_updates_uses_one_typed_update_per_raw() -> None:
     update_raw_state = AsyncMock()
     repository = SimpleNamespace(update_raw_state=update_raw_state)
-    service = cast(Any, SimpleNamespace(repository=repository))
+    service = cast(ParsingService, SimpleNamespace(repository=repository))
 
     @asynccontextmanager
     async def _bulk_connection() -> AsyncIterator[None]:
         yield
 
-    backend = cast(Any, SimpleNamespace(bulk_connection=_bulk_connection))
+    backend = cast(SQLiteBackend, SimpleNamespace(bulk_connection=_bulk_connection))
     outcomes = {
         "raw-success": _RawIngestOutcome(
             raw_id="raw-success",
@@ -740,13 +755,13 @@ async def test_persist_batch_raw_state_updates_uses_one_typed_update_per_raw() -
 async def test_persist_batch_raw_state_updates_preserves_validation_only_failure_without_quarantine() -> None:
     update_raw_state = AsyncMock()
     repository = SimpleNamespace(update_raw_state=update_raw_state)
-    service = cast(Any, SimpleNamespace(repository=repository))
+    service = cast(ParsingService, SimpleNamespace(repository=repository))
 
     @asynccontextmanager
     async def _bulk_connection() -> AsyncIterator[None]:
         yield
 
-    backend = cast(Any, SimpleNamespace(bulk_connection=_bulk_connection))
+    backend = cast(SQLiteBackend, SimpleNamespace(bulk_connection=_bulk_connection))
     outcomes = {
         "raw-schema-invalid": _RawIngestOutcome(
             raw_id="raw-schema-invalid",

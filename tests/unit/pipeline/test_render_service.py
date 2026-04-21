@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncGenerator
 from pathlib import Path
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -93,7 +92,8 @@ class TestRenderService:
         """Render errors collected in failures list."""
         renderer = AsyncMock()
 
-        async def render_side_effect(conv_id: Any, root: Any) -> None:
+        async def render_side_effect(conv_id: str, root: Path) -> None:
+            del root
             if conv_id == "conv-bad":
                 raise ValueError("render exploded")
 
@@ -116,8 +116,9 @@ class TestRenderService:
 
         renderer = AsyncMock()
 
-        async def tracked_render(conv_id: Any, root: Any) -> None:
+        async def tracked_render(conv_id: str, root: Path) -> None:
             nonlocal max_concurrent, current_concurrent
+            del conv_id, root
             async with lock:
                 current_concurrent += 1
                 max_concurrent = max(max_concurrent, current_concurrent)
@@ -158,7 +159,8 @@ class TestRenderService:
         service = RenderService(renderer=renderer, render_root=Path("/tmp/render"))
         descriptions: list[str | None] = []
 
-        def capture(amount: Any, desc: Any = None) -> None:
+        def capture(amount: int, desc: str | None = None) -> None:
+            del amount
             descriptions.append(desc)
 
         await service.render_conversations(
@@ -206,7 +208,8 @@ class TestRenderService:
         service = RenderService(renderer=renderer, render_root=Path("/tmp/render"))
         amounts: list[int] = []
 
-        def capture(amount: Any, desc: Any = None) -> None:
+        def capture(amount: int, desc: str | None = None) -> None:
+            del desc
             amounts.append(amount)
 
         await service.render_conversations(
