@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from polylogue.schemas.json_types import JSONDocument, json_document
+from polylogue.lib.json import JSONDocument, json_document
 from polylogue.schemas.runtime_registry import SchemaProvider
 from polylogue.schemas.tooling_models import PropertyChange, SchemaDiff
 

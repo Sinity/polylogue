@@ -6,7 +6,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import cast
 
-from polylogue.schemas.json_types import JSONDocument, JSONValue, json_document
+from polylogue.lib.json import JSONDocument, JSONValue, json_document
 from polylogue.schemas.operator_models import (
     JSONDocument as OperatorJSONDocument,
 )

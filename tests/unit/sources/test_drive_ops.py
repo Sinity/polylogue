@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from polylogue.config import Source
-from polylogue.schemas.json_types import JSONDocument, JSONValue
+from polylogue.lib.json import JSONDocument, JSONValue
 from polylogue.sources import DriveFile, download_drive_files, iter_drive_conversations
 from polylogue.sources.drive import _apply_drive_attachments
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedConversation

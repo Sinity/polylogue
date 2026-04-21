@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Generic, TypeVar
 from pydantic import RootModel
 from typing_extensions import TypedDict
 
-from polylogue.schemas.json_types import JSONDocument
+from polylogue.lib.json import JSONDocument
 from polylogue.surface_payloads import (
     ConversationDetailPayload as MCPConversationDetailPayload,
 )

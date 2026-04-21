@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 import pytest
 
-from polylogue.schemas.json_types import JSONDocument
+from polylogue.lib.json import JSONDocument
 from polylogue.schemas.unified import (
     HarmonizedMessage,
     bulk_harmonize,

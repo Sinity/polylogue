@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Literal
 
-from polylogue.schemas.json_types import JSONDocument, json_document
+from polylogue.lib.json import JSONDocument, json_document
 
 
 @dataclass

@@ -6,6 +6,7 @@ from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 from typing import Protocol, TypeAlias
 
+from polylogue.lib.json import JSONDocument, json_document
 from polylogue.schemas.field_stats import _collect_field_stats
 from polylogue.schemas.generation_support import (
     GENSON_AVAILABLE,
@@ -16,7 +17,6 @@ from polylogue.schemas.generation_support import (
     _remove_nested_required,
     collapse_dynamic_keys,
 )
-from polylogue.schemas.json_types import JSONDocument, json_document
 from polylogue.schemas.observation import ProviderConfig
 from polylogue.schemas.redaction_report import SchemaReport
 from polylogue.schemas.shape_fingerprint import _structure_fingerprint

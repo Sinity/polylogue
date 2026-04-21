@@ -10,8 +10,8 @@ except ImportError:
     SchemaBuilder = None
     GENSON_AVAILABLE = False
 
+from polylogue.lib.json import JSONDocument, json_document, json_document_list
 from polylogue.schemas.field_stats import is_dynamic_key
-from polylogue.schemas.json_types import JSONDocument, json_document, json_document_list
 
 _HIGH_CARDINALITY_KEY_THRESHOLD = 128
 _PATHLIKE_KEY_RATIO_THRESHOLD = 0.35

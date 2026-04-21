@@ -6,8 +6,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from polylogue.lib.json import JSONDocument
 from polylogue.paths import data_home
-from polylogue.schemas.json_types import JSONDocument
 from polylogue.schemas.runtime_registry import SchemaRegistry, canonical_schema_provider
 from polylogue.types import Provider
 
