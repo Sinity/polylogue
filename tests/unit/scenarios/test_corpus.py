@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
+from polylogue.lib.json import JSONDocument
 from polylogue.scenarios import (
     CorpusProfile,
     CorpusRequest,
@@ -14,8 +17,63 @@ from polylogue.scenarios import (
     resolve_corpus_scenarios,
     resolve_corpus_specs,
 )
+from polylogue.schemas.operator_registry import SchemaRegistryLike
 from polylogue.schemas.packages import SchemaElementManifest, SchemaPackageCatalog, SchemaVersionPackage
-from polylogue.schemas.tooling_models import ClusterManifest, SchemaCluster
+from polylogue.schemas.tooling_models import ClusterManifest, SchemaCluster, SchemaDiff
+
+
+class _PassiveRegistry(SchemaRegistryLike):
+    def load_package_catalog(self, provider: str) -> SchemaPackageCatalog | None:
+        return None
+
+    def get_package(self, provider: str, version: str = "default") -> SchemaVersionPackage | None:
+        return None
+
+    def get_element_schema(
+        self,
+        provider: str,
+        *,
+        version: str = "default",
+        element_kind: str | None = None,
+    ) -> JSONDocument | None:
+        return None
+
+    def list_versions(self, provider: str) -> list[str]:
+        return []
+
+    def list_providers(self) -> list[str]:
+        return []
+
+    def get_schema_age_days(self, provider: str) -> int | None:
+        return None
+
+    def compare_versions(
+        self,
+        provider: str,
+        v1: str,
+        v2: str,
+        *,
+        element_kind: str | None = None,
+    ) -> SchemaDiff:
+        raise AssertionError("compare_versions should not be called in this test")
+
+    def cluster_samples(self, provider: str, samples: object) -> ClusterManifest:
+        raise AssertionError("cluster_samples should not be called in this test")
+
+    def save_cluster_manifest(self, manifest: ClusterManifest) -> Path:
+        raise AssertionError("save_cluster_manifest should not be called in this test")
+
+    def load_cluster_manifest(self, provider: str) -> ClusterManifest | None:
+        return None
+
+    def promote_cluster(
+        self,
+        provider: str,
+        cluster_id: str,
+        *,
+        samples: object | None = None,
+    ) -> str:
+        raise AssertionError("promote_cluster should not be called in this test")
 
 
 def test_corpus_spec_payload_round_trip_preserves_inference_fields() -> None:
@@ -361,6 +419,46 @@ def test_corpus_request_resolves_inferred_source_without_provider_inventory() ->
             style="showcase",
         ).resolve_specs()
 
+    assert len(specs) == 1
+    assert specs[0].provider == "chatgpt"
+    assert specs[0].count == 2
+
+
+def test_corpus_request_passes_registry_through_inferred_resolution() -> None:
+    inferred = (
+        CorpusSpec(
+            provider="chatgpt",
+            package_version="v7",
+            count=1,
+            messages_min=4,
+            messages_max=4,
+            seed=3,
+            origin="inferred.schema",
+            tags=("inferred", "schema", "synthetic"),
+        ),
+    )
+    registry = _PassiveRegistry()
+    observed_registries: list[SchemaRegistryLike | None] = []
+
+    def _list_inferred(*, registry: SchemaRegistryLike | None = None) -> tuple[CorpusSpec, ...]:
+        observed_registries.append(registry)
+        return inferred
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(
+            "polylogue.schemas.operator_inference.list_inferred_corpus_specs",
+            _list_inferred,
+        )
+        specs = CorpusRequest(
+            source="inferred",
+            count=2,
+            messages_min=6,
+            messages_max=8,
+            seed=42,
+            style="showcase",
+        ).resolve_specs(registry=registry)
+
+    assert observed_registries == [registry]
     assert len(specs) == 1
     assert specs[0].provider == "chatgpt"
     assert specs[0].count == 2
