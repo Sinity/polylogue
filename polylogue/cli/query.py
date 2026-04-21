@@ -250,8 +250,9 @@ def project_query_results(results: list[Conversation], plan: QueryExecutionPlan)
     projected = results
     if plan.output.transform is not None:
         projected = _query_actions.apply_transform(projected, plan.output.transform)
-    if plan.output.dialogue_only:
-        projected = [conversation.dialogue_only() for conversation in projected]
+    message_roles = plan.output.effective_message_roles()
+    if message_roles:
+        projected = [conversation.with_roles(message_roles) for conversation in projected]
     return projected
 
 
@@ -400,6 +401,7 @@ async def async_execute_query_request(env: AppEnv, request: RootModeRequest) -> 
             full_id,
             output_format=plan.output.stream_format(),
             dialogue_only=plan.output.dialogue_only,
+            message_roles=plan.output.effective_message_roles(),
             message_limit=message_limit,
         )
         return

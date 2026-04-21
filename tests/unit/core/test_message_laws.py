@@ -85,9 +85,9 @@ def test_substantive_only_preserves_count(conv: Conversation) -> None:
 
 
 @given(conversation_model_strategy())
-def test_user_only_preserves_count(conv: Conversation) -> None:
+def test_with_roles_preserves_selected_role_count(conv: Conversation) -> None:
     expected_ids = [msg.id for msg in conv.messages if msg.is_user]
-    filtered = conv.user_only()
+    filtered = conv.with_roles((Role.USER,))
     assert [msg.id for msg in filtered.messages] == expected_ids
 
 

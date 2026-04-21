@@ -96,6 +96,7 @@ def cli(
     # Streaming
     stream: bool,
     dialogue_only: bool,
+    message_role: tuple[str, ...],
     # Modifiers
     set_meta: tuple[tuple[str, str], ...],
     add_tag: tuple[str, ...],

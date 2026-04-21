@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 from polylogue.lib.conversation_models import Conversation, ConversationSummary
 from polylogue.lib.message_models import Message
+from polylogue.lib.message_roles import MessageRoleFilter
 from polylogue.storage.archive_views import ConversationRenderProjection
 from polylogue.storage.hydrators import (
     conversation_from_records,
@@ -145,6 +146,7 @@ class RepositoryArchiveConversationMixin:
         conversation_id: str,
         *,
         dialogue_only: bool = False,
+        message_roles: MessageRoleFilter = (),
         limit: int | None = None,
     ) -> AsyncIterator[Message]:
         conv_record = await self.queries.get_conversation(conversation_id)
@@ -152,6 +154,7 @@ class RepositoryArchiveConversationMixin:
         async for record in self.queries.iter_messages(
             conversation_id,
             dialogue_only=dialogue_only,
+            message_roles=message_roles,
             limit=limit,
         ):
             yield message_from_record(record, attachments=[], provider=provider_name)

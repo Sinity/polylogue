@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 import aiosqlite
 
+from polylogue.lib.message_roles import MessageRoleFilter
 from polylogue.storage.backends.queries import attachments as attachments_q
 from polylogue.storage.backends.queries import conversations as conversations_q
 from polylogue.storage.backends.queries import messages as messages_q
@@ -141,6 +142,7 @@ class SQLiteQueryStoreArchiveMixin:
         conversation_id: str,
         *,
         dialogue_only: bool = False,
+        message_roles: MessageRoleFilter = (),
         limit: int | None = None,
     ) -> AsyncIterator[MessageRecord]:
         async with self._connection_factory() as conn:
@@ -148,6 +150,7 @@ class SQLiteQueryStoreArchiveMixin:
                 conn,
                 conversation_id,
                 dialogue_only=dialogue_only,
+                message_roles=message_roles,
                 limit=limit,
             ):
                 yield record

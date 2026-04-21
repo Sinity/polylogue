@@ -8,6 +8,8 @@ from datetime import datetime
 from typing import Protocol
 
 from polylogue.lib.action_events import ActionEvent, build_action_events
+from polylogue.lib.message_roles import MessageRoleFilter, message_role_labels
+from polylogue.lib.roles import Role
 from polylogue.lib.semantic_fact_models import (
     ConversationSemanticFacts,
     MCPDetailSemanticFacts,
@@ -357,9 +359,15 @@ def build_stream_semantic_facts(
     conversation: SemanticConversationLike,
     *,
     dialogue_only: bool = False,
+    message_roles: MessageRoleFilter = (),
     message_limit: int | None = None,
 ) -> StreamSemanticFacts:
-    filtered_messages = [message for message in conversation.messages if not dialogue_only or message.is_dialogue]
+    effective_roles = message_roles or ((Role.USER, Role.ASSISTANT) if dialogue_only else ())
+
+    def _passes_role_filter(message: SemanticConversationMessageLike) -> bool:
+        return not effective_roles or Role.normalize(str(message.role)) in effective_roles
+
+    filtered_messages = [message for message in conversation.messages if _passes_role_filter(message)]
     if message_limit is not None:
         filtered_messages = filtered_messages[:message_limit]
 
@@ -381,6 +389,7 @@ def build_stream_semantic_facts(
         tool_messages=sum(1 for message in filtered_messages if message.is_tool_use),
         branch_messages=sum(1 for message in filtered_messages if message.branch_index > 0),
         dialogue_only=dialogue_only,
+        message_roles=message_role_labels(effective_roles),
         message_limit=message_limit,
     )
 

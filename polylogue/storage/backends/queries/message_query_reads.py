@@ -6,6 +6,8 @@ from collections.abc import AsyncIterator
 
 import aiosqlite
 
+from polylogue.lib.message_roles import MessageRoleFilter, message_role_sql_values
+from polylogue.lib.roles import Role
 from polylogue.storage.backends.queries.mappers import _row_to_message
 from polylogue.storage.store import MessageRecord
 
@@ -54,17 +56,22 @@ async def iter_messages(
     *,
     chunk_size: int = 100,
     dialogue_only: bool = False,
+    message_roles: MessageRoleFilter = (),
     limit: int | None = None,
 ) -> AsyncIterator[MessageRecord]:
     offset = 0
     yielded = 0
+    effective_roles = message_roles or ((Role.USER, Role.ASSISTANT) if dialogue_only else ())
+    role_values = message_role_sql_values(effective_roles)
 
     while True:
         query = "SELECT * FROM messages WHERE conversation_id = ?"
         params: list[str | int] = [conversation_id]
 
-        if dialogue_only:
-            query += " AND role IN ('user', 'assistant', 'human')"
+        if role_values:
+            placeholders = ",".join("?" for _ in role_values)
+            query += f" AND role IN ({placeholders})"
+            params.extend(role_values)
 
         query += " ORDER BY (sort_key IS NULL), sort_key, message_id"
 
