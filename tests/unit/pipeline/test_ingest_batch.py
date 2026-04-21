@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator, Callable
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
-from typing import NoReturn, cast
+from typing import NoReturn
 from unittest.mock import AsyncMock
 
+import aiosqlite
 import pytest
 
 from polylogue.lib.roles import Role
@@ -39,8 +40,6 @@ from polylogue.pipeline.services.ingest_worker import (
     StatsTuple,
     _make_ref_id,
 )
-from polylogue.pipeline.services.parsing import ParsingService
-from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.raw_state_models import RawConversationStateUpdate
 from polylogue.storage.session_product_refresh import SessionProductRefreshChunkObservation
@@ -49,7 +48,51 @@ from polylogue.types import AttachmentId, ContentBlockType, ContentHash, Convers
 
 
 def _float_value(value: object) -> float:
-    return float(cast(float | int | str, value))
+    if not isinstance(value, (float, int, str)):
+        raise TypeError(f"expected numeric value, got {type(value).__name__}")
+    return float(value)
+
+
+class _FakeConnectionBackend:
+    def __init__(self, connection: Callable[[], AbstractAsyncContextManager[aiosqlite.Connection]]) -> None:
+        self._connection = connection
+
+    def connection(self) -> AbstractAsyncContextManager[aiosqlite.Connection]:
+        return self._connection()
+
+
+class _FakeBulkBackend:
+    def __init__(self, connection: Callable[[], AbstractAsyncContextManager[object]]) -> None:
+        self._connection = connection
+
+    def bulk_connection(self) -> AbstractAsyncContextManager[object]:
+        return self._connection()
+
+
+class _FakeRawStateRepository:
+    def __init__(self, update_raw_state: AsyncMock) -> None:
+        self._update_raw_state = update_raw_state
+
+    async def update_raw_state(self, raw_id: str, *, state: RawConversationStateUpdate) -> object:
+        return await self._update_raw_state(raw_id, state=state)
+
+
+class _FakeParsingService:
+    def __init__(self, update_raw_state: AsyncMock) -> None:
+        self._repository = _FakeRawStateRepository(update_raw_state)
+
+    @property
+    def repository(self) -> _FakeRawStateRepository:
+        return self._repository
+
+
+class _FakeRefreshConnection(aiosqlite.Connection):
+    def __init__(self) -> None:
+        self._connection = None
+        self.commit_mock = AsyncMock()
+
+    async def commit(self) -> None:
+        await self.commit_mock()
 
 
 def _conversation_data(
@@ -482,13 +525,13 @@ def test_drain_ready_conversation_entries_preserves_late_parent_fk(tmp_path: Pat
 async def test_refresh_session_products_bulk_dedupes_related_refreshes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    fake_conn = SimpleNamespace(commit=AsyncMock())
+    fake_conn = _FakeRefreshConnection()
 
     @asynccontextmanager
-    async def _connection() -> AsyncIterator[SimpleNamespace]:
+    async def _connection() -> AsyncIterator[aiosqlite.Connection]:
         yield fake_conn
 
-    fake_backend = cast(SQLiteBackend, SimpleNamespace(connection=_connection))
+    fake_backend = _FakeConnectionBackend(_connection)
 
     async def _fake_apply(conn: object, conversation_ids: list[str], *, transaction_depth: int) -> object:
         del conn, transaction_depth
@@ -561,7 +604,7 @@ async def test_refresh_session_products_bulk_dedupes_related_refreshes(
         ("chatgpt", "2026-04-03"),
     }
     assert aggregate_args.kwargs["transaction_depth"] == 1
-    fake_conn.commit.assert_awaited_once()
+    fake_conn.commit_mock.assert_awaited_once()
     assert observation is not None
     assert observation["conversations"] == 3
     assert observation["unique_thread_roots"] == 2
@@ -701,14 +744,13 @@ def test_build_batch_memory_observation_separates_lifetime_peak_from_batch_growt
 @pytest.mark.asyncio
 async def test_persist_batch_raw_state_updates_uses_one_typed_update_per_raw() -> None:
     update_raw_state = AsyncMock()
-    repository = SimpleNamespace(update_raw_state=update_raw_state)
-    service = cast(ParsingService, SimpleNamespace(repository=repository))
+    service = _FakeParsingService(update_raw_state)
 
     @asynccontextmanager
     async def _bulk_connection() -> AsyncIterator[None]:
         yield
 
-    backend = cast(SQLiteBackend, SimpleNamespace(bulk_connection=_bulk_connection))
+    backend = _FakeBulkBackend(_bulk_connection)
     outcomes = {
         "raw-success": _RawIngestOutcome(
             raw_id="raw-success",
@@ -754,14 +796,13 @@ async def test_persist_batch_raw_state_updates_uses_one_typed_update_per_raw() -
 @pytest.mark.asyncio
 async def test_persist_batch_raw_state_updates_preserves_validation_only_failure_without_quarantine() -> None:
     update_raw_state = AsyncMock()
-    repository = SimpleNamespace(update_raw_state=update_raw_state)
-    service = cast(ParsingService, SimpleNamespace(repository=repository))
+    service = _FakeParsingService(update_raw_state)
 
     @asynccontextmanager
     async def _bulk_connection() -> AsyncIterator[None]:
         yield
 
-    backend = cast(SQLiteBackend, SimpleNamespace(bulk_connection=_bulk_connection))
+    backend = _FakeBulkBackend(_bulk_connection)
     outcomes = {
         "raw-schema-invalid": _RawIngestOutcome(
             raw_id="raw-schema-invalid",

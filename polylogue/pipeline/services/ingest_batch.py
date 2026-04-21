@@ -16,10 +16,11 @@ import sqlite3
 import time
 from collections.abc import Iterable, Sequence
 from concurrent.futures import Future, as_completed
+from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 from polylogue.lib.metrics import (
     read_current_rss_mb,
@@ -50,6 +51,8 @@ from polylogue.storage.raw_state_models import RawConversationStateUpdate
 from polylogue.storage.store import RawConversationRecord
 
 if TYPE_CHECKING:
+    import aiosqlite
+
     from polylogue.pipeline.services.parsing import ParsingService
     from polylogue.pipeline.services.parsing_models import ParseResult
     from polylogue.protocols import ProgressCallback
@@ -61,6 +64,23 @@ _DEFAULT_INGEST_WORKER_LIMIT = 8
 _INGEST_SOFT_BLOB_LIMIT_BYTES = 48 * 1024 * 1024
 _INGEST_HIGH_BLOB_LIMIT_BYTES = 96 * 1024 * 1024
 _INGEST_EXTREME_BLOB_LIMIT_BYTES = 256 * 1024 * 1024
+
+
+class _RawStateRepositoryLike(Protocol):
+    async def update_raw_state(self, raw_id: str, *, state: RawConversationStateUpdate) -> object: ...
+
+
+class _ParsingServiceRawStateLike(Protocol):
+    @property
+    def repository(self) -> _RawStateRepositoryLike: ...
+
+
+class _BulkConnectionBackendLike(Protocol):
+    def bulk_connection(self) -> AbstractAsyncContextManager[object]: ...
+
+
+class _ConnectionBackendLike(Protocol):
+    def connection(self) -> AbstractAsyncContextManager[aiosqlite.Connection]: ...
 
 
 @dataclass(slots=True)
@@ -1091,8 +1111,8 @@ def _failed_raw_state_update(
 
 
 async def _persist_batch_raw_state_updates(
-    service: ParsingService,
-    backend: SQLiteBackend,
+    service: _ParsingServiceRawStateLike,
+    backend: _BulkConnectionBackendLike,
     *,
     outcomes: dict[str, _RawIngestOutcome],
     succeeded_raw_ids: set[str],
@@ -1136,7 +1156,7 @@ async def _persist_batch_raw_state_updates(
 
 
 async def refresh_session_products_bulk(
-    backend: SQLiteBackend,
+    backend: _ConnectionBackendLike,
     changed_conversation_ids: list[str],
 ) -> MaterializeStageObservation | None:
     """Bulk session product refresh — once after all batches, not per-batch."""

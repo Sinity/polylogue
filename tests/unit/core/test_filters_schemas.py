@@ -8,7 +8,7 @@ filter logic.
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Literal, TypeAlias, cast
+from typing import Literal, TypeAlias
 from unittest.mock import patch
 
 import pytest
@@ -76,23 +76,28 @@ CONTENT_BLOCKS_CASES: list[ContentBlocksCase] = [
 ]
 
 EXTRACT_TEXT_CASES: list[ExtractTextCase] = [
-    (lambda content: extract_claude_code_text(cast(list[JSONDocument] | None, content)), None, "", "claude_code_none"),
     (
-        lambda content: extract_claude_code_text(cast(list[JSONDocument] | None, content)),
+        lambda content: extract_claude_code_text(content if isinstance(content, list) else None),
+        None,
+        "",
+        "claude_code_none",
+    ),
+    (
+        lambda content: extract_claude_code_text(content if isinstance(content, list) else None),
         ["string", 123],
         "",
         "claude_code_non_dict",
     ),
-    (lambda content: extract_chatgpt_text(cast(JSONDocument | None, content)), None, "", "chatgpt_none"),
-    (lambda content: extract_chatgpt_text(cast(JSONDocument | None, content)), {}, "", "chatgpt_no_parts"),
+    (lambda content: extract_chatgpt_text(content if isinstance(content, dict) else None), None, "", "chatgpt_none"),
+    (lambda content: extract_chatgpt_text(content if isinstance(content, dict) else None), {}, "", "chatgpt_no_parts"),
     (
-        lambda content: extract_chatgpt_text(cast(JSONDocument | None, content)),
+        lambda content: extract_chatgpt_text(content if isinstance(content, dict) else None),
         {"parts": "string"},
         "string",
         "chatgpt_parts_as_string",
     ),
     (
-        lambda content: extract_chatgpt_text(cast(JSONDocument | None, content)),
+        lambda content: extract_chatgpt_text(content if isinstance(content, dict) else None),
         {"parts": [123, "text", {"key": "val"}]},
         "text",
         "chatgpt_non_string_parts",
@@ -139,7 +144,7 @@ class TestUnifiedExtractReasoningTraces:
         expected_text: str | None,
         description: str,
     ) -> None:
-        result = extract_reasoning_traces(cast(list[JSONDocument] | None, content), provider)
+        result = extract_reasoning_traces(content if isinstance(content, list) else None, provider)
         assert len(result) == expected_len
         if expected_text is not None:
             assert result[0].text == expected_text
@@ -154,7 +159,7 @@ class TestUnifiedExtractContentBlocks:
         expected_types: list[str],
         description: str,
     ) -> None:
-        result = extract_content_blocks(cast(list[JSONDocument] | None, content))
+        result = extract_content_blocks(content if isinstance(content, list) else None)
         assert len(result) == expected_len
         if expected_types:
             for block, expected_type in zip(result, expected_types, strict=True):

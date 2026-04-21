@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass
-from typing import cast
 
 import pytest
 
@@ -29,7 +28,7 @@ def _conversation_record(conversation_id: str, *, title: str, provider_name: str
 
 
 @dataclass
-class _FakeQueries:
+class _FakeQueries(SQLiteQueryStore):
     hits: ConversationSearchResult
     records_by_id: dict[str, ConversationRecord]
     last_batch_ids: list[str] | None = None
@@ -37,19 +36,19 @@ class _FakeQueries:
     async def search_conversation_hits(
         self,
         query: str,
-        *,
-        limit: int,
-        providers: list[str] | None,
+        limit: int = 20,
+        providers: list[str] | None = None,
     ) -> ConversationSearchResult:
+        del query, limit, providers
         return self.hits
 
     async def search_action_conversation_hits(
         self,
         query: str,
-        *,
-        limit: int,
-        providers: list[str] | None,
+        limit: int = 20,
+        providers: list[str] | None = None,
     ) -> ConversationSearchResult:
+        del query, limit, providers
         return self.hits
 
     async def get_conversations_batch(self, ids: list[str]) -> list[ConversationRecord]:
@@ -58,10 +57,10 @@ class _FakeQueries:
 
 
 class _FakeRepo(RepositoryArchiveSearchMixin):
-    queries: SQLiteQueryStore
+    queries: _FakeQueries
 
     def __init__(self, queries: _FakeQueries) -> None:
-        self.queries = cast(SQLiteQueryStore, queries)
+        self.queries = queries
         self.ordered_ids_seen: list[str] | None = None
 
     async def _hydrate_conversations(

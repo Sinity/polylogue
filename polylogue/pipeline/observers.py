@@ -6,6 +6,7 @@ import ipaddress
 import re
 import shlex
 import socket
+import ssl
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
@@ -118,6 +119,44 @@ def _validate_webhook_url(url: str) -> None:
             )
 
 
+def _webhook_request_target(url: str) -> tuple[str, str, int, str]:
+    _validate_webhook_url(url)
+    parsed = urlparse(url)
+    if parsed.hostname is None:
+        raise ValueError("Webhook URL must have a hostname")
+    default_port = 443 if parsed.scheme == "https" else 80
+    path = parsed.path or "/"
+    if parsed.query:
+        path = f"{path}?{parsed.query}"
+    return parsed.scheme, parsed.hostname, parsed.port or default_port, path
+
+
+def _post_webhook(url: str, data: bytes) -> None:
+    import http.client
+
+    scheme, host, port, path = _webhook_request_target(url)
+    if scheme == "https":
+        connection: http.client.HTTPConnection = http.client.HTTPSConnection(
+            host,
+            port=port,
+            timeout=10,
+            context=ssl.create_default_context(),
+        )
+    else:
+        connection = http.client.HTTPConnection(host, port=port, timeout=10)
+    try:
+        connection.request(
+            "POST",
+            path,
+            body=data,
+            headers={"Content-Type": "application/json"},
+        )
+        response = connection.getresponse()
+        response.read()
+    finally:
+        connection.close()
+
+
 class WebhookObserver(RunObserver):
     """POST to webhook URL when a run produces conversation changes."""
 
@@ -133,9 +172,6 @@ class WebhookObserver(RunObserver):
             return
         try:
             import json
-            import urllib.request
-
-            _validate_webhook_url(self._url)
 
             data = json.dumps(
                 {
@@ -145,13 +181,7 @@ class WebhookObserver(RunObserver):
                     "changed_conversations": changed_count,
                 }
             ).encode()
-            req = urllib.request.Request(
-                self._url,
-                data=data,
-                headers={"Content-Type": "application/json"},
-                method="POST",
-            )
-            urllib.request.urlopen(req, timeout=10)  # noqa: S310
+            _post_webhook(self._url, data)
         except ValueError as exc:
             logger.warning("Webhook blocked for %s: %s", self._url, exc)
         except Exception as exc:

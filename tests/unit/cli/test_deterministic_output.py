@@ -16,7 +16,7 @@ import sys
 from datetime import datetime, timezone
 from io import StringIO
 from pathlib import Path
-from typing import TypeAlias, cast
+from typing import TypeAlias
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -51,14 +51,14 @@ def _extract_json(output: str) -> JSONEnvelope:
             parsed = json.loads("\n".join(lines[i:]))
             if not isinstance(parsed, dict):
                 raise ValueError(f"Expected JSON object in output:\n{output}")
-            return cast(JSONEnvelope, parsed)
+            return dict(parsed)
     raise ValueError(f"No JSON object in output:\n{output}")
 
 
 def _result_payload(data: JSONEnvelope) -> JSONEnvelope:
     result = data["result"]
     assert isinstance(result, dict)
-    return cast(JSONEnvelope, result)
+    return dict(result)
 
 
 def _has_ansi(text: str) -> bool:

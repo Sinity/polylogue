@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Protocol, cast
 from unittest.mock import MagicMock
 
 import click
@@ -24,16 +23,6 @@ from tests.infra.storage_records import ConversationBuilder
 
 JsonObject = dict[str, object]
 CliWorkspace = dict[str, Path]
-
-
-class ProductCallback(Protocol):
-    def __wrapped__(
-        self,
-        ctx: click.Context,
-        *,
-        json_mode: bool,
-        refined_work_kind: str,
-    ) -> object: ...
 
 
 def _expect_object(value: object) -> JsonObject:
@@ -243,7 +232,9 @@ def test_products_callback_rejects_unknown_query_fields() -> None:
     with pytest.raises(
         SystemExit, match="products enrichments: Unknown query field\\(s\\) for session_enrichments: refined_work_kind"
     ):
-        cast(ProductCallback, callback).__wrapped__(mock_ctx, json_mode=False, refined_work_kind="planning")
+        wrapped = getattr(callback, "__wrapped__", None)
+        assert callable(wrapped)
+        wrapped(mock_ctx, json_mode=False, refined_work_kind="planning")
 
 
 def test_products_profiles_json_supports_explicit_evidence_and_inference_tiers(cli_workspace: CliWorkspace) -> None:

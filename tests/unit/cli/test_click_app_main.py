@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import sys
-from typing import cast
 from unittest.mock import patch
 
 import click
@@ -23,6 +22,12 @@ def _system_exit_code(code: str | int | None) -> int:
     return 1
 
 
+def _json_object(payload: str) -> dict[str, object]:
+    value = json.loads(payload)
+    assert isinstance(value, dict)
+    return {str(key): item for key, item in value.items()}
+
+
 def _run_main_with_error(
     monkeypatch: pytest.MonkeyPatch,
     argv: list[str],
@@ -34,7 +39,7 @@ def _run_main_with_error(
         with pytest.raises(SystemExit) as exit_info:
             main()
     captured = capsys.readouterr()
-    return _system_exit_code(exit_info.value.code), cast(dict[str, object], json.loads(captured.out))
+    return _system_exit_code(exit_info.value.code), _json_object(captured.out)
 
 
 def test_main_wraps_usage_error_as_json(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:

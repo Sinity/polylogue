@@ -1,11 +1,23 @@
 from __future__ import annotations
 
-from typing import cast
-
 import pytest
 
 from polylogue.scenarios import ExecutionResult, ExecutionSpec, polylogue_execution
 from polylogue.showcase import cli_boundary
+
+
+def _captured_execution(captured: dict[str, object]) -> ExecutionSpec:
+    execution = captured["execution"]
+    if not isinstance(execution, ExecutionSpec):
+        raise TypeError(f"expected ExecutionSpec, got {type(execution).__name__}")
+    return execution
+
+
+def _captured_kwargs(captured: dict[str, object]) -> dict[str, object]:
+    kwargs = captured["kwargs"]
+    if not isinstance(kwargs, dict):
+        raise TypeError(f"expected kwargs dict, got {type(kwargs).__name__}")
+    return dict(kwargs)
 
 
 def test_invoke_showcase_cli_uses_public_polylogue_command(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -25,8 +37,8 @@ def test_invoke_showcase_cli_uses_public_polylogue_command(monkeypatch: pytest.M
     monkeypatch.setattr(cli_boundary, "run_execution", fake_run)
 
     result = cli_boundary.invoke_showcase_cli(polylogue_execution("--help"))
-    kwargs = cast(dict[str, object], captured["kwargs"])
-    execution = cast(ExecutionSpec, captured["execution"])
+    kwargs = _captured_kwargs(captured)
+    execution = _captured_execution(captured)
 
     assert result.exit_code == 0
     assert result.stdout == "ok\n"
@@ -57,8 +69,8 @@ def test_invoke_showcase_cli_passes_runtime_options(monkeypatch: pytest.MonkeyPa
         timeout=30.0,
     )
 
-    execution = cast(ExecutionSpec, captured["execution"])
-    kwargs = cast(dict[str, object], captured["kwargs"])
+    execution = _captured_execution(captured)
+    kwargs = _captured_kwargs(captured)
     assert execution.display_command == ("polylogue", "doctor", "--json")
     assert kwargs["capture_output"] is True
     assert kwargs["timeout"] == 30.0

@@ -4,14 +4,14 @@ import contextlib
 import io
 import os
 import tempfile
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from pathlib import Path
-from typing import Protocol
+from typing import ParamSpec, Protocol, TypeVar
 
 from polylogue.lib.json import JSONDocument, JSONValue
 from polylogue.logging import get_logger
 
-from .drive_gateway import DriveServiceGateway
+from .drive_gateway import DriveListFilesResponse, DrivePayloadRecord
 from .drive_source_support import (
     _build_drive_file,
     _build_folder_lookup_query,
@@ -32,15 +32,35 @@ from .drive_types import (
 
 logger = get_logger(__name__)
 
+P = ParamSpec("P")
+T = TypeVar("T")
+
 
 class _WritableBinaryHandle(Protocol):
     def write(self, data: bytes) -> object: ...
 
 
+class _DriveSourceGateway(Protocol):
+    def call_with_retry(self, func: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T: ...
+
+    def get_file(self, file_id: str, fields: str) -> DrivePayloadRecord: ...
+
+    def list_files(
+        self,
+        *,
+        q: str,
+        fields: str,
+        page_token: str | None,
+        page_size: int,
+    ) -> DriveListFilesResponse: ...
+
+    def download_file(self, file_id: str, handle: _WritableBinaryHandle) -> None: ...
+
+
 class DriveSourceClient:
     """Owns Polylogue-specific Drive source semantics."""
 
-    def __init__(self, *, gateway: DriveServiceGateway) -> None:
+    def __init__(self, *, gateway: _DriveSourceGateway) -> None:
         self._gateway = gateway
         self._meta_cache: dict[str, DriveFile] = {}
 

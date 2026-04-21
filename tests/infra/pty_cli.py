@@ -22,7 +22,6 @@ import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol, cast
 
 # Conditional pyte import with fallback
 try:
@@ -31,12 +30,6 @@ try:
     HAS_PYTE = True
 except ImportError:
     HAS_PYTE = False
-
-
-class TerminalChar(Protocol):
-    """Subset of pyte's Char object used for snapshot rendering."""
-
-    data: str
 
 
 @dataclass
@@ -214,14 +207,20 @@ def run_in_pty(
     stream.feed(raw_output.decode("utf-8", errors="replace"))
 
     # Extract full output: scrollback history + visible screen
-    def _chardict_to_str(chardict: Mapping[int, TerminalChar]) -> str:
+    def _chardict_to_str(chardict: object) -> str:
         """Convert pyte history line (StaticDefaultDict of Char) to string."""
-        if not chardict:
+        if not isinstance(chardict, Mapping) or not chardict:
             return ""
         max_col = max(chardict.keys()) if chardict else 0
-        return "".join(chardict[i].data for i in range(max_col + 1)).rstrip()
+        chars: list[str] = []
+        for index in range(max_col + 1):
+            char = chardict[index]
+            data = getattr(char, "data", "")
+            assert isinstance(data, str)
+            chars.append(data)
+        return "".join(chars).rstrip()
 
-    history_lines = [_chardict_to_str(cast(Mapping[int, TerminalChar], line)) for line in screen.history.top]
+    history_lines = [_chardict_to_str(line) for line in screen.history.top]
     visible_lines = [line.rstrip() for line in screen.display]
     grid = history_lines + visible_lines
 

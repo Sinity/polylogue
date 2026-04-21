@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
-from typing import cast
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -23,6 +22,12 @@ from polylogue.storage.search_providers.hybrid import (
     reciprocal_rank_fusion,
 )
 from tests.infra.storage_records import make_conversation, make_hash, make_message
+
+
+def _as_mock(value: object) -> MagicMock:
+    if not isinstance(value, MagicMock):
+        raise TypeError(f"expected MagicMock, got {type(value).__name__}")
+    return value
 
 
 class TestHybridSearchProvider:
@@ -417,11 +422,11 @@ class TestProviderFilteringIntegration:
     def test_provider_filter_applied_before_limit(self, hybrid_provider: HybridSearchProvider) -> None:
         """Provider filter should be applied before limit, not after."""
         # Mock search returns messages from various providers
-        cast(MagicMock, hybrid_provider.fts_provider.search).return_value = [f"msg-claude-{i}" for i in range(15)] + [
+        _as_mock(hybrid_provider.fts_provider.search).return_value = [f"msg-claude-{i}" for i in range(15)] + [
             f"msg-chatgpt-{i}" for i in range(5)
         ]
 
-        cast(MagicMock, hybrid_provider.vector_provider.query).return_value = [
+        _as_mock(hybrid_provider.vector_provider.query).return_value = [
             (f"msg-claude-{i}", 0.9 - i * 0.01) for i in range(10)
         ]
 
@@ -442,12 +447,12 @@ class TestProviderFilteringIntegration:
 
     def test_provider_filter_none_returns_all(self, hybrid_provider: HybridSearchProvider) -> None:
         """When providers=None, should return conversations from all providers."""
-        cast(MagicMock, hybrid_provider.fts_provider.search).return_value = [
+        _as_mock(hybrid_provider.fts_provider.search).return_value = [
             "msg-claude-1",
             "msg-chatgpt-1",
             "msg-gemini-1",
         ]
-        cast(MagicMock, hybrid_provider.vector_provider.query).return_value = []
+        _as_mock(hybrid_provider.vector_provider.query).return_value = []
 
         with patch("polylogue.storage.search_providers.hybrid.open_connection") as mock_conn:
             mock_context = MagicMock()
@@ -470,12 +475,12 @@ class TestProviderFilteringIntegration:
 
     def test_provider_filter_multiple_providers(self, hybrid_provider: HybridSearchProvider) -> None:
         """Can filter by multiple providers at once."""
-        cast(MagicMock, hybrid_provider.fts_provider.search).return_value = [
+        _as_mock(hybrid_provider.fts_provider.search).return_value = [
             "msg-claude-1",
             "msg-chatgpt-1",
             "msg-gemini-1",
         ]
-        cast(MagicMock, hybrid_provider.vector_provider.query).return_value = []
+        _as_mock(hybrid_provider.vector_provider.query).return_value = []
 
         with patch("polylogue.storage.search_providers.hybrid.open_connection") as mock_conn:
             mock_context = MagicMock()

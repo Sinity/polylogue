@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import datetime
-from typing import TYPE_CHECKING, Protocol, Self, TypeVar, cast
+from typing import TYPE_CHECKING, Protocol, Self, TypeVar
 
 from polylogue.lib.dates import parse_date
 from polylogue.lib.filter_types import SortField
@@ -21,6 +21,7 @@ class _HasQueryPlan(Protocol):
 
 
 _PlanOwner = TypeVar("_PlanOwner", bound=_HasQueryPlan)
+_ReplacePlan: Callable[..., ConversationQueryPlan] = replace
 
 
 def _extend_tuple(values: tuple[_T, ...], additions: tuple[_T, ...]) -> tuple[_T, ...]:
@@ -34,8 +35,7 @@ def _replace_plan(
     plan = filter_obj._plan
     # dataclasses.replace is typed per field and cannot express this fluent
     # builder's one-field-at-a-time updates.
-    replace_plan = cast("Callable[..., ConversationQueryPlan]", replace)
-    filter_obj._plan = replace_plan(plan, **changes)
+    filter_obj._plan = _ReplacePlan(plan, **changes)
     return filter_obj
 
 

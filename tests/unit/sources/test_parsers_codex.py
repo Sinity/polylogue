@@ -6,8 +6,6 @@ branch tracking, git context, and edge cases.
 
 from __future__ import annotations
 
-from typing import cast
-
 from polylogue.lib.branch_type import BranchType
 from polylogue.sources.parsers.base import ParsedConversation
 from polylogue.sources.parsers.codex import looks_like as _looks_like_impl
@@ -18,12 +16,12 @@ from polylogue.sources.parsers.codex import parse_stream
 def looks_like(payload: object) -> bool:
     if not isinstance(payload, list):
         return False
-    return _looks_like_impl(cast(list[object], payload))
+    return _looks_like_impl(payload)
 
 
 def parse(payload: object, fallback_id: str) -> ParsedConversation:
     assert isinstance(payload, list)
-    return _parse_impl(cast(list[object], payload), fallback_id)
+    return _parse_impl(payload, fallback_id)
 
 
 def _provider_meta(conversation: ParsedConversation) -> dict[str, object]:
@@ -34,7 +32,7 @@ def _provider_meta(conversation: ParsedConversation) -> dict[str, object]:
 def _nested_meta(conversation: ParsedConversation, key: str) -> dict[str, object]:
     value = _provider_meta(conversation).get(key)
     assert isinstance(value, dict)
-    return cast(dict[str, object], value)
+    return dict(value)
 
 
 # =============================================================================

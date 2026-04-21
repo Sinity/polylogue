@@ -7,7 +7,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
-from typing import Protocol, cast
+from typing import Protocol
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -41,6 +41,13 @@ def _creds(
     creds.refresh_token = refresh_token
     creds.to_json.return_value = token_json
     return creds
+
+
+def _fake_module(**attrs: object) -> ModuleType:
+    module = ModuleType("fake_drive_auth_module")
+    for name, value in attrs.items():
+        setattr(module, name, value)
+    return module
 
 
 class FakeAuthPrompter:
@@ -364,11 +371,11 @@ def test_load_credentials_state_machine(case: AuthLoadCase, monkeypatch: pytest.
 
     def fake_import(name: str) -> ModuleType:
         if name == "google.oauth2.credentials":
-            return cast(ModuleType, MagicMock(Credentials=credentials_cls))
+            return _fake_module(Credentials=credentials_cls)
         if name == "google_auth_oauthlib.flow":
-            return cast(ModuleType, MagicMock(InstalledAppFlow=MagicMock()))
+            return _fake_module(InstalledAppFlow=MagicMock())
         if name == "google.auth.transport.requests":
-            return cast(ModuleType, SimpleNamespace(Request=request_cls))
+            return _fake_module(Request=request_cls)
         raise AssertionError(name)
 
     mgr = DriveAuthManager(ui=None, token_path=token_path)
@@ -456,9 +463,9 @@ def test_load_credentials_uses_manual_flow_when_local_server_fails(
 
     def fake_import(name: str) -> ModuleType:
         if name == "google.oauth2.credentials":
-            return cast(ModuleType, MagicMock(Credentials=MagicMock()))
+            return _fake_module(Credentials=MagicMock())
         if name == "google_auth_oauthlib.flow":
-            return cast(ModuleType, MagicMock(InstalledAppFlow=installed_app_flow_cls))
+            return _fake_module(InstalledAppFlow=installed_app_flow_cls)
         raise AssertionError(name)
 
     mgr = DriveAuthManager(credentials_path=credentials_path, token_path=token_path)
@@ -486,9 +493,9 @@ def test_load_credentials_returns_local_server_result(monkeypatch: pytest.Monkey
 
     def fake_import(name: str) -> ModuleType:
         if name == "google.oauth2.credentials":
-            return cast(ModuleType, MagicMock(Credentials=MagicMock()))
+            return _fake_module(Credentials=MagicMock())
         if name == "google_auth_oauthlib.flow":
-            return cast(ModuleType, MagicMock(InstalledAppFlow=installed_app_flow_cls))
+            return _fake_module(InstalledAppFlow=installed_app_flow_cls)
         raise AssertionError(name)
 
     mgr = DriveAuthManager(credentials_path=credentials_path, token_path=token_path)

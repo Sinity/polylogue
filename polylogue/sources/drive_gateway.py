@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-# ruff: noqa: N803
 import importlib
 from collections.abc import Callable
 from types import ModuleType
-from typing import ParamSpec, Protocol, TypeAlias, TypeVar
+from typing import ParamSpec, Protocol, TypeAlias, TypeVar, runtime_checkable
 
 from tenacity import (
     retry_if_exception_type,
@@ -12,7 +11,7 @@ from tenacity import (
     stop_after_attempt,
     wait_exponential,
 )
-from typing_extensions import TypedDict
+from typing_extensions import TypedDict, Unpack
 
 from polylogue.lib.json import JSONDocument, JSONDocumentList
 from polylogue.logging import get_logger
@@ -39,6 +38,22 @@ class DriveListFilesResponse(TypedDict, total=False):
     nextPageToken: str
 
 
+class _DriveGetKwargs(TypedDict):
+    fileId: str
+    fields: str
+
+
+class _DriveListKwargs(TypedDict):
+    q: str
+    fields: str
+    pageToken: str | None
+    pageSize: int
+
+
+class _DriveGetMediaKwargs(TypedDict):
+    fileId: str
+
+
 DEFAULT_DRIVE_RETRIES = 3
 DEFAULT_DRIVE_RETRY_BASE = 0.5
 
@@ -56,20 +71,14 @@ class _BinaryWritable(Protocol):
 
 
 class _DriveFilesResource(Protocol):
-    def get(self, *, fileId: str, fields: str) -> _ExecutableRequest[DrivePayloadRecord]: ...
+    def get(self, **kwargs: Unpack[_DriveGetKwargs]) -> _ExecutableRequest[DrivePayloadRecord]: ...
 
-    def list(
-        self,
-        *,
-        q: str,
-        fields: str,
-        pageToken: str | None,
-        pageSize: int,
-    ) -> _ExecutableRequest[DriveListFilesResponse]: ...
+    def list(self, **kwargs: Unpack[_DriveListKwargs]) -> _ExecutableRequest[DriveListFilesResponse]: ...
 
-    def get_media(self, *, fileId: str) -> object: ...
+    def get_media(self, **kwargs: Unpack[_DriveGetMediaKwargs]) -> object: ...
 
 
+@runtime_checkable
 class _DriveService(Protocol):
     _http: object | None
 

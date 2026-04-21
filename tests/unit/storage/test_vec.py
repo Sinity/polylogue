@@ -6,7 +6,7 @@ import sqlite3
 import struct
 from collections.abc import Callable
 from pathlib import Path
-from typing import Protocol, TypeAlias, cast
+from typing import Protocol, TypeAlias
 from unittest.mock import MagicMock, patch
 
 import httpx
@@ -18,34 +18,17 @@ from polylogue.storage.store import MessageRecord
 from polylogue.types import ContentHash, ConversationId, MessageId
 
 Embedding: TypeAlias = list[float]
-SearchRows: TypeAlias = list[tuple[str, float]]
 
 
 class EmbeddingFetcher(Protocol):
     def __call__(self, texts: list[str], input_type: str = "document") -> list[Embedding]: ...
 
 
-class MutableSqliteVecProvider(Protocol):
-    db_path: Path
-    voyage_key: str
-    model: str
-    dimension: int
-    _vec_available: bool | None
-    _tables_ensured: bool
+class MutableSqliteVecProvider(SqliteVecProvider):
     _ensure_vec_available: Callable[[], None]
     _ensure_tables: Callable[[], None]
     _get_embeddings: EmbeddingFetcher
     _get_connection: Callable[[], sqlite3.Connection]
-
-    def _should_embed_message(self, msg: MessageRecord) -> bool: ...
-
-    def upsert(self, conversation_id: str, messages: list[MessageRecord]) -> None: ...
-
-    def query(self, text: str, limit: int = 10) -> SearchRows: ...
-
-    def query_by_provider(self, text: str, provider: str, limit: int = 10) -> SearchRows: ...
-
-    def get_embedding_stats(self) -> dict[str, int]: ...
 
 
 def make_message(
@@ -68,20 +51,12 @@ def make_message(
 
 
 @pytest.fixture
-def provider_cls() -> type[SqliteVecProvider]:
-    return SqliteVecProvider
-
-
-@pytest.fixture
-def mock_provider(tmp_path: Path, provider_cls: type[SqliteVecProvider]) -> MutableSqliteVecProvider:
-    provider = object.__new__(provider_cls)
-    provider.db_path = tmp_path / "test.db"
-    provider.voyage_key = "test-voyage-key"
-    provider.model = "voyage-4"
+def mock_provider(tmp_path: Path) -> MutableSqliteVecProvider:
+    provider = MutableSqliteVecProvider(voyage_key="test-voyage-key", db_path=tmp_path / "test.db", model="voyage-4")
     provider.dimension = 1024
     provider._vec_available = None
     provider._tables_ensured = True
-    return cast(MutableSqliteVecProvider, provider)
+    return provider
 
 
 def test_get_embeddings_request_contract(mock_provider: MutableSqliteVecProvider) -> None:

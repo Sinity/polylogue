@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
-from collections.abc import Awaitable, Callable, Coroutine, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import datetime, timezone
-from typing import Protocol, TypeAlias, TypeVar, cast
+from typing import Protocol, TypeAlias, TypeVar, runtime_checkable
 from unittest.mock import AsyncMock, MagicMock
 
 from polylogue.lib.models import Conversation
@@ -83,10 +82,15 @@ class MCPPromptManager(Protocol):
     _prompts: Mapping[str, RegisteredMCPSurface]
 
 
+@runtime_checkable
 class MCPServerUnderTest(Protocol):
     _tool_manager: MCPToolManager
     _resource_manager: MCPResourceManager
     _prompt_manager: MCPPromptManager
+
+
+async def _await_surface(result: Awaitable[SurfaceResult]) -> SurfaceResult:
+    return await result
 
 
 def invoke_surface(
@@ -97,9 +101,10 @@ def invoke_surface(
 ) -> SurfaceResult:
     """Call an MCP surface whether it is sync or async."""
     result = fn(*args, **kwargs)
-    if inspect.iscoroutine(result):
-        return asyncio.run(cast(Coroutine[object, object, SurfaceResult], result))
-    return cast(SurfaceResult, result)
+    if isinstance(result, Awaitable):
+        surface: SurfaceResult = asyncio.run(_await_surface(result))
+        return surface
+    return result
 
 
 async def invoke_surface_async(
@@ -110,8 +115,8 @@ async def invoke_surface_async(
 ) -> SurfaceResult:
     """Await an MCP surface from async tests."""
     result = fn(*args, **kwargs)
-    if inspect.isawaitable(result):
-        return await cast(Awaitable[SurfaceResult], result)
+    if isinstance(result, Awaitable):
+        return await result
     return result
 
 
