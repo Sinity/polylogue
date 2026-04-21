@@ -103,8 +103,6 @@ Options:
                                   --latest or -i ID. Incompatible with
                                   --transform
   -d, --dialogue-only             Show only user/assistant messages
-  -u, --user-only                 Show only user messages (subset of
-                                  --dialogue-only)
   --set TEXT...                   Set metadata key value
   --add-tag TEXT                  Add tags (comma-separated)
   --plain                         Force non-interactive plain output
