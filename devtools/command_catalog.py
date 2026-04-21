@@ -152,6 +152,11 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "verification",
         "Run typed pipeline probes against synthetic, staged, or archive-subset inputs.",
         "devtools.pipeline_probe",
+        use_when="Exercise real pipeline stages and optionally capture emitted summaries as regression cases.",
+        examples=(
+            "devtools pipeline-probe --provider chatgpt --stage parse",
+            "devtools pipeline-probe --input-mode archive-subset --capture-regression live-parse-drift",
+        ),
     ),
     CommandSpec(
         "query-memory-budget",
@@ -160,6 +165,17 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "devtools.query_memory_budget",
         use_when="Assert memory budgets around a concrete query or archive-facing command.",
         examples=("devtools query-memory-budget --max-rss-mb 1536 -- polylogue --plain stats",),
+    ),
+    CommandSpec(
+        "regression-capture",
+        "verification",
+        "Capture pipeline-probe summaries as durable local regression cases.",
+        "devtools.regression_capture",
+        use_when="Turn a live or probe failure JSON summary into a replayable local regression artifact.",
+        examples=(
+            "devtools regression-capture --input probe.json --name parse-drift",
+            "devtools pipeline-probe --json | devtools regression-capture --name parse-drift --tag live",
+        ),
     ),
     CommandSpec(
         "inject-semantic-annotations",

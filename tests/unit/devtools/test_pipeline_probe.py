@@ -9,6 +9,7 @@ from typing import TypeAlias
 import pytest
 
 from devtools.pipeline_probe import _write_probe_sources, main, run_probe
+from devtools.regression_cases import RegressionCase
 from polylogue.scenarios import CorpusRequest, CorpusScenario, CorpusSpec, PipelineProbeRequest
 from polylogue.schemas.synthetic import SyntheticCorpus
 from polylogue.storage.backends import create_backend
@@ -542,6 +543,50 @@ def test_main_returns_nonzero_when_budget_is_exceeded(capsys: pytest.CaptureFixt
     assert exit_code == 1
     assert _json_path(printed, "budgets", "ok") is False
     assert len(_require_json_array(_json_path(printed, "budgets", "violations"))) >= 1
+
+
+def test_main_can_capture_probe_summary_as_regression_case(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    output_dir = tmp_path / "regression-cases"
+
+    exit_code = main(
+        [
+            "--provider",
+            "chatgpt",
+            "--count",
+            "1",
+            "--messages-min",
+            "3",
+            "--messages-max",
+            "4",
+            "--stage",
+            "parse",
+            "--max-total-ms",
+            "0.0",
+            "--capture-regression",
+            "Probe Budget Drift",
+            "--regression-output-dir",
+            str(output_dir),
+            "--regression-tag",
+            "budget",
+            "--regression-note",
+            "captured by pipeline-probe",
+        ]
+    )
+
+    printed = _load_json_object(capsys.readouterr().out)
+    regression_case = _require_json_object(_json_path(printed, "regression_case"))
+    case_path = Path(_require_str(regression_case["path"]))
+    case = RegressionCase.read(case_path)
+
+    assert exit_code == 1
+    assert case_path.parent == output_dir
+    assert case.name == "Probe Budget Drift"
+    assert case.tags == ("budget",)
+    assert case.notes == ("captured by pipeline-probe",)
+    assert _json_path(case.summary, "budgets", "ok") is False
 
 
 async def test_run_probe_can_sample_archive_subset_and_persist_manifest(tmp_path: Path) -> None:
