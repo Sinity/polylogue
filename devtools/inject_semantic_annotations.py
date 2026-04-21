@@ -12,8 +12,8 @@ import gzip
 import json
 import sys
 from pathlib import Path
-from typing import Any
 
+from polylogue.lib.json import JSONDocument, is_json_document, json_document
 from polylogue.schemas.registry import SchemaRegistry
 
 SCHEMAS_DIR = Path(__file__).resolve().parent.parent / "polylogue" / "schemas" / "providers"
@@ -138,11 +138,11 @@ ANNOTATION_MAP: dict[str, list[tuple[list[str], str]]] = {
 }
 
 
-def _navigate(schema: dict[str, Any], path_segments: list[str]) -> dict[str, Any] | None:
+def _navigate(schema: JSONDocument, path_segments: list[str]) -> JSONDocument | None:
     """Navigate a schema using path segments, returning the target node."""
     node: object = schema
     for segment in path_segments:
-        if not isinstance(node, dict):
+        if not is_json_document(node):
             return None
 
         mapping = node
@@ -150,7 +150,7 @@ def _navigate(schema: dict[str, Any], path_segments: list[str]) -> dict[str, Any
         if segment.startswith("properties."):
             key = segment[len("properties.") :]
             properties = mapping.get("properties")
-            if not isinstance(properties, dict):
+            if not is_json_document(properties):
                 return None
             node = properties.get(key)
         elif segment == "items":
@@ -161,18 +161,22 @@ def _navigate(schema: dict[str, Any], path_segments: list[str]) -> dict[str, Any
             # Find the anyOf variant that has "properties"
             variants = mapping.get("anyOf", [])
             found = None
-            for v in variants:
-                if isinstance(v, dict) and "properties" in v:
-                    found = v
+            if not isinstance(variants, list):
+                return None
+            for variant in variants:
+                if is_json_document(variant) and "properties" in variant:
+                    found = variant
                     break
             node = found
         elif segment == "anyOf:array":
             # Find the anyOf variant with type="array"
             variants = mapping.get("anyOf", [])
             found = None
-            for v in variants:
-                if isinstance(v, dict) and v.get("type") == "array":
-                    found = v
+            if not isinstance(variants, list):
+                return None
+            for variant in variants:
+                if is_json_document(variant) and variant.get("type") == "array":
+                    found = variant
                     break
             node = found
         else:
@@ -181,10 +185,10 @@ def _navigate(schema: dict[str, Any], path_segments: list[str]) -> dict[str, Any
         if node is None:
             return None
 
-    return node if isinstance(node, dict) else None
+    return node if is_json_document(node) else None
 
 
-def inject_annotations(provider: str, schema: dict[str, Any], *, dry_run: bool = False) -> int:
+def inject_annotations(provider: str, schema: JSONDocument, *, dry_run: bool = False) -> int:
     """Inject semantic role annotations into a schema. Returns count of annotations added."""
     annotations = ANNOTATION_MAP.get(provider, [])
     count = 0
@@ -232,7 +236,7 @@ def main(argv: list[str] | None = None) -> int:
 
         print(f"\n--- {provider} ---")
         with gzip.open(schema_path, "rt") as f:
-            schema = json.load(f)
+            schema = json_document(json.load(f))
 
         count = inject_annotations(provider, schema, dry_run=args.dry_run)
         total += count

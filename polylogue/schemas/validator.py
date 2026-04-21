@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeAlias
+from typing import TYPE_CHECKING, Literal, Protocol, TypeAlias
 
 try:
     import jsonschema
@@ -33,7 +33,7 @@ from .validator_resolution import (
 if TYPE_CHECKING:
     from polylogue.schemas.packages import SchemaResolution
 
-ValidationSchema: TypeAlias = Mapping[str, Any]
+ValidationSchema: TypeAlias = Mapping[str, object]
 ValidationSample: TypeAlias = JSONDocument
 
 

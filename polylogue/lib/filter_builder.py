@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, Protocol, Self, TypeVar, cast
+from typing import TYPE_CHECKING, Protocol, Self, TypeVar
 
 from polylogue.lib.dates import parse_date
 from polylogue.lib.filter_types import SortField
@@ -32,7 +32,9 @@ def _replace_plan(
     **changes: object,
 ) -> _PlanOwner:
     plan = filter_obj._plan
-    filter_obj._plan = cast("ConversationQueryPlan", cast(Any, replace)(plan, **changes))
+    # dataclasses.replace is precisely typed per field and cannot express this
+    # fluent builder's dynamic one-field-at-a-time updates.
+    filter_obj._plan = replace(plan, **changes)  # type: ignore[arg-type]
     return filter_obj
 
 

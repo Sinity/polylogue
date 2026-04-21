@@ -7,11 +7,13 @@ import json
 import subprocess
 import tempfile
 import time
+from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TypedDict
 
+from polylogue.lib.json import JSONDocument, json_document, json_document_list
 from polylogue.scenarios import ExecutionKind, ScenarioMetadata, pytest_execution, run_execution
 
 from .authored_scenario_catalog import get_authored_scenario_catalog
@@ -23,6 +25,26 @@ STATUS_IGNORE_PREFIXES = (f"{ARTIFACT_DIR.as_posix()}/",)
 DEFAULT_WARN_PCT = 10.0
 DEFAULT_FAIL_PCT = 20.0
 CAMPAIGNS = get_authored_scenario_catalog().benchmark_campaign_index()
+
+
+class BenchmarkStatRecord(TypedDict):
+    name: str
+    fullname: str
+    group: str
+    mean: float
+    median: float
+    minimum: float
+    maximum: float
+    stddev: float
+    rounds: int
+    ops: float | None
+
+
+class RegressionRecord(TypedDict):
+    fullname: str
+    baseline_mean: float
+    current_mean: float
+    delta_pct: float
 
 
 @dataclass(frozen=True)
@@ -61,13 +83,13 @@ class CampaignResult:
     benchmark_count: int
     runtime_seconds: float
     exit_code: int
-    machine_info: dict[str, Any]
-    benchmarks: list[dict[str, Any]]
-    slowest: list[dict[str, Any]]
+    machine_info: JSONDocument
+    benchmarks: list[BenchmarkStatRecord]
+    slowest: list[BenchmarkStatRecord]
     compare_to: str | None
     warn_pct: float
     fail_pct: float
-    regressions: list[dict[str, Any]]
+    regressions: list[RegressionRecord]
     worst_regression_pct: float | None
     origin: str = "authored"
     path_targets: list[str] = field(default_factory=list)
@@ -97,39 +119,81 @@ def _default_artifact_path(campaign: str, suffix: str) -> Path:
     return ROOT / ARTIFACT_DIR / f"{date}-{campaign}.{suffix}"
 
 
-def _benchmark_key(entry: dict[str, Any]) -> str:
+def _benchmark_key(entry: JSONDocument) -> str:
     return str(entry.get("fullname") or entry.get("fullfunc") or entry.get("name"))
 
 
-def _parse_stats(raw: dict[str, Any]) -> BenchmarkStat:
-    stats = raw["stats"]
-    mean = float(stats["mean"])
+def _number_value(value: object, *, field: str) -> str | int | float:
+    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        raise ValueError(f"Benchmark payload field {field!r} is not numeric: {value!r}")
+    return value
+
+
+def _number_field(payload: JSONDocument, field: str) -> str | int | float:
+    return _number_value(payload[field], field=field)
+
+
+def _float_field(payload: JSONDocument, field: str) -> float:
+    return float(_number_field(payload, field))
+
+
+def _int_field(payload: JSONDocument, field: str) -> int:
+    return int(_number_field(payload, field))
+
+
+def _parse_stats(raw: JSONDocument) -> BenchmarkStat:
+    stats = json_document(raw.get("stats"))
+    mean = _float_field(stats, "mean")
     return BenchmarkStat(
         name=str(raw.get("name", "unknown")),
         fullname=_benchmark_key(raw),
         group=str(raw.get("group", "benchmark")),
         mean=mean,
-        median=float(stats["median"]),
-        minimum=float(stats["min"]),
-        maximum=float(stats["max"]),
-        stddev=float(stats.get("stddev", 0.0)),
-        rounds=int(stats.get("rounds", 0)),
+        median=_float_field(stats, "median"),
+        minimum=_float_field(stats, "min"),
+        maximum=_float_field(stats, "max"),
+        stddev=_float_field(stats, "stddev") if "stddev" in stats else 0.0,
+        rounds=_int_field(stats, "rounds") if "rounds" in stats else 0,
         ops=(1.0 / mean) if mean > 0 else None,
     )
+
+
+def _benchmark_stat_record(stat: BenchmarkStat) -> BenchmarkStatRecord:
+    return {
+        "name": stat.name,
+        "fullname": stat.fullname,
+        "group": stat.group,
+        "mean": stat.mean,
+        "median": stat.median,
+        "minimum": stat.minimum,
+        "maximum": stat.maximum,
+        "stddev": stat.stddev,
+        "rounds": stat.rounds,
+        "ops": stat.ops,
+    }
+
+
+def _regression_record(regression: Regression) -> RegressionRecord:
+    return {
+        "fullname": regression.fullname,
+        "baseline_mean": regression.baseline_mean,
+        "current_mean": regression.current_mean,
+        "delta_pct": regression.delta_pct,
+    }
 
 
 def _load_campaign_result(path: Path) -> CampaignResult:
     return CampaignResult(**json.loads(path.read_text()))
 
 
-def _compare_results(current: list[BenchmarkStat], baseline: list[dict[str, Any]]) -> list[Regression]:
+def _compare_results(current: list[BenchmarkStat], baseline: Iterable[Mapping[str, object]]) -> list[Regression]:
     baseline_map = {str(item["fullname"]): item for item in baseline}
     regressions: list[Regression] = []
     for bench in current:
         previous = baseline_map.get(bench.fullname)
         if previous is None:
             continue
-        baseline_mean = float(previous["mean"])
+        baseline_mean = float(_number_value(previous["mean"], field="mean"))
         if baseline_mean <= 0:
             continue
         delta_pct = ((bench.mean - baseline_mean) / baseline_mean) * 100.0
@@ -254,7 +318,8 @@ def run_campaign(
             raise SystemExit(f"Benchmark run for {campaign.name} produced no JSON artifact")
         payload = json.loads(raw_json.read_text())
 
-    benchmarks = [_parse_stats(entry) for entry in payload.get("benchmarks", [])]
+    payload_document = json_document(payload)
+    benchmarks = [_parse_stats(entry) for entry in json_document_list(payload_document.get("benchmarks"))]
     benchmarks.sort(key=lambda item: item.mean, reverse=True)
     baseline_result = _load_campaign_result(compare_to) if compare_to else None
     regressions = _compare_results(benchmarks, baseline_result.benchmarks) if baseline_result else []
@@ -276,13 +341,13 @@ def run_campaign(
         benchmark_count=len(benchmarks),
         runtime_seconds=runtime_seconds,
         exit_code=completed.exit_code,
-        machine_info=dict(payload.get("machine_info", {})),
-        benchmarks=[asdict(bench) for bench in benchmarks],
-        slowest=[asdict(bench) for bench in benchmarks[:10]],
+        machine_info=json_document(payload_document.get("machine_info")),
+        benchmarks=[_benchmark_stat_record(bench) for bench in benchmarks],
+        slowest=[_benchmark_stat_record(bench) for bench in benchmarks[:10]],
         compare_to=str(compare_to) if compare_to else None,
         warn_pct=warn_threshold,
         fail_pct=fail_threshold,
-        regressions=[asdict(item) for item in regressions],
+        regressions=[_regression_record(item) for item in regressions],
         worst_regression_pct=worst_regression,
         origin=metadata.origin,
         path_targets=list(metadata.path_targets),
