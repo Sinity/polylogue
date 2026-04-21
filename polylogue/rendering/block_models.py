@@ -5,8 +5,8 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import cast
 
+from polylogue.lib.json import JSONDocument, json_document
 from polylogue.storage.store import ContentBlockRecord
 
 
@@ -22,18 +22,32 @@ class RenderableBlock:
     mime_type: str | None = None
     tool_name: str | None = None
     tool_id: str | None = None
-    tool_input: Mapping[str, object] | None = None
+    tool_input: JSONDocument | None = None
 
 
-def _mapping_with_string_keys(value: object) -> Mapping[str, object] | None:
+def _mapping_with_string_keys(value: object) -> JSONDocument | None:
     if not isinstance(value, Mapping):
         return None
-    if not all(isinstance(key, str) for key in value):
-        return None
-    return cast(Mapping[str, object], value)
+    normalized: dict[str, object] = {}
+    for key, item in value.items():
+        if not isinstance(key, str):
+            return None
+        normalized[key] = item
+    return json_document(normalized)
 
 
-def _json_mapping(value: str | None) -> Mapping[str, object] | None:
+def _optional_string(value: object) -> str | None:
+    return value if isinstance(value, str) else None
+
+
+def _first_string(*values: object) -> str | None:
+    for value in values:
+        if isinstance(value, str):
+            return value
+    return None
+
+
+def _json_mapping(value: str | None) -> JSONDocument | None:
     if not value:
         return None
     try:
@@ -43,7 +57,7 @@ def _json_mapping(value: str | None) -> Mapping[str, object] | None:
     return _mapping_with_string_keys(parsed)
 
 
-def _coerce_tool_input(value: object) -> Mapping[str, object] | None:
+def _coerce_tool_input(value: object) -> JSONDocument | None:
     mapping = _mapping_with_string_keys(value)
     if mapping is not None:
         return mapping
@@ -58,13 +72,13 @@ def _coerce_mapping_block(block: Mapping[str, object]) -> RenderableBlock:
     name = block.get("name") or block.get("title")
     return RenderableBlock(
         type=block_type,
-        text=cast(str | None, block.get("thinking") or block.get("text") or block.get("code") or block.get("content")),
-        language=cast(str | None, block.get("language")),
-        url=cast(str | None, block.get("url") or source.get("url")),
+        text=_first_string(block.get("thinking"), block.get("text"), block.get("code"), block.get("content")),
+        language=_optional_string(block.get("language")),
+        url=_first_string(block.get("url"), source.get("url")),
         name=str(name) if isinstance(name, str) else None,
-        mime_type=cast(str | None, block.get("media_type") or block.get("mime_type")),
-        tool_name=cast(str | None, block.get("name")) if block_type == "tool_use" else None,
-        tool_id=cast(str | None, block.get("id") or block.get("tool_use_id") or block.get("tool_id")),
+        mime_type=_first_string(block.get("media_type"), block.get("mime_type")),
+        tool_name=_optional_string(block.get("name")) if block_type == "tool_use" else None,
+        tool_id=_first_string(block.get("id"), block.get("tool_use_id"), block.get("tool_id")),
         tool_input=_coerce_tool_input(block.get("input")),
     )
 
@@ -74,9 +88,9 @@ def _coerce_record_block(block: ContentBlockRecord) -> RenderableBlock:
     return RenderableBlock(
         type=block.type.value,
         text=block.text,
-        language=cast(str | None, metadata.get("language")) if metadata is not None else None,
-        url=cast(str | None, metadata.get("url")) if metadata is not None else None,
-        name=cast(str | None, metadata.get("name")) if metadata is not None else None,
+        language=_optional_string(metadata.get("language")) if metadata is not None else None,
+        url=_optional_string(metadata.get("url")) if metadata is not None else None,
+        name=_optional_string(metadata.get("name")) if metadata is not None else None,
         mime_type=block.media_type,
         tool_name=block.tool_name,
         tool_id=block.tool_id,

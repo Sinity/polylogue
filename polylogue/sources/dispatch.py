@@ -6,7 +6,7 @@ import json
 from collections.abc import Iterable
 from dataclasses import dataclass
 from io import BytesIO
-from typing import TYPE_CHECKING, Literal, TypeAlias, cast
+from typing import TYPE_CHECKING, Literal, TypeAlias
 
 from polylogue.lib.json import JSONDocument, JSONValue, is_json_document, is_json_value
 from polylogue.lib.payload_coercion import optional_string
@@ -103,9 +103,9 @@ def _detect_provider_from_sequence(payloads: PayloadSequence) -> Provider | None
         if _looks_like_gemini_mapping(first_record):
             return Provider.GEMINI
 
-    if claude.looks_like_code(cast(list[object], payloads)):
+    if claude.looks_like_code(payloads):
         return Provider.CLAUDE_CODE
-    if codex.looks_like(cast(list[object], payloads)):
+    if codex.looks_like(payloads):
         return Provider.CODEX
     return None
 
@@ -403,11 +403,11 @@ def _parse_lowered_spec(spec: LoweredPayloadSpec) -> list[ParsedConversation]:
 
     if spec.provider is Provider.CLAUDE_CODE:
         payloads = _payload_sequence(spec.payload)
-        return [claude.parse_code(cast(list[object], payloads), spec.fallback_id)] if payloads is not None else []
+        return [claude.parse_code(payloads, spec.fallback_id)] if payloads is not None else []
 
     if spec.provider is Provider.CODEX:
         payloads = _payload_sequence(spec.payload)
-        return [codex.parse(cast(list[object], payloads), spec.fallback_id)] if payloads is not None else []
+        return [codex.parse(payloads, spec.fallback_id)] if payloads is not None else []
 
     if spec.mode == "chunked_prompt":
         record = _payload_record(spec.payload)

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from decimal import Decimal
-from typing import TypeAlias, TypeGuard, cast
+from typing import TypeAlias, TypeGuard
 
 import orjson
 
@@ -29,7 +29,7 @@ def is_json_value(value: object) -> TypeGuard[JSONValue]:
 
 def is_json_document(value: object) -> TypeGuard[JSONDocument]:
     """Return whether *value* is a JSON object with string keys."""
-    return isinstance(value, dict) and all(isinstance(key, str) for key in value)
+    return isinstance(value, dict) and all(isinstance(key, str) and is_json_value(item) for key, item in value.items())
 
 
 def json_document(value: object) -> JSONDocument:
@@ -41,11 +41,21 @@ def json_document_list(value: object) -> JSONDocumentList:
     """Coerce a value into a list of string-keyed JSON objects."""
     if not isinstance(value, list):
         return []
-    return [document for item in value if (document := json_document(item))]
+    documents: JSONDocumentList = []
+    for item in value:
+        if is_json_document(item):
+            documents.append(item)
+    return documents
 
 
 def _reject_non_finite_token(token: str) -> JSONValue:
     raise ValueError(f"invalid non-finite JSON token: {token}")
+
+
+def _loaded_json_value(value: object) -> JSONValue:
+    if is_json_value(value):
+        return value
+    raise ValueError("loaded JSON payload does not satisfy the JSONValue contract")
 
 
 def _default_encoder(user_default: JSONEncoder | None = None) -> JSONEncoder:
@@ -90,10 +100,10 @@ def dumps(obj: object, *, default: JSONEncoder | None = None, option: int | None
 def loads(obj: str | bytes | bytearray) -> JSONValue:
     """Load object from JSON string or bytes."""
     try:
-        return cast(JSONValue, orjson.loads(obj))
+        return _loaded_json_value(orjson.loads(obj))
     except (orjson.JSONDecodeError, ValueError) as exc:
         try:
-            return cast(JSONValue, json.loads(obj, parse_constant=_reject_non_finite_token))
+            return _loaded_json_value(json.loads(obj, parse_constant=_reject_non_finite_token))
         except (json.JSONDecodeError, ValueError):
             raise exc from None
 

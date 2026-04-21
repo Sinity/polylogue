@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from typing import Any
 
 from pydantic import ValidationError
@@ -220,7 +220,7 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedCo
     )
 
 
-def parse_code(payload: list[object], fallback_id: str) -> ParsedConversation:
+def parse_code(payload: Sequence[object], fallback_id: str) -> ParsedConversation:
     return _parse_code_records(payload, fallback_id)
 
 
