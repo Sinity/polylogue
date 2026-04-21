@@ -182,14 +182,20 @@ class TestAuditReport:
             ],
         )
         data = report.to_json()
+        summary = data["summary"]
+        checks = data["checks"]
+        assert isinstance(summary, dict)
+        assert isinstance(checks, list)
+        assert len(checks) == 1
+        check = checks[0]
+        assert isinstance(check, dict)
         assert data["provider"] == "test"
-        assert data["summary"]["passed"] == 1
-        assert data["summary"]["warned"] == 0
-        assert data["summary"]["failed"] == 0
-        assert len(data["checks"]) == 1
-        assert data["checks"][0]["name"] == "a"
-        assert data["checks"][0]["provider"] is None
-        assert data["checks"][0]["details"] == ["detail1"]
+        assert summary["passed"] == 1
+        assert summary["warned"] == 0
+        assert summary["failed"] == 0
+        assert check["name"] == "a"
+        assert check["provider"] is None
+        assert check["details"] == ["detail1"]
 
     def test_to_json_no_provider(self) -> None:
         report = AuditReport(checks=[])
@@ -215,9 +221,13 @@ class TestAuditReport:
         )
 
         data = report.to_json()
+        checks = data["checks"]
+        assert isinstance(checks, list)
+        check = checks[0]
+        assert isinstance(check, dict)
 
         assert data["provider"] is None
-        assert data["checks"][0]["provider"] == "chatgpt"
+        assert check["provider"] == "chatgpt"
 
 
 class TestCheckPrivacyGuards:

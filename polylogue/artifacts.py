@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from enum import Enum
-from typing import Any
+
+from polylogue.lib.json import JSONDocument, json_document
 
 
 class ArtifactLayer(str, Enum):
@@ -27,10 +28,18 @@ class ArtifactNode:
     repair_targets: tuple[str, ...] = ()
     readiness_surfaces: tuple[str, ...] = ()
 
-    def to_dict(self) -> dict[str, Any]:
-        data = asdict(self)
-        data["layer"] = self.layer.value
-        return data
+    def to_dict(self) -> JSONDocument:
+        return json_document(
+            {
+                "name": self.name,
+                "layer": self.layer.value,
+                "description": self.description,
+                "depends_on": list(self.depends_on),
+                "code_refs": list(self.code_refs),
+                "repair_targets": list(self.repair_targets),
+                "readiness_surfaces": list(self.readiness_surfaces),
+            }
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,8 +50,14 @@ class ArtifactPath:
     description: str
     nodes: tuple[str, ...]
 
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+    def to_dict(self) -> JSONDocument:
+        return json_document(
+            {
+                "name": self.name,
+                "description": self.description,
+                "nodes": list(self.nodes),
+            }
+        )
 
 
 RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (

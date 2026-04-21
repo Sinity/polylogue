@@ -9,7 +9,7 @@ is rejected.
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import Protocol, runtime_checkable
 
 _SAFE_ENUM_MAX_LEN = 50  # structural enums are short tokens, not content
 
@@ -45,6 +45,19 @@ _HIGH_ENTROPY_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{10,}$")
 # Pattern matching structural identifiers: lowercase tokens with underscores
 # (e.g. "chatgpt_agent", "deep_research") — not random IDs.
 _STRUCTURAL_CONSTANT_RE = re.compile(r"^[a-z][a-z0-9_]{2,30}$")
+
+
+@runtime_checkable
+class PrivacyConfigLike(Protocol):
+    """Runtime privacy config surface consumed by enum-value guards."""
+
+    @property
+    def safe_enum_max_length(self) -> int: ...
+
+    def field_override(self, path: str) -> str | None: ...
+
+    def is_value_allowed(self, value: str) -> bool | None: ...
+
 
 _IDENTIFIER_FIELD_TOKENS = frozenset(
     {
@@ -192,11 +205,11 @@ def _is_content_field(path: str) -> bool:
 
 
 def _is_safe_enum_value(
-    value: Any,
+    value: object,
     *,
     path: str = "$",
     max_length: int | None = None,
-    config: Any | None = None,
+    config: object | None = None,
 ) -> bool:
     """Return True if a string value is safe to include in schema annotations.
 
@@ -217,27 +230,32 @@ def _is_safe_enum_value(
     effective_max_len = max_length or _SAFE_ENUM_MAX_LEN
 
     # Check config-level overrides first (highest precedence)
-    if config is not None:
+    privacy_config = config if isinstance(config, PrivacyConfigLike) else None
+
+    if privacy_config is not None:
         # Field-level override
-        field_action = config.field_override(path)
+        field_action = privacy_config.field_override(path)
         if field_action == "allow":
             return True
         if field_action == "deny":
             return False
         # Value-level override
         if isinstance(value, str):
-            val_override = config.is_value_allowed(value)
+            val_override = privacy_config.is_value_allowed(value)
             if val_override is True:
                 return True
             if val_override is False:
                 return False
         # Use config's max_length if not explicitly overridden
         if max_length is None:
-            effective_max_len = config.safe_enum_max_length
+            effective_max_len = privacy_config.safe_enum_max_length
+
+    if not isinstance(value, str):
+        return False
 
     # Identifier fields are normally blocked, but structural constants
     # (lowercase underscore-separated tokens like "chatgpt_agent") pass through.
-    if _is_identifier_field(path) and not (isinstance(value, str) and _STRUCTURAL_CONSTANT_RE.match(value)):
+    if _is_identifier_field(path) and not _STRUCTURAL_CONSTANT_RE.match(value):
         return False
     if not value or len(value) > effective_max_len:
         return False

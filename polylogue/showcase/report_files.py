@@ -5,8 +5,8 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
+from polylogue.lib.json import JSONDocument, json_document
 from polylogue.publication import OutputManifest
 from polylogue.showcase.runner import ShowcaseResult
 
@@ -36,9 +36,11 @@ def scan_manifest(result: ShowcaseResult, *, include_hashes: bool = True) -> Out
     )
 
 
-def generate_manifest(result: ShowcaseResult, *, include_hashes: bool = True) -> dict[str, Any]:
+def generate_manifest(result: ShowcaseResult, *, include_hashes: bool = True) -> JSONDocument:
     """Produce a JSON-serializable manifest payload for showcase artifacts."""
-    return scan_manifest(result, include_hashes=include_hashes).model_dump(mode="json", exclude_none=True)
+    return json_document(
+        scan_manifest(result, include_hashes=include_hashes).model_dump(mode="json", exclude_none=True)
+    )
 
 
 def _report_artifacts(result: ShowcaseResult) -> tuple[ShowcaseReportArtifact, ...]:

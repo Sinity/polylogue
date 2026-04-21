@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any
 
 
 class MaintenanceCategory(str, Enum):
@@ -30,7 +29,7 @@ class DerivedModelStatus:
     materializer_version: int | None = None
     matches_version: bool | None = None
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, object]:
         return {
             "name": self.name,
             "ready": self.ready,

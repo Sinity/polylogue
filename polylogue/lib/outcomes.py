@@ -5,7 +5,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+
+from polylogue.lib.json import JSONDocument, json_document
 
 
 class OutcomeStatus(str, Enum):
@@ -45,15 +46,17 @@ class OutcomeCheck:
     def message(self) -> str:
         return self.summary
 
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "name": self.name,
-            "status": self.status.value,
-            "summary": self.summary,
-            "count": self.count,
-            "details": list(self.details),
-            "breakdown": dict(self.breakdown),
-        }
+    def to_dict(self) -> JSONDocument:
+        return json_document(
+            {
+                "name": self.name,
+                "status": self.status.value,
+                "summary": self.summary,
+                "count": self.count,
+                "details": list(self.details),
+                "breakdown": dict(self.breakdown),
+            }
+        )
 
     def format_line(
         self,

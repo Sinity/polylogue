@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from enum import Enum
 from functools import lru_cache
-from typing import Any
+
+from polylogue.lib.json import JSONDocument, JSONDocumentList, json_document
 
 
 class OperationKind(str, Enum):
@@ -37,10 +38,22 @@ class OperationSpec:
     previewable: bool = False
     idempotent: bool = True
 
-    def to_dict(self) -> dict[str, Any]:
-        data = asdict(self)
-        data["kind"] = self.kind.value
-        return data
+    def to_dict(self) -> JSONDocument:
+        return json_document(
+            {
+                "name": self.name,
+                "kind": self.kind.value,
+                "description": self.description,
+                "consumes": list(self.consumes),
+                "produces": list(self.produces),
+                "path_targets": list(self.path_targets),
+                "code_refs": list(self.code_refs),
+                "surfaces": list(self.surfaces),
+                "mutates_state": self.mutates_state,
+                "previewable": self.previewable,
+                "idempotent": self.idempotent,
+            }
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,7 +72,7 @@ class OperationCatalog:
         by_name = self.by_name()
         return tuple(by_name[name] for name in names if name in by_name)
 
-    def to_dict(self) -> list[dict[str, Any]]:
+    def to_dict(self) -> JSONDocumentList:
         return [spec.to_dict() for spec in self.specs]
 
 

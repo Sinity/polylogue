@@ -127,12 +127,16 @@ class TestToJson:
             FieldReport(path="$.x", included_values=["a"], rejected=[]),
         ]
         data = report.to_json()
+        summary = data["summary"]
+        field_reports = data["field_reports"]
+        assert isinstance(summary, dict)
+        assert isinstance(field_reports, list)
         # Verify structure
         assert data["provider"] == "chatgpt"
-        assert data["summary"]["total_fields"] == 5
-        assert data["summary"]["total_included"] == 3
-        assert data["summary"]["total_rejected"] == 2
+        assert summary["total_fields"] == 5
+        assert summary["total_included"] == 3
+        assert summary["total_rejected"] == 2
         assert data["rejection_reasons"] == {"high_entropy": 2}
-        assert len(data["field_reports"]) == 1
+        assert len(field_reports) == 1
         # Should be JSON-serializable
         json.dumps(data)

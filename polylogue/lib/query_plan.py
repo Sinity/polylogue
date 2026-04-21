@@ -6,7 +6,7 @@ import builtins
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, TypeVar
 
 from polylogue.lib.query_plan_description import describe_plan, effective_fetch_limit, plan_has_filters
 from polylogue.lib.query_retrieval import (
@@ -32,7 +32,7 @@ from polylogue.lib.query_runtime import (
     plan_has_post_filters,
     plan_needs_content_loading,
 )
-from polylogue.lib.query_sorting import finalize_results, sort_conversations, sort_generic, sort_summaries
+from polylogue.lib.query_sorting import SortKey, finalize_results, sort_conversations, sort_generic, sort_summaries
 from polylogue.lib.query_support import conversation_has_branches, provider_values
 from polylogue.storage.query_models import ConversationRecordQuery
 from polylogue.types import Provider
@@ -237,7 +237,7 @@ class ConversationQueryPlan:
     def _apply_full_filters(self, conversations: list[Conversation], *, sql_pushed: bool) -> list[Conversation]:
         return apply_full_filters(self, conversations, sql_pushed=sql_pushed)
 
-    def _sort_generic(self, items: list[_T], key_fn: Callable[[_T], Any]) -> list[_T]:
+    def _sort_generic(self, items: list[_T], key_fn: Callable[[_T], SortKey]) -> list[_T]:
         return sort_generic(self, items, key_fn)
 
     def _sort_conversations(self, conversations: list[Conversation]) -> list[Conversation]:
