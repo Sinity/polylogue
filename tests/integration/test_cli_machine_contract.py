@@ -4,17 +4,17 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, cast
 
 import pytest
 
+from polylogue.lib.json import JSONDocument, json_document
 from tests.infra.cli_subprocess import run_cli, setup_isolated_workspace
 
 pytestmark = [pytest.mark.integration, pytest.mark.machine_contract]
 
 
-def _parse_json(stdout: str) -> dict[str, Any]:
-    return cast(dict[str, Any], json.loads(stdout))
+def _parse_json(stdout: str) -> JSONDocument:
+    return json_document(json.loads(stdout))
 
 
 def test_script_entrypoint_invalid_flag_emits_json_error(tmp_path: Path) -> None:

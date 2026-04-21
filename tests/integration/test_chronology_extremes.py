@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from typing import Any
+from pathlib import Path
 
 import pytest
 
@@ -22,7 +22,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.chaos]
 # =============================================================================
 
 
-def test_epoch_near_zero_timestamps_ingested(tmp_path: Any) -> None:
+def test_epoch_near_zero_timestamps_ingested(tmp_path: Path) -> None:
     """Test that timestamps near Unix epoch (1970) are ingested correctly."""
     workspace = setup_isolated_workspace(tmp_path)
     inbox = workspace["paths"]["inbox"]
@@ -53,7 +53,7 @@ def test_epoch_near_zero_timestamps_ingested(tmp_path: Any) -> None:
         assert count == 5, f"Expected 5 epoch records, got {count}"
 
 
-def test_y2038_adjacent_timestamps_ingested(tmp_path: Any) -> None:
+def test_y2038_adjacent_timestamps_ingested(tmp_path: Path) -> None:
     """Test that timestamps near Unix Y2K38 boundary (2038) are ingested."""
     workspace = setup_isolated_workspace(tmp_path)
     inbox = workspace["paths"]["inbox"]
@@ -81,7 +81,7 @@ def test_y2038_adjacent_timestamps_ingested(tmp_path: Any) -> None:
         assert count == 5, f"Expected 5 Y2038 records, got {count}"
 
 
-def test_far_future_timestamps_ingested(tmp_path: Any) -> None:
+def test_far_future_timestamps_ingested(tmp_path: Path) -> None:
     """Test that far-future timestamps (year 2065+) are accepted."""
     workspace = setup_isolated_workspace(tmp_path)
     inbox = workspace["paths"]["inbox"]
@@ -114,7 +114,7 @@ def test_far_future_timestamps_ingested(tmp_path: Any) -> None:
 # =============================================================================
 
 
-def test_mixed_timestamp_formats_coexist(tmp_path: Any) -> None:
+def test_mixed_timestamp_formats_coexist(tmp_path: Path) -> None:
     """Test that ISO, epoch float, and epoch string formats coexist in same file.
 
     Records may have:
@@ -154,7 +154,7 @@ def test_mixed_timestamp_formats_coexist(tmp_path: Any) -> None:
 # =============================================================================
 
 
-def test_missing_timestamps_handled(tmp_path: Any) -> None:
+def test_missing_timestamps_handled(tmp_path: Path) -> None:
     """Test that records without timestamps coexist with timestamped ones.
 
     Records may be missing the timestamp field entirely, and this should
@@ -192,7 +192,7 @@ def test_missing_timestamps_handled(tmp_path: Any) -> None:
 # =============================================================================
 
 
-def test_chronological_ordering_preserved(tmp_path: Any) -> None:
+def test_chronological_ordering_preserved(tmp_path: Path) -> None:
     """Test that output ordering respects input timestamp order.
 
     After ingestion, records should be retrievable in a consistent order
@@ -251,7 +251,7 @@ def test_chronological_ordering_preserved(tmp_path: Any) -> None:
     assert ids == expected_ids, f"Order mismatch: got {ids}, expected {expected_ids}"
 
 
-def test_tomorrow_timestamps_ingested(tmp_path: Any) -> None:
+def test_tomorrow_timestamps_ingested(tmp_path: Path) -> None:
     """Test that future timestamps (tomorrow) are accepted without error."""
     workspace = setup_isolated_workspace(tmp_path)
     inbox = workspace["paths"]["inbox"]
@@ -284,7 +284,7 @@ def test_tomorrow_timestamps_ingested(tmp_path: Any) -> None:
 # =============================================================================
 
 
-def test_all_timestamp_patterns_in_single_inbox(tmp_path: Any) -> None:
+def test_all_timestamp_patterns_in_single_inbox(tmp_path: Path) -> None:
     """Integration test: all timestamp patterns in one inbox."""
     workspace = setup_isolated_workspace(tmp_path)
     inbox = workspace["paths"]["inbox"]
