@@ -164,7 +164,7 @@ def _collect_field_stats(
                 continue
             overlap = len(observed & keys)
             if overlap / len(observed) >= REF_MATCH_THRESHOLD:
-                stats._ref_target = dict_path  # type: ignore[attr-defined]
+                stats.ref_target = dict_path
 
     return all_stats
 

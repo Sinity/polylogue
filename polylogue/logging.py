@@ -48,7 +48,7 @@ class _StderrProxy:
         return sys.stderr.fileno()
 
 
-_stderr_proxy: TextIO = _StderrProxy()  # type: ignore[assignment]
+_stderr_proxy = cast(TextIO, _StderrProxy())
 
 
 # Configure structlog

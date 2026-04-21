@@ -112,8 +112,8 @@ class TestInferRelations:
 class TestDetectForeignKeys:
     """_detect_foreign_keys() identifies reference relationships."""
 
-    def test_ref_target_attribute_detected(self) -> None:
-        """Fields with _ref_target set by field_stats are recognized."""
+    def test_ref_target_detected(self) -> None:
+        """Fields with ref_target set by field_stats are recognized."""
         stats = {
             "$.user_id": FieldStats(
                 path="$.user_id",
@@ -123,8 +123,8 @@ class TestDetectForeignKeys:
                 value_count=20,
             ),
         }
-        # Manually set the _ref_target (as field_stats would)
-        stats["$.user_id"]._ref_target = "$.users"  # type: ignore
+        # Manually set the relation target as field_stats would.
+        stats["$.user_id"].ref_target = "$.users"
         result = infer_relations(stats)
         assert len(result.foreign_keys) == 1
         fk = result.foreign_keys[0]
@@ -193,7 +193,7 @@ class TestDetectForeignKeys:
                 value_count=15,
             ),
         }
-        stats["$.ref"]._ref_target = "$.items"  # type: ignore
+        stats["$.ref"].ref_target = "$.items"
         result = infer_relations(stats)
         assert len(result.foreign_keys) > 0
         assert "source" in result.foreign_keys[0].evidence

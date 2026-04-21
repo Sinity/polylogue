@@ -133,8 +133,8 @@ class TestAnnotateSemanticAndRelational:
                 value_count=10,
             ),
         }
-        # Set up FK detection
-        field_stats["$.user_id"]._ref_target = "$.users"  # type: ignore
+        # Set up FK detection.
+        field_stats["$.user_id"].ref_target = "$.users"
         result_schema = _annotate_semantic_and_relational(schema, field_stats)
 
         # Check if FK annotations are present when relations exist

@@ -128,9 +128,8 @@ def annotate_schema(
         ):
             schema_node["x-polylogue-multiline"] = True
 
-        ref_target = getattr(field_stats, "_ref_target", None)
-        if ref_target:
-            schema_node["x-polylogue-ref"] = ref_target
+        if field_stats.ref_target:
+            schema_node["x-polylogue-ref"] = field_stats.ref_target
 
     properties = _schema_node(schema_node.get("properties"))
     if properties is not None:
