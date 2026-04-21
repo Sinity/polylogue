@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING
+
+from polylogue.cli.types import AppEnv
+
+if TYPE_CHECKING:
+    from polylogue.showcase.runner import ShowcaseResult
 
 
-def run_vhs_capture(env: Any, showcase_result: Any, json_output: bool) -> None:
+def run_vhs_capture(env: AppEnv, showcase_result: ShowcaseResult, json_output: bool) -> None:
     """Run VHS tape captures if available."""
     try:
         from polylogue.showcase.vhs import (

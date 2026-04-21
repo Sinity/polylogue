@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Callable, Iterator, Mapping
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, Self, cast
+from typing import TYPE_CHECKING, Self, cast
 
 from polylogue.lib.branch_type import BranchType
 from polylogue.lib.message_models import DialoguePair, Message
@@ -42,7 +42,7 @@ class ConversationRuntimeMixin:
 
     if TYPE_CHECKING:
 
-        def model_copy(self, *, update: Mapping[str, Any] | None = None, deep: bool = False) -> Self: ...
+        def model_copy(self, *, update: Mapping[str, object] | None = None, deep: bool = False) -> Self: ...
 
     @property
     def display_date(self) -> datetime | None:

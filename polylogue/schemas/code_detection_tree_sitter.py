@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
 from functools import lru_cache
-from typing import Any
+from typing import Protocol, cast
 
 _TS_GRAMMAR_MAP: dict[str, str] = {
     "python": "tree_sitter_python",
@@ -22,6 +23,12 @@ _TS_GRAMMAR_MAP: dict[str, str] = {
 }
 
 
+class TreeSitterNodeLike(Protocol):
+    type: str
+    is_missing: bool
+    children: Sequence[TreeSitterNodeLike]
+
+
 @lru_cache(maxsize=1)
 def tree_sitter_available() -> bool:
     """Check if the tree-sitter Python bindings are importable."""
@@ -34,7 +41,7 @@ def tree_sitter_available() -> bool:
 
 
 @lru_cache(maxsize=32)
-def get_ts_language(lang: str) -> Any | None:
+def get_ts_language(lang: str) -> object | None:
     """Load a tree-sitter Language for *lang*, or ``None`` on failure."""
     if not tree_sitter_available():
         return None
@@ -50,9 +57,10 @@ def get_ts_language(lang: str) -> Any | None:
 
         mod = importlib.import_module(module_name)
         lang_fn = getattr(mod, "language", None)
-        if lang_fn is None:
+        if not callable(lang_fn):
             return None
-        return Language(lang_fn())
+        language_factory = cast(Callable[[], object], lang_fn)
+        return cast(object, Language(language_factory()))
     except Exception:
         return None
 
@@ -72,7 +80,7 @@ def ts_error_ratio(code: str, lang: str) -> float | None:
         total_nodes = 0
         error_nodes = 0
 
-        def _walk(node: Any) -> None:
+        def _walk(node: TreeSitterNodeLike) -> None:
             nonlocal total_nodes, error_nodes
             total_nodes += 1
             if node.type == "ERROR" or node.is_missing:
@@ -80,7 +88,7 @@ def ts_error_ratio(code: str, lang: str) -> float | None:
             for child in node.children:
                 _walk(child)
 
-        _walk(tree.root_node)
+        _walk(cast(TreeSitterNodeLike, tree.root_node))
 
         if total_nodes == 0:
             return 1.0
