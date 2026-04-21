@@ -10,13 +10,13 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
 
 import pytest
 
 from polylogue.lib.messages import MessageCollection
 from polylogue.lib.models import Attachment, Conversation, DialoguePair, Message
 from polylogue.lib.pricing import harmonize_session_cost
+from polylogue.lib.projections import ConversationProjection
 from tests.infra.assertions import assert_contains_all, assert_not_contains_any
 from tests.infra.builders import make_conv, make_msg
 
@@ -122,7 +122,7 @@ class TestDialoguePairContracts:
         ],
     )
     def test_dialogue_pair_role_contract(
-        self: Any,
+        self,
         user_role: str,
         assistant_role: str,
         should_pass: bool,
@@ -138,7 +138,7 @@ class TestDialoguePairContracts:
             with pytest.raises(ValueError, match=error):
                 DialoguePair(user=user, assistant=assistant)
 
-    def test_dialogue_pair_exchange_and_semantic_payload(self: Any) -> None:
+    def test_dialogue_pair_exchange_and_semantic_payload(self) -> None:
         pair = DialoguePair(
             user=make_msg(id="u1", role="user", text="Hard problem"),
             assistant=make_msg(
@@ -170,7 +170,7 @@ class TestMessageSemanticProjection:
         ids=["content_blocks", "multiple_blocks", "gemini", "chatgpt", "non_thinking"],
     )
     def test_extract_thinking_projection_contract(
-        self: Any,
+        self,
         provider_meta: dict[str, object] | None,
         text: str,
         expected: str | None,
@@ -189,7 +189,7 @@ class TestMessageSemanticProjection:
         ],
     )
     def test_message_metadata_projection_contract(
-        self: Any,
+        self,
         provider_meta: dict[str, object] | None,
         expected_cost: float | None,
         expected_duration: int | None,
@@ -198,7 +198,7 @@ class TestMessageSemanticProjection:
         assert msg.cost_usd == expected_cost
         assert msg.duration_ms == expected_duration
 
-    def test_message_attachments_and_classification_contract(self: Any) -> None:
+    def test_message_attachments_and_classification_contract(self) -> None:
         attachment = Attachment(
             id="att-1",
             name="doc.pdf",
@@ -226,7 +226,7 @@ class TestMessageSemanticProjection:
         assert thinking.is_thinking is True
         assert tool.is_tool_use is True
 
-    def test_context_wrappers_are_context_dumps(self: Any) -> None:
+    def test_context_wrappers_are_context_dumps(self) -> None:
         msg = make_msg(
             id="m1",
             role="user",
@@ -234,7 +234,7 @@ class TestMessageSemanticProjection:
         )
         assert msg.is_context_dump is True
 
-    def test_multiline_context_markers_are_context_dumps(self: Any) -> None:
+    def test_multiline_context_markers_are_context_dumps(self) -> None:
         contents_dump = make_msg(
             id="m2",
             role="user",
@@ -251,7 +251,7 @@ class TestMessageSemanticProjection:
 
 
 class TestConversationMetadataAndAggregation:
-    def test_title_summary_tags_and_display_contract(self: Any, conversation_with_metadata: Conversation) -> None:
+    def test_title_summary_tags_and_display_contract(self, conversation_with_metadata: Conversation) -> None:
         assert conversation_with_metadata.user_title is None
         assert conversation_with_metadata.display_title == "Complex Conversation"
         assert conversation_with_metadata.summary == "A test conversation"
@@ -267,7 +267,7 @@ class TestConversationMetadataAndAggregation:
         assert fallback.display_title == "abc123de"
         assert fallback.tags == []
 
-    def test_cost_duration_branch_and_equality_contract(self: Any, conversation_with_metadata: Conversation) -> None:
+    def test_cost_duration_branch_and_equality_contract(self, conversation_with_metadata: Conversation) -> None:
         assert conversation_with_metadata.total_cost_usd == 0.015
         assert conversation_with_metadata.total_duration_ms == 5500
 
@@ -289,7 +289,7 @@ class TestConversationMetadataAndAggregation:
         assert branched.assistant_message_count == 3
         assert conversation_with_metadata.model_copy() == conversation_with_metadata
 
-    def test_cost_duration_fall_back_to_conversation_provider_meta(self: Any) -> None:
+    def test_cost_duration_fall_back_to_conversation_provider_meta(self) -> None:
         conversation = make_conv(
             id="claude-code-session",
             provider="claude-code",
@@ -361,12 +361,12 @@ VIEW_CASES = [
 
 class TestConversationViewsAndIteration:
     @pytest.mark.parametrize("case", VIEW_CASES, ids=lambda case: case.name)
-    def test_view_projection_contract(self: Any, case: ViewCase) -> None:
+    def test_view_projection_contract(self, case: ViewCase) -> None:
         conversation = make_conv(id="c1", provider="test", messages=MessageCollection(messages=case.messages))
         projected = getattr(conversation, case.view)()
         assert tuple(message.id for message in projected.messages) == case.expected_ids
 
-    def test_iterators_share_projection_contract(self: Any, dialogue_noise_mix: Conversation) -> None:
+    def test_iterators_share_projection_contract(self, dialogue_noise_mix: Conversation) -> None:
         assert [message.id for message in dialogue_noise_mix.iter_dialogue()] == ["u1", "a1", "a2", "a3"]
         assert [message.id for message in dialogue_noise_mix.iter_substantive()] == ["u1", "a1"]
         assert list(dialogue_noise_mix.iter_thinking()) == ["Reasoning trace"]
@@ -403,14 +403,14 @@ class TestConversationViewsAndIteration:
         ids=["paired", "orphan_user", "out_of_order"],
     )
     def test_iter_pairs_contract(
-        self: Any,
+        self,
         messages: list[Message],
         expected_pairs: list[tuple[str, str]],
     ) -> None:
         conversation = make_conv(id="c1", provider="test", messages=MessageCollection(messages=messages))
         assert [(pair.user.id, pair.assistant.id) for pair in conversation.iter_pairs()] == expected_pairs
 
-    def test_iter_branches_contract(self: Any) -> None:
+    def test_iter_branches_contract(self) -> None:
         conversation = make_conv(
             id="c1",
             provider="claude-ai",
@@ -430,7 +430,7 @@ class TestConversationViewsAndIteration:
 
 
 class TestConversationProjectionContracts:
-    def test_projection_count_and_execute_contract(self: Any, projection_conversation: Conversation) -> None:
+    def test_projection_count_and_execute_contract(self, projection_conversation: Conversation) -> None:
         projection = projection_conversation.project()
         assert projection.count() == 4
         assert [message.id for message in projection.to_list()] == ["u1", "a1", "u2", "a2"]
@@ -448,9 +448,9 @@ class TestConversationProjectionContracts:
         ],
     )
     def test_projection_window_contract_matrix(
-        self: Any,
+        self,
         projection_conversation: Conversation,
-        projector: Callable[[Any], Any],
+        projector: Callable[[ConversationProjection], ConversationProjection],
         expected_ids: list[str],
     ) -> None:
         projection = projector(projection_conversation.project())
@@ -459,7 +459,7 @@ class TestConversationProjectionContracts:
 
 class TestConversationRendering:
     @pytest.fixture
-    def render_cases(self: Any) -> list[RenderCase]:
+    def render_cases(self) -> list[RenderCase]:
         unicode_conv = make_conv(
             id="unicode",
             provider="test",
@@ -546,12 +546,12 @@ class TestConversationRendering:
         ]
 
     @pytest.mark.parametrize("include_empty", [True, False])
-    def test_empty_conversation_rendering_contract(self: Any, include_empty: bool) -> None:
+    def test_empty_conversation_rendering_contract(self, include_empty: bool) -> None:
         conversation = make_conv(id="empty", provider="test", messages=MessageCollection(messages=[]))
         assert conversation.to_text() == ""
         assert conversation.to_clean_text() == ""
 
-    def test_render_contract_matrix(self: Any, render_cases: list[RenderCase]) -> None:
+    def test_render_contract_matrix(self, render_cases: list[RenderCase]) -> None:
         for case in render_cases:
             rendered = getattr(case.conversation, case.method)(**(case.kwargs or {}))
             assert_contains_all(rendered, *case.expected)
