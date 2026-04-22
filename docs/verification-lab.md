@@ -18,7 +18,7 @@ Selected vertical slices:
 | Routing | `devtools affected-obligations` | Map changed paths or refs to affected proof obligations and focused verification commands. |
 | Evidence | `devtools semantic-axis-evidence` | Produce comparative proof-envelope performance evidence across semantic scale tiers. |
 | Corpus | `devtools lab-corpus` | Generate raw synthetic corpus fixtures or seed complete demo archive workspaces for lab runs. |
-| Scenarios | `devtools lab-scenario` | Run showcase exercise scenario sets outside the product CLI. |
+| Scenarios | `devtools lab-scenario` | Run showcase exercise scenario sets and committed showcase baseline checks outside the product CLI. |
 
 This surface is intentionally a repo operator surface. It works over proof
 subjects, generated docs, changed files, evidence envelopes, and local
@@ -88,6 +88,7 @@ The showcase exercise smoke flow also moved to the lab surface:
 
 ```bash
 devtools lab-scenario run archive-smoke --tier 0
+devtools lab-scenario verify-baselines
 ```
 
 `polylogue audit` remains the product/archive QA command for schema audit and
