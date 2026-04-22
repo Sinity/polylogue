@@ -6,7 +6,6 @@ import sqlite3
 
 import aiosqlite
 
-from polylogue.errors import DatabaseError
 from polylogue.logging import get_logger
 from polylogue.storage.backends.schema_bootstrap import (
     SCHEMA_DDL,
@@ -19,9 +18,9 @@ from polylogue.storage.backends.schema_bootstrap import (
     build_current_schema_extension_plan,
     capture_schema_snapshot,
     capture_schema_snapshot_async,
+    decide_schema_bootstrap,
     ensure_vec0_table,
     ensure_vec0_table_async,
-    schema_version_mismatch_message,
 )
 
 logger = get_logger(__name__)
@@ -47,16 +46,22 @@ def _log_index_replacement(snapshot: SchemaSnapshot, plan: SchemaExtensionPlan) 
         logger.info("Replacing idx_raw_conv_source_mtime with partial covering definition")
 
 
-def _apply_extensions_for_snapshot(conn: sqlite3.Connection, snapshot: SchemaSnapshot) -> None:
-    plan = build_current_schema_extension_plan(snapshot)
+def _apply_extensions_for_plan(
+    conn: sqlite3.Connection,
+    snapshot: SchemaSnapshot,
+    plan: SchemaExtensionPlan,
+) -> None:
     _log_index_replacement(snapshot, plan)
     apply_schema_extension_plan(conn, plan)
     ensure_vec0_table(conn)
     conn.commit()
 
 
-async def _apply_extensions_for_snapshot_async(conn: aiosqlite.Connection, snapshot: SchemaSnapshot) -> None:
-    plan = build_current_schema_extension_plan(snapshot)
+async def _apply_extensions_for_plan_async(
+    conn: aiosqlite.Connection,
+    snapshot: SchemaSnapshot,
+    plan: SchemaExtensionPlan,
+) -> None:
     _log_index_replacement(snapshot, plan)
     await apply_schema_extension_plan_async(conn, plan)
     await ensure_vec0_table_async(conn)
@@ -64,7 +69,10 @@ async def _apply_extensions_for_snapshot_async(conn: aiosqlite.Connection, snaps
 
 
 def apply_current_schema_extensions(conn: sqlite3.Connection) -> None:
-    _apply_extensions_for_snapshot(conn, capture_schema_snapshot(conn))
+    snapshot = capture_schema_snapshot(conn)
+    decision = decide_schema_bootstrap(snapshot)
+    if decision.action == "apply_current_extensions" and decision.extension_plan is not None:
+        _apply_extensions_for_plan(conn, snapshot, decision.extension_plan)
 
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
@@ -75,7 +83,9 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     """
     snapshot = capture_schema_snapshot(conn)
 
-    if snapshot.current_version == 0:
+    decision = decide_schema_bootstrap(snapshot)
+
+    if decision.action == "create_fresh":
         conn.execute("PRAGMA foreign_keys = ON")
         conn.executescript(SCHEMA_DDL)
         ensure_vec0_table(conn)
@@ -84,12 +94,8 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         logger.debug("Created fresh schema v%s", SCHEMA_VERSION)
         return
 
-    assert_supported_archive_layout_snapshot(snapshot)
-
-    if snapshot.current_version != SCHEMA_VERSION:
-        raise DatabaseError(schema_version_mismatch_message(snapshot.current_version))
-
-    _apply_extensions_for_snapshot(conn, snapshot)
+    if decision.extension_plan is not None:
+        _apply_extensions_for_plan(conn, snapshot, decision.extension_plan)
 
 
 async def ensure_schema_async(conn: aiosqlite.Connection) -> None:
@@ -100,7 +106,9 @@ async def ensure_schema_async(conn: aiosqlite.Connection) -> None:
     """
     snapshot = await capture_schema_snapshot_async(conn)
 
-    if snapshot.current_version == 0:
+    decision = decide_schema_bootstrap(snapshot)
+
+    if decision.action == "create_fresh":
         await conn.execute("PRAGMA foreign_keys = ON")
         await conn.executescript(SCHEMA_DDL)
         await ensure_vec0_table_async(conn)
@@ -108,12 +116,8 @@ async def ensure_schema_async(conn: aiosqlite.Connection) -> None:
         await conn.commit()
         return
 
-    assert_supported_archive_layout_snapshot(snapshot)
-
-    if snapshot.current_version != SCHEMA_VERSION:
-        raise DatabaseError(schema_version_mismatch_message(snapshot.current_version))
-
-    await _apply_extensions_for_snapshot_async(conn, snapshot)
+    if decision.extension_plan is not None:
+        await _apply_extensions_for_plan_async(conn, snapshot, decision.extension_plan)
 
 
 __all__ = [

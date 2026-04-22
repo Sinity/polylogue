@@ -6,6 +6,8 @@ import sqlite3
 
 import aiosqlite
 
+from polylogue.storage.backends.sqlite_vec_extension import try_load_sqlite_vec_async
+
 
 def _table_exists_sync(conn: sqlite3.Connection, table_name: str) -> bool:
     row = conn.execute(
@@ -26,19 +28,8 @@ async def _table_exists_async(conn: aiosqlite.Connection, table_name: str) -> bo
 
 
 async def _ensure_sqlite_vec_async(conn: aiosqlite.Connection) -> bool:
-    try:
-        import sqlite_vec
-
-        await conn.enable_load_extension(True)
-        try:
-            await conn.load_extension(sqlite_vec.loadable_path())
-            return True
-        finally:
-            await conn.enable_load_extension(False)
-    except ImportError:
-        return False
-    except Exception:
-        return False
+    loaded, _error = await try_load_sqlite_vec_async(conn)
+    return loaded
 
 
 def _invalidate_embedding_state_sync(conn: sqlite3.Connection, conversation_id: str) -> None:

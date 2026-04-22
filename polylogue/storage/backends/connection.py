@@ -11,41 +11,24 @@ from typing import TYPE_CHECKING
 
 import polylogue.paths as _paths
 from polylogue.logging import get_logger
+from polylogue.storage.backends.connection_profile import (
+    DB_TIMEOUT,
+    READ_CACHE_SIZE_KIB,
+    READ_CONNECTION_PRAGMA_STATEMENTS,
+    READ_DB_TIMEOUT,
+    READ_MMAP_SIZE_BYTES,
+    WAL_AUTOCHECKPOINT_PAGES,
+    WRITE_CACHE_SIZE_KIB,
+    WRITE_CONNECTION_PRAGMA_STATEMENTS,
+    WRITE_MMAP_SIZE_BYTES,
+)
 from polylogue.storage.backends.schema import _ensure_schema
+from polylogue.storage.backends.sqlite_vec_extension import try_load_sqlite_vec
 
 if TYPE_CHECKING:
     from polylogue.storage.backends.async_sqlite import SQLiteBackend
 
 logger = get_logger(__name__)
-
-# Default SQLite connection timeout in seconds for writer-style connections.
-# Read/query paths should use a shorter read-only timeout and avoid write-ish
-# setup pragmas so they can observe the archive while a bulk ingest is active.
-DB_TIMEOUT = 30
-READ_DB_TIMEOUT = 1
-WRITE_CACHE_SIZE_KIB = 131072  # 128 MiB
-READ_CACHE_SIZE_KIB = 32768  # 32 MiB
-WRITE_MMAP_SIZE_BYTES = 1073741824  # 1 GiB
-READ_MMAP_SIZE_BYTES = 134217728  # 128 MiB
-WAL_AUTOCHECKPOINT_PAGES = 10000
-
-WRITE_CONNECTION_PRAGMA_STATEMENTS: tuple[str, ...] = (
-    "PRAGMA foreign_keys = ON",
-    "PRAGMA journal_mode=WAL",
-    f"PRAGMA busy_timeout = {DB_TIMEOUT * 1000}",
-    f"PRAGMA cache_size = -{WRITE_CACHE_SIZE_KIB}",
-    "PRAGMA synchronous = NORMAL",
-    f"PRAGMA mmap_size = {WRITE_MMAP_SIZE_BYTES}",
-    "PRAGMA temp_store = MEMORY",
-    f"PRAGMA wal_autocheckpoint = {WAL_AUTOCHECKPOINT_PAGES}",
-)
-
-READ_CONNECTION_PRAGMA_STATEMENTS: tuple[str, ...] = (
-    f"PRAGMA busy_timeout = {READ_DB_TIMEOUT * 1000}",
-    f"PRAGMA cache_size = -{READ_CACHE_SIZE_KIB}",
-    f"PRAGMA mmap_size = {READ_MMAP_SIZE_BYTES}",
-    "PRAGMA temp_store = MEMORY",
-)
 
 
 def _apply_pragma_statements(conn: sqlite3.Connection, statements: Sequence[str]) -> None:
@@ -64,20 +47,14 @@ def _load_sqlite_vec(conn: sqlite3.Connection) -> bool:
     extensions. We re-disable it after loading for security (prevents untrusted
     SQL from loading arbitrary extensions).
     """
-    try:
-        import sqlite_vec
-
-        conn.enable_load_extension(True)
-        try:
-            sqlite_vec.load(conn)
-            return True
-        finally:
-            conn.enable_load_extension(False)
-    except ImportError:
+    loaded, error = try_load_sqlite_vec(conn)
+    if loaded:
+        return True
+    if isinstance(error, ImportError):
         return False
-    except Exception as exc:
-        logger.warning("sqlite-vec extension load failed: %s", exc)
-        return False
+    if error is not None:
+        logger.warning("sqlite-vec extension load failed: %s", error)
+    return False
 
 
 def _configure_read_connection(conn: sqlite3.Connection) -> None:
@@ -237,11 +214,14 @@ def _build_provider_scope_filter(
 
 __all__ = [
     "DB_TIMEOUT",
+    "READ_CACHE_SIZE_KIB",
     "READ_CONNECTION_PRAGMA_STATEMENTS",
     "READ_MMAP_SIZE_BYTES",
     "READ_DB_TIMEOUT",
     "WAL_AUTOCHECKPOINT_PAGES",
+    "WRITE_CACHE_SIZE_KIB",
     "WRITE_CONNECTION_PRAGMA_STATEMENTS",
+    "WRITE_MMAP_SIZE_BYTES",
     "_build_provider_scope_filter",
     "_build_scope_filter",
     "_build_source_scope_filter",
