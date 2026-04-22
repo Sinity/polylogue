@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from polylogue.lib.models import Conversation
+    from polylogue.lib.query_miss_diagnostics import QueryMissDiagnostics, QueryMissReason
     from polylogue.lib.stats import ArchiveStats
     from polylogue.readiness import ReadinessCheck, ReadinessReport
 
@@ -56,11 +57,64 @@ class MCPConversationSummaryListPayload(MCPRootPayload[list[MCPConversationSumma
     root: list[MCPConversationSummaryPayload]
 
 
+class MCPQueryMissReasonPayload(SurfacePayloadModel):
+    code: str
+    severity: str
+    summary: str
+    detail: str | None = None
+    count: int | None = None
+
+    @classmethod
+    def from_reason(cls, reason: QueryMissReason) -> MCPQueryMissReasonPayload:
+        return cls(
+            code=reason.code,
+            severity=reason.severity,
+            summary=reason.summary,
+            detail=reason.detail,
+            count=reason.count,
+        )
+
+
+class MCPQueryMissDiagnosticsPayload(SurfacePayloadModel):
+    message: str
+    filters: tuple[str, ...]
+    reasons: tuple[MCPQueryMissReasonPayload, ...]
+    archive_conversation_count: int | None = None
+    raw_conversation_count: int | None = None
+
+    @classmethod
+    def from_diagnostics(cls, diagnostics: QueryMissDiagnostics) -> MCPQueryMissDiagnosticsPayload:
+        return cls(
+            message=diagnostics.message,
+            filters=diagnostics.filters,
+            reasons=tuple(MCPQueryMissReasonPayload.from_reason(reason) for reason in diagnostics.reasons),
+            archive_conversation_count=diagnostics.archive_conversation_count,
+            raw_conversation_count=diagnostics.raw_conversation_count,
+        )
+
+
+class MCPConversationQueryNoResultsPayload(SurfacePayloadModel):
+    results: tuple[MCPConversationSummaryPayload, ...] = ()
+    diagnostics: MCPQueryMissDiagnosticsPayload
+
+
 def conversation_summary_list_payload(
     conversations: Sequence[Conversation],
 ) -> MCPConversationSummaryListPayload:
     return MCPConversationSummaryListPayload(
         root=[MCPConversationSummaryPayload.from_conversation(conv) for conv in conversations]
+    )
+
+
+def conversation_query_result_payload(
+    conversations: Sequence[Conversation],
+    *,
+    diagnostics: QueryMissDiagnostics | None = None,
+) -> MCPConversationSummaryListPayload | MCPConversationQueryNoResultsPayload:
+    if conversations or diagnostics is None:
+        return conversation_summary_list_payload(conversations)
+    return MCPConversationQueryNoResultsPayload(
+        diagnostics=MCPQueryMissDiagnosticsPayload.from_diagnostics(diagnostics),
     )
 
 
@@ -210,6 +264,7 @@ class MCPReadinessReportPayload(SurfacePayloadModel):
 __all__ = [
     "MCPArchiveStatsPayload",
     "MCPConversationDetailPayload",
+    "MCPConversationQueryNoResultsPayload",
     "MCPConversationSummaryListPayload",
     "MCPConversationSummaryPayload",
     "MCPErrorPayload",
@@ -220,8 +275,11 @@ __all__ = [
     "MCPMetadataPayload",
     "MCPRootPayload",
     "MCPMutationStatusPayload",
+    "MCPQueryMissDiagnosticsPayload",
+    "MCPQueryMissReasonPayload",
     "MCPStatsByPayload",
     "MCPTagCountsPayload",
+    "conversation_query_result_payload",
     "conversation_summary_list_payload",
     "model_json_document",
     "normalize_role",

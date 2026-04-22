@@ -40,6 +40,8 @@ if TYPE_CHECKING:
     from polylogue.config import Config
     from polylogue.lib.filters import ConversationFilter
     from polylogue.lib.models import Conversation, ConversationSummary
+    from polylogue.lib.query_miss_diagnostics import QueryMissDiagnostics
+    from polylogue.lib.query_spec import ConversationQuerySpec
     from polylogue.protocols import (
         ConversationArchiveStatsStore,
         ConversationQueryRuntimeStore,
@@ -76,12 +78,14 @@ def no_results(
     env: AppEnv,
     params: QueryParams,
     *,
+    diagnostics: QueryMissDiagnostics | None = None,
     exit_code: int | None = 2,
 ) -> None:
     """Emit the canonical query no-results message."""
     emit_no_results(
         env,
         selection=coerce_query_spec(params),
+        diagnostics=diagnostics,
         output_format=str(params.get("output_format") or "text"),
         exit_code=exit_code,
     )
@@ -283,6 +287,17 @@ def _stats_dimension(plan: QueryExecutionPlan) -> str:
     return plan.stats_dimension or "all"
 
 
+async def _diagnose_query_miss(
+    repo: QueryExecutionStore,
+    selection: ConversationQuerySpec,
+    *,
+    config: Config,
+) -> QueryMissDiagnostics:
+    from polylogue.lib.query_miss_diagnostics import diagnose_query_miss
+
+    return await diagnose_query_miss(repo, selection, config=config)
+
+
 async def _semantic_stats_summaries(
     repo: QueryExecutionStore,
     filter_chain: ConversationFilter,
@@ -376,7 +391,8 @@ async def async_execute_query_request(env: AppEnv, request: RootModeRequest) -> 
     if route == QueryRoute.SUMMARY_LIST:
         summary_results = await filter_chain.list_summaries()
         if not summary_results:
-            no_results(env, params)
+            summary_diagnostics = await _diagnose_query_miss(repo, plan.selection, config=config)
+            no_results(env, params, diagnostics=summary_diagnostics)
         await _query_output._output_summary_list(env, summary_results, plan.output, repo)
         return
 
@@ -459,7 +475,14 @@ async def async_execute_query_request(env: AppEnv, request: RootModeRequest) -> 
             open_results: Sequence[Conversation | ConversationSummary] = await filter_chain.list_summaries()
         else:
             open_results = await filter_chain.list()
-        _query_output._open_result(env, open_results, plan.output, selection=plan.selection)
+        open_diagnostics = await _diagnose_query_miss(repo, plan.selection, config=config) if not open_results else None
+        _query_output._open_result(
+            env,
+            open_results,
+            plan.output,
+            selection=plan.selection,
+            diagnostics=open_diagnostics,
+        )
         return
 
     if route in {QueryRoute.MODIFY, QueryRoute.SUMMARY_MODIFY}:
@@ -492,7 +515,16 @@ async def async_execute_query_request(env: AppEnv, request: RootModeRequest) -> 
 
     conversation_results = await filter_chain.list()
     projected_results = project_query_results(conversation_results, plan)
-    _query_output.output_results(env, projected_results, plan.output, selection=plan.selection)
+    output_diagnostics = (
+        await _diagnose_query_miss(repo, plan.selection, config=config) if not projected_results else None
+    )
+    _query_output.output_results(
+        env,
+        projected_results,
+        plan.output,
+        selection=plan.selection,
+        diagnostics=output_diagnostics,
+    )
 
 
 __all__ = [
