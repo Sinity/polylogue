@@ -11,6 +11,7 @@ from devtools.command_catalog import (
     control_plane_command,
     featured_command_specs,
     grouped_command_specs,
+    verification_lab_command_specs,
 )
 from devtools.render_support import write_if_changed
 
@@ -45,9 +46,28 @@ def _render_featured_commands(commands: tuple[CommandSpec, ...]) -> list[str]:
     return lines
 
 
+def _render_verification_lab_surface(commands: tuple[CommandSpec, ...]) -> list[str]:
+    if not commands:
+        return []
+    lines = [
+        "## Verification Lab Surface",
+        "",
+        "The proof-lab operator surface intentionally lives in `devtools` for now. These commands operate on",
+        "repo proof obligations and evidence records, not end-user archive workflows.",
+        "",
+        "| Command | Role |",
+        "| --- | --- |",
+    ]
+    for spec in commands:
+        lines.append(f"| `{spec.invocation}` | {spec.use_when or spec.description} |")
+    lines.append("")
+    return lines
+
+
 def build_command_catalog() -> str:
     groups = grouped_command_specs()
     featured = featured_command_specs()
+    verification_lab = verification_lab_command_specs()
     lines = [
         "<!-- BEGIN GENERATED: devtools-command-catalog -->",
         "## Command Catalog",
@@ -63,6 +83,7 @@ def build_command_catalog() -> str:
         "```",
         "",
     ]
+    lines.extend(_render_verification_lab_surface(verification_lab))
     if featured:
         lines.extend(_render_featured_commands(featured))
     for category, commands in groups.items():

@@ -39,6 +39,11 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "docs/verification-catalog.md",
         "Generated proof-obligation subjects, claims, runners, and catalog self-checks.",
     ),
+    DocsEntry(
+        "Verification Lab",
+        "docs/verification-lab.md",
+        "Accepted command-surface decision for proof catalog, routing, and evidence operators.",
+    ),
 )
 
 REPO_GUIDE_ENTRIES: tuple[DocsEntry, ...] = (

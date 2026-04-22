@@ -20,6 +20,7 @@ This directory holds the current repository-facing documentation.
 | [Providers](providers/README.md) | Provider-specific parsing and export-format notes. |
 | [Test Quality Workflows](test-quality-workflows.md) | Generated validation lanes, mutation campaigns, and benchmark campaigns. |
 | [Verification Catalog](verification-catalog.md) | Generated proof-obligation subjects, claims, runners, and catalog self-checks. |
+| [Verification Lab](verification-lab.md) | Accepted command-surface decision for proof catalog, routing, and evidence operators. |
 
 ## Repository Guides
 
