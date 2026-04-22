@@ -11,6 +11,7 @@ import click
 from polylogue.cli.command_inventory import CommandPath, iter_command_paths
 from polylogue.lib.json import JSONDocument, json_document, json_document_list, require_json_value
 from polylogue.lib.provider_capabilities import iter_provider_capabilities
+from polylogue.operations import build_declared_operation_catalog
 from polylogue.proof.models import SourceSpan, SubjectRef
 from polylogue.schemas.packages import SchemaVersionPackage
 from polylogue.schemas.runtime_registry import SCHEMA_DIR, SchemaRegistry
@@ -145,6 +146,56 @@ def provider_capability_subjects() -> tuple[SubjectRef, ...]:
     return tuple(sorted(subjects, key=lambda subject: subject.id))
 
 
+def operation_spec_subjects() -> tuple[SubjectRef, ...]:
+    """Compile declared operation specifications into proof subjects."""
+    subjects = [
+        SubjectRef(
+            kind="operation.spec",
+            id=f"operation.spec.{operation.name}",
+            attrs=operation.to_dict(),
+            source_span=SourceSpan(path="polylogue/operations/specs.py", symbol=operation.name),
+        )
+        for operation in build_declared_operation_catalog().specs
+    ]
+    return tuple(sorted(subjects, key=lambda subject: subject.id))
+
+
+def workflow_claim_subjects() -> tuple[SubjectRef, ...]:
+    """Compile durable workflow claims that are not coupled to GitHub runtime state."""
+    return (
+        SubjectRef(
+            kind="workflow.claim",
+            id="workflow.claim.generated_surfaces_current",
+            attrs=_json_document(
+                {
+                    "claim_family": "generated-surfaces",
+                    "required_command": "devtools render-all --check",
+                    "source_changes": [
+                        "CLI help",
+                        "devtools command catalog",
+                        "proof catalog",
+                        "quality registry",
+                        "agent memory",
+                    ],
+                }
+            ),
+            source_span=SourceSpan(path="devtools/generated_surfaces.py", symbol="GENERATED_SURFACES"),
+        ),
+        SubjectRef(
+            kind="workflow.claim",
+            id="workflow.claim.pr_verification_recorded",
+            attrs=_json_document(
+                {
+                    "claim_family": "pr-body",
+                    "required_sections": ["Summary", "Problem", "Solution", "Verification"],
+                    "required_linking": ["Ref #<issue>", "Closes #<issue>"],
+                }
+            ),
+            source_span=SourceSpan(path="CONTRIBUTING.md", symbol="Pull Requests"),
+        ),
+    )
+
+
 def _command_subject(command_path: CommandPath) -> SubjectRef:
     is_root = not command_path.path
     command_id = "polylogue" if is_root else f"polylogue {' '.join(command_path.path)}"
@@ -206,7 +257,9 @@ def build_catalog_subjects() -> tuple[SubjectRef, ...]:
         *json_command_subjects(),
         *query_law_subjects(),
         *provider_capability_subjects(),
+        *operation_spec_subjects(),
         *schema_annotation_subjects(),
+        *workflow_claim_subjects(),
     )
 
 
@@ -408,7 +461,9 @@ __all__ = [
     "build_catalog_subjects",
     "command_subjects",
     "json_command_subjects",
+    "operation_spec_subjects",
     "provider_capability_subjects",
     "query_law_subjects",
     "schema_annotation_subjects",
+    "workflow_claim_subjects",
 ]
