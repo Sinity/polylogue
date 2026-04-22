@@ -294,6 +294,10 @@ def _apply_filter_spec(f: ConversationFilter, spec: FilterSpec) -> ConversationF
     return f
 
 
+def _conversation_ids(conversations: list[Conversation]) -> list[str]:
+    return [str(conversation.id) for conversation in conversations]
+
+
 @given(filter_chain_strategy(min_filters=1, max_filters=4))
 @settings(max_examples=30, suppress_health_check=[HealthCheck.too_slow])
 def test_filter_chain_never_crashes_on_build(chain: list[FilterSpec]) -> None:
@@ -409,6 +413,44 @@ async def test_filter_idempotence_exclude(filter_repo: ConversationRepository) -
     once = await ConversationFilter(filter_repo).exclude_provider("claude-ai").list()
     twice = await ConversationFilter(filter_repo).exclude_provider("claude-ai").exclude_provider("claude-ai").list()
     assert {c.id for c in once} == {c.id for c in twice}
+
+
+# =============================================================================
+# Property: Filter semantic oracles for mutation-frontier campaigns
+# =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_provider_filter_list_count_subset_and_order_law(filter_repo: ConversationRepository) -> None:
+    """Provider filtering agrees across list/count and preserves base result order."""
+    all_items = await ConversationFilter(filter_repo).list()
+    filtered = await ConversationFilter(filter_repo).provider("claude-ai").list()
+    expected = [conversation for conversation in all_items if conversation.provider == "claude-ai"]
+
+    assert _conversation_ids(filtered) == _conversation_ids(expected)
+    assert await ConversationFilter(filter_repo).provider("claude-ai").count() == len(filtered)
+    assert all(conversation.provider == "claude-ai" for conversation in filtered)
+
+
+@pytest.mark.asyncio
+async def test_equivalent_filter_order_list_count_and_first_law(filter_repo: ConversationRepository) -> None:
+    """Commutative filter constraints must agree across all terminal methods."""
+    provider_then_title = await ConversationFilter(filter_repo).provider("claude-ai").title("Python").list()
+    title_then_provider = await ConversationFilter(filter_repo).title("Python").provider("claude-ai").list()
+
+    assert _conversation_ids(provider_then_title) == _conversation_ids(title_then_provider)
+    assert await ConversationFilter(filter_repo).provider("claude-ai").title("Python").count() == len(
+        provider_then_title
+    )
+    assert await ConversationFilter(filter_repo).title("Python").provider("claude-ai").count() == len(
+        title_then_provider
+    )
+
+    first_provider_then_title = await ConversationFilter(filter_repo).provider("claude-ai").title("Python").first()
+    first_title_then_provider = await ConversationFilter(filter_repo).title("Python").provider("claude-ai").first()
+    assert first_provider_then_title is not None
+    assert first_title_then_provider is not None
+    assert first_provider_then_title.id == first_title_then_provider.id
 
 
 # =============================================================================
