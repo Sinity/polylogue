@@ -196,7 +196,7 @@
     --version                       Show the version and exit.
     -h, --help                      Show this message and exit.
   Commands:
-    audit        Run composable QA: schema audit, exercises, and invariant...
+    audit        Run archive QA: schema audit and artifact proof checks.
     auth         Authenticate with external services (Google Drive for...
     completions  Generate shell completion scripts.
     count        Print count of matched conversations.
@@ -352,8 +352,8 @@
     -h, --help                      Show this message and exit
   .
   Commands:
-    audit        Run composable QA: schema audit, exercises, a
-  nd invariant...
+    audit        Run archive QA: schema audit and artifact pro
+  of checks.
     auth         Authenticate with external services (Google D
   rive for...
     completions  Generate shell completion scripts.
@@ -475,7 +475,7 @@
     --version                       Show the version and exit.
     -h, --help                      Show this message and exit.
   Commands:
-    audit        Run composable QA: schema audit, exercises, and invariant...
+    audit        Run archive QA: schema audit and artifact proof checks.
     auth         Authenticate with external services (Google Drive for...
     completions  Generate shell completion scripts.
     count        Print count of matched conversations.

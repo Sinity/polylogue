@@ -17,12 +17,14 @@ Selected vertical slices:
 | Catalog | `devtools render-verification-catalog` | Render and check the proof-obligation catalog generated from subjects, claims, runners, and compiled obligations. |
 | Routing | `devtools affected-obligations` | Map changed paths or refs to affected proof obligations and focused verification commands. |
 | Evidence | `devtools semantic-axis-evidence` | Produce comparative proof-envelope performance evidence across semantic scale tiers. |
+| Corpus | `devtools lab-corpus` | Generate raw synthetic corpus fixtures or seed complete demo archive workspaces for lab runs. |
+| Scenarios | `devtools lab-scenario` | Run showcase exercise scenario sets outside the product CLI. |
 
 This surface is intentionally a repo operator surface. It works over proof
 subjects, generated docs, changed files, evidence envelopes, and local
 verification artifacts. Product/archive-facing checks remain in the product CLI
 where they already belong, such as `polylogue doctor --proof`, schema proof
-rendering, and archive audit exercises.
+rendering, and archive audit/proof checks.
 
 ## Catalog Grounding
 
@@ -40,6 +42,8 @@ That means the first lab surface can be explicit without moving command
 implementations. `devtools render-verification-catalog` is the catalog slice,
 `devtools affected-obligations` is the routing slice, and
 `devtools semantic-axis-evidence` is the first comparative evidence slice.
+`devtools lab-corpus` and `devtools lab-scenario` carry synthetic/demo and
+showcase exercise work that used to overload `polylogue audit`.
 
 ## Alternatives Rejected
 
@@ -69,3 +73,22 @@ selected surface, so agents and scripts can discover it without scraping prose.
 If a future command must operate on user archives rather than repo proof
 obligations, it belongs in the product CLI or API first, not in the
 verification-lab surface.
+
+## Migration Notes
+
+`polylogue audit generate` was removed immediately instead of retained as an
+alias. Use:
+
+```bash
+devtools lab-corpus generate
+devtools lab-corpus seed --env-only
+```
+
+The showcase exercise smoke flow also moved to the lab surface:
+
+```bash
+devtools lab-scenario run archive-smoke --tier 0
+```
+
+`polylogue audit` remains the product/archive QA command for schema audit and
+artifact proof checks.

@@ -64,25 +64,6 @@
       "tier": 0
     },
     {
-      "name": "help-audit-generate",
-      "group": "structural",
-      "description": "Audit generate subcommand help",
-      "execution": {
-        "kind": "polylogue",
-        "argv": [
-          "audit",
-          "generate",
-          "--help"
-        ]
-      },
-      "assertion": {
-        "stdout_contains": [
-          "--seed"
-        ]
-      },
-      "tier": 0
-    },
-    {
       "name": "help-audit",
       "group": "structural",
       "description": "Audit subcommand help",

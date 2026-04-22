@@ -29,6 +29,8 @@ repo proof obligations and evidence records, not end-user archive workflows.
 | `devtools render-verification-catalog` | Refresh or verify the proof-obligation catalog that anchors the verification-lab surface after changing proof subjects, claims, runners, or catalog rendering. |
 | `devtools affected-obligations` | Find the proof obligations and inner-loop checks affected by local changes before escalating to full PR gates. |
 | `devtools semantic-axis-evidence` | Produce comparative performance evidence that describes growth shape over semantic axes instead of machine-specific absolute budgets. |
+| `devtools lab-corpus` | Seed synthetic corpus files or complete demo workspaces for lab exercises. |
+| `devtools lab-scenario` | Run showcase exercise smoke scenarios outside the product CLI. |
 
 ## Core Loop
 
@@ -70,6 +72,8 @@ These are the commands worth remembering during normal repo work:
 | --- | --- |
 | `devtools affected-obligations` | Route changed paths or refs to affected verification-lab proof obligations and focused checks. |
 | `devtools artifact-graph` | Render the runtime artifact, operation, and scenario-coverage map. |
+| `devtools lab-corpus` | Generate verification-lab synthetic corpus fixtures and demo archives. |
+| `devtools lab-scenario` | Run verification-lab showcase scenario sets. |
 | `devtools pipeline-probe` | Run typed pipeline probes against synthetic, staged, or archive-subset inputs. |
 | `devtools query-memory-budget` | Measure query-memory envelopes on generated fixtures. |
 | `devtools regression-capture` | Capture pipeline-probe summaries as durable local regression cases. |

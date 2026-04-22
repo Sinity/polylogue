@@ -5,6 +5,7 @@ from __future__ import annotations
 from functools import partial
 
 from devtools.lane_models import LaneEntry
+from devtools.validation_lane_base import devtools_lane as _devtools_lane
 from devtools.validation_lane_base import memory_budget_lane as _memory_budget_lane
 from devtools.validation_lane_base import pipeline_probe_lane as _pipeline_probe_lane
 from devtools.validation_lane_base import polylogue_lane as _polylogue_lane
@@ -19,6 +20,7 @@ from polylogue.scenarios import (
 memory_budget_lane = partial(_memory_budget_lane, category="live")
 pipeline_probe_lane = partial(_pipeline_probe_lane, category="live")
 polylogue_lane = partial(_polylogue_lane, category="live")
+devtools_lane = partial(_devtools_lane, category="live")
 
 
 def _live_product_lanes() -> dict[str, LaneEntry]:
@@ -73,14 +75,14 @@ LIVE_LANES: dict[str, LaneEntry] = {
         json_out="/tmp/polylogue-live-archive-subset-parse-probe.json",
         tags=("live", "probe", "parse"),
     ),
-    "live-exercises": polylogue_lane(
+    "live-exercises": devtools_lane(
         "live-exercises",
-        "Manual live archive showcase/QA exercise lane",
+        "Manual verification-lab archive-smoke exercise lane",
         1800,
-        "audit",
+        "lab-scenario",
+        "run",
+        "archive-smoke",
         "--live",
-        "--only",
-        "exercises",
         "--tier",
         "0",
         "--json",

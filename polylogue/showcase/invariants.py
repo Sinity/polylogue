@@ -52,7 +52,7 @@ class Invariant:
             breaker=BreakerMetadata(
                 description="A showcase exercise output that violates the invariant becomes a counterexample.",
                 issue="#192",
-                command=("polylogue", "audit", "--only", "exercises", "--tier", "0"),
+                command=("devtools", "lab-scenario", "run", "archive-smoke", "--tier", "0"),
             ),
         )
 

@@ -23,7 +23,6 @@ SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Run Site", ("run", "site")),
     ("Products", ("products",)),
     ("Audit", ("audit",)),
-    ("Audit Generate", ("audit", "generate")),
     ("Doctor", ("doctor",)),
     ("Tags", ("tags",)),
     ("Auth", ("auth",)),

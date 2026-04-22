@@ -103,7 +103,7 @@ Options:
   -h, --help                      Show this message and exit.
 
 Commands:
-  audit        Run composable QA: schema audit, exercises, and invariant...
+  audit        Run archive QA: schema audit and artifact proof checks.
   auth         Authenticate with external services (Google Drive for...
   completions  Generate shell completion scripts.
   count        Print count of matched conversations.

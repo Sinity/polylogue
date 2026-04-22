@@ -17,6 +17,8 @@ def test_list_commands_json_includes_generated_surface(capsys: pytest.CaptureFix
         "render-verification-catalog",
         "affected-obligations",
         "semantic-axis-evidence",
+        "lab-corpus",
+        "lab-scenario",
     ]
     assert "artifact-graph" in commands
     assert "regression-capture" in commands
@@ -31,6 +33,8 @@ def test_list_commands_human_output(capsys: pytest.CaptureFixture[str]) -> None:
     captured = capsys.readouterr()
     assert "verification lab surface:" in captured.out
     assert "semantic-axis-evidence" in captured.out
+    assert "lab-corpus" in captured.out
+    assert "lab-scenario" in captured.out
     assert "generated surfaces:" in captured.out
     assert "artifact-graph" in captured.out
     assert "regression-capture" in captured.out

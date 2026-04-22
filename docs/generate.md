@@ -8,7 +8,7 @@ Polylogue includes a built-in synthetic data generator for exploring features wi
 
 ```bash
 # Create a full demo environment
-eval "$(polylogue audit generate --seed --env-only)"
+eval "$(devtools lab-corpus seed --env-only)"
 
 # Now all commands work against synthetic data
 polylogue                          # Archive stats
@@ -29,28 +29,28 @@ Writes raw provider-format files (JSON, JSONL) to disk without processing them. 
 
 ```bash
 # All providers, 3 conversations each
-polylogue audit generate
+devtools lab-corpus generate
 
 # ChatGPT only, 5 conversations, custom output
-polylogue audit generate -p chatgpt -n 5 -o /tmp/corpus
+devtools lab-corpus generate -p chatgpt -n 5 -o /tmp/corpus
 ```
 
-### `--seed` Mode
+### `seed` Mode
 
 Creates a complete demo environment: a temporary database seeded with synthetic conversations, rendered output files, and a search index. Prints environment variables that redirect Polylogue to the demo data.
 
 ```bash
 # Interactive — prints env vars and instructions
-polylogue audit generate --seed
+devtools lab-corpus seed
 
 # Shell integration — eval sets env vars in current shell
-eval "$(polylogue audit generate --seed --env-only)"
+eval "$(devtools lab-corpus seed --env-only)"
 
 # Custom options
-polylogue audit generate --seed -p chatgpt,claude-ai -n 10
+devtools lab-corpus seed -p chatgpt -p claude-ai -n 10
 ```
 
-The seeded environment uses `run_sources` — the same pipeline as `polylogue run` — so the generate command exercises the full acquire → parse → render → index flow, with validation performed inline during parse.
+The seeded environment uses the same pipeline as `polylogue run`, so the lab corpus command exercises the full acquire → parse → render → index flow, with validation performed inline during parse.
 
 ## Options
 
@@ -59,12 +59,11 @@ The seeded environment uses `run_sources` — the same pipeline as `polylogue ru
 | `--provider` | `-p` | all | Providers to include (repeatable) |
 | `--count` | `-n` | 3 | Conversations per provider |
 | `--output-dir` | `-o` | auto | Output directory |
-| `--seed` | | | Also run pipeline to produce usable environment |
-| `--env-only` | | | Print export statements only (requires `--seed`) |
+| `--env-only` | | | Print export statements only for `seed` |
 
 ## How It Works
 
-`polylogue audit generate` uses `SyntheticCorpus` from `polylogue.schemas.synthetic`, which generates realistic conversation structures for each supported provider:
+`devtools lab-corpus` uses `SyntheticCorpus` from `polylogue.schemas.synthetic`, which generates realistic conversation structures for each supported provider:
 
 - **ChatGPT**: JSON documents with UUID-based message graphs (`mapping`)
 - **Claude AI**: JSON documents with `chat_messages` arrays
@@ -82,7 +81,7 @@ The test suite uses the same `SyntheticCorpus` infrastructure through shared fix
 - `synthetic_source` — A temporary source directory with generated files
 - `raw_synthetic_samples` — Raw conversation data for unit tests
 
-This means `polylogue audit generate` exercises the same schema-driven generation paths as the test suite fixtures.
+This means `devtools lab-corpus` exercises the same schema-driven generation paths as the test suite fixtures.
 
 ---
 

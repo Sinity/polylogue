@@ -6,6 +6,7 @@ from polylogue.scenarios import (
     PipelineProbeInputMode,
     PipelineProbeRequest,
     composite_execution,
+    devtools_execution,
     memory_budget_execution,
     pipeline_probe_execution,
     polylogue_execution,
@@ -116,7 +117,7 @@ def test_memory_budget_execution_wraps_structured_execution() -> None:
 
 
 def test_execution_spec_round_trips_payload() -> None:
-    execution = polylogue_execution("audit", "--only", "exercises")
+    execution = devtools_execution("lab-scenario", "run", "archive-smoke", "--tier", "0")
 
     restored = type(execution).from_payload(execution.to_payload())
 
