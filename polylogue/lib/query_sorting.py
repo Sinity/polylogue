@@ -4,19 +4,49 @@ from __future__ import annotations
 
 import random
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, TypeAlias, TypeVar
+from typing import TYPE_CHECKING, Protocol, TypeAlias, TypeVar
 
 if TYPE_CHECKING:
     from polylogue.lib.models import Conversation, ConversationSummary
-    from polylogue.lib.query_plan import ConversationQueryPlan
+
+from polylogue.lib.filter_types import SortField
 
 _T = TypeVar("_T")
 SortKey: TypeAlias = datetime | float | int | str
 
 
+class QuerySortPlan(Protocol):
+    """Minimal plan surface required by result sorting/finalization."""
+
+    @property
+    def sort(self) -> SortField: ...
+
+    @property
+    def reverse(self) -> bool: ...
+
+    @property
+    def limit(self) -> int | None: ...
+
+    @property
+    def sample(self) -> int | None: ...
+
+
+@dataclass(frozen=True, slots=True)
+class ResultWindow:
+    """Typed sampling and limit settings for finalized query results."""
+
+    sample: int | None = None
+    limit: int | None = None
+
+    @classmethod
+    def from_plan(cls, plan: QuerySortPlan) -> ResultWindow:
+        return cls(sample=plan.sample, limit=plan.limit)
+
+
 def sort_generic(
-    plan: ConversationQueryPlan,
+    plan: QuerySortPlan,
     items: list[_T],
     key_fn: Callable[[_T], SortKey],
 ) -> list[_T]:
@@ -28,7 +58,7 @@ def sort_generic(
 
 
 def sort_conversations(
-    plan: ConversationQueryPlan,
+    plan: QuerySortPlan,
     conversations: list[Conversation],
 ) -> list[Conversation]:
     dt_min = datetime.min.replace(tzinfo=timezone.utc)
@@ -50,7 +80,7 @@ def sort_conversations(
 
 
 def sort_summaries(
-    plan: ConversationQueryPlan,
+    plan: QuerySortPlan,
     summaries: list[ConversationSummary],
 ) -> list[ConversationSummary]:
     dt_min = datetime.min.replace(tzinfo=timezone.utc)
@@ -58,19 +88,30 @@ def sort_summaries(
 
 
 def finalize_results(
-    plan: ConversationQueryPlan,
+    plan: QuerySortPlan,
     items: list[_T],
 ) -> list[_T]:
+    return finalize_window(ResultWindow.from_plan(plan), items)
+
+
+def finalize_window(
+    window: ResultWindow,
+    items: list[_T],
+) -> list[_T]:
+    """Apply a typed result window to already sorted query results."""
     results = list(items)
-    if plan.sample is not None and plan.sample < len(results):
-        results = random.sample(results, plan.sample)
-    if plan.limit is not None:
-        results = results[: plan.limit]
+    if window.sample is not None and window.sample < len(results):
+        results = random.sample(results, window.sample)
+    if window.limit is not None:
+        results = results[: window.limit]
     return results
 
 
 __all__ = [
     "finalize_results",
+    "finalize_window",
+    "QuerySortPlan",
+    "ResultWindow",
     "sort_conversations",
     "sort_generic",
     "sort_summaries",
