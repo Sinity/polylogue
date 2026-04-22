@@ -46,6 +46,7 @@ from polylogue.cli.types import AppEnv
 from polylogue.lib.json import JSONDocument
 from polylogue.lib.message_roles import MessageRoleFilter
 from polylogue.lib.models import Conversation
+from polylogue.lib.query_miss_diagnostics import QueryMissDiagnostics, QueryMissReason
 from polylogue.lib.query_spec import ConversationQuerySpec, QuerySpecError
 from polylogue.lib.roles import Role
 from polylogue.services import build_runtime_services
@@ -1008,7 +1009,7 @@ def test_output_results_no_results_contract() -> None:
         output_results(env, [], output)
 
     assert exc_info.value.code == 2
-    mock_no_results.assert_called_once_with(env, output, selection=None)
+    mock_no_results.assert_called_once_with(env, output, selection=None, diagnostics=None)
     mock_render.assert_not_called()
     mock_send.assert_not_called()
     mock_format.assert_not_called()
@@ -1534,6 +1535,65 @@ def test_no_results_contract_json_emits_machine_envelope(capsys: pytest.CaptureF
     assert payload["code"] == "no_results"
     assert payload["message"] == "No conversations matched filters."
     assert payload["details"]["filters"] == ["provider: claude-ai"]
+
+
+def test_no_results_contract_prints_diagnostics() -> None:
+    env = _make_env()
+    diagnostics = QueryMissDiagnostics(
+        message="No conversations matched filters.",
+        filters=("provider: claude-ai",),
+        reasons=(
+            QueryMissReason(
+                code="raw_ingest_backlog",
+                severity="warning",
+                summary="Raw ingested conversations exist but are not materialized into searchable conversations.",
+                detail="2 raw records observed",
+                count=2,
+            ),
+        ),
+        archive_conversation_count=0,
+        raw_conversation_count=2,
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        no_results(env, {"provider": "claude-ai"}, diagnostics=diagnostics)
+
+    assert exc_info.value.code == 2
+    observed_lines = [call.args[0] for call in _as_mock(env.ui.console.print).call_args_list if call.args]
+    assert observed_lines == [
+        "No conversations matched filters:",
+        "  provider: claude-ai",
+        "Hint: try broadening your filters or use `list` to browse",
+        "Why this may have missed:",
+        "  - Raw ingested conversations exist but are not materialized into searchable conversations.",
+        "    2 raw records observed",
+    ]
+
+
+def test_no_results_contract_json_includes_diagnostics(capsys: pytest.CaptureFixture[str]) -> None:
+    env = _make_env()
+    diagnostics = QueryMissDiagnostics(
+        message="No conversations matched filters.",
+        filters=("provider: claude-ai",),
+        reasons=(
+            QueryMissReason(
+                code="archive_empty",
+                severity="info",
+                summary="The selected archive scope has no materialized conversations.",
+                count=0,
+            ),
+        ),
+        archive_conversation_count=0,
+        raw_conversation_count=0,
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        no_results(env, {"output_format": "json", "provider": "claude-ai"}, diagnostics=diagnostics)
+
+    assert exc_info.value.code == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["details"]["diagnostics"]["archive_conversation_count"] == 0
+    assert payload["details"]["diagnostics"]["reasons"][0]["code"] == "archive_empty"
 
 
 @pytest.mark.parametrize(

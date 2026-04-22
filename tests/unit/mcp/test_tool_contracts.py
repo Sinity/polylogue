@@ -35,6 +35,7 @@ from polylogue.archive_products import (
     WorkThreadProduct,
 )
 from polylogue.lib.models import Conversation, ConversationSummary
+from polylogue.lib.query_miss_diagnostics import QueryMissDiagnostics, QueryMissReason
 from polylogue.lib.query_spec import ConversationQuerySpec
 from polylogue.lib.stats import ArchiveStats
 from polylogue.types import ConversationId, Provider
@@ -306,15 +307,33 @@ class TestQueryTools:
 
     @pytest.mark.asyncio
     async def test_search_with_empty_query(self, mcp_server: MCPServerUnderTest) -> None:
+        diagnostics = QueryMissDiagnostics(
+            message="No conversations matched.",
+            filters=(),
+            reasons=(
+                QueryMissReason(
+                    code="archive_empty",
+                    severity="info",
+                    summary="The selected archive scope has no materialized conversations.",
+                    count=0,
+                ),
+            ),
+            archive_conversation_count=0,
+            raw_conversation_count=0,
+        )
         with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
             mock_ops = MagicMock()
             mock_ops.query_conversations = AsyncMock(return_value=[])
+            mock_ops.diagnose_query_miss = AsyncMock(return_value=diagnostics)
             mock_get_archive_ops.return_value = mock_ops
 
             result = await invoke_surface_async(mcp_server._tool_manager._tools["search"].fn, query="", limit=10)
 
         parsed = json.loads(result)
-        assert isinstance(parsed, (list, dict))
+        assert parsed["results"] == []
+        assert parsed["diagnostics"]["archive_conversation_count"] == 0
+        assert parsed["diagnostics"]["reasons"][0]["code"] == "archive_empty"
+        mock_ops.diagnose_query_miss.assert_awaited_once()
 
 
 class TestGetConversationTool:
