@@ -14,6 +14,7 @@ from polylogue.lib.json import JSONDocument, json_document, json_document_list, 
 from polylogue.lib.provider_capabilities import iter_provider_capabilities
 from polylogue.maintenance_targets import MaintenanceTargetCatalog, build_maintenance_target_catalog
 from polylogue.operations import build_declared_operation_catalog
+from polylogue.proof.generated_scenarios import generated_scenario_subjects
 from polylogue.proof.models import SourceSpan, SubjectRef
 from polylogue.schemas.packages import SchemaVersionPackage
 from polylogue.schemas.runtime_registry import SCHEMA_DIR, SchemaRegistry
@@ -409,6 +410,7 @@ def build_catalog_subjects() -> tuple[SubjectRef, ...]:
         *error_surface_subjects(),
         *trace_operation_subjects(),
         *observable_diagnostic_subjects(),
+        *generated_scenario_subjects(),
         *schema_annotation_subjects(),
         *workflow_claim_subjects(),
     )
@@ -613,6 +615,7 @@ __all__ = [
     "build_catalog_subjects",
     "command_subjects",
     "error_surface_subjects",
+    "generated_scenario_subjects",
     "json_command_subjects",
     "maintenance_target_subjects",
     "observable_diagnostic_subjects",

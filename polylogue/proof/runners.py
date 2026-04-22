@@ -692,6 +692,169 @@ def run_diagnostic_trace_mapping_evidence(
     )
 
 
+def run_generated_scenario_evidence(
+    obligation: ProofObligation,
+    *,
+    reproducer: tuple[str, ...] = ("pytest", "tests/unit/proof/test_generated_scenario_obligations.py"),
+) -> EvidenceEnvelope:
+    """Verify static generated-scenario proof subject metadata."""
+    if obligation.claim.id == "generated.scenario.family_registered":
+        return _run_generated_scenario_family_evidence(obligation, reproducer=reproducer)
+    if obligation.claim.id == "generated.scenario.local_deterministic":
+        return _run_generated_scenario_local_evidence(obligation, reproducer=reproducer)
+    if obligation.claim.id == "generated.scenario.semantic_claim_mapping":
+        return _run_generated_scenario_semantic_evidence(obligation, reproducer=reproducer)
+    raise ValueError(f"unsupported generated scenario claim: {obligation.claim.id}")
+
+
+def _run_generated_scenario_family_evidence(
+    obligation: ProofObligation,
+    *,
+    reproducer: tuple[str, ...],
+) -> EvidenceEnvelope:
+    attrs = obligation.subject.attrs
+    status = attrs.get("status")
+    family_reproducer = _string_tuple_attr(attrs.get("reproducer"))
+    checks: JSONDocument = {
+        "name_present": bool(str(attrs.get("name", "")).strip()),
+        "description_present": bool(str(attrs.get("description", "")).strip()),
+        "status_valid": status in {"implemented", "migration_task"},
+        "generated_world_present": bool(str(attrs.get("generated_world", "")).strip()),
+        "workload_family_present": bool(str(attrs.get("workload_family", "")).strip()),
+        "issue_links_196": attrs.get("issue") == "#196",
+        "reproducer_present": bool(family_reproducer),
+    }
+    observed_state = require_json_document(
+        {
+            "name": attrs.get("name"),
+            "status": status,
+            "generated_world": attrs.get("generated_world"),
+            "workload_family": attrs.get("workload_family"),
+            "reproducer": list(family_reproducer),
+            "checks": checks,
+        },
+        context="generated scenario observed state",
+    )
+    expected_law = "generated scenario families declare status, generated world, workload family, issue, and reproducer"
+    evidence = _evidence_payload(
+        obligation,
+        runner_class="generated_scenario_static",
+        expected_law=expected_law,
+        observed_state=observed_state,
+    )
+    evidence["name"] = attrs.get("name")
+    evidence["status"] = status
+    evidence["generated_world"] = attrs.get("generated_world")
+    evidence["workload_family"] = attrs.get("workload_family")
+    return _build_envelope(
+        obligation,
+        status=OutcomeStatus.OK if all(bool(value) for value in checks.values()) else OutcomeStatus.ERROR,
+        evidence=evidence,
+        expected_law=expected_law,
+        observed_state=observed_state,
+        reproducer=reproducer,
+        provenance=obligation.subject.source_span,
+        producer="polylogue.proof.runners.generated_scenario_static",
+    )
+
+
+def _run_generated_scenario_local_evidence(
+    obligation: ProofObligation,
+    *,
+    reproducer: tuple[str, ...],
+) -> EvidenceEnvelope:
+    attrs = obligation.subject.attrs
+    family_reproducer = _string_tuple_attr(attrs.get("reproducer"))
+    checks: JSONDocument = {
+        "status_implemented": attrs.get("status") == "implemented",
+        "local_deterministic": attrs.get("local_deterministic") is True,
+        "no_live_archive_dependency": attrs.get("live_archive_dependency") is False,
+        "reproducer_present": bool(family_reproducer),
+    }
+    observed_state = require_json_document(
+        {
+            "status": attrs.get("status"),
+            "local_deterministic": attrs.get("local_deterministic"),
+            "live_archive_dependency": attrs.get("live_archive_dependency"),
+            "reproducer": list(family_reproducer),
+            "checks": checks,
+        },
+        context="generated scenario local deterministic observed state",
+    )
+    expected_law = "implemented generated scenario families are local, deterministic, and do not require live archives"
+    evidence = _evidence_payload(
+        obligation,
+        runner_class="generated_scenario_static",
+        expected_law=expected_law,
+        observed_state=observed_state,
+    )
+    evidence["local_deterministic"] = attrs.get("local_deterministic")
+    evidence["live_archive_dependency"] = attrs.get("live_archive_dependency")
+    evidence["reproducer"] = list(family_reproducer)
+    return _build_envelope(
+        obligation,
+        status=OutcomeStatus.OK if all(bool(value) for value in checks.values()) else OutcomeStatus.ERROR,
+        evidence=evidence,
+        expected_law=expected_law,
+        observed_state=observed_state,
+        reproducer=reproducer,
+        provenance=obligation.subject.source_span,
+        producer="polylogue.proof.runners.generated_scenario_static",
+    )
+
+
+def _run_generated_scenario_semantic_evidence(
+    obligation: ProofObligation,
+    *,
+    reproducer: tuple[str, ...],
+) -> EvidenceEnvelope:
+    semantic_claims = _json_document_tuple_attr(obligation.subject.attrs.get("semantic_claims"))
+    claim_states = tuple(str(claim.get("state", "")) for claim in semantic_claims)
+    implemented = tuple(
+        str(claim.get("family", "")) for claim in semantic_claims if claim.get("state") == "implemented"
+    )
+    mapped = tuple(str(claim.get("family", "")) for claim in semantic_claims if claim.get("state") == "mapped")
+    mapped_missing_issue = tuple(
+        str(claim.get("family", ""))
+        for claim in semantic_claims
+        if claim.get("state") == "mapped" and not str(claim.get("issue", "")).startswith("#")
+    )
+    invalid_states = tuple(state for state in claim_states if state not in {"implemented", "mapped"})
+    checks: JSONDocument = {
+        "semantic_claims_present": bool(semantic_claims),
+        "claim_states_valid": not invalid_states,
+        "mapped_claims_link_issues": not mapped_missing_issue,
+    }
+    observed_state: JSONDocument = {
+        "semantic_claims": [dict(claim) for claim in semantic_claims],
+        "implemented_claim_families": list(implemented),
+        "mapped_claim_families": list(mapped),
+        "invalid_states": list(invalid_states),
+        "mapped_missing_issue": list(mapped_missing_issue),
+        "checks": checks,
+    }
+    expected_law = "generated scenario families declare implemented or issue-mapped semantic claim families"
+    evidence = _evidence_payload(
+        obligation,
+        runner_class="generated_scenario_static",
+        expected_law=expected_law,
+        observed_state=observed_state,
+    )
+    evidence["semantic_claims"] = [dict(claim) for claim in semantic_claims]
+    evidence["implemented_claim_families"] = list(implemented)
+    evidence["mapped_claim_families"] = list(mapped)
+    return _build_envelope(
+        obligation,
+        status=OutcomeStatus.OK if all(bool(value) for value in checks.values()) else OutcomeStatus.ERROR,
+        evidence=evidence,
+        expected_law=expected_law,
+        observed_state=observed_state,
+        reproducer=reproducer,
+        provenance=obligation.subject.source_span,
+        producer="polylogue.proof.runners.generated_scenario_static",
+    )
+
+
 def _run_provider_identity_bridge_evidence(
     obligation: ProofObligation,
     *,
@@ -1164,6 +1327,7 @@ __all__ = [
     "run_artifact_path_evidence",
     "run_cli_json_envelope_evidence",
     "run_diagnostic_trace_mapping_evidence",
+    "run_generated_scenario_evidence",
     "run_provider_capability_evidence",
     "run_error_context_evidence",
     "run_maintenance_repair_state_evidence",
