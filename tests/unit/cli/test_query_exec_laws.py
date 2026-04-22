@@ -1495,6 +1495,103 @@ def test_async_execute_query_show_projects_results_before_output_contract() -> N
     assert [message.id for message in projected_results[0].messages] == ["m-user", "m-assistant"]
 
 
+def test_async_execute_query_slow_human_query_emits_progress_note() -> None:
+    env = _make_env(repo=MagicMock(), config=MagicMock())
+    selection = MagicMock()
+    selection.similar_text = None
+    plan = QueryExecutionPlan(
+        selection=selection,
+        action=QueryAction.SHOW,
+        output=_output_spec(),
+        mutation=_mutation_spec(),
+    )
+    filter_chain = MagicMock()
+    filter_chain.can_use_summaries.return_value = False
+
+    async def delayed_list() -> list[Conversation]:
+        await asyncio.sleep(0.01)
+        return [_sample_conversation()]
+
+    filter_chain.list = AsyncMock(side_effect=delayed_list)
+    selection.build_filter.return_value = filter_chain
+
+    with (
+        patch("polylogue.cli.helpers.load_effective_config", return_value=MagicMock()),
+        patch("polylogue.storage.search_providers.create_vector_provider", return_value=None),
+        patch("polylogue.cli.query.build_query_execution_plan", return_value=plan),
+        patch("polylogue.cli.query_progress.SLOW_QUERY_NOTICE_SECONDS", 0.001),
+        patch("polylogue.cli.query_output.output_results"),
+        patch("click.echo") as mock_echo,
+    ):
+        mock_echo = _as_mock(mock_echo)
+        asyncio.run(async_execute_query(env, {}))
+
+    filter_chain.list.assert_awaited_once()
+    progress_calls = [call for call in mock_echo.call_args_list if call.kwargs.get("err") is True]
+    assert len(progress_calls) == 1
+    assert "Query still running after 0.0s" in progress_calls[0].args[0]
+    assert "route: show" in progress_calls[0].args[0]
+
+
+def test_async_execute_query_slow_json_query_suppresses_progress_note() -> None:
+    env = _make_env(repo=MagicMock(), config=MagicMock())
+    selection = MagicMock()
+    selection.similar_text = None
+    plan = QueryExecutionPlan(
+        selection=selection,
+        action=QueryAction.SHOW,
+        output=_output_spec("json"),
+        mutation=_mutation_spec(),
+    )
+    filter_chain = MagicMock()
+    filter_chain.can_use_summaries.return_value = False
+
+    async def delayed_list() -> list[Conversation]:
+        await asyncio.sleep(0.01)
+        return [_sample_conversation()]
+
+    filter_chain.list = AsyncMock(side_effect=delayed_list)
+    selection.build_filter.return_value = filter_chain
+
+    with (
+        patch("polylogue.cli.helpers.load_effective_config", return_value=MagicMock()),
+        patch("polylogue.storage.search_providers.create_vector_provider", return_value=None),
+        patch("polylogue.cli.query.build_query_execution_plan", return_value=plan),
+        patch("polylogue.cli.query_progress.SLOW_QUERY_NOTICE_SECONDS", 0.001),
+        patch("polylogue.cli.query_output.output_results"),
+        patch("click.echo") as mock_echo,
+    ):
+        mock_echo = _as_mock(mock_echo)
+        asyncio.run(async_execute_query(env, {}))
+
+    filter_chain.list.assert_awaited_once()
+    mock_echo.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_slow_query_notice_reports_degraded_action_read_model() -> None:
+    from polylogue.cli.query_progress import build_query_slow_notice
+
+    repo = MagicMock()
+    repo.get_action_event_artifact_state = AsyncMock(
+        return_value=ActionEventArtifactState(
+            source_conversations=4,
+            materialized_conversations=2,
+            materialized_rows=2,
+            fts_rows=0,
+        )
+    )
+
+    notice = await build_query_slow_notice(
+        repo,
+        ConversationQuerySpec(retrieval_lane="actions"),
+        route=QueryRoute.SHOW.value,
+    )
+
+    assert notice.retrieval_lane == "actions"
+    assert "Action-event read model pending" in notice.message(elapsed_seconds=2.0)
+
+
 @pytest.mark.parametrize(
     ("params", "expected_lines"),
     [

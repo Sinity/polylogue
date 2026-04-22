@@ -298,6 +298,25 @@ async def _diagnose_query_miss(
     return await diagnose_query_miss(repo, selection, config=config)
 
 
+async def _observe_query_operation(
+    repo: QueryExecutionStore,
+    plan: QueryExecutionPlan,
+    route: QueryRoute,
+    operation: Awaitable[_T],
+) -> _T:
+    from polylogue.cli.query_progress import (
+        build_query_slow_notice,
+        observe_slow_query,
+        should_emit_slow_query_notes,
+    )
+
+    return await observe_slow_query(
+        operation,
+        enabled=should_emit_slow_query_notes(plan.output),
+        notice_factory=lambda: build_query_slow_notice(repo, plan.selection, route=route.value),
+    )
+
+
 async def _semantic_stats_summaries(
     repo: QueryExecutionStore,
     filter_chain: ConversationFilter,
@@ -385,11 +404,11 @@ async def async_execute_query_request(env: AppEnv, request: RootModeRequest) -> 
     route = resolve_query_route(plan, can_use_summaries=filter_chain.can_use_summaries())
 
     if route == QueryRoute.COUNT:
-        click.echo(await filter_chain.count())
+        click.echo(await _observe_query_operation(repo, plan, route, filter_chain.count()))
         return
 
     if route == QueryRoute.SUMMARY_LIST:
-        summary_results = await filter_chain.list_summaries()
+        summary_results = await _observe_query_operation(repo, plan, route, filter_chain.list_summaries())
         if not summary_results:
             summary_diagnostics = await _diagnose_query_miss(repo, plan.selection, config=config)
             no_results(env, params, diagnostics=summary_diagnostics)
@@ -423,17 +442,22 @@ async def async_execute_query_request(env: AppEnv, request: RootModeRequest) -> 
         return
 
     if route == QueryRoute.STATS_SQL:
-        await _query_output.output_stats_sql(
-            env,
-            filter_chain,
+        await _observe_query_operation(
             repo,
-            selection=plan.selection,
-            output_format=plan.output.output_format,
+            plan,
+            route,
+            _query_output.output_stats_sql(
+                env,
+                filter_chain,
+                repo,
+                selection=plan.selection,
+                output_format=plan.output.output_format,
+            ),
         )
         return
 
     if route == QueryRoute.SUMMARY_STATS:
-        summaries = await filter_chain.list_summaries()
+        summaries = await _observe_query_operation(repo, plan, route, filter_chain.list_summaries())
         msg_counts = await repo.get_message_counts_batch([str(summary.id) for summary in summaries])
         _query_output.output_stats_by_summaries(
             env,
@@ -446,7 +470,12 @@ async def async_execute_query_request(env: AppEnv, request: RootModeRequest) -> 
         return
 
     if route == QueryRoute.STATS_BY and plan.stats_dimension in {"action", "tool"}:
-        semantic_summaries = await _semantic_stats_summaries(repo, filter_chain)
+        semantic_summaries = await _observe_query_operation(
+            repo,
+            plan,
+            route,
+            _semantic_stats_summaries(repo, filter_chain),
+        )
         if semantic_summaries is not None:
             await _query_output.output_stats_by_semantic_summaries(
                 env,
@@ -459,7 +488,7 @@ async def async_execute_query_request(env: AppEnv, request: RootModeRequest) -> 
             return
 
     if route == QueryRoute.STATS_BY and plan.stats_dimension in {"repo", "work-kind"}:
-        summaries = await _profile_stats_summaries(repo, filter_chain)
+        summaries = await _observe_query_operation(repo, plan, route, _profile_stats_summaries(repo, filter_chain))
         await _query_output.output_stats_by_profile_summaries(
             env,
             summaries,
@@ -472,9 +501,14 @@ async def async_execute_query_request(env: AppEnv, request: RootModeRequest) -> 
 
     if route == QueryRoute.OPEN:
         if filter_chain.can_use_summaries():
-            open_results: Sequence[Conversation | ConversationSummary] = await filter_chain.list_summaries()
+            open_results: Sequence[Conversation | ConversationSummary] = await _observe_query_operation(
+                repo,
+                plan,
+                route,
+                filter_chain.list_summaries(),
+            )
         else:
-            open_results = await filter_chain.list()
+            open_results = await _observe_query_operation(repo, plan, route, filter_chain.list())
         open_diagnostics = await _diagnose_query_miss(repo, plan.selection, config=config) if not open_results else None
         _query_output._open_result(
             env,
@@ -487,22 +521,27 @@ async def async_execute_query_request(env: AppEnv, request: RootModeRequest) -> 
 
     if route in {QueryRoute.MODIFY, QueryRoute.SUMMARY_MODIFY}:
         if route == QueryRoute.SUMMARY_MODIFY:
-            matched_results: Sequence[Conversation | ConversationSummary] = await filter_chain.list_summaries()
+            matched_results: Sequence[Conversation | ConversationSummary] = await _observe_query_operation(
+                repo,
+                plan,
+                route,
+                filter_chain.list_summaries(),
+            )
         else:
-            matched_results = await filter_chain.list()
+            matched_results = await _observe_query_operation(repo, plan, route, filter_chain.list())
         await _query_actions.apply_modifiers(env, matched_results, plan.mutation, repo)
         return
 
     if route in {QueryRoute.DELETE, QueryRoute.SUMMARY_DELETE}:
         if route == QueryRoute.SUMMARY_DELETE:
-            matched_results = await filter_chain.list_summaries()
+            matched_results = await _observe_query_operation(repo, plan, route, filter_chain.list_summaries())
         else:
-            matched_results = await filter_chain.list()
+            matched_results = await _observe_query_operation(repo, plan, route, filter_chain.list())
         await _query_actions.delete_conversations(env, matched_results, plan.mutation, repo)
         return
 
     if route == QueryRoute.STATS_BY:
-        conversation_results = await filter_chain.list()
+        conversation_results = await _observe_query_operation(repo, plan, route, filter_chain.list())
         projected_results = project_query_results(conversation_results, plan)
         _query_output._output_stats_by(
             env,
@@ -513,7 +552,7 @@ async def async_execute_query_request(env: AppEnv, request: RootModeRequest) -> 
         )
         return
 
-    conversation_results = await filter_chain.list()
+    conversation_results = await _observe_query_operation(repo, plan, route, filter_chain.list())
     projected_results = project_query_results(conversation_results, plan)
     output_diagnostics = (
         await _diagnose_query_miss(repo, plan.selection, config=config) if not projected_results else None
