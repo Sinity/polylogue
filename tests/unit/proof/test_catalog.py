@@ -27,13 +27,18 @@ def test_default_catalog_compiles_first_vertical_slice() -> None:
         "cli.command.help",
         "cli.command.no_traceback",
         "cli.command.plain_mode",
+        "cli.command.json_envelope",
+        "archive.query.provider_filter_consistency",
         "schema.values.value_closure",
         "schema.foreign_key.resolves",
         "schema.mutual_exclusion.exclusive",
     }
     assert catalog.subjects_by_kind()["cli.command"] >= 1
+    assert catalog.subjects_by_kind()["cli.json_command"] >= 1
+    assert catalog.subjects_by_kind()["archive.query_law"] == 1
     assert catalog.subjects_by_kind()["schema.annotation"] >= 1
     assert {runner.claim_id for runner in catalog.runner_bindings} == {claim.id for claim in catalog.claims}
+    assert {"smoke", "semantic", "structural"}.issubset({runner.evidence_class for runner in catalog.runner_bindings})
     assert all(check.status is OutcomeStatus.OK for check in catalog.quality_checks)
 
 
@@ -70,6 +75,7 @@ def test_catalog_self_quality_exposes_catalog_contract_failures() -> None:
         id="runner:claim",
         claim_id="claim",
         runner="static",
+        evidence_class="structural",
         cost_tier="static",
         freshness_policy="test",
         environment=EnvironmentContract(),
@@ -92,6 +98,9 @@ def test_catalog_self_quality_exposes_catalog_contract_failures() -> None:
         evidence_schema={"type": "object"},
         bug_classes=("bug",),
         tracked_exception="#999",
+        runner_classes=("static",),
+        observed_facts=("fact",),
+        staleness_conditions=("condition",),
     )
     obligations = compile_obligations((subject,), (claim, zero_subject_claim), (stale_runner,))
     catalog = VerificationCatalog(
@@ -109,4 +118,5 @@ def test_catalog_self_quality_exposes_catalog_contract_failures() -> None:
     assert checks["catalog.runner_trust_metadata"].status is OutcomeStatus.ERROR
     assert checks["catalog.serious_claim_bug_classes"].status is OutcomeStatus.ERROR
     assert checks["catalog.serious_claim_breakers"].status is OutcomeStatus.ERROR
+    assert checks["catalog.serious_claim_adequacy"].status is OutcomeStatus.ERROR
     assert checks["catalog.non_abstract_claim_subjects"].status is OutcomeStatus.ERROR

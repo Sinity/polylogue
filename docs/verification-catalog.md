@@ -8,10 +8,10 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 
 ## Snapshot
 
-- subjects: `8940`
-- claims: `6`
-- runner bindings: `6`
-- proof obligations: `9026`
+- subjects: `8943`
+- claims: `8`
+- runner bindings: `8`
+- proof obligations: `9029`
 
 ## Quality Checks
 
@@ -21,13 +21,16 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `catalog.runner_trust_metadata` | `ok` | runner trust metadata is present and fresh |
 | `catalog.serious_claim_bug_classes` | `ok` | serious claims expose bug classes |
 | `catalog.serious_claim_breakers` | `ok` | serious claims expose breakers or tracked exceptions |
+| `catalog.serious_claim_adequacy` | `ok` | serious claims declare runner classes, observed facts, and staleness conditions |
 | `catalog.non_abstract_claim_subjects` | `ok` | non-abstract claims bind at least one subject |
 
 ## Subject Summary
 
 | Kind | Count |
 | --- | ---: |
+| `archive.query_law` | 1 |
 | `cli.command` | 43 |
+| `cli.json_command` | 2 |
 | `schema.annotation` | 8897 |
 
 ## Command Subjects
@@ -99,26 +102,32 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `cli.command.help` | `serious` | `cli.help.regression`<br>`command.inventory.omission` | A hidden or broken command makes the help runner fail for that command. |
 | `cli.command.no_traceback` | `serious` | `cli.traceback.leak`<br>`operator-facing-error-regression` | A command callback or Click wiring error leaks traceback text into evidence. |
 | `cli.command.plain_mode` | `serious` | `cli.plain-mode.regression`<br>`terminal-rendering-regression` | A rich-only output path breaks the plain-mode runner comparison. |
+| `cli.command.json_envelope` | `serious` | `cli.json-envelope.regression`<br>`machine-contract.invalid-json` | A selected JSON command that emits invalid JSON or a missing success envelope breaks the claim. |
+| `archive.query.provider_filter_consistency` | `serious` | `query.provider-filter.drift`<br>`archive-count.semantic-mismatch` | A provider result outside all results, mismatched count, or divergent equivalent construction is a counterexample. |
 | `schema.values.value_closure` | `serious` | `schema.value-domain.drift`<br>`schema.privacy.enum-leak` | A generated payload outside the annotated value set is a counterexample. |
 | `schema.foreign_key.resolves` | `serious` | `schema.relationship.drift`<br>`synthetic-corpus.integrity` | A source path pointing at a missing target path breaks the relation claim. |
 | `schema.mutual_exclusion.exclusive` | `serious` | `schema.mutual-exclusion.drift`<br>`synthetic-corpus.invalid-combination` | A generated record containing two fields from the same exclusion group is a counterexample. |
 
 ## Runner Bindings
 
-| Runner Binding | Claim | Cost | Environment | Trust |
-| --- | --- | --- | --- | --- |
-| `cli-help-contract:cli.command.help` | `cli.command.help` | `static` | commands=`polylogue`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
-| `cli-help-contract:cli.command.no_traceback` | `cli.command.no_traceback` | `static` | commands=`polylogue`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
-| `cli-help-contract:cli.command.plain_mode` | `cli.command.plain_mode` | `static` | commands=`polylogue`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
-| `schema-annotation-static-contract:schema.values.value_closure` | `schema.values.value_closure` | `static` | commands=—; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
-| `schema-annotation-static-contract:schema.foreign_key.resolves` | `schema.foreign_key.resolves` | `static` | commands=—; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
-| `schema-annotation-static-contract:schema.mutual_exclusion.exclusive` | `schema.mutual_exclusion.exclusive` | `static` | commands=—; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
+| Runner Binding | Claim | Evidence | Cost | Environment | Trust |
+| --- | --- | --- | --- | --- | --- |
+| `cli-help-contract:cli.command.help` | `cli.command.help` | `smoke` | `static` | commands=`polylogue`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
+| `cli-help-contract:cli.command.no_traceback` | `cli.command.no_traceback` | `smoke` | `static` | commands=`polylogue`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
+| `cli-plain-contract:cli.command.plain_mode` | `cli.command.plain_mode` | `structural` | `static` | commands=`polylogue`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
+| `cli-json-envelope-contract:cli.command.json_envelope` | `cli.command.json_envelope` | `structural` | `unit` | commands=`polylogue`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
+| `semantic-query-law-contract:archive.query.provider_filter_consistency` | `archive.query.provider_filter_consistency` | `semantic` | `unit` | commands=—; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
+| `schema-annotation-static-contract:schema.values.value_closure` | `schema.values.value_closure` | `structural` | `static` | commands=—; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
+| `schema-annotation-static-contract:schema.foreign_key.resolves` | `schema.foreign_key.resolves` | `structural` | `static` | commands=—; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
+| `schema-annotation-static-contract:schema.mutual_exclusion.exclusive` | `schema.mutual_exclusion.exclusive` | `structural` | `static` | commands=—; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
 
 ## Proof Obligations
 
 | Claim | Obligations |
 | --- | ---: |
+| `archive.query.provider_filter_consistency` | 1 |
 | `cli.command.help` | 43 |
+| `cli.command.json_envelope` | 2 |
 | `cli.command.no_traceback` | 43 |
 | `cli.command.plain_mode` | 43 |
 | `schema.foreign_key.resolves` | 7 |
