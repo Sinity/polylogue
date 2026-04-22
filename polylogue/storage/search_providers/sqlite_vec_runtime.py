@@ -6,7 +6,8 @@ import sqlite3
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from polylogue.storage.backends.connection import DB_TIMEOUT
+from polylogue.storage.backends.connection_profile import DB_TIMEOUT
+from polylogue.storage.backends.sqlite_vec_extension import try_load_sqlite_vec
 from polylogue.storage.search_providers.sqlite_vec_support import SqliteVecError, logger
 
 
@@ -24,33 +25,22 @@ class SqliteVecRuntimeMixin:
         conn.row_factory = sqlite3.Row
 
         if self._vec_available is None:
-            try:
-                import sqlite_vec
-
-                conn.enable_load_extension(True)
-                try:
-                    sqlite_vec.load(conn)
-                finally:
-                    conn.enable_load_extension(False)
+            loaded, error = try_load_sqlite_vec(conn)
+            if loaded:
                 self._vec_available = True
-            except ImportError:
+            elif isinstance(error, ImportError):
                 logger.warning("sqlite-vec not installed")
                 self._vec_available = False
-            except (OSError, sqlite3.OperationalError) as exc:
-                logger.warning("sqlite-vec load failed: %s", exc)
+            else:
+                logger.warning("sqlite-vec load failed: %s", error)
                 self._vec_available = False
         elif self._vec_available:
-            try:
-                import sqlite_vec
-
-                conn.enable_load_extension(True)
-                try:
-                    sqlite_vec.load(conn)
-                finally:
-                    conn.enable_load_extension(False)
-            except (ImportError, OSError, sqlite3.OperationalError) as exc:
+            loaded, error = try_load_sqlite_vec(conn)
+            if not loaded:
                 conn.close()
-                raise SqliteVecError(f"sqlite-vec extension failed to load on connection: {exc}") from exc
+                if error is None:
+                    raise SqliteVecError("sqlite-vec extension failed to load on connection: unknown error")
+                raise SqliteVecError(f"sqlite-vec extension failed to load on connection: {error}") from error
 
         return conn
 

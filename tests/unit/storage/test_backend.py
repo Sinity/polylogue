@@ -17,14 +17,20 @@ import pytest
 import polylogue.paths
 from polylogue.lib.roles import Role
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
-from polylogue.storage.backends.connection import (
+from polylogue.storage.backends.connection import connection_context, open_connection, open_read_connection
+from polylogue.storage.backends.connection_profile import (
     READ_CACHE_SIZE_KIB,
+    READ_CONNECTION_PRAGMA_STATEMENTS,
+    READ_CONNECTION_PROFILE,
     WRITE_CACHE_SIZE_KIB,
-    connection_context,
-    open_connection,
-    open_read_connection,
+    WRITE_CONNECTION_PRAGMA_STATEMENTS,
+    WRITE_CONNECTION_PROFILE,
 )
 from polylogue.storage.backends.schema import SCHEMA_VERSION, _ensure_schema
+from polylogue.storage.backends.schema_bootstrap import (
+    SchemaSnapshot,
+    decide_schema_bootstrap,
+)
 from polylogue.storage.embedding_stats_models import EmbeddingStatsSnapshot
 from polylogue.storage.query_models import ConversationRecordQuery
 from polylogue.storage.repository import ConversationRepository
@@ -100,6 +106,17 @@ def test_ensure_schema_rejects_unsupported_version(tmp_path: Path) -> None:
     assert exc_info.type.__name__ == "DatabaseError"
     assert "schema version" in str(exc_info.value).lower() or "incompatible" in str(exc_info.value).lower()
     conn.close()
+
+
+def test_schema_bootstrap_decision_rejects_unsupported_version() -> None:
+    """Sync and async schema runtimes should share version decision semantics."""
+    snapshot = SchemaSnapshot(current_version=999, table_columns={}, index_sql={})
+
+    with pytest.raises(Exception) as exc_info:
+        decide_schema_bootstrap(snapshot)
+
+    assert exc_info.type.__name__ == "DatabaseError"
+    assert "schema version" in str(exc_info.value).lower()
 
 
 def test_ensure_schema_adds_blob_size_to_legacy_v1_raw_table(tmp_path: Path) -> None:
@@ -199,6 +216,25 @@ def test_open_connection_contract(tmp_path: Path) -> None:
 
     assert db_path.exists()
     assert db_path.parent.exists()
+
+
+def test_connection_profiles_define_sqlite_tuning_once() -> None:
+    """Read and write PRAGMA statements should be derived from the shared profiles."""
+    import polylogue.pipeline.services.ingest_batch as ingest_batch_module
+    import polylogue.storage.backends.async_sqlite as async_sqlite_module
+    import polylogue.storage.backends.connection as connection_module
+
+    assert WRITE_CONNECTION_PROFILE.pragma_statements == WRITE_CONNECTION_PRAGMA_STATEMENTS
+    assert READ_CONNECTION_PROFILE.pragma_statements == READ_CONNECTION_PRAGMA_STATEMENTS
+    assert connection_module.WRITE_CONNECTION_PRAGMA_STATEMENTS == WRITE_CONNECTION_PRAGMA_STATEMENTS
+    assert vars(async_sqlite_module)["WRITE_CONNECTION_PRAGMA_STATEMENTS"] == WRITE_CONNECTION_PRAGMA_STATEMENTS
+    assert vars(ingest_batch_module)["WRITE_CONNECTION_PRAGMA_STATEMENTS"] == WRITE_CONNECTION_PRAGMA_STATEMENTS
+    assert connection_module.READ_CONNECTION_PRAGMA_STATEMENTS == READ_CONNECTION_PRAGMA_STATEMENTS
+    assert vars(async_sqlite_module)["READ_CONNECTION_PRAGMA_STATEMENTS"] == READ_CONNECTION_PRAGMA_STATEMENTS
+    assert WRITE_CONNECTION_PROFILE.busy_timeout_ms == 30000
+    assert WRITE_CONNECTION_PROFILE.cache_size_kib == WRITE_CACHE_SIZE_KIB
+    assert READ_CONNECTION_PROFILE.busy_timeout_ms == 1000
+    assert READ_CONNECTION_PROFILE.cache_size_kib == READ_CACHE_SIZE_KIB
 
 
 def test_open_read_connection_contract(tmp_path: Path) -> None:
