@@ -34,11 +34,15 @@ def _small_catalog() -> VerificationCatalog:
         evidence_schema={"type": "object"},
         bug_classes=("cli.help.regression",),
         breaker=BreakerMetadata("help failure"),
+        runner_classes=("cli_visual",),
+        observed_facts=("help_exit_code",),
+        staleness_conditions=("command registration changes",),
     )
     runner = RunnerBinding(
         id="runner:cli.command.help",
         claim_id=claim.id,
         runner="static",
+        evidence_class="smoke",
         cost_tier="static",
         freshness_policy="test",
         environment=EnvironmentContract(required_commands=("polylogue",)),

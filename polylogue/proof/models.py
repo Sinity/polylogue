@@ -19,6 +19,7 @@ from polylogue.lib.outcomes import OutcomeStatus
 
 ClaimSeverity = Literal["info", "serious"]
 CostTier = Literal["static", "unit", "integration", "live"]
+EvidenceClass = Literal["smoke", "semantic", "structural", "trace", "performance", "workflow"]
 NetworkPolicy = Literal["none", "optional", "required"]
 TrustLevel = Literal["authored", "generated", "external"]
 
@@ -254,6 +255,9 @@ class Claim:
     bug_classes: tuple[str, ...] = ()
     breaker: BreakerMetadata | None = None
     tracked_exception: str | None = None
+    runner_classes: tuple[str, ...] = ()
+    observed_facts: tuple[str, ...] = ()
+    staleness_conditions: tuple[str, ...] = ()
     severity: ClaimSeverity = "serious"
     abstract: bool = False
 
@@ -270,6 +274,9 @@ class Claim:
                 "bug_classes": list(self.bug_classes),
                 "breaker": self.breaker.to_payload() if self.breaker is not None else None,
                 "tracked_exception": self.tracked_exception,
+                "runner_classes": list(self.runner_classes),
+                "observed_facts": list(self.observed_facts),
+                "staleness_conditions": list(self.staleness_conditions),
                 "severity": self.severity,
                 "abstract": self.abstract,
             }
@@ -338,6 +345,7 @@ class RunnerBinding:
     id: str
     claim_id: str
     runner: str
+    evidence_class: EvidenceClass
     cost_tier: CostTier
     freshness_policy: str
     environment: EnvironmentContract
@@ -349,6 +357,7 @@ class RunnerBinding:
                 "id": self.id,
                 "claim_id": self.claim_id,
                 "runner": self.runner,
+                "evidence_class": self.evidence_class,
                 "cost_tier": self.cost_tier,
                 "freshness_policy": self.freshness_policy,
                 "environment": self.environment.to_payload(),
@@ -466,6 +475,7 @@ __all__ = [
     "CostTier",
     "EnvironmentContract",
     "EvidenceEnvelope",
+    "EvidenceClass",
     "Kind",
     "NetworkPolicy",
     "Not",

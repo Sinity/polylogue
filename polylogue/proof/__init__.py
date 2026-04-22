@@ -16,6 +16,7 @@ from polylogue.proof.models import (
     BreakerMetadata,
     Claim,
     EnvironmentContract,
+    EvidenceClass,
     EvidenceEnvelope,
     Kind,
     Not,
@@ -28,10 +29,19 @@ from polylogue.proof.models import (
     TrustMetadata,
     subject_query_from_payload,
 )
+from polylogue.proof.runners import (
+    SemanticQueryObservation,
+    run_cli_json_envelope_evidence,
+    run_cli_visual_evidence,
+    run_semantic_query_evidence,
+)
 from polylogue.proof.subjects import (
+    SELECTED_JSON_COMMANDS,
     SELECTED_SCHEMA_ANNOTATIONS,
     build_catalog_subjects,
     command_subjects,
+    json_command_subjects,
+    query_law_subjects,
     schema_annotation_subjects,
 )
 
@@ -42,6 +52,7 @@ __all__ = [
     "AttrIn",
     "BreakerMetadata",
     "Claim",
+    "EvidenceClass",
     "EnvironmentContract",
     "EvidenceEnvelope",
     "Kind",
@@ -49,7 +60,9 @@ __all__ = [
     "Or",
     "ProofObligation",
     "RunnerBinding",
+    "SELECTED_JSON_COMMANDS",
     "SELECTED_SCHEMA_ANNOTATIONS",
+    "SemanticQueryObservation",
     "SourceSpan",
     "SubjectQuery",
     "SubjectRef",
@@ -62,6 +75,11 @@ __all__ = [
     "compile_obligations",
     "default_claims",
     "default_runner_bindings",
+    "json_command_subjects",
+    "query_law_subjects",
+    "run_cli_json_envelope_evidence",
+    "run_cli_visual_evidence",
+    "run_semantic_query_evidence",
     "schema_annotation_subjects",
     "subject_query_from_payload",
 ]
