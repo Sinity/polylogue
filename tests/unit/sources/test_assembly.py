@@ -11,7 +11,8 @@ from polylogue.lib.roles import Role
 from polylogue.sources.assembly import SidecarData, get_assembly_spec
 from polylogue.sources.assembly_claude_code import ClaudeCodeAssemblySpec
 from polylogue.sources.assembly_codex import CodexAssemblySpec, _parse_codex_session_index
-from polylogue.sources.parsers.base import ParsedConversation, ParsedMessage
+from polylogue.sources.assembly_gemini import GeminiAssemblySpec
+from polylogue.sources.parsers.base import ParsedAttachment, ParsedConversation, ParsedMessage
 from polylogue.sources.parsers.claude_index import (
     SessionIndexEntry,
     _looks_like_git_branch,
@@ -27,11 +28,23 @@ def _parsed_message(provider_message_id: str, role: str, text: str) -> ParsedMes
     )
 
 
+def _parsed_attachment(name: str | None = None) -> ParsedAttachment:
+    return ParsedAttachment(
+        provider_attachment_id="attachment-1",
+        message_provider_id="m1",
+        name=name,
+        provider_meta={"name": name} if name else None,
+    )
+
+
 def _parsed_conversation(
     provider_name: Provider,
     provider_conversation_id: str,
     title: str,
     messages: list[ParsedMessage],
+    *,
+    attachments: list[ParsedAttachment] | None = None,
+    provider_meta: dict[str, object] | None = None,
 ) -> ParsedConversation:
     return ParsedConversation(
         provider_name=provider_name,
@@ -40,6 +53,8 @@ def _parsed_conversation(
         created_at=None,
         updated_at=None,
         messages=messages,
+        attachments=attachments or [],
+        provider_meta=provider_meta,
     )
 
 
@@ -72,9 +87,107 @@ class TestGetAssemblySpec:
         spec = get_assembly_spec(Provider.CODEX)
         assert isinstance(spec, CodexAssemblySpec)
 
-    @pytest.mark.parametrize("provider", [Provider.CHATGPT, Provider.CLAUDE_AI, Provider.GEMINI, Provider.UNKNOWN])
+    def test_gemini_returns_spec(self) -> None:
+        spec = get_assembly_spec(Provider.GEMINI)
+        assert isinstance(spec, GeminiAssemblySpec)
+
+    @pytest.mark.parametrize("provider", [Provider.CHATGPT, Provider.CLAUDE_AI, Provider.UNKNOWN])
     def test_no_spec_for_other_providers(self, provider: Provider) -> None:
         assert get_assembly_spec(provider) is None
+
+
+# ---------------------------------------------------------------------------
+# Gemini Assembly
+# ---------------------------------------------------------------------------
+
+
+class TestGeminiAssemblySpec:
+    def test_discover_sidecars_returns_empty_data(self, tmp_path: Path) -> None:
+        session_file = tmp_path / "gemini.json"
+        session_file.write_text("{}", encoding="utf-8")
+
+        sidecar_data = GeminiAssemblySpec().discover_sidecars([session_file])
+
+        assert sidecar_data == {}
+
+    def test_meaningful_imported_title_is_preserved(self) -> None:
+        conv = _parsed_conversation(
+            Provider.GEMINI,
+            "gemini-id-1234",
+            "Gemini Session",
+            [_parsed_message("m1", "user", "Summarize the roadmap")],
+            provider_meta={"title_source": "imported:displayName"},
+        )
+
+        result = GeminiAssemblySpec().enrich_conversation(conv, {})
+
+        assert result is conv
+        assert _provider_meta(result)["title_source"] == "imported:displayName"
+
+    def test_id_like_title_uses_first_user_message_display_label(self) -> None:
+        conv = _parsed_conversation(
+            Provider.GEMINI,
+            "gemini-20250422-1234",
+            "gemini-20250422-1234",
+            [
+                _parsed_message("m1", "assistant", "Opening context"),
+                _parsed_message("m2", "user", "Summarize the retention plan for Q2."),
+            ],
+            provider_meta={"title_source": "fallback:id"},
+        )
+
+        enriched = GeminiAssemblySpec().enrich_conversation(conv, {})
+
+        assert enriched.title == "gemini-20250422-1234"
+        metadata = _provider_meta(enriched)
+        assert metadata["title_source"] == "fallback:id"
+        assert metadata["display_label"] == "Summarize the retention plan for Q2."
+        assert metadata["display_label_source"] == "first-user-message"
+
+    def test_attachment_name_informs_display_label(self) -> None:
+        conv = _parsed_conversation(
+            Provider.GEMINI,
+            "gemini-attachment-221",
+            "gemini-attachment-221",
+            [_parsed_message("m1", "user", "Please review the attached project plan.")],
+            attachments=[_parsed_attachment("Project Plan")],
+            provider_meta={"title_source": "fallback:id"},
+        )
+
+        enriched = GeminiAssemblySpec().enrich_conversation(conv, {})
+
+        metadata = _provider_meta(enriched)
+        assert metadata["display_label"] == "Project Plan: Please review the attached project plan."
+        assert metadata["display_label_source"] == "attachment-name:first-user-message"
+
+    def test_empty_title_uses_attachment_name_when_no_prompt_exists(self) -> None:
+        conv = _parsed_conversation(
+            Provider.GEMINI,
+            "gemini-empty-title",
+            "",
+            [_parsed_message("m1", "assistant", "Ready")],
+            attachments=[_parsed_attachment("Project Plan")],
+            provider_meta={"title_source": "fallback:id"},
+        )
+
+        enriched = GeminiAssemblySpec().enrich_conversation(conv, {})
+
+        metadata = _provider_meta(enriched)
+        assert metadata["display_label"] == "Attachment: Project Plan"
+        assert metadata["display_label_source"] == "attachment-name"
+
+    def test_minimal_payload_without_label_evidence_is_unchanged(self) -> None:
+        conv = _parsed_conversation(
+            Provider.GEMINI,
+            "gemini-minimal-221",
+            "gemini-minimal-221",
+            [_parsed_message("m1", "assistant", "Ready")],
+            provider_meta={"title_source": "fallback:id"},
+        )
+
+        result = GeminiAssemblySpec().enrich_conversation(conv, {})
+
+        assert result is conv
 
 
 # ---------------------------------------------------------------------------

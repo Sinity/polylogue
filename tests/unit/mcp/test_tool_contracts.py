@@ -383,6 +383,29 @@ class TestQueryTools:
         mock_ops.diagnose_query_miss.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_list_conversations_uses_provider_display_label(self, mcp_server: MCPServerUnderTest) -> None:
+        gemini_conversation = make_conv(
+            id="gemini:gemini-20250422-1234",
+            provider=Provider.GEMINI,
+            title="gemini-20250422-1234",
+            provider_meta={"display_label": "Project Plan: Please review the attached project plan."},
+            messages=[make_msg(id="msg-user", role="user", text="Please review the attached project plan.")],
+        )
+        with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
+            mock_ops = MagicMock()
+            mock_ops.query_conversations = AsyncMock(return_value=[gemini_conversation])
+            mock_get_archive_ops.return_value = mock_ops
+
+            raw = await invoke_surface_async(
+                mcp_server._tool_manager._tools["list_conversations"].fn,
+                provider="gemini",
+                limit=10,
+            )
+
+        payload = json.loads(raw)
+        assert payload[0]["title"] == "Project Plan: Please review the attached project plan."
+
+    @pytest.mark.asyncio
     async def test_search_exposes_attachment_identity_evidence(
         self,
         simple_conversation: Conversation,
