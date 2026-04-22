@@ -3,17 +3,15 @@
 from __future__ import annotations
 
 import json
-import os
 import sys
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from click.testing import CliRunner
 
 from polylogue.cli.click_app import cli as click_cli
 from polylogue.cli.click_app import mcp_command
-from polylogue.scenarios import CorpusProfile, CorpusSpec
 from tests.infra.cli_subprocess import run_cli
 
 QueryParams = dict[str, object]
@@ -465,139 +463,6 @@ class TestCliMetadata:
 
 
 # ---------------------------------------------------------------------------
-# Generate command tests (replaces test_demo.py)
-# ---------------------------------------------------------------------------
-
-
-class TestGenerateSeed:
-    """``polylogue generate --seed`` creates a full demo environment."""
-
-    def test_seed_creates_database(self, cli_runner: CliRunner, tmp_path: Path) -> None:
-        result = cli_runner.invoke(
-            click_cli,
-            [
-                "audit",
-                "generate",
-                "--seed",
-                "-o",
-                str(tmp_path),
-                "-n",
-                "1",
-                "-p",
-                "chatgpt",
-            ],
-        )
-        assert result.exit_code == 0
-        db_path = tmp_path / "data" / "polylogue" / "polylogue.db"
-        assert db_path.exists()
-        assert (tmp_path / "home").exists()
-        assert (tmp_path / "data" / "polylogue" / "inbox" / "chatgpt").exists()
-
-    def test_seed_restores_environment(
-        self,
-        cli_runner: CliRunner,
-        monkeypatch: pytest.MonkeyPatch,
-        tmp_path: Path,
-    ) -> None:
-        monkeypatch.setenv("XDG_DATA_HOME", "/tmp/original-data")
-        monkeypatch.setenv("HOME", "/tmp/original-home")
-        monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", "/tmp/original-archive")
-
-        with patch(
-            "polylogue.pipeline.runner.run_sources",
-            new=AsyncMock(
-                return_value=type(
-                    "_Result",
-                    (),
-                    {"counts": {"conversations": 0, "messages": 0}},
-                )()
-            ),
-        ):
-            result = cli_runner.invoke(
-                click_cli,
-                ["audit", "generate", "--seed", "-o", str(tmp_path), "-n", "1", "-p", "chatgpt"],
-            )
-
-        assert result.exit_code == 0
-        assert os.environ["HOME"] == "/tmp/original-home"
-        assert os.environ["XDG_DATA_HOME"] == "/tmp/original-data"
-        assert os.environ["POLYLOGUE_ARCHIVE_ROOT"] == "/tmp/original-archive"
-
-    def test_env_only_requires_seed(self, cli_runner: CliRunner) -> None:
-        result = cli_runner.invoke(click_cli, ["audit", "generate", "--env-only"])
-        assert result.exit_code != 0
-        assert "requires --seed" in result.output.lower() or "error" in result.output.lower()
-
-    def test_seed_env_only_exports_isolated_workspace(self, cli_runner: CliRunner, tmp_path: Path) -> None:
-        result = cli_runner.invoke(
-            click_cli,
-            ["audit", "generate", "--seed", "--env-only", "-o", str(tmp_path), "-n", "1", "-p", "chatgpt"],
-        )
-
-        assert result.exit_code == 0
-        assert f'export HOME="{tmp_path / "home"}"' in result.output
-        assert f'export XDG_CONFIG_HOME="{tmp_path / "config"}"' in result.output
-        assert f'export XDG_CACHE_HOME="{tmp_path / "cache"}"' in result.output
-
-    def test_inferred_corpus_generation_uses_unique_prefixes_per_same_provider_spec(
-        self,
-        cli_runner: CliRunner,
-        tmp_path: Path,
-    ) -> None:
-        inferred_specs = (
-            CorpusSpec(
-                provider="chatgpt",
-                package_version="v1",
-                count=1,
-                messages_min=4,
-                messages_max=4,
-                seed=7,
-                profile=CorpusProfile(family_ids=("cluster-a",)),
-            ),
-            CorpusSpec(
-                provider="chatgpt",
-                package_version="v1",
-                count=1,
-                messages_min=4,
-                messages_max=4,
-                seed=8,
-                profile=CorpusProfile(family_ids=("cluster-b",)),
-            ),
-        )
-
-        with patch(
-            "polylogue.schemas.operator_inference.list_inferred_corpus_specs",
-            return_value=inferred_specs,
-        ):
-            result = cli_runner.invoke(
-                click_cli,
-                ["audit", "generate", "--corpus-source", "inferred", "-o", str(tmp_path), "-n", "1", "-p", "chatgpt"],
-            )
-
-        assert result.exit_code == 0
-        provider_dir = tmp_path / "chatgpt"
-        assert (provider_dir / "sample-v1-cluster-a-00.json").exists()
-        assert (provider_dir / "sample-v1-cluster-b-00.json").exists()
-
-    def test_inferred_corpus_generation_fails_when_no_specs_match(
-        self,
-        cli_runner: CliRunner,
-        tmp_path: Path,
-    ) -> None:
-        with patch(
-            "polylogue.schemas.operator_inference.list_inferred_corpus_specs",
-            return_value=(),
-        ):
-            result = cli_runner.invoke(
-                click_cli,
-                ["audit", "generate", "--corpus-source", "inferred", "-o", str(tmp_path), "-p", "chatgpt"],
-            )
-
-        assert result.exit_code != 0
-        assert "No corpus scenarios matched" in result.output
-
-
-# ---------------------------------------------------------------------------
 # QA command tests
 # ---------------------------------------------------------------------------
 
@@ -608,7 +473,7 @@ class TestQaCommand:
     def test_only_and_skip_mutually_exclusive(self, cli_runner: CliRunner) -> None:
         result = cli_runner.invoke(
             click_cli,
-            ["audit", "--only", "audit", "--skip", "exercises"],
+            ["audit", "--only", "audit", "--skip", "audit"],
         )
         assert result.exit_code != 0
 
@@ -635,6 +500,9 @@ class TestQaCommand:
         assert "--only" in result.output
         assert "--skip" in result.output
         assert "--snapshot" in result.output
+        assert "  --tier" not in result.output
+        assert "audit generate" not in result.output
+        assert "devtools lab-scenario" in result.output
 
     def test_json_output_uses_composed_qa_session_payload(self, cli_runner: CliRunner) -> None:
         from polylogue.lib.outcomes import OutcomeCheck, OutcomeStatus
@@ -697,44 +565,11 @@ class TestQaCommand:
         assert payload["proof"]["skipped"] is True
         assert payload["overall_status"] == "ok"
 
-    def test_exercises_only_skips_artifact_proof(self, cli_runner: CliRunner) -> None:
-        from polylogue.scenarios import AssertionSpec, polylogue_execution
-        from polylogue.showcase.exercises import Exercise
-        from polylogue.showcase.qa_runner import QAResult
-        from polylogue.showcase.runner import ExerciseResult, ShowcaseResult
+    def test_exercises_only_is_no_longer_product_cli_stage(self, cli_runner: CliRunner) -> None:
+        result = cli_runner.invoke(click_cli, ["audit", "--only", "exercises", "--json"])
 
-        qa_result = QAResult(
-            proof_skipped=True,
-            audit_skipped=True,
-            showcase_result=ShowcaseResult(
-                results=[
-                    ExerciseResult(
-                        exercise=Exercise(
-                            name="smoke",
-                            group="structural",
-                            description="smoke",
-                            execution=polylogue_execution("--help"),
-                            assertion=AssertionSpec(),
-                        ),
-                        passed=True,
-                        exit_code=0,
-                        output="ok",
-                        duration_ms=1.0,
-                    )
-                ],
-                total_duration_ms=1.0,
-            ),
-            invariants_skipped=True,
-        )
-
-        with patch("polylogue.showcase.qa_runner.run_qa_session", return_value=qa_result) as mock_run:
-            result = cli_runner.invoke(click_cli, ["audit", "--only", "exercises", "--json"])
-
-        assert result.exit_code == 0
-        assert mock_run.call_args.args[0].skip_proof is True
-        payload = json.loads(result.output)
-        assert payload["proof"]["status"] == "skip"
-        assert payload["proof"]["skipped"] is True
+        assert result.exit_code != 0
+        assert "invalid value" in result.output.lower()
 
 
 # ---------------------------------------------------------------------------

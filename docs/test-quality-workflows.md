@@ -15,10 +15,10 @@ Current registry snapshot:
 - mutation campaigns: `19`
 - benchmark campaigns: `3`
 - synthetic benchmark campaigns: `6`
-- scenario projections: `242`
+- scenario projections: `241`
 - inferred corpus scenarios: `5`
   - benchmark-campaign: `3`
-  - exercise: `137`
+  - exercise: `136`
   - inferred-corpus-scenario: `5`
   - mutation-campaign: `19`
   - synthetic-benchmark: `6`
@@ -155,7 +155,7 @@ Use the named lanes through the runner.
 | --- | ---: | --- |
 | `live-archive-subset-parse-probe` | 1800 | Live archive medium archive-subset parse probe with persisted manifest/workdir artifacts |
 | `live-embed-stats` | 120 | Live archive embedding status JSON view |
-| `live-exercises` | 1800 | Manual live archive showcase/QA exercise lane |
+| `live-exercises` | 1800 | Manual verification-lab archive-smoke exercise lane |
 | `live-maintenance-preview` | 240 | Live archive machine-readable maintenance preview for safe repairs and destructive cleanup |
 | `live-products-analytics` | 180 | Live archive provider-analytics product surface |
 | `live-products-day-summaries` | 180 | Live archive day-summary product surface over the recent semantic slice |
@@ -310,7 +310,6 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `exercise` | `gen-schema-explain-gemini` | `schema-explain-query-loop` | `schema_packages`<br>`schema_explanation_results` | `query-schema-explanations` | — | `generated`<br>`schema`<br>`gemini` | Generated: schema explain --provider gemini |
 | `exercise` | `gen-schema-list` | `schema-list-query-loop` | `schema_packages`<br>`schema_cluster_manifests`<br>`inferred_corpus_specs`<br>`inferred_corpus_scenarios`<br>`schema_list_results` | `query-schema-catalog` | — | `generated`<br>`schema`<br>`list` | Generated: schema list --json returns valid JSON |
 | `exercise` | `help-audit` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | audit help |
-| `exercise` | `help-audit-generate` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | audit generate help |
 | `exercise` | `help-auth` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | auth help |
 | `exercise` | `help-completions` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | completions help |
 | `exercise` | `help-count` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | count help |
@@ -466,7 +465,7 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `validation-lane` | `live-archive-small` | `retrieval-band-readiness-loop`<br>`embedding-status-query-loop`<br>`conversation-query-loop`<br>`session-product-status-query-loop`<br>`message-fts-readiness-loop` | `embedding_metadata_rows`<br>`embedding_status_rows`<br>`message_embedding_vectors`<br>`action_event_readiness`<br>`session_product_readiness`<br>`retrieval_band_readiness`<br>`embedding_status_results`<br>`message_fts`<br>`conversation_query_results`<br>`session_product_status_results`<br>`archive_readiness` | `project-retrieval-band-readiness`<br>`query-embedding-status`<br>`cli.json-contract`<br>`query-conversations`<br>`query-session-product-status`<br>`project-archive-readiness` | — | `live`<br>`embeddings`<br>`readiness`<br>`retrieval`<br>`products`<br>`status`<br>`maintenance` | Bounded live archive retrieval/readiness/health dogfood lane |
 | `validation-lane` | `live-archive-subset-parse-probe` | `source-acquisition-loop`<br>`raw-reparse-loop`<br>`raw-archive-ingest-loop` | `configured_sources`<br>`source_payload_stream`<br>`raw_validation_state`<br>`artifact_observation_rows`<br>`validation_backlog`<br>`parse_backlog`<br>`parse_quarantine`<br>`archive_conversation_rows` | `acquire-raw-conversations`<br>`plan-validation-backlog`<br>`plan-parse-backlog`<br>`ingest-archive-runtime` | — | `live`<br>`probe`<br>`parse` | Live archive medium archive-subset parse probe with persisted manifest/workdir artifacts |
 | `validation-lane` | `live-embed-stats` | `retrieval-band-readiness-loop`<br>`embedding-status-query-loop` | `embedding_metadata_rows`<br>`embedding_status_rows`<br>`message_embedding_vectors`<br>`action_event_readiness`<br>`session_product_readiness`<br>`retrieval_band_readiness`<br>`embedding_status_results` | `project-retrieval-band-readiness`<br>`query-embedding-status`<br>`cli.json-contract` | — | `live`<br>`embeddings`<br>`readiness` | Live archive embedding status JSON view |
-| `validation-lane` | `live-exercises` | — | — | — | — | — | Manual live archive showcase/QA exercise lane |
+| `validation-lane` | `live-exercises` | — | — | — | — | — | Manual verification-lab archive-smoke exercise lane |
 | `validation-lane` | `live-maintenance-preview` | `message-fts-readiness-loop`<br>`retrieval-band-readiness-loop` | `message_fts`<br>`action_event_readiness`<br>`session_product_readiness`<br>`retrieval_band_readiness`<br>`archive_readiness` | `cli.json-contract`<br>`project-archive-readiness` | — | `live`<br>`maintenance`<br>`preview` | Live archive machine-readable maintenance preview for safe repairs and destructive cleanup |
 | `validation-lane` | `live-maintenance-small` | `message-fts-readiness-loop`<br>`retrieval-band-readiness-loop` | `message_fts`<br>`action_event_readiness`<br>`session_product_readiness`<br>`retrieval_band_readiness`<br>`archive_readiness` | `cli.json-contract`<br>`project-archive-readiness` | — | `maintenance`<br>`readiness`<br>`live`<br>`preview` | Bounded live archive lane for health, maintenance preview, and maintenance memory budget |
 | `validation-lane` | `live-products-analytics` | `provider-analytics-query-loop` | `session_product_rows`<br>`provider_analytics_results` | `query-provider-analytics` | — | `products`<br>`analytics` | Live archive provider-analytics product surface |

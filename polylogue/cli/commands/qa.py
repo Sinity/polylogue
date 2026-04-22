@@ -1,4 +1,4 @@
-"""Composable QA command: audit, exercises, invariants, and archival."""
+"""Archive QA command: schema audit, artifact proof, and archival."""
 
 from __future__ import annotations
 
@@ -6,7 +6,6 @@ from pathlib import Path
 
 import click
 
-from polylogue.cli.commands.generate import generate_command
 from polylogue.cli.helpers import complete_configured_source_names, load_effective_config, resolve_sources
 from polylogue.cli.qa_finalization import finalize_qa_run
 from polylogue.cli.qa_requests import (
@@ -16,11 +15,10 @@ from polylogue.cli.qa_snapshot import execute_snapshot_plan
 from polylogue.cli.types import AppEnv
 from polylogue.showcase.qa_runner_request import QAStage
 
-_STAGE_CHOICES = click.Choice([stage.value for stage in QAStage])
-_CAPTURE_CHOICES = click.Choice(["none", "vhs"])
+_PRODUCT_STAGE_CHOICES = click.Choice([QAStage.AUDIT.value])
 
 
-@click.group("audit", invoke_without_command=True)
+@click.command("audit")
 @click.option("--synthetic/--live", default=True, help="Data source: synthetic (default) or live real data")
 @click.option(
     "--source",
@@ -35,17 +33,8 @@ _CAPTURE_CHOICES = click.Choice(["none", "vhs"])
     "--ingest", is_flag=True, default=None, help="Run ingestion pipeline (auto for synthetic and fresh-with-sources)"
 )
 @click.option("--schemas", "regenerate_schemas", is_flag=True, help="Regenerate schemas during pipeline")
-@click.option("--only", "only_stage", type=_STAGE_CHOICES, default=None, help="Run only this stage")
-@click.option("--skip", "skip_stages", multiple=True, type=_STAGE_CHOICES, help="Skip this stage (repeatable)")
-@click.option("--tier", "tier_filter", type=int, default=None, help="Only run exercises at this tier (0/1/2)")
-@click.option("--fail-fast", is_flag=True, help="Stop on first exercise failure")
-@click.option(
-    "--capture",
-    type=_CAPTURE_CHOICES,
-    default="none",
-    show_default=True,
-    help="Capture mode for exercises",
-)
+@click.option("--only", "only_stage", type=_PRODUCT_STAGE_CHOICES, default=None, help="Run only this stage")
+@click.option("--skip", "skip_stages", multiple=True, type=_PRODUCT_STAGE_CHOICES, help="Skip this stage (repeatable)")
 @click.option(
     "--report-dir",
     type=click.Path(path_type=Path),
@@ -79,40 +68,40 @@ def qa_command(
     regenerate_schemas: bool,
     only_stage: str | None,
     skip_stages: tuple[str, ...],
-    tier_filter: int | None,
-    fail_fast: bool,
-    capture: str,
     report_dir: Path | None,
     json_output: bool,
     verbose: bool,
     snapshot_label: str | None,
     snapshot_from: Path | None,
 ) -> None:
-    """Run composable QA: schema audit, exercises, and invariant checks.
+    """Run archive QA: schema audit and artifact proof checks.
 
     \b
-    By default, creates a fresh workspace with synthetic data and runs
-    all stages: audit → exercises → invariants.
+    By default, audits packaged schemas and checks raw artifact proof against the active archive.
 
     \b
     Examples:
-      polylogue audit                              # Full synthetic QA
-      polylogue audit --live                       # Exercises against real data
-      polylogue audit --source inbox               # Fresh workspace from inbox
-      polylogue audit --only audit                 # Schema audit only
-      polylogue audit --only exercises --tier 0    # Tier-0 smoke test
-      polylogue audit --skip invariants            # Skip invariant checks
-      polylogue audit --snapshot release-v3        # QA + archive results
-      polylogue audit --snapshot-from ./qa_outputs # Archive existing directory
-      polylogue audit generate                     # Generate synthetic data
-      polylogue audit generate --seed              # Full demo environment
+      polylogue audit                         # Schema audit + artifact proof
+      polylogue audit --only audit            # Schema audit only
+      polylogue audit --snapshot release-v3   # QA + archive results
+      polylogue audit --snapshot-from ./qa_outputs
+
+    \b
+    Verification-lab corpus and scenario commands live under devtools:
+      devtools lab-corpus seed --env-only
+      devtools lab-scenario run archive-smoke --tier 0
     """
-    # If a subcommand (e.g. "generate") was invoked, let it run instead.
-    ctx = click.get_current_context()
-    if ctx.invoked_subcommand is not None:
-        return
     config = load_effective_config(env)
     selected_source_names = resolve_sources(config, source_names, "audit") if source_names else None
+    product_skip_stages = (
+        skip_stages
+        if only_stage is not None
+        else (
+            *skip_stages,
+            QAStage.EXERCISES.value,
+            QAStage.INVARIANTS.value,
+        )
+    )
     try:
         invocation_plan = build_qa_invocation_plan(
             synthetic=synthetic,
@@ -121,13 +110,13 @@ def qa_command(
             ingest=ingest,
             regenerate_schemas=regenerate_schemas,
             only_stage=only_stage,
-            skip_stages=skip_stages,
+            skip_stages=product_skip_stages,
             workspace=workspace,
             report_dir=report_dir,
             verbose=verbose,
-            fail_fast=fail_fast,
-            tier_filter=tier_filter,
-            capture=capture,
+            fail_fast=False,
+            tier_filter=None,
+            capture="none",
             json_output=json_output,
             snapshot_label=snapshot_label,
             snapshot_from=snapshot_from,
@@ -168,7 +157,5 @@ def qa_command(
     if not result.all_passed:
         raise SystemExit(1)
 
-
-qa_command.add_command(generate_command)
 
 __all__ = ["qa_command"]

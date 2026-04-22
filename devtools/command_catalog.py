@@ -13,6 +13,8 @@ VERIFICATION_LAB_COMMAND_NAMES: tuple[str, ...] = (
     "render-verification-catalog",
     "affected-obligations",
     "semantic-axis-evidence",
+    "lab-corpus",
+    "lab-scenario",
 )
 
 CATEGORY_ORDER: tuple[str, ...] = (
@@ -211,6 +213,25 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "devtools semantic-axis-evidence --campaign fts-rebuild --axis messages --scales small medium",
             "devtools semantic-axis-evidence --campaign session-product-materialization --axis conversations --scales small medium",
         ),
+    ),
+    CommandSpec(
+        "lab-corpus",
+        "verification",
+        "Generate verification-lab synthetic corpus fixtures and demo archives.",
+        "devtools.lab_corpus",
+        use_when="Seed synthetic corpus files or complete demo workspaces for lab exercises.",
+        examples=(
+            "devtools lab-corpus generate --provider chatgpt --count 5",
+            "devtools lab-corpus seed --env-only",
+        ),
+    ),
+    CommandSpec(
+        "lab-scenario",
+        "verification",
+        "Run verification-lab showcase scenario sets.",
+        "devtools.lab_scenario",
+        use_when="Run showcase exercise smoke scenarios outside the product CLI.",
+        examples=("devtools lab-scenario run archive-smoke --tier 0",),
     ),
     CommandSpec(
         "regression-capture",
