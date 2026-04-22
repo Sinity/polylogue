@@ -64,7 +64,9 @@ from .projections import (
 )
 from .runtime import (
     ExecutionResult,
+    RunnerInvocation,
     dispatch_execution,
+    dispatch_runner_execution,
     resolve_execution_command,
     resolve_execution_runner,
     run_execution,
@@ -97,6 +99,7 @@ __all__ = [
     "CorpusSpec",
     "compile_projection_entries",
     "dispatch_execution",
+    "dispatch_runner_execution",
     "declared_operation_target_names",
     "ExecutableScenario",
     "ExecutionKind",
@@ -119,6 +122,7 @@ __all__ = [
     "pytest_execution",
     "resolve_execution_command",
     "resolve_execution_runner",
+    "RunnerInvocation",
     "runner_execution",
     "run_execution",
     "build_live_product_surface_lanes",

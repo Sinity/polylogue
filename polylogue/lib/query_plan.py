@@ -8,7 +8,11 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import TYPE_CHECKING, TypeVar
 
-from polylogue.lib.query_fields import conversation_record_query_for_plan, sql_pushdown_params_for_plan
+from polylogue.lib.query_fields import (
+    SqlPushdownParams,
+    conversation_record_query_for_plan,
+    sql_pushdown_params_for_plan,
+)
 from polylogue.lib.query_plan_description import describe_plan, effective_fetch_limit, plan_has_filters
 from polylogue.lib.query_retrieval import (
     action_event_rows_ready,
@@ -57,7 +61,7 @@ def plan_record_query(plan: ConversationQueryPlan) -> ConversationRecordQuery:
     return conversation_record_query_for_plan(plan)
 
 
-def plan_sql_pushdown_params(plan: ConversationQueryPlan) -> dict[str, object]:
+def plan_sql_pushdown_params(plan: ConversationQueryPlan) -> SqlPushdownParams:
     return sql_pushdown_params_for_plan(plan)
 
 
@@ -122,7 +126,7 @@ class ConversationQueryPlan:
     def record_query(self) -> ConversationRecordQuery:
         return plan_record_query(self)
 
-    def sql_pushdown_params(self) -> dict[str, object]:
+    def sql_pushdown_params(self) -> SqlPushdownParams:
         return plan_sql_pushdown_params(self)
 
     def describe(self) -> list[str]:

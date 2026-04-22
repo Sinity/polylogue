@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
-from typing import Protocol, TypeAlias
+from typing import TypeAlias
 
 from polylogue.lib.json import JSONDocument, json_document
 from polylogue.schemas.field_stats import _collect_field_stats
@@ -18,17 +18,13 @@ from polylogue.schemas.generation_support import (
     collapse_dynamic_keys,
 )
 from polylogue.schemas.observation import ProviderConfig
+from polylogue.schemas.privacy_config import SchemaPrivacyConfig
 from polylogue.schemas.redaction_report import SchemaReport
 from polylogue.schemas.shape_fingerprint import _structure_fingerprint
 
 SchemaInput: TypeAlias = Mapping[str, object]
 SchemaPayload: TypeAlias = JSONDocument
 MutableSchemaPayload: TypeAlias = JSONDocument
-
-
-class PrivacyConfigLike(Protocol):
-    @property
-    def level(self) -> str: ...
 
 
 _STRUCTURE_EXEMPLARS_PER_FINGERPRINT = 8
@@ -40,7 +36,7 @@ def _generate_cluster_schema(
     samples: Sequence[SchemaInput],
     conv_ids: Sequence[str | None],
     *,
-    privacy_config: PrivacyConfigLike | None,
+    privacy_config: SchemaPrivacyConfig | None,
     full_corpus: bool = False,
     artifact_kind: str | None = None,
 ) -> tuple[MutableSchemaPayload, SchemaReport | None]:

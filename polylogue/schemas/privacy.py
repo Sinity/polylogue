@@ -9,7 +9,8 @@ is rejected.
 from __future__ import annotations
 
 import re
-from typing import Protocol, runtime_checkable
+
+from polylogue.schemas.privacy_config import SchemaPrivacyConfig
 
 _SAFE_ENUM_MAX_LEN = 50  # structural enums are short tokens, not content
 
@@ -45,18 +46,6 @@ _HIGH_ENTROPY_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{10,}$")
 # Pattern matching structural identifiers: lowercase tokens with underscores
 # (e.g. "chatgpt_agent", "deep_research") — not random IDs.
 _STRUCTURAL_CONSTANT_RE = re.compile(r"^[a-z][a-z0-9_]{2,30}$")
-
-
-@runtime_checkable
-class PrivacyConfigLike(Protocol):
-    """Runtime privacy config surface consumed by enum-value guards."""
-
-    @property
-    def safe_enum_max_length(self) -> int: ...
-
-    def field_override(self, path: str) -> str | None: ...
-
-    def is_value_allowed(self, value: str) -> bool | None: ...
 
 
 _IDENTIFIER_FIELD_TOKENS = frozenset(
@@ -209,7 +198,7 @@ def _is_safe_enum_value(
     *,
     path: str = "$",
     max_length: int | None = None,
-    config: object | None = None,
+    config: SchemaPrivacyConfig | None = None,
 ) -> bool:
     """Return True if a string value is safe to include in schema annotations.
 
@@ -230,7 +219,7 @@ def _is_safe_enum_value(
     effective_max_len = max_length or _SAFE_ENUM_MAX_LEN
 
     # Check config-level overrides first (highest precedence)
-    privacy_config = config if isinstance(config, PrivacyConfigLike) else None
+    privacy_config = config if isinstance(config, SchemaPrivacyConfig) else None
 
     if privacy_config is not None:
         # Field-level override

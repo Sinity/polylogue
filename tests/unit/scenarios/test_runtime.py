@@ -6,7 +6,9 @@ from types import SimpleNamespace
 import pytest
 
 from polylogue.scenarios import (
+    RunnerInvocation,
     dispatch_execution,
+    dispatch_runner_execution,
     polylogue_execution,
     resolve_execution_command,
     run_execution,
@@ -84,7 +86,7 @@ async def test_dispatch_execution_routes_runner_executions_through_resolver() ->
         captured["db_path"] = db_path
         return {"ok": True}
 
-    def resolve_runner(name: str) -> ExecutionRunner:
+    def resolve_runner(name: str) -> ExecutionRunner[dict[str, bool]]:
         assert name == "startup-readiness"
         return fake_runner
 
@@ -96,6 +98,29 @@ async def test_dispatch_execution_routes_runner_executions_through_resolver() ->
 
     assert result == {"ok": True}
     assert captured["db_path"] == Path("/tmp/benchmark.db")
+
+
+@pytest.mark.asyncio
+async def test_dispatch_runner_execution_preserves_typed_result_and_kwargs() -> None:
+    captured: dict[str, object] = {}
+
+    def fake_runner(db_path: Path, *, scale: str) -> int:
+        captured["db_path"] = db_path
+        captured["scale"] = scale
+        return 3
+
+    def resolve_runner(name: str) -> ExecutionRunner[int]:
+        assert name == "startup-readiness"
+        return fake_runner
+
+    result = await dispatch_runner_execution(
+        runner_execution("startup-readiness"),
+        runner_resolver=resolve_runner,
+        invocation=RunnerInvocation(args=(Path("/tmp/benchmark.db"),), kwargs={"scale": "small"}),
+    )
+
+    assert result == 3
+    assert captured == {"db_path": Path("/tmp/benchmark.db"), "scale": "small"}
 
 
 @pytest.mark.asyncio

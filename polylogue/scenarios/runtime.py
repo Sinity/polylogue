@@ -7,8 +7,11 @@ import subprocess
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TypeAlias, TypeVar
 
 from .execution import ExecutionSpec
+
+_RunnerT = TypeVar("_RunnerT")
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,8 +29,16 @@ class ExecutionResult:
         return self.stdout + self.stderr
 
 
-ExecutionRunner = Callable[..., object | Awaitable[object]]
-ExecutionRunnerResolver = Callable[[str], ExecutionRunner]
+ExecutionRunner: TypeAlias = Callable[..., _RunnerT | Awaitable[_RunnerT]]
+ExecutionRunnerResolver: TypeAlias = Callable[[str], ExecutionRunner[_RunnerT]]
+
+
+@dataclass(frozen=True, slots=True)
+class RunnerInvocation:
+    """Typed argument bundle for named in-process execution runners."""
+
+    args: tuple[object, ...] = ()
+    kwargs: Mapping[str, object] | None = None
 
 
 def resolve_execution_command(
@@ -83,12 +94,27 @@ def run_execution(
 def resolve_execution_runner(
     execution: ExecutionSpec,
     *,
-    runner_resolver: ExecutionRunnerResolver,
-) -> ExecutionRunner:
+    runner_resolver: ExecutionRunnerResolver[_RunnerT],
+) -> ExecutionRunner[_RunnerT]:
     """Resolve one runner-backed execution spec into a callable."""
     if not execution.is_runner or not execution.runner:
         raise ValueError(f"{execution.kind.value} execution has no named runner")
     return runner_resolver(execution.runner)
+
+
+async def dispatch_runner_execution(
+    execution: ExecutionSpec,
+    *,
+    runner_resolver: ExecutionRunnerResolver[_RunnerT],
+    invocation: RunnerInvocation | None = None,
+) -> _RunnerT:
+    """Dispatch one runner-backed execution with a typed result contract."""
+    runner = resolve_execution_runner(execution, runner_resolver=runner_resolver)
+    call = invocation or RunnerInvocation()
+    dispatched = runner(*call.args, **dict(call.kwargs or {}))
+    if isinstance(dispatched, Awaitable):
+        return await dispatched
+    return dispatched
 
 
 async def dispatch_execution(
@@ -99,7 +125,7 @@ async def dispatch_execution(
     timeout: float | None = None,
     capture_output: bool = False,
     binary_overrides: Mapping[str, str] | None = None,
-    runner_resolver: ExecutionRunnerResolver | None = None,
+    runner_resolver: ExecutionRunnerResolver[object] | None = None,
     runner_args: Sequence[object] = (),
     runner_kwargs: Mapping[str, object] | None = None,
 ) -> object:
@@ -107,11 +133,11 @@ async def dispatch_execution(
     if execution.is_runner:
         if runner_resolver is None:
             raise ValueError("runner execution requires a runner_resolver")
-        runner = resolve_execution_runner(execution, runner_resolver=runner_resolver)
-        dispatched = runner(*runner_args, **dict(runner_kwargs or {}))
-        if isinstance(dispatched, Awaitable):
-            return await dispatched
-        return dispatched
+        return await dispatch_runner_execution(
+            execution,
+            runner_resolver=runner_resolver,
+            invocation=RunnerInvocation(args=tuple(runner_args), kwargs=runner_kwargs),
+        )
     return run_execution(
         execution,
         cwd=cwd,
@@ -124,9 +150,11 @@ async def dispatch_execution(
 
 __all__ = [
     "dispatch_execution",
+    "dispatch_runner_execution",
     "ExecutionResult",
     "ExecutionRunner",
     "ExecutionRunnerResolver",
+    "RunnerInvocation",
     "resolve_execution_command",
     "resolve_execution_runner",
     "run_execution",
