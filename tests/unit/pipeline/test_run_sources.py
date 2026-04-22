@@ -19,10 +19,11 @@ from polylogue.pipeline.run_stages import (
     RenderStageOutcome,
     execute_materialize_stage,
 )
-from polylogue.pipeline.run_support import expand_requested_stage, normalize_stage_sequence
+from polylogue.pipeline.run_support import RUN_LEAF_STAGES, expand_requested_stage, normalize_stage_sequence
 from polylogue.pipeline.runner import _select_sources, latest_run, plan_sources, run_sources
 from polylogue.pipeline.services.parsing_models import IngestResult, ParseResult
 from polylogue.pipeline.stage_models import AcquireResult
+from polylogue.pipeline.stage_specs import PIPELINE_STAGE_SPECS, stage_sequence_suspends_fts, stage_specs_for_sequence
 from polylogue.sources.parsers.base import RawConversationData
 from polylogue.storage.backends import create_backend
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
@@ -110,6 +111,20 @@ def test_expand_requested_stage_contract() -> None:
     assert expand_requested_stage("parse") == ("parse",)
     assert expand_requested_stage("reprocess") == ("parse", "materialize", "render", "index")
     assert expand_requested_stage("all") == ("acquire", "parse", "materialize", "render", "site", "index")
+
+
+def test_pipeline_stage_specs_cover_leaf_stage_vocabulary() -> None:
+    assert set(PIPELINE_STAGE_SPECS) == RUN_LEAF_STAGES
+    assert PIPELINE_STAGE_SPECS["parse"].log_stage == "ingest"
+    assert PIPELINE_STAGE_SPECS["embed"].pipeline_managed is False
+
+
+def test_stage_specs_preserve_sequence_order_and_fts_policy() -> None:
+    stage_specs = stage_specs_for_sequence(("render", "parse", "materialize", "index"))
+
+    assert [spec.name for spec in stage_specs] == ["render", "parse", "materialize", "index"]
+    assert stage_sequence_suspends_fts(stage_specs) is True
+    assert stage_sequence_suspends_fts(stage_specs_for_sequence(("acquire", "materialize", "site"))) is False
 
 
 def test_normalize_stage_sequence_rejects_duplicates() -> None:
