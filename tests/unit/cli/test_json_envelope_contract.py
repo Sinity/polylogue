@@ -12,7 +12,6 @@ pure output formatting, independent of path caching).
 from __future__ import annotations
 
 import json
-from typing import TypeAlias
 
 import pytest
 from click.testing import CliRunner
@@ -23,9 +22,10 @@ from polylogue.cli.machine_errors import (
     emit_success,
     success,
 )
+from polylogue.lib.json import JSONDocument
+from tests.infra.json_contracts import envelope_result, extract_json_object, json_object_field, parse_json_object
 
 pytestmark = pytest.mark.machine_contract
-JSONEnvelope: TypeAlias = dict[str, object]
 
 
 # ---------------------------------------------------------------------------
@@ -40,7 +40,7 @@ class TestEmitSuccess:
         """emit_success() writes the success envelope to stdout."""
         emit_success({"count": 42})
         captured = capsys.readouterr()
-        parsed = json.loads(captured.out)
+        parsed = parse_json_object(captured.out, context="emit_success stdout")
         assert parsed["status"] == "ok"
         assert parsed["result"] == {"count": 42}
 
@@ -48,14 +48,14 @@ class TestEmitSuccess:
         """emit_success(None) writes empty result."""
         emit_success(None)
         captured = capsys.readouterr()
-        parsed = json.loads(captured.out)
+        parsed = parse_json_object(captured.out, context="emit_success stdout")
         assert parsed == {"status": "ok", "result": {}}
 
     def test_emit_success_empty_result(self: object, capsys: pytest.CaptureFixture[str]) -> None:
         """emit_success({}) writes empty result."""
         emit_success({})
         captured = capsys.readouterr()
-        parsed = json.loads(captured.out)
+        parsed = parse_json_object(captured.out, context="emit_success stdout")
         assert parsed == {"status": "ok", "result": {}}
 
 
@@ -64,34 +64,7 @@ class TestEmitSuccess:
 # ---------------------------------------------------------------------------
 
 
-def _parse_json_output(output: str) -> JSONEnvelope:
-    """Parse JSON from CLI output, stripping any log lines."""
-    # CLI may emit structlog lines to stderr; stdout should be clean JSON.
-    # But CliRunner mixes output, so find the JSON object.
-    lines = output.strip().splitlines()
-    # Find the first line that starts with '{' and parse from there
-    json_start = None
-    for i, line in enumerate(lines):
-        stripped = line.strip()
-        if stripped.startswith("{"):
-            json_start = i
-            break
-    if json_start is None:
-        raise ValueError(f"No JSON object found in output:\n{output}")
-    json_text = "\n".join(lines[json_start:])
-    parsed = json.loads(json_text)
-    if not isinstance(parsed, dict):
-        raise ValueError(f"Expected object envelope, got {type(parsed).__name__}")
-    return dict(parsed)
-
-
-def _result_payload(data: JSONEnvelope) -> JSONEnvelope:
-    result = data["result"]
-    assert isinstance(result, dict)
-    return dict(result)
-
-
-def _invoke_json_command(args: list[str], monkeypatch: pytest.MonkeyPatch) -> JSONEnvelope | None:
+def _invoke_json_command(args: list[str], monkeypatch: pytest.MonkeyPatch) -> JSONDocument | None:
     """Invoke a CLI command with --json flag, return parsed output or None on skip.
 
     Returns None (and calls pytest.skip) if the command fails due to DB errors
@@ -109,7 +82,7 @@ def _invoke_json_command(args: list[str], monkeypatch: pytest.MonkeyPatch) -> JS
         if result.exception:
             pytest.skip(f"{args[0]} --json raised {type(result.exception).__name__}: {result.exception}")
         pytest.skip(f"{args[0]} --json failed (exit {result.exit_code})")
-    return _parse_json_output(result.output)
+    return extract_json_object(result.output, context=f"{args[0]} output")
 
 
 class TestCheckJsonEnvelope:
@@ -132,7 +105,7 @@ class TestTagsJsonEnvelope:
         assert parsed is not None
         assert parsed["status"] == "ok"
         assert "result" in parsed
-        assert "tags" in _result_payload(parsed)
+        assert "tags" in envelope_result(parsed, context="tags envelope")
 
 
 # ---------------------------------------------------------------------------
@@ -170,9 +143,11 @@ class TestErrorEnvelopeContract:
             details={"nested": {"data": True}},
         )
         text = json.dumps(err.to_dict())
-        parsed = json.loads(text)
+        parsed = parse_json_object(text, context="error envelope")
+        details = json_object_field(parsed, "details", context="error envelope")
+        nested = json_object_field(details, "nested", context="error envelope.details")
         assert parsed["status"] == "error"
-        assert parsed["details"]["nested"]["data"] is True
+        assert nested["data"] is True
 
 
 class TestSuccessEnvelopeContract:
@@ -189,7 +164,7 @@ class TestSuccessEnvelopeContract:
         """Success envelope serializes to valid JSON."""
         s = success({"nested": {"deep": True}})
         text = json.dumps(s.to_dict())
-        parsed = json.loads(text)
+        parsed = parse_json_object(text, context="success envelope")
         assert parsed["status"] == "ok"
 
     def test_success_none_gives_empty_result(self: object) -> None:

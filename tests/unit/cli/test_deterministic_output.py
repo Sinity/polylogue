@@ -16,13 +16,13 @@ import sys
 from datetime import datetime, timezone
 from io import StringIO
 from pathlib import Path
-from typing import TypeAlias
 from unittest.mock import MagicMock, patch
 
 import pytest
 from click.testing import CliRunner
 
 from polylogue.cli.click_app import cli
+from polylogue.lib.json import JSONDocument
 from polylogue.lib.outcomes import OutcomeCheck, OutcomeStatus
 from polylogue.proof.catalog import build_verification_catalog
 from polylogue.proof.models import ProofObligation
@@ -35,10 +35,10 @@ from polylogue.showcase.invariants import InvariantResult
 from polylogue.showcase.qa_report import generate_qa_session
 from polylogue.showcase.qa_runner import QAResult
 from polylogue.showcase.runner import ExerciseResult, ShowcaseResult
+from tests.infra.json_contracts import envelope_result, extract_json_object
 
 # ANSI escape code pattern: ESC[ ... final-byte
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]|\x1b\].*?\x07|\x1b\[.*?m")
-JSONEnvelope: TypeAlias = dict[str, object]
 
 
 # ---------------------------------------------------------------------------
@@ -46,22 +46,13 @@ JSONEnvelope: TypeAlias = dict[str, object]
 # ---------------------------------------------------------------------------
 
 
-def _extract_json(output: str) -> JSONEnvelope:
+def _extract_json(output: str) -> JSONDocument:
     """Extract the first JSON object from CLI output, skipping log/banner lines."""
-    lines = output.strip().splitlines()
-    for i, line in enumerate(lines):
-        if line.strip().startswith("{"):
-            parsed = json.loads("\n".join(lines[i:]))
-            if not isinstance(parsed, dict):
-                raise ValueError(f"Expected JSON object in output:\n{output}")
-            return dict(parsed)
-    raise ValueError(f"No JSON object in output:\n{output}")
+    return extract_json_object(output, context="CLI output")
 
 
-def _result_payload(data: JSONEnvelope) -> JSONEnvelope:
-    result = data["result"]
-    assert isinstance(result, dict)
-    return dict(result)
+def _result_payload(data: JSONDocument) -> JSONDocument:
+    return envelope_result(data, context="CLI envelope")
 
 
 def _has_ansi(text: str) -> bool:
@@ -94,7 +85,7 @@ class TestFrozenClockCheckJson:
     ) -> None:
         """Two runs with same frozen clock produce identical timestamps."""
 
-        def _run_check() -> JSONEnvelope:
+        def _run_check() -> JSONDocument:
             runner = CliRunner()
             with patch("time.time", return_value=float(self.FROZEN_EPOCH)):
                 result = runner.invoke(
@@ -367,7 +358,7 @@ class TestJsonDeterminism:
     """Same inputs with frozen time must produce byte-identical --json output."""
 
     @staticmethod
-    def _normalize_check_result(data: JSONEnvelope) -> JSONEnvelope:
+    def _normalize_check_result(data: JSONDocument) -> JSONDocument:
         """Remove provenance fields that legitimately vary between runs.
 
         The health system reports live provenance. That provenance is still a
@@ -386,7 +377,7 @@ class TestJsonDeterminism:
     ) -> None:
         """Two doctor --json runs with same frozen time produce identical results."""
         runner = CliRunner()
-        parsed: list[JSONEnvelope] = []
+        parsed: list[JSONDocument] = []
 
         for _ in range(2):
             with patch("time.time", return_value=1700000000.0):

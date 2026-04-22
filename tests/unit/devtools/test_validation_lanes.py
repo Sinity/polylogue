@@ -42,6 +42,13 @@ class TestLaneParsing:
             assert lane.description
             assert lane.timeout_s > 0
 
+    def test_pytest_lanes_do_not_repeat_explicit_targets(self) -> None:
+        for lane in LANES.values():
+            if lane.execution is None or lane.execution.kind is not ExecutionKind.PYTEST:
+                continue
+            explicit_targets = tuple(arg for arg in lane.execution.argv if arg.startswith("tests/"))
+            assert len(explicit_targets) == len(set(explicit_targets)), lane.name
+
     def test_machine_contract_lane_carries_shared_operation_metadata(self) -> None:
         lane = LANES["machine-contract"]
 
