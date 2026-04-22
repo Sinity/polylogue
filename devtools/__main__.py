@@ -6,13 +6,17 @@ import argparse
 import json
 import sys
 
-from devtools.command_catalog import COMMAND_SPECS, COMMANDS, grouped_command_specs
+from devtools.command_catalog import COMMAND_SPECS, COMMANDS, grouped_command_specs, verification_lab_command_specs
 
 
 def _print_command_inventory(*, as_json: bool) -> None:
+    verification_lab = verification_lab_command_specs()
     if as_json:
         payload = {
             "commands": [spec.to_dict() for spec in COMMAND_SPECS],
+            "surfaces": {
+                "verification_lab": [spec.name for spec in verification_lab],
+            },
             "categories": [
                 {
                     "name": category,
@@ -26,6 +30,10 @@ def _print_command_inventory(*, as_json: bool) -> None:
         return
 
     print("Commands:")
+    if verification_lab:
+        print("\n  verification lab surface:")
+        for spec in verification_lab:
+            print(f"    {spec.name:<25} {spec.description}")
     for category, specs in grouped_command_specs().items():
         print(f"\n  {category}:")
         for spec in specs:

@@ -9,6 +9,11 @@ from dataclasses import asdict, dataclass
 
 CommandMain = Callable[[list[str] | None], int]
 CONTROL_PLANE = "devtools"
+VERIFICATION_LAB_COMMAND_NAMES: tuple[str, ...] = (
+    "render-verification-catalog",
+    "affected-obligations",
+    "semantic-axis-evidence",
+)
 
 CATEGORY_ORDER: tuple[str, ...] = (
     "core",
@@ -112,9 +117,12 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     CommandSpec(
         "render-verification-catalog",
         "generated surfaces",
-        "Render docs/verification-catalog.md from proof-obligation registries.",
+        "Render the verification-lab proof catalog from obligation registries.",
         "devtools.render_verification_catalog",
-        use_when="Refresh or verify the proof-obligation catalog after changing proof subjects, claims, runners, or catalog rendering.",
+        use_when=(
+            "Refresh or verify the proof-obligation catalog that anchors the verification-lab surface after "
+            "changing proof subjects, claims, runners, or catalog rendering."
+        ),
         examples=(
             "devtools render-verification-catalog",
             "devtools render-verification-catalog --check",
@@ -133,7 +141,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     CommandSpec(
         "affected-obligations",
         "verification",
-        "Route changed paths or refs to affected proof obligations and focused checks.",
+        "Route changed paths or refs to affected verification-lab proof obligations and focused checks.",
         "devtools.affected_obligations",
         use_when="Find the proof obligations and inner-loop checks affected by local changes before escalating to full PR gates.",
         examples=(
@@ -193,7 +201,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     CommandSpec(
         "semantic-axis-evidence",
         "verification",
-        "Generate proof-envelope performance evidence across synthetic semantic scale tiers.",
+        "Generate verification-lab performance evidence across synthetic semantic scale tiers.",
         "devtools.semantic_axis_evidence",
         use_when=(
             "Produce comparative performance evidence that describes growth shape over semantic axes "
@@ -275,6 +283,11 @@ def featured_command_specs(commands: Iterable[CommandSpec] = COMMAND_SPECS) -> t
     return tuple(spec for spec in commands if spec.featured)
 
 
+def verification_lab_command_specs(commands: Iterable[CommandSpec] = COMMAND_SPECS) -> tuple[CommandSpec, ...]:
+    by_name = {spec.name: spec for spec in commands}
+    return tuple(by_name[name] for name in VERIFICATION_LAB_COMMAND_NAMES)
+
+
 def grouped_command_specs(commands: Iterable[CommandSpec] = COMMAND_SPECS) -> OrderedDict[str, list[CommandSpec]]:
     grouped: OrderedDict[str, list[CommandSpec]] = OrderedDict((category, []) for category in CATEGORY_ORDER)
     for spec in commands:
@@ -296,4 +309,6 @@ __all__ = [
     "control_plane_command",
     "featured_command_specs",
     "grouped_command_specs",
+    "VERIFICATION_LAB_COMMAND_NAMES",
+    "verification_lab_command_specs",
 ]

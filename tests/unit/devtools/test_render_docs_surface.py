@@ -10,6 +10,7 @@ def test_build_docs_readme_lists_core_and_repo_guides() -> None:
     assert "## Core References" in rendered
     assert "[CLI Reference](cli-reference.md)" in rendered
     assert "[Developer Tools](devtools.md)" in rendered
+    assert "[Verification Lab](verification-lab.md)" in rendered
     assert "## Repository Guides" in rendered
     assert "[Contributing](../CONTRIBUTING.md)" in rendered
     assert "[Local Cache Layout](../.cache/README.md)" in rendered

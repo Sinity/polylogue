@@ -3,10 +3,12 @@ from __future__ import annotations
 from devtools.command_catalog import (
     CATEGORY_ORDER,
     COMMAND_SPECS,
+    VERIFICATION_LAB_COMMAND_NAMES,
     control_plane_argv,
     control_plane_command,
     featured_command_specs,
     grouped_command_specs,
+    verification_lab_command_specs,
 )
 
 
@@ -35,3 +37,18 @@ def test_featured_command_specs_are_actionable() -> None:
         assert spec.use_when
         assert spec.examples
         assert spec.to_dict()["argv"] == list(spec.argv)
+
+
+def test_verification_lab_surface_is_explicit_and_implemented() -> None:
+    specs = verification_lab_command_specs()
+
+    assert tuple(spec.name for spec in specs) == VERIFICATION_LAB_COMMAND_NAMES
+    assert {spec.category for spec in specs} == {"generated surfaces", "verification"}
+    assert len({spec.module for spec in specs}) == len(specs)
+
+    for spec in specs:
+        assert spec.module.startswith("devtools.")
+        assert "Alias" not in spec.description
+        assert spec.use_when
+        assert spec.examples
+        assert callable(spec.resolve_main())
