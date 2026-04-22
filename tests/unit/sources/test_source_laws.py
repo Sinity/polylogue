@@ -1602,6 +1602,35 @@ def test_conversation_emitter_only_enriches_matching_claude_code_sessions_contra
     assert untouched.title == "untouched"
 
 
+def test_conversation_emitter_enriches_gemini_display_labels_contract() -> None:
+    ctx = _ParseContext(
+        provider_hint=Provider.GEMINI,
+        should_group=False,
+        source_path_str="/tmp/gemini.json",
+        fallback_id="gemini",
+        file_mtime="2026-03-11T00:00:00+00:00",
+        capture_raw=False,
+        sidecar_data={},
+    )
+    emitter = _ConversationEmitter(ctx)
+    conversation = _parsed_conversation(
+        provider_name=Provider.GEMINI,
+        provider_conversation_id="gemini-20250422-1234",
+        title="gemini-20250422-1234",
+        created_at=None,
+        updated_at=None,
+        messages=[_parsed_message("m1", role="user", text="Summarize the roadmap")],
+        provider_meta={"title_source": "fallback:id"},
+    )
+
+    enriched = emitter._maybe_enrich(conversation)
+
+    assert enriched.title == "gemini-20250422-1234"
+    assert enriched.provider_meta is not None
+    assert enriched.provider_meta["display_label"] == "Summarize the roadmap"
+    assert enriched.provider_meta["display_label_source"] == "first-user-message"
+
+
 def _zip_entry(name: str, *, size: int = 100, compressed: int = 50) -> zipfile.ZipInfo:
     entry = zipfile.ZipInfo(name)
     entry.file_size = size

@@ -13,6 +13,16 @@ def _metadata_string(metadata: dict[str, object], key: str) -> str | None:
     return str(value) if value is not None else None
 
 
+def _provider_meta_string(provider_meta: dict[str, object] | None, key: str) -> str | None:
+    if provider_meta is None:
+        return None
+    value = provider_meta.get(key)
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
 def _metadata_tags(metadata: dict[str, object]) -> list[str]:
     raw_tags = metadata.get("tags", [])
     if not isinstance(raw_tags, list):
@@ -25,6 +35,7 @@ class ConversationSummaryRuntimeMixin:
     title: str | None
     created_at: datetime | None
     updated_at: datetime | None
+    provider_meta: dict[str, object] | None
     metadata: dict[str, object]
     parent_id: ConversationId | None
     branch_type: BranchType | None
@@ -38,6 +49,9 @@ class ConversationSummaryRuntimeMixin:
         user_title = _metadata_string(self.metadata, "title")
         if user_title:
             return user_title
+        provider_label = _provider_meta_string(self.provider_meta, "display_label")
+        if provider_label:
+            return provider_label
         if self.title:
             return self.title
         return self.id[:8]

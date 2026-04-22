@@ -18,6 +18,9 @@ Polylogue ingests Gemini chats through the Drive API and direct file uploads.
 - Captures `driveDocument` references as attachments.
 - Preserves Drive document provider ids plus `id`, `fileId`, and `driveId`
   metadata for exact attachment-identity retrieval.
+- Preserves raw title provenance and adds deterministic display labels from the
+  first substantive user prompt or attachment names when imported titles are
+  empty, id-like, or fallback-only.
 - Downloads Drive attachments into the archive assets folder during ingest.
 
 ## Defaults

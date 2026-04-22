@@ -72,6 +72,10 @@ def get_assembly_spec(provider: Provider) -> ProviderAssemblySpec | None:
         from .assembly_codex import CodexAssemblySpec
 
         return CodexAssemblySpec()
+    if provider is Provider.GEMINI:
+        from .assembly_gemini import GeminiAssemblySpec
+
+        return GeminiAssemblySpec()
     return None
 
 

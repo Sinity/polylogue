@@ -430,3 +430,12 @@ class TestConversationSummaryDisplayDate:
             metadata={"title": "User Title"},
         )
         assert summary.display_title == "User Title"
+
+    def test_display_title_from_provider_display_label(self) -> None:
+        summary = ConversationSummary(
+            id=ConversationId("test"),
+            provider=Provider.GEMINI,
+            title="gemini-20250422-1234",
+            provider_meta={"display_label": "Review the project plan"},
+        )
+        assert summary.display_title == "Review the project plan"

@@ -265,6 +265,14 @@ class TestConversationMetadataAndAggregation:
         assert titled.user_title == "User Override"
         assert titled.display_title == "User Override"
 
+        provider_labeled = conversation_with_metadata.model_copy(
+            update={
+                "title": "gemini-20250422-1234",
+                "provider_meta": {"display_label": "Review the project plan"},
+            }
+        )
+        assert provider_labeled.display_title == "Review the project plan"
+
         fallback = make_conv(id="abc123def456", provider="test", title=None, messages=MessageCollection(messages=[]))
         assert fallback.display_title == "abc123de"
         assert fallback.tags == []
