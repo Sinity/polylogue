@@ -114,7 +114,7 @@ Options:
   -h, --help                      Show this message and exit.
 
 Commands:
-  audit        Run composable QA: schema audit, exercises, and invariant...
+  audit        Run archive QA: schema audit and artifact proof checks.
   auth         Authenticate with external services (Google Drive for...
   completions  Generate shell completion scripts.
   count        Print count of matched conversations.
@@ -297,84 +297,44 @@ Commands:
 ## Audit
 
 ```text
-Usage: polylogue audit [OPTIONS] COMMAND [ARGS]...
+Usage: polylogue audit [OPTIONS]
 
-  Run composable QA: schema audit, exercises, and invariant checks.
+  Run archive QA: schema audit and artifact proof checks.
 
-  By default, creates a fresh workspace with synthetic data and runs
-  all stages: audit → exercises → invariants.
-
-  Examples:
-    polylogue audit                              # Full synthetic QA
-    polylogue audit --live                       # Exercises against real data
-    polylogue audit --source inbox               # Fresh workspace from inbox
-    polylogue audit --only audit                 # Schema audit only
-    polylogue audit --only exercises --tier 0    # Tier-0 smoke test
-    polylogue audit --skip invariants            # Skip invariant checks
-    polylogue audit --snapshot release-v3        # QA + archive results
-    polylogue audit --snapshot-from ./qa_outputs # Archive existing directory
-    polylogue audit generate                     # Generate synthetic data
-    polylogue audit generate --seed              # Full demo environment
-
-Options:
-  --synthetic / --live            Data source: synthetic (default) or live
-                                  real data
-  --source TEXT                   Configured real source name (repeatable,
-                                  implies --fresh)
-  --fresh                         Run in an isolated temp workspace (default
-                                  for synthetic)
-  --workspace PATH                Reuse a specific workspace directory
-  --ingest                        Run ingestion pipeline (auto for synthetic
-                                  and fresh-with-sources)
-  --schemas                       Regenerate schemas during pipeline
-  --only [audit|exercises|invariants]
-                                  Run only this stage
-  --skip [audit|exercises|invariants]
-                                  Skip this stage (repeatable)
-  --tier INTEGER                  Only run exercises at this tier (0/1/2)
-  --fail-fast                     Stop on first exercise failure
-  --capture [none|vhs]            Capture mode for exercises  [default: none]
-  --report-dir PATH               Directory for QA artifacts (auto-generated
-                                  if omitted)
-  --json                          Machine-readable output
-  --verbose                       Print exercise outputs
-  --snapshot TEXT                 Archive results after QA completes (optional
-                                  label)
-  --snapshot-from DIRECTORY       Archive an existing output directory (skips
-                                  QA execution)
-  -h, --help                      Show this message and exit.
-
-Commands:
-  generate  Generate synthetic conversations for demos, testing, and...
-```
-
-## Audit Generate
-
-```text
-Usage: polylogue audit generate [OPTIONS]
-
-  Generate synthetic conversations for demos, testing, and inspection.
+  By default, audits packaged schemas and checks raw artifact proof against the active archive.
 
   Examples:
-    polylogue audit generate                        # Raw wire-format files
-    polylogue audit generate -p chatgpt -n 5        # ChatGPT only, 5 conversations
-    polylogue audit generate -o /tmp/corpus         # Custom output directory
-    polylogue audit generate --seed                 # Full demo environment
-    eval "$(polylogue audit generate --seed --env-only)"  # Shell-friendly
+    polylogue audit                         # Schema audit + artifact proof
+    polylogue audit --only audit            # Schema audit only
+    polylogue audit --snapshot release-v3   # QA + archive results
+    polylogue audit --snapshot-from ./qa_outputs
+
+  Verification-lab corpus and scenario commands live under devtools:
+    devtools lab-corpus seed --env-only
+    devtools lab-scenario run archive-smoke --tier 0
 
 Options:
-  -p, --provider TEXT             Providers to include (default: all). Can be
-                                  repeated.
-  -n, --count INTEGER             Conversations per provider  [default: 3]
-  --corpus-source [default|inferred]
-                                  Corpus spec source to execute.  [default:
-                                  default]
-  -o, --output-dir PATH           Output directory
-  --seed                          Run pipeline to produce a usable demo
-                                  environment
-  --env-only                      Print shell export statements only (requires
-                                  --seed)
-  -h, --help                      Show this message and exit.
+  --synthetic / --live       Data source: synthetic (default) or live real
+                             data
+  --source TEXT              Configured real source name (repeatable, implies
+                             --fresh)
+  --fresh                    Run in an isolated temp workspace (default for
+                             synthetic)
+  --workspace PATH           Reuse a specific workspace directory
+  --ingest                   Run ingestion pipeline (auto for synthetic and
+                             fresh-with-sources)
+  --schemas                  Regenerate schemas during pipeline
+  --only [audit]             Run only this stage
+  --skip [audit]             Skip this stage (repeatable)
+  --report-dir PATH          Directory for QA artifacts (auto-generated if
+                             omitted)
+  --json                     Machine-readable output
+  --verbose                  Print exercise outputs
+  --snapshot TEXT            Archive results after QA completes (optional
+                             label)
+  --snapshot-from DIRECTORY  Archive an existing output directory (skips QA
+                             execution)
+  -h, --help                 Show this message and exit.
 ```
 
 ## Doctor

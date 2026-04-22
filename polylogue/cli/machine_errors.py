@@ -252,7 +252,6 @@ def extract_command(argv: list[str]) -> list[str]:
         "--report-dir",
         "--snapshot",
         "--snapshot-from",
-        "--capture",
         "--tier",
         "--only",
         "--skip",

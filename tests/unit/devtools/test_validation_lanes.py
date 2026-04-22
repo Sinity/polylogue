@@ -401,9 +401,10 @@ class TestCommandConstruction:
 
     def test_live_lane_uses_module_entrypoint(self) -> None:
         cmd = build_lane_command(LANES["live-exercises"])
-        assert cmd[:1] == ["polylogue"]
-        assert "audit" in cmd
+        assert cmd[:2] == ["devtools", "lab-scenario"]
+        assert "archive-smoke" in cmd
         assert "--live" in cmd
+        assert "--tier" in cmd
 
     def test_live_maintenance_preview_lane_uses_doctor_preview(self) -> None:
         cmd = build_lane_command(LANES["live-maintenance-preview"])
