@@ -22,6 +22,7 @@ from click.testing import CliRunner, Result
 from polylogue.lib.json import JSONDocument, JSONValue, require_json_document, require_json_value
 from polylogue.lib.outcomes import OutcomeStatus
 from polylogue.proof.models import EvidenceEnvelope, ProofObligation, SourceSpan, TrustMetadata
+from polylogue.proof.traces import ObservableDiagnosticMapping, ObservableTrace, trace_signature_hash
 from polylogue.storage.backends.schema_ddl import SCHEMA_VERSION
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]|\x1b\].*?\x07|\x1b\[.*?m")
@@ -95,6 +96,20 @@ class ErrorContextObservation:
     user_message: str
     required_context: tuple[str, ...] = ()
     payload_fragments: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class TraceEquivalenceObservation:
+    """Observed cross-surface semantic traces for one operation."""
+
+    traces: tuple[ObservableTrace, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class DiagnosticTraceMappingObservation:
+    """Observed mapping from a diagnostic shape into the trace vocabulary."""
+
+    mapping: ObservableDiagnosticMapping
 
 
 _STATE_EFFECT_VALUES = {"unchanged", "changed", "rolled_back", "partially_changed"}
@@ -538,6 +553,142 @@ def run_error_context_evidence(
         reproducer=reproducer,
         provenance=obligation.subject.source_span,
         producer="polylogue.proof.runners.error_context",
+    )
+
+
+def run_trace_equivalence_evidence(
+    obligation: ProofObligation,
+    observation: TraceEquivalenceObservation,
+    *,
+    reproducer: tuple[str, ...] = ("pytest", "tests/unit/proof/test_trace_evidence.py"),
+) -> EvidenceEnvelope:
+    """Verify that surface traces match by semantic event payloads."""
+    if obligation.claim.id != "trace.operation.surface_equivalence":
+        raise ValueError(f"unsupported trace-equivalence claim: {obligation.claim.id}")
+
+    traces = observation.traces
+    expected_surfaces = _string_tuple_attr(obligation.subject.attrs.get("surfaces"))
+    expected_event_names = _string_tuple_attr(obligation.subject.attrs.get("event_nouns"))
+    surface_names = tuple(trace.surface for trace in traces)
+    signature_hashes = tuple(trace_signature_hash(trace) for trace in traces)
+    first_signature = traces[0].semantic_signature() if traces else ()
+    signature_match = bool(traces) and all(trace.semantic_signature() == first_signature for trace in traces)
+    required_surfaces_present = set(expected_surfaces).issubset(set(surface_names))
+    event_names_match = all(not expected_event_names or trace.event_names() == expected_event_names for trace in traces)
+    raw_output_absent = all(
+        not _json_key_present(event.payload, "raw_output") for trace in traces for event in trace.events
+    )
+    semantic_signature_hash = signature_hashes[0] if signature_hashes and len(set(signature_hashes)) == 1 else ""
+    happens_before: list[JSONDocument] = [
+        require_json_document(
+            {
+                "surface": trace.surface,
+                "edges": [edge.to_payload() for edge in trace.happens_before],
+            },
+            context="trace happens-before payload",
+        )
+        for trace in traces
+    ]
+    trace_payloads: list[JSONDocument] = [trace.to_payload() for trace in traces]
+    observed_state = require_json_document(
+        {
+            "surface_names": list(surface_names),
+            "expected_surfaces": list(expected_surfaces),
+            "event_names": list(expected_event_names),
+            "event_names_by_surface": {trace.surface: list(trace.event_names()) for trace in traces},
+            "semantic_signature_hash": semantic_signature_hash,
+            "signature_hashes": list(signature_hashes),
+            "trace_payloads": trace_payloads,
+            "happens_before": happens_before,
+            "checks": {
+                "at_least_two_surfaces": len(traces) >= 2,
+                "required_surfaces_present": required_surfaces_present,
+                "event_names_match": event_names_match,
+                "semantic_signatures_match": signature_match,
+                "raw_output_absent": raw_output_absent,
+            },
+        },
+        context="trace equivalence observed state",
+    )
+    expected_law = "cross-surface traces for the operation share semantic event names and payload fingerprints"
+    evidence = _evidence_payload(
+        obligation,
+        runner_class="trace_equivalence",
+        expected_law=expected_law,
+        observed_state=observed_state,
+    )
+    evidence["surface_names"] = list(surface_names)
+    evidence["event_names"] = list(expected_event_names)
+    evidence["semantic_signature_hash"] = semantic_signature_hash
+    evidence["trace_payloads"] = require_json_value(trace_payloads, context="trace_payloads")
+    evidence["happens_before"] = require_json_value(happens_before, context="happens_before")
+    ok = len(traces) >= 2 and required_surfaces_present and event_names_match and signature_match and raw_output_absent
+    return _build_envelope(
+        obligation,
+        status=OutcomeStatus.OK if ok else OutcomeStatus.ERROR,
+        evidence=evidence,
+        expected_law=expected_law,
+        observed_state=observed_state,
+        reproducer=reproducer,
+        provenance=obligation.subject.source_span,
+        producer="polylogue.proof.runners.trace_equivalence",
+    )
+
+
+def run_diagnostic_trace_mapping_evidence(
+    obligation: ProofObligation,
+    observation: DiagnosticTraceMappingObservation,
+    *,
+    reproducer: tuple[str, ...] = ("pytest", "tests/unit/proof/test_trace_evidence.py"),
+) -> EvidenceEnvelope:
+    """Verify a diagnostic shape is routable through observable trace nouns."""
+    if obligation.claim.id != "diagnostic.observable_trace_mapping":
+        raise ValueError(f"unsupported diagnostic mapping claim: {obligation.claim.id}")
+
+    attrs = obligation.subject.attrs
+    mapping = observation.mapping
+    expected_payload_contract = require_json_document(attrs.get("payload_contract"), context="payload_contract")
+    payload_contract_matches = mapping.payload_contract == expected_payload_contract
+    checks: JSONDocument = {
+        "diagnostic_name_matches": mapping.diagnostic_name == attrs.get("diagnostic_name"),
+        "source_matches": mapping.source == attrs.get("source"),
+        "event_name_matches": mapping.event_name.value == attrs.get("event_noun"),
+        "operation_matches": mapping.operation == attrs.get("operation"),
+        "artifact_node_matches": mapping.artifact_node == attrs.get("artifact_node"),
+        "payload_contract_present": bool(mapping.payload_contract),
+        "payload_contract_matches": payload_contract_matches,
+        "mapped_subject_id_present": bool(mapping.subject_id),
+    }
+    observed_state = require_json_document(
+        {
+            "mapping": mapping.to_payload(),
+            "expected": dict(attrs),
+            "checks": checks,
+        },
+        context="diagnostic trace mapping observed state",
+    )
+    expected_law = "diagnostic shape maps to an observable event noun, operation, artifact node, and payload contract"
+    evidence = _evidence_payload(
+        obligation,
+        runner_class="diagnostic_trace_mapping",
+        expected_law=expected_law,
+        observed_state=observed_state,
+    )
+    evidence["diagnostic_name"] = mapping.diagnostic_name
+    evidence["event_name"] = mapping.event_name.value
+    evidence["mapped_subject_id"] = mapping.subject_id
+    evidence["operation"] = mapping.operation
+    evidence["artifact_node"] = mapping.artifact_node
+    ok = all(bool(value) for value in checks.values())
+    return _build_envelope(
+        obligation,
+        status=OutcomeStatus.OK if ok else OutcomeStatus.ERROR,
+        evidence=evidence,
+        expected_law=expected_law,
+        observed_state=observed_state,
+        reproducer=reproducer,
+        provenance=obligation.subject.source_span,
+        producer="polylogue.proof.runners.diagnostic_trace_mapping",
     )
 
 
@@ -994,14 +1145,25 @@ def _payload_leak_detected(fragments: Sequence[str], *texts: str) -> bool:
     return any(fragment and any(fragment in text for text in texts) for fragment in fragments)
 
 
+def _json_key_present(value: JSONValue, target: str) -> bool:
+    if isinstance(value, dict):
+        return target in value or any(_json_key_present(item, target) for item in value.values())
+    if isinstance(value, list):
+        return any(_json_key_present(item, target) for item in value)
+    return False
+
+
 __all__ = [
+    "DiagnosticTraceMappingObservation",
     "ErrorContextObservation",
     "MaintenanceRepairObservation",
     "QuarantineErrorObservation",
     "SemanticQueryObservation",
     "SchemaValueGenerationObservation",
+    "TraceEquivalenceObservation",
     "run_artifact_path_evidence",
     "run_cli_json_envelope_evidence",
+    "run_diagnostic_trace_mapping_evidence",
     "run_provider_capability_evidence",
     "run_error_context_evidence",
     "run_maintenance_repair_state_evidence",
@@ -1009,4 +1171,5 @@ __all__ = [
     "run_schema_value_generation_evidence",
     "run_cli_visual_evidence",
     "run_semantic_query_evidence",
+    "run_trace_equivalence_evidence",
 ]

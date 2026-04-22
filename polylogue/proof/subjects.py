@@ -261,6 +261,51 @@ def error_surface_subjects() -> tuple[SubjectRef, ...]:
     )
 
 
+def trace_operation_subjects() -> tuple[SubjectRef, ...]:
+    """Compile observable operation traces into proof subjects."""
+    return (
+        SubjectRef(
+            kind="trace.operation",
+            id="trace.operation.provider_filter_query",
+            attrs=_json_document(
+                {
+                    "operation": "query-conversations",
+                    "surfaces": ["repository", "facade"],
+                    "event_nouns": ["ReadArchive", "ApplyFilter", "ReturnRows"],
+                    "semantic_payloads": ["provider", "count", "ids_hash"],
+                    "artifact_node": "conversation_query_results",
+                }
+            ),
+            source_span=SourceSpan(path="tests/infra/surfaces.py", symbol="ArchiveSurfaceAdapter.query_ids"),
+        ),
+    )
+
+
+def observable_diagnostic_subjects() -> tuple[SubjectRef, ...]:
+    """Compile existing diagnostics that map into observable trace vocabulary."""
+    return (
+        SubjectRef(
+            kind="diagnostic.observable",
+            id="diagnostic.observable.pipeline_probe_archive_subset",
+            attrs=_json_document(
+                {
+                    "diagnostic_name": "pipeline-probe.archive-subset.sample",
+                    "source": "devtools.pipeline_probe.ProbeSummary.sample",
+                    "event_noun": "ReadArchive",
+                    "operation": "acquire-raw-conversations",
+                    "artifact_node": "source_payload_stream",
+                    "payload_contract": {
+                        "input_mode": "archive-subset",
+                        "selected_count": "sample.selected_count",
+                        "provider_counts": "sample.provider_counts",
+                    },
+                }
+            ),
+            source_span=SourceSpan(path="devtools/pipeline_probe.py", symbol="ProbeSummary"),
+        ),
+    )
+
+
 def workflow_claim_subjects() -> tuple[SubjectRef, ...]:
     """Compile durable workflow claims that are not coupled to GitHub runtime state."""
     return (
@@ -362,6 +407,8 @@ def build_catalog_subjects() -> tuple[SubjectRef, ...]:
         *artifact_path_subjects(),
         *maintenance_target_subjects(),
         *error_surface_subjects(),
+        *trace_operation_subjects(),
+        *observable_diagnostic_subjects(),
         *schema_annotation_subjects(),
         *workflow_claim_subjects(),
     )
@@ -568,9 +615,11 @@ __all__ = [
     "error_surface_subjects",
     "json_command_subjects",
     "maintenance_target_subjects",
+    "observable_diagnostic_subjects",
     "operation_spec_subjects",
     "provider_capability_subjects",
     "query_law_subjects",
     "schema_annotation_subjects",
+    "trace_operation_subjects",
     "workflow_claim_subjects",
 ]
