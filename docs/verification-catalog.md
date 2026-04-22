@@ -8,10 +8,10 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 
 ## Snapshot
 
-- subjects: `9027`
+- subjects: `9024`
 - claims: `19`
 - runner bindings: `19`
-- proof obligations: `9099`
+- proof obligations: `9090`
 
 ## Quality Checks
 
@@ -31,7 +31,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | --- | ---: |
 | `archive.query_law` | 1 |
 | `artifact.path` | 27 |
-| `cli.command` | 42 |
+| `cli.command` | 39 |
 | `cli.json_command` | 2 |
 | `diagnostic.observable` | 1 |
 | `error.surface` | 2 |
@@ -79,13 +79,10 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `polylogue run reprocess` | `polylogue/cli/commands/run.py:401` `polylogue.cli.commands.run.run_reprocess_stage` |
 | `polylogue run schema` | `polylogue/cli/commands/run.py:363` `polylogue.cli.commands.run.run_schema_stage` |
 | `polylogue run site` | `polylogue/cli/commands/run.py:413` `polylogue.cli.commands.run.run_site_stage` |
-| `polylogue schema` | `polylogue/cli/commands/schema.py:49` `polylogue.cli.commands.schema.schema_command` |
-| `polylogue schema audit` | `polylogue/cli/commands/schema.py:229` `polylogue.cli.commands.schema.schema_audit` |
-| `polylogue schema compare` | `polylogue/cli/commands/schema.py:129` `polylogue.cli.commands.schema.schema_compare` |
-| `polylogue schema explain` | `polylogue/cli/commands/schema.py:195` `polylogue.cli.commands.schema.schema_explain` |
-| `polylogue schema generate` | `polylogue/cli/commands/schema.py:56` `polylogue.cli.commands.schema.schema_generate` |
-| `polylogue schema list` | `polylogue/cli/commands/schema.py:118` `polylogue.cli.commands.schema.schema_list` |
-| `polylogue schema promote` | `polylogue/cli/commands/schema.py:163` `polylogue.cli.commands.schema.schema_promote` |
+| `polylogue schema` | `polylogue/cli/commands/schema.py:38` `polylogue.cli.commands.schema.schema_command` |
+| `polylogue schema compare` | `polylogue/cli/commands/schema.py:56` `polylogue.cli.commands.schema.schema_compare` |
+| `polylogue schema explain` | `polylogue/cli/commands/schema.py:90` `polylogue.cli.commands.schema.schema_explain` |
+| `polylogue schema list` | `polylogue/cli/commands/schema.py:45` `polylogue.cli.commands.schema.schema_list` |
 | `polylogue stats` | `polylogue/cli/query_verbs.py:48` `polylogue.cli.query_verbs.stats_verb` |
 | `polylogue tags` | `polylogue/cli/commands/tags.py:12` `polylogue.cli.commands.tags.tags_command` |
 
@@ -165,10 +162,10 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | --- | ---: |
 | `archive.query.provider_filter_consistency` | 1 |
 | `artifact.path.dependency_closure` | 11 |
-| `cli.command.help` | 42 |
+| `cli.command.help` | 39 |
 | `cli.command.json_envelope` | 2 |
-| `cli.command.no_traceback` | 42 |
-| `cli.command.plain_mode` | 42 |
+| `cli.command.no_traceback` | 39 |
+| `cli.command.plain_mode` | 39 |
 | `diagnostic.observable_trace_mapping` | 1 |
 | `error.machine_user_context` | 2 |
 | `maintenance.repair.crash_consistency` | 8 |

@@ -305,3 +305,9 @@ class TestSchemaErrorBoundaries:
         result = runner.invoke(cli, ["schema", "--help"])
         assert result.exit_code == 0
         assert TRACEBACK_SENTINEL not in result.output
+        assert "compare" in result.output
+        assert "explain" in result.output
+        assert "list" in result.output
+        assert "generate" not in result.output
+        assert "promote" not in result.output
+        assert "audit" not in result.output

@@ -15,10 +15,10 @@ Current registry snapshot:
 - mutation campaigns: `19`
 - benchmark campaigns: `3`
 - synthetic benchmark campaigns: `6`
-- scenario projections: `241`
+- scenario projections: `237`
 - inferred corpus scenarios: `5`
   - benchmark-campaign: `3`
-  - exercise: `136`
+  - exercise: `132`
   - inferred-corpus-scenario: `5`
   - mutation-campaign: `19`
   - synthetic-benchmark: `6`
@@ -343,12 +343,9 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `exercise` | `help-run-schema` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | run schema help |
 | `exercise` | `help-run-site` | `site-publication-loop` | `conversation_render_projection`<br>`site_conversation_pages`<br>`site_publication_manifest`<br>`publication_records` | `cli.help`<br>`publish-site` | — | `generated`<br>`help`<br>`structural` | run site help |
 | `exercise` | `help-schema` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | schema help |
-| `exercise` | `help-schema-audit` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | schema audit help |
 | `exercise` | `help-schema-compare` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | schema compare help |
 | `exercise` | `help-schema-explain` | `schema-explain-query-loop` | `schema_packages`<br>`schema_explanation_results` | `cli.help`<br>`query-schema-explanations` | — | `generated`<br>`help`<br>`structural` | schema explain help |
-| `exercise` | `help-schema-generate` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | schema generate help |
 | `exercise` | `help-schema-list` | `schema-list-query-loop` | `schema_packages`<br>`schema_cluster_manifests`<br>`inferred_corpus_specs`<br>`inferred_corpus_scenarios`<br>`schema_list_results` | `cli.help`<br>`query-schema-catalog` | — | `generated`<br>`help`<br>`structural` | schema list help |
-| `exercise` | `help-schema-promote` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | schema promote help |
 | `exercise` | `help-stats` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | stats help |
 | `exercise` | `help-tags` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | tags help |
 | `exercise` | `json-audit` | — | — | `cli.json-contract` | — | `generated`<br>`json-contract` | audit JSON contract |
@@ -364,7 +361,6 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `exercise` | `json-products-week-summaries` | `week-summary-query-loop` | `day_session_summary_rows`<br>`week_session_summary_results` | `cli.json-contract`<br>`query-week-session-summaries` | — | `generated`<br>`json-contract`<br>`products`<br>`week-summaries` | products week-summaries JSON contract |
 | `exercise` | `json-products-work-events` | `session-work-event-query-loop` | `session_work_event_rows`<br>`session_work_event_fts`<br>`session_work_event_results` | `cli.json-contract`<br>`query-session-work-events` | — | `generated`<br>`json-contract`<br>`products`<br>`work-events` | products work-events JSON contract |
 | `exercise` | `json-run-embed` | `retrieval-band-readiness-loop`<br>`embedding-status-query-loop` | `embedding_metadata_rows`<br>`embedding_status_rows`<br>`message_embedding_vectors`<br>`action_event_readiness`<br>`session_product_readiness`<br>`retrieval_band_readiness`<br>`embedding_status_results` | `cli.json-contract`<br>`project-retrieval-band-readiness`<br>`query-embedding-status` | — | `generated`<br>`json-contract` | run embed JSON contract |
-| `exercise` | `json-schema-audit` | — | — | `cli.json-contract` | — | `generated`<br>`json-contract` | schema audit JSON contract |
 | `exercise` | `json-schema-list` | `schema-list-query-loop` | `schema_packages`<br>`schema_cluster_manifests`<br>`inferred_corpus_specs`<br>`inferred_corpus_scenarios`<br>`schema_list_results` | `cli.json-contract`<br>`query-schema-catalog` | — | `generated`<br>`json-contract` | schema list JSON contract |
 | `exercise` | `json-tags` | — | — | `cli.json-contract` | — | `generated`<br>`json-contract` | tags JSON contract |
 | `exercise` | `query-count` | — | — | — | — | — | Count conversations |
