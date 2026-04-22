@@ -19,6 +19,7 @@ SELECTED_SCHEMA_ANNOTATIONS: tuple[str, ...] = (
     "x-polylogue-foreign-keys",
     "x-polylogue-mutually-exclusive",
 )
+SELECTED_JSON_COMMANDS: tuple[tuple[str, ...], ...] = (("doctor",), ("tags",))
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SCHEMA_COMPOSITE_KEYWORDS = ("anyOf", "oneOf", "allOf")
@@ -68,6 +69,62 @@ def command_subjects(root_command: click.Command | None = None) -> tuple[Subject
     for command_path in iter_command_paths(root_command, include_root=True):
         subjects.append(_command_subject(command_path))
     return tuple(sorted(subjects, key=lambda subject: subject.id))
+
+
+def json_command_subjects(
+    root_command: click.Command | None = None,
+    *,
+    selected_paths: Iterable[tuple[str, ...]] = SELECTED_JSON_COMMANDS,
+) -> tuple[SubjectRef, ...]:
+    """Compile the selected JSON-capable commands into proof subjects."""
+    if root_command is None:
+        from polylogue.cli.click_app import cli
+
+        root_command = cli
+
+    selected = set(selected_paths)
+    subjects: list[SubjectRef] = []
+    for command_path in iter_command_paths(root_command, include_root=False):
+        if command_path.path not in selected:
+            continue
+        command_id = f"polylogue {' '.join(command_path.path)} --json"
+        attrs = _json_document(
+            {
+                "command_path": list(command_path.path),
+                "display_name": f"{command_path.display_name} --json",
+                "json_args": ["--plain", *command_path.path, "--json"],
+            }
+        )
+        subjects.append(
+            SubjectRef(
+                kind="cli.json_command",
+                id=command_id,
+                attrs=attrs,
+                source_span=_command_source_span(command_path.command, fallback_symbol=command_id),
+            )
+        )
+    return tuple(sorted(subjects, key=lambda subject: subject.id))
+
+
+def query_law_subjects() -> tuple[SubjectRef, ...]:
+    """Compile stable archive-query laws used by semantic evidence runners."""
+    return (
+        SubjectRef(
+            kind="archive.query_law",
+            id="archive.query_law.provider_filter.codex",
+            attrs=_json_document(
+                {
+                    "provider": "codex",
+                    "laws": [
+                        "provider_subset",
+                        "provider_count_matches_list",
+                        "equivalent_provider_filter_constructions",
+                    ],
+                }
+            ),
+            source_span=SourceSpan(path="polylogue/proof/subjects.py", symbol="query_law_subjects"),
+        ),
+    )
 
 
 def _command_subject(command_path: CommandPath) -> SubjectRef:
@@ -126,7 +183,7 @@ def schema_annotation_subjects(
 
 def build_catalog_subjects() -> tuple[SubjectRef, ...]:
     """Compile all subjects included in the first proof-catalog slice."""
-    return (*command_subjects(), *schema_annotation_subjects())
+    return (*command_subjects(), *json_command_subjects(), *query_law_subjects(), *schema_annotation_subjects())
 
 
 def _dedupe(subjects: Iterable[SubjectRef]) -> Iterator[SubjectRef]:
@@ -323,7 +380,10 @@ def _json_document(items: dict[str, object]) -> JSONDocument:
 
 __all__ = [
     "SELECTED_SCHEMA_ANNOTATIONS",
+    "SELECTED_JSON_COMMANDS",
     "build_catalog_subjects",
     "command_subjects",
+    "json_command_subjects",
+    "query_law_subjects",
     "schema_annotation_subjects",
 ]

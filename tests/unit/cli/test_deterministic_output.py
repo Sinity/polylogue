@@ -24,6 +24,9 @@ from click.testing import CliRunner
 
 from polylogue.cli.click_app import cli
 from polylogue.lib.outcomes import OutcomeCheck, OutcomeStatus
+from polylogue.proof.catalog import build_verification_catalog
+from polylogue.proof.models import ProofObligation
+from polylogue.proof.runners import run_cli_visual_evidence
 from polylogue.scenarios import polylogue_execution
 from polylogue.schemas.audit_models import AuditReport
 from polylogue.schemas.verification_models import ArtifactProofReport, ProviderArtifactProof
@@ -64,6 +67,16 @@ def _result_payload(data: JSONEnvelope) -> JSONEnvelope:
 def _has_ansi(text: str) -> bool:
     """Return True if text contains ANSI escape codes."""
     return bool(_ANSI_RE.search(text))
+
+
+def _plain_mode_obligation(args: list[str]) -> ProofObligation:
+    command_path = tuple(arg for arg in args if arg not in {"--plain", "--help"})
+    subject_id = "polylogue" if not command_path else f"polylogue {' '.join(command_path)}"
+    catalog = build_verification_catalog()
+    for obligation in catalog.obligations:
+        if obligation.claim.id == "cli.command.plain_mode" and obligation.subject.id == subject_id:
+            return obligation
+    raise AssertionError(f"missing plain-mode obligation for {args!r}")
 
 
 # ---------------------------------------------------------------------------
@@ -235,6 +248,8 @@ class TestPlainModeNoAnsi:
         result = runner.invoke(cli, args, catch_exceptions=True)
         # Commands may fail (e.g., no workspace) but output must be ANSI-free
         assert not _has_ansi(result.output), f"ANSI codes found in output for {args!r}:\n{result.output[:200]}"
+        evidence = run_cli_visual_evidence(_plain_mode_obligation(args), args=args)
+        assert evidence.status is OutcomeStatus.OK
 
 
 # ---------------------------------------------------------------------------

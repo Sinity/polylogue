@@ -130,8 +130,8 @@ def _render_claims(claims: tuple[Claim, ...]) -> list[str]:
 
 def _render_runner_bindings(runners: tuple[RunnerBinding, ...]) -> list[str]:
     lines = [
-        "| Runner Binding | Claim | Cost | Environment | Trust |",
-        "| --- | --- | --- | --- | --- |",
+        "| Runner Binding | Claim | Evidence | Cost | Environment | Trust |",
+        "| --- | --- | --- | --- | --- | --- |",
     ]
     for runner in runners:
         env_bits = [
@@ -141,7 +141,7 @@ def _render_runner_bindings(runners: tuple[RunnerBinding, ...]) -> list[str]:
         ]
         trust = f"`{runner.trust.level}` by `{runner.trust.producer}` at `{runner.trust.reviewed_at}`"
         lines.append(
-            f"| `{runner.id}` | `{runner.claim_id}` | `{runner.cost_tier}` | {'; '.join(env_bits)} | {trust} |"
+            f"| `{runner.id}` | `{runner.claim_id}` | `{runner.evidence_class}` | `{runner.cost_tier}` | {'; '.join(env_bits)} | {trust} |"
         )
     return lines
 

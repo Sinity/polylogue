@@ -14,7 +14,9 @@ from polylogue.proof.models import (
     AttrEq,
     BreakerMetadata,
     Claim,
+    CostTier,
     EnvironmentContract,
+    EvidenceClass,
     Kind,
     ProofObligation,
     RunnerBinding,
@@ -138,6 +140,9 @@ def default_claims() -> tuple[Claim, ...]:
             subject_query=command_query,
             evidence_schema=_evidence_schema("help_exit_code", "help_output"),
             bug_classes=("cli.help.regression", "command.inventory.omission"),
+            runner_classes=("cli_visual",),
+            observed_facts=("help_exit_code", "help_usage_banner", "command_path"),
+            staleness_conditions=("Click command registration or help option handling changes.",),
             breaker=BreakerMetadata(
                 description="A hidden or broken command makes the help runner fail for that command.",
                 issue="#333",
@@ -150,6 +155,9 @@ def default_claims() -> tuple[Claim, ...]:
             subject_query=command_query,
             evidence_schema=_evidence_schema("stderr", "stdout"),
             bug_classes=("cli.traceback.leak", "operator-facing-error-regression"),
+            runner_classes=("cli_visual",),
+            observed_facts=("stdout", "stderr", "traceback_present", "exit_code"),
+            staleness_conditions=("Click error handling, command callbacks, or exception formatting changes.",),
             breaker=BreakerMetadata(
                 description="A command callback or Click wiring error leaks traceback text into evidence.",
                 issue="#333",
@@ -162,10 +170,50 @@ def default_claims() -> tuple[Claim, ...]:
             subject_query=command_query,
             evidence_schema=_evidence_schema("plain_stdout", "rich_stdout"),
             bug_classes=("cli.plain-mode.regression", "terminal-rendering-regression"),
+            runner_classes=("cli_visual",),
+            observed_facts=("plain_stdout", "ansi_present", "command_path"),
+            staleness_conditions=("Terminal renderer, rich/plain mode, or command output formatting changes.",),
             breaker=BreakerMetadata(
                 description="A rich-only output path breaks the plain-mode runner comparison.",
                 issue="#333",
                 command=("devtools", "render-verification-catalog", "--check"),
+            ),
+        ),
+        Claim(
+            id="cli.command.json_envelope",
+            description="Selected JSON-capable commands emit a valid machine envelope.",
+            subject_query=Kind("cli.json_command"),
+            evidence_schema=_evidence_schema("json_status", "json_result_type", "parse_error"),
+            bug_classes=("cli.json-envelope.regression", "machine-contract.invalid-json"),
+            runner_classes=("cli_json",),
+            observed_facts=("json_status", "json_result_type", "exit_code", "parse_error"),
+            staleness_conditions=(
+                "Machine-output envelope, selected JSON command list, or JSON serialization changes.",
+            ),
+            breaker=BreakerMetadata(
+                description="A selected JSON command that emits invalid JSON or a missing success envelope breaks the claim.",
+                issue="#333",
+                command=("devtools", "render-verification-catalog", "--check"),
+            ),
+        ),
+        Claim(
+            id="archive.query.provider_filter_consistency",
+            description="Provider-filter query results preserve subset, count, and equivalent-construction laws.",
+            subject_query=Kind("archive.query_law"),
+            evidence_schema=_evidence_schema(
+                "all_ids",
+                "provider_ids",
+                "provider_count",
+                "equivalent_provider_ids",
+            ),
+            bug_classes=("query.provider-filter.drift", "archive-count.semantic-mismatch"),
+            runner_classes=("semantic_query",),
+            observed_facts=("all_ids", "provider_ids", "provider_count", "equivalent_provider_ids"),
+            staleness_conditions=("Repository list/count behavior or equivalent filter construction changes.",),
+            breaker=BreakerMetadata(
+                description="A provider result outside all results, mismatched count, or divergent equivalent construction is a counterexample.",
+                issue="#333",
+                command=("pytest", "tests/unit/proof/test_evidence_runners.py"),
             ),
         ),
         Claim(
@@ -174,6 +222,11 @@ def default_claims() -> tuple[Claim, ...]:
             subject_query=values_query,
             evidence_schema=_evidence_schema("values", "observed_values"),
             bug_classes=("schema.value-domain.drift", "schema.privacy.enum-leak"),
+            runner_classes=("schema_static",),
+            observed_facts=("values", "observed_values", "schema_path"),
+            staleness_conditions=(
+                "Schema annotation grammar, synthetic corpus generation, or provider schema changes.",
+            ),
             breaker=BreakerMetadata(
                 description="A generated payload outside the annotated value set is a counterexample.",
                 issue="#332",
@@ -186,6 +239,11 @@ def default_claims() -> tuple[Claim, ...]:
             subject_query=foreign_key_query,
             evidence_schema=_evidence_schema("source_path", "target_path"),
             bug_classes=("schema.relationship.drift", "synthetic-corpus.integrity"),
+            runner_classes=("schema_static",),
+            observed_facts=("source_path", "target_path", "schema_element"),
+            staleness_conditions=(
+                "Schema relationship annotations or synthetic corpus relationship generation changes.",
+            ),
             breaker=BreakerMetadata(
                 description="A source path pointing at a missing target path breaks the relation claim.",
                 issue="#332",
@@ -198,6 +256,9 @@ def default_claims() -> tuple[Claim, ...]:
             subject_query=mutual_exclusion_query,
             evidence_schema=_evidence_schema("parent", "fields"),
             bug_classes=("schema.mutual-exclusion.drift", "synthetic-corpus.invalid-combination"),
+            runner_classes=("schema_static",),
+            observed_facts=("parent", "fields", "co_populated_fields"),
+            staleness_conditions=("Schema mutual-exclusion annotations or generated payload construction changes.",),
             breaker=BreakerMetadata(
                 description="A generated record containing two fields from the same exclusion group is a counterexample.",
                 issue="#332",
@@ -211,10 +272,47 @@ def default_runner_bindings(claims: Iterable[Claim]) -> tuple[RunnerBinding, ...
     """Bind every default claim to its first static runner contract."""
     bindings: list[RunnerBinding] = []
     for claim in claims:
-        if claim.id.startswith("cli.command."):
-            bindings.append(_runner_binding(claim, runner="cli-help-contract", required_commands=("polylogue",)))
+        if claim.id in {"cli.command.help", "cli.command.no_traceback"}:
+            bindings.append(
+                _runner_binding(
+                    claim,
+                    runner="cli-help-contract",
+                    evidence_class="smoke",
+                    required_commands=("polylogue",),
+                )
+            )
+        elif claim.id == "cli.command.plain_mode":
+            bindings.append(
+                _runner_binding(
+                    claim,
+                    runner="cli-plain-contract",
+                    evidence_class="structural",
+                    required_commands=("polylogue",),
+                )
+            )
+        elif claim.id == "cli.command.json_envelope":
+            bindings.append(
+                _runner_binding(
+                    claim,
+                    runner="cli-json-envelope-contract",
+                    evidence_class="structural",
+                    cost_tier="unit",
+                    required_commands=("polylogue",),
+                )
+            )
+        elif claim.id.startswith("archive.query."):
+            bindings.append(
+                _runner_binding(
+                    claim,
+                    runner="semantic-query-law-contract",
+                    evidence_class="semantic",
+                    cost_tier="unit",
+                )
+            )
         elif claim.id.startswith("schema."):
-            bindings.append(_runner_binding(claim, runner="schema-annotation-static-contract"))
+            bindings.append(
+                _runner_binding(claim, runner="schema-annotation-static-contract", evidence_class="structural")
+            )
     return tuple(bindings)
 
 
@@ -227,6 +325,7 @@ def catalog_quality_checks(catalog: VerificationCatalog, *, now: datetime | None
         _stale_trust_metadata_check(catalog.runner_bindings, now=now_value),
         _missing_serious_bug_classes_check(catalog.claims),
         _missing_serious_breakers_check(catalog.claims),
+        _missing_serious_claim_adequacy_check(catalog.claims),
         _zero_subject_claims_check(catalog.claims, obligations_by_claim),
     ]
     return tuple(checks)
@@ -255,19 +354,22 @@ def _runner_binding(
     claim: Claim,
     *,
     runner: str,
+    evidence_class: EvidenceClass,
+    cost_tier: CostTier = "static",
     required_commands: tuple[str, ...] = (),
 ) -> RunnerBinding:
     return RunnerBinding(
         id=f"{runner}:{claim.id}",
         claim_id=claim.id,
         runner=runner,
-        cost_tier="static",
+        evidence_class=evidence_class,
+        cost_tier=cost_tier,
         freshness_policy="Refresh when the subject compiler, claim metadata, or runner contract changes.",
         environment=EnvironmentContract(
             required_commands=required_commands,
             network="none",
             live_archive=False,
-            notes=("No live archive dependency in the #192 catalog slice.",),
+            notes=("No live archive dependency; evidence is generated from command help or seeded test archives.",),
         ),
         trust=TrustMetadata(
             producer="polylogue.proof.catalog",
@@ -327,6 +429,30 @@ def _missing_serious_breakers_check(claims: tuple[Claim, ...]) -> OutcomeCheck:
         missing,
         ok_summary="serious claims expose breakers or tracked exceptions",
         error_summary="serious claims missing breakers or tracked exceptions",
+    )
+
+
+def _missing_serious_claim_adequacy_check(claims: tuple[Claim, ...]) -> OutcomeCheck:
+    missing: list[str] = []
+    for claim in claims:
+        if claim.severity != "serious":
+            continue
+        missing_fields = [
+            field_name
+            for field_name, values in (
+                ("runner_classes", claim.runner_classes),
+                ("observed_facts", claim.observed_facts),
+                ("staleness_conditions", claim.staleness_conditions),
+            )
+            if not values
+        ]
+        if missing_fields:
+            missing.append(f"{claim.id}: {', '.join(missing_fields)}")
+    return _check(
+        "catalog.serious_claim_adequacy",
+        missing,
+        ok_summary="serious claims declare runner classes, observed facts, and staleness conditions",
+        error_summary="serious claims missing adequacy metadata",
     )
 
 
