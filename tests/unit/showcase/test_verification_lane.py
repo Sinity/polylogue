@@ -1,4 +1,4 @@
-"""Tests for devtools.verify_showcase — showcase baseline verification."""
+"""Tests for showcase baseline verification."""
 
 from __future__ import annotations
 

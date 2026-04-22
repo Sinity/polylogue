@@ -103,8 +103,8 @@ devtools pipeline-probe --input-mode archive-subset --manifest-in /tmp/polylogue
 ### Showcase baseline drift
 
 ```bash
-devtools verify-showcase
-devtools verify-showcase --update
+devtools lab-scenario verify-baselines
+devtools lab-scenario verify-baselines --update
 ```
 
 ## Validation Lane Catalog

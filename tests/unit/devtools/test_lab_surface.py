@@ -117,3 +117,16 @@ def test_lab_scenario_live_archive_smoke_uses_active_archive() -> None:
     assert request.live is True
     assert request.fresh is False
     assert request.ingest is False
+
+
+def test_lab_scenario_verify_baselines_delegates_to_baseline_runner(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: list[bool] = []
+
+    def fake_verify_showcase_baselines(*, update: bool) -> int:
+        captured.append(update)
+        return 0
+
+    monkeypatch.setattr(lab_scenario, "verify_showcase_baselines", fake_verify_showcase_baselines)
+
+    assert lab_scenario.main(["verify-baselines", "--update"]) == 0
+    assert captured == [True]

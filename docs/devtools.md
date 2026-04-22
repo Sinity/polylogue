@@ -6,6 +6,25 @@ Use `devtools` for routine repository maintenance. Call individual
 It exposes both human and JSON discovery/status forms. Use the JSON forms for
 scripts and agents.
 
+## Command Ownership Policy
+
+`devtools` is the repository control plane. It owns orchestration around local
+repo readiness: generated-surface rendering, baseline verification, validation
+lane dispatch, package/build checks, and branch/PR readiness gates.
+
+Domain proof semantics belong in the verification-lab, proof, schema, scenario,
+or product modules first. A `devtools` command may expose them only as a thin
+operator entrypoint that delegates to the owning lab/product implementation.
+
+Routine command placement:
+
+- keep repo state, rendering, packaging, and PR-readiness orchestration in
+  `devtools`;
+- keep archive/product workflows in `polylogue` CLI/API surfaces;
+- keep proof/evidence/scenario behavior behind the verification-lab surface;
+- prefer validation lanes and `devtools verify --lab` to compose lab checks
+  rather than duplicating domain checks inside `devtools verify`.
+
 <!-- BEGIN GENERATED: devtools-command-catalog -->
 ## Command Catalog
 
@@ -30,7 +49,7 @@ repo proof obligations and evidence records, not end-user archive workflows.
 | `devtools affected-obligations` | Find the proof obligations and inner-loop checks affected by local changes before escalating to full PR gates. |
 | `devtools semantic-axis-evidence` | Produce comparative performance evidence that describes growth shape over semantic axes instead of machine-specific absolute budgets. |
 | `devtools lab-corpus` | Seed synthetic corpus files or complete demo workspaces for lab exercises. |
-| `devtools lab-scenario` | Run showcase exercise smoke scenarios outside the product CLI. |
+| `devtools lab-scenario` | Run showcase exercise smoke scenarios and committed baseline checks outside the product CLI. |
 | `devtools schema-generate` | Refresh provider schema package artifacts from archive observations outside the product CLI. |
 | `devtools schema-promote` | Turn reviewed schema evidence clusters into committed provider schema packages. |
 | `devtools schema-audit` | Check committed schema package quality gates without presenting them as normal archive usage. |
@@ -44,7 +63,7 @@ These are the commands worth remembering during normal repo work:
 - `devtools render-all`: Refresh or verify every generated repo surface together after changing docs, CLI help, or agent memory.
   Common forms: `devtools render-all`, `devtools render-all --check`.
 - `devtools verify`: Run format, lint, mypy, render-all, and test checks locally before pushing.
-  Common forms: `devtools verify`, `devtools verify --quick`.
+  Common forms: `devtools verify`, `devtools verify --quick`, `devtools verify --lab`.
 - `devtools mutmut-campaign`: Run or inspect focused mutation-testing work without shrinking the committed mutmut scope.
   Common forms: `devtools mutmut-campaign list`, `devtools mutmut-campaign run filters`.
 - `devtools benchmark-campaign`: Record durable benchmark artifacts or compare a candidate run against a baseline artifact.
@@ -76,7 +95,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools affected-obligations` | Route changed paths or refs to affected verification-lab proof obligations and focused checks. |
 | `devtools artifact-graph` | Render the runtime artifact, operation, and scenario-coverage map. |
 | `devtools lab-corpus` | Generate verification-lab synthetic corpus fixtures and demo archives. |
-| `devtools lab-scenario` | Run verification-lab showcase scenario sets. |
+| `devtools lab-scenario` | Run verification-lab showcase scenario sets and baseline checks. |
 | `devtools pipeline-probe` | Run typed pipeline probes against synthetic, staged, or archive-subset inputs. |
 | `devtools query-memory-budget` | Measure query-memory envelopes on generated fixtures. |
 | `devtools regression-capture` | Capture pipeline-probe summaries as durable local regression cases. |
@@ -113,7 +132,7 @@ When changing semantics, validation, or surfaces:
 ```bash
 devtools run-validation-lanes --list
 devtools run-validation-lanes --lane frontier-local
-devtools verify-showcase
+devtools lab-scenario verify-baselines
 devtools query-memory-budget --max-rss-mb 1536 -- polylogue --plain stats
 ```
 
