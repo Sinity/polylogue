@@ -123,6 +123,7 @@ Commands:
   doctor       Health check with optional maintenance and cleanup previews.
   list         List matched conversations.
   mcp          Start the MCP server for AI assistant integration.
+  neighbors    Show explainable neighboring or near-duplicate candidates.
   open         Open matched conversation in browser/editor.
   products     Inspect durable archive data products.
   reset        Reset database, blob store, assets, rendered outputs, or...

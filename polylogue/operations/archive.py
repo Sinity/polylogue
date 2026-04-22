@@ -64,6 +64,7 @@ _PROFILE_FTS_STATUS_BY_TIER: dict[str, SessionProductReadyFlag] = {
 if TYPE_CHECKING:
     from polylogue.config import Config
     from polylogue.lib.conversation_models import Conversation
+    from polylogue.lib.neighbor_candidates import ConversationNeighborCandidate
     from polylogue.lib.query_miss_diagnostics import QueryMissDiagnostics
     from polylogue.lib.search_hits import ConversationSearchHit
     from polylogue.lib.stats import ArchiveStats as StorageArchiveStats
@@ -257,6 +258,32 @@ class ArchiveSearchMixin:
             return hits
         counts = await self.repository.get_message_counts_batch([hit.conversation_id for hit in hits])
         return [hit.with_message_count(counts.get(hit.conversation_id)) for hit in hits]
+
+    async def neighbor_candidates(
+        self,
+        *,
+        conversation_id: str | None = None,
+        query: str | None = None,
+        provider: str | None = None,
+        limit: int = 10,
+        window_hours: int = 24,
+    ) -> list[ConversationNeighborCandidate]:
+        from polylogue.lib.neighbor_candidates import NeighborDiscoveryRequest, discover_neighbor_candidates
+
+        candidates = await discover_neighbor_candidates(
+            self.repository,
+            NeighborDiscoveryRequest(
+                conversation_id=conversation_id,
+                query=query,
+                provider=provider,
+                limit=limit,
+                window_hours=window_hours,
+            ),
+        )
+        if not candidates:
+            return []
+        counts = await self.repository.get_message_counts_batch([candidate.conversation_id for candidate in candidates])
+        return [candidate.with_message_count(counts.get(candidate.conversation_id)) for candidate in candidates]
 
     async def diagnose_query_miss(self, spec: ConversationQuerySpec) -> QueryMissDiagnostics:
         from polylogue.lib.query_miss_diagnostics import diagnose_query_miss

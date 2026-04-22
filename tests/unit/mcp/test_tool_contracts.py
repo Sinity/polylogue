@@ -35,6 +35,7 @@ from polylogue.archive_products import (
     WorkThreadProduct,
 )
 from polylogue.lib.models import Conversation, ConversationSummary
+from polylogue.lib.neighbor_candidates import ConversationNeighborCandidate, NeighborReason
 from polylogue.lib.query_miss_diagnostics import QueryMissDiagnostics, QueryMissReason
 from polylogue.lib.query_spec import ConversationQuerySpec
 from polylogue.lib.search_hits import ConversationSearchHit
@@ -262,6 +263,29 @@ def _make_attachment_search_hit(conversation: Conversation) -> ConversationSearc
     )
 
 
+def _make_neighbor_candidate() -> ConversationNeighborCandidate:
+    return ConversationNeighborCandidate(
+        summary=ConversationSummary(
+            id=ConversationId("candidate"),
+            provider=Provider.CODEX,
+            title="Archive Lock Retries",
+            message_count=2,
+            updated_at=datetime(2026, 4, 22, 14, 0, tzinfo=timezone.utc),
+        ),
+        rank=1,
+        score=3.25,
+        reasons=(
+            NeighborReason(
+                kind="nearby_time",
+                detail="within 2.0h of source conversation",
+                evidence="source=2026-04-22T12:00:00+00:00 candidate=2026-04-22T14:00:00+00:00",
+                weight=1.0,
+            ),
+        ),
+        source_conversation_id="target",
+    )
+
+
 def _provenance() -> ArchiveProductProvenance:
     return ArchiveProductProvenance(
         materializer_version=1,
@@ -432,6 +456,31 @@ class TestQueryTools:
         assert "provider_meta.fileId=drive-file-1" in payload[0]["match"]["snippet"]
         mock_ops.search_conversation_hits.assert_awaited_once()
         mock_ops.diagnose_query_miss.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_neighbor_candidates_exposes_candidate_reasons(self, mcp_server: MCPServerUnderTest) -> None:
+        with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
+            mock_ops = MagicMock()
+            mock_ops.neighbor_candidates = AsyncMock(return_value=[_make_neighbor_candidate()])
+            mock_get_archive_ops.return_value = mock_ops
+
+            raw = await invoke_surface_async(
+                mcp_server._tool_manager._tools["neighbor_candidates"].fn,
+                id="target",
+                limit=3,
+            )
+
+        payload = json.loads(raw)
+        assert payload[0]["conversation"]["id"] == "candidate"
+        assert payload[0]["reasons"][0]["kind"] == "nearby_time"
+        assert payload[0]["source_conversation_id"] == "target"
+        mock_ops.neighbor_candidates.assert_awaited_once_with(
+            conversation_id="target",
+            query=None,
+            provider=None,
+            limit=3,
+            window_hours=24,
+        )
 
 
 class TestGetConversationTool:
