@@ -24,8 +24,21 @@ from polylogue.proof.models import (
     TrustMetadata,
 )
 from polylogue.proof.subjects import build_catalog_subjects
+from polylogue.storage.backends.schema_ddl import SCHEMA_VERSION
 
 _REVIEWED_AT = "2026-04-22T00:00:00+00:00"
+_RUNNER_VERSION = "proof-catalog.v1"
+_CONTROLLED_RUNNER_DIMENSIONS = (
+    "timezone=UTC",
+    "locale=C.UTF-8",
+    "terminal_width=runner-default",
+    "color_mode=runner-controlled",
+    "random_seed=runner-supplied-or-not-used",
+    "clock_policy=static-reviewed-at",
+    "filesystem_ordering=sorted-subjects",
+    "sqlite_features=not-live",
+    "feature_flags=none",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -378,6 +391,7 @@ def catalog_quality_checks(catalog: VerificationCatalog, *, now: datetime | None
     checks = [
         _missing_source_span_check(catalog.subjects),
         _stale_trust_metadata_check(catalog.runner_bindings, now=now_value),
+        _missing_runner_environment_dimensions_check(catalog.runner_bindings),
         _missing_serious_bug_classes_check(catalog.claims),
         _missing_serious_breakers_check(catalog.claims),
         _missing_serious_claim_adequacy_check(catalog.claims),
@@ -413,6 +427,14 @@ def _runner_binding(
     cost_tier: CostTier = "static",
     required_commands: tuple[str, ...] = (),
 ) -> RunnerBinding:
+    environment = EnvironmentContract(
+        required_commands=required_commands,
+        controlled_dimensions=_CONTROLLED_RUNNER_DIMENSIONS,
+        uncontrolled_dimensions=(),
+        network="none",
+        live_archive=False,
+        notes=("No live archive dependency; evidence is generated from command help or seeded test archives.",),
+    )
     return RunnerBinding(
         id=f"{runner}:{claim.id}",
         claim_id=claim.id,
@@ -420,17 +442,19 @@ def _runner_binding(
         evidence_class=evidence_class,
         cost_tier=cost_tier,
         freshness_policy="Refresh when the subject compiler, claim metadata, or runner contract changes.",
-        environment=EnvironmentContract(
-            required_commands=required_commands,
-            network="none",
-            live_archive=False,
-            notes=("No live archive dependency; evidence is generated from command help or seeded test archives.",),
-        ),
+        environment=environment,
         trust=TrustMetadata(
             producer="polylogue.proof.catalog",
             reviewed_at=_REVIEWED_AT,
             level="authored",
             privacy="repo-local metadata only; no archive payloads",
+            code_revision="catalog-reviewed",
+            dirty_state=False,
+            schema_version=SCHEMA_VERSION,
+            environment_fingerprint="catalog-runner-environment-v1",
+            runner_version=_RUNNER_VERSION,
+            freshness="static review refreshed with generated catalog",
+            origin="authored-catalog",
         ),
     )
 
@@ -450,16 +474,64 @@ def _missing_source_span_check(subjects: tuple[SubjectRef, ...]) -> OutcomeCheck
 
 
 def _stale_trust_metadata_check(runners: tuple[RunnerBinding, ...], *, now: datetime) -> OutcomeCheck:
-    stale = [
-        runner.id
-        for runner in runners
-        if not runner.trust.producer.strip() or not runner.trust.reviewed_at.strip() or runner.trust.expires_before(now)
-    ]
+    stale: list[str] = []
+    for runner in runners:
+        missing_fields = _missing_runner_trust_fields(runner.trust)
+        if missing_fields or runner.trust.expires_before(now):
+            stale.append(f"{runner.id}: {', '.join(missing_fields) or 'expired'}")
     return _check(
         "catalog.runner_trust_metadata",
         stale,
         ok_summary="runner trust metadata is present and fresh",
         error_summary="runner trust metadata is stale or incomplete",
+    )
+
+
+def _missing_runner_trust_fields(trust: TrustMetadata) -> list[str]:
+    missing: list[str] = []
+    for field_name, value in (
+        ("producer", trust.producer),
+        ("reviewed_at", trust.reviewed_at),
+        ("code_revision", trust.code_revision),
+        ("dirty_state", trust.dirty_state),
+        ("schema_version", trust.schema_version),
+        ("environment_fingerprint", trust.environment_fingerprint),
+        ("runner_version", trust.runner_version),
+        ("freshness", trust.freshness),
+        ("origin", trust.origin),
+    ):
+        if value is None or (isinstance(value, str) and not value.strip()):
+            missing.append(field_name)
+    return missing
+
+
+def _missing_runner_environment_dimensions_check(runners: tuple[RunnerBinding, ...]) -> OutcomeCheck:
+    missing = [
+        runner.id
+        for runner in runners
+        if not runner.environment.controlled_dimensions and not runner.environment.uncontrolled_dimensions
+    ]
+    uncontrolled = [
+        f"{runner.id}: {', '.join(runner.environment.uncontrolled_dimensions)}"
+        for runner in runners
+        if runner.environment.uncontrolled_dimensions
+    ]
+    if missing:
+        return OutcomeCheck(
+            name="catalog.runner_environment_dimensions",
+            status=OutcomeStatus.ERROR,
+            summary=f"runner environment dimensions missing: {len(missing)}",
+            count=len(missing),
+            details=missing[:50],
+            breakdown={"missing": len(missing), "uncontrolled": len(uncontrolled)},
+        )
+    return OutcomeCheck(
+        name="catalog.runner_environment_dimensions",
+        status=OutcomeStatus.OK,
+        summary=f"runner environment dimensions declared; uncontrolled dimensions: {len(uncontrolled)}",
+        count=len(uncontrolled),
+        details=uncontrolled[:50],
+        breakdown={"missing": 0, "uncontrolled": len(uncontrolled)},
     )
 
 

@@ -162,6 +162,8 @@ def _render_runner_bindings(runners: tuple[RunnerBinding, ...]) -> list[str]:
     for runner in runners:
         env_bits = [
             f"commands={_code_list(runner.environment.required_commands)}",
+            f"controlled_dims=`{len(runner.environment.controlled_dimensions)}`",
+            f"uncontrolled_dims=`{len(runner.environment.uncontrolled_dimensions)}`",
             f"network=`{runner.environment.network}`",
             f"live_archive=`{runner.environment.live_archive}`",
         ]

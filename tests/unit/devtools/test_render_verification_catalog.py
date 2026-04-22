@@ -45,8 +45,21 @@ def _small_catalog() -> VerificationCatalog:
         evidence_class="smoke",
         cost_tier="static",
         freshness_policy="test",
-        environment=EnvironmentContract(required_commands=("polylogue",)),
-        trust=TrustMetadata(producer="tests", reviewed_at="2026-04-22T00:00:00+00:00"),
+        environment=EnvironmentContract(
+            required_commands=("polylogue",),
+            controlled_dimensions=("timezone=UTC",),
+        ),
+        trust=TrustMetadata(
+            producer="tests",
+            reviewed_at="2026-04-22T00:00:00+00:00",
+            code_revision="test",
+            dirty_state=False,
+            schema_version=1,
+            environment_fingerprint="test",
+            runner_version="test",
+            freshness="test",
+            origin="test",
+        ),
     )
     return build_verification_catalog(subjects=(subject,), claims=(claim,), runner_bindings=(runner,))
 

@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "witness_id": "golden.tool-use-json",
+  "path": "tests/data/golden/tool-use-json.md",
+  "origin": "golden-surface-snapshot",
+  "committed": true,
+  "provenance": {
+    "fixture_kind": "golden-rendering-snapshot",
+    "provider": "chatgpt",
+    "source_test": "tests/unit/rendering/test_output_snapshots.py",
+    "raw_material": "synthetic"
+  },
+  "preserved_semantic_facts": [
+    "tool-use JSON remains rendered as parse-visible fenced content",
+    "message role ordering survives markdown rendering"
+  ],
+  "minimization_status": "minimized",
+  "privacy": {
+    "private_material": "not_observed",
+    "transformed": false,
+    "redacted": false,
+    "discarded": false,
+    "retained": false,
+    "notes": [
+      "committed witness points at a repo-local synthetic golden fixture"
+    ]
+  },
+  "known_failing": false,
+  "xfail_strict": false,
+  "linked_issue": null,
+  "rejection_reason": null,
+  "notes": [
+    "accepted minimized witness metadata lives under tests/witnesses; new local candidates start under .local/witnesses/new"
+  ]
+}
