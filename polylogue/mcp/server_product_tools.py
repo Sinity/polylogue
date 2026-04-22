@@ -15,6 +15,7 @@ from polylogue.products.registry import (
     PRODUCT_REGISTRY,
     ProductType,
     fetch_products_async,
+    product_items_payload,
 )
 
 if TYPE_CHECKING:
@@ -36,14 +37,7 @@ def _register_list_tool(
             ops = hooks.get_archive_ops()
             normalized_kwargs = spec.normalize_kwargs(hooks.clamp_limit, kwargs)
             products = await fetch_products_async(pt, ops, **normalized_kwargs)
-            return hooks.json_payload(
-                MCPRootPayload(
-                    root={
-                        "count": len(products),
-                        "items": [product.model_dump(mode="json") for product in products],
-                    }
-                )
-            )
+            return hooks.json_payload(MCPRootPayload(root=product_items_payload(products, pt, item_key="items")))
 
         return await hooks.async_safe_call(pt.name, run)
 

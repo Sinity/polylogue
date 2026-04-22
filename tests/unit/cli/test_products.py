@@ -11,9 +11,10 @@ import click
 import pytest
 from click.testing import CliRunner, Result
 
+from polylogue.archive_products import ProviderAnalyticsProduct
 from polylogue.cli.click_app import cli
 from polylogue.cli.commands.products import _make_callback
-from polylogue.products.registry import get_product_type
+from polylogue.products.registry import get_product_type, product_items_payload
 from polylogue.storage.action_event_rebuild_runtime import rebuild_action_event_read_model_sync
 from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.session_product_rebuild import rebuild_session_products_sync
@@ -64,6 +65,34 @@ def _extract_json(output: str) -> JsonObject:
 
 def _exception_message(result: Result) -> str:
     return str(result.exception) if result.exception is not None else result.output.strip()
+
+
+def test_product_items_payload_can_render_cli_and_mcp_keys() -> None:
+    product = ProviderAnalyticsProduct(
+        provider_name="claude-code",
+        conversation_count=1,
+        message_count=2,
+        user_message_count=1,
+        assistant_message_count=1,
+        avg_messages_per_conversation=2.0,
+        avg_user_words=3.0,
+        avg_assistant_words=4.0,
+        tool_use_count=1,
+        thinking_count=0,
+        total_conversations_with_tools=1,
+        total_conversations_with_thinking=0,
+        tool_use_percentage=100.0,
+        thinking_percentage=0.0,
+    )
+    product_type = get_product_type("provider_analytics")
+
+    cli_payload = product_items_payload([product], product_type)
+    mcp_payload = product_items_payload([product], product_type, item_key="items")
+
+    assert cli_payload["count"] == 1
+    assert _expect_object_list(cli_payload["provider_analytics"])[0]["product_kind"] == "provider_analytics"
+    assert mcp_payload["count"] == 1
+    assert _expect_object_list(mcp_payload["items"])[0]["provider_name"] == "claude-code"
 
 
 def _seed_products(cli_workspace: CliWorkspace) -> None:

@@ -17,6 +17,7 @@ import click
 
 from polylogue.cli.query_contracts import QueryDeliveryTarget, QueryOutputSpec
 from polylogue.cli.query_feedback import emit_no_results
+from polylogue.cli.query_output_contracts import QueryOutputDocument, StructuredRowsDocument
 from polylogue.cli.query_semantic import (
     SemanticStatsSlice,
     action_matches_slice,
@@ -202,24 +203,23 @@ def render_conversation_rich(env: AppEnv, conv: Conversation) -> None:
 # ---------------------------------------------------------------------------
 
 
-def send_output(
+def deliver_query_output(
     env: AppEnv,
-    content: str,
-    destinations: list[str],
-    output_format: str,
-    conv: Conversation | None,
+    document: QueryOutputDocument,
 ) -> None:
-    for dest in destinations:
-        if dest == "stdout":
-            click.echo(content)
-        elif dest == "browser":
-            open_in_browser(env, content, output_format, conv)
-        elif dest == "clipboard":
-            copy_to_clipboard(env, content)
+    """Deliver a rendered query document to every requested destination."""
+    for destination in document.destinations:
+        if destination.kind == "stdout":
+            click.echo(document.content)
+        elif destination.kind == "browser":
+            _open_in_browser(env, document.content, document.output_format, document.conversation)
+        elif destination.kind == "clipboard":
+            _copy_to_clipboard(env, document.content)
         else:
-            path = Path(dest)
+            assert destination.path is not None
+            path = destination.path
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(content, encoding="utf-8")
+            path.write_text(document.content, encoding="utf-8")
             env.ui.console.print(f"Wrote to {path}")
 
 
@@ -350,44 +350,24 @@ def format_summary_list(
 ) -> str:
     """Format summary-list output for deterministic machine/plain surfaces."""
     message_counts = message_counts or {}
-
-    selected = {field.strip() for field in fields.split(",")} if fields else None
-
-    data = [summary_to_dict(summary, message_counts.get(str(summary.id), 0)) for summary in summaries]
-    if selected:
-        data = [{key: value for key, value in item.items() if key in selected} for item in data]
-
-    if output_format == "json":
-        return json.dumps(data, indent=2)
-
-    if output_format == "yaml":
-        import yaml
-
-        return yaml.dump(data, default_flow_style=False, allow_unicode=True)
-
-    if output_format == "csv":
-        import csv
-        import io
-
-        buf = io.StringIO()
-        writer = csv.writer(buf)
-        writer.writerow(["id", "date", "provider", "title", "messages", "tags", "summary"])
-        for summary in summaries:
-            tags_str = ",".join(summary.tags) if summary.tags else ""
-            writer.writerow(
-                [
-                    str(summary.id),
-                    _display_date(summary.display_date),
-                    summary.provider,
-                    summary.display_title or "",
-                    message_counts.get(str(summary.id), 0),
-                    tags_str,
-                    summary.summary or "",
-                ]
+    document = StructuredRowsDocument(
+        rows=tuple(summary_to_dict(summary, message_counts.get(str(summary.id), 0)) for summary in summaries),
+        csv_headers=("id", "date", "provider", "title", "messages", "tags", "summary"),
+        csv_rows=tuple(
+            (
+                str(summary.id),
+                _display_date(summary.display_date),
+                summary.provider,
+                summary.display_title or "",
+                message_counts.get(str(summary.id), 0),
+                ",".join(summary.tags) if summary.tags else "",
+                summary.summary or "",
             )
-        return buf.getvalue().rstrip("\r\n")
-
-    return "\n".join(_summary_list_line(summary, message_counts.get(str(summary.id), 0)) for summary in summaries)
+            for summary in summaries
+        ),
+        text_lines=tuple(_summary_list_line(summary, message_counts.get(str(summary.id), 0)) for summary in summaries),
+    )
+    return document.with_selected_fields(fields).render(output_format)
 
 
 def _search_hit_to_payload(
@@ -410,67 +390,46 @@ def format_search_hit_list(
 ) -> str:
     """Format evidence-bearing search hits for deterministic surfaces."""
     message_counts = message_counts or {}
-    selected = {field.strip() for field in fields.split(",")} if fields else None
-
-    data = [
-        _search_hit_to_payload(
-            hit, message_count=message_counts.get(hit.conversation_id, hit.summary.message_count or 0)
-        )
-        for hit in hits
-    ]
-    if selected:
-        data = [{key: value for key, value in item.items() if key in selected} for item in data]
-
-    if output_format == "json":
-        return json.dumps(data, indent=2)
-
-    if output_format == "yaml":
-        import yaml
-
-        return yaml.dump(data, default_flow_style=False, allow_unicode=True)
-
-    if output_format == "csv":
-        import csv
-        import io
-
-        buf = io.StringIO()
-        writer = csv.writer(buf)
-        writer.writerow(
-            [
-                "id",
-                "date",
-                "provider",
-                "title",
-                "messages",
-                "rank",
-                "retrieval_lane",
-                "match_surface",
-                "message_id",
-                "snippet",
-            ]
-        )
-        for hit in hits:
-            summary = hit.summary
-            writer.writerow(
-                [
-                    str(summary.id),
-                    _display_date(summary.display_date),
-                    summary.provider,
-                    summary.display_title or "",
-                    message_counts.get(hit.conversation_id, summary.message_count or 0),
-                    hit.rank,
-                    hit.retrieval_lane,
-                    hit.match_surface,
-                    hit.message_id or "",
-                    hit.snippet or "",
-                ]
+    document = StructuredRowsDocument(
+        rows=tuple(
+            _search_hit_to_payload(
+                hit, message_count=message_counts.get(hit.conversation_id, hit.summary.message_count or 0)
             )
-        return buf.getvalue().rstrip("\r\n")
-
-    return "\n".join(
-        _search_hit_list_line(hit, message_counts.get(hit.conversation_id, hit.summary.message_count or 0))
-        for hit in hits
+            for hit in hits
+        ),
+        csv_headers=(
+            "id",
+            "date",
+            "provider",
+            "title",
+            "messages",
+            "rank",
+            "retrieval_lane",
+            "match_surface",
+            "message_id",
+            "snippet",
+        ),
+        csv_rows=tuple(
+            (
+                str(hit.summary.id),
+                _display_date(hit.summary.display_date),
+                hit.summary.provider,
+                hit.summary.display_title or "",
+                message_counts.get(hit.conversation_id, hit.summary.message_count or 0),
+                hit.rank,
+                hit.retrieval_lane,
+                hit.match_surface,
+                hit.message_id or "",
+                hit.snippet or "",
+            )
+            for hit in hits
+        ),
+        text_lines=tuple(
+            _search_hit_list_line(hit, message_counts.get(hit.conversation_id, hit.summary.message_count or 0))
+            for hit in hits
+        ),
     )
+    return document.with_selected_fields(fields).render(output_format)
 
 
 async def output_search_hits(
@@ -859,19 +818,15 @@ def _send_output(
     conv: Conversation | None,
 ) -> None:
     """Send output to specified destinations."""
-    for destination in destinations:
-        if destination.kind == "stdout":
-            click.echo(content)
-        elif destination.kind == "browser":
-            _open_in_browser(env, content, output_format, conv)
-        elif destination.kind == "clipboard":
-            _copy_to_clipboard(env, content)
-        else:
-            assert destination.path is not None
-            path = destination.path
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(content, encoding="utf-8")
-            env.ui.console.print(f"Wrote to {path}")
+    deliver_query_output(
+        env,
+        QueryOutputDocument(
+            content=content,
+            output_format=output_format,
+            destinations=tuple(destinations),
+            conversation=conv,
+        ),
+    )
 
 
 __all__ = [
@@ -879,6 +834,7 @@ __all__ = [
     "action_matches_slice",
     "conversations_to_csv",
     "copy_to_clipboard",
+    "deliver_query_output",
     "emit_structured_stats",
     "filtered_action_events",
     "format_list",
@@ -904,7 +860,6 @@ __all__ = [
     "render_stream_header",
     "render_stream_message",
     "render_stream_transcript",
-    "send_output",
     "stream_conversation",
     "summary_to_dict",
     "write_message_streaming",
