@@ -72,6 +72,26 @@ class OutcomeCheck:
         return f"{prefix}[{label}] {self.name}: {self.summary}"
 
 
+@dataclass(frozen=True)
+class OutcomeCounts:
+    """Typed status-count payload shared by outcome reports."""
+
+    ok: int = 0
+    warning: int = 0
+    error: int = 0
+    skip: int | None = None
+
+    def to_json(self, *, include_skip: bool = False) -> JSONDocument:
+        payload: JSONDocument = {
+            OutcomeStatus.OK.value: self.ok,
+            OutcomeStatus.WARNING.value: self.warning,
+            OutcomeStatus.ERROR.value: self.error,
+        }
+        if include_skip:
+            payload[OutcomeStatus.SKIP.value] = self.skip or 0
+        return payload
+
+
 @dataclass
 class OutcomeReport:
     """Shared report container for collections of outcome checks."""
@@ -81,15 +101,24 @@ class OutcomeReport:
     def count(self, status: OutcomeStatus) -> int:
         return sum(1 for check in self.checks if check.status is status)
 
+    def counts(self) -> OutcomeCounts:
+        return OutcomeCounts(
+            ok=self.count(OutcomeStatus.OK),
+            warning=self.count(OutcomeStatus.WARNING),
+            error=self.count(OutcomeStatus.ERROR),
+            skip=self.count(OutcomeStatus.SKIP),
+        )
+
     def summary_counts(self, *, include_skip: bool = False) -> dict[str, int]:
-        statuses = [
-            OutcomeStatus.OK,
-            OutcomeStatus.WARNING,
-            OutcomeStatus.ERROR,
-        ]
+        counts = self.counts()
+        payload = {
+            OutcomeStatus.OK.value: counts.ok,
+            OutcomeStatus.WARNING.value: counts.warning,
+            OutcomeStatus.ERROR.value: counts.error,
+        }
         if include_skip:
-            statuses.append(OutcomeStatus.SKIP)
-        return {status.value: self.count(status) for status in statuses}
+            payload[OutcomeStatus.SKIP.value] = counts.skip or 0
+        return payload
 
     @property
     def ok_count(self) -> int:
@@ -114,6 +143,7 @@ class OutcomeReport:
 
 __all__ = [
     "OutcomeCheck",
+    "OutcomeCounts",
     "OutcomeReport",
     "OutcomeStatus",
 ]

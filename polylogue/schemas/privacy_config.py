@@ -13,7 +13,7 @@ import sys
 from dataclasses import dataclass, field
 from fnmatch import fnmatch
 from pathlib import Path
-from typing import Literal, TypeAlias
+from typing import Literal, Protocol, TypeAlias, runtime_checkable
 
 if sys.version_info >= (3, 11):
     import tomllib
@@ -30,6 +30,21 @@ PrivacySettingValue: TypeAlias = str | int | bool | float | list[str] | dict[str
 PrivacyConfigSection: TypeAlias = dict[str, PrivacySettingValue]
 FieldOverride: TypeAlias = dict[str, str]
 PatternList: TypeAlias = list[str]
+
+
+@runtime_checkable
+class SchemaPrivacyConfig(Protocol):
+    """Runtime contract shared by schema generation privacy guards."""
+
+    @property
+    def level(self) -> PrivacyLevel: ...
+
+    @property
+    def safe_enum_max_length(self) -> int: ...
+
+    def field_override(self, path: str) -> str | None: ...
+
+    def is_value_allowed(self, value: str) -> bool | None: ...
 
 
 # ---------------------------------------------------------------------------
@@ -224,5 +239,6 @@ def _bool_config_value(value: PrivacySettingValue, *, default: bool) -> bool:
 
 __all__ = [
     "PrivacyConfig",
+    "SchemaPrivacyConfig",
     "load_privacy_config",
 ]

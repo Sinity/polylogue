@@ -80,6 +80,11 @@ def test_query_field_catalog_drives_plan_presence_descriptions_and_pushdown() ->
         "min_messages": 3,
         "since": "2024-01-01T00:00:00+00:00",
     }
+    assert all(
+        isinstance(value, (str, int, bool))
+        or (isinstance(value, list) and all(isinstance(item, str) for item in value))
+        for value in plan.sql_pushdown_params().values()
+    )
 
     record_query = plan.record_query
     assert record_query.provider == "codex"

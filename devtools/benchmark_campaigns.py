@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from polylogue.scenarios import CorpusSourceKind, dispatch_execution
+from polylogue.scenarios import CorpusSourceKind, RunnerInvocation, dispatch_runner_execution
 
 from .authored_scenario_catalog import get_authored_scenario_catalog
 from .benchmark_catalog import BenchmarkCampaignEntry
@@ -25,15 +25,11 @@ async def run_synthetic_benchmark_campaign(name: str, db_path: Path) -> Campaign
     campaign = SYNTHETIC_CAMPAIGNS[name]
     if campaign.execution is None:
         raise ValueError(f"Synthetic benchmark campaign {campaign.name!r} has no execution")
-    result = await dispatch_execution(
+    result = await dispatch_runner_execution(
         campaign.execution,
         runner_resolver=resolve_synthetic_benchmark_runner,
-        runner_args=(db_path,),
+        invocation=RunnerInvocation(args=(db_path,)),
     )
-    if not isinstance(result, CampaignResult):
-        raise TypeError(
-            f"Synthetic benchmark campaign {campaign.name!r} returned unexpected result type {type(result).__name__}"
-        )
     result.origin = campaign.origin
     result.path_targets = list(campaign.path_targets)
     result.artifact_targets = list(campaign.artifact_targets)

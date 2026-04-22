@@ -25,6 +25,19 @@ class RedactionDecision:
     conversation_count: int | None = None
     risk: Literal["none", "low", "medium", "high"] | None = None
 
+    def to_json(self) -> JSONDocument:
+        """Return the complete machine payload for this decision."""
+        payload: JSONDocument = {
+            "path": self.path,
+            "value": self.value,
+            "action": self.action,
+            "reason": self.reason,
+            "count": self.count,
+            "conversation_count": self.conversation_count,
+            "risk": self.risk,
+        }
+        return payload
+
 
 @dataclass
 class FieldReport:
@@ -35,6 +48,39 @@ class FieldReport:
     rejected: list[RedactionDecision] = field(default_factory=list)
     content_field_blocked: bool = False
     identifier_field_blocked: bool = False
+
+    def to_json(self) -> JSONDocument:
+        """Return the machine payload for this field summary."""
+        payload: JSONDocument = {
+            "path": self.path,
+            "included_values": list(self.included_values),
+            "included_count": len(self.included_values),
+            "rejected": [decision.to_json() for decision in self.rejected],
+            "rejected_count": len(self.rejected),
+            "content_field_blocked": self.content_field_blocked,
+            "identifier_field_blocked": self.identifier_field_blocked,
+        }
+        return payload
+
+
+@dataclass(frozen=True)
+class SchemaReportSummary:
+    """Machine-readable redaction summary counts."""
+
+    total_fields: int
+    fields_with_enums: int
+    total_values_considered: int
+    total_included: int
+    total_rejected: int
+
+    def to_json(self) -> JSONDocument:
+        return {
+            "total_fields": self.total_fields,
+            "fields_with_enums": self.fields_with_enums,
+            "total_values_considered": self.total_values_considered,
+            "total_included": self.total_included,
+            "total_rejected": self.total_rejected,
+        }
 
 
 @dataclass
@@ -52,6 +98,17 @@ class SchemaReport:
     field_reports: list[FieldReport] = field(default_factory=list)
     rejection_reasons: dict[str, int] = field(default_factory=dict)
     borderline_decisions: list[RedactionDecision] = field(default_factory=list)
+
+    @property
+    def summary(self) -> SchemaReportSummary:
+        """Return typed summary counts for the report."""
+        return SchemaReportSummary(
+            total_fields=self.total_fields,
+            fields_with_enums=self.fields_with_enums,
+            total_values_considered=self.total_values_considered,
+            total_included=self.total_included,
+            total_rejected=self.total_rejected,
+        )
 
     def add_decision(self, decision: RedactionDecision) -> None:
         """Track a single redaction decision."""
@@ -162,33 +219,10 @@ class SchemaReport:
                 "provider": self.provider,
                 "timestamp": self.timestamp,
                 "privacy_level": self.privacy_level,
-                "summary": {
-                    "total_fields": self.total_fields,
-                    "fields_with_enums": self.fields_with_enums,
-                    "total_values_considered": self.total_values_considered,
-                    "total_included": self.total_included,
-                    "total_rejected": self.total_rejected,
-                },
+                "summary": self.summary.to_json(),
                 "rejection_reasons": self.rejection_reasons,
-                "borderline_decisions": [
-                    {
-                        "path": d.path,
-                        "value": d.value,
-                        "count": d.count,
-                        "reason": d.reason,
-                    }
-                    for d in self.borderline_decisions
-                ],
-                "field_reports": [
-                    {
-                        "path": fr.path,
-                        "included_count": len(fr.included_values),
-                        "rejected_count": len(fr.rejected),
-                        "content_field_blocked": fr.content_field_blocked,
-                        "identifier_field_blocked": fr.identifier_field_blocked,
-                    }
-                    for fr in self.field_reports
-                ],
+                "borderline_decisions": [decision.to_json() for decision in self.borderline_decisions],
+                "field_reports": [field_report.to_json() for field_report in self.field_reports],
             }
         )
 
@@ -196,5 +230,6 @@ class SchemaReport:
 __all__ = [
     "FieldReport",
     "RedactionDecision",
+    "SchemaReportSummary",
     "SchemaReport",
 ]

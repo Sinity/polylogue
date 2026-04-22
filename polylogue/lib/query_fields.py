@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime
-from typing import Protocol, cast
+from typing import Protocol, TypeAlias, cast
 
 from polylogue.storage.query_models import ConversationRecordQuery
 from polylogue.types import Provider
@@ -14,6 +14,8 @@ PresenceCheck = Callable[[object], bool]
 DescriptionRenderer = Callable[[object], str]
 StorageValue = Callable[[object], object]
 _ReplaceRecordQuery: Callable[..., ConversationRecordQuery] = replace
+SqlPushdownValue: TypeAlias = str | int | bool | list[str]
+SqlPushdownParams: TypeAlias = dict[str, SqlPushdownValue]
 
 
 class _ProviderScopedPlan(Protocol):
@@ -92,6 +94,14 @@ def _literal(text: str) -> DescriptionRenderer:
 
 def _list_value(value: object) -> object:
     return list(_as_tuple(value))
+
+
+def _sql_pushdown_value(value: object) -> SqlPushdownValue:
+    if isinstance(value, (str, int, bool)):
+        return value
+    if isinstance(value, list) and all(isinstance(item, str) for item in value):
+        return value
+    raise TypeError(f"SQL pushdown parameter is not supported: {value!r}")
 
 
 def _identity(value: object) -> object:
@@ -613,8 +623,8 @@ def conversation_record_query_for_plan(plan: object) -> ConversationRecordQuery:
     )
 
 
-def sql_pushdown_params_for_plan(plan: object) -> dict[str, object]:
-    params: dict[str, object] = {}
+def sql_pushdown_params_for_plan(plan: object) -> SqlPushdownParams:
+    params: SqlPushdownParams = {}
     provider, providers = provider_scope_for_plan(cast(_ProviderScopedPlan, plan))
     if provider is not None:
         params["provider"] = provider
@@ -623,7 +633,7 @@ def sql_pushdown_params_for_plan(plan: object) -> dict[str, object]:
     for descriptor in QUERY_FIELD_DESCRIPTORS:
         if descriptor.sql_param is None or not descriptor.is_active_for_plan(plan):
             continue
-        params[descriptor.sql_param] = descriptor.sql_plan_value(plan)
+        params[descriptor.sql_param] = _sql_pushdown_value(descriptor.sql_plan_value(plan))
     return params
 
 
@@ -639,6 +649,8 @@ def storage_filters_require_stats_join(filters: Mapping[str, object]) -> bool:
 __all__ = [
     "QUERY_FIELD_DESCRIPTORS",
     "QueryFieldDescriptor",
+    "SqlPushdownParams",
+    "SqlPushdownValue",
     "active_plan_field_names",
     "conversation_record_query_for_plan",
     "describe_plan_fields",

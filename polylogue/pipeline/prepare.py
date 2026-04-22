@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 from polylogue.logging import get_logger
 from polylogue.pipeline.ids import (
@@ -25,16 +25,36 @@ from polylogue.pipeline.prepare_models import (
     _timestamp_sort_key,
 )
 from polylogue.pipeline.prepare_transform import transform_to_records
+from polylogue.storage.store import (
+    AttachmentRecord,
+    ContentBlockRecord,
+    ConversationRecord,
+    MessageRecord,
+)
 
 if TYPE_CHECKING:
     from polylogue.sources.parsers.base import ParsedConversation
     from polylogue.storage.backends.async_sqlite import SQLiteBackend
-    from polylogue.storage.repository import ConversationRepository
 
 logger = get_logger(__name__)
 
 
-async def save_bundle(bundle: RecordBundle, repository: ConversationRepository) -> SaveResult:
+class PrepareRepository(Protocol):
+    """Repository surface needed by record preparation."""
+
+    @property
+    def backend(self) -> SQLiteBackend: ...
+
+    async def save_conversation(
+        self,
+        conversation: ConversationRecord,
+        messages: list[MessageRecord],
+        attachments: list[AttachmentRecord],
+        content_blocks: list[ContentBlockRecord] | None = None,
+    ) -> dict[str, int]: ...
+
+
+async def save_bundle(bundle: RecordBundle, repository: PrepareRepository) -> SaveResult:
     counts = await repository.save_conversation(
         conversation=bundle.conversation,
         messages=bundle.messages,
@@ -50,7 +70,7 @@ async def prepare_bundle(
     *,
     archive_root: Path,
     backend: SQLiteBackend | None = None,
-    repository: ConversationRepository | None = None,
+    repository: PrepareRepository | None = None,
     raw_id: str | None = None,
     cache: PrepareCache | None = None,
 ) -> PreparedBundle:
@@ -73,7 +93,7 @@ async def prepare_bundle(
 async def persist_prepared_bundle(
     prepared: PreparedBundle,
     *,
-    repository: ConversationRepository,
+    repository: PrepareRepository,
 ) -> PersistedConversationResult:
     """Persist a prepared conversation bundle, including attachment materialization."""
     applied_moves: list[tuple[Path, Path]] = []
@@ -106,7 +126,7 @@ async def prepare_records(
     *,
     archive_root: Path,
     backend: SQLiteBackend | None = None,
-    repository: ConversationRepository | None = None,
+    repository: PrepareRepository | None = None,
     raw_id: str | None = None,
     cache: PrepareCache | None = None,
 ) -> PersistedConversationResult:
@@ -152,6 +172,7 @@ __all__ = [
     "AttachmentMaterializationPlan",
     "PersistedConversationResult",
     "PrepareCache",
+    "PrepareRepository",
     "PreparedBundle",
     "RecordBundle",
     "SaveResult",

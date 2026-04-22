@@ -9,6 +9,7 @@ from polylogue.schemas.privacy import (
     _is_safe_enum_value,
     _looks_high_entropy_token,
 )
+from polylogue.schemas.privacy_config import SchemaPrivacyConfig
 from polylogue.schemas.redaction_report import (
     FieldReport,
     RedactionDecision,
@@ -21,7 +22,7 @@ def _build_redaction_report(
     stats: dict[str, FieldStats],
     schema: SchemaNode,
     *,
-    privacy_config: object | None = None,
+    privacy_config: SchemaPrivacyConfig | None = None,
     privacy_level: str = "standard",
 ) -> SchemaReport:
     report = SchemaReport(provider=provider, privacy_level=privacy_level)

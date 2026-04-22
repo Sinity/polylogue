@@ -229,6 +229,28 @@ class TestAuditReport:
         assert data["provider"] is None
         assert check["provider"] == "chatgpt"
 
+    def test_typed_summary_payload(self) -> None:
+        report = AuditReport(
+            checks=[
+                AuditCheck(name="schema_exists", status=PASS, summary="ok"),
+                AuditCheck(name="privacy", status=WARN, summary="review"),
+                AuditCheck(name="package", status=FAIL, summary="missing"),
+            ]
+        )
+
+        assert report.summary.to_json() == {"passed": 1, "warned": 1, "failed": 1}
+
+    def test_audit_check_json_payload(self) -> None:
+        check = AuditCheck(name="privacy", status=PASS, summary="ok", details=["safe"], provider="chatgpt")
+
+        assert check.to_json(label="PASS") == {
+            "name": "privacy",
+            "provider": "chatgpt",
+            "status": "PASS",
+            "message": "ok",
+            "details": ["safe"],
+        }
+
 
 class TestCheckPrivacyGuards:
     def test_clean_schema_passes(self) -> None:

@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 from polylogue.lib.filter_builder import ConversationFilterBuilderMixin
 from polylogue.lib.filter_types import SortField
+from polylogue.lib.query_fields import SqlPushdownParams
 from polylogue.lib.query_plan import ConversationQueryPlan
 from polylogue.lib.query_plan_execution import (
     count_for_plan,
@@ -66,7 +67,7 @@ class ConversationFilter(ConversationFilterBuilderMixin):
     def build_query_plan(self) -> ConversationQueryPlan:
         return self._plan
 
-    def _sql_pushdown_params(self) -> dict[str, object]:
+    def _sql_pushdown_params(self) -> SqlPushdownParams:
         return self._plan.sql_pushdown_params()
 
     def _has_post_filters(self) -> bool:

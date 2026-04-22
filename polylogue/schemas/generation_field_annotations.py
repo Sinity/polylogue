@@ -11,6 +11,7 @@ from polylogue.schemas.privacy import (
     _is_content_field,
     _is_safe_enum_value,
 )
+from polylogue.schemas.privacy_config import SchemaPrivacyConfig
 
 _ENUM_VALUE_CAP = 200
 _ENUM_OUTPUT_CAP = 20
@@ -23,7 +24,7 @@ def _enum_values(
     *,
     path: str,
     min_conversation_count: int,
-    privacy_config: object | None,
+    privacy_config: SchemaPrivacyConfig | None,
 ) -> list[JSONValue]:
     total = max(field_stats.value_count, 1)
     min_count = _ENUM_MIN_COUNT if total >= 20 else 1
@@ -57,7 +58,7 @@ def annotate_schema(
     path: str = "$",
     *,
     min_conversation_count: int = 1,
-    privacy_config: object | None = None,
+    privacy_config: SchemaPrivacyConfig | None = None,
 ) -> JSONDocument: ...
 
 
@@ -68,7 +69,7 @@ def annotate_schema(
     path: str = "$",
     *,
     min_conversation_count: int = 1,
-    privacy_config: object | None = None,
+    privacy_config: SchemaPrivacyConfig | None = None,
 ) -> JSONValue: ...
 
 
@@ -78,7 +79,7 @@ def annotate_schema(
     path: str = "$",
     *,
     min_conversation_count: int = 1,
-    privacy_config: object | None = None,
+    privacy_config: SchemaPrivacyConfig | None = None,
 ) -> JSONValue:
     """Apply x-polylogue-* annotations to a schema from collected field stats."""
     schema_node = _schema_node(schema)
