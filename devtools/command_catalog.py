@@ -191,6 +191,20 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools query-memory-budget --max-rss-mb 1536 -- polylogue --plain stats",),
     ),
     CommandSpec(
+        "semantic-axis-evidence",
+        "verification",
+        "Generate proof-envelope performance evidence across synthetic semantic scale tiers.",
+        "devtools.semantic_axis_evidence",
+        use_when=(
+            "Produce comparative performance evidence that describes growth shape over semantic axes "
+            "instead of machine-specific absolute budgets."
+        ),
+        examples=(
+            "devtools semantic-axis-evidence --campaign fts-rebuild --axis messages --scales small medium",
+            "devtools semantic-axis-evidence --campaign session-product-materialization --axis conversations --scales small medium",
+        ),
+    ),
+    CommandSpec(
         "regression-capture",
         "verification",
         "Capture pipeline-probe summaries as durable local regression cases.",

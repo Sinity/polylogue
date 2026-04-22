@@ -64,6 +64,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools regression-capture` | Capture pipeline-probe summaries as durable local regression cases. |
 | `devtools run-validation-lanes` | Run named validation lanes. |
 | `devtools scenario-projections` | Render the authored scenario-bearing verification projections. |
+| `devtools semantic-axis-evidence` | Generate proof-envelope performance evidence across synthetic semantic scale tiers. |
 | `devtools verify` | Run the local verification baseline before pushing or creating a PR. |
 | `devtools verify-showcase` | Verify committed showcase/demo surfaces. |
 
