@@ -10,6 +10,7 @@ import click
 
 from polylogue.cli.command_inventory import CommandPath, iter_command_paths
 from polylogue.lib.json import JSONDocument, json_document, json_document_list, require_json_value
+from polylogue.lib.provider_capabilities import iter_provider_capabilities
 from polylogue.proof.models import SourceSpan, SubjectRef
 from polylogue.schemas.packages import SchemaVersionPackage
 from polylogue.schemas.runtime_registry import SCHEMA_DIR, SchemaRegistry
@@ -127,6 +128,23 @@ def query_law_subjects() -> tuple[SubjectRef, ...]:
     )
 
 
+def provider_capability_subjects() -> tuple[SubjectRef, ...]:
+    """Compile typed provider capability metadata into proof subjects."""
+    subjects = [
+        SubjectRef(
+            kind="provider.capability",
+            id=f"provider.capability.{capability.provider.value}",
+            attrs=capability.to_payload(),
+            source_span=SourceSpan(
+                path="polylogue/lib/provider_capabilities.py",
+                symbol=capability.source_symbol,
+            ),
+        )
+        for capability in iter_provider_capabilities()
+    ]
+    return tuple(sorted(subjects, key=lambda subject: subject.id))
+
+
 def _command_subject(command_path: CommandPath) -> SubjectRef:
     is_root = not command_path.path
     command_id = "polylogue" if is_root else f"polylogue {' '.join(command_path.path)}"
@@ -183,7 +201,13 @@ def schema_annotation_subjects(
 
 def build_catalog_subjects() -> tuple[SubjectRef, ...]:
     """Compile all subjects included in the first proof-catalog slice."""
-    return (*command_subjects(), *json_command_subjects(), *query_law_subjects(), *schema_annotation_subjects())
+    return (
+        *command_subjects(),
+        *json_command_subjects(),
+        *query_law_subjects(),
+        *provider_capability_subjects(),
+        *schema_annotation_subjects(),
+    )
 
 
 def _dedupe(subjects: Iterable[SubjectRef]) -> Iterator[SubjectRef]:
@@ -384,6 +408,7 @@ __all__ = [
     "build_catalog_subjects",
     "command_subjects",
     "json_command_subjects",
+    "provider_capability_subjects",
     "query_law_subjects",
     "schema_annotation_subjects",
 ]

@@ -44,6 +44,10 @@ def build_catalog_markdown(catalog: VerificationCatalog) -> str:
         "",
         *_render_schema_subject_summary(catalog.subjects),
         "",
+        "## Provider Capability Subjects",
+        "",
+        *_render_provider_capability_subjects(catalog.subjects),
+        "",
         "## Claims",
         "",
         *_render_claims(catalog.claims),
@@ -112,6 +116,28 @@ def _render_schema_subject_summary(subjects: tuple[SubjectRef, ...]) -> list[str
     for (provider, element_kind, annotation), count in sorted(rows.items()):
         lines.append(
             f"| `{provider}` | `{element_kind}` | `{annotation}` | {count} | `{examples[(provider, element_kind, annotation)]}` |"
+        )
+    return lines
+
+
+def _render_provider_capability_subjects(subjects: tuple[SubjectRef, ...]) -> list[str]:
+    provider_subjects = [subject for subject in subjects if subject.kind == "provider.capability"]
+    lines = [
+        "| Provider | Parser Identity | Reasoning | Streaming | Sidecars | Explicit Gaps |",
+        "| --- | --- | --- | --- | --- | --- |",
+    ]
+    for subject in provider_subjects:
+        coverage = subject.attrs.get("coverage_facets")
+        sidecars = ""
+        if isinstance(coverage, dict):
+            sidecar_value = coverage.get("sidecars")
+            sidecars = sidecar_value if isinstance(sidecar_value, str) else ""
+        gaps = subject.attrs.get("partial_coverage")
+        gap_list = tuple(str(item) for item in gaps) if isinstance(gaps, list) else ()
+        lines.append(
+            f"| `{_string_attr(subject, 'provider')}` | {_string_attr(subject, 'parser_identity')} | "
+            f"{_string_attr(subject, 'reasoning_capability')} | {_string_attr(subject, 'streaming_capability')} | "
+            f"`{sidecars}` | {_code_list(gap_list)} |"
         )
     return lines
 
