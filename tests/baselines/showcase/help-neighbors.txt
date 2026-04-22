@@ -1,0 +1,13 @@
+Usage: polylogue neighbors [OPTIONS]
+
+  Show explainable neighboring or near-duplicate candidates.
+
+Options:
+  --id TEXT               Known conversation id or prefix
+  -q, --query TEXT        Fuzzy query to seed candidate discovery
+  -p, --provider TEXT     Limit candidate scope to one provider
+  -n, --limit INTEGER     Maximum candidates  [default: 10]
+  --window-hours INTEGER  Neighboring time window around --id  [default: 24]
+  --json                  Output as JSON
+  -f, --format [json]     Output format
+  -h, --help              Show this message and exit.
