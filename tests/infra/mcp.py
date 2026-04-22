@@ -16,6 +16,7 @@ EXPECTED_TOOL_NAMES = {
     "search",
     "list_conversations",
     "get_conversation",
+    "neighbor_candidates",
     "stats",
     "add_tag",
     "remove_tag",
@@ -156,6 +157,7 @@ def make_archive_ops_mock() -> MagicMock:
     operations.get_conversation_stats = AsyncMock(return_value={})
     operations.get_session_tree = AsyncMock(return_value=[])
     operations.get_stats_by = AsyncMock(return_value={})
+    operations.neighbor_candidates = AsyncMock(return_value=[])
     operations.storage_stats = AsyncMock(return_value=MagicMock())
     return operations
 

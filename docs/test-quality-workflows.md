@@ -15,10 +15,10 @@ Current registry snapshot:
 - mutation campaigns: `19`
 - benchmark campaigns: `3`
 - synthetic benchmark campaigns: `6`
-- scenario projections: `237`
+- scenario projections: `238`
 - inferred corpus scenarios: `5`
   - benchmark-campaign: `3`
-  - exercise: `132`
+  - exercise: `133`
   - inferred-corpus-scenario: `5`
   - mutation-campaign: `19`
   - synthetic-benchmark: `6`
@@ -319,6 +319,7 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `exercise` | `help-list` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | list help |
 | `exercise` | `help-main` | — | — | — | — | — | Main help screen |
 | `exercise` | `help-mcp` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | mcp help |
+| `exercise` | `help-neighbors` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | neighbors help |
 | `exercise` | `help-open` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | open help |
 | `exercise` | `help-products` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | products help |
 | `exercise` | `help-products-analytics` | `provider-analytics-query-loop` | `session_product_rows`<br>`provider_analytics_results` | `cli.help`<br>`query-provider-analytics` | — | `generated`<br>`help`<br>`structural` | products analytics help |

@@ -10,6 +10,7 @@ from polylogue.mcp.payloads import (
     MCPConversationSummaryPayload,
     MCPReadinessReportPayload,
     MCPStatsByPayload,
+    conversation_neighbor_candidate_list_payload,
     conversation_query_result_payload,
     conversation_search_result_payload,
     conversation_summary_list_payload,
@@ -129,6 +130,28 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             return hooks.json_payload(MCPConversationDetailPayload.from_conversation(conv))
 
         return await hooks.async_safe_call("get_conversation", run)
+
+    @mcp.tool()
+    async def neighbor_candidates(
+        id: str | None = None,
+        query: str | None = None,
+        provider: str | None = None,
+        limit: int = 10,
+        window_hours: int = 24,
+    ) -> str:
+        async def run() -> str:
+            if not id and not (query and query.strip()):
+                return hooks.error_json("neighbor_candidates requires id or query")
+            candidates = await hooks.get_archive_ops().neighbor_candidates(
+                conversation_id=id,
+                query=query,
+                provider=provider,
+                limit=hooks.clamp_limit(limit),
+                window_hours=max(1, window_hours),
+            )
+            return hooks.json_payload(conversation_neighbor_candidate_list_payload(candidates), exclude_none=True)
+
+        return await hooks.async_safe_call("neighbor_candidates", run)
 
     @mcp.tool()
     async def stats() -> str:

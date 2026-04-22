@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from collections.abc import Container
 
     from polylogue.lib.models import Conversation, ConversationSummary, Message
+    from polylogue.lib.neighbor_candidates import ConversationNeighborCandidate, NeighborReason
     from polylogue.lib.search_hits import ConversationSearchHit
 
 
@@ -273,10 +274,58 @@ class ConversationSearchHitPayload(SurfacePayloadModel):
         )
 
 
+class ConversationNeighborReasonPayload(SurfacePayloadModel):
+    """Evidence explaining one neighboring-candidate reason."""
+
+    kind: str
+    detail: str
+    evidence: str | None = None
+    weight: float
+
+    @classmethod
+    def from_reason(cls, reason: NeighborReason) -> ConversationNeighborReasonPayload:
+        return cls(
+            kind=reason.kind,
+            detail=reason.detail,
+            evidence=reason.evidence,
+            weight=round(reason.weight, 6),
+        )
+
+
+class ConversationNeighborCandidatePayload(SurfacePayloadModel):
+    """Machine-readable neighboring-conversation candidate payload."""
+
+    conversation: ConversationSummaryPayload
+    rank: int
+    score: float
+    reasons: tuple[ConversationNeighborReasonPayload, ...]
+    source_conversation_id: str | None = None
+    query: str | None = None
+
+    @classmethod
+    def from_candidate(
+        cls,
+        candidate: ConversationNeighborCandidate,
+    ) -> ConversationNeighborCandidatePayload:
+        return cls(
+            conversation=ConversationSummaryPayload.from_summary(
+                candidate.summary,
+                message_count=candidate.summary.message_count,
+            ),
+            rank=candidate.rank,
+            score=candidate.score,
+            reasons=tuple(ConversationNeighborReasonPayload.from_reason(reason) for reason in candidate.reasons),
+            source_conversation_id=candidate.source_conversation_id,
+            query=candidate.query,
+        )
+
+
 __all__ = [
     "ConversationDetailPayload",
     "ConversationListRowPayload",
     "ConversationMessagePayload",
+    "ConversationNeighborCandidatePayload",
+    "ConversationNeighborReasonPayload",
     "ConversationSearchHitPayload",
     "ConversationSearchMatchPayload",
     "ConversationSummaryPayload",
