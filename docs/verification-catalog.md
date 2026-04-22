@@ -8,10 +8,10 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 
 ## Snapshot
 
-- subjects: `8943`
-- claims: `8`
-- runner bindings: `8`
-- proof obligations: `9029`
+- subjects: `8946`
+- claims: `10`
+- runner bindings: `10`
+- proof obligations: `9035`
 
 ## Quality Checks
 
@@ -31,6 +31,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `archive.query_law` | 1 |
 | `cli.command` | 43 |
 | `cli.json_command` | 2 |
+| `provider.capability` | 3 |
 | `schema.annotation` | 8897 |
 
 ## Command Subjects
@@ -95,6 +96,14 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `gemini` | `conversation_document` | `x-polylogue-mutually-exclusive` | 285 | `gemini:v1:conversation_document:x-polylogue-mutually-exclusive:0:$:applets,runSettings` |
 | `gemini` | `conversation_document` | `x-polylogue-values` | 14 | `gemini:v1:conversation_document:x-polylogue-values:$.chunkedPrompt.chunks[*].finishReason` |
 
+## Provider Capability Subjects
+
+| Provider | Parser Identity | Reasoning | Streaming | Sidecars | Explicit Gaps |
+| --- | --- | --- | --- | --- | --- |
+| `chatgpt` | ChatGPT mapping graph export with typed conversation and node models | supported when exported as thoughts or reasoning_recap content types | snapshot mapping graph, not an append-only stream | `absent` | `streaming_capability_absent`<br>`sidecar_spec_absent`<br>`tool_use_variant_partial` |
+| `claude-code` | Claude Code JSONL record stream with typed record models | supported; thinking blocks are extracted from provider content blocks | record stream grouped by sessionId with parentUuid continuity | `partial` | `sidecar_artifact_contract_not_modeled` |
+| `codex` | Codex JSONL session envelope and response item stream | partial; reasoning is preserved when exported as content blocks, not inferred | record stream with session metadata, response items, compactions, and context turns | `absent` | `reasoning_capability_partial`<br>`sidecar_spec_absent` |
+
 ## Claims
 
 | Claim | Severity | Bug Classes | Breaker / Exception |
@@ -104,6 +113,8 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `cli.command.plain_mode` | `serious` | `cli.plain-mode.regression`<br>`terminal-rendering-regression` | A rich-only output path breaks the plain-mode runner comparison. |
 | `cli.command.json_envelope` | `serious` | `cli.json-envelope.regression`<br>`machine-contract.invalid-json` | A selected JSON command that emits invalid JSON or a missing success envelope breaks the claim. |
 | `archive.query.provider_filter_consistency` | `serious` | `query.provider-filter.drift`<br>`archive-count.semantic-mismatch` | A provider result outside all results, mismatched count, or divergent equivalent construction is a counterexample. |
+| `provider.capability.identity_bridge` | `serious` | `provider.identity.loss`<br>`normalization.native-fact-drop` | A provider without native/canonical identity mappings can silently drop provider-native facts. |
+| `provider.capability.partial_coverage_declared` | `serious` | `provider.capability.implicit-gap`<br>`provider-semantics.untracked-partial-support` | A provider with absent or partial facets but no explicit gap record hides verification scope. |
 | `schema.values.value_closure` | `serious` | `schema.value-domain.drift`<br>`schema.privacy.enum-leak` | A generated payload outside the annotated value set is a counterexample. |
 | `schema.foreign_key.resolves` | `serious` | `schema.relationship.drift`<br>`synthetic-corpus.integrity` | A source path pointing at a missing target path breaks the relation claim. |
 | `schema.mutual_exclusion.exclusive` | `serious` | `schema.mutual-exclusion.drift`<br>`synthetic-corpus.invalid-combination` | A generated record containing two fields from the same exclusion group is a counterexample. |
@@ -117,6 +128,8 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `cli-plain-contract:cli.command.plain_mode` | `cli.command.plain_mode` | `structural` | `static` | commands=`polylogue`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
 | `cli-json-envelope-contract:cli.command.json_envelope` | `cli.command.json_envelope` | `structural` | `unit` | commands=`polylogue`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
 | `semantic-query-law-contract:archive.query.provider_filter_consistency` | `archive.query.provider_filter_consistency` | `semantic` | `unit` | commands=—; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
+| `provider-capability-static-contract:provider.capability.identity_bridge` | `provider.capability.identity_bridge` | `structural` | `static` | commands=—; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
+| `provider-capability-static-contract:provider.capability.partial_coverage_declared` | `provider.capability.partial_coverage_declared` | `structural` | `static` | commands=—; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
 | `schema-annotation-static-contract:schema.values.value_closure` | `schema.values.value_closure` | `structural` | `static` | commands=—; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
 | `schema-annotation-static-contract:schema.foreign_key.resolves` | `schema.foreign_key.resolves` | `structural` | `static` | commands=—; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
 | `schema-annotation-static-contract:schema.mutual_exclusion.exclusive` | `schema.mutual_exclusion.exclusive` | `structural` | `static` | commands=—; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
@@ -130,6 +143,8 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `cli.command.json_envelope` | 2 |
 | `cli.command.no_traceback` | 43 |
 | `cli.command.plain_mode` | 43 |
+| `provider.capability.identity_bridge` | 3 |
+| `provider.capability.partial_coverage_declared` | 3 |
 | `schema.foreign_key.resolves` | 7 |
 | `schema.mutual_exclusion.exclusive` | 8802 |
 | `schema.values.value_closure` | 88 |

@@ -133,6 +133,7 @@ def default_claims() -> tuple[Claim, ...]:
     values_query = _schema_annotation_query("x-polylogue-values")
     foreign_key_query = _schema_annotation_query("x-polylogue-foreign-keys")
     mutual_exclusion_query = _schema_annotation_query("x-polylogue-mutually-exclusive")
+    provider_capability_query = Kind("provider.capability")
     return (
         Claim(
             id="cli.command.help",
@@ -214,6 +215,56 @@ def default_claims() -> tuple[Claim, ...]:
                 description="A provider result outside all results, mismatched count, or divergent equivalent construction is a counterexample.",
                 issue="#333",
                 command=("pytest", "tests/unit/proof/test_evidence_runners.py"),
+            ),
+        ),
+        Claim(
+            id="provider.capability.identity_bridge",
+            description="Provider capability metadata maps native identity facts onto canonical archive fields.",
+            subject_query=provider_capability_query,
+            evidence_schema=_evidence_schema(
+                "native_identity_fields",
+                "canonical_identity_fields",
+                "identity_mappings",
+            ),
+            bug_classes=("provider.identity.loss", "normalization.native-fact-drop"),
+            runner_classes=("provider_static",),
+            observed_facts=("native_identity_fields", "canonical_identity_fields", "identity_mappings"),
+            staleness_conditions=(
+                "Provider parser identity, provider_meta projection, or conversation/message id semantics change.",
+            ),
+            breaker=BreakerMetadata(
+                description="A provider without native/canonical identity mappings can silently drop provider-native facts.",
+                issue="#332",
+                command=("devtools", "render-verification-catalog", "--check"),
+            ),
+        ),
+        Claim(
+            id="provider.capability.partial_coverage_declared",
+            description="Provider capability metadata declares unsupported or partial reasoning, streaming, sidecar, and tool-use facets.",
+            subject_query=provider_capability_query,
+            evidence_schema=_evidence_schema(
+                "reasoning_capability",
+                "streaming_capability",
+                "sidecar_spec",
+                "coverage_facets",
+                "partial_coverage",
+            ),
+            bug_classes=("provider.capability.implicit-gap", "provider-semantics.untracked-partial-support"),
+            runner_classes=("provider_static",),
+            observed_facts=(
+                "reasoning_capability",
+                "streaming_capability",
+                "sidecar_spec",
+                "coverage_facets",
+                "partial_coverage",
+            ),
+            staleness_conditions=(
+                "Provider parser support for reasoning, streaming, sidecars, or tool-use variants changes.",
+            ),
+            breaker=BreakerMetadata(
+                description="A provider with absent or partial facets but no explicit gap record hides verification scope.",
+                issue="#332",
+                command=("devtools", "render-verification-catalog", "--check"),
             ),
         ),
         Claim(
@@ -308,6 +359,10 @@ def default_runner_bindings(claims: Iterable[Claim]) -> tuple[RunnerBinding, ...
                     evidence_class="semantic",
                     cost_tier="unit",
                 )
+            )
+        elif claim.id.startswith("provider.capability."):
+            bindings.append(
+                _runner_binding(claim, runner="provider-capability-static-contract", evidence_class="structural")
             )
         elif claim.id.startswith("schema."):
             bindings.append(

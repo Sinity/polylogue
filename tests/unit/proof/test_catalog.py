@@ -29,6 +29,8 @@ def test_default_catalog_compiles_first_vertical_slice() -> None:
         "cli.command.plain_mode",
         "cli.command.json_envelope",
         "archive.query.provider_filter_consistency",
+        "provider.capability.identity_bridge",
+        "provider.capability.partial_coverage_declared",
         "schema.values.value_closure",
         "schema.foreign_key.resolves",
         "schema.mutual_exclusion.exclusive",
@@ -36,6 +38,7 @@ def test_default_catalog_compiles_first_vertical_slice() -> None:
     assert catalog.subjects_by_kind()["cli.command"] >= 1
     assert catalog.subjects_by_kind()["cli.json_command"] >= 1
     assert catalog.subjects_by_kind()["archive.query_law"] == 1
+    assert catalog.subjects_by_kind()["provider.capability"] >= 2
     assert catalog.subjects_by_kind()["schema.annotation"] >= 1
     assert {runner.claim_id for runner in catalog.runner_bindings} == {claim.id for claim in catalog.claims}
     assert {"smoke", "semantic", "structural"}.issubset({runner.evidence_class for runner in catalog.runner_bindings})
