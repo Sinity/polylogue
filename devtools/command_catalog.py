@@ -15,6 +15,9 @@ VERIFICATION_LAB_COMMAND_NAMES: tuple[str, ...] = (
     "semantic-axis-evidence",
     "lab-corpus",
     "lab-scenario",
+    "schema-generate",
+    "schema-promote",
+    "schema-audit",
 )
 
 CATEGORY_ORDER: tuple[str, ...] = (
@@ -232,6 +235,30 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "devtools.lab_scenario",
         use_when="Run showcase exercise smoke scenarios outside the product CLI.",
         examples=("devtools lab-scenario run archive-smoke --tier 0",),
+    ),
+    CommandSpec(
+        "schema-generate",
+        "verification",
+        "Generate provider schema packages and optional evidence clusters.",
+        "devtools.schema_generate",
+        use_when="Refresh provider schema package artifacts from archive observations outside the product CLI.",
+        examples=("devtools schema-generate --provider chatgpt --cluster",),
+    ),
+    CommandSpec(
+        "schema-promote",
+        "verification",
+        "Promote a schema evidence cluster into a registered package version.",
+        "devtools.schema_promote",
+        use_when="Turn reviewed schema evidence clusters into committed provider schema packages.",
+        examples=("devtools schema-promote --provider chatgpt --cluster chatgpt-message-v2",),
+    ),
+    CommandSpec(
+        "schema-audit",
+        "verification",
+        "Run committed provider schema package quality checks.",
+        "devtools.schema_audit",
+        use_when="Check committed schema package quality gates without presenting them as normal archive usage.",
+        examples=("devtools schema-audit --provider chatgpt --json",),
     ),
     CommandSpec(
         "regression-capture",

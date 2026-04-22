@@ -19,6 +19,9 @@ def test_list_commands_json_includes_generated_surface(capsys: pytest.CaptureFix
         "semantic-axis-evidence",
         "lab-corpus",
         "lab-scenario",
+        "schema-generate",
+        "schema-promote",
+        "schema-audit",
     ]
     assert "artifact-graph" in commands
     assert "regression-capture" in commands
@@ -35,6 +38,9 @@ def test_list_commands_human_output(capsys: pytest.CaptureFixture[str]) -> None:
     assert "semantic-axis-evidence" in captured.out
     assert "lab-corpus" in captured.out
     assert "lab-scenario" in captured.out
+    assert "schema-generate" in captured.out
+    assert "schema-promote" in captured.out
+    assert "schema-audit" in captured.out
     assert "generated surfaces:" in captured.out
     assert "artifact-graph" in captured.out
     assert "regression-capture" in captured.out

@@ -7,7 +7,7 @@ This module infers JSON schemas from real data samples, which can be used for:
 
 Can be used as:
 - Module: `from polylogue.schemas.schema_inference import generate_provider_schema`
-- CLI: `polylogue schema generate --provider chatgpt`
+- Devtools: `devtools schema-generate --provider chatgpt`
 
 Implementation is split across:
 - `schemas/observation.py` — ProviderConfig, PROVIDERS, runtime-safe observation helpers

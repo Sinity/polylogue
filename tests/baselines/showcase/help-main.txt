@@ -116,6 +116,6 @@ Commands:
   products     Inspect durable archive data products.
   reset        Reset database, blob store, assets, rendered outputs, or...
   run          Run pipeline stages on configured sources.
-  schema       Schema generation, package versioning, and evidence...
+  schema       Inspect schema packages, versions, and evidence.
   stats        Show statistics for matched conversations.
   tags         List all tags with conversation counts.
