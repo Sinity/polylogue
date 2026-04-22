@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import AsyncIterator, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
@@ -15,6 +16,7 @@ from polylogue.lib.models import ConversationSummary
 from polylogue.site.builder import SiteBuilder, SiteConfig
 from polylogue.site.models import ConversationIndex
 from polylogue.types import ConversationId, Provider
+from tests.infra.storage_records import ConversationBuilder
 
 WorkspaceEnv = dict[str, Path]
 MessagePayload = tuple[str, str]
@@ -130,6 +132,61 @@ def test_run_site_no_rich_markup_in_output(workspace_env: WorkspaceEnv) -> None:
     assert result.exit_code == 0
     for token in ("[bold]", "[/bold]", "[green]", "[/green]", "[red]", "[/red]"):
         assert token not in result.output
+
+
+def test_run_site_builds_browsable_static_site(workspace_env: WorkspaceEnv) -> None:
+    """Smoke: `polylogue run site` writes linked HTML pages from a seeded archive."""
+    db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
+    (
+        ConversationBuilder(db_path, "site-smoke-1")
+        .provider("chatgpt")
+        .title("Smoke Conversation")
+        .updated_at("2026-03-22T12:00:00+00:00")
+        .add_message("m1", role="user", text="site smoke body")
+        .save()
+    )
+
+    runner = CliRunner()
+    output_dir = workspace_env["archive_root"] / "site-smoke"
+    result = runner.invoke(
+        cli,
+        [
+            "--plain",
+            "run",
+            "site",
+            "--output",
+            str(output_dir),
+            "--title",
+            "Smoke Archive",
+            "--search-provider",
+            "lunr",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    index_html = (output_dir / "index.html").read_text(encoding="utf-8")
+    dashboard_html = (output_dir / "dashboard.html").read_text(encoding="utf-8")
+    conversation_path = output_dir / "chatgpt" / "site-smoke-1" / "conversation.html"
+    conversation_html = conversation_path.read_text(encoding="utf-8")
+    search_index = json.loads((output_dir / "search-index.json").read_text(encoding="utf-8"))
+
+    assert "<!DOCTYPE html>" in index_html
+    assert "Smoke Archive" in index_html
+    assert "Smoke Conversation" in index_html
+    assert "dashboard.html" in index_html
+    assert "<!DOCTYPE html>" in dashboard_html
+    assert "Smoke Archive" in dashboard_html
+    assert "<!DOCTYPE html>" in conversation_html
+    assert "site smoke body" in conversation_html
+    assert search_index == [
+        {
+            "id": "site-smoke-1",
+            "title": "Smoke Conversation",
+            "provider": "chatgpt",
+            "preview": "",
+            "path": "chatgpt/site-smoke-1/conversation.html",
+        }
+    ]
 
 
 def test_run_site_error_handling(workspace_env: WorkspaceEnv) -> None:
