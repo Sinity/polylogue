@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .payloads import merge_unique_string_tuples
+from polylogue.authored_payloads import merge_unique_string_tuples
 
 
 @dataclass(frozen=True, slots=True)

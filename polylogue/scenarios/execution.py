@@ -5,11 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 
-from polylogue.maintenance_targets import build_maintenance_target_catalog
-
-from .corpus import CorpusRequest, CorpusSourceKind
-from .metadata import ScenarioMetadata
-from .payloads import (
+from polylogue.authored_payloads import (
     PayloadDict,
     PayloadMap,
     merge_unique_string_tuples,
@@ -19,6 +15,10 @@ from .payloads import (
     payload_string,
     payload_string_tuple,
 )
+from polylogue.maintenance_targets import build_maintenance_target_catalog
+
+from .corpus import CorpusRequest, CorpusSourceKind
+from .metadata import ScenarioMetadata
 
 
 class ExecutionKind(str, Enum):

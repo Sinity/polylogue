@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
-from polylogue.scenarios import PayloadDict
+from polylogue.authored_payloads import PayloadDict
 from polylogue.showcase.report_models import (
     QASessionRecord,
     ShowcaseSessionRecord,
