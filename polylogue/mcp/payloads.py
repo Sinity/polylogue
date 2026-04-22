@@ -16,6 +16,9 @@ from polylogue.surface_payloads import (
     ConversationMessagePayload as MCPMessagePayload,
 )
 from polylogue.surface_payloads import (
+    ConversationNeighborCandidatePayload as MCPConversationNeighborCandidatePayload,
+)
+from polylogue.surface_payloads import (
     ConversationSearchHitPayload as MCPConversationSearchHitPayload,
 )
 from polylogue.surface_payloads import (
@@ -31,6 +34,7 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from polylogue.lib.models import Conversation
+    from polylogue.lib.neighbor_candidates import ConversationNeighborCandidate
     from polylogue.lib.query_miss_diagnostics import QueryMissDiagnostics, QueryMissReason
     from polylogue.lib.search_hits import ConversationSearchHit
     from polylogue.lib.stats import ArchiveStats
@@ -63,6 +67,10 @@ class MCPConversationSummaryListPayload(MCPRootPayload[list[MCPConversationSumma
 
 class MCPConversationSearchHitListPayload(MCPRootPayload[list[MCPConversationSearchHitPayload]]):
     root: list[MCPConversationSearchHitPayload]
+
+
+class MCPConversationNeighborCandidateListPayload(MCPRootPayload[list[MCPConversationNeighborCandidatePayload]]):
+    root: list[MCPConversationNeighborCandidatePayload]
 
 
 class MCPQueryMissReasonPayload(SurfacePayloadModel):
@@ -142,6 +150,14 @@ def conversation_search_hit_list_payload(
             )
             for hit in hits
         ]
+    )
+
+
+def conversation_neighbor_candidate_list_payload(
+    candidates: Sequence[ConversationNeighborCandidate],
+) -> MCPConversationNeighborCandidateListPayload:
+    return MCPConversationNeighborCandidateListPayload(
+        root=[MCPConversationNeighborCandidatePayload.from_candidate(candidate) for candidate in candidates]
     )
 
 
@@ -303,6 +319,8 @@ class MCPReadinessReportPayload(SurfacePayloadModel):
 __all__ = [
     "MCPArchiveStatsPayload",
     "MCPConversationDetailPayload",
+    "MCPConversationNeighborCandidateListPayload",
+    "MCPConversationNeighborCandidatePayload",
     "MCPConversationQueryNoResultsPayload",
     "MCPConversationSearchHitListPayload",
     "MCPConversationSearchHitPayload",
@@ -321,6 +339,7 @@ __all__ = [
     "MCPQueryMissReasonPayload",
     "MCPStatsByPayload",
     "MCPTagCountsPayload",
+    "conversation_neighbor_candidate_list_payload",
     "conversation_query_result_payload",
     "conversation_search_hit_list_payload",
     "conversation_search_result_payload",

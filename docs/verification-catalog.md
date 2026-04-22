@@ -8,10 +8,10 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 
 ## Snapshot
 
-- subjects: `9033`
+- subjects: `9034`
 - claims: `22`
 - runner bindings: `22`
-- proof obligations: `9112`
+- proof obligations: `9115`
 
 ## Quality Checks
 
@@ -31,7 +31,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | --- | ---: |
 | `archive.query_law` | 1 |
 | `artifact.path` | 27 |
-| `cli.command` | 39 |
+| `cli.command` | 40 |
 | `cli.json_command` | 2 |
 | `diagnostic.observable` | 1 |
 | `error.surface` | 2 |
@@ -57,6 +57,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `polylogue doctor` | `polylogue/cli/commands/check.py:31` `polylogue.cli.commands.check.check_command` |
 | `polylogue list` | `polylogue/cli/query_verbs.py:18` `polylogue.cli.query_verbs.list_verb` |
 | `polylogue mcp` | `polylogue/cli/commands/mcp.py:10` `polylogue.cli.commands.mcp.mcp_command` |
+| `polylogue neighbors` | `polylogue/cli/commands/neighbors.py:42` `polylogue.cli.commands.neighbors.neighbors_command` |
 | `polylogue open` | `polylogue/cli/query_verbs.py:76` `polylogue.cli.query_verbs.open_verb` |
 | `polylogue products` | `polylogue/cli/commands/products.py:129` `polylogue.cli.commands.products.products_command` |
 | `polylogue products analytics` | `polylogue/cli/commands/products.py:92` `polylogue.cli.commands.products._make_callback.<locals>.callback` |
@@ -183,10 +184,10 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | --- | ---: |
 | `archive.query.provider_filter_consistency` | 1 |
 | `artifact.path.dependency_closure` | 11 |
-| `cli.command.help` | 39 |
+| `cli.command.help` | 40 |
 | `cli.command.json_envelope` | 2 |
-| `cli.command.no_traceback` | 39 |
-| `cli.command.plain_mode` | 39 |
+| `cli.command.no_traceback` | 40 |
+| `cli.command.plain_mode` | 40 |
 | `diagnostic.observable_trace_mapping` | 1 |
 | `error.machine_user_context` | 2 |
 | `generated.scenario.family_registered` | 9 |
