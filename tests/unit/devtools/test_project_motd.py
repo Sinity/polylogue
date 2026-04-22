@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from devtools import project_motd
+from devtools.generated_surfaces import GENERATED_SURFACES
 
 
 def test_read_version_extracts_project_version(tmp_path: Path) -> None:
@@ -27,10 +28,11 @@ def test_render_motd_contains_expected_sections(
     monkeypatch.setattr(project_motd, "use_color", lambda stream=None: False)
 
     rendered = project_motd.render_motd(tmp_path)
+    surface_count = len(GENERATED_SURFACES)
 
     assert "Polylogue  feature/docs/test  v0.1.0+deadbeef-dirty" in rendered
     assert "worktree   dirty · 1 staged · 2 modified · 3 untracked" in rendered
-    assert "generated  5/5 generated unchecked" in rendered
+    assert f"generated  {surface_count}/{surface_count} generated unchecked" in rendered
     assert "head       docs: tighten repo guides" in rendered
     assert "ready      devtools render-all --check · devtools verify --quick · devtools build-package" in rendered
     assert "test       pytest -q --ignore=tests/integration" in rendered
@@ -79,8 +81,9 @@ def test_render_motd_can_verify_generated_surfaces(
     monkeypatch.setattr(project_motd, "use_color", lambda stream=None: False)
 
     rendered = project_motd.render_motd(tmp_path, verify_generated=True)
+    surface_count = len(GENERATED_SURFACES)
 
-    assert "5/5 generated clean" in rendered
+    assert f"{surface_count}/{surface_count} generated clean" in rendered
 
 
 def test_main_can_write_motd_to_stderr(

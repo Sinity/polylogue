@@ -11,6 +11,7 @@ from devtools import (
     render_devtools_reference,
     render_docs_surface,
     render_quality_reference,
+    render_verification_catalog,
 )
 from devtools.command_catalog import control_plane_argv
 
@@ -54,6 +55,13 @@ GENERATED_SURFACES: tuple[GeneratedSurface, ...] = (
         description="Render docs/test-quality-workflows.md from quality registries.",
         command=control_plane_argv("render-quality-reference"),
         main=render_quality_reference.main,
+    ),
+    GeneratedSurface(
+        name="verification-catalog",
+        label="Verification catalog",
+        description="Render docs/verification-catalog.md from proof-obligation registries.",
+        command=control_plane_argv("render-verification-catalog"),
+        main=render_verification_catalog.main,
     ),
     GeneratedSurface(
         name="docs-surface",
