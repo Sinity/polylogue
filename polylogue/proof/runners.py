@@ -54,6 +54,52 @@ class SchemaValueGenerationObservation:
     generator: str = "hypothesis-jsonschema"
 
 
+@dataclass(frozen=True, slots=True)
+class MaintenanceRepairObservation:
+    """Observed repair/cleanup transition facts for a maintenance target."""
+
+    target: str
+    before_count: int
+    preview_repaired_count: int
+    after_dry_run_count: int
+    repaired_count: int
+    after_count: int
+    second_repair_count: int
+    state_effect: str
+    destructive: bool
+    result_success: bool = True
+    failure_state: str | None = None
+    operation: str = "polylogue doctor --repair"
+
+
+@dataclass(frozen=True, slots=True)
+class QuarantineErrorObservation:
+    """Observed parser quarantine diagnostic facts with privacy witnesses."""
+
+    provider: str
+    source_path: str
+    raw_id: str
+    parse_error: str
+    machine_payload: JSONDocument
+    user_message: str
+    payload_fragments: tuple[str, ...] = ()
+    validation_status: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ErrorContextObservation:
+    """Observed generic machine/user error context for a proof surface."""
+
+    error_family: str
+    machine_payload: JSONDocument
+    user_message: str
+    required_context: tuple[str, ...] = ()
+    payload_fragments: tuple[str, ...] = ()
+
+
+_STATE_EFFECT_VALUES = {"unchanged", "changed", "rolled_back", "partially_changed"}
+
+
 def run_cli_visual_evidence(
     obligation: ProofObligation,
     *,
@@ -224,6 +270,275 @@ def run_provider_capability_evidence(
     if obligation.claim.id == "provider.capability.partial_coverage_declared":
         return _run_provider_partial_coverage_evidence(obligation, reproducer=reproducer)
     raise ValueError(f"unsupported provider capability claim: {obligation.claim.id}")
+
+
+def run_artifact_path_evidence(
+    obligation: ProofObligation,
+    *,
+    reproducer: tuple[str, ...] = ("pytest", "tests/unit/proof/test_structural_error_evidence.py"),
+) -> EvidenceEnvelope:
+    """Verify static structural closure for one runtime artifact path."""
+    if obligation.claim.id != "artifact.path.dependency_closure":
+        raise ValueError(f"unsupported artifact path claim: {obligation.claim.id}")
+
+    attrs = obligation.subject.attrs
+    nodes = _string_tuple_attr(attrs.get("nodes"))
+    layers = require_json_document(attrs.get("layers"), context="artifact path layers")
+    missing_dependencies = _string_tuple_attr(attrs.get("missing_dependencies"))
+    operation_targets = _string_tuple_attr(attrs.get("operation_targets"))
+    external_dependencies = _string_tuple_attr(attrs.get("external_dependencies"))
+    layer_values = {value for value in layers.values() if isinstance(value, str)}
+    has_durable_layer = "durable" in layer_values
+    has_non_core_layer = bool({"derived", "index", "projection"} & layer_values)
+    observed_state: JSONDocument = {
+        "path_name": attrs.get("path_name"),
+        "nodes": list(nodes),
+        "layers": dict(layers),
+        "missing_dependencies": list(missing_dependencies),
+        "external_dependencies": list(external_dependencies),
+        "operation_targets": list(operation_targets),
+        "has_durable_layer": has_durable_layer,
+        "has_non_core_layer": has_non_core_layer,
+    }
+    expected_law = (
+        "runtime artifact paths resolve dependencies and include durable plus derived/index/projection semantics"
+    )
+    evidence = _evidence_payload(
+        obligation,
+        runner_class="artifact_path_static",
+        expected_law=expected_law,
+        observed_state=observed_state,
+    )
+    evidence["path_name"] = attrs.get("path_name")
+    evidence["nodes"] = list(nodes)
+    evidence["layers"] = dict(layers)
+    evidence["missing_dependencies"] = list(missing_dependencies)
+    evidence["external_dependencies"] = list(external_dependencies)
+    ok = bool(nodes) and not missing_dependencies and has_durable_layer and has_non_core_layer
+    return _build_envelope(
+        obligation,
+        status=OutcomeStatus.OK if ok else OutcomeStatus.ERROR,
+        evidence=evidence,
+        expected_law=expected_law,
+        observed_state=observed_state,
+        reproducer=reproducer,
+        provenance=obligation.subject.source_span,
+        producer="polylogue.proof.runners.artifact_path_static",
+    )
+
+
+def run_maintenance_repair_state_evidence(
+    obligation: ProofObligation,
+    observation: MaintenanceRepairObservation,
+    *,
+    reproducer: tuple[str, ...] = ("pytest", "tests/unit/proof/test_structural_error_evidence.py"),
+) -> EvidenceEnvelope:
+    """Verify maintenance repair evidence states dry-run, execution, and failure effects."""
+    if obligation.claim.id != "maintenance.repair.crash_consistency":
+        raise ValueError(f"unsupported maintenance repair claim: {obligation.claim.id}")
+
+    expected_target = str(obligation.subject.attrs.get("name", ""))
+    target_matches = observation.target == expected_target
+    dry_run_unchanged = observation.before_count == observation.after_dry_run_count
+    preview_matches_execution = not observation.result_success or (
+        observation.preview_repaired_count == observation.repaired_count
+    )
+    state_effect_explicit = observation.state_effect in _STATE_EFFECT_VALUES
+    failure_state_explicit = observation.result_success or observation.failure_state in _STATE_EFFECT_VALUES
+    converged_or_explained = observation.result_success or observation.after_count == observation.before_count
+    idempotent_after_success = not observation.result_success or observation.second_repair_count == 0
+    observed_state: JSONDocument = {
+        "target": observation.target,
+        "expected_target": expected_target,
+        "destructive": observation.destructive,
+        "before_count": observation.before_count,
+        "preview_repaired_count": observation.preview_repaired_count,
+        "after_dry_run_count": observation.after_dry_run_count,
+        "repaired_count": observation.repaired_count,
+        "after_count": observation.after_count,
+        "second_repair_count": observation.second_repair_count,
+        "state_effect": observation.state_effect,
+        "result_success": observation.result_success,
+        "failure_state": observation.failure_state,
+        "operation": observation.operation,
+        "checks": {
+            "target_matches": target_matches,
+            "dry_run_unchanged": dry_run_unchanged,
+            "preview_matches_execution": preview_matches_execution,
+            "state_effect_explicit": state_effect_explicit,
+            "failure_state_explicit": failure_state_explicit,
+            "converged_or_explained": converged_or_explained,
+            "idempotent_after_success": idempotent_after_success,
+        },
+    }
+    expected_law = "maintenance evidence explicitly states preview, execution, idempotence, and failure state effects"
+    evidence = _evidence_payload(
+        obligation,
+        runner_class="maintenance_repair_state",
+        expected_law=expected_law,
+        observed_state=observed_state,
+    )
+    evidence["target"] = observation.target
+    evidence["preview_repaired_count"] = observation.preview_repaired_count
+    evidence["repaired_count"] = observation.repaired_count
+    evidence["state_effect"] = observation.state_effect
+    evidence["failure_state"] = observation.failure_state
+    ok = all(
+        (
+            target_matches,
+            dry_run_unchanged,
+            preview_matches_execution,
+            state_effect_explicit,
+            failure_state_explicit,
+            converged_or_explained,
+            idempotent_after_success,
+        )
+    )
+    return _build_envelope(
+        obligation,
+        status=OutcomeStatus.OK if ok else OutcomeStatus.ERROR,
+        evidence=evidence,
+        expected_law=expected_law,
+        observed_state=observed_state,
+        reproducer=reproducer,
+        provenance=obligation.subject.source_span,
+        producer="polylogue.proof.runners.maintenance_repair_state",
+    )
+
+
+def run_quarantine_error_evidence(
+    obligation: ProofObligation,
+    observation: QuarantineErrorObservation,
+    *,
+    reproducer: tuple[str, ...] = ("pytest", "tests/unit/proof/test_structural_error_evidence.py"),
+) -> EvidenceEnvelope:
+    """Verify parser quarantine diagnostics retain context without leaking payload text."""
+    if obligation.claim.id != "parser.quarantine.context_redaction":
+        raise ValueError(f"unsupported parser quarantine claim: {obligation.claim.id}")
+
+    payload_leak_detected = _payload_leak_detected(
+        observation.payload_fragments,
+        observation.parse_error,
+        observation.user_message,
+        json.dumps(observation.machine_payload, sort_keys=True),
+    )
+    machine_details = _machine_details(observation.machine_payload)
+    context_checks: JSONDocument = {
+        "provider": bool(observation.provider) and machine_details.get("provider") == observation.provider,
+        "source_path": bool(observation.source_path) and machine_details.get("source_path") == observation.source_path,
+        "raw_id": bool(observation.raw_id) and machine_details.get("raw_id") == observation.raw_id,
+    }
+    user_context_checks: JSONDocument = {
+        "provider": observation.provider in observation.user_message,
+        "source_path": observation.source_path in observation.user_message,
+    }
+    observed_state: JSONDocument = {
+        "provider": observation.provider,
+        "source_path": observation.source_path,
+        "raw_id": observation.raw_id,
+        "parse_error": observation.parse_error,
+        "validation_status": observation.validation_status,
+        "machine_payload": dict(observation.machine_payload),
+        "user_message": observation.user_message,
+        "context_checks": context_checks,
+        "user_context_checks": user_context_checks,
+        "payload_leak_detected": payload_leak_detected,
+    }
+    expected_law = "parser quarantine diagnostics preserve source context and redact private payload fragments"
+    evidence = _evidence_payload(
+        obligation,
+        runner_class="parser_quarantine_error",
+        expected_law=expected_law,
+        observed_state=observed_state,
+    )
+    evidence["provider"] = observation.provider
+    evidence["source_path"] = observation.source_path
+    evidence["parse_error"] = observation.parse_error
+    evidence["payload_leak_detected"] = payload_leak_detected
+    ok = (
+        observation.machine_payload.get("status") == "error"
+        and all(bool(value) for value in context_checks.values())
+        and all(bool(value) for value in user_context_checks.values())
+        and not payload_leak_detected
+    )
+    return _build_envelope(
+        obligation,
+        status=OutcomeStatus.OK if ok else OutcomeStatus.ERROR,
+        evidence=evidence,
+        expected_law=expected_law,
+        observed_state=observed_state,
+        reproducer=reproducer,
+        provenance=obligation.subject.source_span,
+        producer="polylogue.proof.runners.parser_quarantine_error",
+    )
+
+
+def run_error_context_evidence(
+    obligation: ProofObligation,
+    observation: ErrorContextObservation,
+    *,
+    reproducer: tuple[str, ...] = ("pytest", "tests/unit/proof/test_structural_error_evidence.py"),
+) -> EvidenceEnvelope:
+    """Verify machine/user error context for a durable error surface."""
+    if obligation.claim.id != "error.machine_user_context":
+        raise ValueError(f"unsupported error context claim: {obligation.claim.id}")
+
+    subject_required_context = _string_tuple_attr(obligation.subject.attrs.get("required_context"))
+    required_context = observation.required_context or subject_required_context
+    machine_details = _machine_details(observation.machine_payload)
+    user_context_checks: JSONDocument = {
+        key: key in machine_details and str(machine_details.get(key)) in observation.user_message
+        for key in required_context
+    }
+    machine_context_checks: JSONDocument = {
+        key: key in machine_details and bool(machine_details.get(key)) for key in required_context
+    }
+    payload_leak_detected = _payload_leak_detected(
+        observation.payload_fragments,
+        observation.user_message,
+        json.dumps(observation.machine_payload, sort_keys=True),
+    )
+    privacy_checks: JSONDocument = {
+        "payload_fragments_redacted": not payload_leak_detected,
+        "payload_leak_detected": payload_leak_detected,
+    }
+    observed_state: JSONDocument = {
+        "error_family": observation.error_family,
+        "machine_payload": dict(observation.machine_payload),
+        "user_message": observation.user_message,
+        "required_context": list(required_context),
+        "machine_context_checks": machine_context_checks,
+        "user_context_checks": user_context_checks,
+        "privacy_checks": privacy_checks,
+    }
+    expected_law = "machine error payloads and user-facing text expose matching context without payload leaks"
+    evidence = _evidence_payload(
+        obligation,
+        runner_class="error_context",
+        expected_law=expected_law,
+        observed_state=observed_state,
+    )
+    evidence["machine_payload"] = dict(observation.machine_payload)
+    evidence["user_context_checks"] = dict(user_context_checks)
+    evidence["privacy_checks"] = dict(privacy_checks)
+    ok = (
+        observation.machine_payload.get("status") == "error"
+        and bool(observation.machine_payload.get("code"))
+        and bool(observation.machine_payload.get("message"))
+        and all(machine_context_checks.values())
+        and all(user_context_checks.values())
+        and not payload_leak_detected
+    )
+    return _build_envelope(
+        obligation,
+        status=OutcomeStatus.OK if ok else OutcomeStatus.ERROR,
+        evidence=evidence,
+        expected_law=expected_law,
+        observed_state=observed_state,
+        reproducer=reproducer,
+        provenance=obligation.subject.source_span,
+        producer="polylogue.proof.runners.error_context",
+    )
 
 
 def _run_provider_identity_bridge_evidence(
@@ -670,11 +985,27 @@ def _json_value_key(value: JSONValue) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
+def _machine_details(machine_payload: JSONDocument) -> JSONDocument:
+    details = machine_payload.get("details")
+    return require_json_document(details, context="machine error details") if isinstance(details, dict) else {}
+
+
+def _payload_leak_detected(fragments: Sequence[str], *texts: str) -> bool:
+    return any(fragment and any(fragment in text for text in texts) for fragment in fragments)
+
+
 __all__ = [
+    "ErrorContextObservation",
+    "MaintenanceRepairObservation",
+    "QuarantineErrorObservation",
     "SemanticQueryObservation",
     "SchemaValueGenerationObservation",
+    "run_artifact_path_evidence",
     "run_cli_json_envelope_evidence",
     "run_provider_capability_evidence",
+    "run_error_context_evidence",
+    "run_maintenance_repair_state_evidence",
+    "run_quarantine_error_evidence",
     "run_schema_value_generation_evidence",
     "run_cli_visual_evidence",
     "run_semantic_query_evidence",
