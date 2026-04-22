@@ -176,6 +176,19 @@ _CANONICAL_PROVIDERS = (
 )
 
 
+def _minimal_chatgpt_payload(text: str) -> dict[str, object]:
+    return {
+        "mapping": {
+            "node-1": {
+                "message": {
+                    "author": {"role": "user"},
+                    "content": {"content_type": "text", "parts": [text]},
+                }
+            }
+        }
+    }
+
+
 def _empty_cursor_state() -> CursorStatePayload:
     return {}
 
@@ -215,6 +228,27 @@ def test_detect_provider_prefers_payload_shape_over_conflicting_path_hint() -> N
     }
 
     assert detect_provider(payload, Path("misleading/claude-code/session.jsonl")) == Provider.CHATGPT
+
+
+@pytest.mark.parametrize(
+    ("provider_hint", "stream_name"),
+    [
+        (Provider.CLAUDE_CODE, "misleading/claude-code/session.jsonl"),
+        (Provider.CODEX, "misleading/codex/session.jsonl"),
+    ],
+)
+def test_entry_payload_detection_overrides_misleading_grouped_fallback_law(
+    provider_hint: Provider,
+    stream_name: str,
+) -> None:
+    payloads = [_minimal_chatgpt_payload("first"), _minimal_chatgpt_payload("second")]
+    raw = "\n".join(json.dumps(payload) for payload in payloads).encode("utf-8")
+
+    observed = list(_iter_entry_payloads(BytesIO(raw), stream_name=stream_name, provider_hint=provider_hint))
+
+    assert [provider for provider, _, _ in observed] == [Provider.CHATGPT, Provider.CHATGPT]
+    assert [payload for _, payload, _ in observed] == payloads
+    assert all(detect_provider_ms >= 0.0 for _, _, detect_provider_ms in observed)
 
 
 @given(provider_payload_case_strategy(_CANONICAL_PROVIDERS))
