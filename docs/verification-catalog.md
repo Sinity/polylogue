@@ -19,6 +19,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | --- | --- | --- |
 | `catalog.subject_source_spans` | `ok` | all subjects carry source spans |
 | `catalog.runner_trust_metadata` | `ok` | runner trust metadata is present and fresh |
+| `catalog.runner_environment_dimensions` | `ok` | runner environment dimensions declared; uncontrolled dimensions: 0 |
 | `catalog.serious_claim_bug_classes` | `ok` | serious claims expose bug classes |
 | `catalog.serious_claim_breakers` | `ok` | serious claims expose breakers or tracked exceptions |
 | `catalog.serious_claim_adequacy` | `ok` | serious claims declare runner classes, observed facts, and staleness conditions |
@@ -123,16 +124,16 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 
 | Runner Binding | Claim | Evidence | Cost | Environment | Trust |
 | --- | --- | --- | --- | --- | --- |
-| `cli-help-contract:cli.command.help` | `cli.command.help` | `smoke` | `static` | commands=`polylogue`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
-| `cli-help-contract:cli.command.no_traceback` | `cli.command.no_traceback` | `smoke` | `static` | commands=`polylogue`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
-| `cli-plain-contract:cli.command.plain_mode` | `cli.command.plain_mode` | `structural` | `static` | commands=`polylogue`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
-| `cli-json-envelope-contract:cli.command.json_envelope` | `cli.command.json_envelope` | `structural` | `unit` | commands=`polylogue`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
-| `semantic-query-law-contract:archive.query.provider_filter_consistency` | `archive.query.provider_filter_consistency` | `semantic` | `unit` | commands=—; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
-| `provider-capability-static-contract:provider.capability.identity_bridge` | `provider.capability.identity_bridge` | `structural` | `static` | commands=—; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
-| `provider-capability-static-contract:provider.capability.partial_coverage_declared` | `provider.capability.partial_coverage_declared` | `structural` | `static` | commands=—; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
-| `schema-annotation-static-contract:schema.values.value_closure` | `schema.values.value_closure` | `structural` | `static` | commands=—; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
-| `schema-annotation-static-contract:schema.foreign_key.resolves` | `schema.foreign_key.resolves` | `structural` | `static` | commands=—; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
-| `schema-annotation-static-contract:schema.mutual_exclusion.exclusive` | `schema.mutual_exclusion.exclusive` | `structural` | `static` | commands=—; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
+| `cli-help-contract:cli.command.help` | `cli.command.help` | `smoke` | `static` | commands=`polylogue`; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
+| `cli-help-contract:cli.command.no_traceback` | `cli.command.no_traceback` | `smoke` | `static` | commands=`polylogue`; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
+| `cli-plain-contract:cli.command.plain_mode` | `cli.command.plain_mode` | `structural` | `static` | commands=`polylogue`; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
+| `cli-json-envelope-contract:cli.command.json_envelope` | `cli.command.json_envelope` | `structural` | `unit` | commands=`polylogue`; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
+| `semantic-query-law-contract:archive.query.provider_filter_consistency` | `archive.query.provider_filter_consistency` | `semantic` | `unit` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
+| `provider-capability-static-contract:provider.capability.identity_bridge` | `provider.capability.identity_bridge` | `structural` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
+| `provider-capability-static-contract:provider.capability.partial_coverage_declared` | `provider.capability.partial_coverage_declared` | `structural` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
+| `schema-annotation-static-contract:schema.values.value_closure` | `schema.values.value_closure` | `structural` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
+| `schema-annotation-static-contract:schema.foreign_key.resolves` | `schema.foreign_key.resolves` | `structural` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
+| `schema-annotation-static-contract:schema.mutual_exclusion.exclusive` | `schema.mutual_exclusion.exclusive` | `structural` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
 
 ## Proof Obligations
 
