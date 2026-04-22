@@ -3,14 +3,20 @@ from __future__ import annotations
 from pathlib import Path
 
 from devtools import render_devtools_reference
+from devtools.render_support import write_if_changed
 
 
 def test_build_command_catalog_includes_discovery_and_commands() -> None:
     rendered = render_devtools_reference.build_command_catalog()
 
     assert "## Core Loop" in rendered
+    assert "## Verification Lab Surface" in rendered
     assert "devtools --list-commands --json" in rendered
     assert "devtools status --json" in rendered
+    assert "`devtools render-verification-catalog`" in rendered
+    assert "`devtools affected-obligations`" in rendered
+    assert "`devtools semantic-axis-evidence`" in rendered
+    assert "not end-user archive workflows" in rendered
     assert (
         "| `devtools artifact-graph` | Render the runtime artifact, operation, and scenario-coverage map. |" in rendered
     )
@@ -47,10 +53,10 @@ def test_replace_marked_section_updates_catalog_block() -> None:
 def test_write_if_changed_reuses_existing_output(tmp_path: Path) -> None:
     output_path = tmp_path / "devtools.md"
     content = "hello\n"
-    render_devtools_reference.write_if_changed(output_path, content)
+    write_if_changed(output_path, content)
     original_mtime = output_path.stat().st_mtime_ns
 
-    render_devtools_reference.write_if_changed(output_path, content)
+    write_if_changed(output_path, content)
 
     assert output_path.read_text(encoding="utf-8") == content
     assert output_path.stat().st_mtime_ns == original_mtime

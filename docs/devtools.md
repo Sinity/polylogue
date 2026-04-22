@@ -19,6 +19,17 @@ devtools status
 devtools status --json
 ```
 
+## Verification Lab Surface
+
+The proof-lab operator surface intentionally lives in `devtools` for now. These commands operate on
+repo proof obligations and evidence records, not end-user archive workflows.
+
+| Command | Role |
+| --- | --- |
+| `devtools render-verification-catalog` | Refresh or verify the proof-obligation catalog that anchors the verification-lab surface after changing proof subjects, claims, runners, or catalog rendering. |
+| `devtools affected-obligations` | Find the proof obligations and inner-loop checks affected by local changes before escalating to full PR gates. |
+| `devtools semantic-axis-evidence` | Produce comparative performance evidence that describes growth shape over semantic axes instead of machine-specific absolute budgets. |
+
 ## Core Loop
 
 These are the commands worth remembering during normal repo work:
@@ -51,20 +62,20 @@ These are the commands worth remembering during normal repo work:
 | `devtools render-devtools-reference` | Render the command catalog inside docs/devtools.md. |
 | `devtools render-docs-surface` | Render docs/README.md and the README documentation table. |
 | `devtools render-quality-reference` | Render docs/test-quality-workflows.md from live validation, mutation, and benchmark registries. |
-| `devtools render-verification-catalog` | Render docs/verification-catalog.md from proof-obligation registries. |
+| `devtools render-verification-catalog` | Render the verification-lab proof catalog from obligation registries. |
 
 ### Verification
 
 | Command | Description |
 | --- | --- |
-| `devtools affected-obligations` | Route changed paths or refs to affected proof obligations and focused checks. |
+| `devtools affected-obligations` | Route changed paths or refs to affected verification-lab proof obligations and focused checks. |
 | `devtools artifact-graph` | Render the runtime artifact, operation, and scenario-coverage map. |
 | `devtools pipeline-probe` | Run typed pipeline probes against synthetic, staged, or archive-subset inputs. |
 | `devtools query-memory-budget` | Measure query-memory envelopes on generated fixtures. |
 | `devtools regression-capture` | Capture pipeline-probe summaries as durable local regression cases. |
 | `devtools run-validation-lanes` | Run named validation lanes. |
 | `devtools scenario-projections` | Render the authored scenario-bearing verification projections. |
-| `devtools semantic-axis-evidence` | Generate proof-envelope performance evidence across synthetic semantic scale tiers. |
+| `devtools semantic-axis-evidence` | Generate verification-lab performance evidence across synthetic semantic scale tiers. |
 | `devtools verify` | Run the local verification baseline before pushing or creating a PR. |
 | `devtools verify-showcase` | Verify committed showcase/demo surfaces. |
 
