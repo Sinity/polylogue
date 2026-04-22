@@ -38,10 +38,10 @@ from polylogue.pipeline.services.ingest_worker import (
     ingest_record,
 )
 from polylogue.pipeline.services.process_pool import process_pool_executor
-from polylogue.storage.backends.connection import (
+from polylogue.storage.backends.connection import _load_sqlite_vec
+from polylogue.storage.backends.connection_profile import (
     DB_TIMEOUT,
-    WRITE_CACHE_SIZE_KIB,
-    _load_sqlite_vec,
+    WRITE_CONNECTION_PRAGMA_STATEMENTS,
 )
 from polylogue.storage.conversation_replacement import (
     recount_and_prune_attachments_sync,
@@ -274,14 +274,8 @@ def _open_sync_connection(db_path: Path) -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(db_path), timeout=DB_TIMEOUT)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute("PRAGMA journal_mode = WAL")
-    conn.execute(f"PRAGMA busy_timeout = {DB_TIMEOUT * 1000}")
-    conn.execute(f"PRAGMA cache_size = -{WRITE_CACHE_SIZE_KIB}")
-    conn.execute("PRAGMA synchronous = NORMAL")
-    conn.execute("PRAGMA mmap_size = 1073741824")
-    conn.execute("PRAGMA temp_store = MEMORY")
-    conn.execute("PRAGMA wal_autocheckpoint = 10000")
+    for statement in WRITE_CONNECTION_PRAGMA_STATEMENTS:
+        conn.execute(statement)
     _load_sqlite_vec(conn)
     return conn
 

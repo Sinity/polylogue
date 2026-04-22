@@ -6,6 +6,7 @@ import re
 import sqlite3
 from contextlib import suppress
 from dataclasses import dataclass
+from typing import Literal
 
 import aiosqlite
 
@@ -52,6 +53,14 @@ class SchemaExtensionPlan:
 
     statements: tuple[str, ...]
     scripts: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class SchemaBootstrapDecision:
+    """Shared schema bootstrap branch chosen from a schema snapshot."""
+
+    action: Literal["create_fresh", "apply_current_extensions"]
+    extension_plan: SchemaExtensionPlan | None = None
 
 
 def _normalize_sql(sql: str) -> str:
@@ -224,6 +233,22 @@ def build_current_schema_extension_plan(snapshot: SchemaSnapshot) -> SchemaExten
     return SchemaExtensionPlan(statements=tuple(statements), scripts=tuple(scripts))
 
 
+def decide_schema_bootstrap(snapshot: SchemaSnapshot) -> SchemaBootstrapDecision:
+    """Choose the canonical schema bootstrap path for sync and async backends."""
+    if snapshot.current_version == 0:
+        return SchemaBootstrapDecision(action="create_fresh")
+
+    assert_supported_archive_layout_snapshot(snapshot)
+
+    if snapshot.current_version != SCHEMA_VERSION:
+        raise DatabaseError(schema_version_mismatch_message(snapshot.current_version))
+
+    return SchemaBootstrapDecision(
+        action="apply_current_extensions",
+        extension_plan=build_current_schema_extension_plan(snapshot),
+    )
+
+
 def capture_schema_snapshot(conn: sqlite3.Connection) -> SchemaSnapshot:
     current_version = conn.execute("PRAGMA user_version").fetchone()[0]
     table_columns: dict[str, frozenset[str]] = {}
@@ -314,6 +339,7 @@ async def ensure_vec0_table_async(conn: aiosqlite.Connection) -> None:
 __all__ = [
     "SCHEMA_DDL",
     "SCHEMA_VERSION",
+    "SchemaBootstrapDecision",
     "SchemaExtensionPlan",
     "SchemaSnapshot",
     "apply_schema_extension_plan",
@@ -322,6 +348,7 @@ __all__ = [
     "build_current_schema_extension_plan",
     "capture_schema_snapshot",
     "capture_schema_snapshot_async",
+    "decide_schema_bootstrap",
     "ensure_vec0_table",
     "ensure_vec0_table_async",
     "schema_version_mismatch_message",

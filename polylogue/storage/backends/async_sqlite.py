@@ -22,7 +22,7 @@ import polylogue.paths as _paths
 from polylogue.errors import DatabaseError
 from polylogue.storage.backends.async_sqlite_archive import SQLiteArchiveMixin
 from polylogue.storage.backends.async_sqlite_raw import SQLiteRawMixin
-from polylogue.storage.backends.connection import (
+from polylogue.storage.backends.connection_profile import (
     DB_TIMEOUT,
     READ_CONNECTION_PRAGMA_STATEMENTS,
     READ_DB_TIMEOUT,
