@@ -8,10 +8,10 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 
 ## Snapshot
 
-- subjects: `9024`
-- claims: `19`
-- runner bindings: `19`
-- proof obligations: `9090`
+- subjects: `9033`
+- claims: `22`
+- runner bindings: `22`
+- proof obligations: `9112`
 
 ## Quality Checks
 
@@ -35,6 +35,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `cli.json_command` | 2 |
 | `diagnostic.observable` | 1 |
 | `error.surface` | 2 |
+| `generated.scenario_family` | 9 |
 | `maintenance.target` | 8 |
 | `operation.spec` | 41 |
 | `provider.capability` | 3 |
@@ -108,6 +109,20 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `claude-code` | Claude Code JSONL record stream with typed record models | supported; thinking blocks are extracted from provider content blocks | record stream grouped by sessionId with parentUuid continuity | `partial` | `sidecar_artifact_contract_not_modeled` |
 | `codex` | Codex JSONL session envelope and response item stream | partial; reasoning is preserved when exported as content blocks, not inferred | record stream with session metadata, response items, compactions, and context turns | `absent` | `reasoning_capability_partial`<br>`sidecar_spec_absent` |
 
+## Generated Scenario Subjects
+
+| Scenario Family | Status | Generated World | Workload | Claims |
+| --- | --- | --- | --- | --- |
+| `generated.scenario_family.cold-doctor-check` | `migration_task` | fresh generated archive workspace | doctor/check startup readiness | `archive absence/degraded readiness`<br>`cold readiness diagnostics` |
+| `generated.scenario_family.cold-stats-search` | `migration_task` | small generated archive with indexed messages | stats/search startup query | `filter algebra and count/list/search agreement`<br>`slow-query diagnostics` |
+| `generated.scenario_family.large-generated-search` | `migration_task` | large generated archive scale profile | FTS and hybrid search | `comparative/growth-shape performance evidence`<br>`retrieval evidence provenance` |
+| `generated.scenario_family.pathological-raw-rerun` | `implemented` | repo-local malformed raw payload fixtures | raw validation and parser quarantine | `parser crashlessness and explicit quarantine semantics`<br>`wrong-provider rejection without silent adoption` |
+| `generated.scenario_family.giant-grouped-jsonl-ingest` | `migration_task` | large grouped JSONL fixture | batch ingest fanout | `parser crashlessness and explicit quarantine semantics`<br>`pipeline batch fanout accounting` |
+| `generated.scenario_family.repair-convergence-broken-generated` | `implemented` | seeded archive with orphaned message rows | maintenance repair convergence | `repair convergence and explicit state effects`<br>`destructive-preview safety` |
+| `generated.scenario_family.action-event-rebuild-convergence` | `migration_task` | synthetic tool-use transcript archive | action-event materialization | `action-event rebuild convergence`<br>`session product rebuild convergence` |
+| `generated.scenario_family.destructive-preview-safety` | `implemented` | seeded archive with previewable orphan cleanup | dry-run versus destructive repair | `destructive-preview safety`<br>`error machine/user context` |
+| `generated.scenario_family.archive-substrate-laws` | `implemented` | unit-generated conversation and text fixtures | archive substrate laws | `content hash stability`<br>`idempotent upsert and NFC normalization` |
+
 ## Claims
 
 | Claim | Severity | Bug Classes | Breaker / Exception |
@@ -129,6 +144,9 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `error.machine_user_context` | `serious` | `error-envelope.context-loss`<br>`operator-error.unactionable` | An error surface that only carries prose, or omits required context keys, is not actionable. |
 | `trace.operation.surface_equivalence` | `serious` | `trace.surface-drift`<br>`semantic-result.parity` | Equivalent operations with different semantic event signatures expose cross-surface drift. |
 | `diagnostic.observable_trace_mapping` | `serious` | `diagnostic.vocabulary-drift`<br>`probe-proof-unroutable` | A probe diagnostic without a proof-vocabulary mapping cannot route into trace evidence. |
+| `generated.scenario.family_registered` | `serious` | `scenario-family.omission`<br>`live-checks.overused` | A missing generated-world family leaves live/archive checks carrying routine confidence. |
+| `generated.scenario.local_deterministic` | `serious` | `scenario-family.live-dependency`<br>`scenario-family.nondeterministic-local-fixture` | An implemented generated scenario with live archive dependency is not a routine proof subject. |
+| `generated.scenario.semantic_claim_mapping` | `serious` | `scenario-family.vacuous-process-check`<br>`semantic-proof.unmapped-generated-world` | A generated scenario without semantic claim mapping can go green without proving meaning. |
 | `workflow.generated_surfaces_current` | `serious` | `generated-surface.drift`<br>`agent-context.stale-generated-doc` | Generated docs or AGENTS surfaces drift when render-all is not refreshed. |
 | `workflow.pr_verification_recorded` | `serious` | `workflow.verification-record.omitted`<br>`workflow.issue-link.omitted` | A non-trivial PR without a verification record or issue reference loses proof provenance. |
 
@@ -153,6 +171,9 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `error-context-contract:error.machine_user_context` | `error.machine_user_context` | `structural` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
 | `trace-equivalence-contract:trace.operation.surface_equivalence` | `trace.operation.surface_equivalence` | `trace` | `unit` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
 | `diagnostic-trace-mapping-contract:diagnostic.observable_trace_mapping` | `diagnostic.observable_trace_mapping` | `trace` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
+| `generated-scenario-static-contract:generated.scenario.family_registered` | `generated.scenario.family_registered` | `structural` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
+| `generated-scenario-static-contract:generated.scenario.local_deterministic` | `generated.scenario.local_deterministic` | `structural` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
+| `generated-scenario-static-contract:generated.scenario.semantic_claim_mapping` | `generated.scenario.semantic_claim_mapping` | `semantic` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
 | `workflow-static-contract:workflow.generated_surfaces_current` | `workflow.generated_surfaces_current` | `workflow` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
 | `workflow-static-contract:workflow.pr_verification_recorded` | `workflow.pr_verification_recorded` | `workflow` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
 
@@ -168,6 +189,9 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `cli.command.plain_mode` | 39 |
 | `diagnostic.observable_trace_mapping` | 1 |
 | `error.machine_user_context` | 2 |
+| `generated.scenario.family_registered` | 9 |
+| `generated.scenario.local_deterministic` | 4 |
+| `generated.scenario.semantic_claim_mapping` | 9 |
 | `maintenance.repair.crash_consistency` | 8 |
 | `operation.spec.routing_metadata` | 41 |
 | `parser.quarantine.context_redaction` | 1 |

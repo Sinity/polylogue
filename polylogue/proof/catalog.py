@@ -160,6 +160,8 @@ def default_claims() -> tuple[Claim, ...]:
     error_surface_query = Kind("error.surface")
     trace_operation_query = Kind("trace.operation")
     observable_diagnostic_query = Kind("diagnostic.observable")
+    generated_scenario_query = Kind("generated.scenario_family")
+    implemented_generated_scenario_query = And((generated_scenario_query, AttrEq("status", "implemented")))
     return (
         Claim(
             id="cli.command.help",
@@ -481,6 +483,51 @@ def default_claims() -> tuple[Claim, ...]:
             ),
         ),
         Claim(
+            id="generated.scenario.family_registered",
+            description="Generated-world and workload families are registered as proof subjects or explicit migration tasks.",
+            subject_query=generated_scenario_query,
+            evidence_schema=_evidence_schema("name", "status", "generated_world", "workload_family"),
+            bug_classes=("scenario-family.omission", "live-checks.overused"),
+            runner_classes=("generated_scenario_static",),
+            observed_facts=("name", "status", "generated_world", "workload_family", "issue"),
+            staleness_conditions=("Scenario inventory, pipeline probes, or validation-lane families change.",),
+            breaker=BreakerMetadata(
+                description="A missing generated-world family leaves live/archive checks carrying routine confidence.",
+                issue="#196",
+                command=("devtools", "render-verification-catalog", "--check"),
+            ),
+        ),
+        Claim(
+            id="generated.scenario.local_deterministic",
+            description="Implemented generated scenario families are deterministic, local, and free of live archive dependencies.",
+            subject_query=implemented_generated_scenario_query,
+            evidence_schema=_evidence_schema("local_deterministic", "live_archive_dependency", "reproducer"),
+            bug_classes=("scenario-family.live-dependency", "scenario-family.nondeterministic-local-fixture"),
+            runner_classes=("generated_scenario_static",),
+            observed_facts=("local_deterministic", "live_archive_dependency", "reproducer", "status"),
+            staleness_conditions=("Generated scenario implementation status or reproducer commands change.",),
+            breaker=BreakerMetadata(
+                description="An implemented generated scenario with live archive dependency is not a routine proof subject.",
+                issue="#196",
+                command=("pytest", "tests/unit/proof/test_generated_scenario_obligations.py"),
+            ),
+        ),
+        Claim(
+            id="generated.scenario.semantic_claim_mapping",
+            description="Generated scenario families map to semantic claim families instead of only process-output checks.",
+            subject_query=generated_scenario_query,
+            evidence_schema=_evidence_schema("semantic_claims", "implemented_claim_families", "mapped_claim_families"),
+            bug_classes=("scenario-family.vacuous-process-check", "semantic-proof.unmapped-generated-world"),
+            runner_classes=("generated_scenario_static",),
+            observed_facts=("semantic_claims", "claim_states", "mapped_issues"),
+            staleness_conditions=("Semantic claim vocabulary, generated scenarios, or proof-runner mapping changes.",),
+            breaker=BreakerMetadata(
+                description="A generated scenario without semantic claim mapping can go green without proving meaning.",
+                issue="#196",
+                command=("pytest", "tests/unit/proof/test_generated_scenario_obligations.py"),
+            ),
+        ),
+        Claim(
             id="workflow.generated_surfaces_current",
             description="Generated documentation and agent surfaces are current after their sources change.",
             subject_query=AttrEq("claim_family", "generated-surfaces"),
@@ -603,6 +650,22 @@ def default_runner_bindings(claims: Iterable[Claim]) -> tuple[RunnerBinding, ...
                     claim,
                     runner="diagnostic-trace-mapping-contract",
                     evidence_class="trace",
+                )
+            )
+        elif claim.id.startswith("generated.scenario.semantic_"):
+            bindings.append(
+                _runner_binding(
+                    claim,
+                    runner="generated-scenario-static-contract",
+                    evidence_class="semantic",
+                )
+            )
+        elif claim.id.startswith("generated.scenario."):
+            bindings.append(
+                _runner_binding(
+                    claim,
+                    runner="generated-scenario-static-contract",
+                    evidence_class="structural",
                 )
             )
         elif claim.id.startswith("workflow."):
