@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import ANY, patch
 
@@ -76,6 +77,39 @@ def _find_named_check(payload: JsonObject, name: str) -> JsonObject:
         if check_payload.get("name") == name:
             return check_payload
     raise AssertionError(f"Missing check named {name}")
+
+
+def _insert_raw_blob(
+    *,
+    db_path: Path,
+    provider_name: str,
+    source_name: str,
+    source_path: str,
+    raw_content: bytes,
+) -> str:
+    from polylogue.storage.blob_store import get_blob_store
+
+    raw_id, blob_size = get_blob_store().write_from_bytes(raw_content)
+    with open_connection(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO raw_conversations (
+                raw_id, provider_name, source_name, source_path, source_index,
+                blob_size, acquired_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                raw_id,
+                provider_name,
+                source_name,
+                source_path,
+                0,
+                blob_size,
+                datetime.now(tz=timezone.utc).isoformat(),
+            ),
+        )
+        conn.commit()
+    return raw_id
 
 
 def _extract_json(output: str) -> JsonObject:
@@ -835,6 +869,60 @@ class TestCheckCommandSupplementary:
         assert request.record_offset == 0
         assert request.quarantine_malformed is True
         assert request.progress_callback is not None
+
+    def test_check_schemas_quarantine_reports_and_persists_decode_failure(
+        self,
+        cli_workspace: WorkspacePaths,
+        cli_runner: CliRunner,
+    ) -> None:
+        """`doctor --schemas` reports and persists legitimate raw quarantine failures."""
+        raw_id = _insert_raw_blob(
+            db_path=cli_workspace["db_path"],
+            provider_name="codex",
+            source_name="codex",
+            source_path="/tmp/session.jsonl",
+            raw_content=(
+                b'{"type":"session_meta"}\nnot json at all\n{"type":"response_item","payload":{"type":"message"}}'
+            ),
+        )
+
+        result = cli_runner.invoke(
+            cli,
+            [
+                "--plain",
+                "doctor",
+                "--schemas",
+                "--schema-provider",
+                "codex",
+                "--schema-quarantine-malformed",
+            ],
+            catch_exceptions=False,
+        )
+
+        assert result.exit_code == 0
+        assert "Schema verification: 1 raw records" in result.output
+        assert "codex: valid=0 invalid=0 drift=0 skipped=0 decode_errors=1 quarantined=1" in result.output
+
+        with open_connection(cli_workspace["db_path"]) as conn:
+            row = conn.execute(
+                """
+                SELECT validation_status, validation_error, validation_mode, validation_provider,
+                       payload_provider, validated_at, parsed_at, parse_error
+                FROM raw_conversations
+                WHERE raw_id = ?
+                """,
+                (raw_id,),
+            ).fetchone()
+
+        assert row is not None
+        assert row[0] == "failed"
+        assert isinstance(row[1], str) and "Malformed JSONL lines:" in row[1]
+        assert row[2] == "strict"
+        assert row[3] == "codex"
+        assert row[4] == "codex"
+        assert row[5] is not None
+        assert row[6] is None
+        assert isinstance(row[7], str) and "Malformed JSONL lines:" in row[7]
 
     def test_check_proof_json_output(self, cli_workspace: WorkspacePaths) -> None:
         """--proof adds artifact_proof block to JSON output."""

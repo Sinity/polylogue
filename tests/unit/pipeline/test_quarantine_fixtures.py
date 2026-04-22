@@ -35,11 +35,12 @@ from pathlib import Path
 import pytest
 
 from polylogue.pipeline.services.ingest_worker import ingest_record
+from polylogue.pipeline.services.validation_flow import validate_raw_ids
 from polylogue.storage.blob_store import get_blob_store
 from polylogue.storage.raw_ingest_artifacts import RawIngestArtifactState
 from polylogue.storage.raw_state_models import RawConversationState
 from polylogue.storage.store import RawConversationRecord
-from polylogue.types import ValidationStatus
+from polylogue.types import ValidationMode, ValidationStatus
 
 EMPTY_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 
@@ -262,5 +263,66 @@ async def test_quarantine_state_round_trip_through_mark_raw_parsed(tmp_path: Pat
         )
         assert state.quarantined is True
         assert state.parsed is False
+    finally:
+        await backend.close()
+
+
+async def test_validation_flow_persists_decode_quarantine_state(tmp_path: Path) -> None:
+    """Validation persistence records both decode-failure shapes as quarantines."""
+    from polylogue.storage.backends.async_sqlite import SQLiteBackend
+
+    cases = [
+        (
+            _make_raw_record(zero_length_bytes(), "codex", "/exports/empty-codex.jsonl"),
+            "zero-length",
+        ),
+        (
+            _make_raw_record(codex_malformed_jsonl_bytes(), "codex", "/exports/malformed-codex.jsonl"),
+            "Malformed JSONL lines:",
+        ),
+    ]
+
+    backend = SQLiteBackend(db_path=tmp_path / "archive.db")
+    try:
+        for record, _expected_error in cases:
+            await backend.save_raw_conversation(record)
+
+        result = await validate_raw_ids(
+            repository=backend,
+            raw_ids=[record.raw_id for record, _expected_error in cases],
+            persist=True,
+            validation_mode=ValidationMode.STRICT,
+            raw_batch_size=10,
+        )
+
+        assert len(result.records) == 2
+        assert result.parseable_raw_ids == []
+        assert set(result.invalid_raw_ids) == {record.raw_id for record, _expected_error in cases}
+
+        for record, expected_error in cases:
+            validation_record = next(item for item in result.records if item.raw_id == record.raw_id)
+            assert validation_record.validation_status == ValidationStatus.FAILED
+            assert validation_record.parse_error is not None
+            assert expected_error in validation_record.parse_error
+
+            stored = await backend.get_raw_conversation(record.raw_id)
+            assert stored is not None
+            assert stored.validation_status == ValidationStatus.FAILED
+            assert stored.validation_error is not None
+            assert expected_error in stored.validation_error
+            assert stored.parse_error is not None
+            assert expected_error in stored.parse_error
+            assert stored.parsed_at is None
+
+            state = RawIngestArtifactState.from_state(
+                RawConversationState(
+                    raw_id=stored.raw_id,
+                    parsed_at=stored.parsed_at,
+                    parse_error=stored.parse_error,
+                    validation_status=stored.validation_status,
+                )
+            )
+            assert state.quarantined is True
+            assert state.needs_parse_backlog() is False
     finally:
         await backend.close()
