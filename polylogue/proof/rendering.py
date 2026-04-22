@@ -48,6 +48,10 @@ def build_catalog_markdown(catalog: VerificationCatalog) -> str:
         "",
         *_render_provider_capability_subjects(catalog.subjects),
         "",
+        "## Generated Scenario Subjects",
+        "",
+        *_render_generated_scenario_subjects(catalog.subjects),
+        "",
         "## Claims",
         "",
         *_render_claims(catalog.claims),
@@ -138,6 +142,28 @@ def _render_provider_capability_subjects(subjects: tuple[SubjectRef, ...]) -> li
             f"| `{_string_attr(subject, 'provider')}` | {_string_attr(subject, 'parser_identity')} | "
             f"{_string_attr(subject, 'reasoning_capability')} | {_string_attr(subject, 'streaming_capability')} | "
             f"`{sidecars}` | {_code_list(gap_list)} |"
+        )
+    return lines
+
+
+def _render_generated_scenario_subjects(subjects: tuple[SubjectRef, ...]) -> list[str]:
+    generated_subjects = [subject for subject in subjects if subject.kind == "generated.scenario_family"]
+    lines = [
+        "| Scenario Family | Status | Generated World | Workload | Claims |",
+        "| --- | --- | --- | --- | --- |",
+    ]
+    for subject in generated_subjects:
+        semantic_claims = subject.attrs.get("semantic_claims")
+        claim_names: tuple[str, ...] = ()
+        if isinstance(semantic_claims, list):
+            claim_names = tuple(
+                str(claim.get("family", ""))
+                for claim in semantic_claims
+                if isinstance(claim, dict) and str(claim.get("family", "")).strip()
+            )
+        lines.append(
+            f"| `{subject.id}` | `{_string_attr(subject, 'status')}` | {_string_attr(subject, 'generated_world')} | "
+            f"{_string_attr(subject, 'workload_family')} | {_code_list(claim_names[:4])} |"
         )
     return lines
 
