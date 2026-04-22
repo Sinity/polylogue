@@ -157,6 +157,23 @@ def _render_runtime_coverage_section(coverage: RuntimeScenarioCoverage) -> list[
     ]
 
 
+def _render_test_infrastructure_section() -> list[str]:
+    return [
+        "## Test Infrastructure Contracts",
+        "",
+        "Shared helpers under `tests/infra/` are verification substrate. Prefer these contracts over",
+        "per-suite JSON parsing, surface invocation, archive seeding, or cross-surface oracle helpers.",
+        "",
+        "| Helper | Contract | Primary consumers |",
+        "| --- | --- | --- |",
+        "| `tests/infra/json_contracts.py` | Typed JSON object/envelope/result narrowing for machine surfaces | CLI, MCP, product, and devtools JSON tests |",
+        "| `tests/infra/mcp.py` | MCP surface registration, invocation, and mock archive seams | MCP server and tool-contract tests |",
+        "| `tests/infra/storage_records.py` | Durable archive row builders and DB factories | Storage, CLI, product, and health tests |",
+        "| `tests/infra/surfaces.py` | Cross-surface archive adapters over SQLite, repository, and facade projections | Scenario/oracle tests |",
+        "",
+    ]
+
+
 def _render_scenario_projection_snapshot(registry: QualityRegistry) -> list[str]:
     projection_counts: dict[str, int] = {}
     for entry in registry.scenario_projections:
@@ -210,6 +227,7 @@ def build_document(registry: QualityRegistry, *, runtime_coverage: RuntimeScenar
         'pytest -q -n 0 -m "not slow and not benchmark"',
         "```",
         "",
+        *_render_test_infrastructure_section(),
         "### Validation lanes",
         "",
         "```bash",

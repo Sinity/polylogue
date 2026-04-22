@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import ANY, patch
@@ -13,7 +12,7 @@ from click.testing import CliRunner
 from polylogue.cli import cli
 from polylogue.cli.check_workflow import CheckCommandOptions, run_check_workflow
 from polylogue.cli.types import AppEnv
-from polylogue.lib.raw_payload_decode import JSONValue
+from polylogue.lib.json import JSONDocument
 from polylogue.readiness import ReadinessCheck, ReadinessReport, VerifyStatus
 from polylogue.schemas.operator_models import (
     ArtifactCohortListResult,
@@ -31,11 +30,17 @@ from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.store import ArtifactObservationRecord
 from polylogue.types import ArtifactSupportStatus, Provider
 from polylogue.ui import create_ui
+from tests.infra.json_contracts import (
+    extract_json_result,
+    json_array_field,
+    json_array_item,
+    json_object,
+    json_object_field,
+    parse_json_object,
+)
 from tests.infra.storage_records import ConversationBuilder, DbFactory
 
 WorkspacePaths = dict[str, Path]
-JsonObject = dict[str, JSONValue]
-JsonArray = list[JSONValue]
 
 
 @pytest.fixture
@@ -44,36 +49,10 @@ def cli_runner() -> CliRunner:
     return CliRunner()
 
 
-def _require_json_object(value: object, *, context: str) -> JsonObject:
-    if not isinstance(value, dict):
-        raise ValueError(f"Expected {context} object, got {type(value).__name__}")
-    if not all(isinstance(key, str) for key in value):
-        raise ValueError(f"Expected {context} keys to be strings")
-    return {str(key): item for key, item in value.items()}
-
-
-def _require_json_array(value: object, *, context: str) -> JsonArray:
-    if not isinstance(value, list):
-        raise ValueError(f"Expected {context} array, got {type(value).__name__}")
-    return list(value)
-
-
-def _json_object_field(payload: JsonObject, key: str, *, context: str) -> JsonObject:
-    return _require_json_object(payload.get(key), context=f"{context}.{key}")
-
-
-def _json_array_field(payload: JsonObject, key: str, *, context: str) -> JsonArray:
-    return _require_json_array(payload.get(key), context=f"{context}.{key}")
-
-
-def _json_array_item(items: JsonArray, index: int, *, context: str) -> JsonObject:
-    return _require_json_object(items[index], context=f"{context}[{index}]")
-
-
-def _find_named_check(payload: JsonObject, name: str) -> JsonObject:
-    checks = _json_array_field(payload, "checks", context="check payload")
+def _find_named_check(payload: JSONDocument, name: str) -> JSONDocument:
+    checks = json_array_field(payload, "checks", context="check payload")
     for check in checks:
-        check_payload = _require_json_object(check, context=f"check {name}")
+        check_payload = json_object(check, context=f"check {name}")
         if check_payload.get("name") == name:
             return check_payload
     raise AssertionError(f"Missing check named {name}")
@@ -112,20 +91,9 @@ def _insert_raw_blob(
     return raw_id
 
 
-def _extract_json(output: str) -> JsonObject:
+def _extract_json(output: str) -> JSONDocument:
     """Extract JSON from CLI output, unwrapping the success envelope."""
-    lines = output.strip().split("\n")
-    # Find first line that starts with { and join all subsequent lines
-    json_start = next((i for i, line in enumerate(lines) if line.strip().startswith("{")), None)
-    if json_start is None:
-        raise ValueError(f"No JSON found in output: {output}")
-    json_str = "\n".join(lines[json_start:])
-    data = json.loads(json_str)
-    data_object = _require_json_object(data, context="JSON")
-    # Unwrap success envelope
-    if data_object.get("status") == "ok" and "result" in data_object:
-        return _require_json_object(data_object["result"], context="result")
-    return data_object
+    return extract_json_result(output, context="doctor output")
 
 
 class TestReadinessReportConstruction:
@@ -210,10 +178,10 @@ def test_check_records_scoped_maintenance_preview(cli_workspace: WorkspacePaths,
 
     assert result.exit_code == 0
     payload = _extract_json(result.output)
-    maintenance = _json_object_field(payload, "maintenance", context="check payload")
+    maintenance = json_object_field(payload, "maintenance", context="check payload")
     assert maintenance.get("targets") == ["session_products"]
-    maintenance_item = _json_array_item(
-        _json_array_field(maintenance, "items", context="maintenance"), 0, context="maintenance.items"
+    maintenance_item = json_array_item(
+        json_array_field(maintenance, "items", context="maintenance"), 0, context="maintenance.items"
     )
     assert maintenance_item.get("name") == "session_products"
     assert maintenance_item.get("repaired_count") == 1
@@ -250,10 +218,10 @@ def test_check_records_scoped_maintenance_apply(cli_workspace: WorkspacePaths, c
 
     assert result.exit_code == 0
     payload = _extract_json(result.output)
-    maintenance = _json_object_field(payload, "maintenance", context="check payload")
+    maintenance = json_object_field(payload, "maintenance", context="check payload")
     assert maintenance.get("targets") == ["session_products"]
-    maintenance_item = _json_array_item(
-        _json_array_field(maintenance, "items", context="maintenance"), 0, context="maintenance.items"
+    maintenance_item = json_array_item(
+        json_array_field(maintenance, "items", context="maintenance"), 0, context="maintenance.items"
     )
     assert maintenance_item.get("name") == "session_products"
     assert maintenance_item.get("success") is True
@@ -389,8 +357,8 @@ class TestCheckCommand:
         data = _extract_json(result.output)
         assert "checks" in data
         assert "summary" in data
-        checks = _json_array_field(data, "checks", context="check payload")
-        summary = _json_object_field(data, "summary", context="check payload")
+        checks = json_array_field(data, "checks", context="check payload")
+        summary = json_object_field(data, "summary", context="check payload")
         assert isinstance(checks, list)
         assert isinstance(summary, dict)
 
@@ -477,7 +445,7 @@ class TestCheckCommand:
         assert orphan_check["count"] == 1
 
         # Summary should show at least one error
-        summary = _json_object_field(data, "summary", context="check payload")
+        summary = json_object_field(data, "summary", context="check payload")
         assert summary.get("error") == 1
 
     def test_check_verbose_output(self, db_path: Path, cli_runner: CliRunner) -> None:
@@ -711,8 +679,11 @@ class TestCheckCommandSupplementary:
         runner = CliRunner()
         result = runner.invoke(cli, ["doctor", "--json", "--repair", "--preview"])
         assert result.exit_code == 0
-        envelope = json.loads(result.output.split("\n", 1)[-1] if "Plain" in result.output else result.output)
-        data = _require_json_object(envelope.get("result", envelope), context="repair preview payload")
+        envelope = parse_json_object(
+            result.output.split("\n", 1)[-1] if "Plain" in result.output else result.output,
+            context="repair preview envelope",
+        )
+        data = json_object(envelope.get("result", envelope), context="repair preview payload")
         assert "maintenance" in data
 
     def test_repair_with_no_issues_shows_message(self, cli_workspace: WorkspacePaths) -> None:
@@ -751,10 +722,10 @@ class TestCheckCommandSupplementary:
         result = runner.invoke(cli, ["--plain", "doctor", "--json", "--repair", "--preview", "--vacuum"])
 
         assert result.exit_code == 0
-        envelope = json.loads(result.output)
-        data = _require_json_object(envelope.get("result", envelope), context="repair vacuum payload")
+        envelope = parse_json_object(result.output, context="repair vacuum envelope")
+        data = json_object(envelope.get("result", envelope), context="repair vacuum payload")
         assert "maintenance" in data
-        vacuum = _json_object_field(data, "vacuum", context="repair vacuum payload")
+        vacuum = json_object_field(data, "vacuum", context="repair vacuum payload")
         assert vacuum.get("ok") is True
         assert vacuum.get("preview") is True
 
@@ -786,7 +757,7 @@ class TestCheckCommandSupplementary:
         assert result.exit_code == 0
         data = _extract_json(result.output)
         assert "schema_verification" in data
-        schema_verification = _json_object_field(data, "schema_verification", context="schema verification payload")
+        schema_verification = json_object_field(data, "schema_verification", context="schema verification payload")
         assert schema_verification.get("total_records") == 3
         assert schema_verification.get("max_samples") == "all"
         assert schema_verification.get("record_limit") == "all"
@@ -958,8 +929,8 @@ class TestCheckCommandSupplementary:
         assert result.exit_code == 0
         data = _extract_json(result.output)
         assert "artifact_proof" in data
-        artifact_proof = _json_object_field(data, "artifact_proof", context="artifact proof payload")
-        artifact_summary = _json_object_field(artifact_proof, "summary", context="artifact proof payload")
+        artifact_proof = json_object_field(data, "artifact_proof", context="artifact proof payload")
+        artifact_summary = json_object_field(artifact_proof, "summary", context="artifact proof payload")
         assert artifact_proof.get("total_records") == 2
         assert artifact_summary.get("linked_sidecars") == 1
         assert artifact_summary.get("unsupported_parseable_records") == 1
@@ -1094,12 +1065,12 @@ class TestCheckCommandSupplementary:
 
         assert result.exit_code == 0
         data = _extract_json(result.output)
-        artifact_observations = _json_object_field(
+        artifact_observations = json_object_field(
             data, "artifact_observations", context="artifact observations payload"
         )
         assert artifact_observations.get("count") == 1
-        observation = _json_array_item(
-            _json_array_field(artifact_observations, "items", context="artifact observations payload"),
+        observation = json_array_item(
+            json_array_field(artifact_observations, "items", context="artifact observations payload"),
             0,
             context="artifact_observations.items",
         )

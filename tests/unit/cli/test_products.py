@@ -20,47 +20,17 @@ from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.session_product_rebuild import rebuild_session_products_sync
 from polylogue.storage.session_product_status import session_product_status_sync
 from polylogue.storage.store_constants import SESSION_PRODUCT_MATERIALIZER_VERSION
+from tests.infra.json_contracts import (
+    extract_json_result,
+    json_array,
+    json_int,
+    json_number,
+    json_object,
+    json_object_list,
+)
 from tests.infra.storage_records import ConversationBuilder
 
-JsonObject = dict[str, object]
 CliWorkspace = dict[str, Path]
-
-
-def _expect_object(value: object) -> JsonObject:
-    assert isinstance(value, dict)
-    return value
-
-
-def _expect_list(value: object) -> list[object]:
-    assert isinstance(value, list)
-    return value
-
-
-def _expect_object_list(value: object) -> list[JsonObject]:
-    values = _expect_list(value)
-    return [_expect_object(item) for item in values]
-
-
-def _expect_int(value: object) -> int:
-    assert isinstance(value, int) and not isinstance(value, bool)
-    return value
-
-
-def _expect_bool(value: object) -> bool:
-    assert isinstance(value, bool)
-    return value
-
-
-def _expect_number(value: object) -> float:
-    assert isinstance(value, (int, float)) and not isinstance(value, bool)
-    return float(value)
-
-
-def _extract_json(output: str) -> JsonObject:
-    data = json.loads(output)
-    if isinstance(data, dict) and data.get("status") == "ok":
-        return _expect_object(data["result"])
-    return _expect_object(data)
 
 
 def _exception_message(result: Result) -> str:
@@ -90,9 +60,9 @@ def test_product_items_payload_can_render_cli_and_mcp_keys() -> None:
     mcp_payload = product_items_payload([product], product_type, item_key="items")
 
     assert cli_payload["count"] == 1
-    assert _expect_object_list(cli_payload["provider_analytics"])[0]["product_kind"] == "provider_analytics"
+    assert json_object_list(cli_payload["provider_analytics"])[0]["product_kind"] == "provider_analytics"
     assert mcp_payload["count"] == 1
-    assert _expect_object_list(mcp_payload["items"])[0]["provider_name"] == "claude-code"
+    assert json_object_list(mcp_payload["items"])[0]["provider_name"] == "claude-code"
 
 
 def _seed_products(cli_workspace: CliWorkspace) -> None:
@@ -177,16 +147,16 @@ def test_products_profiles_json(cli_workspace: CliWorkspace) -> None:
     result = runner.invoke(cli, ["products", "profiles", "--json"], catch_exceptions=False)
 
     assert result.exit_code == 0
-    payload = _extract_json(result.output)
-    assert _expect_int(payload["count"]) == 2
-    first = _expect_object_list(payload["session_profiles"])[0]
-    evidence = _expect_object(first["evidence"])
-    inference = _expect_object(first["inference"])
-    assert _expect_int(first["contract_version"]) == 4
+    payload = extract_json_result(result.output)
+    assert json_int(payload["count"]) == 2
+    first = json_object_list(payload["session_profiles"])[0]
+    evidence = json_object(first["evidence"])
+    inference = json_object(first["inference"])
+    assert json_int(first["contract_version"]) == 4
     assert first["product_kind"] == "session_profile"
     assert first["semantic_tier"] == "merged"
     assert evidence["canonical_session_date"] == "2026-03-01"
-    assert _expect_number(inference["engaged_duration_ms"]) >= 0
+    assert json_number(inference["engaged_duration_ms"]) >= 0
     assert "evidence" in first
     assert "inference" in first
     assert "provenance" in first
@@ -199,8 +169,8 @@ def test_products_profiles_format_json_alias(cli_workspace: CliWorkspace) -> Non
     result = runner.invoke(cli, ["products", "profiles", "--format", "json"], catch_exceptions=False)
 
     assert result.exit_code == 0
-    payload = _extract_json(result.output)
-    assert _expect_int(payload["count"]) == 2
+    payload = extract_json_result(result.output)
+    assert json_int(payload["count"]) == 2
 
 
 def test_products_profiles_inherit_root_format_json(cli_workspace: CliWorkspace) -> None:
@@ -214,8 +184,8 @@ def test_products_profiles_inherit_root_format_json(cli_workspace: CliWorkspace)
     )
 
     assert result.exit_code == 0
-    payload = _extract_json(result.output)
-    assert _expect_int(payload["count"]) == 1
+    payload = extract_json_result(result.output)
+    assert json_int(payload["count"]) == 1
 
 
 def test_products_enrichments_json(cli_workspace: CliWorkspace) -> None:
@@ -237,12 +207,12 @@ def test_products_enrichments_json(cli_workspace: CliWorkspace) -> None:
     )
 
     assert result.exit_code == 0
-    payload = _extract_json(result.output)
-    assert _expect_int(payload["count"]) == 2
-    first = _expect_object_list(payload["session_enrichments"])[0]
-    enrichment_provenance = _expect_object(first["enrichment_provenance"])
-    enrichment = _expect_object(first["enrichment"])
-    assert _expect_int(first["contract_version"]) == 4
+    payload = extract_json_result(result.output)
+    assert json_int(payload["count"]) == 2
+    first = json_object_list(payload["session_enrichments"])[0]
+    enrichment_provenance = json_object(first["enrichment_provenance"])
+    enrichment = json_object(first["enrichment"])
+    assert json_int(first["contract_version"]) == 4
     assert first["product_kind"] == "session_enrichment"
     assert first["semantic_tier"] == "enrichment"
     assert enrichment_provenance["enrichment_family"] == "scored_session_enrichment"
@@ -284,22 +254,20 @@ def test_products_profiles_json_supports_explicit_evidence_and_inference_tiers(c
     assert evidence_result.exit_code == 0
     assert inference_result.exit_code == 0
 
-    evidence_payload = _extract_json(evidence_result.output)
-    inference_payload = _extract_json(inference_result.output)
-    evidence_profile = _expect_object_list(evidence_payload["session_profiles"])[0]
-    inference_profile = _expect_object_list(inference_payload["session_profiles"])[0]
+    evidence_payload = extract_json_result(evidence_result.output)
+    inference_payload = extract_json_result(inference_result.output)
+    evidence_profile = json_object_list(evidence_payload["session_profiles"])[0]
+    inference_profile = json_object_list(inference_payload["session_profiles"])[0]
 
     assert evidence_profile["semantic_tier"] == "evidence"
-    assert _expect_object(evidence_profile["evidence"])["canonical_session_date"] == "2026-03-01"
+    assert json_object(evidence_profile["evidence"])["canonical_session_date"] == "2026-03-01"
     assert evidence_profile["inference"] is None
     assert evidence_profile["inference_provenance"] is None
 
     assert inference_profile["semantic_tier"] == "inference"
     assert inference_profile["evidence"] is None
-    assert _expect_number(_expect_object(inference_profile["inference"])["engaged_duration_ms"]) >= 0
-    assert (
-        _expect_object(inference_profile["inference_provenance"])["inference_family"] == "heuristic_session_semantics"
-    )
+    assert json_number(json_object(inference_profile["inference"])["engaged_duration_ms"]) >= 0
+    assert json_object(inference_profile["inference_provenance"])["inference_family"] == "heuristic_session_semantics"
 
 
 def test_products_profiles_json_handles_blank_tier_search_text_from_migrated_rows(cli_workspace: CliWorkspace) -> None:
@@ -322,8 +290,8 @@ def test_products_profiles_json_handles_blank_tier_search_text_from_migrated_row
 
     assert evidence_result.exit_code == 0
     assert inference_result.exit_code == 0
-    assert _expect_int(_extract_json(evidence_result.output)["count"]) == 2
-    assert _expect_int(_extract_json(inference_result.output)["count"]) == 2
+    assert json_int(extract_json_result(evidence_result.output)["count"]) == 2
+    assert json_int(extract_json_result(inference_result.output)["count"]) == 2
 
 
 def test_products_reconstructs_tiered_payloads_from_blank_migrated_rows(cli_workspace: CliWorkspace) -> None:
@@ -353,24 +321,20 @@ def test_products_reconstructs_tiered_payloads_from_blank_migrated_rows(cli_work
     assert work_events.exit_code == 0
     assert phases.exit_code == 0
 
-    evidence_profiles_payload = _expect_object_list(_extract_json(evidence_profiles.output)["session_profiles"])
-    inference_profiles_payload = _expect_object_list(_extract_json(inference_profiles.output)["session_profiles"])
-    work_event = _expect_object_list(_extract_json(work_events.output)["session_work_events"])[0]
-    phase = _expect_object_list(_extract_json(phases.output)["session_phases"])[0]
+    evidence_profiles_payload = json_object_list(extract_json_result(evidence_profiles.output)["session_profiles"])
+    inference_profiles_payload = json_object_list(extract_json_result(inference_profiles.output)["session_profiles"])
+    work_event = json_object_list(extract_json_result(work_events.output)["session_work_events"])[0]
+    phase = json_object_list(extract_json_result(phases.output)["session_phases"])[0]
 
+    assert all(json_int(json_object(item["evidence"])["message_count"]) >= 1 for item in evidence_profiles_payload)
     assert all(
-        _expect_int(_expect_object(item["evidence"])["message_count"]) >= 1 for item in evidence_profiles_payload
+        json_object(item["evidence"])["canonical_session_date"] == "2026-03-01" for item in evidence_profiles_payload
     )
-    assert all(
-        _expect_object(item["evidence"])["canonical_session_date"] == "2026-03-01" for item in evidence_profiles_payload
-    )
-    assert all(
-        _expect_int(_expect_object(item["inference"])["work_event_count"]) >= 0 for item in inference_profiles_payload
-    )
-    assert _expect_int(_expect_object(work_event["evidence"])["start_index"]) >= 0
-    assert _expect_object(work_event["inference"])["kind"] in {"implementation", "testing", "planning", "debugging"}
-    assert _expect_int(_expect_list(_expect_object(phase["evidence"])["message_range"])[0]) >= 0
-    assert _expect_number(_expect_object(phase["inference"])["confidence"]) >= 0.0
+    assert all(json_int(json_object(item["inference"])["work_event_count"]) >= 0 for item in inference_profiles_payload)
+    assert json_int(json_object(work_event["evidence"])["start_index"]) >= 0
+    assert json_object(work_event["inference"])["kind"] in {"implementation", "testing", "planning", "debugging"}
+    assert json_int(json_array(json_object(phase["evidence"])["message_range"])[0]) >= 0
+    assert json_number(json_object(phase["inference"])["confidence"]) >= 0.0
 
 
 def test_products_profile_date_filters_and_phases_json(cli_workspace: CliWorkspace) -> None:
@@ -395,11 +359,11 @@ def test_products_profile_date_filters_and_phases_json(cli_workspace: CliWorkspa
     assert profiles.exit_code == 0
     assert phases.exit_code == 0
 
-    profile_payload = _extract_json(profiles.output)
-    phase_payload = _extract_json(phases.output)
-    assert _expect_int(profile_payload["count"]) == 2
-    assert _expect_int(phase_payload["count"]) >= 1
-    assert _expect_object_list(phase_payload["session_phases"])[0]["product_kind"] == "session_phase"
+    profile_payload = extract_json_result(profiles.output)
+    phase_payload = extract_json_result(phases.output)
+    assert json_int(profile_payload["count"]) == 2
+    assert json_int(phase_payload["count"]) >= 1
+    assert json_object_list(phase_payload["session_phases"])[0]["product_kind"] == "session_phase"
 
 
 def test_session_product_rebuild_supports_legacy_payload_columns(cli_workspace: CliWorkspace) -> None:
@@ -444,7 +408,7 @@ def test_session_product_rebuild_sync_reports_progress(cli_workspace: CliWorkspa
         rebuild_session_products_sync(
             conn,
             page_size=1,
-            progress_callback=lambda amount, desc=None: observed.append((_expect_int(amount), desc)),
+            progress_callback=lambda amount, desc=None: observed.append((json_int(amount), desc)),
             progress_total=2,
         )
 
@@ -500,10 +464,10 @@ def test_session_product_rebuild_preserves_profile_semantics_without_loading_ful
 
     assert counts.profiles == 1
     assert row is not None
-    repo_names = _expect_list(json.loads(row["repo_names_json"]))
-    evidence_payload = _expect_object(json.loads(row["evidence_payload_json"]))
+    repo_names = json_array(json.loads(row["repo_names_json"]))
+    evidence_payload = json_object(json.loads(row["evidence_payload_json"]))
     assert "sinex" in repo_names
-    assert _expect_int(evidence_payload["compaction_count"]) == 1
+    assert json_int(evidence_payload["compaction_count"]) == 1
 
 
 def test_products_threads_json(cli_workspace: CliWorkspace) -> None:
@@ -514,9 +478,9 @@ def test_products_threads_json(cli_workspace: CliWorkspace) -> None:
 
     assert threads.exit_code == 0
 
-    threads_payload = _extract_json(threads.output)
-    assert _expect_int(threads_payload["count"]) == 1
-    assert _expect_object_list(threads_payload["work_threads"])[0]["product_kind"] == "work_thread"
+    threads_payload = extract_json_result(threads.output)
+    assert json_int(threads_payload["count"]) == 1
+    assert json_object_list(threads_payload["work_threads"])[0]["product_kind"] == "work_thread"
 
 
 def test_products_tag_and_summary_rollups_json(cli_workspace: CliWorkspace) -> None:
@@ -531,16 +495,14 @@ def test_products_tag_and_summary_rollups_json(cli_workspace: CliWorkspace) -> N
     assert days.exit_code == 0
     assert weeks.exit_code == 0
 
-    tag_payload = _extract_json(tags.output)
-    day_payload = _extract_json(days.output)
-    week_payload = _extract_json(weeks.output)
-    assert any(
-        item["tag"] == "provider:claude-code" for item in _expect_object_list(tag_payload["session_tag_rollups"])
-    )
-    assert _expect_int(day_payload["count"]) == 1
-    assert _expect_object_list(day_payload["day_session_summaries"])[0]["product_kind"] == "day_session_summary"
-    assert _expect_int(week_payload["count"]) == 1
-    assert _expect_object_list(week_payload["week_session_summaries"])[0]["product_kind"] == "week_session_summary"
+    tag_payload = extract_json_result(tags.output)
+    day_payload = extract_json_result(days.output)
+    week_payload = extract_json_result(weeks.output)
+    assert any(item["tag"] == "provider:claude-code" for item in json_object_list(tag_payload["session_tag_rollups"]))
+    assert json_int(day_payload["count"]) == 1
+    assert json_object_list(day_payload["day_session_summaries"])[0]["product_kind"] == "day_session_summary"
+    assert json_int(week_payload["count"]) == 1
+    assert json_object_list(week_payload["week_session_summaries"])[0]["product_kind"] == "week_session_summary"
 
 
 def test_products_analytics_json(cli_workspace: CliWorkspace) -> None:
@@ -554,13 +516,13 @@ def test_products_analytics_json(cli_workspace: CliWorkspace) -> None:
     )
 
     assert result.exit_code == 0
-    payload = _extract_json(result.output)
-    assert _expect_int(payload["count"]) == 1
-    item = _expect_object_list(payload["provider_analytics"])[0]
+    payload = extract_json_result(result.output)
+    assert json_int(payload["count"]) == 1
+    item = json_object_list(payload["provider_analytics"])[0]
     assert item["product_kind"] == "provider_analytics"
     assert item["provider_name"] == "claude-code"
-    assert _expect_int(item["conversation_count"]) == 2
-    assert _expect_int(item["tool_use_count"]) == 2
+    assert json_int(item["conversation_count"]) == 2
+    assert json_int(item["tool_use_count"]) == 2
 
 
 def test_session_product_status_accepts_epoch_backed_conversation_timestamps(cli_workspace: CliWorkspace) -> None:

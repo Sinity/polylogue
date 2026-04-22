@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import sys
 from unittest.mock import patch
 
@@ -10,6 +9,8 @@ import click
 import pytest
 
 from polylogue.cli.click_app import main
+from polylogue.lib.json import JSONDocument
+from tests.infra.json_contracts import parse_json_object
 
 pytestmark = pytest.mark.machine_contract
 
@@ -22,24 +23,18 @@ def _system_exit_code(code: str | int | None) -> int:
     return 1
 
 
-def _json_object(payload: str) -> dict[str, object]:
-    value = json.loads(payload)
-    assert isinstance(value, dict)
-    return {str(key): item for key, item in value.items()}
-
-
 def _run_main_with_error(
     monkeypatch: pytest.MonkeyPatch,
     argv: list[str],
     exc: BaseException,
     capsys: pytest.CaptureFixture[str],
-) -> tuple[int, dict[str, object]]:
+) -> tuple[int, JSONDocument]:
     monkeypatch.setattr(sys, "argv", ["polylogue", *argv])
     with patch("polylogue.cli.click_app.cli", side_effect=exc):
         with pytest.raises(SystemExit) as exit_info:
             main()
     captured = capsys.readouterr()
-    return _system_exit_code(exit_info.value.code), _json_object(captured.out)
+    return _system_exit_code(exit_info.value.code), parse_json_object(captured.out, context="main stdout")
 
 
 def test_main_wraps_usage_error_as_json(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
