@@ -88,6 +88,20 @@ def _model_payload(item: ArchiveProductModel) -> dict[str, object]:
     return item.model_dump(mode="json")
 
 
+def product_items_payload(
+    items: Sequence[ArchiveProductModel],
+    product_type: ProductType,
+    *,
+    item_key: str | None = None,
+) -> dict[str, object]:
+    """Return the shared machine payload for a product list surface."""
+
+    return {
+        "count": len(items),
+        item_key or product_type.json_key: [_model_payload(item) for item in items],
+    }
+
+
 def _stringify(value: object | None, default: str = "-") -> str:
     if value is None:
         return default
@@ -107,12 +121,7 @@ def render_product_items(
     if json_mode:
         from polylogue.cli.machine_errors import emit_success
 
-        emit_success(
-            {
-                "count": len(items),
-                product_type.json_key: [_model_payload(item) for item in items],
-            }
-        )
+        emit_success(product_items_payload(items, product_type))
         return
 
     if not items:
@@ -526,6 +535,7 @@ __all__ = [
     "fetch_products_async",
     "get_product_type",
     "list_product_types",
+    "product_items_payload",
     "register",
     "render_product_items",
 ]
