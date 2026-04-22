@@ -42,6 +42,7 @@ if TYPE_CHECKING:
     from polylogue.lib.models import Conversation, ConversationSummary
     from polylogue.lib.query_miss_diagnostics import QueryMissDiagnostics
     from polylogue.lib.query_spec import ConversationQuerySpec
+    from polylogue.lib.search_hits import ConversationSearchHit
     from polylogue.protocols import (
         ConversationArchiveStatsStore,
         ConversationQueryRuntimeStore,
@@ -317,6 +318,20 @@ async def _observe_query_operation(
     )
 
 
+async def _search_hits_for_execution_plan(
+    repo: QueryExecutionStore,
+    plan: QueryExecutionPlan,
+    *,
+    vector_provider: VectorProvider | None,
+) -> list[ConversationSearchHit] | None:
+    from polylogue.lib.query_search_hits import plan_has_search_hit_evidence, search_hits_for_plan
+
+    query_plan = plan.selection.to_plan(vector_provider=vector_provider)
+    if not plan_has_search_hit_evidence(query_plan):
+        return None
+    return await search_hits_for_plan(query_plan, repo)
+
+
 async def _semantic_stats_summaries(
     repo: QueryExecutionStore,
     filter_chain: ConversationFilter,
@@ -408,6 +423,19 @@ async def async_execute_query_request(env: AppEnv, request: RootModeRequest) -> 
         return
 
     if route == QueryRoute.SUMMARY_LIST:
+        search_hits = await _observe_query_operation(
+            repo,
+            plan,
+            route,
+            _search_hits_for_execution_plan(repo, plan, vector_provider=vector_provider),
+        )
+        if search_hits is not None:
+            if not search_hits:
+                summary_diagnostics = await _diagnose_query_miss(repo, plan.selection, config=config)
+                no_results(env, params, diagnostics=summary_diagnostics)
+            await _query_output.output_search_hits(env, search_hits, plan.output, repo)
+            return
+
         summary_results = await _observe_query_operation(repo, plan, route, filter_chain.list_summaries())
         if not summary_results:
             summary_diagnostics = await _diagnose_query_miss(repo, plan.selection, config=config)
@@ -557,6 +585,11 @@ async def async_execute_query_request(env: AppEnv, request: RootModeRequest) -> 
     output_diagnostics = (
         await _diagnose_query_miss(repo, plan.selection, config=config) if not projected_results else None
     )
+    if output_diagnostics is None and (plan.output.list_mode or len(projected_results) > 1):
+        search_hits = await _search_hits_for_execution_plan(repo, plan, vector_provider=vector_provider)
+        if search_hits is not None:
+            await _query_output.output_search_hits(env, search_hits, plan.output, repo)
+            return
     _query_output.output_results(
         env,
         projected_results,

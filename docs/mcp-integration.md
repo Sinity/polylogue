@@ -49,7 +49,7 @@ Add to `~/.config/claude/claude_desktop_config.json`:
 
 | Tool | Description |
 |------|-------------|
-| `search` | Search conversations by text query with optional provider/date filters |
+| `search` | Search conversations by text query with optional provider/date filters; returns conversation summaries plus match rank, lane, surface, message id, and snippet evidence |
 | `list_conversations` | List recent conversations, optionally filtered |
 | `get_conversation` | Get a single conversation by ID (supports prefix matching) |
 | `stats` | Archive statistics: totals, provider breakdown, database size |

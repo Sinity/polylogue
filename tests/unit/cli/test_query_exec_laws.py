@@ -49,6 +49,7 @@ from polylogue.lib.models import Conversation
 from polylogue.lib.query_miss_diagnostics import QueryMissDiagnostics, QueryMissReason
 from polylogue.lib.query_spec import ConversationQuerySpec, QuerySpecError
 from polylogue.lib.roles import Role
+from polylogue.lib.search_hits import ConversationSearchHit
 from polylogue.services import build_runtime_services
 from polylogue.storage.action_event_artifacts import ActionEventArtifactState
 from polylogue.storage.store import ContentBlockRecord, ConversationRecord, MessageRecord
@@ -213,6 +214,7 @@ def _mutation_spec(
 def _build_plan(case: str) -> QueryExecutionPlan:
     selection = MagicMock()
     selection.similar_text = None
+    selection.to_plan.return_value = ConversationQuerySpec().to_plan()
     action = QueryAction.SHOW
     output = _output_spec()
     mutation = _mutation_spec()
@@ -1289,6 +1291,42 @@ def test_async_execute_query_action_routing_contract(case: str, expected_helper:
         filter_chain.list.assert_awaited_once()
         filter_chain.list_summaries.assert_not_called()
         mock_output_results.assert_called_once()
+
+
+def test_async_execute_query_summary_list_uses_evidence_hits_for_search_contract() -> None:
+    env = _make_env(repo=MagicMock(), config=MagicMock())
+    repo = _as_mock(env.repository)
+    summary = build_conversation_summary(_sample_summary_spec())
+    hit = ConversationSearchHit(
+        summary=summary,
+        rank=1,
+        retrieval_lane="dialogue",
+        match_surface="message",
+        message_id="msg-law-1",
+        snippet="[needle] evidence",
+    )
+    plan = _build_plan("summary_list")
+    selection = _as_mock(plan.selection)
+    selection.to_plan.return_value = ConversationQuerySpec(query_terms=("needle",), limit=5).to_plan()
+    filter_chain = MagicMock()
+    filter_chain.can_use_summaries.return_value = True
+    filter_chain.list_summaries = AsyncMock(return_value=[summary])
+    selection.build_filter.return_value = filter_chain
+    repo.search_summary_hits = AsyncMock(return_value=[hit])
+
+    with (
+        patch("polylogue.cli.helpers.load_effective_config", return_value=MagicMock()),
+        patch("polylogue.storage.search_providers.create_vector_provider", return_value=None),
+        patch("polylogue.cli.query.build_query_execution_plan", return_value=plan),
+        patch("polylogue.cli.query_output.output_search_hits", new_callable=AsyncMock) as mock_output_search_hits,
+        patch("polylogue.cli.query_output._output_summary_list", new_callable=AsyncMock) as mock_output_summary_list,
+    ):
+        asyncio.run(async_execute_query(env, {"query": ("needle",), "limit": 5}))
+
+    repo.search_summary_hits.assert_awaited_once_with("needle", limit=5, providers=None, since=None)
+    filter_chain.list_summaries.assert_not_called()
+    mock_output_search_hits.assert_awaited_once_with(env, [hit], plan.output, repo)
+    mock_output_summary_list.assert_not_called()
 
 
 def test_async_execute_query_open_falls_back_to_full_results_without_summaries_contract() -> None:

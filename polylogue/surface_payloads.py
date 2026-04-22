@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from collections.abc import Container
 
     from polylogue.lib.models import Conversation, ConversationSummary, Message
+    from polylogue.lib.search_hits import ConversationSearchHit
 
 
 def serialize_surface_payload(payload: BaseModel, *, exclude_none: bool = False) -> str:
@@ -232,10 +233,52 @@ class ConversationListRowPayload(SurfacePayloadModel):
         return {key: value for key, value in data.items() if key in fields}
 
 
+class ConversationSearchMatchPayload(SurfacePayloadModel):
+    """Evidence explaining why a conversation appeared in search results."""
+
+    rank: int
+    retrieval_lane: str
+    match_surface: str
+    message_id: str | None = None
+    snippet: str | None = None
+    score: float | None = None
+
+
+class ConversationSearchHitPayload(SurfacePayloadModel):
+    """Search-hit payload with summary identity and match evidence."""
+
+    conversation: ConversationSummaryPayload
+    match: ConversationSearchMatchPayload
+
+    @classmethod
+    def from_search_hit(
+        cls,
+        hit: ConversationSearchHit,
+        *,
+        message_count: int | None = None,
+    ) -> ConversationSearchHitPayload:
+        return cls(
+            conversation=ConversationSummaryPayload.from_summary(
+                hit.summary,
+                message_count=message_count if message_count is not None else hit.summary.message_count,
+            ),
+            match=ConversationSearchMatchPayload(
+                rank=hit.rank,
+                retrieval_lane=hit.retrieval_lane,
+                match_surface=hit.match_surface,
+                message_id=hit.message_id,
+                snippet=hit.snippet,
+                score=hit.score,
+            ),
+        )
+
+
 __all__ = [
     "ConversationDetailPayload",
     "ConversationListRowPayload",
     "ConversationMessagePayload",
+    "ConversationSearchHitPayload",
+    "ConversationSearchMatchPayload",
     "ConversationSummaryPayload",
     "MachineErrorPayload",
     "MachineErrorEnvelope",

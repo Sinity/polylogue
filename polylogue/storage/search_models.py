@@ -32,6 +32,17 @@ class ConversationSearchHit:
 
 
 @dataclass(frozen=True)
+class ConversationSearchEvidenceHit:
+    conversation_id: str
+    rank: int
+    score: float | None = None
+    message_id: str | None = None
+    snippet: str | None = None
+    match_surface: str = "message"
+    retrieval_lane: str = "dialogue"
+
+
+@dataclass(frozen=True)
 class ConversationSearchResult:
     hits: list[ConversationSearchHit]
 
@@ -49,6 +60,7 @@ class ConversationSearchResult:
 
 
 __all__ = [
+    "ConversationSearchEvidenceHit",
     "ConversationSearchHit",
     "ConversationSearchResult",
     "SearchHit",
