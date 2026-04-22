@@ -130,6 +130,18 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools verify", "devtools verify --quick"),
         featured=True,
     ),
+    CommandSpec(
+        "affected-obligations",
+        "verification",
+        "Route changed paths or refs to affected proof obligations and focused checks.",
+        "devtools.affected_obligations",
+        use_when="Find the proof obligations and inner-loop checks affected by local changes before escalating to full PR gates.",
+        examples=(
+            "devtools affected-obligations --base-ref master --head-ref HEAD",
+            "devtools affected-obligations --path polylogue/sources/parsers/codex.py",
+            "devtools affected-obligations --json --path docs/verification-catalog.md",
+        ),
+    ),
     CommandSpec("run-validation-lanes", "verification", "Run named validation lanes.", "devtools.run_validation_lanes"),
     CommandSpec(
         "artifact-graph",
