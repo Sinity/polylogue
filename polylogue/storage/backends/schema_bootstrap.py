@@ -116,6 +116,58 @@ def build_current_schema_extension_plan(snapshot: SchemaSnapshot) -> SchemaExten
             """
         )
 
+    if snapshot.has_table("attachments"):
+        statements.extend(
+            (
+                """
+                CREATE INDEX IF NOT EXISTS idx_attachments_provider_meta_id
+                ON attachments(json_extract(provider_meta, '$.id'))
+                WHERE provider_meta IS NOT NULL
+                """,
+                """
+                CREATE INDEX IF NOT EXISTS idx_attachments_provider_meta_provider_id
+                ON attachments(json_extract(provider_meta, '$.provider_id'))
+                WHERE provider_meta IS NOT NULL
+                """,
+                """
+                CREATE INDEX IF NOT EXISTS idx_attachments_provider_meta_file_id
+                ON attachments(json_extract(provider_meta, '$.fileId'))
+                WHERE provider_meta IS NOT NULL
+                """,
+                """
+                CREATE INDEX IF NOT EXISTS idx_attachments_provider_meta_drive_id
+                ON attachments(json_extract(provider_meta, '$.driveId'))
+                WHERE provider_meta IS NOT NULL
+                """,
+            )
+        )
+
+    if snapshot.has_table("attachment_refs"):
+        statements.extend(
+            (
+                """
+                CREATE INDEX IF NOT EXISTS idx_attachment_refs_provider_meta_id
+                ON attachment_refs(json_extract(provider_meta, '$.id'))
+                WHERE provider_meta IS NOT NULL
+                """,
+                """
+                CREATE INDEX IF NOT EXISTS idx_attachment_refs_provider_meta_provider_id
+                ON attachment_refs(json_extract(provider_meta, '$.provider_id'))
+                WHERE provider_meta IS NOT NULL
+                """,
+                """
+                CREATE INDEX IF NOT EXISTS idx_attachment_refs_provider_meta_file_id
+                ON attachment_refs(json_extract(provider_meta, '$.fileId'))
+                WHERE provider_meta IS NOT NULL
+                """,
+                """
+                CREATE INDEX IF NOT EXISTS idx_attachment_refs_provider_meta_drive_id
+                ON attachment_refs(json_extract(provider_meta, '$.driveId'))
+                WHERE provider_meta IS NOT NULL
+                """,
+            )
+        )
+
     scripts.extend((_ARTIFACT_OBSERVATION_DDL, _PUBLICATION_DDL, _ACTION_EVENT_DDL))
     if snapshot.has_table("action_events") and "materializer_version" not in snapshot.columns("action_events"):
         statements.append("ALTER TABLE action_events ADD COLUMN materializer_version INTEGER NOT NULL DEFAULT 1")
@@ -256,6 +308,8 @@ def capture_schema_snapshot(conn: sqlite3.Connection) -> SchemaSnapshot:
 
     for table_name in (
         "raw_conversations",
+        "attachments",
+        "attachment_refs",
         "content_blocks",
         "action_events",
         "session_profiles",
@@ -287,6 +341,8 @@ async def capture_schema_snapshot_async(conn: aiosqlite.Connection) -> SchemaSna
 
     for table_name in (
         "raw_conversations",
+        "attachments",
+        "attachment_refs",
         "content_blocks",
         "action_events",
         "session_profiles",
