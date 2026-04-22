@@ -16,6 +16,9 @@ from polylogue.surface_payloads import (
     ConversationMessagePayload as MCPMessagePayload,
 )
 from polylogue.surface_payloads import (
+    ConversationSearchHitPayload as MCPConversationSearchHitPayload,
+)
+from polylogue.surface_payloads import (
     ConversationSummaryPayload as MCPConversationSummaryPayload,
 )
 from polylogue.surface_payloads import (
@@ -29,6 +32,7 @@ if TYPE_CHECKING:
 
     from polylogue.lib.models import Conversation
     from polylogue.lib.query_miss_diagnostics import QueryMissDiagnostics, QueryMissReason
+    from polylogue.lib.search_hits import ConversationSearchHit
     from polylogue.lib.stats import ArchiveStats
     from polylogue.readiness import ReadinessCheck, ReadinessReport
 
@@ -55,6 +59,10 @@ class MCPFencedCodeBlock(TypedDict):
 
 class MCPConversationSummaryListPayload(MCPRootPayload[list[MCPConversationSummaryPayload]]):
     root: list[MCPConversationSummaryPayload]
+
+
+class MCPConversationSearchHitListPayload(MCPRootPayload[list[MCPConversationSearchHitPayload]]):
+    root: list[MCPConversationSearchHitPayload]
 
 
 class MCPQueryMissReasonPayload(SurfacePayloadModel):
@@ -98,6 +106,11 @@ class MCPConversationQueryNoResultsPayload(SurfacePayloadModel):
     diagnostics: MCPQueryMissDiagnosticsPayload
 
 
+class MCPConversationSearchNoResultsPayload(SurfacePayloadModel):
+    results: tuple[MCPConversationSearchHitPayload, ...] = ()
+    diagnostics: MCPQueryMissDiagnosticsPayload
+
+
 def conversation_summary_list_payload(
     conversations: Sequence[Conversation],
 ) -> MCPConversationSummaryListPayload:
@@ -114,6 +127,32 @@ def conversation_query_result_payload(
     if conversations or diagnostics is None:
         return conversation_summary_list_payload(conversations)
     return MCPConversationQueryNoResultsPayload(
+        diagnostics=MCPQueryMissDiagnosticsPayload.from_diagnostics(diagnostics),
+    )
+
+
+def conversation_search_hit_list_payload(
+    hits: Sequence[ConversationSearchHit],
+) -> MCPConversationSearchHitListPayload:
+    return MCPConversationSearchHitListPayload(
+        root=[
+            MCPConversationSearchHitPayload.from_search_hit(
+                hit,
+                message_count=hit.summary.message_count,
+            )
+            for hit in hits
+        ]
+    )
+
+
+def conversation_search_result_payload(
+    hits: Sequence[ConversationSearchHit],
+    *,
+    diagnostics: QueryMissDiagnostics | None = None,
+) -> MCPConversationSearchHitListPayload | MCPConversationSearchNoResultsPayload:
+    if hits or diagnostics is None:
+        return conversation_search_hit_list_payload(hits)
+    return MCPConversationSearchNoResultsPayload(
         diagnostics=MCPQueryMissDiagnosticsPayload.from_diagnostics(diagnostics),
     )
 
@@ -265,6 +304,9 @@ __all__ = [
     "MCPArchiveStatsPayload",
     "MCPConversationDetailPayload",
     "MCPConversationQueryNoResultsPayload",
+    "MCPConversationSearchHitListPayload",
+    "MCPConversationSearchHitPayload",
+    "MCPConversationSearchNoResultsPayload",
     "MCPConversationSummaryListPayload",
     "MCPConversationSummaryPayload",
     "MCPErrorPayload",
@@ -280,6 +322,8 @@ __all__ = [
     "MCPStatsByPayload",
     "MCPTagCountsPayload",
     "conversation_query_result_payload",
+    "conversation_search_hit_list_payload",
+    "conversation_search_result_payload",
     "conversation_summary_list_payload",
     "model_json_document",
     "normalize_role",

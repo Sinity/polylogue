@@ -30,6 +30,7 @@ if TYPE_CHECKING:
     from polylogue.lib.conversation_models import Conversation, ConversationSummary
     from polylogue.lib.message_models import Message
     from polylogue.lib.message_roles import MessageRoleFilter
+    from polylogue.lib.search_hits import ConversationSearchHit
     from polylogue.lib.session_profile import SessionProfile
     from polylogue.lib.stats import ArchiveStats
     from polylogue.storage.action_event_artifacts import ActionEventArtifactState
@@ -205,6 +206,14 @@ class SearchStore(Protocol):
         limit: int = 20,
         providers: builtins.list[str] | None = None,
     ) -> list[ConversationSummary]: ...
+
+    async def search_summary_hits(
+        self,
+        query: str,
+        limit: int = 20,
+        providers: builtins.list[str] | None = None,
+        since: str | None = None,
+    ) -> list[ConversationSearchHit]: ...
 
     async def search_similar(
         self,

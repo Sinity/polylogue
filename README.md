@@ -68,6 +68,10 @@ polylogue --latest open
 polylogue "urgent" --tag review delete --dry-run
 ```
 
+Text searches that render result lists include match evidence alongside the
+conversation identity: rank, retrieval lane, matched surface, message id, and a
+snippet when the FTS index can provide one.
+
 The pipeline and archive-maintenance surfaces are explicit verbs:
 
 ```bash
