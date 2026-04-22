@@ -2,32 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-
+from polylogue.authored_payloads import payload_count_mapping, require_payload_mapping
 from polylogue.showcase.qa_runner_models import QAResult
 from polylogue.showcase.report_common import (
     format_count_mapping,
     status_label,
 )
 from polylogue.showcase.report_models import QASessionRecord
-
-
-def _payload_mapping(value: object) -> Mapping[str, object]:
-    if not isinstance(value, Mapping):
-        raise TypeError("Expected mapping payload")
-    if not all(isinstance(key, str) for key in value):
-        raise TypeError("Expected string-keyed mapping payload")
-    return {str(key): item for key, item in value.items()}
-
-
-def _count_value(value: object) -> int:
-    if isinstance(value, bool):
-        return int(value)
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float | str):
-        return int(value)
-    raise TypeError(f"Expected count-like value, got {type(value).__name__}")
 
 
 def generate_qa_summary(result: QAResult, *, session: QASessionRecord | None = None) -> str:
@@ -53,7 +34,9 @@ def generate_qa_summary(result: QAResult, *, session: QASessionRecord | None = N
         )
     lines: list[str] = []
     proof_report = session.proof.report
-    proof_summary = _payload_mapping(proof_report["summary"]) if proof_report is not None else None
+    proof_summary = (
+        require_payload_mapping(proof_report["summary"], context="proof.summary") if proof_report is not None else None
+    )
 
     lines.append(f"Schema Audit: {status_label(result.audit_status)}")
     if result.proof_error:
@@ -67,17 +50,18 @@ def generate_qa_summary(result: QAResult, *, session: QASessionRecord | None = N
             f"unknown={proof_summary['unknown_records']}, "
             f"decode_errors={proof_summary['decode_errors']}"
         )
-        package_versions = {
-            key: _count_value(value)
-            for key, value in _payload_mapping(proof_summary.get("package_versions", {})).items()
-        }
-        element_kinds = {
-            key: _count_value(value) for key, value in _payload_mapping(proof_summary.get("element_kinds", {})).items()
-        }
-        resolution_reasons = {
-            key: _count_value(value)
-            for key, value in _payload_mapping(proof_summary.get("resolution_reasons", {})).items()
-        }
+        package_versions = payload_count_mapping(
+            proof_summary.get("package_versions", {}),
+            context="proof.summary.package_versions",
+        )
+        element_kinds = payload_count_mapping(
+            proof_summary.get("element_kinds", {}),
+            context="proof.summary.element_kinds",
+        )
+        resolution_reasons = payload_count_mapping(
+            proof_summary.get("resolution_reasons", {}),
+            context="proof.summary.resolution_reasons",
+        )
         if package_versions:
             lines.append(f"  Packages: {format_count_mapping(package_versions)}")
         if element_kinds:

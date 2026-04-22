@@ -7,18 +7,20 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from polylogue.scenarios import (
-    AssertionSpec,
-    CorpusSpec,
-    ExecutionSpec,
+from polylogue.authored_payloads import (
     PayloadDict,
-    ScenarioMetadata,
     payload_bool,
     payload_float,
     payload_int,
     payload_items,
     payload_mapping,
     payload_string_tuple,
+)
+from polylogue.scenarios import (
+    AssertionSpec,
+    CorpusSpec,
+    ExecutionSpec,
+    ScenarioMetadata,
 )
 from polylogue.showcase.exercise_models import Exercise
 
