@@ -34,6 +34,7 @@ from polylogue.cli.query_output import (
     format_summary_list,
     render_stream_transcript,
 )
+from polylogue.cli.query_output_contracts import StructuredRowsDocument
 from polylogue.lib.attachment_models import Attachment
 from polylogue.lib.messages import MessageCollection
 from polylogue.lib.models import Conversation, ConversationSummary, Message
@@ -429,6 +430,26 @@ class TestConversationFormatting:
 
 
 class TestListFormatting:
+    def test_structured_rows_document_centralizes_machine_and_plain_rendering(self) -> None:
+        document = StructuredRowsDocument(
+            rows=(
+                {
+                    "id": "conv-a",
+                    "provider": "claude-ai",
+                    "title": "A",
+                    "messages": 2,
+                },
+            ),
+            csv_headers=("id", "provider", "title", "messages"),
+            csv_rows=(("conv-a", "claude-ai", "A", 2),),
+            text_lines=("conv-a  claude-ai  A (2 msgs)",),
+        )
+
+        assert json.loads(document.with_selected_fields("id,title").render("json")) == [{"id": "conv-a", "title": "A"}]
+        assert yaml.safe_load(document.render("yaml"))[0]["provider"] == "claude-ai"
+        assert document.render("csv").splitlines()[0] == "id,provider,title,messages"
+        assert document.render("text") == "conv-a  claude-ai  A (2 msgs)"
+
     @pytest.mark.parametrize("case", LIST_FORMAT_CASES, ids=lambda case: case.name)
     def test_format_list_contract_matrix(self, sample_conversation: Conversation, case: ListFormatCase) -> None:
         other = _make_conv(
