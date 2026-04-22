@@ -64,6 +64,7 @@ _PROFILE_FTS_STATUS_BY_TIER: dict[str, SessionProductReadyFlag] = {
 if TYPE_CHECKING:
     from polylogue.config import Config
     from polylogue.lib.conversation_models import Conversation
+    from polylogue.lib.query_miss_diagnostics import QueryMissDiagnostics
     from polylogue.lib.stats import ArchiveStats as StorageArchiveStats
     from polylogue.storage.backends.async_sqlite import SQLiteBackend
     from polylogue.storage.repository import ConversationRepository
@@ -246,6 +247,11 @@ class ArchiveSearchMixin:
 
     async def query_conversations(self, spec: ConversationQuerySpec) -> list[Conversation]:
         return await spec.list(self.repository)
+
+    async def diagnose_query_miss(self, spec: ConversationQuerySpec) -> QueryMissDiagnostics:
+        from polylogue.lib.query_miss_diagnostics import diagnose_query_miss
+
+        return await diagnose_query_miss(self.repository, spec, config=self.config)
 
     async def get_session_tree(self, conversation_id: str) -> list[Conversation]:
         return await self.repository.get_session_tree(conversation_id)

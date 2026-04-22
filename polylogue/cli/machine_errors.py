@@ -134,10 +134,13 @@ def error_no_results(
     *,
     command: list[str] | None = None,
     filters: list[str] | None = None,
+    diagnostics: JSONDocument | None = None,
 ) -> MachineError:
     details: JSONDocument = {}
     if filters:
         details["filters"] = list(filters)
+    if diagnostics:
+        details["diagnostics"] = diagnostics
     return MachineError(
         code=NO_RESULTS,
         message=message,

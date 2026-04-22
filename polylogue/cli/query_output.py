@@ -47,6 +47,7 @@ logger = get_logger(__name__)
 if TYPE_CHECKING:
     from polylogue.cli.types import AppEnv
     from polylogue.lib.models import Conversation, ConversationSummary, Message
+    from polylogue.lib.query_miss_diagnostics import QueryMissDiagnostics
     from polylogue.lib.query_spec import ConversationQuerySpec
     from polylogue.protocols import ConversationOutputStore
     from polylogue.storage.store import MessageRecord
@@ -263,9 +264,10 @@ def open_result(
     output: QueryOutputSpec,
     *,
     selection: ConversationQuerySpec | None = None,
+    diagnostics: QueryMissDiagnostics | None = None,
 ) -> None:
     if not results:
-        emit_no_results(env, selection=selection, output_format=output.output_format)
+        emit_no_results(env, selection=selection, diagnostics=diagnostics, output_format=output.output_format)
 
     conv = results[0]
 
@@ -648,12 +650,14 @@ def no_results(
     output: QueryOutputSpec,
     *,
     selection: ConversationQuerySpec | None = None,
+    diagnostics: QueryMissDiagnostics | None = None,
     exit_code: int | None = 2,
 ) -> None:
     """Emit the canonical no-results contract for output surfaces."""
     emit_no_results(
         env,
         selection=selection,
+        diagnostics=diagnostics,
         output_format=output.output_format,
         exit_code=exit_code,
     )
@@ -670,10 +674,11 @@ def output_results(
     output: QueryOutputSpec,
     *,
     selection: ConversationQuerySpec | None = None,
+    diagnostics: QueryMissDiagnostics | None = None,
 ) -> None:
     """Output query results."""
     if not results:
-        no_results(env, output, selection=selection)
+        no_results(env, output, selection=selection, diagnostics=diagnostics)
 
     if len(results) == 1 and not output.list_mode:
         conv = results[0]

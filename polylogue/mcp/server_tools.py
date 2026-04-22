@@ -10,6 +10,7 @@ from polylogue.mcp.payloads import (
     MCPConversationSummaryPayload,
     MCPReadinessReportPayload,
     MCPStatsByPayload,
+    conversation_query_result_payload,
     conversation_summary_list_payload,
 )
 from polylogue.mcp.query_contracts import MCPConversationQueryRequest
@@ -64,7 +65,8 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 min_words=min_words,
             ).build_spec(hooks.clamp_limit)
             results = await ops.query_conversations(spec)
-            return hooks.json_payload(conversation_summary_list_payload(results))
+            diagnostics = await ops.diagnose_query_miss(spec) if not results else None
+            return hooks.json_payload(conversation_query_result_payload(results, diagnostics=diagnostics))
 
         return await hooks.async_safe_call("search", run)
 
@@ -112,7 +114,8 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 min_words=min_words,
             ).build_spec(hooks.clamp_limit)
             conversations = await ops.query_conversations(spec)
-            return hooks.json_payload(conversation_summary_list_payload(conversations))
+            diagnostics = await ops.diagnose_query_miss(spec) if not conversations else None
+            return hooks.json_payload(conversation_query_result_payload(conversations, diagnostics=diagnostics))
 
         return await hooks.async_safe_call("list_conversations", run)
 
