@@ -34,6 +34,11 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "docs/test-quality-workflows.md",
         "Generated validation lanes, mutation campaigns, and benchmark campaigns.",
     ),
+    DocsEntry(
+        "Verification Catalog",
+        "docs/verification-catalog.md",
+        "Generated proof-obligation subjects, claims, runners, and catalog self-checks.",
+    ),
 )
 
 REPO_GUIDE_ENTRIES: tuple[DocsEntry, ...] = (

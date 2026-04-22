@@ -110,6 +110,18 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "devtools.render_quality_reference",
     ),
     CommandSpec(
+        "render-verification-catalog",
+        "generated surfaces",
+        "Render docs/verification-catalog.md from proof-obligation registries.",
+        "devtools.render_verification_catalog",
+        use_when="Refresh or verify the proof-obligation catalog after changing proof subjects, claims, runners, or catalog rendering.",
+        examples=(
+            "devtools render-verification-catalog",
+            "devtools render-verification-catalog --check",
+            "devtools render-verification-catalog --json",
+        ),
+    ),
+    CommandSpec(
         "verify",
         "verification",
         "Run the local verification baseline before pushing or creating a PR.",
