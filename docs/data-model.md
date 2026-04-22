@@ -23,7 +23,9 @@
 | `tags` | list[str] | Tags (`important`, `repo:polylogue`) |
 | (custom) | str | Any user-defined key |
 
-Display title precedence: `metadata.title` > `original_title` > truncated ID.
+Display title precedence: `metadata.title` > `provider_meta.display_label` >
+`original_title` > truncated ID. Provider display labels are deterministic
+presentation labels, not replacements for the raw provider title.
 
 ## Message
 
@@ -69,6 +71,14 @@ Some providers include additional metadata:
 - `cost_usd`: API cost in USD
 - `duration_ms`: Response generation time
 - `model`: Model used (e.g., `claude-3-opus`)
+
+**Gemini**:
+
+- `title_source`: raw title provenance (`imported:title`,
+  `imported:displayName`, or `fallback:id`)
+- `display_label`: deterministic fallback label for weak imported titles
+- `display_label_source`: evidence used for that label, such as
+  `first-user-message` or `attachment-name:first-user-message`
 
 Access via `message.provider_meta` or convenience properties:
 

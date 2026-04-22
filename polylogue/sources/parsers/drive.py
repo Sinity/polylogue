@@ -217,8 +217,13 @@ def parse_chunked_prompt(provider: Provider | str, payload: JSONDocument, fallba
         )
         attachments.extend(chunk_attachments)
 
-    title_val = payload.get("title") or payload.get("displayName")
+    title_val = payload.get("title")
+    title_source = "imported:title"
+    if not title_val:
+        title_val = payload.get("displayName")
+        title_source = "imported:displayName" if title_val else "fallback:id"
     title = str(title_val) if title_val else fallback_id
+    provider_meta: dict[str, object] = {"title_source": title_source}
     create_time_str = (
         str(payload.get("createTime"))
         if payload.get("createTime")
@@ -237,6 +242,7 @@ def parse_chunked_prompt(provider: Provider | str, payload: JSONDocument, fallba
         updated_at=update_time_str,
         messages=messages,
         attachments=attachments,
+        provider_meta=provider_meta,
     )
 
 

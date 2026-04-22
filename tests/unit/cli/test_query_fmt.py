@@ -558,6 +558,30 @@ class TestListFormatting:
         assert payload[0]["match"]["message_id"] == "msg-doc"
         assert "provider_meta.fileId=drive-file-1" in payload[0]["match"]["snippet"]
 
+    def test_format_summary_and_search_use_provider_display_label(self) -> None:
+        summary = ConversationSummary(
+            id=ConversationId("gemini:gemini-20250422-1234"),
+            provider=Provider.GEMINI,
+            title="gemini-20250422-1234",
+            provider_meta={"display_label": "Project Plan: Please review the attached project plan."},
+            created_at=datetime(2025, 6, 1, tzinfo=timezone.utc),
+            updated_at=datetime(2025, 6, 2, tzinfo=timezone.utc),
+        )
+        hit = ConversationSearchHit(
+            summary=summary,
+            rank=1,
+            retrieval_lane="dialogue",
+            match_surface="message",
+            message_id="msg-user",
+            snippet="Please review the attached project plan.",
+        )
+
+        summary_payload = json.loads(format_summary_list([summary], "json", None, message_counts={str(summary.id): 1}))
+        search_payload = json.loads(format_search_hit_list([hit], "json", None, message_counts={str(summary.id): 1}))
+
+        assert summary_payload[0]["title"] == "Project Plan: Please review the attached project plan."
+        assert search_payload[0]["conversation"]["title"] == "Project Plan: Please review the attached project plan."
+
 
 class TestStreamingOutput:
     @pytest.mark.parametrize("output_format,expected_role,expected_text", STREAM_CASES)
