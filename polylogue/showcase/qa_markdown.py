@@ -2,22 +2,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from datetime import datetime, timezone
 
+from polylogue.authored_payloads import require_payload_mapping
 from polylogue.lib.outcomes import OutcomeStatus
 from polylogue.showcase.exercises import GROUPS
 from polylogue.showcase.qa_runner_models import QAResult
 from polylogue.showcase.report_common import status_label
 from polylogue.showcase.report_models import QASessionRecord
-
-
-def _payload_mapping(value: object) -> Mapping[str, object]:
-    if not isinstance(value, Mapping):
-        raise TypeError("Expected mapping payload")
-    if not all(isinstance(key, str) for key in value):
-        raise TypeError("Expected string-keyed mapping payload")
-    return {str(key): item for key, item in value.items()}
 
 
 def generate_qa_markdown(
@@ -61,7 +53,9 @@ def generate_qa_markdown(
     lines.append("")
 
     if result.audit_report is not None:
-        audit_summary = _payload_mapping(result.audit_report.to_json().get("summary", {}))
+        audit_summary = require_payload_mapping(
+            result.audit_report.to_json().get("summary", {}), context="audit.summary"
+        )
         lines.append("## Schema Audit")
         lines.append("")
         lines.append(f"- Passed: {audit_summary['passed']}")
@@ -76,13 +70,25 @@ def generate_qa_markdown(
 
     proof_report = session.proof.report
     if proof_report is not None:
-        proof_summary = _payload_mapping(proof_report["summary"])
-        package_versions = _payload_mapping(proof_summary.get("package_versions", {}))
-        element_kinds = _payload_mapping(proof_summary.get("element_kinds", {}))
-        resolution_reasons = _payload_mapping(proof_summary.get("resolution_reasons", {}))
+        proof_summary = require_payload_mapping(proof_report["summary"], context="proof.summary")
+        package_versions = require_payload_mapping(
+            proof_summary.get("package_versions", {}),
+            context="proof.summary.package_versions",
+        )
+        element_kinds = require_payload_mapping(
+            proof_summary.get("element_kinds", {}),
+            context="proof.summary.element_kinds",
+        )
+        resolution_reasons = require_payload_mapping(
+            proof_summary.get("resolution_reasons", {}),
+            context="proof.summary.resolution_reasons",
+        )
         providers = {
-            provider: _payload_mapping(stats)
-            for provider, stats in _payload_mapping(proof_report.get("providers", {})).items()
+            provider: require_payload_mapping(stats, context=f"proof.providers.{provider}")
+            for provider, stats in require_payload_mapping(
+                proof_report.get("providers", {}),
+                context="proof.providers",
+            ).items()
         }
         lines.extend(
             [

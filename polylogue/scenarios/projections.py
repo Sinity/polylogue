@@ -6,8 +6,9 @@ from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
 from enum import Enum
 
+from polylogue.authored_payloads import PayloadDict, PayloadMap
+
 from .metadata import ScenarioMetadata
-from .payloads import PayloadDict, PayloadMap
 
 
 class ScenarioProjectionSourceKind(str, Enum):

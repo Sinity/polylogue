@@ -5,8 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from polylogue.authored_payloads import PayloadDict, PayloadMap
+
 from .metadata import ScenarioMetadata
-from .payloads import PayloadDict, PayloadMap
 from .projections import ScenarioProjectionSource
 
 if TYPE_CHECKING:

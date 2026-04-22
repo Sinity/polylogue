@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from polylogue.authored_payloads import PayloadDict
+
 from .assertions import AssertionSpec
 from .execution import ExecutionSpec
 from .metadata import ScenarioMetadata
-from .payloads import PayloadDict
 from .sources import NamedScenarioSource
 
 

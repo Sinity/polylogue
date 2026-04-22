@@ -10,7 +10,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from polylogue.scenarios import PayloadDict, ScenarioMetadata
+from polylogue.authored_payloads import PayloadDict, payload_records
+from polylogue.scenarios import ScenarioMetadata
 from polylogue.showcase.invariants import InvariantResult
 from polylogue.showcase.qa_runner_models import QAResult
 from polylogue.showcase.showcase_runner_models import (
@@ -171,7 +172,7 @@ class ShowcaseSessionRecord:
             "timestamp": self.timestamp,
             "summary": self.summary.to_payload(),
             "group_counts": {group: counts.to_payload() for group, counts in self.group_counts.items()},
-            "exercises": [exercise.to_payload() for exercise in self.exercises],
+            "exercises": payload_records(self.exercises),
         }
 
 
@@ -221,7 +222,7 @@ class QAShowcaseRecord:
             "skipped": self.skipped,
             "summary": self.summary.to_payload() if self.summary is not None else None,
             "group_counts": {group: counts.to_payload() for group, counts in self.group_counts.items()},
-            "exercises": [exercise.to_payload() for exercise in self.exercises],
+            "exercises": payload_records(self.exercises),
         }
 
 
@@ -237,7 +238,7 @@ class QAInvariantRecord:
             "status": self.status,
             "skipped": self.skipped,
             "summary": self.summary.to_payload(),
-            "checks": [check.to_payload() for check in self.checks],
+            "checks": payload_records(self.checks),
         }
 
 

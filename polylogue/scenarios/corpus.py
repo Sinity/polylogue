@@ -7,10 +7,7 @@ from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import TYPE_CHECKING
 
-from polylogue.schemas.operator_registry import SchemaRegistryLike
-
-from .metadata import ScenarioMetadata
-from .payloads import (
+from polylogue.authored_payloads import (
     PayloadDict,
     PayloadMap,
     merge_unique_string_tuples,
@@ -19,6 +16,9 @@ from .payloads import (
     payload_optional_string,
     payload_string_tuple,
 )
+from polylogue.schemas.operator_registry import SchemaRegistryLike
+
+from .metadata import ScenarioMetadata
 from .projections import ScenarioProjectionSource, ScenarioProjectionSourceKind
 from .specs import ScenarioSpec
 

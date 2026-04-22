@@ -6,7 +6,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-from polylogue.scenarios import PayloadDict
+from polylogue.authored_payloads import PayloadDict
 from polylogue.showcase.report_models import (
     ShowcaseExerciseRecord,
     ShowcaseSessionRecord,

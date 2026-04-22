@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from polylogue.authored_payloads import PayloadDict
 from polylogue.logging import get_logger
 from polylogue.paths import safe_path_component
 from polylogue.types import SearchProvider
@@ -51,7 +52,7 @@ class SiteConfig:
         """Whether this site build should produce Pagefind assets."""
         return self.enable_search and self.search_provider is SearchProvider.PAGEFIND
 
-    def to_payload(self) -> dict[str, object]:
+    def to_payload(self) -> PayloadDict:
         """Return a stable manifest-friendly config payload."""
         return {
             "title": self.title,
@@ -202,7 +203,7 @@ class ConversationPageBuildStats:
         elif status == "failed":
             self.failed += 1
 
-    def to_payload(self) -> dict[str, int]:
+    def to_payload(self) -> PayloadDict:
         return {
             "total": self.total,
             "rendered": self.rendered,

@@ -10,12 +10,12 @@ Laws that hold regardless of exercise content:
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
 from pathlib import Path
 
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
+from polylogue.authored_payloads import require_payload_mapping
 from polylogue.lib.outcomes import OutcomeCheck, OutcomeStatus
 from polylogue.scenarios import CorpusSpec, polylogue_execution
 from polylogue.schemas.audit_models import AuditReport
@@ -63,11 +63,6 @@ def _make_showcase(results: list[ExerciseResult]) -> ShowcaseResult:
     sr.results = results
     sr.total_duration_ms = sum(r.duration_ms for r in results)
     return sr
-
-
-def _payload_mapping(value: object) -> Mapping[str, object]:
-    assert isinstance(value, Mapping)
-    return value
 
 
 # ---------------------------------------------------------------------------
@@ -281,10 +276,10 @@ def test_full_qa_session_contains_composed_stage_payloads() -> None:
         timestamp="2026-01-01T00:00:00Z",
         showcase_session=build_showcase_session_record(showcase, timestamp="2026-01-01T00:00:00Z"),
     )
-    audit_report = _payload_mapping(session.audit.report)
-    audit_summary = _payload_mapping(audit_report["summary"])
-    proof_report = _payload_mapping(session.proof.report)
-    proof_summary = _payload_mapping(proof_report["summary"])
+    audit_report = require_payload_mapping(session.audit.report, context="audit.report")
+    audit_summary = require_payload_mapping(audit_report["summary"], context="audit.summary")
+    proof_report = require_payload_mapping(session.proof.report, context="proof.report")
+    proof_summary = require_payload_mapping(proof_report["summary"], context="proof.summary")
     showcase_summary = session.showcase.summary
 
     assert session.audit.status == "ok"
