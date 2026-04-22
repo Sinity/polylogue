@@ -158,6 +158,8 @@ def default_claims() -> tuple[Claim, ...]:
     maintenance_target_query = Kind("maintenance.target")
     parser_quarantine_query = AttrEq("error_family", "parser-quarantine")
     error_surface_query = Kind("error.surface")
+    trace_operation_query = Kind("trace.operation")
+    observable_diagnostic_query = Kind("diagnostic.observable")
     return (
         Claim(
             id="cli.command.help",
@@ -437,6 +439,48 @@ def default_claims() -> tuple[Claim, ...]:
             ),
         ),
         Claim(
+            id="trace.operation.surface_equivalence",
+            description="Cross-surface operation traces expose equivalent semantic events and payloads.",
+            subject_query=trace_operation_query,
+            evidence_schema=_evidence_schema(
+                "surface_names",
+                "event_names",
+                "semantic_signature_hash",
+                "trace_payloads",
+                "happens_before",
+            ),
+            bug_classes=("trace.surface-drift", "semantic-result.parity"),
+            runner_classes=("trace_equivalence",),
+            observed_facts=("surface_names", "event_names", "semantic_signature_hash", "happens_before"),
+            staleness_conditions=("Surface query adapters, observable event payloads, or trace vocabulary changes.",),
+            breaker=BreakerMetadata(
+                description="Equivalent operations with different semantic event signatures expose cross-surface drift.",
+                issue="#341",
+                command=("pytest", "tests/unit/proof/test_trace_evidence.py"),
+            ),
+        ),
+        Claim(
+            id="diagnostic.observable_trace_mapping",
+            description="Existing diagnostics map to observable trace nouns, operations, and artifact nodes.",
+            subject_query=observable_diagnostic_query,
+            evidence_schema=_evidence_schema(
+                "diagnostic_name",
+                "event_name",
+                "mapped_subject_id",
+                "operation",
+                "artifact_node",
+            ),
+            bug_classes=("diagnostic.vocabulary-drift", "probe-proof-unroutable"),
+            runner_classes=("diagnostic_trace_mapping",),
+            observed_facts=("diagnostic_name", "event_name", "payload_contract", "artifact_node"),
+            staleness_conditions=("Pipeline probe diagnostics or observable trace vocabulary changes.",),
+            breaker=BreakerMetadata(
+                description="A probe diagnostic without a proof-vocabulary mapping cannot route into trace evidence.",
+                issue="#341",
+                command=("pytest", "tests/unit/proof/test_trace_evidence.py"),
+            ),
+        ),
+        Claim(
             id="workflow.generated_surfaces_current",
             description="Generated documentation and agent surfaces are current after their sources change.",
             subject_query=AttrEq("claim_family", "generated-surfaces"),
@@ -544,6 +588,23 @@ def default_runner_bindings(claims: Iterable[Claim]) -> tuple[RunnerBinding, ...
             )
         elif claim.id.startswith("error."):
             bindings.append(_runner_binding(claim, runner="error-context-contract", evidence_class="structural"))
+        elif claim.id.startswith("trace.operation."):
+            bindings.append(
+                _runner_binding(
+                    claim,
+                    runner="trace-equivalence-contract",
+                    evidence_class="trace",
+                    cost_tier="unit",
+                )
+            )
+        elif claim.id.startswith("diagnostic."):
+            bindings.append(
+                _runner_binding(
+                    claim,
+                    runner="diagnostic-trace-mapping-contract",
+                    evidence_class="trace",
+                )
+            )
         elif claim.id.startswith("workflow."):
             bindings.append(_runner_binding(claim, runner="workflow-static-contract", evidence_class="workflow"))
     return tuple(bindings)
