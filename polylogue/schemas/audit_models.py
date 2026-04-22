@@ -14,6 +14,37 @@ class AuditCheck(OutcomeCheck):
 
     provider: str | None = None
 
+    def to_json(self, *, label: str | None = None) -> JSONDocument:
+        """Return the machine payload for this audit check."""
+        return audit_check_json(self, provider=self.provider, label=label)
+
+
+@dataclass(frozen=True)
+class AuditSummary:
+    """Machine-readable schema-audit summary counts."""
+
+    passed: int
+    warned: int
+    failed: int
+
+    def to_json(self) -> JSONDocument:
+        return {
+            "passed": self.passed,
+            "warned": self.warned,
+            "failed": self.failed,
+        }
+
+
+def audit_check_json(check: OutcomeCheck, *, provider: str | None, label: str | None) -> JSONDocument:
+    """Return the schema-audit JSON payload for one check."""
+    return {
+        "name": check.name,
+        "provider": provider,
+        "status": label or check.status.value,
+        "message": check.summary,
+        "details": list(check.details),
+    }
+
 
 @dataclass
 class AuditReport(OutcomeReport):
@@ -50,6 +81,10 @@ class AuditReport(OutcomeReport):
     def all_passed(self) -> bool:
         return self.all_ok
 
+    @property
+    def summary(self) -> AuditSummary:
+        return AuditSummary(passed=self.passed, warned=self.warned, failed=self.failed)
+
     def format_text(self) -> str:
         lines = []
         scope = f" ({self.provider})" if self.provider else ""
@@ -67,23 +102,17 @@ class AuditReport(OutcomeReport):
         return json_document(
             {
                 "provider": self.provider,
-                "summary": {
-                    "passed": self.passed,
-                    "warned": self.warned,
-                    "failed": self.failed,
-                },
+                "summary": self.summary.to_json(),
                 "checks": [
-                    {
-                        "name": c.name,
-                        "provider": getattr(c, "provider", None),
-                        "status": self._LABELS[c.status],
-                        "message": c.summary,
-                        "details": c.details,
-                    }
+                    audit_check_json(
+                        c,
+                        provider=getattr(c, "provider", None),
+                        label=self._LABELS[c.status],
+                    )
                     for c in self.checks
                 ],
             }
         )
 
 
-__all__ = ["AuditCheck", "AuditReport"]
+__all__ = ["AuditCheck", "AuditReport", "AuditSummary", "audit_check_json"]

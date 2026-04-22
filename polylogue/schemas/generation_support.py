@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Protocol, TypeAlias, overload
+from typing import TypeAlias, overload
 
 from polylogue.lib.json import JSONDocument, json_document
 from polylogue.schemas import generation_dynamic_keys as _dynamic_keys
@@ -11,16 +11,12 @@ from polylogue.schemas.field_stats import FieldStats
 from polylogue.schemas.generation_field_annotations import annotate_schema, remove_nested_required
 from polylogue.schemas.generation_redaction import _build_redaction_report
 from polylogue.schemas.generation_semantic_relations import annotate_semantic_and_relational
+from polylogue.schemas.privacy_config import SchemaPrivacyConfig
 
 SchemaPayload: TypeAlias = JSONDocument
 SchemaMapping: TypeAlias = Mapping[str, object]
 SchemaCollection: TypeAlias = Sequence[SchemaMapping]
 FieldStatsMapping: TypeAlias = Mapping[str, FieldStats]
-
-
-class PrivacyConfigLike(Protocol):
-    @property
-    def level(self) -> str: ...
 
 
 GENSON_AVAILABLE = _dynamic_keys.GENSON_AVAILABLE
@@ -38,7 +34,7 @@ def _annotate_schema(
     path: str = "$",
     *,
     min_conversation_count: int = 1,
-    privacy_config: PrivacyConfigLike | None = None,
+    privacy_config: SchemaPrivacyConfig | None = None,
 ) -> SchemaPayload:
     return annotate_schema(
         json_document(dict(schema)),

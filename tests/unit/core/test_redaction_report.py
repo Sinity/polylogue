@@ -124,7 +124,21 @@ class TestToJson:
         report = SchemaReport(provider="chatgpt", total_fields=5, total_included=3, total_rejected=2)
         report.rejection_reasons = {"high_entropy": 2}
         report.field_reports = [
-            FieldReport(path="$.x", included_values=["a"], rejected=[]),
+            FieldReport(
+                path="$.x",
+                included_values=["a"],
+                rejected=[
+                    RedactionDecision(
+                        path="$.x",
+                        value="secret",
+                        action="rejected",
+                        reason="high_entropy",
+                        count=2,
+                        conversation_count=1,
+                        risk="medium",
+                    )
+                ],
+            ),
         ]
         data = report.to_json()
         summary = data["summary"]
@@ -138,5 +152,33 @@ class TestToJson:
         assert summary["total_rejected"] == 2
         assert data["rejection_reasons"] == {"high_entropy": 2}
         assert len(field_reports) == 1
+        field_report = field_reports[0]
+        assert isinstance(field_report, dict)
+        assert field_report["included_values"] == ["a"]
+        rejected = field_report["rejected"]
+        assert isinstance(rejected, list)
+        rejected_decision = rejected[0]
+        assert isinstance(rejected_decision, dict)
+        assert rejected_decision["action"] == "rejected"
+        assert rejected_decision["conversation_count"] == 1
+        assert rejected_decision["risk"] == "medium"
         # Should be JSON-serializable
         json.dumps(data)
+
+    def test_typed_summary_payload(self) -> None:
+        report = SchemaReport(
+            provider="chatgpt",
+            total_fields=2,
+            fields_with_enums=1,
+            total_values_considered=4,
+            total_included=3,
+            total_rejected=1,
+        )
+
+        assert report.summary.to_json() == {
+            "total_fields": 2,
+            "fields_with_enums": 1,
+            "total_values_considered": 4,
+            "total_included": 3,
+            "total_rejected": 1,
+        }

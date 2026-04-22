@@ -28,13 +28,13 @@ from polylogue.schemas.generation_schema_builder import (
     _apply_schema_metadata,
     _generate_cluster_schema,
 )
-from polylogue.schemas.generation_support import PrivacyConfigLike
 from polylogue.schemas.observation import ProviderConfig
 from polylogue.schemas.packages import (
     SchemaElementManifest,
     SchemaPackageCatalog,
     SchemaVersionPackage,
 )
+from polylogue.schemas.privacy_config import SchemaPrivacyConfig
 from polylogue.schemas.redaction_report import SchemaReport
 from polylogue.schemas.registry import ClusterManifest, SchemaCluster
 from polylogue.types import Provider
@@ -65,7 +65,7 @@ def build_provider_catalog_artifacts(
     sample_count: int,
     artifact_counts: dict[str, int],
     orphan_adjunct_counts: dict[str, int],
-    privacy_config: PrivacyConfigLike | None,
+    privacy_config: SchemaPrivacyConfig | None,
 ) -> ProviderCatalogArtifacts:
     """Build package schemas, catalog metadata, and manifest for a provider."""
     total_units = max(sum(acc.sample_count for acc in clusters.values()), 1)

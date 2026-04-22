@@ -21,8 +21,9 @@ from polylogue.schemas.generation_provider_bundle_packages import (
     build_provider_catalog_artifacts,
     build_success_provider_bundle,
 )
-from polylogue.schemas.generation_support import GENSON_AVAILABLE, PrivacyConfigLike
+from polylogue.schemas.generation_support import GENSON_AVAILABLE
 from polylogue.schemas.observation import PROVIDERS, ProviderConfig, resolve_provider_config
+from polylogue.schemas.privacy_config import SchemaPrivacyConfig
 from polylogue.schemas.registry import ClusterManifest, SchemaCluster
 from polylogue.types import Provider
 
@@ -55,7 +56,7 @@ def _build_provider_bundle(
     *,
     db_path: Path | None,
     max_samples: int | None,
-    privacy_config: PrivacyConfigLike | None,
+    privacy_config: SchemaPrivacyConfig | None,
     full_corpus: bool = False,
 ) -> _ProviderBundle:
     """Generate all inferred schema versions plus the default result for a provider."""
