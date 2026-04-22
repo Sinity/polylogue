@@ -533,6 +533,31 @@ class TestListFormatting:
             assert "match[1]: message/dialogue/message msg-hit-1" in rendered
             assert "[needle] in context" in rendered
 
+    def test_format_search_hit_list_exposes_attachment_identity_evidence(self) -> None:
+        summary = ConversationSummary(
+            id=ConversationId("conv-attachment-hit"),
+            provider=Provider.GEMINI,
+            title="Attachment Hit",
+            created_at=datetime(2025, 6, 1, tzinfo=timezone.utc),
+            updated_at=datetime(2025, 6, 2, tzinfo=timezone.utc),
+        )
+        hit = ConversationSearchHit(
+            summary=summary,
+            rank=1,
+            retrieval_lane="attachment",
+            match_surface="attachment",
+            message_id="msg-doc",
+            snippet='attachment identity provider_meta.fileId=drive-file-1 name="Project Plan"',
+        )
+
+        rendered = format_search_hit_list([hit], "json", None, message_counts={"conv-attachment-hit": 1})
+        payload = json.loads(rendered)
+
+        assert payload[0]["match"]["match_surface"] == "attachment"
+        assert payload[0]["match"]["retrieval_lane"] == "attachment"
+        assert payload[0]["match"]["message_id"] == "msg-doc"
+        assert "provider_meta.fileId=drive-file-1" in payload[0]["match"]["snippet"]
+
 
 class TestStreamingOutput:
     @pytest.mark.parametrize("output_format,expected_role,expected_text", STREAM_CASES)
