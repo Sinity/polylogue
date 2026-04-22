@@ -140,7 +140,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "Run the local verification baseline before pushing or creating a PR.",
         "devtools.verify",
         use_when="Run format, lint, mypy, render-all, and test checks locally before pushing.",
-        examples=("devtools verify", "devtools verify --quick"),
+        examples=("devtools verify", "devtools verify --quick", "devtools verify --lab"),
         featured=True,
     ),
     CommandSpec(
@@ -231,10 +231,13 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     CommandSpec(
         "lab-scenario",
         "verification",
-        "Run verification-lab showcase scenario sets.",
+        "Run verification-lab showcase scenario sets and baseline checks.",
         "devtools.lab_scenario",
-        use_when="Run showcase exercise smoke scenarios outside the product CLI.",
-        examples=("devtools lab-scenario run archive-smoke --tier 0",),
+        use_when="Run showcase exercise smoke scenarios and committed baseline checks outside the product CLI.",
+        examples=(
+            "devtools lab-scenario run archive-smoke --tier 0",
+            "devtools lab-scenario verify-baselines",
+        ),
     ),
     CommandSpec(
         "schema-generate",

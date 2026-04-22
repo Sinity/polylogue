@@ -165,9 +165,9 @@ class TestCommandConstruction:
         cmd = build_lane_command(LANES["query-routing"])
         assert "query_routing" in cmd
 
-    def test_showcase_baselines_lane_uses_verify_showcase_module(self) -> None:
+    def test_showcase_baselines_lane_uses_lab_scenario_baseline_action(self) -> None:
         cmd = build_lane_command(LANES["showcase-baselines"])
-        assert cmd[:2] == ["devtools", "verify-showcase"]
+        assert cmd[:3] == ["devtools", "lab-scenario", "verify-baselines"]
 
     def test_pipeline_probe_chatgpt_lane_uses_probe_budgets(self) -> None:
         cmd = build_lane_command(LANES["pipeline-probe-chatgpt"])

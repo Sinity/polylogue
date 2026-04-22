@@ -1,162 +1,73 @@
-"""Verify showcase tier 0 output matches committed baselines.
+"""Compatibility wrapper for showcase baseline verification.
 
-Usage: devtools verify-showcase
-Exit code: 0 if baselines match, 1 if drift detected.
+Routine callers should prefer:
 
-Tier 0 exercises are structural tests (help screens, version output)
-that produce deterministic output. This script runs them and compares
-against stored baselines to detect unintentional CLI changes.
+    devtools lab-scenario verify-baselines
+
+This module remains as the stable generated-surface check entrypoint and
+delegates the baseline semantics to the verification-lab scenario surface.
 """
 
 from __future__ import annotations
 
-import difflib
 import sys
-from pathlib import Path
 
-from polylogue.showcase.cli_boundary import invoke_showcase_cli
-from polylogue.showcase.exercises import EXERCISES, Exercise
-from polylogue.showcase.showcase_runner_support import run_exercise
+from devtools import lab_scenario
+from polylogue.showcase.exercises import Exercise
 
-BASELINE_DIR = Path(__file__).resolve().parent.parent / "tests" / "baselines" / "showcase"
-
-TIER_0_GROUPS = frozenset({"structural"})
+BASELINE_DIR = lab_scenario.BASELINE_DIR
 
 
-# Exercises whose output depends on runtime environment (absolute paths, git
-# SHAs, etc.) and therefore cannot be compared against committed baselines.
-_ENV_DEPENDENT: frozenset[str] = frozenset({"version"})
+def _sync_baseline_dir() -> None:
+    lab_scenario.BASELINE_DIR = BASELINE_DIR
 
 
 def get_tier_0_exercises() -> list[Exercise]:
-    """Return all tier-0 exercises (structural, no data needed).
-
-    Excludes exercises whose output depends on the runtime environment
-    (machine-specific paths, git SHAs) — they cannot have stable baselines.
-    """
-    return [ex for ex in EXERCISES if ex.group in TIER_0_GROUPS and not ex.needs_data and ex.name not in _ENV_DEPENDENT]
+    return lab_scenario.get_tier_0_exercises()
 
 
 def run_tier_0() -> dict[str, str]:
-    """Run tier 0 exercises and return {exercise_name: output} mapping."""
-    from polylogue.showcase.exercises import topological_order
-
-    exercises = get_tier_0_exercises()
-    exercises = topological_order(exercises)
-
-    results: dict[str, str] = {}
-    for ex in exercises:
-        er = run_exercise(
-            ex,
-            env_vars={},
-            invoke_showcase_cli_fn=invoke_showcase_cli,
-        )
-        results[ex.name] = er.output or ""
-
-    return results
+    return lab_scenario.run_tier_0()
 
 
 def load_baselines() -> dict[str, str]:
-    """Load committed baseline outputs from disk.
-
-    Returns empty dict if baseline directory doesn't exist yet.
-    """
-    if not BASELINE_DIR.exists():
-        return {}
-
-    baselines: dict[str, str] = {}
-    for path in sorted(BASELINE_DIR.glob("*.txt")):
-        name = path.stem  # e.g. "help-main.txt" -> "help-main"
-        baselines[name] = path.read_text(encoding="utf-8")
-
-    return baselines
+    _sync_baseline_dir()
+    return lab_scenario.load_baselines()
 
 
 def save_baselines(outputs: dict[str, str]) -> None:
-    """Save current outputs as new baselines."""
-    BASELINE_DIR.mkdir(parents=True, exist_ok=True)
-    for name, output in sorted(outputs.items()):
-        (BASELINE_DIR / f"{name}.txt").write_text(output, encoding="utf-8")
+    _sync_baseline_dir()
+    lab_scenario.save_baselines(outputs)
 
 
 def compare_outputs(
     current: dict[str, str],
     baselines: dict[str, str],
 ) -> list[str]:
-    """Compare current outputs against baselines, returning drift descriptions.
+    return lab_scenario.compare_outputs(current, baselines)
 
-    Returns empty list if no drift detected.
-    """
-    drifts: list[str] = []
 
-    # Check for exercises in baselines but not in current (removed exercises)
-    for name in sorted(set(baselines) - set(current)):
-        drifts.append(f"REMOVED: {name} (in baseline but not in current run)")
-
-    # Check for exercises in current but not in baselines (new exercises)
-    for name in sorted(set(current) - set(baselines)):
-        drifts.append(f"NEW: {name} (no baseline yet)")
-
-    # Check for output differences
-    for name in sorted(set(current) & set(baselines)):
-        if current[name] != baselines[name]:
-            diff = difflib.unified_diff(
-                baselines[name].splitlines(keepends=True),
-                current[name].splitlines(keepends=True),
-                fromfile=f"baseline/{name}",
-                tofile=f"current/{name}",
-                n=3,
-            )
-            diff_text = "".join(diff)
-            drifts.append(f"CHANGED: {name}\n{diff_text}")
-
-    return drifts
+def verify_showcase_baselines(*, update: bool) -> int:
+    _sync_baseline_dir()
+    return lab_scenario.verify_showcase_baselines(update=update)
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Main entry point.
+    _sync_baseline_dir()
+    args = argv or []
+    return lab_scenario.main(["verify-baselines", *args])
 
-    Args:
-        argv: Command-line arguments (for testing). Supports:
-            --update: Update baselines instead of comparing.
 
-    Returns:
-        0 if baselines match (or updated), 1 if drift detected.
-    """
-    import argparse
-
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--update",
-        action="store_true",
-        help="Update baselines to current output instead of comparing",
-    )
-    args = parser.parse_args(argv)
-
-    print("Running tier 0 showcase exercises...")
-    current = run_tier_0()
-    print(f"  Ran {len(current)} exercises")
-
-    if args.update:
-        save_baselines(current)
-        print(f"  Updated baselines in {BASELINE_DIR}")
-        return 0
-
-    baselines = load_baselines()
-    if not baselines:
-        print("ERROR: No baselines found. Run with --update to create them.")
-        return 1
-
-    drifts = compare_outputs(current, baselines)
-    if not drifts:
-        print("  All baselines match.")
-        return 0
-
-    print(f"\n  DRIFT DETECTED ({len(drifts)} differences):\n")
-    for drift in drifts:
-        print(f"  {drift}")
-
-    return 1
+__all__ = [
+    "BASELINE_DIR",
+    "compare_outputs",
+    "get_tier_0_exercises",
+    "load_baselines",
+    "main",
+    "run_tier_0",
+    "save_baselines",
+    "verify_showcase_baselines",
+]
 
 
 if __name__ == "__main__":

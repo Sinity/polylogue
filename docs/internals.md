@@ -85,7 +85,7 @@ Drift check:
 
 ```bash
 devtools render-all --check
-devtools verify-showcase
+devtools lab-scenario verify-baselines
 ```
 
 ## Local State

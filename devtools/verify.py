@@ -11,10 +11,12 @@ Steps:
   5. pytest --ignore=tests/integration (slow but essential, ~3min)
 
 Use --quick to run only steps 1-4 (suitable for pre-commit).
+Use --lab to add verification-lab scenario checks through lab commands.
 """
 
 from __future__ import annotations
 
+import argparse
 import subprocess
 import sys
 import time
@@ -37,14 +39,7 @@ def _run(label: str, cmd: list[str], *, cwd: str | None = None) -> int:
     return result.returncode
 
 
-def main(argv: list[str] | None = None) -> int:
-    args = argv or []
-    quick = "--quick" in args
-
-    sys.stderr.write("verify: running local verification baseline\n")
-
-    exit_code = 0
-
+def build_verify_steps(*, quick: bool, lab: bool) -> list[tuple[str, list[str]]]:
     steps: list[tuple[str, list[str]]] = [
         ("ruff format", ["ruff", "format", "--check", "polylogue/", "tests/", "devtools/"]),
         ("ruff check", ["ruff", "check", "polylogue/", "tests/", "devtools/"]),
@@ -56,6 +51,26 @@ def main(argv: list[str] | None = None) -> int:
         steps.append(
             ("pytest", ["pytest", "-q", "--tb=short", "--ignore=tests/integration"]),
         )
+
+    if lab:
+        steps.append(("lab scenario", ["devtools", "lab-scenario", "run", "archive-smoke", "--tier", "0"]))
+    return steps
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Run the local verification baseline.")
+    parser.add_argument("--quick", action="store_true", help="Skip pytest and run only fast local gates.")
+    parser.add_argument(
+        "--lab",
+        action="store_true",
+        help="Delegate additional domain proof checks through verification-lab commands.",
+    )
+    args = parser.parse_args(argv)
+
+    sys.stderr.write("verify: running local verification baseline\n")
+
+    exit_code = 0
+    steps = build_verify_steps(quick=bool(args.quick), lab=bool(args.lab))
 
     for label, cmd in steps:
         rc = _run(label, cmd)
