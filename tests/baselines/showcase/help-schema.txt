@@ -1,14 +1,11 @@
 Usage: polylogue schema [OPTIONS] COMMAND [ARGS]...
 
-  Schema generation, package versioning, and evidence inspection.
+  Inspect schema packages, versions, and evidence.
 
 Options:
   -h, --help  Show this message and exit.
 
 Commands:
-  audit     Run automated quality checks on committed schema packages.
-  compare   Compare two schema package versions for a provider.
-  explain   Explain a package element schema with evidence and annotations.
-  generate  Generate provider schema packages and optional evidence...
-  list      List available schema packages, versions, and evidence...
-  promote   Promote an evidence cluster to a new registered package version.
+  compare  Compare two schema package versions for a provider.
+  explain  Explain a package element schema with evidence and annotations.
+  list     List available schema packages, versions, and evidence manifests.

@@ -127,7 +127,7 @@ Commands:
   products     Inspect durable archive data products.
   reset        Reset database, blob store, assets, rendered outputs, or...
   run          Run pipeline stages on configured sources.
-  schema       Schema generation, package versioning, and evidence...
+  schema       Inspect schema packages, versions, and evidence.
   stats        Show statistics for matched conversations.
   tags         List all tags with conversation counts.
 ```
@@ -463,18 +463,15 @@ Options:
 ```text
 Usage: polylogue schema [OPTIONS] COMMAND [ARGS]...
 
-  Schema generation, package versioning, and evidence inspection.
+  Inspect schema packages, versions, and evidence.
 
 Options:
   -h, --help  Show this message and exit.
 
 Commands:
-  audit     Run automated quality checks on committed schema packages.
-  compare   Compare two schema package versions for a provider.
-  explain   Explain a package element schema with evidence and annotations.
-  generate  Generate provider schema packages and optional evidence...
-  list      List available schema packages, versions, and evidence...
-  promote   Promote an evidence cluster to a new registered package version.
+  compare  Compare two schema package versions for a provider.
+  explain  Explain a package element schema with evidence and annotations.
+  list     List available schema packages, versions, and evidence manifests.
 ```
 
 ## Completions

@@ -1,8 +1,9 @@
-"""Integration test for the schema CLI operator workflow.
+"""Integration test for the schema operator workflow.
 
 End-to-end flow: infer -> list -> compare -> promote -> explain
-using Click's CliRunner to invoke each subcommand against a real
-SchemaRegistry backed by a temp directory.
+using Click's CliRunner for product-facing inspection and devtools
+entrypoints for maintenance actions against a real SchemaRegistry backed by a
+temp directory.
 
 Since schema infer requires DB access with real provider data,
 we test it via a pre-populated registry and exercise the CLI
@@ -19,6 +20,7 @@ from unittest.mock import patch
 import pytest
 from click.testing import CliRunner
 
+from devtools import schema_audit, schema_promote
 from polylogue.cli import cli
 from polylogue.schemas.registry import SchemaRegistry
 
@@ -202,13 +204,14 @@ class TestSchemaListCommand:
 
 
 class TestSchemaAuditCommand:
-    def test_schema_audit_json_scopes_checks_by_provider(self, runner: CliRunner) -> None:
-        result = runner.invoke(cli, ["schema", "audit", "--json"])
+    def test_schema_audit_json_scopes_checks_by_provider(self, capsys: pytest.CaptureFixture[str]) -> None:
+        exit_code = schema_audit.main(["--json"])
 
-        assert result.exit_code == 0, f"CLI failed: {result.output}"
-        outer = _extract_json(result.output)
+        captured = capsys.readouterr()
+        assert exit_code == 0, f"devtools failed: {captured.out}{captured.err}"
+        outer = _extract_json(captured.out)
         assert outer["status"] == "ok"
-        data = _extract_result_json(result.output)
+        data = _extract_result_json(captured.out)
         checks = _expect_object_list(data["checks"], "checks")
         assert checks
         assert any(check.get("provider") for check in checks[:-1])
@@ -467,13 +470,17 @@ class TestSchemaExplainCommand:
 
 
 # =============================================================================
-# schema promote (end-to-end with clustering)
+# devtools schema-promote (end-to-end with clustering)
 # =============================================================================
 
 
 class TestSchemaPromoteCommand:
-    def test_promote_creates_new_version(self, runner: CliRunner, schema_storage: Path) -> None:
-        """Full promote workflow: cluster -> save manifest -> promote via CLI."""
+    def test_promote_creates_new_version(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        schema_storage: Path,
+    ) -> None:
+        """Full promote workflow: cluster -> save manifest -> promote via devtools."""
         registry = SchemaRegistry(storage_root=schema_storage)
         samples = [
             {"id": "1", "title": "a", "count": 1},
@@ -484,16 +491,14 @@ class TestSchemaPromoteCommand:
         cluster_id = manifest.clusters[0].cluster_id
 
         with _patch_registry(registry):
-            result = runner.invoke(
-                cli,
-                ["schema", "promote", "--provider", "promo-prov", "--cluster", cluster_id],
-            )
+            exit_code = schema_promote.main(["--provider", "promo-prov", "--cluster", cluster_id])
 
-        assert result.exit_code == 0, f"CLI failed: {result.output}"
-        assert "v1" in result.output
-        assert "Promoted" in result.output or "promoted" in result.output
+        output = capsys.readouterr().out
+        assert exit_code == 0, f"devtools failed: {output}"
+        assert "v1" in output
+        assert "Promoted" in output or "promoted" in output
 
-    def test_promote_json_output(self, runner: CliRunner, schema_storage: Path) -> None:
+    def test_promote_json_output(self, capsys: pytest.CaptureFixture[str], schema_storage: Path) -> None:
         registry = SchemaRegistry(storage_root=schema_storage)
         samples = [{"key": "val"}]
         manifest = registry.cluster_samples("promo-json", samples)
@@ -501,15 +506,13 @@ class TestSchemaPromoteCommand:
         cluster_id = manifest.clusters[0].cluster_id
 
         with _patch_registry(registry):
-            result = runner.invoke(
-                cli,
-                ["schema", "promote", "--provider", "promo-json", "--cluster", cluster_id, "--json"],
-            )
+            exit_code = schema_promote.main(["--provider", "promo-json", "--cluster", cluster_id, "--json"])
 
-        assert result.exit_code == 0, f"CLI failed: {result.output}"
-        outer = _extract_json(result.output)
+        output = capsys.readouterr().out
+        assert exit_code == 0, f"devtools failed: {output}"
+        outer = _extract_json(output)
         assert outer["status"] == "ok"
-        data = _extract_result_json(result.output)
+        data = _extract_result_json(output)
         assert data["provider"] == "promo-json"
         assert data["cluster_id"] == cluster_id
         assert data["package_version"] == "v1"
@@ -517,7 +520,11 @@ class TestSchemaPromoteCommand:
         assert package["version"] == "v1"
         assert data["schema"] is not None
 
-    def test_promote_already_promoted_fails(self, runner: CliRunner, schema_storage: Path) -> None:
+    def test_promote_already_promoted_fails(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        schema_storage: Path,
+    ) -> None:
         registry = SchemaRegistry(storage_root=schema_storage)
         samples = [{"x": 1}]
         manifest = registry.cluster_samples("dup-promo", samples)
@@ -528,37 +535,35 @@ class TestSchemaPromoteCommand:
         registry.promote_cluster("dup-promo", cluster_id)
 
         with _patch_registry(registry):
-            result = runner.invoke(
-                cli,
-                ["schema", "promote", "--provider", "dup-promo", "--cluster", cluster_id],
-            )
+            exit_code = schema_promote.main(["--provider", "dup-promo", "--cluster", cluster_id])
 
-        assert result.exit_code != 0
+        assert exit_code != 0
+        assert "schema-promote:" in capsys.readouterr().err
 
-    def test_promote_nonexistent_cluster_fails(self, runner: CliRunner, schema_storage: Path) -> None:
+    def test_promote_nonexistent_cluster_fails(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        schema_storage: Path,
+    ) -> None:
         registry = SchemaRegistry(storage_root=schema_storage)
         samples = [{"x": 1}]
         manifest = registry.cluster_samples("ne-promo", samples)
         registry.save_cluster_manifest(manifest)
 
         with _patch_registry(registry):
-            result = runner.invoke(
-                cli,
-                ["schema", "promote", "--provider", "ne-promo", "--cluster", "nonexistent-id"],
-            )
+            exit_code = schema_promote.main(["--provider", "ne-promo", "--cluster", "nonexistent-id"])
 
-        assert result.exit_code != 0
+        assert exit_code != 0
+        assert "schema-promote:" in capsys.readouterr().err
 
-    def test_promote_no_manifest_fails(self, runner: CliRunner, schema_storage: Path) -> None:
+    def test_promote_no_manifest_fails(self, capsys: pytest.CaptureFixture[str], schema_storage: Path) -> None:
         registry = SchemaRegistry(storage_root=schema_storage)
 
         with _patch_registry(registry):
-            result = runner.invoke(
-                cli,
-                ["schema", "promote", "--provider", "no-manifest", "--cluster", "any-id"],
-            )
+            exit_code = schema_promote.main(["--provider", "no-manifest", "--cluster", "any-id"])
 
-        assert result.exit_code != 0
+        assert exit_code != 0
+        assert "schema-promote:" in capsys.readouterr().err
 
 
 # =============================================================================
@@ -567,7 +572,12 @@ class TestSchemaPromoteCommand:
 
 
 class TestFullOperatorWorkflow:
-    def test_end_to_end_workflow(self, runner: CliRunner, schema_storage: Path) -> None:
+    def test_end_to_end_workflow(
+        self,
+        runner: CliRunner,
+        capsys: pytest.CaptureFixture[str],
+        schema_storage: Path,
+    ) -> None:
         """Simulate an operator's complete schema management workflow."""
         registry = SchemaRegistry(storage_root=schema_storage)
 
@@ -649,14 +659,12 @@ class TestFullOperatorWorkflow:
         cluster_id = manifest.clusters[0].cluster_id
 
         with _patch_registry(registry):
-            result = runner.invoke(
-                cli,
-                ["schema", "promote", "--provider", "workflow-prov", "--cluster", cluster_id, "--json"],
-            )
-        assert result.exit_code == 0
-        outer = _extract_json(result.output)
+            exit_code = schema_promote.main(["--provider", "workflow-prov", "--cluster", cluster_id, "--json"])
+        output = capsys.readouterr().out
+        assert exit_code == 0
+        outer = _extract_json(output)
         assert outer["status"] == "ok"
-        promo = _extract_result_json(result.output)
+        promo = _extract_result_json(output)
         assert promo["package_version"] == "v3"
 
         # Step 6: Explain the promoted version

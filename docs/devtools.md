@@ -31,6 +31,9 @@ repo proof obligations and evidence records, not end-user archive workflows.
 | `devtools semantic-axis-evidence` | Produce comparative performance evidence that describes growth shape over semantic axes instead of machine-specific absolute budgets. |
 | `devtools lab-corpus` | Seed synthetic corpus files or complete demo workspaces for lab exercises. |
 | `devtools lab-scenario` | Run showcase exercise smoke scenarios outside the product CLI. |
+| `devtools schema-generate` | Refresh provider schema package artifacts from archive observations outside the product CLI. |
+| `devtools schema-promote` | Turn reviewed schema evidence clusters into committed provider schema packages. |
+| `devtools schema-audit` | Check committed schema package quality gates without presenting them as normal archive usage. |
 
 ## Core Loop
 
@@ -79,6 +82,9 @@ These are the commands worth remembering during normal repo work:
 | `devtools regression-capture` | Capture pipeline-probe summaries as durable local regression cases. |
 | `devtools run-validation-lanes` | Run named validation lanes. |
 | `devtools scenario-projections` | Render the authored scenario-bearing verification projections. |
+| `devtools schema-audit` | Run committed provider schema package quality checks. |
+| `devtools schema-generate` | Generate provider schema packages and optional evidence clusters. |
+| `devtools schema-promote` | Promote a schema evidence cluster into a registered package version. |
 | `devtools semantic-axis-evidence` | Generate verification-lab performance evidence across synthetic semantic scale tiers. |
 | `devtools verify` | Run the local verification baseline before pushing or creating a PR. |
 | `devtools verify-showcase` | Verify committed showcase/demo surfaces. |

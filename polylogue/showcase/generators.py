@@ -302,16 +302,6 @@ JSON_CONTRACT_SCENARIOS: tuple[Exercise, ...] = (
     _json_contract_scenario(
         "json-schema-list", "schema list JSON contract", "schema", "list", "--json", needs_data=False, tier=0, env="any"
     ),
-    _json_contract_scenario(
-        "json-schema-audit",
-        "schema audit JSON contract",
-        "schema",
-        "audit",
-        "--json",
-        needs_data=False,
-        tier=0,
-        env="any",
-    ),
     *_product_json_contract_scenarios(),
     _json_contract_scenario(
         "json-run-embed",
