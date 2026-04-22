@@ -48,6 +48,11 @@ Display title precedence: `metadata.title` > `original_title` > truncated ID.
 | `path` | str? | Local path (if downloaded) |
 
 Attachments are stored as references. For Drive sources, attachments can be downloaded on demand.
+Drive/Gemini attachment lookup is limited to explicit identity fields that are
+already preserved at ingest: the provider attachment id stored as `provider_id`
+plus `id`, `fileId`, and `driveId` in attachment metadata. These identifiers are
+indexed for exact lookup and search results report the match as attachment
+evidence.
 
 ## Branching
 

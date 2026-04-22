@@ -13,6 +13,7 @@ from polylogue.storage.backends.queries.attachment_mutations import (
 from polylogue.storage.backends.queries.attachment_records import (
     get_attachments,
     get_attachments_batch,
+    search_attachment_identity_evidence_hits,
 )
 
 __all__ = [
@@ -20,6 +21,7 @@ __all__ = [
     "save_content_blocks",
     "get_attachments",
     "get_attachments_batch",
+    "search_attachment_identity_evidence_hits",
     "save_attachments",
     "prune_attachments",
 ]

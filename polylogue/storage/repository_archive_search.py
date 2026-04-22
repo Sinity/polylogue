@@ -3,14 +3,41 @@
 from __future__ import annotations
 
 import builtins
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from polylogue.lib.conversation_models import Conversation, ConversationSummary
     from polylogue.lib.search_hits import ConversationSearchHit
     from polylogue.storage.backends.query_store import SQLiteQueryStore
-    from polylogue.storage.search_models import ConversationSearchResult
+    from polylogue.storage.search_models import ConversationSearchEvidenceHit, ConversationSearchResult
     from polylogue.storage.store import ConversationRecord
+
+
+def _rerank_evidence_hits(
+    hits: builtins.list[ConversationSearchEvidenceHit],
+) -> builtins.list[ConversationSearchEvidenceHit]:
+    return [replace(hit, rank=rank) for rank, hit in enumerate(hits, start=1)]
+
+
+def _merge_evidence_hits(
+    *,
+    attachment_hits: builtins.list[ConversationSearchEvidenceHit],
+    message_hits: builtins.list[ConversationSearchEvidenceHit],
+    limit: int,
+) -> builtins.list[ConversationSearchEvidenceHit]:
+    if limit <= 0:
+        return []
+    merged: builtins.list[ConversationSearchEvidenceHit] = []
+    seen: set[str] = set()
+    for hit in (*attachment_hits, *message_hits):
+        if hit.conversation_id in seen:
+            continue
+        seen.add(hit.conversation_id)
+        merged.append(hit)
+        if len(merged) >= limit:
+            break
+    return _rerank_evidence_hits(merged)
 
 
 class RepositoryArchiveSearchMixin:
@@ -44,14 +71,32 @@ class RepositoryArchiveSearchMixin:
         providers: builtins.list[str] | None = None,
         since: str | None = None,
     ) -> builtins.list[ConversationSearchHit]:
+        from polylogue.errors import DatabaseError
         from polylogue.lib.search_hits import conversation_search_hit_from_summary
         from polylogue.storage.hydrators import conversation_summary_from_record
 
-        evidence_hits = await self.queries.search_conversation_evidence_hits(
+        attachment_hits = await self.queries.search_attachment_identity_evidence_hits(
             query,
             limit=limit,
             providers=providers,
             since=since,
+        )
+        try:
+            message_hits = await self.queries.search_conversation_evidence_hits(
+                query,
+                limit=limit,
+                providers=providers,
+                since=since,
+            )
+        except DatabaseError:
+            if not attachment_hits:
+                raise
+            message_hits = []
+
+        evidence_hits = _merge_evidence_hits(
+            attachment_hits=attachment_hits,
+            message_hits=message_hits,
+            limit=limit,
         )
         if not evidence_hits:
             return []

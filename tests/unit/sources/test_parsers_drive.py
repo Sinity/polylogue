@@ -120,6 +120,10 @@ def test_attachment_from_doc_contract(doc: object, expected_id: str | None, expe
         assert attachment.provider_attachment_id == expected_id
         assert attachment.message_provider_id == "msg-1"
         assert attachment.size_bytes == expected_size
+        if isinstance(doc, dict):
+            assert attachment.provider_meta is not None
+            for key, value in doc.items():
+                assert attachment.provider_meta[key] == value
 
 
 def test_parse_chunked_prompt_preserves_core_conversation_metadata() -> None:

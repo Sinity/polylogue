@@ -49,7 +49,7 @@ Add to `~/.config/claude/claude_desktop_config.json`:
 
 | Tool | Description |
 |------|-------------|
-| `search` | Search conversations by text query with optional provider/date filters; returns conversation summaries plus match rank, lane, surface, message id, and snippet evidence |
+| `search` | Search conversations by text query with optional provider/date filters; returns conversation summaries plus match rank, lane, surface, message id, and snippet evidence. Drive/Gemini provider attachment ids and stored `provider_id`, `id`, `fileId`, or `driveId` metadata return `match_surface=attachment` hits. |
 | `list_conversations` | List recent conversations, optionally filtered |
 | `get_conversation` | Get a single conversation by ID (supports prefix matching) |
 | `stats` | Archive statistics: totals, provider breakdown, database size |

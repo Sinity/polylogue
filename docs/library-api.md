@@ -246,7 +246,7 @@ async def main():
         ids = [c.id for c in recent]
         convs = await archive.get_conversations(ids)
 
-        # Full-text search
+        # Search with evidence snippets
         results = await archive.search("error handling", limit=20)
         for hit in results.hits:
             print(f"{hit.title}: {hit.snippet}")
@@ -270,7 +270,7 @@ asyncio.run(main())
 | `get_conversation(id)` | Get single conversation by ID |
 | `get_conversations(ids)` | Parallel batch fetch (5-10x faster) |
 | `list_conversations(provider, limit)` | List with optional filtering |
-| `search(query, limit, source, since)` | Full-text search returning message-level evidence snippets |
+| `search(query, limit, source, since)` | Search returning evidence snippets; text matches report message evidence and Drive/Gemini `provider_id` / `id` / `fileId` / `driveId` attachment-id matches report attachment evidence |
 | `parse_file(path, source_name)` | Parse a single export file |
 | `parse_sources(sources, download_assets)` | Parse from configured sources |
 | `rebuild_index()` | Rebuild FTS5 search index |

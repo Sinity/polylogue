@@ -244,6 +244,24 @@ def _make_search_hit(conversation: Conversation) -> ConversationSearchHit:
     )
 
 
+def _make_attachment_search_hit(conversation: Conversation) -> ConversationSearchHit:
+    return ConversationSearchHit(
+        summary=ConversationSummary(
+            id=ConversationId(str(conversation.id)),
+            provider=Provider.from_string(str(conversation.provider)),
+            title=conversation.display_title,
+            message_count=len(conversation.messages),
+            created_at=conversation.created_at,
+            updated_at=conversation.updated_at,
+        ),
+        rank=1,
+        retrieval_lane="attachment",
+        match_surface="attachment",
+        message_id="msg-doc",
+        snippet='attachment identity provider_meta.fileId=drive-file-1 name="Project Plan"',
+    )
+
+
 def _provenance() -> ArchiveProductProvenance:
     return ArchiveProductProvenance(
         materializer_version=1,
@@ -363,6 +381,34 @@ class TestQueryTools:
         assert parsed["diagnostics"]["archive_conversation_count"] == 0
         assert parsed["diagnostics"]["reasons"][0]["code"] == "archive_empty"
         mock_ops.diagnose_query_miss.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_search_exposes_attachment_identity_evidence(
+        self,
+        simple_conversation: Conversation,
+        mcp_server: MCPServerUnderTest,
+    ) -> None:
+        with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
+            mock_ops = MagicMock()
+            mock_ops.search_conversation_hits = AsyncMock(
+                return_value=[_make_attachment_search_hit(simple_conversation)]
+            )
+            mock_ops.diagnose_query_miss = AsyncMock()
+            mock_get_archive_ops.return_value = mock_ops
+
+            raw = await invoke_surface_async(
+                mcp_server._tool_manager._tools["search"].fn,
+                query="drive-file-1",
+                limit=10,
+            )
+
+        payload = json.loads(raw)
+        assert payload[0]["match"]["match_surface"] == "attachment"
+        assert payload[0]["match"]["retrieval_lane"] == "attachment"
+        assert payload[0]["match"]["message_id"] == "msg-doc"
+        assert "provider_meta.fileId=drive-file-1" in payload[0]["match"]["snippet"]
+        mock_ops.search_conversation_hits.assert_awaited_once()
+        mock_ops.diagnose_query_miss.assert_not_called()
 
 
 class TestGetConversationTool:

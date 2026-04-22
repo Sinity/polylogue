@@ -70,7 +70,10 @@ polylogue "urgent" --tag review delete --dry-run
 
 Text searches that render result lists include match evidence alongside the
 conversation identity: rank, retrieval lane, matched surface, message id, and a
-snippet when the FTS index can provide one.
+snippet when the FTS index can provide one. Drive/Gemini attachment identities
+are also queryable through the same surfaces: provider attachment ids plus
+stored `provider_id`, `id`, `fileId`, and `driveId` metadata return hits with
+`match_surface=attachment`.
 
 The pipeline and archive-maintenance surfaces are explicit verbs:
 

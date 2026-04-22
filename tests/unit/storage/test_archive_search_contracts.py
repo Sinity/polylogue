@@ -2,12 +2,18 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass
+from pathlib import Path
 
 import pytest
 
 from polylogue.lib.conversation_models import Conversation
+from polylogue.lib.json import JSONDocument
 from polylogue.lib.messages import MessageCollection
+from polylogue.pipeline.prepare import prepare_records
+from polylogue.sources.parsers.drive import parse_chunked_prompt
+from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.backends.query_store import SQLiteQueryStore
+from polylogue.storage.repository import ConversationRepository
 from polylogue.storage.repository_archive_search import RepositoryArchiveSearchMixin
 from polylogue.storage.search_models import ConversationSearchEvidenceHit, ConversationSearchResult
 from polylogue.storage.search_providers.hybrid_conversations import (
@@ -31,6 +37,7 @@ def _conversation_record(conversation_id: str, *, title: str, provider_name: str
 class _FakeQueries(SQLiteQueryStore):
     hits: ConversationSearchResult
     records_by_id: dict[str, ConversationRecord]
+    attachment_hits: list[ConversationSearchEvidenceHit] | None = None
     last_batch_ids: list[str] | None = None
 
     async def search_conversation_hits(
@@ -69,6 +76,16 @@ class _FakeQueries(SQLiteQueryStore):
             )
             for hit in self.hits.hits
         ]
+
+    async def search_attachment_identity_evidence_hits(
+        self,
+        query: str,
+        limit: int = 20,
+        providers: list[str] | None = None,
+        since: str | None = None,
+    ) -> list[ConversationSearchEvidenceHit]:
+        del query, limit, providers, since
+        return self.attachment_hits or []
 
     async def get_conversations_batch(self, ids: list[str]) -> list[ConversationRecord]:
         self.last_batch_ids = ids
@@ -183,6 +200,100 @@ async def test_repository_search_summary_hits_keep_evidence_and_conversation_ord
     assert [hit.rank for hit in summary_hits] == [1, 2]
     assert [hit.message_id for hit in summary_hits] == ["msg-conv-b", "msg-conv-a"]
     assert [hit.snippet for hit in summary_hits] == ["snippet for conv-b", "snippet for conv-a"]
+
+
+@pytest.mark.asyncio
+async def test_repository_search_summary_hits_prioritize_attachment_identity_evidence() -> None:
+    hits = ConversationSearchResult.from_ids(["conv-b", "conv-a"])
+    attachment_hit = ConversationSearchEvidenceHit(
+        conversation_id="conv-a",
+        rank=1,
+        message_id="msg-attachment",
+        snippet="attachment identity provider_meta.fileId=drive-file-1",
+        match_surface="attachment",
+        retrieval_lane="attachment",
+    )
+    queries = _FakeQueries(
+        hits=hits,
+        attachment_hits=[attachment_hit],
+        records_by_id={
+            "conv-a": _conversation_record("conv-a", title="Attachment Match"),
+            "conv-b": _conversation_record("conv-b", title="Message Match"),
+        },
+    )
+    repo = _FakeRepo(queries)
+
+    summary_hits = await repo.search_summary_hits("drive-file-1", limit=5, providers=["gemini"])
+
+    assert queries.last_batch_ids == ["conv-a", "conv-b"]
+    assert [hit.conversation_id for hit in summary_hits] == ["conv-a", "conv-b"]
+    assert [hit.rank for hit in summary_hits] == [1, 2]
+    assert summary_hits[0].match_surface == "attachment"
+    assert summary_hits[0].retrieval_lane == "attachment"
+    assert summary_hits[0].message_id == "msg-attachment"
+    assert summary_hits[1].match_surface == "message"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("query", "expected_snippet"),
+    [
+        ("provider-attachment-218", "provider_meta.provider_id=provider-attachment-218"),
+        ("drive-file-218", "provider_meta.fileId=drive-file-218"),
+        ("drive-root-218", "provider_meta.driveId=drive-root-218"),
+    ],
+    ids=["provider-attachment-id", "drive-file-id", "drive-id"],
+)
+async def test_gemini_drive_attachment_id_is_searchable_after_parse_and_prepare(
+    tmp_path: Path,
+    query: str,
+    expected_snippet: str,
+) -> None:
+    payload: JSONDocument = {
+        "id": "gemini-attachment-identity",
+        "displayName": "Gemini Attachment Identity",
+        "chunkedPrompt": {
+            "chunks": [
+                {
+                    "id": "msg-doc",
+                    "role": "user",
+                    "text": "Please review the attached project plan.",
+                    "driveDocument": {
+                        "id": "provider-attachment-218",
+                        "fileId": "drive-file-218",
+                        "driveId": "drive-root-218",
+                        "name": "Project Plan",
+                        "mimeType": "application/vnd.google-apps.document",
+                    },
+                }
+            ]
+        },
+    }
+    backend = SQLiteBackend(db_path=tmp_path / "attachment-identity.db")
+    repo = ConversationRepository(backend=backend)
+    try:
+        parsed = parse_chunked_prompt("gemini", payload, "fallback-id")
+        await prepare_records(
+            parsed,
+            "gemini-export.json",
+            archive_root=tmp_path / "archive",
+            backend=backend,
+            repository=repo,
+        )
+
+        hits = await repo.search_summary_hits(query, limit=5, providers=["gemini"])
+    finally:
+        await repo.close()
+
+    assert len(hits) == 1
+    hit = hits[0]
+    assert hit.conversation_id == "gemini:gemini-attachment-identity"
+    assert hit.match_surface == "attachment"
+    assert hit.retrieval_lane == "attachment"
+    assert hit.message_id == "gemini:gemini-attachment-identity:msg-doc"
+    assert hit.snippet is not None
+    assert expected_snippet in hit.snippet
+    assert 'name="Project Plan"' in hit.snippet
 
 
 @pytest.mark.asyncio
