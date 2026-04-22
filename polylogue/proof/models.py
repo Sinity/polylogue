@@ -289,6 +289,8 @@ class EnvironmentContract:
 
     required_commands: tuple[str, ...] = ()
     required_env: tuple[str, ...] = ()
+    controlled_dimensions: tuple[str, ...] = ()
+    uncontrolled_dimensions: tuple[str, ...] = ()
     network: NetworkPolicy = "none"
     live_archive: bool = False
     notes: tuple[str, ...] = ()
@@ -298,6 +300,8 @@ class EnvironmentContract:
             {
                 "required_commands": list(self.required_commands),
                 "required_env": list(self.required_env),
+                "controlled_dimensions": list(self.controlled_dimensions),
+                "uncontrolled_dimensions": list(self.uncontrolled_dimensions),
                 "network": self.network,
                 "live_archive": self.live_archive,
                 "notes": list(self.notes),
@@ -314,6 +318,15 @@ class TrustMetadata:
     level: TrustLevel = "authored"
     expires_at: str | None = None
     privacy: str = "repo-local metadata only"
+    code_revision: str | None = None
+    dirty_state: bool | None = None
+    schema_version: int | None = None
+    provider_schema_digest: str | None = None
+    input_fingerprint: str | None = None
+    environment_fingerprint: str | None = None
+    runner_version: str | None = None
+    freshness: str | None = None
+    origin: str | None = None
 
     def expires_before(self, now: datetime) -> bool:
         if self.expires_at is None:
@@ -334,6 +347,15 @@ class TrustMetadata:
                 "level": self.level,
                 "expires_at": self.expires_at,
                 "privacy": self.privacy,
+                "code_revision": self.code_revision,
+                "dirty_state": self.dirty_state,
+                "schema_version": self.schema_version,
+                "provider_schema_digest": self.provider_schema_digest,
+                "input_fingerprint": self.input_fingerprint,
+                "environment_fingerprint": self.environment_fingerprint,
+                "runner_version": self.runner_version,
+                "freshness": self.freshness,
+                "origin": self.origin,
             }
         )
 

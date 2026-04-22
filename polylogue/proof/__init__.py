@@ -30,9 +30,12 @@ from polylogue.proof.models import (
     subject_query_from_payload,
 )
 from polylogue.proof.runners import (
+    SchemaValueGenerationObservation,
     SemanticQueryObservation,
     run_cli_json_envelope_evidence,
     run_cli_visual_evidence,
+    run_provider_capability_evidence,
+    run_schema_value_generation_evidence,
     run_semantic_query_evidence,
 )
 from polylogue.proof.subjects import (
@@ -41,8 +44,15 @@ from polylogue.proof.subjects import (
     build_catalog_subjects,
     command_subjects,
     json_command_subjects,
+    provider_capability_subjects,
     query_law_subjects,
     schema_annotation_subjects,
+)
+from polylogue.proof.witnesses import (
+    PrivacyRecord,
+    WitnessMetadata,
+    committed_witness_errors,
+    load_committed_witnesses,
 )
 
 __all__ = [
@@ -59,26 +69,34 @@ __all__ = [
     "Not",
     "Or",
     "ProofObligation",
+    "PrivacyRecord",
     "RunnerBinding",
     "SELECTED_JSON_COMMANDS",
     "SELECTED_SCHEMA_ANNOTATIONS",
     "SemanticQueryObservation",
+    "SchemaValueGenerationObservation",
     "SourceSpan",
     "SubjectQuery",
     "SubjectRef",
     "TrustMetadata",
     "VerificationCatalog",
+    "WitnessMetadata",
     "build_catalog_subjects",
     "build_verification_catalog",
     "catalog_quality_checks",
     "command_subjects",
+    "committed_witness_errors",
     "compile_obligations",
     "default_claims",
     "default_runner_bindings",
     "json_command_subjects",
+    "load_committed_witnesses",
+    "provider_capability_subjects",
     "query_law_subjects",
     "run_cli_json_envelope_evidence",
     "run_cli_visual_evidence",
+    "run_provider_capability_evidence",
+    "run_schema_value_generation_evidence",
     "run_semantic_query_evidence",
     "schema_annotation_subjects",
     "subject_query_from_payload",

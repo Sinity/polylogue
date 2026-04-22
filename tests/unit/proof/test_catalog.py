@@ -42,6 +42,7 @@ def test_default_catalog_compiles_first_vertical_slice() -> None:
     assert catalog.subjects_by_kind()["schema.annotation"] >= 1
     assert {runner.claim_id for runner in catalog.runner_bindings} == {claim.id for claim in catalog.claims}
     assert {"smoke", "semantic", "structural"}.issubset({runner.evidence_class for runner in catalog.runner_bindings})
+    assert all(runner.environment.controlled_dimensions for runner in catalog.runner_bindings)
     assert all(check.status is OutcomeStatus.OK for check in catalog.quality_checks)
 
 
@@ -119,6 +120,7 @@ def test_catalog_self_quality_exposes_catalog_contract_failures() -> None:
 
     assert checks["catalog.subject_source_spans"].status is OutcomeStatus.ERROR
     assert checks["catalog.runner_trust_metadata"].status is OutcomeStatus.ERROR
+    assert checks["catalog.runner_environment_dimensions"].status is OutcomeStatus.ERROR
     assert checks["catalog.serious_claim_bug_classes"].status is OutcomeStatus.ERROR
     assert checks["catalog.serious_claim_breakers"].status is OutcomeStatus.ERROR
     assert checks["catalog.serious_claim_adequacy"].status is OutcomeStatus.ERROR

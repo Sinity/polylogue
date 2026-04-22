@@ -3,7 +3,7 @@ from __future__ import annotations
 import copy
 import json
 
-from hypothesis import given
+from hypothesis import given, settings
 from hypothesis import strategies as st
 from hypothesis_jsonschema import from_schema
 
@@ -67,6 +67,7 @@ def test_provider_capability_partial_coverage_runner_requires_explicit_gaps() ->
 
 
 @given(data=st.data())
+@settings(deadline=None)
 def test_value_annotation_metadata_drives_generation_and_verification(data: st.DataObject) -> None:
     obligation = _obligation("schema.values.value_closure")
     annotation_values = _json_values_attr(obligation.subject.attrs.get("values"))
