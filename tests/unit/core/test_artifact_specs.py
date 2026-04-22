@@ -55,6 +55,7 @@ def test_runtime_artifact_specs_expose_the_curated_vertical_paths() -> None:
         "raw-archive-ingest-loop",
         "action-event-repair-loop",
         "session-product-repair-loop",
+        "raw-session-product-repair-loop",
         "message-fts-readiness-loop",
         "conversation-query-loop",
         "session-profile-query-loop",

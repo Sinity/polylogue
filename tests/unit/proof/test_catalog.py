@@ -35,6 +35,10 @@ def test_default_catalog_compiles_first_vertical_slice() -> None:
         "schema.foreign_key.resolves",
         "schema.mutual_exclusion.exclusive",
         "operation.spec.routing_metadata",
+        "artifact.path.dependency_closure",
+        "maintenance.repair.crash_consistency",
+        "parser.quarantine.context_redaction",
+        "error.machine_user_context",
         "workflow.generated_surfaces_current",
         "workflow.pr_verification_recorded",
     }
@@ -43,6 +47,9 @@ def test_default_catalog_compiles_first_vertical_slice() -> None:
     assert catalog.subjects_by_kind()["archive.query_law"] == 1
     assert catalog.subjects_by_kind()["provider.capability"] >= 2
     assert catalog.subjects_by_kind()["operation.spec"] >= 1
+    assert catalog.subjects_by_kind()["artifact.path"] >= 1
+    assert catalog.subjects_by_kind()["maintenance.target"] >= 1
+    assert catalog.subjects_by_kind()["error.surface"] == 2
     assert catalog.subjects_by_kind()["schema.annotation"] >= 1
     assert catalog.subjects_by_kind()["workflow.claim"] == 2
     assert {runner.claim_id for runner in catalog.runner_bindings} == {claim.id for claim in catalog.claims}

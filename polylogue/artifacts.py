@@ -843,6 +843,28 @@ RUNTIME_ARTIFACT_PATHS: tuple[ArtifactPath, ...] = (
         ),
     ),
     ArtifactPath(
+        name="raw-session-product-repair-loop",
+        description=(
+            "Raw validation and archive core rows through durable session-product rows, FTS, and projected repair semantics."
+        ),
+        nodes=(
+            "configured_sources",
+            "source_payload_stream",
+            "raw_validation_state",
+            "archive_conversation_rows",
+            "session_product_source_conversations",
+            "session_profile_rows",
+            "session_work_event_rows",
+            "session_phase_rows",
+            "work_thread_rows",
+            "session_tag_rollup_rows",
+            "day_session_summary_rows",
+            "session_product_rows",
+            "session_product_fts",
+            "session_product_readiness",
+        ),
+    ),
+    ArtifactPath(
         name="retrieval-band-readiness-loop",
         description="Embedding state plus action/session-product readiness through retrieval-band and archive readiness projections.",
         nodes=(
