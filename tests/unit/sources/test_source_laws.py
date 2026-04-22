@@ -74,6 +74,7 @@ from polylogue.sources.providers.claude_code import (
     ClaudeCodeUsage,
 )
 from polylogue.sources.source_acquisition import _iter_entry_payloads, iter_source_raw_data
+from polylogue.sources.source_acquisition_components import SplitPayloadBuffer
 from polylogue.sources.source_parsing import (
     iter_source_conversations,
     iter_source_conversations_with_raw,
@@ -1970,7 +1971,7 @@ def test_iter_source_raw_data_avoids_whole_blob_provider_detection_for_zip_entri
         raise AssertionError("ZIP acquisition should not use whole-blob provider detection")
 
     monkeypatch.setattr(
-        "polylogue.sources.source_acquisition._detect_provider_from_raw_bytes",
+        "polylogue.sources.source_acquisition_components._detect_provider_from_raw_bytes",
         _fail,
     )
 
@@ -2016,6 +2017,29 @@ def test_iter_source_raw_data_reports_split_payload_observations(tmp_path: Path)
     assert _numeric_observation_value(peak, "peak_rss_self_mb") > 0.0
 
 
+def test_split_payload_buffer_waits_until_zip_entry_is_multi_conversation() -> None:
+    buffer = SplitPayloadBuffer()
+
+    assert buffer.pending_index == 0
+    assert buffer.add(Provider.CHATGPT, b'{"id":"first"}') == ()
+    assert buffer.did_split is False
+    assert buffer.pending_index == 1
+
+    first_emit = buffer.add(Provider.CHATGPT, b'{"id":"second"}')
+
+    assert buffer.did_split is True
+    assert [(item.source_index, item.payload_bytes) for item in first_emit] == [
+        (0, b'{"id":"first"}'),
+        (1, b'{"id":"second"}'),
+    ]
+    assert buffer.pending_index == 2
+
+    later_emit = buffer.add(Provider.CHATGPT, b'{"id":"third"}')
+
+    assert [(item.source_index, item.payload_bytes) for item in later_emit] == [(2, b'{"id":"third"}')]
+    assert buffer.pending_index == 3
+
+
 def test_iter_source_raw_data_streams_preserved_zip_entries_into_blob_store(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2057,7 +2081,7 @@ def test_iter_entry_payloads_locks_provider_after_first_detected_payload(
             detect_calls.append(payload)
         return original_detect_provider(payload)
 
-    monkeypatch.setattr("polylogue.sources.source_acquisition.detect_provider", tracking_detect_provider)
+    monkeypatch.setattr("polylogue.sources.source_acquisition_components.detect_provider", tracking_detect_provider)
 
     items = list(
         _iter_entry_payloads(
