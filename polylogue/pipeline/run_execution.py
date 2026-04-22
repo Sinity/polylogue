@@ -26,6 +26,11 @@ from polylogue.pipeline.run_support import (
     normalize_stage_sequence,
     select_sources,
 )
+from polylogue.pipeline.stage_specs import (
+    PipelineStageSpec,
+    stage_sequence_suspends_fts,
+    stage_specs_for_sequence,
+)
 from polylogue.storage.backends import create_backend
 from polylogue.storage.repository import ConversationRepository
 from polylogue.storage.run_state import RunResult
@@ -99,11 +104,13 @@ async def run_sources(
     try:
         selected_sources = select_sources(config, source_names)
         normalized_stage_sequence = normalize_stage_sequence(stage=stage, stage_sequence=stage_sequence)
+        stage_specs = stage_specs_for_sequence(normalized_stage_sequence)
+        explicit_sequence = stage_sequence is not None
         executed_stages: set[str] = set()
         index_outcome = IndexStageOutcome(indexed=False, item_count=0)
 
-        async def _run_acquire_stage() -> None:
-            sm = metrics.start_stage("acquire")
+        async def _run_acquire_stage(spec: PipelineStageSpec) -> None:
+            sm = metrics.start_stage(spec.log_stage)
             acquire_result = await execute_acquire_stage(
                 config=config,
                 backend=active_backend,
@@ -115,10 +122,9 @@ async def run_sources(
             sm.stop(items=acquire_result.counts["acquired"])
             state.record_acquire(acquire_result)
             logger.info("Acquire stage complete", **sm.to_dict(), **acquire_result.counts)
-            executed_stages.add("acquire")
 
-        async def _run_schema_stage() -> None:
-            sm = metrics.start_stage("schema")
+        async def _run_schema_stage(spec: PipelineStageSpec) -> None:
+            sm = metrics.start_stage(spec.log_stage)
             schema_outcome = await execute_schema_generation_stage()
             state.record_schema_generation(
                 generated=schema_outcome.generated,
@@ -131,10 +137,9 @@ async def run_sources(
                 generated=schema_outcome.generated,
                 failed=schema_outcome.failed,
             )
-            executed_stages.add("schema")
 
-        async def _run_parse_stage(ingest_stage: str) -> None:
-            sm = metrics.start_stage("ingest")
+        async def _run_parse_stage(spec: PipelineStageSpec, ingest_stage: str) -> None:
+            sm = metrics.start_stage(spec.log_stage)
             ingest_result = await execute_ingest_stage(
                 config=config,
                 repository=active_repository,
@@ -170,10 +175,9 @@ async def run_sources(
                 processed_ids=len(state.processed_ids),
                 parse_failures=ingest_result.parse_result.parse_failures,
             )
-            executed_stages.add("parse")
 
-        async def _run_materialize_stage(materialize_stage: str) -> None:
-            sm = metrics.start_stage("materialize")
+        async def _run_materialize_stage(spec: PipelineStageSpec, materialize_stage: str) -> None:
+            sm = metrics.start_stage(spec.log_stage)
             materialize_outcome = await execute_materialize_stage(
                 stage=materialize_stage,
                 source_names=source_names,
@@ -191,10 +195,9 @@ async def run_sources(
                 **materialize_log_payload,
                 rebuilt=materialize_outcome.rebuilt,
             )
-            executed_stages.add("materialize")
 
-        async def _run_render_stage(render_stage: str) -> None:
-            sm = metrics.start_stage("render")
+        async def _run_render_stage(spec: PipelineStageSpec, render_stage: str) -> None:
+            sm = metrics.start_stage(spec.log_stage)
             render_outcome = await execute_render_stage(
                 config=config,
                 backend=active_backend,
@@ -217,10 +220,9 @@ async def run_sources(
                 failures=len(render_outcome.failures),
                 total=render_outcome.total,
             )
-            executed_stages.add("render")
 
-        async def _run_index_stage(index_stage: str) -> IndexStageOutcome:
-            sm = metrics.start_stage("index")
+        async def _run_index_stage(spec: PipelineStageSpec, index_stage: str) -> IndexStageOutcome:
+            sm = metrics.start_stage(spec.log_stage)
             next_index_outcome = await execute_index_stage(
                 config=config,
                 stage=index_stage,
@@ -237,11 +239,10 @@ async def run_sources(
                 **sm.to_dict(),
                 indexed=next_index_outcome.indexed,
             )
-            executed_stages.add("index")
             return next_index_outcome
 
-        async def _run_site_stage() -> None:
-            sm = metrics.start_stage("site")
+        async def _run_site_stage(spec: PipelineStageSpec) -> None:
+            sm = metrics.start_stage(spec.log_stage)
             site_outcome = await execute_site_stage(
                 backend=active_backend,
                 repository=active_repository,
@@ -258,70 +259,49 @@ async def run_sources(
                 index_pages=site_outcome.index_pages,
                 rendered_pages=site_outcome.rendered_pages,
             )
-            executed_stages.add("site")
 
-        def _explicit_leaf_stage_context(leaf_stage: str) -> str:
-            if leaf_stage == "parse":
-                return "parse"
-            if leaf_stage in {"materialize", "render", "index"} and "parse" in executed_stages:
-                return "all"
-            return leaf_stage
+        async def _run_stage_spec(spec: PipelineStageSpec) -> None:
+            nonlocal index_outcome
+            if not spec.pipeline_managed:
+                executed_stages.add(spec.name)
+                return
+            execution_stage = spec.execution_stage(
+                requested_stage=stage,
+                explicit_sequence=explicit_sequence,
+                executed_stages=executed_stages,
+            )
+            if spec.name == "acquire":
+                await _run_acquire_stage(spec)
+            elif spec.name == "schema":
+                await _run_schema_stage(spec)
+            elif spec.name == "parse":
+                await _run_parse_stage(spec, execution_stage)
+            elif spec.name == "materialize":
+                await _run_materialize_stage(spec, execution_stage)
+            elif spec.name == "render":
+                await _run_render_stage(spec, execution_stage)
+            elif spec.name == "site":
+                await _run_site_stage(spec)
+            elif spec.name == "index":
+                index_outcome = await _run_index_stage(spec, execution_stage)
+            else:
+                raise ValueError(f"Unknown pipeline stage spec: {spec.name}")
+            executed_stages.add(spec.name)
 
         # Suspend FTS triggers during bulk pipeline operations.
         # Triggers fire per-row during message INSERTs, causing massive
         # overhead (~8s per 50 updates with realistic text). The index
         # stage rebuilds FTS at the end anyway, making trigger updates
         # pure waste during ingest.
-        if any(stage_name in {"parse", "render", "index"} for stage_name in normalized_stage_sequence):
+        if stage_sequence_suspends_fts(stage_specs):
             from polylogue.storage.fts_lifecycle import suspend_fts_triggers_async
 
             async with active_backend.connection() as conn:
                 await suspend_fts_triggers_async(conn)
                 await conn.commit()
 
-        if stage_sequence is None:
-            if "acquire" in normalized_stage_sequence:
-                await _run_acquire_stage()
-
-            if "schema" in normalized_stage_sequence:
-                await _run_schema_stage()
-
-            if "parse" in normalized_stage_sequence:
-                await _run_parse_stage(stage)
-
-            if "materialize" in normalized_stage_sequence:
-                await _run_materialize_stage(stage)
-
-            if "render" in normalized_stage_sequence:
-                await _run_render_stage(stage)
-
-            if "site" in normalized_stage_sequence:
-                await _run_site_stage()
-
-            if "index" in normalized_stage_sequence:
-                index_outcome = await _run_index_stage(stage)
-        else:
-            for leaf_stage in normalized_stage_sequence:
-                if leaf_stage == "acquire":
-                    await _run_acquire_stage()
-                    continue
-                if leaf_stage == "schema":
-                    await _run_schema_stage()
-                    continue
-                if leaf_stage == "parse":
-                    await _run_parse_stage(_explicit_leaf_stage_context(leaf_stage))
-                    continue
-                if leaf_stage == "materialize":
-                    await _run_materialize_stage(_explicit_leaf_stage_context(leaf_stage))
-                    continue
-                if leaf_stage == "render":
-                    await _run_render_stage(_explicit_leaf_stage_context(leaf_stage))
-                    continue
-                if leaf_stage == "site":
-                    await _run_site_stage()
-                    continue
-                if leaf_stage == "index":
-                    index_outcome = await _run_index_stage(_explicit_leaf_stage_context(leaf_stage))
+        for stage_spec in stage_specs:
+            await _run_stage_spec(stage_spec)
 
         return await persist_run_result(
             config=config,
