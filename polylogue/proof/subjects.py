@@ -8,9 +8,11 @@ from pathlib import Path
 
 import click
 
+from polylogue.artifact_graph import ArtifactGraph, build_artifact_graph
 from polylogue.cli.command_inventory import CommandPath, iter_command_paths
 from polylogue.lib.json import JSONDocument, json_document, json_document_list, require_json_value
 from polylogue.lib.provider_capabilities import iter_provider_capabilities
+from polylogue.maintenance_targets import MaintenanceTargetCatalog, build_maintenance_target_catalog
 from polylogue.operations import build_declared_operation_catalog
 from polylogue.proof.models import SourceSpan, SubjectRef
 from polylogue.schemas.packages import SchemaVersionPackage
@@ -160,6 +162,105 @@ def operation_spec_subjects() -> tuple[SubjectRef, ...]:
     return tuple(sorted(subjects, key=lambda subject: subject.id))
 
 
+def artifact_path_subjects(graph: ArtifactGraph | None = None) -> tuple[SubjectRef, ...]:
+    """Compile curated runtime artifact paths into structural proof subjects."""
+    runtime_graph = graph or build_artifact_graph()
+    nodes_by_name = runtime_graph.by_name()
+    subjects: list[SubjectRef] = []
+    for path in runtime_graph.paths:
+        path_nodes = tuple(nodes_by_name[name] for name in path.nodes if name in nodes_by_name)
+        path_node_names = set(path.nodes)
+        repair_targets = sorted({target for node in path_nodes for target in node.repair_targets})
+        operation_targets = tuple(operation.name for operation in runtime_graph.operations_for_path(path))
+        layer_names = sorted({node.layer.value for node in path_nodes})
+        missing_dependencies = sorted(
+            {dependency for node in path_nodes for dependency in node.depends_on if dependency not in nodes_by_name}
+        )
+        external_dependencies = sorted(
+            {
+                dependency
+                for node in path_nodes
+                for dependency in node.depends_on
+                if dependency in nodes_by_name and dependency not in path_node_names
+            }
+        )
+        attrs = _json_document(
+            {
+                "path_name": path.name,
+                "description": path.description,
+                "nodes": list(path.nodes),
+                "layers": {node.name: node.layer.value for node in path_nodes},
+                "layer_names": layer_names,
+                "has_durable_layer": "durable" in layer_names,
+                "has_non_core_layer": bool({"derived", "index", "projection"} & set(layer_names)),
+                "repair_targets": repair_targets,
+                "operation_targets": list(operation_targets),
+                "missing_dependencies": missing_dependencies,
+                "external_dependencies": external_dependencies,
+            }
+        )
+        subjects.append(
+            SubjectRef(
+                kind="artifact.path",
+                id=f"artifact.path.{path.name}",
+                attrs=attrs,
+                source_span=SourceSpan(path="polylogue/artifacts.py", symbol=path.name),
+            )
+        )
+    return tuple(sorted(subjects, key=lambda subject: subject.id))
+
+
+def maintenance_target_subjects(
+    catalog: MaintenanceTargetCatalog | None = None,
+) -> tuple[SubjectRef, ...]:
+    """Compile maintenance targets into proof subjects for repair effect claims."""
+    maintenance_catalog = catalog or build_maintenance_target_catalog()
+    return tuple(
+        sorted(
+            (
+                SubjectRef(
+                    kind="maintenance.target",
+                    id=f"maintenance.target.{target.name}",
+                    attrs=target.to_dict(),
+                    source_span=SourceSpan(path="polylogue/maintenance_targets.py", symbol=target.name),
+                )
+                for target in maintenance_catalog.specs
+            ),
+            key=lambda subject: subject.id,
+        )
+    )
+
+
+def error_surface_subjects() -> tuple[SubjectRef, ...]:
+    """Compile durable error-reporting contracts into proof subjects."""
+    return (
+        SubjectRef(
+            kind="error.surface",
+            id="error.surface.parser_quarantine",
+            attrs=_json_document(
+                {
+                    "error_family": "parser-quarantine",
+                    "required_context": ["provider", "source_path", "raw_id"],
+                    "privacy_rule": "Payload fragments are not emitted in user or machine diagnostics.",
+                }
+            ),
+            source_span=SourceSpan(path="polylogue/pipeline/services/ingest_worker.py", symbol="ingest_record"),
+        ),
+        SubjectRef(
+            kind="error.surface",
+            id="error.surface.maintenance_failure",
+            attrs=_json_document(
+                {
+                    "error_family": "maintenance-failure",
+                    "required_context": ["target", "state_effect", "operation"],
+                    "privacy_rule": "Maintenance failures report state effect, not archive payload contents.",
+                }
+            ),
+            source_span=SourceSpan(path="polylogue/storage/repair.py", symbol="RepairResult"),
+        ),
+    )
+
+
 def workflow_claim_subjects() -> tuple[SubjectRef, ...]:
     """Compile durable workflow claims that are not coupled to GitHub runtime state."""
     return (
@@ -258,6 +359,9 @@ def build_catalog_subjects() -> tuple[SubjectRef, ...]:
         *query_law_subjects(),
         *provider_capability_subjects(),
         *operation_spec_subjects(),
+        *artifact_path_subjects(),
+        *maintenance_target_subjects(),
+        *error_surface_subjects(),
         *schema_annotation_subjects(),
         *workflow_claim_subjects(),
     )
@@ -458,9 +562,12 @@ def _json_document(items: dict[str, object]) -> JSONDocument:
 __all__ = [
     "SELECTED_SCHEMA_ANNOTATIONS",
     "SELECTED_JSON_COMMANDS",
+    "artifact_path_subjects",
     "build_catalog_subjects",
     "command_subjects",
+    "error_surface_subjects",
     "json_command_subjects",
+    "maintenance_target_subjects",
     "operation_spec_subjects",
     "provider_capability_subjects",
     "query_law_subjects",

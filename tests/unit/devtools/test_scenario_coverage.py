@@ -17,6 +17,7 @@ def test_build_runtime_scenario_coverage_tracks_the_current_authored_map() -> No
         "conversation-query-loop",
         "action-event-repair-loop",
         "session-product-repair-loop",
+        "raw-session-product-repair-loop",
         "session-profile-query-loop",
         "session-enrichment-query-loop",
         "session-work-event-query-loop",

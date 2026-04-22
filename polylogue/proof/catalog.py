@@ -148,6 +148,16 @@ def default_claims() -> tuple[Claim, ...]:
     mutual_exclusion_query = _schema_annotation_query("x-polylogue-mutually-exclusive")
     provider_capability_query = Kind("provider.capability")
     operation_query = Kind("operation.spec")
+    artifact_path_query = And(
+        (
+            Kind("artifact.path"),
+            AttrEq("has_durable_layer", True),
+            AttrEq("has_non_core_layer", True),
+        )
+    )
+    maintenance_target_query = Kind("maintenance.target")
+    parser_quarantine_query = AttrEq("error_family", "parser-quarantine")
+    error_surface_query = Kind("error.surface")
     return (
         Claim(
             id="cli.command.help",
@@ -346,6 +356,87 @@ def default_claims() -> tuple[Claim, ...]:
             ),
         ),
         Claim(
+            id="artifact.path.dependency_closure",
+            description=(
+                "Runtime artifact paths resolve declared dependencies and span durable, derived, index, or projection "
+                "layers beyond conversation/message rows."
+            ),
+            subject_query=artifact_path_query,
+            evidence_schema=_evidence_schema("path_name", "nodes", "layers", "missing_dependencies"),
+            bug_classes=("artifact-graph.unresolved-dependency", "structural-proof.missing-derived-layer"),
+            runner_classes=("artifact_path_static",),
+            observed_facts=("path_name", "nodes", "layers", "missing_dependencies", "operation_targets"),
+            staleness_conditions=("Artifact graph nodes, runtime paths, operation targets, or repair targets change.",),
+            breaker=BreakerMetadata(
+                description="A runtime path with unresolved dependencies or no derived/index/projection layer breaks routing.",
+                issue="#340",
+                command=("pytest", "tests/unit/proof/test_structural_error_evidence.py"),
+            ),
+        ),
+        Claim(
+            id="maintenance.repair.crash_consistency",
+            description=(
+                "Maintenance repair crash-consistency evidence states preview, execution, idempotence, and failure "
+                "state effects."
+            ),
+            subject_query=maintenance_target_query,
+            evidence_schema=_evidence_schema(
+                "target",
+                "preview_repaired_count",
+                "repaired_count",
+                "state_effect",
+                "failure_state",
+            ),
+            bug_classes=("maintenance.failure-state.ambiguous", "destructive-repair.preview-mismatch"),
+            runner_classes=("maintenance_repair_state",),
+            observed_facts=(
+                "target",
+                "before_count",
+                "after_dry_run_count",
+                "after_count",
+                "state_effect",
+                "failure_state",
+            ),
+            staleness_conditions=("Repair result semantics, doctor preview behavior, or maintenance targets change.",),
+            breaker=BreakerMetadata(
+                description="A repair failure without an explicit unchanged/changed/rolled-back/partial state is ambiguous.",
+                issue="#340",
+                command=("pytest", "tests/unit/proof/test_structural_error_evidence.py"),
+            ),
+        ),
+        Claim(
+            id="parser.quarantine.context_redaction",
+            description="Parser quarantine evidence keeps provider/source/path context while redacting payload fragments.",
+            subject_query=parser_quarantine_query,
+            evidence_schema=_evidence_schema("provider", "source_path", "parse_error", "payload_leak_detected"),
+            bug_classes=("parser-quarantine.context-loss", "parser-quarantine.payload-leak"),
+            runner_classes=("parser_quarantine_error",),
+            observed_facts=("provider", "source_path", "raw_id", "parse_error", "payload_leak_detected"),
+            staleness_conditions=(
+                "Raw ingest envelopes, parser diagnostics, or validation quarantine persistence changes.",
+            ),
+            breaker=BreakerMetadata(
+                description="A quarantine error without source context, or one that echoes private payload text, breaks the claim.",
+                issue="#340",
+                command=("pytest", "tests/unit/proof/test_structural_error_evidence.py"),
+            ),
+        ),
+        Claim(
+            id="error.machine_user_context",
+            description="Error surfaces expose machine-readable context and matching user-facing context checks.",
+            subject_query=error_surface_query,
+            evidence_schema=_evidence_schema("machine_payload", "user_context_checks", "privacy_checks"),
+            bug_classes=("error-envelope.context-loss", "operator-error.unactionable"),
+            runner_classes=("error_context",),
+            observed_facts=("machine_payload", "user_message", "user_context_checks", "privacy_checks"),
+            staleness_conditions=("Machine error envelope, CLI error rendering, or diagnostic context keys change.",),
+            breaker=BreakerMetadata(
+                description="An error surface that only carries prose, or omits required context keys, is not actionable.",
+                issue="#340",
+                command=("pytest", "tests/unit/proof/test_structural_error_evidence.py"),
+            ),
+        ),
+        Claim(
             id="workflow.generated_surfaces_current",
             description="Generated documentation and agent surfaces are current after their sources change.",
             subject_query=AttrEq("claim_family", "generated-surfaces"),
@@ -431,6 +522,28 @@ def default_runner_bindings(claims: Iterable[Claim]) -> tuple[RunnerBinding, ...
             bindings.append(
                 _runner_binding(claim, runner="operation-spec-static-contract", evidence_class="structural")
             )
+        elif claim.id.startswith("artifact.path."):
+            bindings.append(_runner_binding(claim, runner="artifact-path-static-contract", evidence_class="structural"))
+        elif claim.id.startswith("maintenance.repair."):
+            bindings.append(
+                _runner_binding(
+                    claim,
+                    runner="maintenance-repair-state-contract",
+                    evidence_class="structural",
+                    cost_tier="unit",
+                )
+            )
+        elif claim.id.startswith("parser.quarantine."):
+            bindings.append(
+                _runner_binding(
+                    claim,
+                    runner="parser-quarantine-error-contract",
+                    evidence_class="structural",
+                    cost_tier="unit",
+                )
+            )
+        elif claim.id.startswith("error."):
+            bindings.append(_runner_binding(claim, runner="error-context-contract", evidence_class="structural"))
         elif claim.id.startswith("workflow."):
             bindings.append(_runner_binding(claim, runner="workflow-static-contract", evidence_class="workflow"))
     return tuple(bindings)

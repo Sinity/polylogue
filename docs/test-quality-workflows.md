@@ -27,7 +27,7 @@ Current registry snapshot:
 
 ## Runtime Coverage
 
-- covered runtime paths: `26`
+- covered runtime paths: `27`
 - covered runtime artifacts: `59`
 - covered runtime operations: `31`
 - covered maintenance targets: `3`

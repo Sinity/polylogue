@@ -340,6 +340,18 @@ class TestFormatConversationMarkdownNoneGuards:
         md = format_conversation_markdown(conv)
         assert "```json" in md
 
+    def test_message_text_heading_marker_does_not_create_extra_section(self) -> None:
+        """Body lines that look like renderer headers stay message content."""
+        conv = self._make_conv(
+            [
+                make_msg(id="m1", role="user", text="## not a message header"),
+                make_msg(id="m2", role="assistant", text="Response"),
+            ]
+        )
+        md = format_conversation_markdown(conv)
+        assert "\\## not a message header" in md
+        assert sum(1 for line in md.splitlines() if line.startswith("## ")) == 2
+
     def test_all_messages_none_text(self) -> None:
         """All messages with None text should produce header-only markdown."""
         conv = self._make_conv(

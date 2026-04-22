@@ -240,6 +240,7 @@ def test_artifact_graph_paths_reference_only_declared_nodes() -> None:
         "conversation-query-loop",
         "action-event-repair-loop",
         "session-product-repair-loop",
+        "raw-session-product-repair-loop",
         "session-profile-query-loop",
         "session-enrichment-query-loop",
         "session-work-event-query-loop",

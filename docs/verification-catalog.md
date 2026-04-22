@@ -8,10 +8,10 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 
 ## Snapshot
 
-- subjects: `8989`
-- claims: `13`
-- runner bindings: `13`
-- proof obligations: `9078`
+- subjects: `9026`
+- claims: `17`
+- runner bindings: `17`
+- proof obligations: `9100`
 
 ## Quality Checks
 
@@ -30,8 +30,11 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | Kind | Count |
 | --- | ---: |
 | `archive.query_law` | 1 |
+| `artifact.path` | 27 |
 | `cli.command` | 43 |
 | `cli.json_command` | 2 |
+| `error.surface` | 2 |
+| `maintenance.target` | 8 |
 | `operation.spec` | 41 |
 | `provider.capability` | 3 |
 | `schema.annotation` | 8897 |
@@ -122,6 +125,10 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `schema.foreign_key.resolves` | `serious` | `schema.relationship.drift`<br>`synthetic-corpus.integrity` | A source path pointing at a missing target path breaks the relation claim. |
 | `schema.mutual_exclusion.exclusive` | `serious` | `schema.mutual-exclusion.drift`<br>`synthetic-corpus.invalid-combination` | A generated record containing two fields from the same exclusion group is a counterexample. |
 | `operation.spec.routing_metadata` | `serious` | `operation.routing.metadata-missing`<br>`agent-verification.unroutable-operation` | An operation without stable routing metadata cannot be mapped to focused proof checks. |
+| `artifact.path.dependency_closure` | `serious` | `artifact-graph.unresolved-dependency`<br>`structural-proof.missing-derived-layer` | A runtime path with unresolved dependencies or no derived/index/projection layer breaks routing. |
+| `maintenance.repair.crash_consistency` | `serious` | `maintenance.failure-state.ambiguous`<br>`destructive-repair.preview-mismatch` | A repair failure without an explicit unchanged/changed/rolled-back/partial state is ambiguous. |
+| `parser.quarantine.context_redaction` | `serious` | `parser-quarantine.context-loss`<br>`parser-quarantine.payload-leak` | A quarantine error without source context, or one that echoes private payload text, breaks the claim. |
+| `error.machine_user_context` | `serious` | `error-envelope.context-loss`<br>`operator-error.unactionable` | An error surface that only carries prose, or omits required context keys, is not actionable. |
 | `workflow.generated_surfaces_current` | `serious` | `generated-surface.drift`<br>`agent-context.stale-generated-doc` | Generated docs or AGENTS surfaces drift when render-all is not refreshed. |
 | `workflow.pr_verification_recorded` | `serious` | `workflow.verification-record.omitted`<br>`workflow.issue-link.omitted` | A non-trivial PR without a verification record or issue reference loses proof provenance. |
 
@@ -140,6 +147,10 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `schema-annotation-static-contract:schema.foreign_key.resolves` | `schema.foreign_key.resolves` | `structural` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
 | `schema-annotation-static-contract:schema.mutual_exclusion.exclusive` | `schema.mutual_exclusion.exclusive` | `structural` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
 | `operation-spec-static-contract:operation.spec.routing_metadata` | `operation.spec.routing_metadata` | `structural` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
+| `artifact-path-static-contract:artifact.path.dependency_closure` | `artifact.path.dependency_closure` | `structural` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
+| `maintenance-repair-state-contract:maintenance.repair.crash_consistency` | `maintenance.repair.crash_consistency` | `structural` | `unit` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
+| `parser-quarantine-error-contract:parser.quarantine.context_redaction` | `parser.quarantine.context_redaction` | `structural` | `unit` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
+| `error-context-contract:error.machine_user_context` | `error.machine_user_context` | `structural` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
 | `workflow-static-contract:workflow.generated_surfaces_current` | `workflow.generated_surfaces_current` | `workflow` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
 | `workflow-static-contract:workflow.pr_verification_recorded` | `workflow.pr_verification_recorded` | `workflow` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
 
@@ -148,11 +159,15 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | Claim | Obligations |
 | --- | ---: |
 | `archive.query.provider_filter_consistency` | 1 |
+| `artifact.path.dependency_closure` | 11 |
 | `cli.command.help` | 43 |
 | `cli.command.json_envelope` | 2 |
 | `cli.command.no_traceback` | 43 |
 | `cli.command.plain_mode` | 43 |
+| `error.machine_user_context` | 2 |
+| `maintenance.repair.crash_consistency` | 8 |
 | `operation.spec.routing_metadata` | 41 |
+| `parser.quarantine.context_redaction` | 1 |
 | `provider.capability.identity_bridge` | 3 |
 | `provider.capability.partial_coverage_declared` | 3 |
 | `schema.foreign_key.resolves` | 7 |
