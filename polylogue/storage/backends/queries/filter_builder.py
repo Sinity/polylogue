@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from polylogue.lib.query_fields import storage_filters_require_stats_join
 from polylogue.lib.viewports import ToolCategory
 from polylogue.storage.backends.connection import _build_provider_scope_filter
 
@@ -50,9 +51,7 @@ def _build_conversation_filters(
     """
     where_clauses: list[str] = []
     params: list[str | int | float] = []
-    needs_stats_join = (
-        has_tool_use or has_thinking or min_messages is not None or max_messages is not None or min_words is not None
-    )
+    needs_stats_join = storage_filters_require_stats_join(locals())
 
     if source is not None:
         where_clauses.append("c.source_name = ?" if needs_stats_join else "source_name = ?")
@@ -176,4 +175,4 @@ def _needs_stats_join(
     min_words: int | None = None,
 ) -> bool:
     """Return True when the query requires a JOIN on conversation_stats."""
-    return has_tool_use or has_thinking or min_messages is not None or max_messages is not None or min_words is not None
+    return storage_filters_require_stats_join(locals())
