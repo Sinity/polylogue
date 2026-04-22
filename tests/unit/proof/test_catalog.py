@@ -34,14 +34,21 @@ def test_default_catalog_compiles_first_vertical_slice() -> None:
         "schema.values.value_closure",
         "schema.foreign_key.resolves",
         "schema.mutual_exclusion.exclusive",
+        "operation.spec.routing_metadata",
+        "workflow.generated_surfaces_current",
+        "workflow.pr_verification_recorded",
     }
     assert catalog.subjects_by_kind()["cli.command"] >= 1
     assert catalog.subjects_by_kind()["cli.json_command"] >= 1
     assert catalog.subjects_by_kind()["archive.query_law"] == 1
     assert catalog.subjects_by_kind()["provider.capability"] >= 2
+    assert catalog.subjects_by_kind()["operation.spec"] >= 1
     assert catalog.subjects_by_kind()["schema.annotation"] >= 1
+    assert catalog.subjects_by_kind()["workflow.claim"] == 2
     assert {runner.claim_id for runner in catalog.runner_bindings} == {claim.id for claim in catalog.claims}
-    assert {"smoke", "semantic", "structural"}.issubset({runner.evidence_class for runner in catalog.runner_bindings})
+    assert {"smoke", "semantic", "structural", "workflow"}.issubset(
+        {runner.evidence_class for runner in catalog.runner_bindings}
+    )
     assert all(runner.environment.controlled_dimensions for runner in catalog.runner_bindings)
     assert all(check.status is OutcomeStatus.OK for check in catalog.quality_checks)
 
