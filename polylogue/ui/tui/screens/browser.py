@@ -28,9 +28,6 @@ class Browser(RepositoryBoundContainer):
             stats = await repo.get_archive_stats()
             providers = sorted(stats.providers.keys()) if stats.providers else []
 
-            if not providers:
-                providers = ["chatgpt", "claude-ai"]  # Fallback for empty DB
-
             # Collect tree data: list of (provider_label, [(title, conv_id), ...])
             tree_data: list[tuple[str, list[tuple[str, str]]]] = []
             for provider in providers:
@@ -48,6 +45,10 @@ class Browser(RepositoryBoundContainer):
         """Apply fetched tree data to DOM (runs on main thread)."""
         tree = self.query_one("#browser-tree", Tree)
         tree.root.expand()
+
+        if not tree_data:
+            tree.root.add_leaf("No conversations in archive")
+            return
 
         for provider_label, leaves in tree_data:
             provider_node = tree.root.add(provider_label, expand=False)

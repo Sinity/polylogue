@@ -197,7 +197,7 @@ async def test_browser_node_selection(
 @_skip
 @pytest.mark.asyncio
 async def test_browser_empty_db(storage_repository: ConversationRepository) -> None:
-    """Empty DB → fallback provider list shown."""
+    """Empty DB → direct empty-state leaf shown."""
     import asyncio
 
     app = _make_app(storage_repository)
@@ -214,9 +214,8 @@ async def test_browser_empty_db(storage_repository: ConversationRepository) -> N
             await asyncio.sleep(0.1)
             await pilot.pause()
 
-        # Should have fallback providers (chatgpt, claude-ai)
-        provider_names = [str(child.label) for child in tree.root.children]
-        assert len(provider_names) >= 2
+        node_labels = [str(child.label) for child in tree.root.children]
+        assert node_labels == ["No conversations in archive"]
 
 
 # ===========================================================================
