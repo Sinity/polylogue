@@ -4,94 +4,32 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from polylogue.lib.query_fields import has_message_content_type_filter, plan_has_fields_matching
+
 if TYPE_CHECKING:
     from polylogue.lib.query_plan import ConversationQueryPlan
 
 
 def plan_has_post_filters(plan: ConversationQueryPlan) -> bool:
-    return bool(
-        plan.excluded_providers
-        or plan.tags
-        or plan.excluded_tags
-        or plan.has_types
-        or plan.predicates
-        or plan.negative_terms
-        or plan.path_terms
-        or plan.action_terms
-        or plan.excluded_action_terms
-        or plan.action_sequence
-        or plan.action_text_terms
-        or plan.tool_terms
-        or plan.excluded_tool_terms
-        or plan.continuation is not None
-        or plan.sidechain is not None
-        or plan.root is not None
-        or plan.has_branches is not None
-    )
+    return plan_has_fields_matching(plan, lambda descriptor: descriptor.requires_post_filter)
 
 
 def plan_needs_content_loading(plan: ConversationQueryPlan) -> bool:
     if plan.fts_terms and plan.retrieval_lane in {"actions", "hybrid"}:
         return True
-    if plan.has_types and any(kind in ("thinking", "tools", "attachments") for kind in plan.has_types):
+    if has_message_content_type_filter(plan):
         return True
-    if plan.negative_terms or plan.predicates or plan.similar_text:
-        return True
-    if plan.path_terms or plan.action_terms or plan.excluded_action_terms:
-        return True
-    if plan.tool_terms or plan.excluded_tool_terms:
-        return True
-    if plan.action_sequence:
-        return True
-    if plan.action_text_terms:
-        return True
-    if plan.has_branches is not None:
+    if plan_has_fields_matching(plan, lambda descriptor: descriptor.requires_content_loading):
         return True
     return plan.sort in ("messages", "words", "longest", "tokens")
 
 
 def plan_can_count_in_sql(plan: ConversationQueryPlan) -> bool:
-    return not (
-        plan.fts_terms
-        or plan.conversation_id
-        or plan.similar_text
-        or plan.path_terms
-        or plan.action_terms
-        or plan.excluded_action_terms
-        or plan.tool_terms
-        or plan.excluded_tool_terms
-        or plan.action_sequence
-        or plan.action_text_terms
-        or plan.predicates
-        or plan.has_types
-        or plan.negative_terms
-        or plan.excluded_providers
-        or plan.tags
-        or plan.excluded_tags
-        or plan.continuation is not None
-        or plan.sidechain is not None
-        or plan.root is not None
-        or plan.has_branches is not None
-    )
+    return not plan_has_fields_matching(plan, lambda descriptor: descriptor.blocks_sql_count)
 
 
 def plan_can_use_action_event_stats(plan: ConversationQueryPlan) -> bool:
-    return not (
-        plan.fts_terms
-        or plan.negative_terms
-        or plan.action_sequence
-        or plan.action_text_terms
-        or plan.predicates
-        or plan.has_types
-        or plan.tags
-        or plan.excluded_tags
-        or plan.excluded_providers
-        or plan.continuation is not None
-        or plan.sidechain is not None
-        or plan.root is not None
-        or plan.has_branches is not None
-        or plan.similar_text
-    )
+    return not plan_has_fields_matching(plan, lambda descriptor: descriptor.blocks_action_event_stats)
 
 
 __all__ = [

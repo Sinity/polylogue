@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from polylogue.lib.query_fields import plan_has_fields_matching
 from polylogue.lib.query_retrieval import search_limit
 from polylogue.lib.query_retrieval_search import search_query_text
 from polylogue.lib.query_support import provider_values
@@ -25,28 +26,7 @@ def _simple_message_hit_plan(plan: ConversationQueryPlan) -> bool:
     return bool(
         plan.fts_terms
         and plan.retrieval_lane in {"auto", "dialogue"}
-        and plan.conversation_id is None
-        and plan.similar_text is None
-        and not plan.negative_terms
-        and not plan.path_terms
-        and not plan.action_terms
-        and not plan.excluded_action_terms
-        and not plan.action_sequence
-        and not plan.action_text_terms
-        and not plan.tool_terms
-        and not plan.excluded_tool_terms
-        and not plan.excluded_providers
-        and not plan.tags
-        and not plan.excluded_tags
-        and not plan.has_types
-        and plan.title is None
-        and plan.until is None
-        and plan.sample is None
-        and not plan.filter_has_tool_use
-        and not plan.filter_has_thinking
-        and plan.min_messages is None
-        and plan.max_messages is None
-        and plan.min_words is None
+        and not plan_has_fields_matching(plan, lambda descriptor: descriptor.blocks_simple_message_hit)
     )
 
 
