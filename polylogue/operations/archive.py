@@ -65,6 +65,7 @@ if TYPE_CHECKING:
     from polylogue.config import Config
     from polylogue.lib.conversation_models import Conversation
     from polylogue.lib.query_miss_diagnostics import QueryMissDiagnostics
+    from polylogue.lib.search_hits import ConversationSearchHit
     from polylogue.lib.stats import ArchiveStats as StorageArchiveStats
     from polylogue.storage.backends.async_sqlite import SQLiteBackend
     from polylogue.storage.repository import ConversationRepository
@@ -247,6 +248,15 @@ class ArchiveSearchMixin:
 
     async def query_conversations(self, spec: ConversationQuerySpec) -> list[Conversation]:
         return await spec.list(self.repository)
+
+    async def search_conversation_hits(self, spec: ConversationQuerySpec) -> list[ConversationSearchHit]:
+        from polylogue.lib.query_search_hits import search_hits_for_plan
+
+        hits = await search_hits_for_plan(spec.to_plan(), self.repository)
+        if not hits:
+            return hits
+        counts = await self.repository.get_message_counts_batch([hit.conversation_id for hit in hits])
+        return [hit.with_message_count(counts.get(hit.conversation_id)) for hit in hits]
 
     async def diagnose_query_miss(self, spec: ConversationQuerySpec) -> QueryMissDiagnostics:
         from polylogue.lib.query_miss_diagnostics import diagnose_query_miss

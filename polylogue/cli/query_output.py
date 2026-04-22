@@ -40,7 +40,7 @@ from polylogue.lib.message_roles import MessageRoleFilter, message_role_count_ke
 from polylogue.lib.roles import Role
 from polylogue.logging import get_logger
 from polylogue.rendering.formatting import format_conversation
-from polylogue.surface_payloads import ConversationListRowPayload
+from polylogue.surface_payloads import ConversationListRowPayload, ConversationSearchHitPayload, model_json_document
 
 logger = get_logger(__name__)
 
@@ -49,6 +49,7 @@ if TYPE_CHECKING:
     from polylogue.lib.models import Conversation, ConversationSummary, Message
     from polylogue.lib.query_miss_diagnostics import QueryMissDiagnostics
     from polylogue.lib.query_spec import ConversationQuerySpec
+    from polylogue.lib.search_hits import ConversationSearchHit
     from polylogue.protocols import ConversationOutputStore
     from polylogue.storage.store import MessageRecord
 
@@ -75,6 +76,16 @@ def _summary_list_line(summary: ConversationSummary, message_count: int) -> str:
     date = _display_date(summary.display_date)
     title = _ellipsize(summary.display_title or str(summary.id)[:20], 50)
     return f"{str(summary.id)[:24]:24s}  {date:10s}  {summary.provider:12s}  {title} ({message_count} msgs)"
+
+
+def _search_hit_list_line(hit: ConversationSearchHit, message_count: int) -> str:
+    base = _summary_list_line(hit.summary, message_count)
+    evidence_parts = [hit.match_surface, hit.retrieval_lane]
+    if hit.message_id:
+        evidence_parts.append(f"message {hit.message_id}")
+    evidence = "/".join(evidence_parts)
+    snippet = f": {hit.snippet}" if hit.snippet else ""
+    return f"{base}\n  match[{hit.rank}]: {evidence}{snippet}"
 
 
 def _stream_date_parts(display_date: object | None) -> tuple[str | None, str | None]:
@@ -377,6 +388,142 @@ def format_summary_list(
         return buf.getvalue().rstrip("\r\n")
 
     return "\n".join(_summary_list_line(summary, message_counts.get(str(summary.id), 0)) for summary in summaries)
+
+
+def _search_hit_to_payload(
+    hit: ConversationSearchHit,
+    *,
+    message_count: int,
+) -> JSONDocument:
+    return model_json_document(
+        ConversationSearchHitPayload.from_search_hit(hit, message_count=message_count),
+        exclude_none=True,
+    )
+
+
+def format_search_hit_list(
+    hits: list[ConversationSearchHit],
+    output_format: str,
+    fields: str | None,
+    *,
+    message_counts: dict[str, int] | None = None,
+) -> str:
+    """Format evidence-bearing search hits for deterministic surfaces."""
+    message_counts = message_counts or {}
+    selected = {field.strip() for field in fields.split(",")} if fields else None
+
+    data = [
+        _search_hit_to_payload(
+            hit, message_count=message_counts.get(hit.conversation_id, hit.summary.message_count or 0)
+        )
+        for hit in hits
+    ]
+    if selected:
+        data = [{key: value for key, value in item.items() if key in selected} for item in data]
+
+    if output_format == "json":
+        return json.dumps(data, indent=2)
+
+    if output_format == "yaml":
+        import yaml
+
+        return yaml.dump(data, default_flow_style=False, allow_unicode=True)
+
+    if output_format == "csv":
+        import csv
+        import io
+
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        writer.writerow(
+            [
+                "id",
+                "date",
+                "provider",
+                "title",
+                "messages",
+                "rank",
+                "retrieval_lane",
+                "match_surface",
+                "message_id",
+                "snippet",
+            ]
+        )
+        for hit in hits:
+            summary = hit.summary
+            writer.writerow(
+                [
+                    str(summary.id),
+                    _display_date(summary.display_date),
+                    summary.provider,
+                    summary.display_title or "",
+                    message_counts.get(hit.conversation_id, summary.message_count or 0),
+                    hit.rank,
+                    hit.retrieval_lane,
+                    hit.match_surface,
+                    hit.message_id or "",
+                    hit.snippet or "",
+                ]
+            )
+        return buf.getvalue().rstrip("\r\n")
+
+    return "\n".join(
+        _search_hit_list_line(hit, message_counts.get(hit.conversation_id, hit.summary.message_count or 0))
+        for hit in hits
+    )
+
+
+async def output_search_hits(
+    env: AppEnv,
+    hits: list[ConversationSearchHit],
+    output: QueryOutputSpec,
+    repo: ConversationOutputStore | None = None,
+) -> None:
+    """Output evidence-bearing search hits with optional rich table rendering."""
+    msg_counts: dict[str, int] = {}
+    if repo:
+        ids = [hit.conversation_id for hit in hits]
+        msg_counts = await repo.get_message_counts_batch(ids)
+
+    if output.output_format in MACHINE_OUTPUT_FORMATS or env.ui.plain:
+        click.echo(
+            format_search_hit_list(
+                hits,
+                "text" if env.ui.plain and output.output_format not in MACHINE_OUTPUT_FORMATS else output.output_format,
+                output.fields,
+                message_counts=msg_counts,
+            )
+        )
+        return
+
+    from rich.table import Table
+    from rich.text import Text
+
+    from polylogue.ui.theme import provider_color
+
+    table = Table(show_header=True, header_style="bold", box=None, pad_edge=False, show_edge=False)
+    table.add_column("ID", style="dim", max_width=24, no_wrap=True)
+    table.add_column("Date", style="dim")
+    table.add_column("Provider")
+    table.add_column("Title", ratio=1)
+    table.add_column("Msgs", justify="right")
+    table.add_column("Match", ratio=1)
+
+    for hit in hits:
+        summary = hit.summary
+        date = _display_date(summary.display_date)
+        title = _ellipsize(summary.display_title or str(summary.id)[:20], 54)
+        count = msg_counts.get(hit.conversation_id, summary.message_count or 0)
+        provider_text = Text(summary.provider, style=provider_color(summary.provider).hex)
+        snippet = _ellipsize(hit.snippet or "", 80)
+        match = f"{hit.match_surface}/{hit.retrieval_lane}"
+        if hit.message_id:
+            match = f"{match} {hit.message_id}"
+        if snippet:
+            match = f"{match}: {snippet}"
+        table.add_row(str(summary.id)[:24], date, provider_text, title, str(count), match)
+
+    env.ui.console.print(table)
 
 
 async def output_summary_list(
@@ -735,11 +882,13 @@ __all__ = [
     "emit_structured_stats",
     "filtered_action_events",
     "format_list",
+    "format_search_hit_list",
     "format_summary_list",
     "normalized_tool_name",
     "open_in_browser",
     "open_result",
     "output_results",
+    "output_search_hits",
     "output_stats_by_conversations",
     "output_stats_by_profile_ids",
     "output_stats_by_profile_query",

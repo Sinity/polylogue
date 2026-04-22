@@ -30,6 +30,7 @@ from polylogue.cli.query_output import (
     _format_list,
     _output_stats_by,
     _write_message_streaming,
+    format_search_hit_list,
     format_summary_list,
     render_stream_transcript,
 )
@@ -37,6 +38,7 @@ from polylogue.lib.attachment_models import Attachment
 from polylogue.lib.messages import MessageCollection
 from polylogue.lib.models import Conversation, ConversationSummary, Message
 from polylogue.lib.roles import Role
+from polylogue.lib.search_hits import ConversationSearchHit
 from polylogue.rendering.formatting import _conv_to_dict, _yaml_safe, format_conversation
 from polylogue.types import ConversationId, Provider
 from tests.infra.builders import make_conv as build_conv
@@ -484,6 +486,52 @@ class TestListFormatting:
             assert "conv-summary-1" in rendered
             assert "claude-ai" in rendered
             assert "(7 msgs)" in rendered
+
+    @pytest.mark.parametrize("output_format", ["json", "yaml", "csv", "text"])
+    def test_format_search_hit_list_contract(self, output_format: str) -> None:
+        summary = ConversationSummary(
+            id=ConversationId("conv-hit-1"),
+            provider=Provider.CLAUDE_AI,
+            title="Hit Conversation",
+            created_at=datetime(2025, 6, 1, tzinfo=timezone.utc),
+            updated_at=datetime(2025, 6, 2, tzinfo=timezone.utc),
+            metadata={"summary": "Summary text"},
+        )
+        hit = ConversationSearchHit(
+            summary=summary,
+            rank=1,
+            retrieval_lane="dialogue",
+            match_surface="message",
+            message_id="msg-hit-1",
+            snippet="[needle] in context",
+            score=-2.5,
+        )
+
+        rendered = format_search_hit_list(
+            [hit],
+            output_format,
+            None,
+            message_counts={"conv-hit-1": 4},
+        )
+
+        if output_format == "json":
+            payload = json.loads(rendered)
+            assert payload[0]["conversation"]["id"] == "conv-hit-1"
+            assert payload[0]["conversation"]["message_count"] == 4
+            assert payload[0]["match"]["message_id"] == "msg-hit-1"
+            assert payload[0]["match"]["snippet"] == "[needle] in context"
+        elif output_format == "yaml":
+            payload = yaml.safe_load(rendered)
+            assert payload[0]["conversation"]["provider"] == "claude-ai"
+            assert payload[0]["match"]["retrieval_lane"] == "dialogue"
+        elif output_format == "csv":
+            assert "id,date,provider,title,messages,rank,retrieval_lane,match_surface,message_id,snippet" in rendered
+            assert "conv-hit-1" in rendered
+            assert "msg-hit-1" in rendered
+        else:
+            assert "conv-hit-1" in rendered
+            assert "match[1]: message/dialogue/message msg-hit-1" in rendered
+            assert "[needle] in context" in rendered
 
 
 class TestStreamingOutput:

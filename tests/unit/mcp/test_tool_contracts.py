@@ -37,6 +37,7 @@ from polylogue.archive_products import (
 from polylogue.lib.models import Conversation, ConversationSummary
 from polylogue.lib.query_miss_diagnostics import QueryMissDiagnostics, QueryMissReason
 from polylogue.lib.query_spec import ConversationQuerySpec
+from polylogue.lib.search_hits import ConversationSearchHit
 from polylogue.lib.stats import ArchiveStats
 from polylogue.types import ConversationId, Provider
 from tests.infra.builders import make_conv, make_msg
@@ -224,6 +225,25 @@ def _make_summary(
     )
 
 
+def _make_search_hit(conversation: Conversation) -> ConversationSearchHit:
+    messages = conversation.messages.to_list()
+    return ConversationSearchHit(
+        summary=ConversationSummary(
+            id=ConversationId(str(conversation.id)),
+            provider=Provider.from_string(str(conversation.provider)),
+            title=conversation.display_title,
+            message_count=len(conversation.messages),
+            created_at=conversation.created_at,
+            updated_at=conversation.updated_at,
+        ),
+        rank=1,
+        retrieval_lane="dialogue",
+        match_surface="message",
+        message_id=str(messages[0].id) if messages else None,
+        snippet="hello evidence",
+    )
+
+
 def _provenance() -> ArchiveProductProvenance:
     return ArchiveProductProvenance(
         materializer_version=1,
@@ -263,6 +283,7 @@ class TestQueryTools:
         with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
             mock_ops = MagicMock()
             mock_ops.query_conversations = AsyncMock(return_value=[simple_conversation])
+            mock_ops.search_conversation_hits = AsyncMock(return_value=[_make_search_hit(simple_conversation)])
             mock_get_archive_ops.return_value = mock_ops
 
             raw = await invoke_surface_async(mcp_server._tool_manager._tools[tool_name].fn, **args)
@@ -270,9 +291,17 @@ class TestQueryTools:
         payload = json.loads(raw)
         assert isinstance(payload, list)
         assert len(payload) == 1
-        assert payload[0]["id"] == simple_conversation.id
-        mock_ops.query_conversations.assert_awaited_once()
-        spec = mock_ops.query_conversations.await_args.args[0]
+        if tool_name == "search":
+            assert payload[0]["conversation"]["id"] == str(simple_conversation.id)
+            assert payload[0]["match"]["message_id"] == str(simple_conversation.messages.to_list()[0].id)
+            mock_ops.search_conversation_hits.assert_awaited_once()
+            mock_ops.query_conversations.assert_not_called()
+            spec = mock_ops.search_conversation_hits.await_args.args[0]
+        else:
+            assert payload[0]["id"] == simple_conversation.id
+            mock_ops.query_conversations.assert_awaited_once()
+            mock_ops.search_conversation_hits.assert_not_called()
+            spec = mock_ops.query_conversations.await_args.args[0]
         assert isinstance(spec, ConversationQuerySpec)
         for method_name, method_args in expected_calls.items():
             expected_value = method_args[0] if len(method_args) == 1 else method_args
@@ -323,7 +352,7 @@ class TestQueryTools:
         )
         with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
             mock_ops = MagicMock()
-            mock_ops.query_conversations = AsyncMock(return_value=[])
+            mock_ops.search_conversation_hits = AsyncMock(return_value=[])
             mock_ops.diagnose_query_miss = AsyncMock(return_value=diagnostics)
             mock_get_archive_ops.return_value = mock_ops
 

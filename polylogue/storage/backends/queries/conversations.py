@@ -24,6 +24,7 @@ from polylogue.storage.backends.queries.conversations_reads import (
 from polylogue.storage.backends.queries.conversations_search import (
     search_action_conversation_hits,
     search_action_conversations,
+    search_conversation_evidence_hits,
     search_conversation_hits,
     search_conversations,
 )
@@ -52,6 +53,7 @@ __all__ = [
     "save_conversation_record",
     "search_action_conversation_hits",
     "search_action_conversations",
+    "search_conversation_evidence_hits",
     "search_conversation_hits",
     "search_conversations",
     "set_metadata",

@@ -9,7 +9,7 @@ from polylogue.lib.conversation_models import Conversation
 from polylogue.lib.messages import MessageCollection
 from polylogue.storage.backends.query_store import SQLiteQueryStore
 from polylogue.storage.repository_archive_search import RepositoryArchiveSearchMixin
-from polylogue.storage.search_models import ConversationSearchResult
+from polylogue.storage.search_models import ConversationSearchEvidenceHit, ConversationSearchResult
 from polylogue.storage.search_providers.hybrid_conversations import (
     _resolve_ranked_conversation_hits,
 )
@@ -50,6 +50,25 @@ class _FakeQueries(SQLiteQueryStore):
     ) -> ConversationSearchResult:
         del query, limit, providers
         return self.hits
+
+    async def search_conversation_evidence_hits(
+        self,
+        query: str,
+        limit: int = 20,
+        providers: list[str] | None = None,
+        since: str | None = None,
+    ) -> list[ConversationSearchEvidenceHit]:
+        del query, limit, providers, since
+        return [
+            ConversationSearchEvidenceHit(
+                conversation_id=hit.conversation_id,
+                rank=hit.rank,
+                score=hit.score,
+                message_id=f"msg-{hit.conversation_id}",
+                snippet=f"snippet for {hit.conversation_id}",
+            )
+            for hit in self.hits.hits
+        ]
 
     async def get_conversations_batch(self, ids: list[str]) -> list[ConversationRecord]:
         self.last_batch_ids = ids
@@ -143,6 +162,27 @@ async def test_repository_search_summaries_follow_conversation_hit_order() -> No
     assert queries.last_batch_ids == ["conv-b", "conv-a"]
     assert [summary.id for summary in summaries] == [ConversationId("conv-b"), ConversationId("conv-a")]
     assert [summary.title for summary in summaries] == ["Second", "First"]
+
+
+@pytest.mark.asyncio
+async def test_repository_search_summary_hits_keep_evidence_and_conversation_order() -> None:
+    hits = ConversationSearchResult.from_ids(["conv-b", "conv-a"])
+    queries = _FakeQueries(
+        hits=hits,
+        records_by_id={
+            "conv-a": _conversation_record("conv-a", title="First"),
+            "conv-b": _conversation_record("conv-b", title="Second"),
+        },
+    )
+    repo = _FakeRepo(queries)
+
+    summary_hits = await repo.search_summary_hits("storage", limit=5, providers=["chatgpt"], since="2025-01-01")
+
+    assert queries.last_batch_ids == ["conv-b", "conv-a"]
+    assert [hit.conversation_id for hit in summary_hits] == ["conv-b", "conv-a"]
+    assert [hit.rank for hit in summary_hits] == [1, 2]
+    assert [hit.message_id for hit in summary_hits] == ["msg-conv-b", "msg-conv-a"]
+    assert [hit.snippet for hit in summary_hits] == ["snippet for conv-b", "snippet for conv-a"]
 
 
 @pytest.mark.asyncio

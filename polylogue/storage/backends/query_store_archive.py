@@ -19,7 +19,7 @@ from polylogue.storage.backends.queries.stats import (
     ProviderMetricsRow,
 )
 from polylogue.storage.query_models import ConversationRecordQuery
-from polylogue.storage.search_models import ConversationSearchResult
+from polylogue.storage.search_models import ConversationSearchEvidenceHit, ConversationSearchResult
 from polylogue.storage.store import (
     AttachmentRecord,
     ContentBlockRecord,
@@ -85,6 +85,16 @@ class SQLiteQueryStoreArchiveMixin:
     ) -> ConversationSearchResult:
         async with self._connection_factory() as conn:
             return await conversations_q.search_conversation_hits(conn, query, limit, providers)
+
+    async def search_conversation_evidence_hits(
+        self,
+        query: str,
+        limit: int = 100,
+        providers: list[str] | None = None,
+        since: str | None = None,
+    ) -> list[ConversationSearchEvidenceHit]:
+        async with self._connection_factory() as conn:
+            return await conversations_q.search_conversation_evidence_hits(conn, query, limit, providers, since)
 
     async def search_action_conversation_hits(
         self,

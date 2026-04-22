@@ -270,7 +270,7 @@ asyncio.run(main())
 | `get_conversation(id)` | Get single conversation by ID |
 | `get_conversations(ids)` | Parallel batch fetch (5-10x faster) |
 | `list_conversations(provider, limit)` | List with optional filtering |
-| `search(query, limit, source, since)` | Full-text search |
+| `search(query, limit, source, since)` | Full-text search returning message-level evidence snippets |
 | `parse_file(path, source_name)` | Parse a single export file |
 | `parse_sources(sources, download_assets)` | Parse from configured sources |
 | `rebuild_index()` | Rebuild FTS5 search index |

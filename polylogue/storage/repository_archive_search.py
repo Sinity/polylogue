@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from polylogue.lib.conversation_models import Conversation, ConversationSummary
+    from polylogue.lib.search_hits import ConversationSearchHit
     from polylogue.storage.backends.query_store import SQLiteQueryStore
     from polylogue.storage.search_models import ConversationSearchResult
     from polylogue.storage.store import ConversationRecord
@@ -35,6 +36,41 @@ class RepositoryArchiveSearchMixin:
         if not hits.hits:
             return []
         return [conversation_summary_from_record(record) for record in records]
+
+    async def search_summary_hits(
+        self,
+        query: str,
+        limit: int = 20,
+        providers: builtins.list[str] | None = None,
+        since: str | None = None,
+    ) -> builtins.list[ConversationSearchHit]:
+        from polylogue.lib.search_hits import conversation_search_hit_from_summary
+        from polylogue.storage.hydrators import conversation_summary_from_record
+
+        evidence_hits = await self.queries.search_conversation_evidence_hits(
+            query,
+            limit=limit,
+            providers=providers,
+            since=since,
+        )
+        if not evidence_hits:
+            return []
+
+        records = await self.queries.get_conversations_batch([hit.conversation_id for hit in evidence_hits])
+        summaries_by_id = {str(record.conversation_id): conversation_summary_from_record(record) for record in records}
+        return [
+            conversation_search_hit_from_summary(
+                summaries_by_id[hit.conversation_id],
+                rank=hit.rank,
+                retrieval_lane=hit.retrieval_lane,
+                match_surface=hit.match_surface,
+                message_id=hit.message_id,
+                snippet=hit.snippet,
+                score=hit.score,
+            )
+            for hit in evidence_hits
+            if hit.conversation_id in summaries_by_id
+        ]
 
     async def search(
         self,
