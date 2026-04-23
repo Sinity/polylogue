@@ -574,6 +574,20 @@ DECLARED_CONTROL_PLANE_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         previewable=True,
     ),
     OperationSpec(
+        name="seed-archive-scenarios",
+        kind=OperationKind.PROJECTION,
+        description="Seed authored archive-scenario fixtures through typed storage-record helpers for verification lanes.",
+        surfaces=("tests", "validation-lane"),
+        previewable=True,
+    ),
+    OperationSpec(
+        name="build-storage-record-fixtures",
+        kind=OperationKind.PROJECTION,
+        description="Build typed storage-record fixtures from JSON-validated helper inputs for verification lanes.",
+        surfaces=("tests", "validation-lane"),
+        previewable=True,
+    ),
+    OperationSpec(
         name="benchmark.query.search-filters",
         kind=OperationKind.BENCHMARK,
         description="Measure the canonical FTS and ConversationFilter query benchmark domain.",

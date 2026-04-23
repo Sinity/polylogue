@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TypeAlias
 
-from polylogue.lib.json import json_document, loads
+from polylogue.lib.json import JSONDocument, JSONValue, json_document, loads, require_json_document
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.backends.queries.mappers_archive import (
     _row_to_content_block,
@@ -28,6 +28,60 @@ from tests.infra.storage_records import ConversationBuilder, JSONRecord, db_setu
 
 ScenarioProvider: TypeAlias = str
 _FIXTURE_TIMESTAMP = "2026-01-01T00:00:00+00:00"
+
+
+@dataclass(frozen=True, slots=True)
+class ScenarioContentBlock:
+    """Typed content-block fixture for authored archive scenarios."""
+
+    block_type: str = "text"
+    text: str | None = None
+    tool_name: str | None = None
+    tool_id: str | None = None
+    tool_input: JSONValue | None = None
+    media_type: str | None = None
+    metadata: JSONDocument | None = None
+    semantic_type: str | None = None
+
+    @classmethod
+    def text_block(cls, text: str, *, semantic_type: str | None = None) -> ScenarioContentBlock:
+        return cls(block_type="text", text=text, semantic_type=semantic_type)
+
+    @classmethod
+    def tool_use(
+        cls,
+        *,
+        tool_name: str,
+        tool_input: JSONValue | None = None,
+        tool_id: str | None = None,
+    ) -> ScenarioContentBlock:
+        return cls(block_type="tool_use", tool_name=tool_name, tool_id=tool_id, tool_input=tool_input)
+
+    @classmethod
+    def tool_result(cls, text: str, *, tool_name: str | None = None) -> ScenarioContentBlock:
+        return cls(block_type="tool_result", text=text, tool_name=tool_name)
+
+    @classmethod
+    def thinking(cls, text: str) -> ScenarioContentBlock:
+        return cls(block_type="thinking", text=text)
+
+    def to_payload(self) -> JSONDocument:
+        payload: JSONDocument = {"type": self.block_type}
+        if self.text is not None:
+            payload["text"] = self.text
+        if self.tool_name is not None:
+            payload["tool_name"] = self.tool_name
+        if self.tool_id is not None:
+            payload["tool_id"] = self.tool_id
+        if self.tool_input is not None:
+            payload["tool_input"] = self.tool_input
+        if self.media_type is not None:
+            payload["media_type"] = self.media_type
+        if self.metadata is not None:
+            payload["metadata"] = dict(require_json_document(self.metadata, context="scenario content block metadata"))
+        if self.semantic_type is not None:
+            payload["semantic_type"] = self.semantic_type
+        return payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,7 +104,7 @@ class ScenarioMessage:
     message_id: str | None = None
     timestamp: str | None = None
     provider_meta: JSONRecord | None = None
-    content_blocks: Sequence[JSONRecord] = ()
+    content_blocks: Sequence[ScenarioContentBlock] = ()
     attachments: Sequence[ScenarioAttachment] = ()
 
 
@@ -98,7 +152,7 @@ class ArchiveScenario:
         )
         for message_index, message in enumerate(self.messages or _default_messages(), start=1):
             message_id = message.message_id or f"m{message_index}"
-            message_kwargs: dict[str, object] = {"content_blocks": list(message.content_blocks)}
+            message_kwargs: dict[str, object] = {"content_blocks": _content_block_payloads(message.content_blocks)}
             if message.provider_meta is not None:
                 message_kwargs["provider_meta"] = message.provider_meta
             builder.add_message(
@@ -173,6 +227,18 @@ def _default_timestamp() -> str:
 
 def _default_messages() -> tuple[ScenarioMessage, ...]:
     return (ScenarioMessage(role="user", text="Test message"),)
+
+
+def _content_block_payloads(blocks: Sequence[ScenarioContentBlock]) -> list[JSONDocument]:
+    payloads: list[JSONDocument] = []
+    for index, block in enumerate(blocks):
+        if not isinstance(block, ScenarioContentBlock):
+            raise TypeError(
+                "ArchiveScenario content blocks must use ScenarioContentBlock fixtures "
+                f"(content_blocks[{index}]={block!r})"
+            )
+        payloads.append(block.to_payload())
+    return payloads
 
 
 def _attachment_records_for_conversation(conn: sqlite3.Connection, conversation_id: str) -> list[AttachmentRecord]:
@@ -254,6 +320,7 @@ __all__ = [
     "ArchiveScenario",
     "ArchiveScenarioSeed",
     "ScenarioAttachment",
+    "ScenarioContentBlock",
     "ScenarioMessage",
     "repository_for_scenario_db",
     "seed_archive_scenarios",

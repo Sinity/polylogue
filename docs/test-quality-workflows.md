@@ -8,14 +8,14 @@ This reference is generated from the live validation-lane, mutation-campaign, an
 
 Current registry snapshot:
 
-- contract lanes: `23`
+- contract lanes: `24`
 - live lanes: `20`
 - composite lanes: `24`
 - validation families: `5`
 - mutation campaigns: `19`
 - benchmark campaigns: `3`
 - synthetic benchmark campaigns: `6`
-- scenario projections: `238`
+- scenario projections: `239`
 - inferred corpus scenarios: `5`
   - benchmark-campaign: `3`
   - exercise: `133`
@@ -23,7 +23,7 @@ Current registry snapshot:
   - mutation-campaign: `19`
   - synthetic-benchmark: `6`
   - validation-family: `5`
-  - validation-lane: `67`
+  - validation-lane: `68`
 
 ## Runtime Coverage
 
@@ -31,7 +31,7 @@ Current registry snapshot:
 - covered runtime artifacts: `59`
 - covered runtime operations: `31`
 - covered maintenance targets: `3`
-- covered declared operation targets: `41`
+- covered declared operation targets: `43`
 - uncovered runtime paths: —
 - uncovered runtime artifacts: —
 - uncovered runtime operations: —
@@ -160,6 +160,7 @@ Use the named lanes through the runner.
 | `showcase-baselines` | 180 | Registry-derived tier-0 CLI help/source showcase baselines |
 | `source-provider-fidelity` | 420 | Source traversal, Drive/runtime source boundaries, parser decoding, and provider-ingest fidelity |
 | `tui` | 240 | Textual dashboard screens and interaction-state coverage |
+| `verification-substrate-contracts` | 180 | Shared test fixture contracts for JSON metadata, scenario content blocks, and semantic facts |
 
 ### Live Lanes
 
@@ -520,6 +521,7 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `validation-lane` | `source-provider-fidelity` | `source-acquisition-loop` | `configured_sources`<br>`source_payload_stream`<br>`raw_validation_state`<br>`artifact_observation_rows` | `acquire-raw-conversations` | — | `contract`<br>`sources`<br>`acquisition` | Source traversal, Drive/runtime source boundaries, parser decoding, and provider-ingest fidelity |
 | `validation-lane` | `source-runtime-alignment` | `source-acquisition-loop`<br>`site-publication-loop` | `configured_sources`<br>`source_payload_stream`<br>`raw_validation_state`<br>`artifact_observation_rows`<br>`conversation_render_projection`<br>`site_conversation_pages`<br>`site_publication_manifest`<br>`publication_records` | `acquire-raw-conversations`<br>`publish-site` | — | `contract`<br>`sources`<br>`acquisition`<br>`maintenance`<br>`publication` | Local source/provider fidelity plus runtime maintenance alignment |
 | `validation-lane` | `tui` | — | — | — | — | — | Textual dashboard screens and interaction-state coverage |
+| `validation-lane` | `verification-substrate-contracts` | — | `archive_scenario_fixtures`<br>`storage_record_fixtures`<br>`json_contract_helpers` | `seed-archive-scenarios`<br>`build-storage-record-fixtures` | — | `contract`<br>`fixtures`<br>`semantic-precision` | Shared test fixture contracts for JSON metadata, scenario content blocks, and semantic facts |
 
 ## Artifact Locations
 

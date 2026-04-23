@@ -12,6 +12,7 @@ from polylogue.storage.hydrators import conversation_from_records
 from tests.infra.archive_scenarios import (
     ArchiveScenario,
     ScenarioAttachment,
+    ScenarioContentBlock,
     ScenarioMessage,
     repository_for_scenario_db,
     seed_workspace_scenarios,
@@ -35,11 +36,10 @@ async def test_repository_metadata_tag_and_delete_lifecycle_laws(workspace_env: 
                 text="I will call a tool",
                 message_id="m-tool",
                 content_blocks=(
-                    {
-                        "type": "tool_use",
-                        "tool_name": "shell",
-                        "tool_input": {"command": "polylogue doctor --json"},
-                    },
+                    ScenarioContentBlock.tool_use(
+                        tool_name="shell",
+                        tool_input={"command": "polylogue doctor --json"},
+                    ),
                 ),
                 attachments=(ScenarioAttachment(attachment_id="att-lifecycle", mime_type="application/json"),),
             ),

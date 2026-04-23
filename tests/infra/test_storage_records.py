@@ -86,3 +86,36 @@ def test_concurrent_store_records_no_deadlock(workspace_env: Mapping[str, Path])
 
     assert len(results) == 10
     assert all(result["conversations"] == 1 for result in results)
+
+
+def test_make_message_rejects_non_json_provider_meta() -> None:
+    with pytest.raises(TypeError, match="message provider_meta"):
+        make_message(provider_meta={"path": Path("not-json")})
+
+
+def test_make_message_rejects_non_json_content_block_input() -> None:
+    with pytest.raises(TypeError, match="content block tool input"):
+        make_message(
+            content_blocks=[
+                {
+                    "type": "tool_use",
+                    "tool_name": "shell",
+                    "tool_input": {"path": Path("not-json")},
+                }
+            ]
+        )
+
+
+def test_make_message_preserves_json_content_block_input() -> None:
+    message = make_message(
+        content_blocks=[
+            {
+                "type": "tool_use",
+                "tool_name": "shell",
+                "tool_input": {"command": "pytest -q"},
+            }
+        ]
+    )
+
+    assert len(message.content_blocks) == 1
+    assert message.content_blocks[0].tool_input == '{"command":"pytest -q"}'
