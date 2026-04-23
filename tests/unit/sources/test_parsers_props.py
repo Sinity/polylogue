@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from typing import TypeAlias, TypedDict
 
 import pytest
-from hypothesis import given, settings
+from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 from hypothesis.strategies import SearchStrategy
 
@@ -230,7 +230,7 @@ PARSER_CASES: tuple[ParserCase, ...] = (
 
 @pytest.mark.parametrize("case", PARSER_CASES, ids=lambda case: case.name)
 @given(st.data())
-@settings(max_examples=35)
+@settings(max_examples=35, suppress_health_check=[HealthCheck.too_slow])
 def test_provider_parser_contract(case: ParserCase, data: st.DataObject) -> None:
     payload = data.draw(case.strategy)
     result = case.parse(payload)
@@ -250,7 +250,7 @@ def test_provider_parser_contract(case: ParserCase, data: st.DataObject) -> None
 
 @pytest.mark.parametrize("case", PARSER_CASES, ids=lambda case: case.name)
 @given(st.data())
-@settings(max_examples=20)
+@settings(max_examples=20, suppress_health_check=[HealthCheck.too_slow])
 def test_provider_looks_like_accepts_generated_payloads(case: ParserCase, data: st.DataObject) -> None:
     payload = data.draw(case.strategy)
     assert case.looks_like(payload)
@@ -273,7 +273,7 @@ def test_extract_messages_from_list_normalizes_role(msg: JSONDocument) -> None:
 
 
 @given(chatgpt_message_node_strategy())
-@settings(max_examples=30)
+@settings(max_examples=30, suppress_health_check=[HealthCheck.too_slow])
 def test_chatgpt_node_contract(node: JSONDocument) -> None:
     export: dict[str, object] = {"mapping": {str(node["id"]): node}, "id": "test"}
     result = chatgpt.parse(export, "fallback")
@@ -281,7 +281,7 @@ def test_chatgpt_node_contract(node: JSONDocument) -> None:
 
 
 @given(claude_code_message_strategy())
-@settings(max_examples=30)
+@settings(max_examples=30, suppress_health_check=[HealthCheck.too_slow])
 def test_claude_code_message_type_contract(msg: JSONDocument) -> None:
     result = claude.parse_code([msg], "fallback")
     if not result.messages:
@@ -302,7 +302,7 @@ def test_claude_code_message_type_contract(msg: JSONDocument) -> None:
 
 
 @given(codex_message_strategy())
-@settings(max_examples=30)
+@settings(max_examples=30, suppress_health_check=[HealthCheck.too_slow])
 def test_codex_message_text_contract(msg: JSONDocument) -> None:
     session: list[object] = [
         {"type": "session_meta", "payload": {"id": "test", "timestamp": "2024-01-01"}},

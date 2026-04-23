@@ -144,6 +144,18 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         featured=True,
     ),
     CommandSpec(
+        "coverage-gate",
+        "verification",
+        "Run pytest with the repository coverage floor from pyproject.toml.",
+        "devtools.coverage_gate",
+        use_when="Enforce the committed coverage ratchet locally or in CI without duplicating threshold values.",
+        examples=(
+            "devtools coverage-gate",
+            "devtools coverage-gate --ignore-integration --term-missing",
+            "devtools coverage-gate -- --maxfail=1",
+        ),
+    ),
+    CommandSpec(
         "affected-obligations",
         "verification",
         "Route changed paths or refs to affected verification-lab proof obligations and focused checks.",
