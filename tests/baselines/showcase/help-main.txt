@@ -88,6 +88,13 @@ Options:
   --transform [strip-tools|strip-thinking|strip-all]
                                   Remove content: strip-tools (tool calls),
                                   strip-thinking (reasoning), strip-all (both)
+  --no-code-blocks                Exclude fenced and structured code blocks
+                                  from output
+  --no-tool-calls                 Exclude tool invocation records from output
+  --no-tool-outputs               Exclude tool-result payloads from output
+  --no-file-reads                 Exclude file-read payloads while keeping
+                                  other tool output
+  --prose-only                    Show only authored prose text
   --stream                        Stream output (low memory). Requires
                                   --latest or -i ID. Incompatible with
                                   --transform

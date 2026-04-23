@@ -258,6 +258,8 @@ def project_query_results(results: list[Conversation], plan: QueryExecutionPlan)
     message_roles = plan.output.effective_message_roles()
     if message_roles:
         projected = [conversation.with_roles(message_roles) for conversation in projected]
+    if plan.output.filters_content():
+        projected = [conversation.with_content_projection(plan.output.content_projection) for conversation in projected]
     return projected
 
 
@@ -465,6 +467,7 @@ async def async_execute_query_request(env: AppEnv, request: RootModeRequest) -> 
             output_format=plan.output.stream_format(),
             dialogue_only=plan.output.dialogue_only,
             message_roles=plan.output.effective_message_roles(),
+            content_projection=plan.output.content_projection if plan.output.filters_content() else None,
             message_limit=message_limit,
         )
         return

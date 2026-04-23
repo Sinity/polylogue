@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Callable, Iterator, Mapping
 from datetime import datetime
-from typing import TYPE_CHECKING, Self
+from typing import TYPE_CHECKING, Self, cast
 
 from polylogue.lib.branch_type import BranchType
 from polylogue.lib.message_models import DialoguePair, Message
@@ -15,6 +15,8 @@ from polylogue.lib.roles import Role
 from polylogue.types import ConversationId
 
 if TYPE_CHECKING:
+    from polylogue.lib.content_projection import ContentProjectionSpec
+    from polylogue.lib.conversation_models import Conversation
     from polylogue.lib.projections import ConversationProjection
 
 
@@ -102,6 +104,14 @@ class ConversationRuntimeMixin:
     def with_roles(self, roles: object) -> Self:
         selected_roles = normalize_message_roles(roles)
         return self.filter(lambda message: message.role in selected_roles)
+
+    def with_content_projection(
+        self,
+        projection: ContentProjectionSpec | Mapping[str, object] | None,
+    ) -> Self:
+        from polylogue.lib.content_projection import project_conversation_content
+
+        return cast(Self, project_conversation_content(cast("Conversation", self), projection))
 
     def dialogue_only(self) -> Self:
         return self.with_roles((Role.USER, Role.ASSISTANT))

@@ -21,6 +21,7 @@ import pytest
 from polylogue.cli.query import QueryAction, QueryOutputSpec, QueryRoute
 from polylogue.cli.query_contracts import QueryDeliveryTarget
 from polylogue.cli.types import AppEnv
+from polylogue.lib.content_projection import ContentProjectionSpec
 from polylogue.lib.models import Conversation as ConversationModel
 from polylogue.lib.models import ConversationSummary
 from polylogue.lib.models import Message as MessageModel
@@ -839,6 +840,49 @@ async def test_stream_conversation_errors_for_missing_conversation() -> None:
     mock_echo.assert_called_once_with("Conversation not found: missing", err=True)
 
 
+@pytest.mark.asyncio
+async def test_stream_conversation_applies_content_projection_when_requested() -> None:
+    from polylogue.cli.query_output import stream_conversation
+
+    repo = MagicMock()
+    repo.get_render_projection = AsyncMock(
+        return_value=SimpleNamespace(
+            conversation=SimpleNamespace(
+                title="Projected Stream",
+                provider_name=None,
+                updated_at=None,
+                created_at=None,
+            )
+        )
+    )
+    repo.get_conversation_stats = AsyncMock(return_value={"dialogue_messages": 1, "total_messages": 1})
+    repo.get = AsyncMock(
+        return_value=_make_conv(
+            id="conv-stream",
+            messages=[_make_msg("m1", "assistant", "Alpha\n\n```python\nprint('x')\n```\n\nOmega")],
+        )
+    )
+    repo.iter_messages = MagicMock()
+    env = _make_env(repo=repo, config=MagicMock())
+    stdout = StringIO()
+
+    with patch("sys.stdout", stdout):
+        count = await stream_conversation(
+            env,
+            repo,
+            "conv-stream",
+            output_format="plaintext",
+            content_projection=ContentProjectionSpec.prose_only(),
+        )
+
+    output = stdout.getvalue()
+    assert count == 1
+    assert "Alpha" in output
+    assert "Omega" in output
+    assert "print('x')" not in output
+    repo.iter_messages.assert_not_called()
+
+
 @pytest.mark.parametrize(
     ("content", "output_format", "conv", "expected_in_file"),
     [
@@ -1096,6 +1140,9 @@ class TestBuildQueryExecutionPlan:
 
         transformed = build_query_execution_plan({"list_mode": True, "transform": "strip-tools", "query": ("abc",)})
         assert transformed.prefers_summary_list() is False
+
+        projected = build_query_execution_plan({"list_mode": True, "prose_only": True, "query": ("abc",)})
+        assert projected.prefers_summary_list() is False
 
     def test_mutation_fields_are_normalized(self) -> None:
         from polylogue.cli.query import build_query_execution_plan
