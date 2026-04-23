@@ -5,8 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-from polylogue.config import Config
-from polylogue.paths import Source
+from polylogue.config import Config, Source
 from polylogue.scenarios import CorpusProfile, CorpusRequest, CorpusSpec
 from polylogue.showcase.corpus_requests import showcase_corpus_request
 from polylogue.showcase.exercises import Exercise

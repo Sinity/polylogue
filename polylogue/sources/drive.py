@@ -10,7 +10,7 @@ from polylogue.types import Provider
 
 from ..assets import asset_path
 from ..config import Source
-from ..paths import safe_path_component
+from ..paths.sanitize import safe_path_component
 from .dispatch import parse_drive_payload
 from .drive_source import DriveSourceAPI, _parse_modified_time, build_drive_source_client
 from .drive_types import DriveConfigLike, DriveFile, DriveUILike

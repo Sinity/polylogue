@@ -24,7 +24,7 @@ from polylogue.cli.types import AppEnv
 from polylogue.lib.models import Conversation as ConversationModel
 from polylogue.lib.models import ConversationSummary
 from polylogue.lib.models import Message as MessageModel
-from polylogue.paths import conversation_render_root
+from polylogue.paths.sanitize import conversation_render_root
 from polylogue.services import build_runtime_services
 from polylogue.storage.action_event_artifacts import ActionEventArtifactState
 from polylogue.types import ConversationId, Provider

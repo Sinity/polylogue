@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from polylogue.paths import is_within_root, safe_path_component
+from polylogue.paths.sanitize import is_within_root, safe_path_component
 
 
 class TestSafePathComponent:
@@ -114,3 +114,42 @@ class TestIsWithinRoot:
         root.mkdir()
         traversal = root / ".." / "other"
         assert is_within_root(traversal, root) is False
+
+
+class TestPathsPublicBoundary:
+    def test_paths_root_exports_only_directory_layout_symbols(self) -> None:
+        import polylogue.paths as paths
+
+        assert set(paths.__all__) == {
+            "GEMINI_DRIVE_FOLDER",
+            "archive_root",
+            "blob_store_root",
+            "cache_home",
+            "cache_root",
+            "claude_code_path",
+            "codex_path",
+            "config_home",
+            "config_root",
+            "data_home",
+            "data_root",
+            "db_path",
+            "drive_cache_path",
+            "drive_credentials_path",
+            "drive_token_path",
+            "inbox_root",
+            "render_root",
+            "state_home",
+            "state_root",
+        }
+
+    def test_paths_root_does_not_reexport_sanitization_helpers(self) -> None:
+        import polylogue.paths as paths
+
+        forbidden = {
+            "conversation_render_root",
+            "is_within_root",
+            "safe_path_component",
+        }
+        assert forbidden.isdisjoint(set(paths.__all__))
+        for name in forbidden:
+            assert not hasattr(paths, name)

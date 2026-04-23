@@ -40,21 +40,44 @@ Polylogue follows XDG Base Directory specification:
 - Files are processed recursively
 - Supported formats: `.json`, `.jsonl`, `.zip`
 
-## Configuration
+## Configuration Model
 
-Polylogue has no general-purpose config file. It follows XDG defaults, auto-discovers supported sources, and exposes only a few operational overrides for archive location, terminal mode, embeddings, and Drive credentials.
+Polylogue has no general-purpose config file. Runtime configuration is assembled
+by `polylogue.config`: it discovers sources, builds Drive/index settings, and
+captures the current database path in the `Config` value. Filesystem layout is
+owned by `polylogue.paths`, which reads directory environment variables lazily
+when its path functions are called.
 
-## Environment Overrides
+Path-safety helpers are separate from both surfaces. Code that sanitizes
+provider or conversation names imports from `polylogue.paths.sanitize`.
+
+## Environment Policy
+
+Environment variable precedence is:
+
+1. XDG roots define the base config, data, cache, and state directories.
+2. `POLYLOGUE_ARCHIVE_ROOT` overrides only the archive root; the database still
+   defaults to `$XDG_DATA_HOME/polylogue/polylogue.db`.
+3. Source discovery is derived from resolved filesystem paths and Drive cache or
+   auth files.
+4. Drive authentication may override credential and token files through the
+   Drive-specific environment variables below.
+5. Vector indexing reads `VOYAGE_API_KEY` when building index configuration or
+   dispatching embedding commands.
 
 These are the supported runtime overrides:
 
 | Variable | Description |
 |----------|-------------|
+| `XDG_CONFIG_HOME` | Base directory for `polylogue-credentials.json` |
+| `XDG_DATA_HOME` | Base directory for the database, inbox, blob store, and Drive cache |
+| `XDG_CACHE_HOME` | Base directory for cache/index output |
+| `XDG_STATE_HOME` | Base directory for OAuth token and runtime state |
 | `POLYLOGUE_ARCHIVE_ROOT` | Override the archive root instead of using `$XDG_DATA_HOME/polylogue` |
 | `POLYLOGUE_FORCE_PLAIN` | Force non-interactive plain output |
 | `VOYAGE_API_KEY` | Voyage AI API key for embeddings |
-| `POLYLOGUE_CREDENTIAL_PATH` | Path to OAuth client JSON |
-| `POLYLOGUE_TOKEN_PATH` | Path to OAuth token |
+| `POLYLOGUE_CREDENTIAL_PATH` | Drive auth override for the OAuth client JSON path |
+| `POLYLOGUE_TOKEN_PATH` | Drive auth override for the OAuth token path |
 
 ## Backup and Export
 

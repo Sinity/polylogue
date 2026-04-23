@@ -25,8 +25,8 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 from hypothesis.strategies import SearchStrategy
 
+from polylogue.config import Source
 from polylogue.lib.json import JSONDocument, json_document
-from polylogue.paths import Source
 from polylogue.schemas.synthetic import SyntheticCorpus
 from polylogue.sources import iter_source_conversations
 from polylogue.sources.parsers import chatgpt, claude, codex, drive

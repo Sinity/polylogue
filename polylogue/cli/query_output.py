@@ -303,7 +303,7 @@ def open_result(
         click.echo("Run 'polylogue run' first to render conversations.", err=True)
         raise SystemExit(1)
 
-    from polylogue.paths import conversation_render_root
+    from polylogue.paths.sanitize import conversation_render_root
 
     render_dir = conversation_render_root(render_root, str(conv.provider), str(conv.id))
     html_file = render_dir / "conversation.html"

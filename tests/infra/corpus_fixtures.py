@@ -30,7 +30,7 @@ def _seed_db(
 ) -> Path:
     """Generate wire-format bytes, write to temp, run pipeline, return db_path."""
     # Defer all heavy imports to avoid circular import at conftest collection time
-    from polylogue.paths import Source
+    from polylogue.config import Source
     from polylogue.pipeline.prepare import prepare_records
     from polylogue.scenarios import build_default_corpus_specs
     from polylogue.schemas.synthetic import SyntheticCorpus

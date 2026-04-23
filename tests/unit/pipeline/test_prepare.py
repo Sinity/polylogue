@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.paths import is_within_root
+from polylogue.paths.sanitize import is_within_root
 from polylogue.pipeline.prepare import RecordBundle, save_bundle
 from polylogue.rendering.renderers import HTMLRenderer
 from polylogue.storage.backends.connection import open_connection

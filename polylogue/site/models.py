@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 from polylogue.authored_payloads import PayloadDict
 from polylogue.logging import get_logger
-from polylogue.paths import safe_path_component
+from polylogue.paths.sanitize import safe_path_component
 from polylogue.types import SearchProvider
 
 if TYPE_CHECKING:
