@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, TypeVar
+from typing import TYPE_CHECKING, TypeVar, cast
 
 import structlog
 
@@ -36,6 +36,7 @@ from polylogue.archive_products import (
     WorkThreadProduct,
     WorkThreadProductQuery,
 )
+from polylogue.archive_resume import ResumeBrief, ResumeOperations, build_resume_brief
 from polylogue.lib.conversation_models import ConversationSummary
 from polylogue.lib.query_spec import ConversationQuerySpec
 from polylogue.maintenance_targets import build_maintenance_target_catalog
@@ -697,7 +698,24 @@ class ArchiveMaintenanceMixin:
             )
 
 
-class ArchiveOperations(ArchiveSearchMixin, ArchiveStatsMixin, ArchiveProductMixin, ArchiveMaintenanceMixin):
+class ArchiveResumeMixin:
+    async def build_resume_brief(
+        self,
+        session_id: str,
+        *,
+        related_limit: int = 6,
+    ) -> ResumeBrief | None:
+        """Build a compact resume handoff brief for an archived session."""
+        return await build_resume_brief(cast(ResumeOperations, self), session_id, related_limit=related_limit)
+
+
+class ArchiveOperations(
+    ArchiveSearchMixin,
+    ArchiveStatsMixin,
+    ArchiveProductMixin,
+    ArchiveMaintenanceMixin,
+    ArchiveResumeMixin,
+):
     """Canonical archive-level operations over configured runtime dependencies."""
 
     def __init__(
