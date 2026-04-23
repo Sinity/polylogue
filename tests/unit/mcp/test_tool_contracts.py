@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
@@ -14,6 +14,7 @@ from polylogue.archive_product_models import (
     WorkThreadPayload,
 )
 from polylogue.archive_products import (
+    ArchiveDebtProduct,
     ArchiveEnrichmentProvenance,
     ArchiveInferenceProvenance,
     ArchiveProductProvenance,
@@ -40,6 +41,7 @@ from polylogue.lib.query_miss_diagnostics import QueryMissDiagnostics, QueryMiss
 from polylogue.lib.query_spec import ConversationQuerySpec
 from polylogue.lib.search_hits import ConversationSearchHit
 from polylogue.lib.stats import ArchiveStats
+from polylogue.storage.session_product_runtime import SessionProductCounts
 from polylogue.types import ConversationId, Provider
 from tests.infra.builders import make_conv, make_msg
 from tests.infra.mcp import (
@@ -656,6 +658,15 @@ class TestProductTools:
             tool_use_percentage=100.0,
             thinking_percentage=0.0,
         )
+        debt = ArchiveDebtProduct(
+            debt_name="session_products",
+            category="products",
+            maintenance_target="session_products",
+            destructive=False,
+            issue_count=1,
+            healthy=False,
+            detail="1 pending session-product row",
+        )
         with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
             mock_ops = MagicMock()
             mock_ops.list_session_profile_products = AsyncMock(return_value=[profile])
@@ -667,6 +678,7 @@ class TestProductTools:
             mock_ops.list_day_session_summary_products = AsyncMock(return_value=[day_summary])
             mock_ops.list_week_session_summary_products = AsyncMock(return_value=[week_summary])
             mock_ops.list_provider_analytics_products = AsyncMock(return_value=[analytics])
+            mock_ops.list_archive_debt_products = AsyncMock(return_value=[debt])
             mock_get_archive_ops.return_value = mock_ops
 
             profiles_raw = await invoke_surface_async(
@@ -718,6 +730,12 @@ class TestProductTools:
                 provider="claude-code",
                 limit=5,
             )
+            debt_raw = await invoke_surface_async(
+                mcp_server._tool_manager._tools["archive_debt"].fn,
+                category="products",
+                only_actionable=True,
+                limit=5,
+            )
 
         profiles_payload = json.loads(profiles_raw)
         events_payload = json.loads(events_raw)
@@ -728,6 +746,7 @@ class TestProductTools:
         day_payload = json.loads(day_raw)
         week_payload = json.loads(week_raw)
         analytics_payload = json.loads(analytics_raw)
+        debt_payload = json.loads(debt_raw)
 
         assert profiles_payload["count"] == 1
         assert profiles_payload["items"][0]["product_kind"] == "session_profile"
@@ -739,6 +758,10 @@ class TestProductTools:
         assert day_payload["items"][0]["product_kind"] == "day_session_summary"
         assert week_payload["items"][0]["product_kind"] == "week_session_summary"
         assert analytics_payload["items"][0]["product_kind"] == "provider_analytics"
+        assert debt_payload["items"][0]["product_kind"] == "archive_debt"
+        debt_query = mock_ops.list_archive_debt_products.await_args.args[0]
+        assert debt_query.category == "products"
+        assert debt_query.only_actionable is True
 
     @pytest.mark.asyncio
     async def test_session_enrichments_tool_rejects_unknown_query_fields(self, mcp_server: MCPServerUnderTest) -> None:
@@ -866,6 +889,45 @@ class TestMutationTools:
             )
 
         assert "error" in json.loads(result)
+
+    def test_bulk_tag_conversations_applies_every_tag_to_every_conversation(
+        self,
+        mcp_server: MCPServerUnderTest,
+    ) -> None:
+        with patch("polylogue.mcp.server._get_tag_store") as mock_get_tag_store:
+            mock_tag_store = make_tag_store_mock()
+            mock_get_tag_store.return_value = mock_tag_store
+
+            result = invoke_surface(
+                mcp_server._tool_manager._tools["bulk_tag_conversations"].fn,
+                conversation_ids=["conv-1", "conv-2"],
+                tags=["review", "important"],
+            )
+
+        parsed = json.loads(result)
+        assert parsed == {
+            "status": "ok",
+            "conversation_count": 2,
+            "tag_count": 2,
+            "applied_count": 4,
+        }
+        mock_tag_store.add_tag.assert_has_awaits(
+            [
+                call("conv-1", "review"),
+                call("conv-1", "important"),
+                call("conv-2", "review"),
+                call("conv-2", "important"),
+            ]
+        )
+
+    def test_bulk_tag_conversations_rejects_empty_inputs(self, mcp_server: MCPServerUnderTest) -> None:
+        result = invoke_surface(
+            mcp_server._tool_manager._tools["bulk_tag_conversations"].fn,
+            conversation_ids=[],
+            tags=["review"],
+        )
+
+        assert "requires at least one conversation_id" in json.loads(result)["error"]
 
     def test_list_tags_returns_counts(self, mcp_server: MCPServerUnderTest) -> None:
         with patch("polylogue.mcp.server._get_tag_store") as mock_get_tag_store:
@@ -1119,3 +1181,56 @@ class TestMutationTools:
         parsed = json.loads(result)
         assert parsed["status"] == "ok"
         assert parsed["conversation_count"] == 2
+
+    def test_rebuild_session_products_success(self, mcp_server: MCPServerUnderTest) -> None:
+        with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
+            mock_ops = MagicMock()
+            mock_ops.rebuild_session_products = AsyncMock(
+                return_value=SessionProductCounts(profiles=2, work_events=3, phases=1)
+            )
+            mock_get_archive_ops.return_value = mock_ops
+
+            result = invoke_surface(
+                mcp_server._tool_manager._tools["rebuild_session_products"].fn,
+                conversation_ids=["conv-1", "conv-2"],
+            )
+
+        parsed = json.loads(result)
+        assert parsed["status"] == "ok"
+        assert parsed["conversation_count"] == 2
+        assert parsed["counts"]["profiles"] == 2
+        assert parsed["total"] == 6
+        mock_ops.rebuild_session_products.assert_awaited_once_with(conversation_ids=["conv-1", "conv-2"])
+
+    def test_export_query_results_uses_shared_query_contract(
+        self,
+        simple_conversation: Conversation,
+        mcp_server: MCPServerUnderTest,
+    ) -> None:
+        with (
+            patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops,
+            patch("polylogue.rendering.formatting.format_conversation") as mock_format,
+        ):
+            mock_ops = MagicMock()
+            mock_ops.query_conversations = AsyncMock(return_value=[simple_conversation])
+            mock_get_archive_ops.return_value = mock_ops
+            mock_format.return_value = '{"exported": true}'
+
+            result = invoke_surface(
+                mcp_server._tool_manager._tools["export_query_results"].fn,
+                query="hello",
+                provider="chatgpt",
+                format="json",
+                limit=3,
+            )
+
+        parsed = json.loads(result)
+        assert parsed["count"] == 1
+        assert parsed["format"] == "json"
+        assert parsed["exports"][0]["conversation_id"] == "test:conv-123"
+        assert parsed["exports"][0]["content"] == '{"exported": true}'
+        spec = mock_ops.query_conversations.await_args.args[0]
+        assert isinstance(spec, ConversationQuerySpec)
+        assert spec.query_terms == ("hello",)
+        assert tuple(str(provider) for provider in spec.providers) == ("chatgpt",)
+        assert spec.limit == 3

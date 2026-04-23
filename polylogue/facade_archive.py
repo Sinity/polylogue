@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from contextlib import suppress
 from typing import TYPE_CHECKING, Protocol
 
@@ -18,8 +19,10 @@ if TYPE_CHECKING:
     from polylogue.lib.conversation_models import Conversation
     from polylogue.lib.filters import ConversationFilter
     from polylogue.operations import ArchiveStats
+    from polylogue.readiness import ReadinessReport
     from polylogue.storage.repository import ConversationRepository
     from polylogue.storage.search_models import SearchResult
+    from polylogue.storage.session_product_runtime import SessionProductCounts
 
     class _ArchiveOperationsSurface(Protocol):
         async def get_conversation(self, conversation_id: str) -> Conversation | None: ...
@@ -67,6 +70,11 @@ if TYPE_CHECKING:
         ) -> list[SessionEnrichmentProduct]: ...
 
         async def summary_stats(self) -> ArchiveStats: ...
+
+        async def rebuild_session_products(
+            self,
+            conversation_ids: Sequence[str] | None = None,
+        ) -> SessionProductCounts: ...
 
 
 class PolylogueArchiveMixin:
@@ -153,3 +161,20 @@ class PolylogueArchiveMixin:
 
     async def stats(self) -> ArchiveStats:
         return await self.operations.summary_stats()
+
+    async def get_archive_stats(self) -> ArchiveStats:
+        """Return archive summary statistics with an explicit API name."""
+        return await self.stats()
+
+    async def health_check(self) -> ReadinessReport:
+        """Return the canonical archive readiness report."""
+        from polylogue.readiness import get_readiness
+
+        return get_readiness(self.config)
+
+    async def rebuild_products(
+        self,
+        conversation_ids: Sequence[str] | None = None,
+    ) -> SessionProductCounts:
+        """Rebuild durable session-product read models."""
+        return await self.operations.rebuild_session_products(conversation_ids=conversation_ids)

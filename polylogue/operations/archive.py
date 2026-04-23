@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, TypeVar
 
@@ -70,6 +70,7 @@ if TYPE_CHECKING:
     from polylogue.lib.stats import ArchiveStats as StorageArchiveStats
     from polylogue.storage.backends.async_sqlite import SQLiteBackend
     from polylogue.storage.repository import ConversationRepository
+    from polylogue.storage.session_product_runtime import SessionProductCounts
 
 _ResultT = TypeVar("_ResultT")
 _QueryT = TypeVar("_QueryT")
@@ -675,7 +676,28 @@ class ArchiveProductMixin(
     """Versioned archive-product retrieval methods."""
 
 
-class ArchiveOperations(ArchiveSearchMixin, ArchiveStatsMixin, ArchiveProductMixin):
+class ArchiveMaintenanceMixin:
+    if TYPE_CHECKING:
+
+        @property
+        def backend(self) -> SQLiteBackend: ...
+
+    async def rebuild_session_products(
+        self,
+        conversation_ids: Sequence[str] | None = None,
+    ) -> SessionProductCounts:
+        """Rebuild durable session-product read models."""
+        from polylogue.storage.session_product_rebuild import rebuild_session_products_async
+
+        async with self.backend.bulk_connection(), self.backend.connection() as conn:
+            return await rebuild_session_products_async(
+                conn,
+                conversation_ids=conversation_ids,
+                transaction_depth=self.backend.transaction_depth,
+            )
+
+
+class ArchiveOperations(ArchiveSearchMixin, ArchiveStatsMixin, ArchiveProductMixin, ArchiveMaintenanceMixin):
     """Canonical archive-level operations over configured runtime dependencies."""
 
     def __init__(

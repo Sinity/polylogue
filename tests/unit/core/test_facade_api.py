@@ -8,6 +8,7 @@ import pytest
 
 from polylogue import Polylogue
 from polylogue.archive_products import (
+    ArchiveDebtProductQuery,
     DaySessionSummaryProductQuery,
     SessionEnrichmentProductQuery,
     SessionPhaseProductQuery,
@@ -362,12 +363,38 @@ class TestPolylogueArchiveProducts:
         week_summaries = await archive.list_week_session_summary_products(
             WeekSessionSummaryProductQuery(provider="claude-code", limit=10)
         )
+        archive_debt = await archive.list_archive_debt_products(ArchiveDebtProductQuery(limit=10))
 
         assert any(item.tag == "provider:claude-code" for item in tag_rollups)
         assert len(day_summaries) == 1
         assert day_summaries[0].summary.session_count == 2
         assert len(week_summaries) == 1
         assert week_summaries[0].summary.session_count == 2
+        assert any(item.product_kind == "archive_debt" for item in archive_debt)
+
+    @pytest.mark.asyncio
+    async def test_archive_stats_health_and_rebuild_products_are_public(
+        self: object,
+        cli_workspace: dict[str, Path],
+    ) -> None:
+        db_path = cli_workspace["db_path"]
+        (
+            ConversationBuilder(db_path, "conv-public")
+            .provider("codex")
+            .title("Public Facade")
+            .add_message("u1", role="user", text="Verify facade methods")
+            .save()
+        )
+
+        archive = Polylogue(archive_root=cli_workspace["archive_root"], db_path=db_path)
+        stats = await archive.get_archive_stats()
+        health = await archive.health_check()
+        counts = await archive.rebuild_products(["conv-public"])
+
+        assert stats.conversation_count == 1
+        assert health.summary
+        assert counts.profiles == 1
+        assert counts.total() >= 1
 
 
 class TestPolylogueListConversations:

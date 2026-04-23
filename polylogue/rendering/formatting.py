@@ -28,6 +28,22 @@ from polylogue.surface_payloads import (
 if TYPE_CHECKING:
     from polylogue.lib.models import Conversation
 
+CONVERSATION_OUTPUT_FORMATS = (
+    "markdown",
+    "json",
+    "html",
+    "yaml",
+    "plaintext",
+    "csv",
+    "obsidian",
+    "org",
+)
+
+
+def normalize_conversation_output_format(output_format: str) -> str:
+    """Return a supported conversation output format, falling back to markdown."""
+    return output_format if output_format in CONVERSATION_OUTPUT_FORMATS else "markdown"
+
 
 def format_conversation(
     conv: Conversation,
@@ -44,6 +60,8 @@ def format_conversation(
     Returns:
         Formatted string
     """
+    output_format = normalize_conversation_output_format(output_format)
+
     if output_format == "json":
         return _conv_to_json(conv, fields)
     elif output_format == "yaml":

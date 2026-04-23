@@ -525,6 +525,18 @@ def test_products_analytics_json(cli_workspace: CliWorkspace) -> None:
     assert json_int(item["tool_use_count"]) == 2
 
 
+def test_products_debt_json(cli_workspace: CliWorkspace) -> None:
+    runner = CliRunner()
+    result = runner.invoke(cli, ["products", "debt", "--json"], catch_exceptions=False)
+
+    assert result.exit_code == 0
+    payload = extract_json_result(result.output)
+    assert json_int(payload["count"]) >= 1
+    first = json_object_list(payload["archive_debt"])[0]
+    assert first["product_kind"] == "archive_debt"
+    assert "maintenance_target" in first
+
+
 def test_session_product_status_accepts_epoch_backed_conversation_timestamps(cli_workspace: CliWorkspace) -> None:
     db_path = cli_workspace["db_path"]
     (

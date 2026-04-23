@@ -121,6 +121,7 @@ Commands:
   dashboard    Launch the dashboard TUI.
   delete       Delete matched conversations.
   doctor       Health check with optional maintenance and cleanup previews.
+  export       Export one known conversation by ID.
   list         List matched conversations.
   mcp          Start the MCP server for AI assistant integration.
   neighbors    Show explainable neighboring or near-duplicate candidates.
@@ -286,6 +287,7 @@ Options:
 Commands:
   analytics       List provider-level analytics products.
   day-summaries   List durable day-level session summary products.
+  debt            List archive debt and maintenance readiness products.
   enrichments     List durable probabilistic session-enrichment products.
   phases          List durable session-phase products.
   profiles        List durable session-profile products.

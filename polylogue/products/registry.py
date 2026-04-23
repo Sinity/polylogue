@@ -23,6 +23,7 @@ from typing import TypeAlias
 import click
 
 from polylogue.archive_products import (
+    ArchiveDebtProductQuery,
     ArchiveProductModel,
     DaySessionSummaryProductQuery,
     ProviderAnalyticsProductQuery,
@@ -470,6 +471,38 @@ register(
             ProductField("avg_messages", _formatted_float("avg_messages_per_conversation"), group=0),
             ProductField("tools", _count_with_percentage("tool_use_count", "tool_use_percentage"), group=1),
             ProductField("thinking", _count_with_percentage("thinking_count", "thinking_percentage"), group=1),
+        ),
+    )
+)
+
+register(
+    ProductType(
+        name="archive_debt",
+        display_name="Archive Debt",
+        json_key="archive_debt",
+        empty_message="No archive debt entries matched.",
+        query_model=ArchiveDebtProductQuery,
+        operations_method_name="list_archive_debt_products",
+        cli_command_name="debt",
+        cli_help="List archive debt and maintenance readiness products.",
+        cli_options=(
+            CliOption("category", ("--category",), help="Only this maintenance category"),
+            CliOption(
+                "only_actionable",
+                ("--only-actionable",),
+                is_flag=True,
+                default=False,
+                help="Only debt entries with pending issues",
+            ),
+        ),
+        fields=(
+            ProductField("", _attr("debt_name"), group=0),
+            ProductField("category", _attr("category"), group=0),
+            ProductField("target", _attr("maintenance_target"), group=0),
+            ProductField("issues", _attr("issue_count", "0"), group=1),
+            ProductField("healthy", _attr("healthy"), group=1),
+            ProductField("destructive", _attr("destructive"), group=1),
+            ProductField("detail", _attr("detail"), group=2),
         ),
     )
 )

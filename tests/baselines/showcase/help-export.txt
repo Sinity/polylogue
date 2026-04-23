@@ -1,0 +1,9 @@
+Usage: polylogue export [OPTIONS] CONVERSATION_ID
+
+  Export one known conversation by ID.
+
+Options:
+  -f, --format [markdown|json|html|yaml|plaintext|csv|obsidian|org]
+                                  Output format  [default: markdown]
+  --fields TEXT                   Fields for JSON/YAML outputs
+  -h, --help                      Show this message and exit.
