@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from polylogue.lib.conversation_models import Conversation
     from polylogue.lib.filters import ConversationFilter
     from polylogue.operations import ArchiveStats
+    from polylogue.product_export_bundles import ProductExportBundleRequest, ProductExportBundleResult
     from polylogue.product_readiness import ProductReadinessQuery, ProductReadinessReport
     from polylogue.readiness import ReadinessReport
     from polylogue.storage.repository import ConversationRepository
@@ -89,6 +90,11 @@ if TYPE_CHECKING:
             self,
             query: ProductReadinessQuery | None = None,
         ) -> ProductReadinessReport: ...
+
+        async def export_product_bundle(
+            self,
+            request: ProductExportBundleRequest,
+        ) -> ProductExportBundleResult: ...
 
 
 class PolylogueArchiveMixin:
@@ -208,3 +214,10 @@ class PolylogueArchiveMixin:
     ) -> ProductReadinessReport:
         """Return product materialization readiness for downstream consumers."""
         return await self.operations.get_product_readiness_report(query)
+
+    async def export_product_bundle(
+        self,
+        request: ProductExportBundleRequest,
+    ) -> ProductExportBundleResult:
+        """Write a versioned archive-product export bundle."""
+        return await self.operations.export_product_bundle(request)
