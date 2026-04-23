@@ -8,6 +8,7 @@ from polylogue.cli.commands.auth import auth_command
 from polylogue.cli.commands.check import check_command
 from polylogue.cli.commands.completions import completions_command
 from polylogue.cli.commands.dashboard import dashboard_command
+from polylogue.cli.commands.export import export_command
 from polylogue.cli.commands.mcp import mcp_command
 from polylogue.cli.commands.neighbors import neighbors_command
 from polylogue.cli.commands.products import products_command
@@ -26,6 +27,7 @@ ROOT_COMMANDS: tuple[click.Command, ...] = (
     completions_command,
     dashboard_command,
     neighbors_command,
+    export_command,
     products_command,
     tags_command,
     qa_command,
@@ -42,6 +44,7 @@ def register_root_commands(group: click.Group) -> None:
 __all__ = [
     "completions_command",
     "dashboard_command",
+    "export_command",
     "mcp_command",
     "neighbors_command",
     "register_root_commands",
