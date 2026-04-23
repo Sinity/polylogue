@@ -15,10 +15,10 @@ Current registry snapshot:
 - mutation campaigns: `19`
 - benchmark campaigns: `3`
 - synthetic benchmark campaigns: `6`
-- scenario projections: `243`
+- scenario projections: `244`
 - inferred corpus scenarios: `5`
   - benchmark-campaign: `3`
-  - exercise: `137`
+  - exercise: `138`
   - inferred-corpus-scenario: `5`
   - mutation-campaign: `19`
   - synthetic-benchmark: `6`
@@ -340,6 +340,7 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `exercise` | `help-products-day-summaries` | `day-summary-query-loop` | `day_session_summary_rows`<br>`day_session_summary_results` | `cli.help`<br>`query-day-session-summaries` | — | `generated`<br>`help`<br>`structural` | products day-summaries help |
 | `exercise` | `help-products-debt` | `archive-debt-query-loop` | `action_event_readiness`<br>`session_product_readiness`<br>`archive_readiness`<br>`archive_debt_results` | `cli.help`<br>`query-archive-debt` | — | `generated`<br>`help`<br>`structural` | products debt help |
 | `exercise` | `help-products-enrichments` | `session-enrichment-query-loop` | `session_profile_rows`<br>`session_profile_enrichment_fts`<br>`session_enrichment_results` | `cli.help`<br>`query-session-enrichments` | — | `generated`<br>`help`<br>`structural` | products enrichments help |
+| `exercise` | `help-products-export` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | products export help |
 | `exercise` | `help-products-phases` | `session-phase-query-loop` | `session_phase_rows`<br>`session_phase_results` | `cli.help`<br>`query-session-phases` | — | `generated`<br>`help`<br>`structural` | products phases help |
 | `exercise` | `help-products-profiles` | `session-profile-query-loop` | `session_profile_rows`<br>`session_profile_merged_fts`<br>`session_profile_results` | `cli.help`<br>`query-session-profiles` | — | `generated`<br>`help`<br>`structural` | products profiles help |
 | `exercise` | `help-products-status` | `session-product-status-query-loop` | `session_product_readiness`<br>`session_product_status_results` | `cli.help`<br>`query-session-product-status` | — | `generated`<br>`help`<br>`structural` | products status help |

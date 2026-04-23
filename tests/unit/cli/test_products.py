@@ -253,6 +253,25 @@ def test_products_status_plain(cli_workspace: CliWorkspace) -> None:
     assert "session_profiles: ready" in result.output
 
 
+def test_products_export_json(cli_workspace: CliWorkspace) -> None:
+    _seed_products(cli_workspace)
+    target = cli_workspace["archive_root"] / "exports" / "products-bundle"
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["products", "export", "--out", str(target), "--product", "profiles", "--json"],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    payload = extract_json_result(result.output)
+    assert payload["output_path"] == str(target)
+    assert (target / "manifest.json").exists()
+    assert (target / "coverage.json").exists()
+    assert (target / "products" / "session_profiles.jsonl").exists()
+
+
 def test_products_enrichments_json(cli_workspace: CliWorkspace) -> None:
     _seed_products(cli_workspace)
 

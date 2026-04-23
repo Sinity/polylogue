@@ -290,6 +290,7 @@ Commands:
   day-summaries   List durable day-level session summary products.
   debt            List archive debt and maintenance readiness products.
   enrichments     List durable probabilistic session-enrichment products.
+  export          Export versioned archive-product bundles.
   phases          List durable session-phase products.
   profiles        List durable session-profile products.
   status          Report product materialization coverage and readiness.

@@ -41,6 +41,12 @@ from polylogue.lib.conversation_models import ConversationSummary
 from polylogue.lib.query_spec import ConversationQuerySpec
 from polylogue.maintenance_targets import build_maintenance_target_catalog
 from polylogue.paths.sanitize import conversation_render_root
+from polylogue.product_export_bundles import (
+    ProductExportBundleRequest,
+    ProductExportBundleResult,
+    ProductExportOperations,
+    export_product_bundle,
+)
 from polylogue.product_readiness import (
     ProductReadinessQuery,
     ProductReadinessReport,
@@ -594,6 +600,9 @@ class ArchiveProductAggregateMixin:
         @property
         def backend(self) -> SQLiteBackend: ...
 
+        @property
+        def config(self) -> Config: ...
+
     async def list_session_tag_rollup_products(
         self,
         query: SessionTagRollupQuery | None = None,
@@ -658,6 +667,12 @@ class ArchiveProductAggregateMixin:
         status = await _read_session_product_status(self.backend)
         async with self.backend.connection() as conn:
             return await build_product_readiness_report(conn, status, query)
+
+    async def export_product_bundle(
+        self,
+        request: ProductExportBundleRequest,
+    ) -> ProductExportBundleResult:
+        return await export_product_bundle(cast(ProductExportOperations, self), self.config, request)
 
 
 class ArchiveProductDebtMixin:

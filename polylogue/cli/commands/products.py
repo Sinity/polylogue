@@ -8,6 +8,7 @@ works without re-specifying the filter on the subcommand.
 from __future__ import annotations
 
 from collections.abc import Callable
+from pathlib import Path
 
 import click
 
@@ -16,6 +17,12 @@ from polylogue.cli.helper_support import fail
 from polylogue.cli.machine_errors import emit_success
 from polylogue.cli.product_command_contracts import ProductCommandRequest, query_model_field_names
 from polylogue.cli.types import AppEnv
+from polylogue.product_export_bundles import (
+    ProductExportBundleError,
+    ProductExportBundleRequest,
+    ProductExportBundleResult,
+    ProductExportFormat,
+)
 from polylogue.product_readiness import ProductReadinessQuery, ProductReadinessReport, known_product_readiness_names
 from polylogue.products.registry import (
     PRODUCT_REGISTRY,
@@ -171,6 +178,19 @@ def _render_status_plain(report: ProductReadinessReport) -> None:
             click.echo(f"  schema: {', '.join(product.schema_contract_issues)}")
 
 
+def _render_export_plain(result: ProductExportBundleResult) -> None:
+    click.echo(f"Product export bundle: {result.output_path}")
+    click.echo(f"Manifest: {result.manifest_path}")
+    click.echo(f"Coverage: {result.coverage_path}")
+    click.echo("")
+    for product in result.manifest.products:
+        click.echo(f"{product.product_name}: rows={product.row_count} readiness={product.readiness_verdict or '-'}")
+        for warning in product.warnings:
+            click.echo(f"  warning: {warning}")
+        for error in product.errors:
+            click.echo(f"  error: {error}")
+
+
 @products_command.command("status")
 @click.option("--product", "products", multiple=True, help="Product readiness target. May be repeated.")
 @click.option("--provider", default=None, help="Limit provider coverage details to one provider.")
@@ -209,6 +229,57 @@ def products_status_command(
         emit_success(report.model_dump(mode="json"))
         return
     _render_status_plain(report)
+
+
+@products_command.command("export")
+@click.option("--out", "output_path", required=True, type=click.Path(path_type=Path), help="Output bundle directory.")
+@click.option("--product", "products", multiple=True, help="Product to include. Defaults to all exportable products.")
+@click.option("--provider", default=None, help="Limit supported products to one provider.")
+@click.option("--since", default=None, help="Limit supported products to rows at/after this timestamp or date.")
+@click.option("--until", default=None, help="Limit supported products to rows at/before this timestamp or date.")
+@click.option("--format", "output_format", type=click.Choice(["jsonl"]), default="jsonl", show_default=True)
+@click.option(
+    "--overwrite", is_flag=True, help="Replace an existing bundle directory after writing a complete new one."
+)
+@click.option("--json", "json_mode", is_flag=True, help="Output bundle metadata as JSON.")
+@click.pass_context
+def products_export_command(
+    ctx: click.Context,
+    output_path: Path,
+    products: tuple[str, ...],
+    provider: str | None,
+    since: str | None,
+    until: str | None,
+    output_format: str,
+    overwrite: bool,
+    json_mode: bool,
+) -> None:
+    """Export versioned archive-product bundles."""
+    env: AppEnv = ctx.obj
+    root_params = ctx.find_root().params
+    inherited_provider = provider if provider is not None else root_params.get("provider")
+    inherited_since = since if since is not None else root_params.get("since")
+    inherited_until = until if until is not None else root_params.get("until")
+    try:
+        export_format: ProductExportFormat = "jsonl"
+        if output_format != "jsonl":
+            fail("products export", f"unsupported export format: {output_format}")
+        request = ProductExportBundleRequest(
+            output_path=output_path,
+            products=products,
+            provider=str(inherited_provider) if inherited_provider is not None else None,
+            since=str(inherited_since) if inherited_since is not None else None,
+            until=str(inherited_until) if inherited_until is not None else None,
+            output_format=export_format,
+            overwrite=overwrite,
+        )
+        result = run_coroutine_sync(env.operations.export_product_bundle(request))
+    except ProductExportBundleError as exc:
+        fail("products export", str(exc))
+    if json_mode or ctx.find_root().params.get("output_format") == "json":
+        emit_success(result.model_dump(mode="json"))
+        return
+    _render_export_plain(result)
 
 
 # Register all product types as subcommands
