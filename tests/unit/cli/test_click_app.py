@@ -54,6 +54,7 @@ class TestHandleQueryMode:
             "message_role": (),
             "set_meta": (),
             "add_tag": (),
+            "tail": False,
             "plain": False,
             "verbose": False,
             "filter_has_tool_use": False,
@@ -247,8 +248,10 @@ class TestQueryFirstGroupParseArgs:
         assert "products" in result.output
         assert "--provider" in result.output
         assert "--latest" in result.output
+        assert "--tail" in result.output
         assert "Subcommands:" not in result.output
         assert "polylogue --provider claude-code --since 2026-01-01 stats --by repo --format json" in result.output
+        assert "polylogue --tail --provider claude-code --latest list" in result.output
         assert "polylogue stats --by repo --provider claude-code --since 2026-01-01 --format json" not in result.output
 
     def test_root_query_option_after_verb_gets_specific_usage_error(self, cli_runner: CliRunner) -> None:
