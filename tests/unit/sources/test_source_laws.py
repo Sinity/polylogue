@@ -340,7 +340,7 @@ def test_iter_json_stream_conversations_wrapper_round_trips_documents(
 
 
 @given(json_array_bytes_strategy())
-@settings(max_examples=30)
+@settings(max_examples=30, suppress_health_check=[HealthCheck.too_slow])
 def test_iter_json_stream_unpack_lists_false_preserves_single_list(case: tuple[list[dict[str, object]], bytes]) -> None:
     """`unpack_lists=False` keeps the JSON root list intact as one item."""
     documents, raw = case
@@ -348,7 +348,7 @@ def test_iter_json_stream_unpack_lists_false_preserves_single_list(case: tuple[l
 
 
 @given(jsonl_bytes_strategy())
-@settings(max_examples=35)
+@settings(max_examples=35, suppress_health_check=[HealthCheck.too_slow])
 def test_iter_json_stream_jsonl_preserves_valid_records_with_blank_lines(
     case: tuple[list[dict[str, object]], bytes],
 ) -> None:

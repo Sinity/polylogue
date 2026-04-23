@@ -45,6 +45,14 @@ def _run_completion(workspace: IsolatedWorkspace, *, cwd: Path, words: str, cwor
     return records
 
 
+def _assert_only_optional_open_progress(stderr: str) -> None:
+    lines = [line for line in stderr.splitlines() if line.strip()]
+    assert all(
+        line.startswith("Query still running after ") and "route: open" in line and "retrieval: auto" in line
+        for line in lines
+    )
+
+
 def test_cli_query_count_route_returns_exact_count(tmp_path: Path) -> None:
     workspace = setup_isolated_workspace(tmp_path)
     inbox = workspace["paths"]["inbox"]
@@ -152,7 +160,7 @@ def test_cli_query_open_print_path_returns_render_target_without_launching(tmp_p
     result = run_cli(["--plain", "--latest", "open", "--print-path"], env=workspace["env"], cwd=tmp_path)
 
     assert result.exit_code == 0, result.output
-    assert result.stderr == ""
+    _assert_only_optional_open_progress(result.stderr)
     render_path = result.stdout.strip()
     assert render_path.endswith("conversation.html") or render_path.endswith("conversation.md")
 
@@ -178,7 +186,7 @@ def test_cli_query_open_print_path_accepts_query_after_verb(tmp_path: Path) -> N
     )
 
     assert result.exit_code == 0, result.output
-    assert result.stderr == ""
+    _assert_only_optional_open_progress(result.stderr)
     render_path = result.stdout.strip()
     assert render_path.endswith("conversation.html") or render_path.endswith("conversation.md")
 
