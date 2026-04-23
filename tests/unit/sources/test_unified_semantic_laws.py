@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from typing import Protocol, TypeAlias
 
 import pytest
-from hypothesis import given, settings
+from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 from polylogue.lib.json import JSONDocument, json_document, json_document_list
@@ -359,6 +359,7 @@ def test_typed_content_blocks_extract_without_crash(
     ),
     st.sampled_from(["claude-code", "claude-ai", "chatgpt", "gemini", "codex"]),
 )
+@settings(suppress_health_check=[HealthCheck.too_slow])
 def test_extract_reasoning_traces_preserve_reasoning_blocks_contract(
     content: list[object],
     provider: str,
@@ -379,6 +380,7 @@ def test_extract_reasoning_traces_preserve_reasoning_blocks_contract(
     ),
     st.sampled_from(["claude-code", "claude-ai", "chatgpt", "gemini", "codex"]),
 )
+@settings(suppress_health_check=[HealthCheck.too_slow])
 def test_extract_tool_calls_preserve_tool_use_blocks_contract(
     content: list[object],
     provider: str,
@@ -403,6 +405,7 @@ def test_extract_tool_calls_preserve_tool_use_blocks_contract(
         max_size=10,
     )
 )
+@settings(suppress_health_check=[HealthCheck.too_slow])
 def test_extract_content_blocks_preserve_recognized_block_order_contract(
     content: list[object],
 ) -> None:
@@ -426,6 +429,7 @@ def test_extract_content_blocks_preserve_recognized_block_order_contract(
         max_size=8,
     )
 )
+@settings(suppress_health_check=[HealthCheck.too_slow])
 def test_extract_codex_text_prefers_first_available_text_field_contract(content: list[object]) -> None:
     expected: list[str] = []
     for block in content:

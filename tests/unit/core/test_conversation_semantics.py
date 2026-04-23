@@ -470,6 +470,143 @@ class TestConversationProjectionContracts:
         projection = projector(projection_conversation.project())
         assert [message.id for message in projection.to_list()] == expected_ids
 
+    def test_projection_filter_helpers_cover_text_role_time_and_noise_contracts(self) -> None:
+        conversation = make_conv(
+            id="projection-rich",
+            provider="claude-ai",
+            messages=MessageCollection(
+                messages=[
+                    make_msg(
+                        id="u1",
+                        role="user",
+                        text="Needle question with detail",
+                        timestamp=datetime(2024, 1, 1, 9, 0),
+                        attachments=[Attachment(id="att-1", name="spec.md")],
+                    ),
+                    make_msg(
+                        id="a1",
+                        role="assistant",
+                        text="Needle answer with detail",
+                        timestamp=datetime(2024, 1, 1, 9, 5),
+                    ),
+                    make_msg(
+                        id="a2",
+                        role="assistant",
+                        text="Thinking step",
+                        timestamp=datetime(2024, 1, 1, 9, 10),
+                        provider_meta={"content_blocks": [{"type": "thinking", "text": "step"}]},
+                    ),
+                    make_msg(
+                        id="a3",
+                        role="assistant",
+                        text="Calling tool",
+                        timestamp=datetime(2024, 1, 1, 9, 15),
+                        content_blocks=[{"type": "tool_use", "name": "Edit"}],
+                    ),
+                    make_msg(
+                        id="s1",
+                        role="system",
+                        text="System notice",
+                        timestamp=datetime(2024, 1, 1, 9, 20),
+                    ),
+                ]
+            ),
+        )
+
+        assert [message.id for message in conversation.project().assistant_messages().to_list()] == ["a1", "a2", "a3"]
+        assert [message.id for message in conversation.project().dialogue().to_list()] == ["u1", "a1", "a2", "a3"]
+        assert [message.id for message in conversation.project().substantive().to_list()] == ["a1"]
+        assert [message.id for message in conversation.project().without_noise().to_list()] == ["a1", "a2"]
+        assert [message.id for message in conversation.project().with_attachments().to_list()] == ["u1"]
+        assert [message.id for message in conversation.project().min_words(3).to_list()] == ["u1", "a1"]
+        assert [message.id for message in conversation.project().max_words(2).to_list()] == ["a2", "a3", "s1"]
+        assert [message.id for message in conversation.project().contains("needle").to_list()] == ["u1", "a1"]
+        assert [message.id for message in conversation.project().contains("Needle", case_sensitive=True).to_list()] == [
+            "u1",
+            "a1",
+        ]
+        assert [message.id for message in conversation.project().matches(r"Needle\s+answer").to_list()] == ["a1"]
+        assert [message.id for message in conversation.project().since(datetime(2024, 1, 1, 9, 5)).to_list()] == [
+            "a1",
+            "a2",
+            "a3",
+            "s1",
+        ]
+        assert [message.id for message in conversation.project().until(datetime(2024, 1, 1, 9, 10)).to_list()] == [
+            "u1",
+            "a1",
+            "a2",
+        ]
+        assert [
+            message.id
+            for message in conversation.project()
+            .between(datetime(2024, 1, 1, 9, 5), datetime(2024, 1, 1, 9, 15))
+            .to_list()
+        ] == ["a1", "a2", "a3"]
+        assert [message.id for message in conversation.project().thinking_only().to_list()] == ["a2"]
+        assert [message.id for message in conversation.project().tool_use_only().to_list()] == ["a3"]
+
+    def test_projection_transform_and_terminal_helpers_cover_empty_and_render_paths(self) -> None:
+        conversation = make_conv(
+            id="projection-transform",
+            provider="claude-ai",
+            messages=MessageCollection(
+                messages=[
+                    make_msg(
+                        id="u1",
+                        role="user",
+                        text="Alpha text",
+                        attachments=[Attachment(id="att-1", name="draft.md")],
+                    ),
+                    make_msg(
+                        id="a1",
+                        role="assistant",
+                        text="Very long assistant answer",
+                    ),
+                    make_msg(
+                        id="a2",
+                        role="assistant",
+                        text="Thinking trace",
+                        provider_meta={"content_blocks": [{"type": "thinking", "text": "trace"}]},
+                    ),
+                    make_msg(
+                        id="a3",
+                        role="assistant",
+                        text="Tool output",
+                        content_blocks=[{"type": "tool_use", "name": "Edit"}],
+                    ),
+                ]
+            ),
+        )
+
+        stripped = conversation.project().strip_attachments().truncate_text(4, suffix="..").execute()
+        stripped_messages = list(stripped.messages)
+        assert stripped_messages[0].attachments == []
+        assert stripped_messages[1].text == "Very.."
+
+        assert [message.id for message in conversation.project().strip_tools().to_list()] == ["u1", "a1", "a2"]
+        assert [message.id for message in conversation.project().strip_thinking().to_list()] == ["u1", "a1", "a3"]
+        assert [message.id for message in conversation.project().strip_all().to_list()] == ["u1", "a1"]
+        assert [message.id for message in conversation.project().first_n(2).to_list()] == ["u1", "a1"]
+        assert [message.id for message in conversation.project().last_n(2).to_list()] == ["a3", "a2"]
+        first_message = conversation.project().first()
+        last_message = conversation.project().last()
+        assert first_message is not None
+        assert last_message is not None
+        assert first_message.id == "u1"
+        assert last_message.id == "a3"
+        assert conversation.project().exists() is True
+        assert conversation.project().to_text(separator=" | ") == (
+            "user: Alpha text | assistant: Very long assistant answer | assistant: Thinking trace | assistant: Tool output"
+        )
+        assert conversation.project().to_text(include_role=False, separator=" | ") == (
+            "Alpha text | Very long assistant answer | Thinking trace | Tool output"
+        )
+        assert conversation.project().limit(0).to_list() == []
+        assert conversation.project().limit(0).first() is None
+        assert conversation.project().limit(0).last() is None
+        assert conversation.project().limit(0).exists() is False
+
 
 class TestConversationRendering:
     @pytest.fixture

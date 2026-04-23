@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
+import pytest
+
 from polylogue.lib.json import JSONDocument
 from polylogue.schemas.extraction import extract_message_from_schema
 from polylogue.schemas.observation import ProviderConfig, extract_schema_units_from_payload
@@ -68,6 +72,78 @@ class TestExtractMessageFromSchema:
         assert len(message.content_blocks) == 3
         assert len(message.reasoning_traces) == 1
         assert len(message.tool_calls) == 1
+
+    def test_uses_pinned_paths_with_wildcards_and_message_id_aliases(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr("polylogue.schemas.extraction.load_pins", lambda _provider: object())
+        monkeypatch.setattr(
+            "polylogue.schemas.extraction.resolve_pinned_paths",
+            lambda _schema, _pins: {
+                "message_role": ".meta.*.sender",
+                "message_body": ".payload.parts",
+                "message_timestamp": ".timestamps.anyOf[0].created_at",
+            },
+        )
+        raw: JSONDocument = {
+            "messageId": "msg-2",
+            "meta": {"nested": {"sender": "assistant"}},
+            "payload": {
+                "parts": [
+                    {"type": "text", "text": "Pinned text"},
+                    {"type": "tool_use", "name": "edit", "input": {"path": "a.txt"}},
+                ]
+            },
+            "timestamps": {"created_at": "2026-01-02T00:00:00Z"},
+            "message": {"model": 123, "usage": {"output_tokens": 7}},
+        }
+
+        message = extract_message_from_schema(raw, schema={}, provider=Provider.CLAUDE_CODE)
+
+        assert message.id == "msg-2"
+        assert str(message.role) == "assistant"
+        assert message.text == "Pinned text"
+        assert message.timestamp == datetime(2026, 1, 2, tzinfo=timezone.utc)
+        assert message.model is None
+        assert message.tokens is not None
+        assert message.tokens.output_tokens == 7
+        assert len(message.content_blocks) == 2
+        assert len(message.tool_calls) == 1
+
+    def test_extracts_nested_parts_and_scalar_body_fallbacks(self) -> None:
+        nested_raw: JSONDocument = {
+            "id": "msg-nested",
+            "author": "assistant",
+            "message": {
+                "content": {
+                    "parts": [
+                        {"text": "Nested"},
+                        {"content": "parts"},
+                    ]
+                }
+            },
+            "cost_usd": 0.5,
+            "duration_ms": 4.9,
+        }
+        scalar_raw: JSONDocument = {
+            "id": "msg-scalar",
+            "body": 5,
+            "durationMs": True,
+            "costUSD": "bad",
+        }
+
+        nested = extract_message_from_schema(nested_raw, schema={}, provider=Provider.CHATGPT)
+        scalar = extract_message_from_schema(scalar_raw, schema={}, provider=Provider.UNKNOWN)
+
+        assert nested.text == "Nested\nparts"
+        assert nested.cost is not None
+        assert nested.cost.total_usd == 0.5
+        assert nested.duration_ms == 4
+        assert scalar.text == "5"
+        assert str(scalar.role) == "unknown"
+        assert scalar.duration_ms is None
+        assert scalar.cost is None
 
 
 class TestExtractSchemaUnitsFromPayload:
