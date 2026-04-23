@@ -234,6 +234,9 @@ def test_build_conversation_semantic_facts_collects_semantic_counts() -> None:
     assert facts.text_message_ids == ("u1", "a1")
     assert facts.text_role_counts == {"assistant": 1, "user": 1}
     assert facts.timestamped_text_messages == 2
+    assert facts.timestamped_messages == 3
+    assert facts.untimestamped_messages == 0
+    assert facts.timestamp_coverage == "complete"
     assert facts.thinking_messages == 1
     assert facts.tool_messages == 1
     assert facts.branch_messages == 1
@@ -262,10 +265,106 @@ def test_build_session_profile_reuses_shared_semantic_facts() -> None:
     assert profile.repo_names == (EXPECTED_REPO_NAME,)
     assert profile.first_message_at == datetime(2026, 3, 23, 9, 0, tzinfo=timezone.utc)
     assert profile.last_message_at == datetime(2026, 3, 23, 9, 4, tzinfo=timezone.utc)
+    assert profile.timestamped_message_count == 3
+    assert profile.untimestamped_message_count == 0
+    assert profile.timestamp_coverage == "complete"
     assert profile.canonical_session_date is not None
     assert profile.canonical_session_date.isoformat() == "2026-03-23"
     assert profile.engaged_duration_ms > 0
     assert profile.wall_duration_ms == 240000
+
+
+def test_build_conversation_semantic_facts_marks_partial_timestamp_coverage() -> None:
+    conversation = make_conv(
+        id="conv-partial-timestamps",
+        provider="claude-code",
+        title="Partial Timestamps",
+        created_at=datetime(2026, 3, 24, 9, 0, tzinfo=timezone.utc),
+        updated_at=datetime(2026, 3, 24, 9, 10, tzinfo=timezone.utc),
+        messages=MessageCollection(
+            messages=[
+                make_msg(
+                    id="u1",
+                    role="user",
+                    provider="claude-code",
+                    text="Start the task",
+                    timestamp=datetime(2026, 3, 24, 9, 0, tzinfo=timezone.utc),
+                ),
+                make_msg(
+                    id="a1",
+                    role="assistant",
+                    provider="claude-code",
+                    text="Working on it",
+                    timestamp=None,
+                ),
+                make_msg(
+                    id="a2",
+                    role="assistant",
+                    provider="claude-code",
+                    text="Finished",
+                    timestamp=datetime(2026, 3, 24, 9, 7, tzinfo=timezone.utc),
+                ),
+            ]
+        ),
+    )
+
+    facts = build_conversation_semantic_facts(conversation)
+    profile = build_session_profile(conversation)
+
+    assert facts.timestamped_messages == 2
+    assert facts.untimestamped_messages == 1
+    assert facts.timestamp_coverage == "partial"
+    assert facts.wall_duration_ms == 420000
+    assert profile.timestamp_coverage == "partial"
+    assert profile.timestamped_message_count == 2
+    assert profile.untimestamped_message_count == 1
+
+
+def test_build_conversation_semantic_facts_marks_missing_and_single_message_timestamp_cases() -> None:
+    no_timestamp = make_conv(
+        id="conv-no-timestamps",
+        provider="claude-code",
+        title="No Timestamps",
+        messages=MessageCollection(
+            messages=[
+                make_msg(id="u1", role="user", provider="claude-code", text="Hello", timestamp=None),
+                make_msg(id="a1", role="assistant", provider="claude-code", text="Hi", timestamp=None),
+            ]
+        ),
+    )
+    single_timestamp = make_conv(
+        id="conv-single-timestamp",
+        provider="claude-code",
+        title="Single Timestamp",
+        messages=MessageCollection(
+            messages=[
+                make_msg(
+                    id="u1",
+                    role="user",
+                    provider="claude-code",
+                    text="One message",
+                    timestamp=datetime(2026, 3, 24, 10, 0, tzinfo=timezone.utc),
+                )
+            ]
+        ),
+    )
+
+    no_timestamp_facts = build_conversation_semantic_facts(no_timestamp)
+    single_timestamp_facts = build_conversation_semantic_facts(single_timestamp)
+
+    assert no_timestamp_facts.first_message_at is None
+    assert no_timestamp_facts.last_message_at is None
+    assert no_timestamp_facts.wall_duration_ms == 0
+    assert no_timestamp_facts.timestamp_coverage == "none"
+    assert no_timestamp_facts.timestamped_messages == 0
+    assert no_timestamp_facts.untimestamped_messages == 2
+
+    assert single_timestamp_facts.first_message_at == datetime(2026, 3, 24, 10, 0, tzinfo=timezone.utc)
+    assert single_timestamp_facts.last_message_at == datetime(2026, 3, 24, 10, 0, tzinfo=timezone.utc)
+    assert single_timestamp_facts.wall_duration_ms == 0
+    assert single_timestamp_facts.timestamp_coverage == "complete"
+    assert single_timestamp_facts.timestamped_messages == 1
+    assert single_timestamp_facts.untimestamped_messages == 0
 
 
 def test_build_session_analysis_reuses_precomputed_phases(monkeypatch: pytest.MonkeyPatch) -> None:
