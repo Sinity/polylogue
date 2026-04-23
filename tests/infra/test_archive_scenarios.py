@@ -11,6 +11,7 @@ from polylogue.storage.backends.connection import open_connection
 from tests.infra.archive_scenarios import (
     ArchiveScenario,
     ScenarioAttachment,
+    ScenarioContentBlock,
     ScenarioMessage,
     repository_for_scenario_db,
     seed_workspace_scenarios,
@@ -30,13 +31,7 @@ def test_archive_scenario_seeds_record_and_hydration_facts(workspace_env: Mappin
                 role="assistant",
                 text="Using pytest",
                 message_id="m-tool",
-                content_blocks=(
-                    {
-                        "type": "tool_use",
-                        "tool_name": "shell",
-                        "tool_input": {"command": "pytest -q"},
-                    },
-                ),
+                content_blocks=(ScenarioContentBlock.tool_use(tool_name="shell", tool_input={"command": "pytest -q"}),),
                 attachments=(ScenarioAttachment(attachment_id="att-report", mime_type="text/plain"),),
             ),
         ),
@@ -49,6 +44,22 @@ def test_archive_scenario_seeds_record_and_hydration_facts(workspace_env: Mappin
             scenario.facts_from_connection(conn),
             scenario.hydrated_facts_from_connection(conn),
         )
+
+
+def test_archive_scenario_rejects_raw_content_block_dicts(workspace_env: Mapping[str, Path]) -> None:
+    scenario = ArchiveScenario(
+        name="legacy-block-shape",
+        messages=(
+            ScenarioMessage(
+                role="assistant",
+                text="Using pytest",
+                content_blocks=({"type": "tool_use", "tool_name": "shell"},),  # type: ignore[arg-type]
+            ),
+        ),
+    )
+
+    with pytest.raises(TypeError, match="ScenarioContentBlock"):
+        seed_workspace_scenarios(workspace_env, [scenario])
 
 
 @pytest.mark.asyncio()

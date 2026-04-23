@@ -57,6 +57,20 @@ class TestLaneParsing:
         assert lane.operation_targets == ("cli.json-contract",)
         assert lane.tags == ("contract", "json", "cli")
 
+    def test_verification_substrate_lane_carries_fixture_contract_metadata(self) -> None:
+        lane = LANES["verification-substrate-contracts"]
+
+        assert lane.execution is not None
+        assert lane.execution.kind is ExecutionKind.PYTEST
+        assert lane.path_targets == ("verification-fixture-substrate",)
+        assert lane.artifact_targets == (
+            "archive_scenario_fixtures",
+            "storage_record_fixtures",
+            "json_contract_helpers",
+        )
+        assert lane.operation_targets == ("seed-archive-scenarios", "build-storage-record-fixtures")
+        assert lane.tags == ("contract", "fixtures", "semantic-precision")
+
     def test_retrieval_checks_lane_carries_runtime_query_and_health_metadata(self) -> None:
         lane = LANES["retrieval-checks"]
 
@@ -171,6 +185,12 @@ class TestCommandConstruction:
     def test_query_routing_lane_uses_pytest_marker(self) -> None:
         cmd = build_lane_command(LANES["query-routing"])
         assert "query_routing" in cmd
+
+    def test_verification_substrate_lane_uses_infra_contract_suite(self) -> None:
+        cmd = build_lane_command(LANES["verification-substrate-contracts"])
+        assert cmd[0] == "pytest"
+        assert "tests/infra/test_storage_records.py" in cmd
+        assert "tests/infra/test_archive_scenarios.py" in cmd
 
     def test_showcase_baselines_lane_uses_lab_scenario_baseline_action(self) -> None:
         cmd = build_lane_command(LANES["showcase-baselines"])
