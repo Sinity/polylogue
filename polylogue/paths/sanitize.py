@@ -43,3 +43,10 @@ def is_within_root(path: Path, root: Path) -> bool:
     except ValueError:
         return False
     return True
+
+
+__all__ = [
+    "conversation_render_root",
+    "is_within_root",
+    "safe_path_component",
+]

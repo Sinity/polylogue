@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
-from polylogue.paths import conversation_render_root
+from polylogue.paths.sanitize import conversation_render_root
 from polylogue.rendering.core import (
     ConversationFormatter,
     FormattedConversation,

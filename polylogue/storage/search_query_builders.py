@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import TypeAlias
 
-from polylogue.paths import conversation_render_root
+from polylogue.paths.sanitize import conversation_render_root
 
 from .backends.connection import _build_provider_scope_filter
 from .search_query_support import normalize_fts5_query

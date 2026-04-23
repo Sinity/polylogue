@@ -11,7 +11,7 @@ from pathlib import Path
 from polylogue.cli.machine_errors import emit_success
 from polylogue.cli.qa_requests import QASnapshotPlan
 from polylogue.cli.types import AppEnv
-from polylogue.paths import safe_path_component
+from polylogue.paths.sanitize import safe_path_component
 
 
 def iter_snapshot_files(root: Path) -> list[Path]:

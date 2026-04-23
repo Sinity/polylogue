@@ -23,7 +23,7 @@ from polylogue.storage.backends.connection import open_connection
 from polylogue.types import Provider
 
 if TYPE_CHECKING:
-    from polylogue.paths import Source
+    from polylogue.config import Source
 
 
 class SyntheticSourceFactory(Protocol):

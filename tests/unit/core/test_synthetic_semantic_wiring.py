@@ -16,8 +16,8 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.config import Source
 from polylogue.lib.json import JSONDocument, JSONValue
-from polylogue.paths import Source
 from polylogue.schemas.registry import SCHEMA_DIR, SchemaRegistry
 from polylogue.schemas.synthetic.core import SyntheticCorpus
 from polylogue.schemas.synthetic.semantic_values import SemanticValueGenerator
@@ -188,7 +188,7 @@ class TestWireFormatFallback:
     @pytest.mark.parametrize("provider", SyntheticCorpus.available_providers())
     def test_generation_without_annotations_still_parses(self, provider: str, tmp_path: Path) -> None:
         """Stripping semantic annotations from schema still produces parseable output."""
-        from polylogue.paths import Source
+        from polylogue.config import Source
         from polylogue.sources import iter_source_conversations
 
         # Build corpus with annotations stripped

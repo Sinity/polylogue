@@ -11,9 +11,8 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.config import Config, ConfigError
+from polylogue.config import Config, ConfigError, DriveConfig, IndexConfig, Source
 from polylogue.logging import _StderrProxy, configure_logging, get_logger
-from polylogue.paths import DriveConfig, IndexConfig, Source
 
 
 class TestConfig:
@@ -45,8 +44,8 @@ class TestConfig:
         assert config.sources[0].name == "inbox"
         assert config.sources[1].name == "claude-code"
 
-    def test_config_db_path_property(self, workspace_env: dict[str, Path]) -> None:
-        """db_path property returns paths.DB_PATH."""
+    def test_config_db_path_default(self, workspace_env: dict[str, Path]) -> None:
+        """db_path defaults to the resolved XDG database path."""
         config = Config(
             archive_root=Path(workspace_env["archive_root"]),
             render_root=Path(workspace_env["archive_root"]) / "render",
@@ -54,6 +53,21 @@ class TestConfig:
         )
         assert config.db_path.name == "polylogue.db"
         assert "polylogue" in str(config.db_path)
+
+    def test_config_db_path_is_captured_at_construction(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        """Config snapshots db_path instead of resolving it on every access."""
+        first_data = tmp_path / "data-a"
+        second_data = tmp_path / "data-b"
+        monkeypatch.setenv("XDG_DATA_HOME", str(first_data))
+        config = Config(
+            archive_root=tmp_path / "archive",
+            render_root=tmp_path / "render",
+            sources=[],
+        )
+
+        monkeypatch.setenv("XDG_DATA_HOME", str(second_data))
+
+        assert config.db_path == first_data / "polylogue" / "polylogue.db"
 
     def test_config_optional_fields_default_none(self, tmp_path: Path) -> None:
         """Optional fields default to None."""
@@ -203,7 +217,7 @@ class TestConfiguredSources:
         monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
         monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
 
-        from polylogue.paths_config import get_sources
+        from polylogue.config import get_sources
 
         sources = get_sources()
         assert [source.name for source in sources] == ["inbox"]
@@ -225,10 +239,43 @@ class TestConfiguredSources:
         credentials.parent.mkdir(parents=True, exist_ok=True)
         credentials.write_text("{}", encoding="utf-8")
 
-        from polylogue.paths_config import get_sources
+        from polylogue.config import get_sources
 
         sources = get_sources()
         assert [source.name for source in sources] == ["inbox", "gemini"]
+
+
+class TestConfigPublicBoundary:
+    def test_config_exports_configuration_models_and_loaders(self) -> None:
+        import polylogue.config as config
+
+        expected = {
+            "Config",
+            "ConfigError",
+            "DriveConfig",
+            "IndexConfig",
+            "Source",
+            "get_config",
+            "get_drive_config",
+            "get_index_config",
+            "get_sources",
+        }
+        assert expected.issubset(set(config.__all__))
+
+    def test_paths_does_not_reexport_configuration_symbols(self) -> None:
+        import polylogue.paths as paths
+
+        forbidden = {
+            "DriveConfig",
+            "IndexConfig",
+            "Source",
+            "get_drive_config",
+            "get_index_config",
+            "get_sources",
+        }
+        assert forbidden.isdisjoint(set(paths.__all__))
+        for name in forbidden:
+            assert not hasattr(paths, name)
 
 
 # =============================================================================
