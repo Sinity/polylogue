@@ -87,6 +87,9 @@ class SessionProfile:
     phases: tuple[SessionPhase, ...]
     first_message_at: datetime | None = None
     last_message_at: datetime | None = None
+    timestamped_message_count: int = 0
+    untimestamped_message_count: int = 0
+    timestamp_coverage: str = "none"
     canonical_session_date: date | None = None
     engaged_duration_ms: int = 0
     wall_duration_ms: int = 0
@@ -125,6 +128,9 @@ class SessionProfile:
             "phases": [_phase_to_dict(phase) for phase in self.phases],
             "first_message_at": self.first_message_at.isoformat() if self.first_message_at else None,
             "last_message_at": self.last_message_at.isoformat() if self.last_message_at else None,
+            "timestamped_message_count": self.timestamped_message_count,
+            "untimestamped_message_count": self.untimestamped_message_count,
+            "timestamp_coverage": self.timestamp_coverage,
             "canonical_session_date": self.canonical_session_date.isoformat() if self.canonical_session_date else None,
             "engaged_duration_ms": self.engaged_duration_ms,
             "engaged_minutes": round(self.engaged_duration_ms / 60_000.0, 4),
@@ -171,6 +177,9 @@ class SessionProfile:
             phases=tuple(_phase_from_mapping(item) for item in mapping_sequence(payload.get("phases"))),
             first_message_at=optional_datetime(payload.get("first_message_at")),
             last_message_at=optional_datetime(payload.get("last_message_at")),
+            timestamped_message_count=coerce_int(payload.get("timestamped_message_count"), 0),
+            untimestamped_message_count=coerce_int(payload.get("untimestamped_message_count"), 0),
+            timestamp_coverage=optional_string(payload.get("timestamp_coverage")) or "none",
             canonical_session_date=optional_date(payload.get("canonical_session_date")),
             engaged_duration_ms=coerce_int(payload.get("engaged_duration_ms"), 0),
             wall_duration_ms=coerce_int(payload.get("wall_duration_ms"), 0),

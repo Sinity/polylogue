@@ -231,6 +231,14 @@ def build_message_semantic_facts(message: SemanticConversationMessageLike) -> Me
 # ---------------------------------------------------------------------------
 
 
+def _timestamp_coverage(*, total_messages: int, timestamped_messages: int) -> str:
+    if total_messages <= 0 or timestamped_messages <= 0:
+        return "none"
+    if timestamped_messages >= total_messages:
+        return "complete"
+    return "partial"
+
+
 def build_conversation_semantic_facts(conversation: SemanticConversationLike) -> ConversationSemanticFacts:
     role_counts: Counter[str] = Counter()
     tool_categories: Counter[str] = Counter()
@@ -246,6 +254,7 @@ def build_conversation_semantic_facts(conversation: SemanticConversationLike) ->
     word_count = 0
     timestamps: list[datetime] = []
     action_events: list[ActionEvent] = []
+    timestamped_messages = 0
 
     for message_fact in message_facts:
         message_ids.append(message_fact.message_id)
@@ -262,6 +271,7 @@ def build_conversation_semantic_facts(conversation: SemanticConversationLike) ->
         action_events.extend(message_fact.action_events)
         if message_fact.timestamp is not None:
             timestamps.append(message_fact.timestamp)
+            timestamped_messages += 1
         if message_fact.text.strip():
             text_message_ids.append(message_fact.message_id)
             role_counts[message_fact.role] += 1
@@ -275,6 +285,7 @@ def build_conversation_semantic_facts(conversation: SemanticConversationLike) ->
     wall_duration_ms = 0
     if first_message_at and last_message_at:
         wall_duration_ms = max(int((last_message_at - first_message_at).total_seconds() * 1000), 0)
+    untimestamped_messages = max(len(message_facts) - timestamped_messages, 0)
 
     return ConversationSemanticFacts(
         conversation_id=str(conversation.id),
@@ -288,6 +299,12 @@ def build_conversation_semantic_facts(conversation: SemanticConversationLike) ->
         text_message_ids=tuple(text_message_ids),
         text_role_counts=sorted_counts(dict(role_counts)),
         timestamped_text_messages=timestamped_text_messages,
+        timestamped_messages=timestamped_messages,
+        untimestamped_messages=untimestamped_messages,
+        timestamp_coverage=_timestamp_coverage(
+            total_messages=len(message_facts),
+            timestamped_messages=timestamped_messages,
+        ),
         attachment_count=attachment_count,
         thinking_messages=thinking_messages,
         tool_messages=tool_messages,

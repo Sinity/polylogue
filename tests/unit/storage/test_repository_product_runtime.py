@@ -52,6 +52,9 @@ async def test_repository_product_profile_reads_build_typed_queries() -> None:
             first_message_until="2026-01-02T00:00:00Z",
             session_date_since="2026-01-01",
             session_date_until="2026-01-02",
+            min_wallclock_seconds=300,
+            max_wallclock_seconds=900,
+            sort="wallclock",
             tier="evidence",
             limit=5,
             offset=2,
@@ -65,6 +68,9 @@ async def test_repository_product_profile_reads_build_typed_queries() -> None:
     assert list_query.provider == "claude-code"
     assert list_query.first_message_since == "2026-01-01T00:00:00Z"
     assert list_query.session_date_until == "2026-01-02"
+    assert list_query.min_wallclock_seconds == 300
+    assert list_query.max_wallclock_seconds == 900
+    assert list_query.sort == "wallclock"
     assert list_query.tier == "evidence"
     assert list_query.limit == 5
     assert list_query.offset == 2

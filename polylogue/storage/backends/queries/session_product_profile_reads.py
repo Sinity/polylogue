@@ -15,6 +15,20 @@ __all__ = [
 ]
 
 
+def _session_profile_order_by(sort: str) -> str:
+    if sort == "first-message":
+        return (
+            "ORDER BY COALESCE(sp.first_message_at, sp.source_updated_at, sp.last_message_at) DESC, sp.conversation_id"
+        )
+    if sort == "last-message":
+        return (
+            "ORDER BY COALESCE(sp.last_message_at, sp.source_updated_at, sp.first_message_at) DESC, sp.conversation_id"
+        )
+    if sort == "wallclock":
+        return "ORDER BY sp.wall_duration_ms DESC, COALESCE(sp.last_message_at, sp.source_updated_at, sp.first_message_at) DESC, sp.conversation_id"
+    return "ORDER BY COALESCE(sp.source_sort_key, 0) DESC, sp.conversation_id"
+
+
 async def get_session_profile(
     conn: aiosqlite.Connection,
     conversation_id: str,
@@ -47,6 +61,7 @@ async def list_session_profiles(
     query: SessionProfileListQuery,
 ) -> list[SessionProfileRecord]:
     params: list[object] = []
+    secondary_order_by = _session_profile_order_by(query.sort).removeprefix("ORDER BY ")
     if query.query:
         fts_table = {
             "evidence": "session_profile_evidence_fts",
@@ -61,11 +76,11 @@ async def list_session_profiles(
         """
         where = [f"{fts_table} MATCH ?"]
         params.append(query.query)
-        order_by = f"ORDER BY bm25({fts_table}), COALESCE(sp.source_sort_key, 0) DESC, sp.conversation_id"
+        order_by = f"ORDER BY bm25({fts_table}), {secondary_order_by}"
     else:
         from_clause = "FROM session_profiles sp"
         where = []
-        order_by = "ORDER BY COALESCE(sp.source_sort_key, 0) DESC, sp.conversation_id"
+        order_by = _session_profile_order_by(query.sort)
 
     if query.provider:
         where.append("sp.provider_name = ?")
@@ -88,6 +103,12 @@ async def list_session_profiles(
     if query.session_date_until:
         where.append("sp.canonical_session_date <= date(?)")
         params.append(query.session_date_until)
+    if query.min_wallclock_seconds is not None:
+        where.append("sp.wall_duration_ms >= ?")
+        params.append(query.min_wallclock_seconds * 1000)
+    if query.max_wallclock_seconds is not None:
+        where.append("sp.wall_duration_ms <= ?")
+        params.append(query.max_wallclock_seconds * 1000)
     sql = "SELECT sp.* " + from_clause
     if where:
         sql += " WHERE " + " AND ".join(where)

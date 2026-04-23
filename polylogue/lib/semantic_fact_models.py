@@ -78,6 +78,9 @@ class ConversationSemanticFacts:
     text_message_ids: tuple[str, ...]
     text_role_counts: dict[str, int]
     timestamped_text_messages: int
+    timestamped_messages: int
+    untimestamped_messages: int
+    timestamp_coverage: str
     attachment_count: int
     thinking_messages: int
     tool_messages: int
@@ -103,6 +106,9 @@ class ConversationSemanticFacts:
                 "text_message_ids": list(self.text_message_ids),
                 "text_role_counts": self.text_role_counts,
                 "timestamped_text_messages": self.timestamped_text_messages,
+                "timestamped_messages": self.timestamped_messages,
+                "untimestamped_messages": self.untimestamped_messages,
+                "timestamp_coverage": self.timestamp_coverage,
                 "attachment_count": self.attachment_count,
                 "thinking_messages": self.thinking_messages,
                 "tool_messages": self.tool_messages,

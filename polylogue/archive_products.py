@@ -69,6 +69,9 @@ class SessionWindowProductQuery(ProviderSearchProductQuery):
     first_message_until: str | None = None
     session_date_since: str | None = None
     session_date_until: str | None = None
+    min_wallclock_seconds: int | None = None
+    max_wallclock_seconds: int | None = None
+    sort: str = "source"
 
 
 class ConversationTimelineWindowProductQuery(ProviderTimeWindowProductQuery):

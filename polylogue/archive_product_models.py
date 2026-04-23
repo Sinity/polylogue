@@ -42,6 +42,9 @@ class SessionEvidencePayload(ArchiveProductModel):
     updated_at: str | None = None
     first_message_at: str | None = None
     last_message_at: str | None = None
+    timestamped_message_count: int = 0
+    untimestamped_message_count: int = 0
+    timestamp_coverage: str = "none"
     canonical_session_date: str | None = None
     message_count: int = 0
     substantive_count: int = 0

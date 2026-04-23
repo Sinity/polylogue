@@ -166,6 +166,21 @@ def _nested(outer: str, inner: str, default: str = "-") -> ProductAccessor:
     return accessor
 
 
+def _nested_ms_as_seconds(outer: str, inner: str, default: str = "-") -> ProductAccessor:
+    """Create an accessor that renders a nested millisecond field as seconds."""
+
+    def accessor(item: ArchiveProductModel) -> str:
+        nested = getattr(item, outer, None)
+        if nested is None:
+            return default
+        value = getattr(nested, inner, None)
+        if isinstance(value, int):
+            return str(max(value, 0) // 1000)
+        return default
+
+    return accessor
+
+
 def _id_with_provider(identifier_attr: str) -> ProductAccessor:
     """Accessor rendering an identifier together with the provider name."""
 
@@ -263,9 +278,29 @@ _SESSION_TIME_OPTIONS = (
         ("--session-date-until",),
         help="Only sessions whose canonical session date is on/before this date",
     ),
+    CliOption(
+        "min_wallclock_seconds",
+        ("--min-wallclock-seconds",),
+        type=int,
+        help="Only sessions whose wallclock span is at least this many seconds",
+    ),
+    CliOption(
+        "max_wallclock_seconds",
+        ("--max-wallclock-seconds",),
+        type=int,
+        help="Only sessions whose wallclock span is at most this many seconds",
+    ),
 )
 
 _QUERY_OPTION = CliOption("query", ("--query",), help="FTS query against product search text")
+_SESSION_TIME_SORT_OPTION = CliOption(
+    "sort",
+    ("--sort",),
+    type=click.Choice(["source", "first-message", "last-message", "wallclock"]),
+    default="source",
+    show_default=True,
+    help="Sort by source recency, first message time, last message time, or wallclock span",
+)
 
 
 register(
@@ -280,6 +315,7 @@ register(
         cli_help="List durable session-profile products.",
         cli_options=(
             *_SESSION_TIME_OPTIONS,
+            _SESSION_TIME_SORT_OPTION,
             CliOption(
                 "tier",
                 ("--tier",),
@@ -295,6 +331,10 @@ register(
             ProductField("tier", _attr("semantic_tier"), group=0),
             ProductField("", _attr("title", "(untitled)"), group=0),
             ProductField("session_date", _nested("evidence", "canonical_session_date"), group=1),
+            ProductField("first", _nested("evidence", "first_message_at", "-"), group=1),
+            ProductField("last", _nested("evidence", "last_message_at", "-"), group=1),
+            ProductField("wall_s", _nested_ms_as_seconds("evidence", "wall_duration_ms", "0"), group=1),
+            ProductField("ts_cov", _nested("evidence", "timestamp_coverage", "none"), group=1),
             ProductField("messages", _nested("evidence", "message_count", "0"), group=1),
             ProductField("engaged_min", _nested("inference", "engaged_minutes", "0"), group=1),
         ),
@@ -313,6 +353,7 @@ register(
         cli_help="List durable probabilistic session-enrichment products.",
         cli_options=(
             *_SESSION_TIME_OPTIONS,
+            _SESSION_TIME_SORT_OPTION,
             _QUERY_OPTION,
         ),
         fields=(

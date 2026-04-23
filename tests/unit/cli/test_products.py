@@ -149,17 +149,65 @@ def test_products_profiles_json(cli_workspace: CliWorkspace) -> None:
     assert result.exit_code == 0
     payload = extract_json_result(result.output)
     assert json_int(payload["count"]) == 2
-    first = json_object_list(payload["session_profiles"])[0]
+    profiles = json_object_list(payload["session_profiles"])
+    first = next(item for item in profiles if item["conversation_id"] == "conv-root")
     evidence = json_object(first["evidence"])
     inference = json_object(first["inference"])
     assert json_int(first["contract_version"]) == 4
     assert first["product_kind"] == "session_profile"
     assert first["semantic_tier"] == "merged"
     assert evidence["canonical_session_date"] == "2026-03-01"
+    assert evidence["first_message_at"] == "2026-03-01T10:00:00+00:00"
+    assert evidence["last_message_at"] == "2026-03-01T10:05:00+00:00"
+    assert json_int(evidence["timestamped_message_count"]) == 2
+    assert json_int(evidence["untimestamped_message_count"]) == 0
+    assert evidence["timestamp_coverage"] == "complete"
+    assert json_int(evidence["wall_duration_ms"]) == 300000
     assert json_number(inference["engaged_duration_ms"]) >= 0
     assert "evidence" in first
     assert "inference" in first
     assert "provenance" in first
+
+
+def test_products_profiles_support_wallclock_filters_and_sort(cli_workspace: CliWorkspace) -> None:
+    _seed_products(cli_workspace)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["products", "profiles", "--sort", "wallclock", "--min-wallclock-seconds", "250", "--json"],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    payload = extract_json_result(result.output)
+    profiles = json_object_list(payload["session_profiles"])
+    assert json_int(payload["count"]) == 1
+    assert profiles[0]["conversation_id"] == "conv-root"
+
+    result = runner.invoke(
+        cli,
+        ["products", "profiles", "--sort", "wallclock", "--json"],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    payload = extract_json_result(result.output)
+    profiles = json_object_list(payload["session_profiles"])
+    assert [item["conversation_id"] for item in profiles] == ["conv-root", "conv-child"]
+
+
+def test_products_profiles_plain_output_shows_session_time_axis(cli_workspace: CliWorkspace) -> None:
+    _seed_products(cli_workspace)
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["products", "profiles", "--sort", "wallclock"], catch_exceptions=False)
+
+    assert result.exit_code == 0
+    assert "first=2026-03-01T10:00:00+00:00" in result.output
+    assert "last=2026-03-01T10:05:00+00:00" in result.output
+    assert "wall_s=300" in result.output
+    assert "ts_cov=complete" in result.output
 
 
 def test_products_profiles_format_json_alias(cli_workspace: CliWorkspace) -> None:
