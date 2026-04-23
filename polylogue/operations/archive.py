@@ -37,6 +37,7 @@ from polylogue.archive_products import (
     WorkThreadProductQuery,
 )
 from polylogue.archive_resume import ResumeBrief, ResumeOperations, build_resume_brief
+from polylogue.lib.content_projection import ContentProjectionSpec
 from polylogue.lib.conversation_models import ConversationSummary
 from polylogue.lib.query_spec import ConversationQuerySpec
 from polylogue.maintenance_targets import build_maintenance_target_catalog
@@ -238,8 +239,16 @@ class ArchiveSearchMixin:
         @property
         def config(self) -> Config: ...
 
-    async def get_conversation(self, conversation_id: str) -> Conversation | None:
-        return await self.repository.view(conversation_id)
+    async def get_conversation(
+        self,
+        conversation_id: str,
+        *,
+        content_projection: ContentProjectionSpec | None = None,
+    ) -> Conversation | None:
+        conversation = await self.repository.view(conversation_id)
+        if conversation is None or content_projection is None or not content_projection.filters_content():
+            return conversation
+        return conversation.with_content_projection(content_projection)
 
     async def get_conversation_summary(self, conversation_id: str) -> ConversationSummary | None:
         full_id = await self.repository.resolve_id(conversation_id) or conversation_id
@@ -249,19 +258,39 @@ class ArchiveSearchMixin:
         full_id = await self.repository.resolve_id(conversation_id) or conversation_id
         return await self.repository.get_conversation_stats(str(full_id))
 
-    async def get_conversations(self, conversation_ids: list[str]) -> list[Conversation]:
-        return await self.repository.get_many(conversation_ids)
+    async def get_conversations(
+        self,
+        conversation_ids: list[str],
+        *,
+        content_projection: ContentProjectionSpec | None = None,
+    ) -> list[Conversation]:
+        conversations = await self.repository.get_many(conversation_ids)
+        if content_projection is None or not content_projection.filters_content():
+            return conversations
+        return [conversation.with_content_projection(content_projection) for conversation in conversations]
 
     async def list_conversations(
         self,
         *,
         provider: str | None = None,
         limit: int | None = None,
+        content_projection: ContentProjectionSpec | None = None,
     ) -> list[Conversation]:
-        return await self.repository.list(provider=provider, limit=limit)
+        conversations = await self.repository.list(provider=provider, limit=limit)
+        if content_projection is None or not content_projection.filters_content():
+            return conversations
+        return [conversation.with_content_projection(content_projection) for conversation in conversations]
 
-    async def query_conversations(self, spec: ConversationQuerySpec) -> list[Conversation]:
-        return await spec.list(self.repository)
+    async def query_conversations(
+        self,
+        spec: ConversationQuerySpec,
+        *,
+        content_projection: ContentProjectionSpec | None = None,
+    ) -> list[Conversation]:
+        conversations = await spec.list(self.repository)
+        if content_projection is None or not content_projection.filters_content():
+            return conversations
+        return [conversation.with_content_projection(content_projection) for conversation in conversations]
 
     async def search_conversation_hits(self, spec: ConversationQuerySpec) -> list[ConversationSearchHit]:
         from polylogue.lib.query_search_hits import search_hits_for_plan

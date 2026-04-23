@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Literal, NotRequired
 from pydantic import BaseModel, ConfigDict, Field
 from typing_extensions import TypedDict
 
+from polylogue.lib.content_projection import ContentProjectionSpec
 from polylogue.lib.json import JSONDocument, JSONValue, require_json_document
 
 if TYPE_CHECKING:
@@ -177,7 +178,14 @@ class ConversationDetailPayload(ConversationSummaryPayload):
     messages: tuple[ConversationMessagePayload, ...]
 
     @classmethod
-    def from_conversation(cls, conversation: Conversation) -> ConversationDetailPayload:
+    def from_conversation(
+        cls,
+        conversation: Conversation,
+        *,
+        content_projection: ContentProjectionSpec | None = None,
+    ) -> ConversationDetailPayload:
+        if content_projection is not None and content_projection.filters_content():
+            conversation = conversation.with_content_projection(content_projection)
         summary = ConversationSummaryPayload.from_conversation(conversation)
         return cls(
             **summary.model_dump(),

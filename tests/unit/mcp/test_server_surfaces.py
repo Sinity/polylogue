@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from polylogue.lib.content_projection import ContentProjectionSpec
 from polylogue.lib.models import Conversation
 from polylogue.lib.roles import Role
 from polylogue.types import Provider
@@ -402,6 +403,39 @@ class TestPromptSurfaces:
 
 
 class TestExportConversationTool:
+    def test_get_conversation_tool_applies_content_projection(
+        self: object,
+        mcp_server: MCPServerUnderTest,
+    ) -> None:
+        projected_input = make_conv(
+            id="test:conv-123",
+            provider=Provider.CHATGPT,
+            title="Projected Conversation",
+            messages=[
+                make_msg(
+                    id="msg-1",
+                    role="assistant",
+                    text="Alpha\n\n```python\nprint('x')\n```\n\nOmega",
+                )
+            ],
+        )
+
+        with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
+            mock_ops = MagicMock()
+            mock_ops.get_conversation = AsyncMock(return_value=projected_input)
+            mock_get_archive_ops.return_value = mock_ops
+
+            result = invoke_surface(
+                mcp_server._tool_manager._tools["get_conversation"].fn,
+                id="test:conv-123",
+                no_code_blocks=True,
+            )
+
+        payload = json.loads(result)
+        assert payload["messages"][0]["text"] == "Alpha\n\nOmega"
+        projection = mock_ops.get_conversation.await_args.kwargs["content_projection"]
+        assert projection.include_code is False
+
     def test_export_markdown(self: object, simple_conversation: Conversation, mcp_server: MCPServerUnderTest) -> None:
         with (
             patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops,
@@ -480,6 +514,29 @@ class TestTypedPayloads:
         assert len(result["messages"]) == 2
         msg = result["messages"][0]
         assert {"id", "role", "text", "timestamp"} <= msg.keys()
+
+    def test_conversation_to_full_dict_applies_projection(self: object) -> None:
+        from polylogue.mcp.payloads import MCPConversationDetailPayload
+
+        conversation = make_conv(
+            id="projected",
+            provider=Provider.CHATGPT,
+            title="Projected",
+            messages=[
+                make_msg(
+                    id="m1",
+                    role="assistant",
+                    text="Alpha\n\n```python\nprint('x')\n```\n\nOmega",
+                )
+            ],
+        )
+
+        result = MCPConversationDetailPayload.from_conversation(
+            conversation,
+            content_projection=ContentProjectionSpec.prose_only(),
+        ).model_dump(mode="json")
+
+        assert result["messages"][0]["text"] == "Alpha\n\nOmega"
 
     @pytest.mark.parametrize(("case_id", "conv", "expected_fields", "payload_kind"), SERIALIZATION_CASES)
     def test_serialization_edge_cases(

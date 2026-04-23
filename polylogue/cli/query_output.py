@@ -36,6 +36,7 @@ from polylogue.cli.query_stats import (
     output_stats_by_summaries,
     output_stats_sql,
 )
+from polylogue.lib.content_projection import ContentProjectionSpec, coerce_content_projection_spec
 from polylogue.lib.json import JSONDocument
 from polylogue.lib.message_roles import MessageRoleFilter, message_role_count_key, message_role_labels
 from polylogue.lib.roles import Role
@@ -698,6 +699,7 @@ async def stream_conversation(
     output_format: str = "plaintext",
     dialogue_only: bool = False,
     message_roles: MessageRoleFilter = (),
+    content_projection: ContentProjectionSpec | None = None,
     message_limit: int | None = None,
 ) -> int:
     """Stream conversation messages to stdout without buffering."""
@@ -709,6 +711,7 @@ async def stream_conversation(
 
     stats = await repo.get_conversation_stats(conversation_id)
     effective_roles = message_roles or (DIALOGUE_MESSAGE_ROLES if dialogue_only else ())
+    projection_spec = coerce_content_projection_spec(content_projection)
     sys.stdout.write(
         render_stream_header(
             conversation_id=conversation_id,
@@ -725,17 +728,32 @@ async def stream_conversation(
     sys.stdout.flush()
 
     count = 0
-    async for message in repo.iter_messages(
-        conversation_id,
-        dialogue_only=dialogue_only,
-        message_roles=effective_roles,
-        limit=message_limit,
-    ):
-        chunk = render_stream_message(message, output_format)
-        if chunk:
-            sys.stdout.write(chunk)
-            count += 1
-        sys.stdout.flush()
+    if projection_spec.filters_content():
+        conversation = await repo.get(conversation_id)
+        if conversation is None:
+            click.echo(f"Conversation not found: {conversation_id}", err=True)
+            raise SystemExit(1)
+        if effective_roles:
+            conversation = conversation.with_roles(effective_roles)
+        conversation = conversation.with_content_projection(projection_spec)
+        for message in list(conversation.messages)[: message_limit if message_limit is not None else None]:
+            chunk = render_stream_message(message, output_format)
+            if chunk:
+                sys.stdout.write(chunk)
+                count += 1
+            sys.stdout.flush()
+    else:
+        async for message in repo.iter_messages(
+            conversation_id,
+            dialogue_only=dialogue_only,
+            message_roles=effective_roles,
+            limit=message_limit,
+        ):
+            chunk = render_stream_message(message, output_format)
+            if chunk:
+                sys.stdout.write(chunk)
+                count += 1
+            sys.stdout.flush()
 
     sys.stdout.write(render_stream_footer(output_format=output_format, emitted_messages=count))
     sys.stdout.flush()

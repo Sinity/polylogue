@@ -93,6 +93,11 @@ def cli(
     output: str | None,
     output_format: str | None,
     transform: str | None,
+    no_code_blocks: bool,
+    no_tool_calls: bool,
+    no_tool_outputs: bool,
+    no_file_reads: bool,
+    prose_only: bool,
     # Streaming
     stream: bool,
     dialogue_only: bool,
