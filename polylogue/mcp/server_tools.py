@@ -15,7 +15,7 @@ from polylogue.mcp.payloads import (
     conversation_search_result_payload,
     conversation_summary_list_payload,
 )
-from polylogue.mcp.query_contracts import MCPConversationQueryRequest
+from polylogue.mcp.query_contracts import MCPContentProjectionRequest, MCPConversationQueryRequest
 from polylogue.mcp.server_maintenance_tools import register_maintenance_tools
 from polylogue.mcp.server_mutation_tools import register_mutation_tools
 from polylogue.mcp.server_product_tools import register_product_tools
@@ -122,12 +122,28 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         return await hooks.async_safe_call("list_conversations", run)
 
     @mcp.tool()
-    async def get_conversation(id: str) -> str:
+    async def get_conversation(
+        id: str,
+        no_code_blocks: bool = False,
+        no_tool_calls: bool = False,
+        no_tool_outputs: bool = False,
+        no_file_reads: bool = False,
+        prose_only: bool = False,
+    ) -> str:
         async def run() -> str:
-            conv = await hooks.get_archive_ops().get_conversation(id)
+            projection = MCPContentProjectionRequest(
+                no_code_blocks=no_code_blocks,
+                no_tool_calls=no_tool_calls,
+                no_tool_outputs=no_tool_outputs,
+                no_file_reads=no_file_reads,
+                prose_only=prose_only,
+            ).build_projection()
+            conv = await hooks.get_archive_ops().get_conversation(id, content_projection=projection)
             if conv is None:
                 return hooks.error_json(f"Conversation not found: {id}")
-            return hooks.json_payload(MCPConversationDetailPayload.from_conversation(conv))
+            return hooks.json_payload(
+                MCPConversationDetailPayload.from_conversation(conv, content_projection=projection)
+            )
 
         return await hooks.async_safe_call("get_conversation", run)
 

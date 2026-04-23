@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
+from polylogue.lib.content_projection import ContentProjectionSpec
 from polylogue.lib.query_spec import ConversationQuerySpec
 
 _QUERY_PARAM_ALIASES = {
@@ -76,4 +77,31 @@ class MCPConversationQueryRequest:
         )
 
 
-__all__ = ["build_query_spec", "MCPConversationQueryRequest", "normalize_query_params"]
+@dataclass(frozen=True, slots=True)
+class MCPContentProjectionRequest:
+    """Typed MCP-side content projection request shared by read/export surfaces."""
+
+    no_code_blocks: bool = False
+    no_tool_calls: bool = False
+    no_tool_outputs: bool = False
+    no_file_reads: bool = False
+    prose_only: bool = False
+
+    def build_projection(self) -> ContentProjectionSpec:
+        return ContentProjectionSpec.from_params(
+            {
+                "no_code_blocks": self.no_code_blocks,
+                "no_tool_calls": self.no_tool_calls,
+                "no_tool_outputs": self.no_tool_outputs,
+                "no_file_reads": self.no_file_reads,
+                "prose_only": self.prose_only,
+            }
+        )
+
+
+__all__ = [
+    "build_query_spec",
+    "MCPContentProjectionRequest",
+    "MCPConversationQueryRequest",
+    "normalize_query_params",
+]

@@ -9,6 +9,7 @@ from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, TypeAlias
 
+from polylogue.lib.content_projection import ContentProjectionSpec
 from polylogue.lib.message_roles import MessageRoleFilter, normalize_message_roles
 from polylogue.lib.query_spec import ConversationQuerySpec
 from polylogue.lib.roles import Role
@@ -82,9 +83,10 @@ class QueryOutputSpec:
     fields: str | None
     dialogue_only: bool
     message_roles: MessageRoleFilter
-    transform: QueryTransform
-    list_mode: bool
-    print_path: bool
+    transform: QueryTransform = None
+    list_mode: bool = False
+    print_path: bool = False
+    content_projection: ContentProjectionSpec = ContentProjectionSpec()
 
     @classmethod
     def from_params(cls, params: Mapping[str, object]) -> QueryOutputSpec:
@@ -98,6 +100,7 @@ class QueryOutputSpec:
             fields=str(params["fields"]) if params.get("fields") is not None else None,
             dialogue_only=bool(params.get("dialogue_only", False)),
             message_roles=normalize_message_roles(params.get("message_role") or params.get("message_roles")),
+            content_projection=ContentProjectionSpec.from_params(params),
             transform=str(params["transform"]) if params.get("transform") is not None else None,
             list_mode=bool(params.get("list_mode", False)),
             print_path=bool(params.get("print_path", False)),
@@ -122,6 +125,9 @@ class QueryOutputSpec:
 
     def filters_messages(self) -> bool:
         return bool(self.effective_message_roles())
+
+    def filters_content(self) -> bool:
+        return self.content_projection.filters_content()
 
 
 @dataclass(frozen=True, slots=True)
@@ -232,6 +238,7 @@ class QueryExecutionPlan:
             and self.output.list_mode
             and self.output.transform is None
             and not self.output.filters_messages()
+            and not self.output.filters_content()
         )
 
     def prefers_summary_stats(self) -> bool:

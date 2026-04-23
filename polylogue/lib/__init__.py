@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from polylogue.lib.attachment_models import Attachment
     from polylogue.lib.branch_type import BranchType
+    from polylogue.lib.content_projection import ContentKind, ContentProjectionSpec
     from polylogue.lib.conversation_models import Conversation
     from polylogue.lib.message_models import DialoguePair, Message
     from polylogue.lib.messages import MessageCollection
@@ -21,6 +22,8 @@ def __getattr__(name: str) -> object:
     lazy_exports = {
         "Attachment": ("polylogue.lib.attachment_models", "Attachment"),
         "BranchType": ("polylogue.lib.branch_type", "BranchType"),
+        "ContentKind": ("polylogue.lib.content_projection", "ContentKind"),
+        "ContentProjectionSpec": ("polylogue.lib.content_projection", "ContentProjectionSpec"),
         "Conversation": ("polylogue.lib.conversation_models", "Conversation"),
         "ConversationProjection": ("polylogue.lib.projections", "ConversationProjection"),
         "DialoguePair": ("polylogue.lib.message_models", "DialoguePair"),
@@ -39,6 +42,8 @@ def __getattr__(name: str) -> object:
 __all__ = [
     "Attachment",
     "BranchType",
+    "ContentKind",
+    "ContentProjectionSpec",
     "Conversation",
     "ConversationProjection",
     "DialoguePair",

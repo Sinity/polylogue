@@ -18,6 +18,7 @@ import io
 import json
 from typing import TYPE_CHECKING
 
+from polylogue.lib.content_projection import ContentProjectionSpec
 from polylogue.surface_payloads import (
     ConversationDetailPayload,
     ConversationListRowPayload,
@@ -49,6 +50,7 @@ def format_conversation(
     conv: Conversation,
     output_format: str,
     fields: str | None,
+    content_projection: ContentProjectionSpec | None = None,
 ) -> str:
     """Format a single conversation for output.
 
@@ -61,6 +63,8 @@ def format_conversation(
         Formatted string
     """
     output_format = normalize_conversation_output_format(output_format)
+    if content_projection is not None and content_projection.filters_content():
+        conv = conv.with_content_projection(content_projection)
 
     if output_format == "json":
         return _conv_to_json(conv, fields)

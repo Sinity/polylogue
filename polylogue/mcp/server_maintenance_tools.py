@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from polylogue.mcp.payloads import MCPMutationStatusPayload, MCPRootPayload
-from polylogue.mcp.query_contracts import MCPConversationQueryRequest
+from polylogue.mcp.query_contracts import MCPContentProjectionRequest, MCPConversationQueryRequest
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP
@@ -53,15 +53,30 @@ def register_maintenance_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         return await hooks.async_safe_call("update_index", run)
 
     @mcp.tool()
-    async def export_conversation(id: str, format: str = "markdown") -> str:
+    async def export_conversation(
+        id: str,
+        format: str = "markdown",
+        no_code_blocks: bool = False,
+        no_tool_calls: bool = False,
+        no_tool_outputs: bool = False,
+        no_file_reads: bool = False,
+        prose_only: bool = False,
+    ) -> str:
         async def run() -> str:
             from polylogue.rendering.formatting import format_conversation, normalize_conversation_output_format
 
-            conv = await hooks.get_archive_ops().get_conversation(id)
+            projection = MCPContentProjectionRequest(
+                no_code_blocks=no_code_blocks,
+                no_tool_calls=no_tool_calls,
+                no_tool_outputs=no_tool_outputs,
+                no_file_reads=no_file_reads,
+                prose_only=prose_only,
+            ).build_projection()
+            conv = await hooks.get_archive_ops().get_conversation(id, content_projection=projection)
             if conv is None:
                 return hooks.error_json(f"Conversation not found: {id}")
             fmt = normalize_conversation_output_format(format)
-            return format_conversation(conv, fmt, None)
+            return format_conversation(conv, fmt, None, content_projection=projection)
 
         return await hooks.async_safe_call("export_conversation", run)
 
@@ -105,6 +120,11 @@ def register_maintenance_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         has_thinking: bool = False,
         min_messages: int | None = None,
         min_words: int | None = None,
+        no_code_blocks: bool = False,
+        no_tool_calls: bool = False,
+        no_tool_outputs: bool = False,
+        no_file_reads: bool = False,
+        prose_only: bool = False,
     ) -> str:
         async def run() -> str:
             from polylogue.rendering.formatting import format_conversation, normalize_conversation_output_format
@@ -131,7 +151,14 @@ def register_maintenance_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 min_messages=min_messages,
                 min_words=min_words,
             ).build_spec(hooks.clamp_limit)
-            conversations = await hooks.get_archive_ops().query_conversations(spec)
+            projection = MCPContentProjectionRequest(
+                no_code_blocks=no_code_blocks,
+                no_tool_calls=no_tool_calls,
+                no_tool_outputs=no_tool_outputs,
+                no_file_reads=no_file_reads,
+                prose_only=prose_only,
+            ).build_projection()
+            conversations = await hooks.get_archive_ops().query_conversations(spec, content_projection=projection)
             return hooks.json_payload(
                 MCPRootPayload(
                     root={
@@ -142,7 +169,7 @@ def register_maintenance_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                                 "conversation_id": str(conversation.id),
                                 "provider": str(conversation.provider),
                                 "title": conversation.display_title,
-                                "content": format_conversation(conversation, fmt, None),
+                                "content": format_conversation(conversation, fmt, None, content_projection=projection),
                             }
                             for conversation in conversations
                         ],

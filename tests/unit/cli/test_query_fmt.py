@@ -36,6 +36,7 @@ from polylogue.cli.query_output import (
 )
 from polylogue.cli.query_output_contracts import StructuredRowsDocument
 from polylogue.lib.attachment_models import Attachment
+from polylogue.lib.content_projection import ContentProjectionSpec
 from polylogue.lib.messages import MessageCollection
 from polylogue.lib.models import Conversation, ConversationSummary, Message
 from polylogue.lib.roles import Role
@@ -427,6 +428,21 @@ class TestConversationFormatting:
         rendered = format_conversation(conv, "csv", None)
         assert "empty" not in rendered
         assert "reply" in rendered
+
+    def test_format_conversation_applies_content_projection(self) -> None:
+        conv = _make_conv(
+            messages=[
+                _make_msg(
+                    "assistant",
+                    "Alpha\n\n```python\nprint('x')\n```\n\nOmega",
+                    id="projected",
+                )
+            ]
+        )
+
+        rendered = format_conversation(conv, "plaintext", None, content_projection=ContentProjectionSpec.prose_only())
+
+        assert rendered == "Alpha\n\nOmega"
 
 
 class TestListFormatting:

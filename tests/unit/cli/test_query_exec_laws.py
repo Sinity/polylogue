@@ -1278,6 +1278,7 @@ def test_async_execute_query_action_routing_contract(case: str, expected_helper:
             output_format="json-lines",
             dialogue_only=True,
             message_roles=(Role.USER, Role.ASSISTANT),
+            content_projection=None,
             message_limit=7,
         )
         warnings = [call.args[0] for call in mock_echo.call_args_list if call.args]

@@ -18,6 +18,7 @@ from polylogue.archive_products import (
     WorkThreadProductQuery,
 )
 from polylogue.facade import ArchiveStats
+from polylogue.lib.content_projection import ContentProjectionSpec
 from tests.infra.builders import make_conv, make_msg
 from tests.infra.storage_records import ConversationBuilder, make_conversation, make_message
 
@@ -196,6 +197,44 @@ class TestPolylogueGetConversation:
         assert conv is not None
         assert conv.id == "conv-1"
         assert conv.title == "Test Conversation"
+
+    @pytest.mark.asyncio
+    async def test_get_conversation_applies_content_projection(self: object, tmp_path: Path) -> None:
+        archive = _archive(tmp_path)
+        repository = archive.repository
+
+        await repository.save_conversation(
+            make_conversation(
+                "conv-projection",
+                provider_name="claude-ai",
+                title="Projected Conversation",
+                provider_conversation_id="provider-projection",
+                created_at="2025-01-01T00:00:00Z",
+                updated_at="2025-01-01T00:00:00Z",
+                content_hash="hash-projection",
+            ),
+            [
+                make_message(
+                    "msg-projection",
+                    "conv-projection",
+                    role="assistant",
+                    text="Alpha\n\n```python\nprint('x')\n```\n\nOmega",
+                    timestamp="2025-01-01T00:00:00Z",
+                    content_hash="msg-hash-projection",
+                )
+            ],
+            [],
+        )
+
+        projected = await archive.get_conversation(
+            "conv-projection",
+            content_projection=ContentProjectionSpec.prose_only(),
+        )
+
+        assert projected is not None
+        assert len(projected.messages) == 1
+        message = next(iter(projected.messages))
+        assert message.text == "Alpha\n\nOmega"
 
 
 class TestPolylogueGetConversations:

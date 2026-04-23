@@ -184,6 +184,11 @@ OUTPUT_OPTION_DECORATORS: tuple[Callable[[ClickCallable], ClickCallable], ...] =
         type=click.Choice(["strip-tools", "strip-thinking", "strip-all"]),
         help="Remove content: strip-tools (tool calls), strip-thinking (reasoning), strip-all (both)",
     ),
+    click.option("--no-code-blocks", is_flag=True, help="Exclude fenced and structured code blocks from output"),
+    click.option("--no-tool-calls", is_flag=True, help="Exclude tool invocation records from output"),
+    click.option("--no-tool-outputs", is_flag=True, help="Exclude tool-result payloads from output"),
+    click.option("--no-file-reads", is_flag=True, help="Exclude file-read payloads while keeping other tool output"),
+    click.option("--prose-only", is_flag=True, help="Show only authored prose text"),
 )
 
 STREAMING_OPTION_DECORATORS: tuple[Callable[[ClickCallable], ClickCallable], ...] = (

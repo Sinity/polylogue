@@ -12,6 +12,7 @@ from polylogue.archive_products import (
     SessionProfileProduct,
     SessionProfileProductQuery,
 )
+from polylogue.lib.content_projection import ContentProjectionSpec
 from polylogue.storage.session_product_runtime import SessionProductStatusSnapshot
 
 if TYPE_CHECKING:
@@ -28,15 +29,26 @@ if TYPE_CHECKING:
     from polylogue.storage.session_product_runtime import SessionProductCounts
 
     class _ArchiveOperationsSurface(Protocol):
-        async def get_conversation(self, conversation_id: str) -> Conversation | None: ...
+        async def get_conversation(
+            self,
+            conversation_id: str,
+            *,
+            content_projection: ContentProjectionSpec | None = None,
+        ) -> Conversation | None: ...
 
-        async def get_conversations(self, conversation_ids: list[str]) -> list[Conversation]: ...
+        async def get_conversations(
+            self,
+            conversation_ids: list[str],
+            *,
+            content_projection: ContentProjectionSpec | None = None,
+        ) -> list[Conversation]: ...
 
         async def list_conversations(
             self,
             *,
             provider: str | None = None,
             limit: int | None = None,
+            content_projection: ContentProjectionSpec | None = None,
         ) -> list[Conversation]: ...
 
         async def search(
@@ -109,20 +121,32 @@ class PolylogueArchiveMixin:
         @property
         def repository(self) -> ConversationRepository: ...
 
-    async def get_conversation(self, conversation_id: str) -> Conversation | None:
-        return await self.operations.get_conversation(conversation_id)
+    async def get_conversation(
+        self,
+        conversation_id: str,
+        *,
+        content_projection: ContentProjectionSpec | None = None,
+    ) -> Conversation | None:
+        return await self.operations.get_conversation(conversation_id, content_projection=content_projection)
 
-    async def get_conversations(self, conversation_ids: list[str]) -> list[Conversation]:
-        return await self.operations.get_conversations(conversation_ids)
+    async def get_conversations(
+        self,
+        conversation_ids: list[str],
+        *,
+        content_projection: ContentProjectionSpec | None = None,
+    ) -> list[Conversation]:
+        return await self.operations.get_conversations(conversation_ids, content_projection=content_projection)
 
     async def list_conversations(
         self,
         provider: str | None = None,
         limit: int | None = None,
+        content_projection: ContentProjectionSpec | None = None,
     ) -> list[Conversation]:
         return await self.operations.list_conversations(
             provider=provider,
             limit=limit,
+            content_projection=content_projection,
         )
 
     async def search(
