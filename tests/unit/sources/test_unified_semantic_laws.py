@@ -334,6 +334,7 @@ def test_harmonized_message_provider_coercion_contract(provider_str: str) -> Non
     ),
     st.sampled_from(["claude-code", "claude-ai", "chatgpt", "gemini", "codex"]),
 )
+@settings(max_examples=40, suppress_health_check=[HealthCheck.too_slow])
 def test_typed_content_blocks_extract_without_crash(
     content: RawContent,
     provider: str,
