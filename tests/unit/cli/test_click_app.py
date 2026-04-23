@@ -449,6 +449,7 @@ class TestCliMetadata:
             "completions",
             "dashboard",
             "neighbors",
+            "export",
             "products",
             "audit",
             "schema",

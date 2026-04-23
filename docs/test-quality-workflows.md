@@ -15,10 +15,10 @@ Current registry snapshot:
 - mutation campaigns: `19`
 - benchmark campaigns: `3`
 - synthetic benchmark campaigns: `6`
-- scenario projections: `239`
+- scenario projections: `241`
 - inferred corpus scenarios: `5`
   - benchmark-campaign: `3`
-  - exercise: `133`
+  - exercise: `135`
   - inferred-corpus-scenario: `5`
   - mutation-campaign: `19`
   - synthetic-benchmark: `6`
@@ -329,6 +329,7 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `exercise` | `help-dashboard` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | dashboard help |
 | `exercise` | `help-delete` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | delete help |
 | `exercise` | `help-doctor` | `message-fts-readiness-loop`<br>`retrieval-band-readiness-loop` | `message_fts`<br>`action_event_readiness`<br>`session_product_readiness`<br>`retrieval_band_readiness`<br>`archive_readiness` | `cli.help`<br>`project-archive-readiness` | — | `generated`<br>`help`<br>`structural` | doctor help |
+| `exercise` | `help-export` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | export help |
 | `exercise` | `help-list` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | list help |
 | `exercise` | `help-main` | — | — | — | — | — | Main help screen |
 | `exercise` | `help-mcp` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | mcp help |
@@ -337,6 +338,7 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `exercise` | `help-products` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | products help |
 | `exercise` | `help-products-analytics` | `provider-analytics-query-loop` | `session_product_rows`<br>`provider_analytics_results` | `cli.help`<br>`query-provider-analytics` | — | `generated`<br>`help`<br>`structural` | products analytics help |
 | `exercise` | `help-products-day-summaries` | `day-summary-query-loop` | `day_session_summary_rows`<br>`day_session_summary_results` | `cli.help`<br>`query-day-session-summaries` | — | `generated`<br>`help`<br>`structural` | products day-summaries help |
+| `exercise` | `help-products-debt` | `archive-debt-query-loop` | `action_event_readiness`<br>`session_product_readiness`<br>`archive_readiness`<br>`archive_debt_results` | `cli.help`<br>`query-archive-debt` | — | `generated`<br>`help`<br>`structural` | products debt help |
 | `exercise` | `help-products-enrichments` | `session-enrichment-query-loop` | `session_profile_rows`<br>`session_profile_enrichment_fts`<br>`session_enrichment_results` | `cli.help`<br>`query-session-enrichments` | — | `generated`<br>`help`<br>`structural` | products enrichments help |
 | `exercise` | `help-products-phases` | `session-phase-query-loop` | `session_phase_rows`<br>`session_phase_results` | `cli.help`<br>`query-session-phases` | — | `generated`<br>`help`<br>`structural` | products phases help |
 | `exercise` | `help-products-profiles` | `session-profile-query-loop` | `session_profile_rows`<br>`session_profile_merged_fts`<br>`session_profile_results` | `cli.help`<br>`query-session-profiles` | — | `generated`<br>`help`<br>`structural` | products profiles help |
