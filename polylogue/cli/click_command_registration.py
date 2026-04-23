@@ -14,6 +14,7 @@ from polylogue.cli.commands.neighbors import neighbors_command
 from polylogue.cli.commands.products import products_command
 from polylogue.cli.commands.qa import qa_command
 from polylogue.cli.commands.reset import reset_command
+from polylogue.cli.commands.resume import resume_command
 from polylogue.cli.commands.run import run_command
 from polylogue.cli.commands.schema import schema_command
 from polylogue.cli.commands.tags import tags_command
@@ -28,6 +29,7 @@ ROOT_COMMANDS: tuple[click.Command, ...] = (
     dashboard_command,
     neighbors_command,
     export_command,
+    resume_command,
     products_command,
     tags_command,
     qa_command,
@@ -47,5 +49,6 @@ __all__ = [
     "export_command",
     "mcp_command",
     "neighbors_command",
+    "resume_command",
     "register_root_commands",
 ]

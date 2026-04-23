@@ -128,6 +128,7 @@ Commands:
   open         Open matched conversation in browser/editor.
   products     Inspect durable archive data products.
   reset        Reset database, blob store, assets, rendered outputs, or...
+  resume       Reconstruct work-state context for a fresh agent session.
   run          Run pipeline stages on configured sources.
   schema       Inspect schema packages, versions, and evidence.
   stats        Show statistics for matched conversations.
