@@ -8,10 +8,10 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 
 ## Snapshot
 
-- subjects: `9039`
+- subjects: `9040`
 - claims: `22`
 - runner bindings: `22`
-- proof obligations: `9126`
+- proof obligations: `9129`
 
 ## Quality Checks
 
@@ -31,7 +31,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | --- | ---: |
 | `archive.query_law` | 1 |
 | `artifact.path` | 27 |
-| `cli.command` | 43 |
+| `cli.command` | 44 |
 | `cli.json_command` | 2 |
 | `diagnostic.observable` | 1 |
 | `error.surface` | 2 |
@@ -60,17 +60,18 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `polylogue mcp` | `polylogue/cli/commands/mcp.py:10` `polylogue.cli.commands.mcp.mcp_command` |
 | `polylogue neighbors` | `polylogue/cli/commands/neighbors.py:42` `polylogue.cli.commands.neighbors.neighbors_command` |
 | `polylogue open` | `polylogue/cli/query_verbs.py:76` `polylogue.cli.query_verbs.open_verb` |
-| `polylogue products` | `polylogue/cli/commands/products.py:129` `polylogue.cli.commands.products.products_command` |
-| `polylogue products analytics` | `polylogue/cli/commands/products.py:92` `polylogue.cli.commands.products._make_callback.<locals>.callback` |
-| `polylogue products day-summaries` | `polylogue/cli/commands/products.py:92` `polylogue.cli.commands.products._make_callback.<locals>.callback` |
-| `polylogue products debt` | `polylogue/cli/commands/products.py:92` `polylogue.cli.commands.products._make_callback.<locals>.callback` |
-| `polylogue products enrichments` | `polylogue/cli/commands/products.py:92` `polylogue.cli.commands.products._make_callback.<locals>.callback` |
-| `polylogue products phases` | `polylogue/cli/commands/products.py:92` `polylogue.cli.commands.products._make_callback.<locals>.callback` |
-| `polylogue products profiles` | `polylogue/cli/commands/products.py:92` `polylogue.cli.commands.products._make_callback.<locals>.callback` |
-| `polylogue products tags` | `polylogue/cli/commands/products.py:92` `polylogue.cli.commands.products._make_callback.<locals>.callback` |
-| `polylogue products threads` | `polylogue/cli/commands/products.py:92` `polylogue.cli.commands.products._make_callback.<locals>.callback` |
-| `polylogue products week-summaries` | `polylogue/cli/commands/products.py:92` `polylogue.cli.commands.products._make_callback.<locals>.callback` |
-| `polylogue products work-events` | `polylogue/cli/commands/products.py:92` `polylogue.cli.commands.products._make_callback.<locals>.callback` |
+| `polylogue products` | `polylogue/cli/commands/products.py:132` `polylogue.cli.commands.products.products_command` |
+| `polylogue products analytics` | `polylogue/cli/commands/products.py:95` `polylogue.cli.commands.products._make_callback.<locals>.callback` |
+| `polylogue products day-summaries` | `polylogue/cli/commands/products.py:95` `polylogue.cli.commands.products._make_callback.<locals>.callback` |
+| `polylogue products debt` | `polylogue/cli/commands/products.py:95` `polylogue.cli.commands.products._make_callback.<locals>.callback` |
+| `polylogue products enrichments` | `polylogue/cli/commands/products.py:95` `polylogue.cli.commands.products._make_callback.<locals>.callback` |
+| `polylogue products phases` | `polylogue/cli/commands/products.py:95` `polylogue.cli.commands.products._make_callback.<locals>.callback` |
+| `polylogue products profiles` | `polylogue/cli/commands/products.py:95` `polylogue.cli.commands.products._make_callback.<locals>.callback` |
+| `polylogue products status` | `polylogue/cli/commands/products.py:174` `polylogue.cli.commands.products.products_status_command` |
+| `polylogue products tags` | `polylogue/cli/commands/products.py:95` `polylogue.cli.commands.products._make_callback.<locals>.callback` |
+| `polylogue products threads` | `polylogue/cli/commands/products.py:95` `polylogue.cli.commands.products._make_callback.<locals>.callback` |
+| `polylogue products week-summaries` | `polylogue/cli/commands/products.py:95` `polylogue.cli.commands.products._make_callback.<locals>.callback` |
+| `polylogue products work-events` | `polylogue/cli/commands/products.py:95` `polylogue.cli.commands.products._make_callback.<locals>.callback` |
 | `polylogue reset` | `polylogue/cli/commands/reset.py:23` `polylogue.cli.commands.reset.reset_command` |
 | `polylogue resume` | `polylogue/cli/commands/resume.py:22` `polylogue.cli.commands.resume.resume_command` |
 | `polylogue run` | `polylogue/cli/commands/run.py:164` `polylogue.cli.commands.run.run_command` |
@@ -187,10 +188,10 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | --- | ---: |
 | `archive.query.provider_filter_consistency` | 1 |
 | `artifact.path.dependency_closure` | 11 |
-| `cli.command.help` | 43 |
+| `cli.command.help` | 44 |
 | `cli.command.json_envelope` | 2 |
-| `cli.command.no_traceback` | 43 |
-| `cli.command.plain_mode` | 43 |
+| `cli.command.no_traceback` | 44 |
+| `cli.command.plain_mode` | 44 |
 | `diagnostic.observable_trace_mapping` | 1 |
 | `error.machine_user_context` | 2 |
 | `generated.scenario.family_registered` | 9 |
