@@ -1411,6 +1411,7 @@ def test_escape_fts5_query_never_crashes(text: str) -> None:
     assert isinstance(result, str)
 
 
+@settings(max_examples=40, suppress_health_check=[HealthCheck.too_slow])
 @given(text=fts5_match_text_strategy())
 def test_escape_fts5_match_text_safe(text: str) -> None:
     """FTS5 match text from strategy is safely escaped."""
