@@ -175,7 +175,11 @@ async def list_conversation_summaries(
             c.updated_at,
             c.sort_key,
             c.content_hash,
-            NULL AS provider_meta,
+            CASE
+                WHEN json_extract(c.provider_meta, '$.tail_overlay') IS NOT NULL
+                THEN json_object('tail_overlay', json_extract(c.provider_meta, '$.tail_overlay'))
+                ELSE NULL
+            END AS provider_meta,
             c.metadata,
             c.version,
             c.parent_conversation_id,
@@ -195,7 +199,11 @@ async def list_conversation_summaries(
             updated_at,
             sort_key,
             content_hash,
-            NULL AS provider_meta,
+            CASE
+                WHEN json_extract(provider_meta, '$.tail_overlay') IS NOT NULL
+                THEN json_object('tail_overlay', json_extract(provider_meta, '$.tail_overlay'))
+                ELSE NULL
+            END AS provider_meta,
             metadata,
             version,
             parent_conversation_id,
