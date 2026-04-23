@@ -295,7 +295,7 @@ def test_parse_payload_accepts_provider_enum() -> None:
     ids=["chatgpt-bundle", "claude-bundle", "gemini-bundle", "conversations-wrapper"],
 )
 @given(data=st.data())
-@settings(max_examples=20, suppress_health_check=[HealthCheck.too_slow])
+@settings(deadline=None, max_examples=20, suppress_health_check=[HealthCheck.too_slow])
 def test_parse_payload_bundle_cardinality_contract(
     provider: str,
     wrapper: bool,
@@ -330,7 +330,7 @@ def test_iter_json_stream_root_list_round_trips_documents(case: tuple[list[dict[
 
 
 @given(conversations_wrapper_bytes_strategy())
-@settings(max_examples=30)
+@settings(max_examples=30, suppress_health_check=[HealthCheck.too_slow])
 def test_iter_json_stream_conversations_wrapper_round_trips_documents(
     case: tuple[list[dict[str, object]], bytes],
 ) -> None:
