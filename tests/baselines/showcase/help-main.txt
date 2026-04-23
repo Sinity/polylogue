@@ -110,6 +110,7 @@ Commands:
   dashboard    Launch the dashboard TUI.
   delete       Delete matched conversations.
   doctor       Health check with optional maintenance and cleanup previews.
+  export       Export one known conversation by ID.
   list         List matched conversations.
   mcp          Start the MCP server for AI assistant integration.
   neighbors    Show explainable neighboring or near-duplicate candidates.
