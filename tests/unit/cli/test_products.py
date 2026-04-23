@@ -188,6 +188,71 @@ def test_products_profiles_inherit_root_format_json(cli_workspace: CliWorkspace)
     assert json_int(payload["count"]) == 1
 
 
+def test_products_status_json(cli_workspace: CliWorkspace) -> None:
+    _seed_products(cli_workspace)
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["products", "status", "--json"], catch_exceptions=False)
+
+    assert result.exit_code == 0
+    payload = extract_json_result(result.output)
+    assert payload["aggregate_verdict"] == "ready"
+    products = {item["product_name"]: item for item in json_object_list(payload["products"])}
+    assert set(products) >= {
+        "session_profiles",
+        "session_enrichments",
+        "session_work_events",
+        "session_phases",
+        "work_threads",
+        "session_tag_rollups",
+        "day_session_summaries",
+        "week_session_summaries",
+        "provider_analytics",
+    }
+    assert products["session_profiles"]["verdict"] == "ready"
+    assert json_int(products["session_work_events"]["row_count"]) >= 1
+
+
+def test_products_status_inherits_root_format_and_filters(cli_workspace: CliWorkspace) -> None:
+    _seed_products(cli_workspace)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "--format",
+            "json",
+            "--provider",
+            "claude-code",
+            "products",
+            "status",
+            "--product",
+            "session-work-events",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    payload = extract_json_result(result.output)
+    assert payload["provider"] == "claude-code"
+    products = json_object_list(payload["products"])
+    assert len(products) == 1
+    assert products[0]["product_name"] == "session_work_events"
+    coverage = json_object_list(products[0]["provider_coverage"])
+    assert coverage[0]["provider_name"] == "claude-code"
+
+
+def test_products_status_plain(cli_workspace: CliWorkspace) -> None:
+    _seed_products(cli_workspace)
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["products", "status", "--product", "profiles"], catch_exceptions=False)
+
+    assert result.exit_code == 0
+    assert "Product Readiness: ready" in result.output
+    assert "session_profiles: ready" in result.output
+
+
 def test_products_enrichments_json(cli_workspace: CliWorkspace) -> None:
     _seed_products(cli_workspace)
 

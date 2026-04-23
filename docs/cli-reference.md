@@ -292,6 +292,7 @@ Commands:
   enrichments     List durable probabilistic session-enrichment products.
   phases          List durable session-phase products.
   profiles        List durable session-profile products.
+  status          Report product materialization coverage and readiness.
   tags            List durable session-tag rollup products.
   threads         List durable work-thread products.
   week-summaries  List durable week-level session summary products.

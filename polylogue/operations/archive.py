@@ -41,6 +41,11 @@ from polylogue.lib.conversation_models import ConversationSummary
 from polylogue.lib.query_spec import ConversationQuerySpec
 from polylogue.maintenance_targets import build_maintenance_target_catalog
 from polylogue.paths.sanitize import conversation_render_root
+from polylogue.product_readiness import (
+    ProductReadinessQuery,
+    ProductReadinessReport,
+    build_product_readiness_report,
+)
 from polylogue.services import RuntimeServices, build_runtime_services
 from polylogue.storage.backends.connection import connection_context
 from polylogue.storage.backends.queries.stats import ProviderMetricsRow
@@ -645,6 +650,14 @@ class ArchiveProductAggregateMixin:
         if request.provider:
             products = [product for product in products if product.provider_name == request.provider]
         return _slice_products(products, offset=request.offset, limit=request.limit)
+
+    async def get_product_readiness_report(
+        self,
+        query: ProductReadinessQuery | None = None,
+    ) -> ProductReadinessReport:
+        status = await _read_session_product_status(self.backend)
+        async with self.backend.connection() as conn:
+            return await build_product_readiness_report(conn, status, query)
 
 
 class ArchiveProductDebtMixin:

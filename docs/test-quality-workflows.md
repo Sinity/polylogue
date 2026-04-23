@@ -15,10 +15,10 @@ Current registry snapshot:
 - mutation campaigns: `19`
 - benchmark campaigns: `3`
 - synthetic benchmark campaigns: `6`
-- scenario projections: `242`
+- scenario projections: `243`
 - inferred corpus scenarios: `5`
   - benchmark-campaign: `3`
-  - exercise: `136`
+  - exercise: `137`
   - inferred-corpus-scenario: `5`
   - mutation-campaign: `19`
   - synthetic-benchmark: `6`
@@ -342,6 +342,7 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `exercise` | `help-products-enrichments` | `session-enrichment-query-loop` | `session_profile_rows`<br>`session_profile_enrichment_fts`<br>`session_enrichment_results` | `cli.help`<br>`query-session-enrichments` | — | `generated`<br>`help`<br>`structural` | products enrichments help |
 | `exercise` | `help-products-phases` | `session-phase-query-loop` | `session_phase_rows`<br>`session_phase_results` | `cli.help`<br>`query-session-phases` | — | `generated`<br>`help`<br>`structural` | products phases help |
 | `exercise` | `help-products-profiles` | `session-profile-query-loop` | `session_profile_rows`<br>`session_profile_merged_fts`<br>`session_profile_results` | `cli.help`<br>`query-session-profiles` | — | `generated`<br>`help`<br>`structural` | products profiles help |
+| `exercise` | `help-products-status` | `session-product-status-query-loop` | `session_product_readiness`<br>`session_product_status_results` | `cli.help`<br>`query-session-product-status` | — | `generated`<br>`help`<br>`structural` | products status help |
 | `exercise` | `help-products-tags` | `session-tag-rollup-query-loop` | `session_tag_rollup_rows`<br>`session_tag_rollup_results` | `cli.help`<br>`query-session-tag-rollups` | — | `generated`<br>`help`<br>`structural` | products tags help |
 | `exercise` | `help-products-threads` | `work-thread-query-loop` | `work_thread_rows`<br>`work_thread_fts`<br>`work_thread_results` | `cli.help`<br>`query-work-threads` | — | `generated`<br>`help`<br>`structural` | products threads help |
 | `exercise` | `help-products-week-summaries` | `week-summary-query-loop` | `day_session_summary_rows`<br>`week_session_summary_results` | `cli.help`<br>`query-week-session-summaries` | — | `generated`<br>`help`<br>`structural` | products week-summaries help |

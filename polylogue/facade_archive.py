@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from polylogue.lib.conversation_models import Conversation
     from polylogue.lib.filters import ConversationFilter
     from polylogue.operations import ArchiveStats
+    from polylogue.product_readiness import ProductReadinessQuery, ProductReadinessReport
     from polylogue.readiness import ReadinessReport
     from polylogue.storage.repository import ConversationRepository
     from polylogue.storage.search_models import SearchResult
@@ -83,6 +84,11 @@ if TYPE_CHECKING:
             *,
             related_limit: int = 6,
         ) -> ResumeBrief | None: ...
+
+        async def get_product_readiness_report(
+            self,
+            query: ProductReadinessQuery | None = None,
+        ) -> ProductReadinessReport: ...
 
 
 class PolylogueArchiveMixin:
@@ -195,3 +201,10 @@ class PolylogueArchiveMixin:
     ) -> ResumeBrief | None:
         """Build a compact handoff brief for an archived session."""
         return await self.operations.build_resume_brief(session_id, related_limit=related_limit)
+
+    async def product_readiness_report(
+        self,
+        query: ProductReadinessQuery | None = None,
+    ) -> ProductReadinessReport:
+        """Return product materialization readiness for downstream consumers."""
+        return await self.operations.get_product_readiness_report(query)
