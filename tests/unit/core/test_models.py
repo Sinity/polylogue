@@ -10,6 +10,7 @@ from __future__ import annotations
 from unittest.mock import Mock
 
 import pytest
+from pydantic import TypeAdapter
 
 from polylogue.lib.json import JSONDocument, JSONValue, json_document
 from polylogue.lib.messages import MessageCollection
@@ -165,6 +166,25 @@ class TestMessageCollectionContracts:
     def test_is_lazy_is_always_false(self) -> None:
         assert MessageCollection(messages=[]).is_lazy is False
 
+    def test_sequence_surface_round_trips_eager_messages(self) -> None:
+        msg1 = make_msg(id="m1", role=Role.USER, text="hello")
+        msg2 = make_msg(id="m2", role=Role.ASSISTANT, text="world")
+        collection = MessageCollection(messages=[msg1, msg2])
+
+        assert len(collection) == 2
+        assert bool(collection) is True
+        assert list(collection) == [msg1, msg2]
+        assert collection[0] == msg1
+        assert collection[:1] == [msg1]
+        assert repr(collection) == "MessageCollection(eager, 2 messages)"
+        assert collection == MessageCollection(messages=[msg1, msg2])
+        assert collection.__eq__(object()) is NotImplemented
+        assert hash(collection) == id(collection)
+        copy = collection.to_list()
+        copy.pop()
+        assert len(collection) == 2
+        assert MessageCollection.empty().to_list() == []
+
     def test_materialize_is_noop(self) -> None:
         collection = MessageCollection(messages=[make_msg(id="m1", role=Role.USER, text="hello")])
         assert collection.materialize() is collection
@@ -183,6 +203,27 @@ class TestMessageCollectionContracts:
         json_schema = MessageCollection.__get_pydantic_json_schema__(Mock(), handler)
         assert json_schema["type"] == "array"
         assert "items" in json_schema
+
+    def test_type_adapter_accepts_list_and_existing_collection(self) -> None:
+        adapter = TypeAdapter(MessageCollection)
+        existing = MessageCollection(messages=[make_msg(id="m2", role=Role.ASSISTANT, text="existing")])
+
+        from_list = adapter.validate_python([make_msg(id="m1", role=Role.USER, text="hello")])
+        reused = adapter.validate_python(existing)
+
+        assert isinstance(from_list, MessageCollection)
+        assert from_list.to_list()[0].id == "m1"
+        assert reused is existing
+
+        with pytest.raises(ValueError, match="Expected MessageCollection or list"):
+            adapter.validate_python("bad")
+
+    def test_get_pydantic_json_schema_requires_generate(self) -> None:
+        handler = Mock()
+        del handler.generate
+
+        with pytest.raises(TypeError, match="does not expose generate"):
+            MessageCollection.__get_pydantic_json_schema__(Mock(), handler)
 
 
 class TestPinnedSemanticRegressions:
