@@ -13,8 +13,10 @@ import click
 
 from polylogue.archive_products import ArchiveProductUnavailableError
 from polylogue.cli.helper_support import fail
+from polylogue.cli.machine_errors import emit_success
 from polylogue.cli.product_command_contracts import ProductCommandRequest, query_model_field_names
 from polylogue.cli.types import AppEnv
+from polylogue.product_readiness import ProductReadinessQuery, ProductReadinessReport, known_product_readiness_names
 from polylogue.products.registry import (
     PRODUCT_REGISTRY,
     ProductQueryError,
@@ -22,6 +24,7 @@ from polylogue.products.registry import (
     fetch_products,
     render_product_items,
 )
+from polylogue.sync_bridge import run_coroutine_sync
 
 _ROOT_FILTER_KEYS = ("provider", "since", "until")
 
@@ -129,6 +132,83 @@ def _build_product_command(pt: ProductType) -> click.Command:
 @click.group("products")
 def products_command() -> None:
     """Inspect durable archive data products."""
+
+
+def _status_wants_json(ctx: click.Context, *, json_mode: bool, output_format: str | None) -> bool:
+    if json_mode or output_format == "json":
+        return True
+    root_output = ctx.find_root().params.get("output_format")
+    return root_output == "json"
+
+
+def _render_status_plain(report: ProductReadinessReport) -> None:
+    click.echo(f"Product Readiness: {report.aggregate_verdict}")
+    click.echo(f"Total conversations: {report.total_conversations}")
+    if report.provider or report.since or report.until:
+        click.echo(f"Scope: provider={report.provider or '-'} since={report.since or '-'} until={report.until or '-'}")
+    click.echo("")
+    for product in report.products:
+        expected = f" expected={product.expected_row_count}" if product.expected_row_count is not None else ""
+        click.echo(f"{product.product_name}: {product.verdict} rows={product.row_count}{expected}")
+        if product.missing_count or product.stale_count or product.orphan_count or product.legacy_incompatible_count:
+            click.echo(
+                "  "
+                f"missing={product.missing_count} stale={product.stale_count} "
+                f"orphan={product.orphan_count} legacy={product.legacy_incompatible_count}"
+            )
+        if product.ready_flags:
+            flags = ", ".join(f"{key}={value}" for key, value in sorted(product.ready_flags.items()))
+            click.echo(f"  flags: {flags}")
+        if product.provider_coverage:
+            providers = ", ".join(
+                f"{coverage.provider_name}={coverage.row_count}" for coverage in product.provider_coverage
+            )
+            click.echo(f"  providers: {providers}")
+        if product.version_coverage:
+            versions = ", ".join(f"{coverage.field}={dict(coverage.versions)}" for coverage in product.version_coverage)
+            click.echo(f"  versions: {versions}")
+        if product.schema_contract_issues:
+            click.echo(f"  schema: {', '.join(product.schema_contract_issues)}")
+
+
+@products_command.command("status")
+@click.option("--product", "products", multiple=True, help="Product readiness target. May be repeated.")
+@click.option("--provider", default=None, help="Limit provider coverage details to one provider.")
+@click.option("--since", default=None, help="Limit coverage details to rows at/after this timestamp or date.")
+@click.option("--until", default=None, help="Limit coverage details to rows at/before this timestamp or date.")
+@click.option("--json", "json_mode", is_flag=True, help="Output as JSON.")
+@click.option("--format", "output_format", type=click.Choice(["json"]), default=None, help="Output format.")
+@click.pass_context
+def products_status_command(
+    ctx: click.Context,
+    products: tuple[str, ...],
+    provider: str | None,
+    since: str | None,
+    until: str | None,
+    json_mode: bool,
+    output_format: str | None,
+) -> None:
+    """Report product materialization coverage and readiness."""
+    env: AppEnv = ctx.obj
+    root_params = ctx.find_root().params
+    inherited_provider = provider if provider is not None else root_params.get("provider")
+    inherited_since = since if since is not None else root_params.get("since")
+    inherited_until = until if until is not None else root_params.get("until")
+    try:
+        query = ProductReadinessQuery(
+            products=products,
+            provider=str(inherited_provider) if inherited_provider is not None else None,
+            since=str(inherited_since) if inherited_since is not None else None,
+            until=str(inherited_until) if inherited_until is not None else None,
+        )
+        report = run_coroutine_sync(env.operations.get_product_readiness_report(query))
+    except ValueError as exc:
+        valid = ", ".join(known_product_readiness_names())
+        fail("products status", f"{exc}. Known products: {valid}")
+    if _status_wants_json(ctx, json_mode=json_mode, output_format=output_format):
+        emit_success(report.model_dump(mode="json"))
+        return
+    _render_status_plain(report)
 
 
 # Register all product types as subcommands
