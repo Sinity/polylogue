@@ -6,7 +6,7 @@ import re
 import sqlite3
 from contextlib import suppress
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, TypeAlias
 
 import aiosqlite
 
@@ -63,10 +63,430 @@ class SchemaBootstrapDecision:
     extension_plan: SchemaExtensionPlan | None = None
 
 
+@dataclass(frozen=True)
+class SchemaColumnExtensionDescriptor:
+    """Declarative check for a column added after the base schema version."""
+
+    table_name: str
+    column_name: str
+    ddl: str
+
+    def snapshot_tables(self) -> tuple[str, ...]:
+        return (self.table_name,)
+
+    def snapshot_indexes(self) -> tuple[str, ...]:
+        return ()
+
+    def statements(self, snapshot: SchemaSnapshot) -> tuple[str, ...]:
+        if not snapshot.has_table(self.table_name):
+            return ()
+        if self.column_name in snapshot.columns(self.table_name):
+            return ()
+        return (self.ddl,)
+
+    def scripts(self, _snapshot: SchemaSnapshot) -> tuple[str, ...]:
+        return ()
+
+
+@dataclass(frozen=True)
+class SchemaIndexExtensionDescriptor:
+    """Declarative check for an index extension and optional drift repair."""
+
+    table_name: str
+    index_name: str
+    ddl: str
+    replace_on_drift: bool = False
+
+    def snapshot_tables(self) -> tuple[str, ...]:
+        return (self.table_name,)
+
+    def snapshot_indexes(self) -> tuple[str, ...]:
+        return (self.index_name,)
+
+    def statements(self, snapshot: SchemaSnapshot) -> tuple[str, ...]:
+        if not snapshot.has_table(self.table_name):
+            return ()
+
+        existing_sql = snapshot.sql_for_index(self.index_name)
+        if existing_sql is None:
+            return (self.ddl,)
+
+        if self.replace_on_drift and _normalize_sql(existing_sql) != _normalize_sql(self.ddl):
+            return (f"DROP INDEX IF EXISTS {self.index_name}", self.ddl)
+
+        return ()
+
+    def scripts(self, _snapshot: SchemaSnapshot) -> tuple[str, ...]:
+        return ()
+
+
+@dataclass(frozen=True)
+class SchemaScriptExtensionDescriptor:
+    """Reviewable DDL script that is safe to run for current schemas."""
+
+    ddl: str
+
+    def snapshot_tables(self) -> tuple[str, ...]:
+        return ()
+
+    def snapshot_indexes(self) -> tuple[str, ...]:
+        return ()
+
+    def statements(self, _snapshot: SchemaSnapshot) -> tuple[str, ...]:
+        return ()
+
+    def scripts(self, _snapshot: SchemaSnapshot) -> tuple[str, ...]:
+        return (self.ddl,)
+
+
+@dataclass(frozen=True)
+class SchemaBackfillDescriptor:
+    """Data repair statement gated by a table's presence."""
+
+    table_name: str
+    ddl: str
+
+    def snapshot_tables(self) -> tuple[str, ...]:
+        return (self.table_name,)
+
+    def snapshot_indexes(self) -> tuple[str, ...]:
+        return ()
+
+    def statements(self, snapshot: SchemaSnapshot) -> tuple[str, ...]:
+        if not snapshot.has_table(self.table_name):
+            return ()
+        return (self.ddl,)
+
+    def scripts(self, _snapshot: SchemaSnapshot) -> tuple[str, ...]:
+        return ()
+
+
+SchemaExtensionDescriptor: TypeAlias = (
+    SchemaColumnExtensionDescriptor
+    | SchemaIndexExtensionDescriptor
+    | SchemaScriptExtensionDescriptor
+    | SchemaBackfillDescriptor
+)
+
+
 def _normalize_sql(sql: str) -> str:
     normalized = " ".join(sql.replace(";", " ").split())
     normalized = re.sub(r"\bIF\s+NOT\s+EXISTS\b", "", normalized, flags=re.IGNORECASE)
     return " ".join(normalized.split())
+
+
+_SCHEMA_EXTENSION_DESCRIPTORS: tuple[SchemaExtensionDescriptor, ...] = (
+    SchemaColumnExtensionDescriptor(
+        table_name="raw_conversations",
+        column_name="blob_size",
+        ddl="ALTER TABLE raw_conversations ADD COLUMN blob_size INTEGER NOT NULL DEFAULT 0",
+    ),
+    SchemaIndexExtensionDescriptor(
+        table_name="raw_conversations",
+        index_name="idx_raw_conv_source_mtime",
+        ddl=_RAW_SOURCE_MTIME_INDEX_SQL,
+        replace_on_drift=True,
+    ),
+    SchemaIndexExtensionDescriptor(
+        table_name="content_blocks",
+        index_name="idx_content_blocks_tool_use_conversation",
+        ddl="""
+            CREATE INDEX IF NOT EXISTS idx_content_blocks_tool_use_conversation
+            ON content_blocks(conversation_id)
+            WHERE type = 'tool_use'
+            """,
+    ),
+    SchemaIndexExtensionDescriptor(
+        table_name="attachments",
+        index_name="idx_attachments_provider_meta_id",
+        ddl="""
+                CREATE INDEX IF NOT EXISTS idx_attachments_provider_meta_id
+                ON attachments(json_extract(provider_meta, '$.id'))
+                WHERE provider_meta IS NOT NULL
+                """,
+    ),
+    SchemaIndexExtensionDescriptor(
+        table_name="attachments",
+        index_name="idx_attachments_provider_meta_provider_id",
+        ddl="""
+                CREATE INDEX IF NOT EXISTS idx_attachments_provider_meta_provider_id
+                ON attachments(json_extract(provider_meta, '$.provider_id'))
+                WHERE provider_meta IS NOT NULL
+                """,
+    ),
+    SchemaIndexExtensionDescriptor(
+        table_name="attachments",
+        index_name="idx_attachments_provider_meta_file_id",
+        ddl="""
+                CREATE INDEX IF NOT EXISTS idx_attachments_provider_meta_file_id
+                ON attachments(json_extract(provider_meta, '$.fileId'))
+                WHERE provider_meta IS NOT NULL
+                """,
+    ),
+    SchemaIndexExtensionDescriptor(
+        table_name="attachments",
+        index_name="idx_attachments_provider_meta_drive_id",
+        ddl="""
+                CREATE INDEX IF NOT EXISTS idx_attachments_provider_meta_drive_id
+                ON attachments(json_extract(provider_meta, '$.driveId'))
+                WHERE provider_meta IS NOT NULL
+                """,
+    ),
+    SchemaIndexExtensionDescriptor(
+        table_name="attachment_refs",
+        index_name="idx_attachment_refs_provider_meta_id",
+        ddl="""
+                CREATE INDEX IF NOT EXISTS idx_attachment_refs_provider_meta_id
+                ON attachment_refs(json_extract(provider_meta, '$.id'))
+                WHERE provider_meta IS NOT NULL
+                """,
+    ),
+    SchemaIndexExtensionDescriptor(
+        table_name="attachment_refs",
+        index_name="idx_attachment_refs_provider_meta_provider_id",
+        ddl="""
+                CREATE INDEX IF NOT EXISTS idx_attachment_refs_provider_meta_provider_id
+                ON attachment_refs(json_extract(provider_meta, '$.provider_id'))
+                WHERE provider_meta IS NOT NULL
+                """,
+    ),
+    SchemaIndexExtensionDescriptor(
+        table_name="attachment_refs",
+        index_name="idx_attachment_refs_provider_meta_file_id",
+        ddl="""
+                CREATE INDEX IF NOT EXISTS idx_attachment_refs_provider_meta_file_id
+                ON attachment_refs(json_extract(provider_meta, '$.fileId'))
+                WHERE provider_meta IS NOT NULL
+                """,
+    ),
+    SchemaIndexExtensionDescriptor(
+        table_name="attachment_refs",
+        index_name="idx_attachment_refs_provider_meta_drive_id",
+        ddl="""
+                CREATE INDEX IF NOT EXISTS idx_attachment_refs_provider_meta_drive_id
+                ON attachment_refs(json_extract(provider_meta, '$.driveId'))
+                WHERE provider_meta IS NOT NULL
+                """,
+    ),
+    SchemaScriptExtensionDescriptor(_ARTIFACT_OBSERVATION_DDL),
+    SchemaScriptExtensionDescriptor(_PUBLICATION_DDL),
+    SchemaScriptExtensionDescriptor(_ACTION_EVENT_DDL),
+    SchemaColumnExtensionDescriptor(
+        table_name="action_events",
+        column_name="materializer_version",
+        ddl="ALTER TABLE action_events ADD COLUMN materializer_version INTEGER NOT NULL DEFAULT 1",
+    ),
+    SchemaScriptExtensionDescriptor(_ACTION_FTS_DDL),
+    SchemaColumnExtensionDescriptor(
+        table_name="session_profiles",
+        column_name="canonical_session_date",
+        ddl="ALTER TABLE session_profiles ADD COLUMN canonical_session_date TEXT",
+    ),
+    SchemaColumnExtensionDescriptor(
+        table_name="session_profiles",
+        column_name="last_message_at",
+        ddl="ALTER TABLE session_profiles ADD COLUMN last_message_at TEXT",
+    ),
+    SchemaColumnExtensionDescriptor(
+        table_name="session_profiles",
+        column_name="substantive_count",
+        ddl="ALTER TABLE session_profiles ADD COLUMN substantive_count INTEGER NOT NULL DEFAULT 0",
+    ),
+    SchemaColumnExtensionDescriptor(
+        table_name="session_profiles",
+        column_name="attachment_count",
+        ddl="ALTER TABLE session_profiles ADD COLUMN attachment_count INTEGER NOT NULL DEFAULT 0",
+    ),
+    SchemaColumnExtensionDescriptor(
+        table_name="session_profiles",
+        column_name="phase_count",
+        ddl="ALTER TABLE session_profiles ADD COLUMN phase_count INTEGER NOT NULL DEFAULT 0",
+    ),
+    SchemaColumnExtensionDescriptor(
+        table_name="session_profiles",
+        column_name="engaged_duration_ms",
+        ddl="ALTER TABLE session_profiles ADD COLUMN engaged_duration_ms INTEGER NOT NULL DEFAULT 0",
+    ),
+    SchemaColumnExtensionDescriptor(
+        table_name="session_profiles",
+        column_name="cost_is_estimated",
+        ddl="ALTER TABLE session_profiles ADD COLUMN cost_is_estimated INTEGER NOT NULL DEFAULT 0",
+    ),
+    SchemaColumnExtensionDescriptor(
+        table_name="session_profiles",
+        column_name="evidence_payload_json",
+        ddl="ALTER TABLE session_profiles ADD COLUMN evidence_payload_json TEXT NOT NULL DEFAULT '{}'",
+    ),
+    SchemaColumnExtensionDescriptor(
+        table_name="session_profiles",
+        column_name="inference_payload_json",
+        ddl="ALTER TABLE session_profiles ADD COLUMN inference_payload_json TEXT NOT NULL DEFAULT '{}'",
+    ),
+    SchemaColumnExtensionDescriptor(
+        table_name="session_profiles",
+        column_name="evidence_search_text",
+        ddl="ALTER TABLE session_profiles ADD COLUMN evidence_search_text TEXT NOT NULL DEFAULT ''",
+    ),
+    SchemaColumnExtensionDescriptor(
+        table_name="session_profiles",
+        column_name="inference_search_text",
+        ddl="ALTER TABLE session_profiles ADD COLUMN inference_search_text TEXT NOT NULL DEFAULT ''",
+    ),
+    SchemaColumnExtensionDescriptor(
+        table_name="session_profiles",
+        column_name="enrichment_payload_json",
+        ddl="ALTER TABLE session_profiles ADD COLUMN enrichment_payload_json TEXT NOT NULL DEFAULT '{}'",
+    ),
+    SchemaColumnExtensionDescriptor(
+        table_name="session_profiles",
+        column_name="enrichment_search_text",
+        ddl="ALTER TABLE session_profiles ADD COLUMN enrichment_search_text TEXT NOT NULL DEFAULT ''",
+    ),
+    SchemaColumnExtensionDescriptor(
+        table_name="session_profiles",
+        column_name="enrichment_version",
+        ddl="ALTER TABLE session_profiles ADD COLUMN enrichment_version INTEGER NOT NULL DEFAULT 1",
+    ),
+    SchemaColumnExtensionDescriptor(
+        table_name="session_profiles",
+        column_name="enrichment_family",
+        ddl=(
+            "ALTER TABLE session_profiles ADD COLUMN enrichment_family "
+            "TEXT NOT NULL DEFAULT 'scored_session_enrichment'"
+        ),
+    ),
+    SchemaColumnExtensionDescriptor(
+        table_name="session_profiles",
+        column_name="inference_version",
+        ddl="ALTER TABLE session_profiles ADD COLUMN inference_version INTEGER NOT NULL DEFAULT 1",
+    ),
+    SchemaColumnExtensionDescriptor(
+        table_name="session_profiles",
+        column_name="inference_family",
+        ddl=(
+            "ALTER TABLE session_profiles ADD COLUMN inference_family "
+            "TEXT NOT NULL DEFAULT 'heuristic_session_semantics'"
+        ),
+    ),
+    SchemaBackfillDescriptor(
+        table_name="session_profiles",
+        ddl="""
+                UPDATE session_profiles
+                SET evidence_search_text = search_text
+                WHERE TRIM(COALESCE(evidence_search_text, '')) = ''
+                """,
+    ),
+    SchemaBackfillDescriptor(
+        table_name="session_profiles",
+        ddl="""
+                UPDATE session_profiles
+                SET inference_search_text = search_text
+                WHERE TRIM(COALESCE(inference_search_text, '')) = ''
+                """,
+    ),
+    SchemaBackfillDescriptor(
+        table_name="session_profiles",
+        ddl="""
+                UPDATE session_profiles
+                SET enrichment_search_text = inference_search_text
+                WHERE TRIM(COALESCE(enrichment_search_text, '')) = ''
+                """,
+    ),
+    SchemaColumnExtensionDescriptor(
+        table_name="session_work_events",
+        column_name="start_time",
+        ddl="ALTER TABLE session_work_events ADD COLUMN start_time TEXT",
+    ),
+    SchemaColumnExtensionDescriptor(
+        table_name="session_work_events",
+        column_name="end_time",
+        ddl="ALTER TABLE session_work_events ADD COLUMN end_time TEXT",
+    ),
+    SchemaColumnExtensionDescriptor(
+        table_name="session_work_events",
+        column_name="duration_ms",
+        ddl="ALTER TABLE session_work_events ADD COLUMN duration_ms INTEGER NOT NULL DEFAULT 0",
+    ),
+    SchemaColumnExtensionDescriptor(
+        table_name="session_work_events",
+        column_name="canonical_session_date",
+        ddl="ALTER TABLE session_work_events ADD COLUMN canonical_session_date TEXT",
+    ),
+    SchemaColumnExtensionDescriptor(
+        table_name="session_work_events",
+        column_name="evidence_payload_json",
+        ddl="ALTER TABLE session_work_events ADD COLUMN evidence_payload_json TEXT NOT NULL DEFAULT '{}'",
+    ),
+    SchemaColumnExtensionDescriptor(
+        table_name="session_work_events",
+        column_name="inference_payload_json",
+        ddl="ALTER TABLE session_work_events ADD COLUMN inference_payload_json TEXT NOT NULL DEFAULT '{}'",
+    ),
+    SchemaColumnExtensionDescriptor(
+        table_name="session_work_events",
+        column_name="inference_version",
+        ddl="ALTER TABLE session_work_events ADD COLUMN inference_version INTEGER NOT NULL DEFAULT 1",
+    ),
+    SchemaColumnExtensionDescriptor(
+        table_name="session_work_events",
+        column_name="inference_family",
+        ddl=(
+            "ALTER TABLE session_work_events ADD COLUMN inference_family "
+            "TEXT NOT NULL DEFAULT 'heuristic_session_semantics'"
+        ),
+    ),
+    SchemaColumnExtensionDescriptor(
+        table_name="session_phases",
+        column_name="confidence",
+        ddl="ALTER TABLE session_phases ADD COLUMN confidence REAL NOT NULL DEFAULT 0",
+    ),
+    SchemaColumnExtensionDescriptor(
+        table_name="session_phases",
+        column_name="evidence_reasons_json",
+        ddl="ALTER TABLE session_phases ADD COLUMN evidence_reasons_json TEXT NOT NULL DEFAULT '[]'",
+    ),
+    SchemaColumnExtensionDescriptor(
+        table_name="session_phases",
+        column_name="evidence_payload_json",
+        ddl="ALTER TABLE session_phases ADD COLUMN evidence_payload_json TEXT NOT NULL DEFAULT '{}'",
+    ),
+    SchemaColumnExtensionDescriptor(
+        table_name="session_phases",
+        column_name="inference_payload_json",
+        ddl="ALTER TABLE session_phases ADD COLUMN inference_payload_json TEXT NOT NULL DEFAULT '{}'",
+    ),
+    SchemaColumnExtensionDescriptor(
+        table_name="session_phases",
+        column_name="inference_version",
+        ddl="ALTER TABLE session_phases ADD COLUMN inference_version INTEGER NOT NULL DEFAULT 1",
+    ),
+    SchemaColumnExtensionDescriptor(
+        table_name="session_phases",
+        column_name="inference_family",
+        ddl=(
+            "ALTER TABLE session_phases ADD COLUMN inference_family TEXT NOT NULL DEFAULT 'heuristic_session_semantics'"
+        ),
+    ),
+    SchemaScriptExtensionDescriptor(_SESSION_PRODUCT_DDL),
+)
+
+
+def schema_extension_snapshot_tables() -> tuple[str, ...]:
+    """Tables that current-schema extension planning must inspect."""
+    table_names: dict[str, None] = {}
+    for descriptor in _SCHEMA_EXTENSION_DESCRIPTORS:
+        for table_name in descriptor.snapshot_tables():
+            table_names.setdefault(table_name, None)
+    return tuple(table_names)
+
+
+def schema_extension_snapshot_indexes() -> tuple[str, ...]:
+    """Indexes that current-schema extension planning must inspect."""
+    index_names: dict[str, None] = {}
+    for descriptor in _SCHEMA_EXTENSION_DESCRIPTORS:
+        for index_name in descriptor.snapshot_indexes():
+            index_names.setdefault(index_name, None)
+    return tuple(index_names)
 
 
 def schema_version_mismatch_message(current_version: int) -> str:
@@ -95,193 +515,10 @@ def build_current_schema_extension_plan(snapshot: SchemaSnapshot) -> SchemaExten
     statements: list[str] = []
     scripts: list[str] = []
 
-    if snapshot.has_table("raw_conversations") and "blob_size" not in snapshot.columns("raw_conversations"):
-        statements.append("ALTER TABLE raw_conversations ADD COLUMN blob_size INTEGER NOT NULL DEFAULT 0")
+    for descriptor in _SCHEMA_EXTENSION_DESCRIPTORS:
+        statements.extend(descriptor.statements(snapshot))
+        scripts.extend(descriptor.scripts(snapshot))
 
-    if snapshot.has_table("raw_conversations"):
-        existing_index_sql = snapshot.sql_for_index("idx_raw_conv_source_mtime")
-        if existing_index_sql is None or _normalize_sql(existing_index_sql) != _normalize_sql(
-            _RAW_SOURCE_MTIME_INDEX_SQL
-        ):
-            if existing_index_sql is not None:
-                statements.append("DROP INDEX IF EXISTS idx_raw_conv_source_mtime")
-            statements.append(_RAW_SOURCE_MTIME_INDEX_SQL)
-
-    if snapshot.has_table("content_blocks"):
-        statements.append(
-            """
-            CREATE INDEX IF NOT EXISTS idx_content_blocks_tool_use_conversation
-            ON content_blocks(conversation_id)
-            WHERE type = 'tool_use'
-            """
-        )
-
-    if snapshot.has_table("attachments"):
-        statements.extend(
-            (
-                """
-                CREATE INDEX IF NOT EXISTS idx_attachments_provider_meta_id
-                ON attachments(json_extract(provider_meta, '$.id'))
-                WHERE provider_meta IS NOT NULL
-                """,
-                """
-                CREATE INDEX IF NOT EXISTS idx_attachments_provider_meta_provider_id
-                ON attachments(json_extract(provider_meta, '$.provider_id'))
-                WHERE provider_meta IS NOT NULL
-                """,
-                """
-                CREATE INDEX IF NOT EXISTS idx_attachments_provider_meta_file_id
-                ON attachments(json_extract(provider_meta, '$.fileId'))
-                WHERE provider_meta IS NOT NULL
-                """,
-                """
-                CREATE INDEX IF NOT EXISTS idx_attachments_provider_meta_drive_id
-                ON attachments(json_extract(provider_meta, '$.driveId'))
-                WHERE provider_meta IS NOT NULL
-                """,
-            )
-        )
-
-    if snapshot.has_table("attachment_refs"):
-        statements.extend(
-            (
-                """
-                CREATE INDEX IF NOT EXISTS idx_attachment_refs_provider_meta_id
-                ON attachment_refs(json_extract(provider_meta, '$.id'))
-                WHERE provider_meta IS NOT NULL
-                """,
-                """
-                CREATE INDEX IF NOT EXISTS idx_attachment_refs_provider_meta_provider_id
-                ON attachment_refs(json_extract(provider_meta, '$.provider_id'))
-                WHERE provider_meta IS NOT NULL
-                """,
-                """
-                CREATE INDEX IF NOT EXISTS idx_attachment_refs_provider_meta_file_id
-                ON attachment_refs(json_extract(provider_meta, '$.fileId'))
-                WHERE provider_meta IS NOT NULL
-                """,
-                """
-                CREATE INDEX IF NOT EXISTS idx_attachment_refs_provider_meta_drive_id
-                ON attachment_refs(json_extract(provider_meta, '$.driveId'))
-                WHERE provider_meta IS NOT NULL
-                """,
-            )
-        )
-
-    scripts.extend((_ARTIFACT_OBSERVATION_DDL, _PUBLICATION_DDL, _ACTION_EVENT_DDL))
-    if snapshot.has_table("action_events") and "materializer_version" not in snapshot.columns("action_events"):
-        statements.append("ALTER TABLE action_events ADD COLUMN materializer_version INTEGER NOT NULL DEFAULT 1")
-    scripts.append(_ACTION_FTS_DDL)
-
-    if snapshot.has_table("session_profiles"):
-        session_profile_columns = snapshot.columns("session_profiles")
-        if "canonical_session_date" not in session_profile_columns:
-            statements.append("ALTER TABLE session_profiles ADD COLUMN canonical_session_date TEXT")
-        if "last_message_at" not in session_profile_columns:
-            statements.append("ALTER TABLE session_profiles ADD COLUMN last_message_at TEXT")
-        if "substantive_count" not in session_profile_columns:
-            statements.append("ALTER TABLE session_profiles ADD COLUMN substantive_count INTEGER NOT NULL DEFAULT 0")
-        if "attachment_count" not in session_profile_columns:
-            statements.append("ALTER TABLE session_profiles ADD COLUMN attachment_count INTEGER NOT NULL DEFAULT 0")
-        if "phase_count" not in session_profile_columns:
-            statements.append("ALTER TABLE session_profiles ADD COLUMN phase_count INTEGER NOT NULL DEFAULT 0")
-        if "engaged_duration_ms" not in session_profile_columns:
-            statements.append("ALTER TABLE session_profiles ADD COLUMN engaged_duration_ms INTEGER NOT NULL DEFAULT 0")
-        if "cost_is_estimated" not in session_profile_columns:
-            statements.append("ALTER TABLE session_profiles ADD COLUMN cost_is_estimated INTEGER NOT NULL DEFAULT 0")
-        if "evidence_payload_json" not in session_profile_columns:
-            statements.append(
-                "ALTER TABLE session_profiles ADD COLUMN evidence_payload_json TEXT NOT NULL DEFAULT '{}'"
-            )
-        if "inference_payload_json" not in session_profile_columns:
-            statements.append(
-                "ALTER TABLE session_profiles ADD COLUMN inference_payload_json TEXT NOT NULL DEFAULT '{}'"
-            )
-        if "evidence_search_text" not in session_profile_columns:
-            statements.append("ALTER TABLE session_profiles ADD COLUMN evidence_search_text TEXT NOT NULL DEFAULT ''")
-        if "inference_search_text" not in session_profile_columns:
-            statements.append("ALTER TABLE session_profiles ADD COLUMN inference_search_text TEXT NOT NULL DEFAULT ''")
-        if "enrichment_payload_json" not in session_profile_columns:
-            statements.append(
-                "ALTER TABLE session_profiles ADD COLUMN enrichment_payload_json TEXT NOT NULL DEFAULT '{}'"
-            )
-        if "enrichment_search_text" not in session_profile_columns:
-            statements.append("ALTER TABLE session_profiles ADD COLUMN enrichment_search_text TEXT NOT NULL DEFAULT ''")
-        if "enrichment_version" not in session_profile_columns:
-            statements.append("ALTER TABLE session_profiles ADD COLUMN enrichment_version INTEGER NOT NULL DEFAULT 1")
-        if "enrichment_family" not in session_profile_columns:
-            statements.append(
-                "ALTER TABLE session_profiles ADD COLUMN enrichment_family TEXT NOT NULL DEFAULT 'scored_session_enrichment'"
-            )
-        if "inference_version" not in session_profile_columns:
-            statements.append("ALTER TABLE session_profiles ADD COLUMN inference_version INTEGER NOT NULL DEFAULT 1")
-        if "inference_family" not in session_profile_columns:
-            statements.append(
-                "ALTER TABLE session_profiles ADD COLUMN inference_family TEXT NOT NULL DEFAULT 'heuristic_session_semantics'"
-            )
-        statements.extend(
-            (
-                """
-                UPDATE session_profiles
-                SET evidence_search_text = search_text
-                WHERE TRIM(COALESCE(evidence_search_text, '')) = ''
-                """,
-                """
-                UPDATE session_profiles
-                SET inference_search_text = search_text
-                WHERE TRIM(COALESCE(inference_search_text, '')) = ''
-                """,
-                """
-                UPDATE session_profiles
-                SET enrichment_search_text = inference_search_text
-                WHERE TRIM(COALESCE(enrichment_search_text, '')) = ''
-                """,
-            )
-        )
-
-    if snapshot.has_table("session_work_events"):
-        session_work_event_columns = snapshot.columns("session_work_events")
-        if "start_time" not in session_work_event_columns:
-            statements.append("ALTER TABLE session_work_events ADD COLUMN start_time TEXT")
-        if "end_time" not in session_work_event_columns:
-            statements.append("ALTER TABLE session_work_events ADD COLUMN end_time TEXT")
-        if "duration_ms" not in session_work_event_columns:
-            statements.append("ALTER TABLE session_work_events ADD COLUMN duration_ms INTEGER NOT NULL DEFAULT 0")
-        if "canonical_session_date" not in session_work_event_columns:
-            statements.append("ALTER TABLE session_work_events ADD COLUMN canonical_session_date TEXT")
-        if "evidence_payload_json" not in session_work_event_columns:
-            statements.append(
-                "ALTER TABLE session_work_events ADD COLUMN evidence_payload_json TEXT NOT NULL DEFAULT '{}'"
-            )
-        if "inference_payload_json" not in session_work_event_columns:
-            statements.append(
-                "ALTER TABLE session_work_events ADD COLUMN inference_payload_json TEXT NOT NULL DEFAULT '{}'"
-            )
-        if "inference_version" not in session_work_event_columns:
-            statements.append("ALTER TABLE session_work_events ADD COLUMN inference_version INTEGER NOT NULL DEFAULT 1")
-        if "inference_family" not in session_work_event_columns:
-            statements.append(
-                "ALTER TABLE session_work_events ADD COLUMN inference_family TEXT NOT NULL DEFAULT 'heuristic_session_semantics'"
-            )
-
-    if snapshot.has_table("session_phases"):
-        session_phase_columns = snapshot.columns("session_phases")
-        if "confidence" not in session_phase_columns:
-            statements.append("ALTER TABLE session_phases ADD COLUMN confidence REAL NOT NULL DEFAULT 0")
-        if "evidence_reasons_json" not in session_phase_columns:
-            statements.append("ALTER TABLE session_phases ADD COLUMN evidence_reasons_json TEXT NOT NULL DEFAULT '[]'")
-        if "evidence_payload_json" not in session_phase_columns:
-            statements.append("ALTER TABLE session_phases ADD COLUMN evidence_payload_json TEXT NOT NULL DEFAULT '{}'")
-        if "inference_payload_json" not in session_phase_columns:
-            statements.append("ALTER TABLE session_phases ADD COLUMN inference_payload_json TEXT NOT NULL DEFAULT '{}'")
-        if "inference_version" not in session_phase_columns:
-            statements.append("ALTER TABLE session_phases ADD COLUMN inference_version INTEGER NOT NULL DEFAULT 1")
-        if "inference_family" not in session_phase_columns:
-            statements.append(
-                "ALTER TABLE session_phases ADD COLUMN inference_family TEXT NOT NULL DEFAULT 'heuristic_session_semantics'"
-            )
-
-    scripts.append(_SESSION_PRODUCT_DDL)
     return SchemaExtensionPlan(statements=tuple(statements), scripts=tuple(scripts))
 
 
@@ -306,16 +543,7 @@ def capture_schema_snapshot(conn: sqlite3.Connection) -> SchemaSnapshot:
     table_columns: dict[str, frozenset[str]] = {}
     index_sql: dict[str, str | None] = {}
 
-    for table_name in (
-        "raw_conversations",
-        "attachments",
-        "attachment_refs",
-        "content_blocks",
-        "action_events",
-        "session_profiles",
-        "session_work_events",
-        "session_phases",
-    ):
+    for table_name in schema_extension_snapshot_tables():
         row = conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
             (table_name,),
@@ -325,10 +553,9 @@ def capture_schema_snapshot(conn: sqlite3.Connection) -> SchemaSnapshot:
         columns = {item[1] for item in conn.execute(f"PRAGMA table_info({table_name})").fetchall()}
         table_columns[table_name] = frozenset(columns)
 
-    row = conn.execute(
-        "SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_raw_conv_source_mtime'"
-    ).fetchone()
-    index_sql["idx_raw_conv_source_mtime"] = row[0] if row and isinstance(row[0], str) else None
+    for index_name in schema_extension_snapshot_indexes():
+        row = conn.execute("SELECT sql FROM sqlite_master WHERE type='index' AND name=?", (index_name,)).fetchone()
+        index_sql[index_name] = row[0] if row and isinstance(row[0], str) else None
     return SchemaSnapshot(current_version=current_version, table_columns=table_columns, index_sql=index_sql)
 
 
@@ -339,16 +566,7 @@ async def capture_schema_snapshot_async(conn: aiosqlite.Connection) -> SchemaSna
     table_columns: dict[str, frozenset[str]] = {}
     index_sql: dict[str, str | None] = {}
 
-    for table_name in (
-        "raw_conversations",
-        "attachments",
-        "attachment_refs",
-        "content_blocks",
-        "action_events",
-        "session_profiles",
-        "session_work_events",
-        "session_phases",
-    ):
+    for table_name in schema_extension_snapshot_tables():
         cursor = await conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
             (table_name,),
@@ -360,9 +578,10 @@ async def capture_schema_snapshot_async(conn: aiosqlite.Connection) -> SchemaSna
         columns = {item[1] for item in await cursor.fetchall()}
         table_columns[table_name] = frozenset(columns)
 
-    cursor = await conn.execute("SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_raw_conv_source_mtime'")
-    row = await cursor.fetchone()
-    index_sql["idx_raw_conv_source_mtime"] = row[0] if row and isinstance(row[0], str) else None
+    for index_name in schema_extension_snapshot_indexes():
+        cursor = await conn.execute("SELECT sql FROM sqlite_master WHERE type='index' AND name=?", (index_name,))
+        row = await cursor.fetchone()
+        index_sql[index_name] = row[0] if row and isinstance(row[0], str) else None
     return SchemaSnapshot(current_version=current_version, table_columns=table_columns, index_sql=index_sql)
 
 
@@ -395,8 +614,12 @@ async def ensure_vec0_table_async(conn: aiosqlite.Connection) -> None:
 __all__ = [
     "SCHEMA_DDL",
     "SCHEMA_VERSION",
+    "SchemaBackfillDescriptor",
     "SchemaBootstrapDecision",
+    "SchemaColumnExtensionDescriptor",
     "SchemaExtensionPlan",
+    "SchemaIndexExtensionDescriptor",
+    "SchemaScriptExtensionDescriptor",
     "SchemaSnapshot",
     "apply_schema_extension_plan",
     "apply_schema_extension_plan_async",
@@ -407,5 +630,7 @@ __all__ = [
     "decide_schema_bootstrap",
     "ensure_vec0_table",
     "ensure_vec0_table_async",
+    "schema_extension_snapshot_indexes",
+    "schema_extension_snapshot_tables",
     "schema_version_mismatch_message",
 ]

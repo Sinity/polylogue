@@ -28,8 +28,13 @@ from polylogue.storage.backends.connection_profile import (
 )
 from polylogue.storage.backends.schema import SCHEMA_VERSION, _ensure_schema
 from polylogue.storage.backends.schema_bootstrap import (
+    SchemaColumnExtensionDescriptor,
+    SchemaIndexExtensionDescriptor,
     SchemaSnapshot,
+    build_current_schema_extension_plan,
     decide_schema_bootstrap,
+    schema_extension_snapshot_indexes,
+    schema_extension_snapshot_tables,
 )
 from polylogue.storage.embedding_stats_models import EmbeddingStatsSnapshot
 from polylogue.storage.query_models import ConversationRecordQuery
@@ -117,6 +122,103 @@ def test_schema_bootstrap_decision_rejects_unsupported_version() -> None:
 
     assert exc_info.type.__name__ == "DatabaseError"
     assert "schema version" in str(exc_info.value).lower()
+
+
+def test_schema_extension_descriptors_detect_missing_columns_and_indexes() -> None:
+    """Descriptor expansion should be table-gated and idempotent."""
+    column_descriptor = SchemaColumnExtensionDescriptor(
+        table_name="demo",
+        column_name="extra",
+        ddl="ALTER TABLE demo ADD COLUMN extra TEXT",
+    )
+    missing_column_snapshot = SchemaSnapshot(
+        current_version=SCHEMA_VERSION,
+        table_columns={"demo": frozenset({"id"})},
+        index_sql={},
+    )
+    current_column_snapshot = SchemaSnapshot(
+        current_version=SCHEMA_VERSION,
+        table_columns={"demo": frozenset({"id", "extra"})},
+        index_sql={},
+    )
+    absent_table_snapshot = SchemaSnapshot(current_version=SCHEMA_VERSION, table_columns={}, index_sql={})
+
+    assert column_descriptor.statements(missing_column_snapshot) == ("ALTER TABLE demo ADD COLUMN extra TEXT",)
+    assert column_descriptor.statements(current_column_snapshot) == ()
+    assert column_descriptor.statements(absent_table_snapshot) == ()
+
+    index_descriptor = SchemaIndexExtensionDescriptor(
+        table_name="demo",
+        index_name="idx_demo_id",
+        ddl="CREATE INDEX IF NOT EXISTS idx_demo_id ON demo(id)",
+        replace_on_drift=True,
+    )
+    missing_index_snapshot = SchemaSnapshot(
+        current_version=SCHEMA_VERSION,
+        table_columns={"demo": frozenset({"id"})},
+        index_sql={"idx_demo_id": None},
+    )
+    current_index_snapshot = SchemaSnapshot(
+        current_version=SCHEMA_VERSION,
+        table_columns={"demo": frozenset({"id"})},
+        index_sql={"idx_demo_id": "CREATE INDEX idx_demo_id ON demo(id)"},
+    )
+    drifted_index_snapshot = SchemaSnapshot(
+        current_version=SCHEMA_VERSION,
+        table_columns={"demo": frozenset({"id", "other_id"})},
+        index_sql={"idx_demo_id": "CREATE INDEX idx_demo_id ON demo(other_id)"},
+    )
+
+    assert index_descriptor.statements(absent_table_snapshot) == ()
+    assert index_descriptor.statements(missing_index_snapshot) == (
+        "CREATE INDEX IF NOT EXISTS idx_demo_id ON demo(id)",
+    )
+    assert index_descriptor.statements(current_index_snapshot) == ()
+    assert index_descriptor.statements(drifted_index_snapshot) == (
+        "DROP INDEX IF EXISTS idx_demo_id",
+        "CREATE INDEX IF NOT EXISTS idx_demo_id ON demo(id)",
+    )
+
+
+def test_schema_extension_catalog_declares_snapshot_scope() -> None:
+    """Snapshot capture should follow the descriptor catalog instead of ad hoc lists."""
+    table_names = schema_extension_snapshot_tables()
+    index_names = schema_extension_snapshot_indexes()
+
+    assert len(table_names) == len(set(table_names))
+    assert len(index_names) == len(set(index_names))
+    assert {"raw_conversations", "attachments", "session_profiles", "session_phases"}.issubset(table_names)
+    assert {
+        "idx_raw_conv_source_mtime",
+        "idx_content_blocks_tool_use_conversation",
+        "idx_attachments_provider_meta_file_id",
+        "idx_attachment_refs_provider_meta_drive_id",
+    }.issubset(index_names)
+
+
+def test_schema_extension_plan_expands_catalog_descriptors() -> None:
+    """Current-version extension planning should expand descriptor facts into SQL."""
+    snapshot = SchemaSnapshot(
+        current_version=SCHEMA_VERSION,
+        table_columns={
+            "raw_conversations": frozenset({"raw_id", "source_path", "file_mtime"}),
+            "content_blocks": frozenset({"conversation_id", "type"}),
+            "attachments": frozenset({"provider_meta"}),
+            "session_profiles": frozenset({"conversation_id", "search_text"}),
+        },
+        index_sql=dict.fromkeys(schema_extension_snapshot_indexes()),
+    )
+
+    plan = build_current_schema_extension_plan(snapshot)
+
+    assert "ALTER TABLE raw_conversations ADD COLUMN blob_size INTEGER NOT NULL DEFAULT 0" in plan.statements
+    assert any("idx_content_blocks_tool_use_conversation" in statement for statement in plan.statements)
+    assert any("idx_attachments_provider_meta_id" in statement for statement in plan.statements)
+    assert any(
+        "ALTER TABLE session_profiles ADD COLUMN evidence_search_text" in statement for statement in plan.statements
+    )
+    assert any("UPDATE session_profiles" in statement for statement in plan.statements)
+    assert len(plan.scripts) == 5
 
 
 def test_ensure_schema_adds_blob_size_to_legacy_v1_raw_table(tmp_path: Path) -> None:
