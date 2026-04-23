@@ -3,41 +3,168 @@
 from __future__ import annotations
 
 import sqlite3
+from dataclasses import dataclass
 from typing import TypeAlias
 
 import aiosqlite
 
 from polylogue.storage.session_product_aggregates import _PROFILE_BUCKET_DAY_SQL
-from polylogue.storage.session_product_runtime import SessionProductStatusSnapshot
+from polylogue.storage.session_product_runtime import SessionProductReadyFlag, SessionProductStatusSnapshot
 from polylogue.storage.store import SESSION_PRODUCT_MATERIALIZER_VERSION
 
 TablePresence: TypeAlias = dict[str, bool]
 StatusCounts: TypeAlias = dict[str, int]
+CountEquality: TypeAlias = tuple[str, str]
+
+
+@dataclass(frozen=True)
+class SessionProductTableDescriptor:
+    """Table presence and optional row-count query for product status."""
+
+    key: str
+    table_name: str
+    count_key: str | None = None
+    count_sql: str | None = None
+
+    @property
+    def exists_sql(self) -> str:
+        return f"SELECT name FROM sqlite_master WHERE type='table' AND name='{self.table_name}'"
+
+    def count_sync(self, conn: sqlite3.Connection, tables: TablePresence) -> tuple[str, int] | None:
+        if self.count_key is None:
+            return None
+        if not tables[self.key]:
+            return (self.count_key, 0)
+        return (self.count_key, _count_sync(conn, self.count_sql or f"SELECT COUNT(*) FROM {self.table_name}"))
+
+    async def count_async(self, conn: aiosqlite.Connection, tables: TablePresence) -> tuple[str, int] | None:
+        if self.count_key is None:
+            return None
+        if not tables[self.key]:
+            return (self.count_key, 0)
+        return (self.count_key, await _count_async(conn, self.count_sql or f"SELECT COUNT(*) FROM {self.table_name}"))
+
+
+@dataclass(frozen=True)
+class SessionProductFtsDescriptor:
+    """FTS projection counts, duplicate checks, and readiness predicate."""
+
+    table_key: str
+    table_name: str
+    count_key: str
+    duplicate_count_key: str
+    source_count_key: str
+    distinct_sql: str
+    duplicate_sql: str
+    ready_key: SessionProductReadyFlag
+
+    def counts_sync(
+        self,
+        conn: sqlite3.Connection,
+        tables: TablePresence,
+        counts: StatusCounts,
+        *,
+        verify_freshness: bool,
+    ) -> StatusCounts:
+        if verify_freshness and tables[self.table_key]:
+            indexed_count = _count_sync(conn, self.distinct_sql)
+            duplicate_count = _count_sync(conn, self.duplicate_sql)
+        else:
+            indexed_count = _table_count_sync(conn, tables[self.table_key], self.table_name)
+            duplicate_count = max(0, indexed_count - counts[self.source_count_key])
+        return {
+            self.count_key: indexed_count,
+            self.duplicate_count_key: duplicate_count,
+        }
+
+    async def counts_async(
+        self,
+        conn: aiosqlite.Connection,
+        tables: TablePresence,
+    ) -> StatusCounts:
+        if not tables[self.table_key]:
+            return {self.count_key: 0, self.duplicate_count_key: 0}
+        return {
+            self.count_key: await _count_async(conn, self.distinct_sql),
+            self.duplicate_count_key: await _count_async(conn, self.duplicate_sql),
+        }
+
+    def ready(self, tables: TablePresence, counts: StatusCounts) -> bool:
+        return (
+            tables[self.table_key]
+            and counts[self.count_key] == counts[self.source_count_key]
+            and counts[self.duplicate_count_key] == 0
+        )
+
+
+@dataclass(frozen=True)
+class SessionProductCountDescriptor:
+    """Status metric query with table/freshness gating and fallback semantics."""
+
+    count_key: str
+    sql: str
+    table_key: str | None = None
+    params: tuple[object, ...] = ()
+    requires_freshness: bool = False
+    fallback_count_key: str | None = None
+    fallback_value: int = 0
+
+    def _should_query(self, tables: TablePresence, *, verify_freshness: bool) -> bool:
+        if self.requires_freshness and not verify_freshness:
+            return False
+        return self.table_key is None or tables[self.table_key]
+
+    def _fallback(self, counts: StatusCounts) -> int:
+        if self.fallback_count_key is not None:
+            return counts[self.fallback_count_key]
+        return self.fallback_value
+
+    def count_sync(
+        self,
+        conn: sqlite3.Connection,
+        tables: TablePresence,
+        counts: StatusCounts,
+        *,
+        verify_freshness: bool,
+    ) -> tuple[str, int]:
+        if self._should_query(tables, verify_freshness=verify_freshness):
+            return (self.count_key, _count_sync(conn, self.sql, *self.params))
+        return (self.count_key, self._fallback(counts))
+
+    async def count_async(
+        self,
+        conn: aiosqlite.Connection,
+        tables: TablePresence,
+        counts: StatusCounts,
+        *,
+        verify_freshness: bool,
+    ) -> tuple[str, int]:
+        if self._should_query(tables, verify_freshness=verify_freshness):
+            return (self.count_key, await _count_async(conn, self.sql, *self.params))
+        return (self.count_key, self._fallback(counts))
+
+
+@dataclass(frozen=True)
+class SessionProductReadyDescriptor:
+    """Readiness predicate over a product table and named status counts."""
+
+    ready_key: SessionProductReadyFlag
+    table_key: str
+    equal_counts: tuple[CountEquality, ...] = ()
+    zero_counts: tuple[str, ...] = ()
+
+    def ready(self, tables: TablePresence, counts: StatusCounts) -> bool:
+        return (
+            tables[self.table_key]
+            and all(counts[left] == counts[right] for left, right in self.equal_counts)
+            and all(counts[key] == 0 for key in self.zero_counts)
+        )
+
 
 # ---------------------------------------------------------------------------
 # SQL constants for session-product status and drift checks
 # ---------------------------------------------------------------------------
 
-SESSION_PROFILES_EXISTS_SQL = "SELECT name FROM sqlite_master WHERE type='table' AND name='session_profiles'"
-SESSION_PROFILES_FTS_EXISTS_SQL = "SELECT name FROM sqlite_master WHERE type='table' AND name='session_profiles_fts'"
-SESSION_PROFILE_EVIDENCE_FTS_EXISTS_SQL = (
-    "SELECT name FROM sqlite_master WHERE type='table' AND name='session_profile_evidence_fts'"
-)
-SESSION_PROFILE_INFERENCE_FTS_EXISTS_SQL = (
-    "SELECT name FROM sqlite_master WHERE type='table' AND name='session_profile_inference_fts'"
-)
-SESSION_PROFILE_ENRICHMENT_FTS_EXISTS_SQL = (
-    "SELECT name FROM sqlite_master WHERE type='table' AND name='session_profile_enrichment_fts'"
-)
-SESSION_WORK_EVENTS_EXISTS_SQL = "SELECT name FROM sqlite_master WHERE type='table' AND name='session_work_events'"
-SESSION_WORK_EVENTS_FTS_EXISTS_SQL = (
-    "SELECT name FROM sqlite_master WHERE type='table' AND name='session_work_events_fts'"
-)
-SESSION_PHASES_EXISTS_SQL = "SELECT name FROM sqlite_master WHERE type='table' AND name='session_phases'"
-WORK_THREADS_EXISTS_SQL = "SELECT name FROM sqlite_master WHERE type='table' AND name='work_threads'"
-WORK_THREADS_FTS_EXISTS_SQL = "SELECT name FROM sqlite_master WHERE type='table' AND name='work_threads_fts'"
-SESSION_TAG_ROLLUPS_EXISTS_SQL = "SELECT name FROM sqlite_master WHERE type='table' AND name='session_tag_rollups'"
-DAY_SESSION_SUMMARIES_EXISTS_SQL = "SELECT name FROM sqlite_master WHERE type='table' AND name='day_session_summaries'"
 SESSION_PROFILE_COUNT_SQL = "SELECT COUNT(*) FROM session_profiles"
 SESSION_PROFILE_MERGED_FTS_DOC_COUNT_SQL = "SELECT COUNT(DISTINCT conversation_id) FROM session_profiles_fts"
 SESSION_PROFILE_MERGED_FTS_DUPLICATE_COUNT_SQL = (
@@ -239,20 +366,274 @@ SESSION_PROFILE_REPAIR_CANDIDATES_SQL = """
     ORDER BY c.conversation_id
 """
 
-_TABLE_SQLS = {
-    "session_profiles": SESSION_PROFILES_EXISTS_SQL,
-    "session_profiles_fts": SESSION_PROFILES_FTS_EXISTS_SQL,
-    "session_profile_evidence_fts": SESSION_PROFILE_EVIDENCE_FTS_EXISTS_SQL,
-    "session_profile_inference_fts": SESSION_PROFILE_INFERENCE_FTS_EXISTS_SQL,
-    "session_profile_enrichment_fts": SESSION_PROFILE_ENRICHMENT_FTS_EXISTS_SQL,
-    "session_work_events": SESSION_WORK_EVENTS_EXISTS_SQL,
-    "session_work_events_fts": SESSION_WORK_EVENTS_FTS_EXISTS_SQL,
-    "session_phases": SESSION_PHASES_EXISTS_SQL,
-    "work_threads": WORK_THREADS_EXISTS_SQL,
-    "work_threads_fts": WORK_THREADS_FTS_EXISTS_SQL,
-    "session_tag_rollups": SESSION_TAG_ROLLUPS_EXISTS_SQL,
-    "day_session_summaries": DAY_SESSION_SUMMARIES_EXISTS_SQL,
-}
+_TABLE_DESCRIPTORS: tuple[SessionProductTableDescriptor, ...] = (
+    SessionProductTableDescriptor(
+        key="session_profiles",
+        table_name="session_profiles",
+        count_key="profile_row_count",
+        count_sql=SESSION_PROFILE_COUNT_SQL,
+    ),
+    SessionProductTableDescriptor(
+        key="session_profiles_fts",
+        table_name="session_profiles_fts",
+    ),
+    SessionProductTableDescriptor(
+        key="session_profile_evidence_fts",
+        table_name="session_profile_evidence_fts",
+    ),
+    SessionProductTableDescriptor(
+        key="session_profile_inference_fts",
+        table_name="session_profile_inference_fts",
+    ),
+    SessionProductTableDescriptor(
+        key="session_profile_enrichment_fts",
+        table_name="session_profile_enrichment_fts",
+    ),
+    SessionProductTableDescriptor(
+        key="session_work_events",
+        table_name="session_work_events",
+        count_key="work_event_inference_count",
+        count_sql=SESSION_WORK_EVENT_COUNT_SQL,
+    ),
+    SessionProductTableDescriptor(
+        key="session_work_events_fts",
+        table_name="session_work_events_fts",
+    ),
+    SessionProductTableDescriptor(
+        key="session_phases",
+        table_name="session_phases",
+        count_key="phase_inference_count",
+        count_sql=SESSION_PHASE_COUNT_SQL,
+    ),
+    SessionProductTableDescriptor(
+        key="work_threads",
+        table_name="work_threads",
+        count_key="thread_count",
+        count_sql=WORK_THREAD_COUNT_SQL,
+    ),
+    SessionProductTableDescriptor(
+        key="work_threads_fts",
+        table_name="work_threads_fts",
+    ),
+    SessionProductTableDescriptor(
+        key="session_tag_rollups",
+        table_name="session_tag_rollups",
+        count_key="tag_rollup_count",
+        count_sql=SESSION_TAG_ROLLUP_COUNT_SQL,
+    ),
+    SessionProductTableDescriptor(
+        key="day_session_summaries",
+        table_name="day_session_summaries",
+        count_key="day_summary_count",
+        count_sql=DAY_SESSION_SUMMARY_COUNT_SQL,
+    ),
+)
+
+_FTS_DESCRIPTORS: tuple[SessionProductFtsDescriptor, ...] = (
+    SessionProductFtsDescriptor(
+        table_key="session_profiles_fts",
+        table_name="session_profiles_fts",
+        count_key="profile_merged_fts_count",
+        duplicate_count_key="profile_merged_fts_duplicate_count",
+        source_count_key="profile_row_count",
+        distinct_sql=SESSION_PROFILE_MERGED_FTS_DOC_COUNT_SQL,
+        duplicate_sql=SESSION_PROFILE_MERGED_FTS_DUPLICATE_COUNT_SQL,
+        ready_key="profile_merged_fts_ready",
+    ),
+    SessionProductFtsDescriptor(
+        table_key="session_profile_evidence_fts",
+        table_name="session_profile_evidence_fts",
+        count_key="profile_evidence_fts_count",
+        duplicate_count_key="profile_evidence_fts_duplicate_count",
+        source_count_key="profile_row_count",
+        distinct_sql=SESSION_PROFILE_EVIDENCE_FTS_DOC_COUNT_SQL,
+        duplicate_sql=SESSION_PROFILE_EVIDENCE_FTS_DUPLICATE_COUNT_SQL,
+        ready_key="profile_evidence_fts_ready",
+    ),
+    SessionProductFtsDescriptor(
+        table_key="session_profile_inference_fts",
+        table_name="session_profile_inference_fts",
+        count_key="profile_inference_fts_count",
+        duplicate_count_key="profile_inference_fts_duplicate_count",
+        source_count_key="profile_row_count",
+        distinct_sql=SESSION_PROFILE_INFERENCE_FTS_DOC_COUNT_SQL,
+        duplicate_sql=SESSION_PROFILE_INFERENCE_FTS_DUPLICATE_COUNT_SQL,
+        ready_key="profile_inference_fts_ready",
+    ),
+    SessionProductFtsDescriptor(
+        table_key="session_profile_enrichment_fts",
+        table_name="session_profile_enrichment_fts",
+        count_key="profile_enrichment_fts_count",
+        duplicate_count_key="profile_enrichment_fts_duplicate_count",
+        source_count_key="profile_row_count",
+        distinct_sql=SESSION_PROFILE_ENRICHMENT_FTS_DOC_COUNT_SQL,
+        duplicate_sql=SESSION_PROFILE_ENRICHMENT_FTS_DUPLICATE_COUNT_SQL,
+        ready_key="profile_enrichment_fts_ready",
+    ),
+    SessionProductFtsDescriptor(
+        table_key="session_work_events_fts",
+        table_name="session_work_events_fts",
+        count_key="work_event_inference_fts_count",
+        duplicate_count_key="work_event_inference_fts_duplicate_count",
+        source_count_key="work_event_inference_count",
+        distinct_sql=SESSION_WORK_EVENT_FTS_DOC_COUNT_SQL,
+        duplicate_sql=SESSION_WORK_EVENT_FTS_DUPLICATE_COUNT_SQL,
+        ready_key="work_event_inference_fts_ready",
+    ),
+    SessionProductFtsDescriptor(
+        table_key="work_threads_fts",
+        table_name="work_threads_fts",
+        count_key="thread_fts_count",
+        duplicate_count_key="thread_fts_duplicate_count",
+        source_count_key="thread_count",
+        distinct_sql=WORK_THREAD_FTS_DOC_COUNT_SQL,
+        duplicate_sql=WORK_THREAD_FTS_DUPLICATE_COUNT_SQL,
+        ready_key="threads_fts_ready",
+    ),
+)
+
+_COUNT_DESCRIPTORS: tuple[SessionProductCountDescriptor, ...] = (
+    SessionProductCountDescriptor(
+        count_key="missing_profile_row_count",
+        table_key="session_profiles",
+        sql=MISSING_SESSION_PROFILE_COUNT_SQL,
+        fallback_count_key="total_conversations",
+    ),
+    SessionProductCountDescriptor(
+        count_key="stale_profile_row_count",
+        table_key="session_profiles",
+        sql=STALE_SESSION_PROFILE_COUNT_SQL,
+        params=(SESSION_PRODUCT_MATERIALIZER_VERSION,),
+        requires_freshness=True,
+    ),
+    SessionProductCountDescriptor(
+        count_key="orphan_profile_row_count",
+        table_key="session_profiles",
+        sql=ORPHAN_SESSION_PROFILE_COUNT_SQL,
+        requires_freshness=True,
+    ),
+    SessionProductCountDescriptor(
+        count_key="expected_work_event_inference_count",
+        table_key="session_profiles",
+        sql=EXPECTED_WORK_EVENT_COUNT_SQL,
+    ),
+    SessionProductCountDescriptor(
+        count_key="expected_phase_inference_count",
+        table_key="session_profiles",
+        sql=EXPECTED_PHASE_COUNT_SQL,
+    ),
+    SessionProductCountDescriptor(
+        count_key="stale_work_event_inference_count",
+        table_key="session_work_events",
+        sql=STALE_WORK_EVENT_COUNT_SQL,
+        params=(SESSION_PRODUCT_MATERIALIZER_VERSION,),
+        requires_freshness=True,
+    ),
+    SessionProductCountDescriptor(
+        count_key="orphan_work_event_inference_count",
+        table_key="session_work_events",
+        sql=ORPHAN_SESSION_WORK_EVENT_COUNT_SQL,
+        requires_freshness=True,
+    ),
+    SessionProductCountDescriptor(
+        count_key="stale_phase_inference_count",
+        table_key="session_phases",
+        sql=STALE_SESSION_PHASE_COUNT_SQL,
+        params=(SESSION_PRODUCT_MATERIALIZER_VERSION,),
+        requires_freshness=True,
+    ),
+    SessionProductCountDescriptor(
+        count_key="orphan_phase_inference_count",
+        table_key="session_phases",
+        sql=ORPHAN_SESSION_PHASE_COUNT_SQL,
+        requires_freshness=True,
+    ),
+    SessionProductCountDescriptor(
+        count_key="stale_thread_count",
+        table_key="work_threads",
+        sql=STALE_WORK_THREAD_COUNT_SQL,
+        params=(SESSION_PRODUCT_MATERIALIZER_VERSION,),
+        requires_freshness=True,
+    ),
+    SessionProductCountDescriptor(
+        count_key="orphan_thread_count",
+        table_key="work_threads",
+        sql=ORPHAN_WORK_THREAD_COUNT_SQL,
+        requires_freshness=True,
+    ),
+    SessionProductCountDescriptor(
+        count_key="expected_tag_rollup_count",
+        table_key="session_profiles",
+        sql=EXPECTED_SESSION_TAG_ROLLUP_COUNT_SQL,
+        requires_freshness=True,
+        fallback_count_key="tag_rollup_count",
+    ),
+    SessionProductCountDescriptor(
+        count_key="stale_tag_rollup_count",
+        table_key="session_tag_rollups",
+        sql=STALE_SESSION_TAG_ROLLUP_COUNT_SQL,
+        params=(SESSION_PRODUCT_MATERIALIZER_VERSION,),
+        requires_freshness=True,
+    ),
+    SessionProductCountDescriptor(
+        count_key="expected_day_summary_count",
+        table_key="session_profiles",
+        sql=EXPECTED_DAY_SESSION_SUMMARY_COUNT_SQL,
+        requires_freshness=True,
+        fallback_count_key="day_summary_count",
+    ),
+    SessionProductCountDescriptor(
+        count_key="stale_day_summary_count",
+        table_key="day_session_summaries",
+        sql=STALE_DAY_SESSION_SUMMARY_COUNT_SQL,
+        params=(SESSION_PRODUCT_MATERIALIZER_VERSION,),
+        requires_freshness=True,
+    ),
+)
+
+_READY_DESCRIPTORS: tuple[SessionProductReadyDescriptor, ...] = (
+    SessionProductReadyDescriptor(
+        ready_key="profile_rows_ready",
+        table_key="session_profiles",
+        zero_counts=("missing_profile_row_count", "stale_profile_row_count", "orphan_profile_row_count"),
+    ),
+    SessionProductReadyDescriptor(
+        ready_key="work_event_inference_rows_ready",
+        table_key="session_work_events",
+        equal_counts=(("work_event_inference_count", "expected_work_event_inference_count"),),
+        zero_counts=("stale_work_event_inference_count", "orphan_work_event_inference_count"),
+    ),
+    SessionProductReadyDescriptor(
+        ready_key="phase_inference_rows_ready",
+        table_key="session_phases",
+        equal_counts=(("phase_inference_count", "expected_phase_inference_count"),),
+        zero_counts=("stale_phase_inference_count", "orphan_phase_inference_count"),
+    ),
+    SessionProductReadyDescriptor(
+        ready_key="threads_ready",
+        table_key="work_threads",
+        equal_counts=(("thread_count", "root_threads"),),
+        zero_counts=("stale_thread_count", "orphan_thread_count"),
+    ),
+    SessionProductReadyDescriptor(
+        ready_key="tag_rollups_ready",
+        table_key="session_tag_rollups",
+        equal_counts=(("tag_rollup_count", "expected_tag_rollup_count"),),
+        zero_counts=("stale_tag_rollup_count",),
+    ),
+    SessionProductReadyDescriptor(
+        ready_key="day_summaries_ready",
+        table_key="day_session_summaries",
+        equal_counts=(("day_summary_count", "expected_day_summary_count"),),
+        zero_counts=("stale_day_summary_count",),
+    ),
+    SessionProductReadyDescriptor(
+        ready_key="week_summaries_ready",
+        table_key="day_session_summaries",
+        equal_counts=(("day_summary_count", "expected_day_summary_count"),),
+        zero_counts=("stale_day_summary_count",),
+    ),
+)
 
 
 def _to_int(row: tuple[object, ...] | sqlite3.Row | None) -> int:
@@ -265,13 +646,13 @@ def _to_int(row: tuple[object, ...] | sqlite3.Row | None) -> int:
 
 
 def _tables_sync(conn: sqlite3.Connection) -> TablePresence:
-    return {key: bool(conn.execute(sql).fetchone()) for key, sql in _TABLE_SQLS.items()}
+    return {descriptor.key: bool(conn.execute(descriptor.exists_sql).fetchone()) for descriptor in _TABLE_DESCRIPTORS}
 
 
 async def _tables_async(conn: aiosqlite.Connection) -> TablePresence:
     tables: TablePresence = {}
-    for key, sql in _TABLE_SQLS.items():
-        tables[key] = bool(await (await conn.execute(sql)).fetchone())
+    for descriptor in _TABLE_DESCRIPTORS:
+        tables[descriptor.key] = bool(await (await conn.execute(descriptor.exists_sql)).fetchone())
     return tables
 
 
@@ -287,33 +668,42 @@ def _table_count_sync(conn: sqlite3.Connection, table_exists: bool, table_name: 
     return _to_int(conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()) if table_exists else 0
 
 
-def _sync_fts_doc_count(
+def _table_row_counts_sync(conn: sqlite3.Connection, tables: TablePresence) -> StatusCounts:
+    counts: StatusCounts = {}
+    for descriptor in _TABLE_DESCRIPTORS:
+        count = descriptor.count_sync(conn, tables)
+        if count is not None:
+            counts[count[0]] = count[1]
+    return counts
+
+
+async def _table_row_counts_async(conn: aiosqlite.Connection, tables: TablePresence) -> StatusCounts:
+    counts: StatusCounts = {}
+    for descriptor in _TABLE_DESCRIPTORS:
+        count = await descriptor.count_async(conn, tables)
+        if count is not None:
+            counts[count[0]] = count[1]
+    return counts
+
+
+def _fts_projection_counts_sync(
     conn: sqlite3.Connection,
     tables: TablePresence,
     *,
-    table_key: str,
-    table_name: str,
-    distinct_sql: str,
+    counts: StatusCounts,
     verify_freshness: bool,
-) -> int:
-    if verify_freshness and tables[table_key]:
-        return _count_sync(conn, distinct_sql)
-    return _table_count_sync(conn, tables[table_key], table_name)
+) -> StatusCounts:
+    projection_counts: StatusCounts = {}
+    for descriptor in _FTS_DESCRIPTORS:
+        projection_counts.update(descriptor.counts_sync(conn, tables, counts, verify_freshness=verify_freshness))
+    return projection_counts
 
 
-def _sync_fts_duplicate_count(
-    conn: sqlite3.Connection,
-    tables: TablePresence,
-    *,
-    table_key: str,
-    duplicate_sql: str,
-    indexed_count: int,
-    source_count: int,
-    verify_freshness: bool,
-) -> int:
-    if verify_freshness and tables[table_key]:
-        return _count_sync(conn, duplicate_sql)
-    return max(0, indexed_count - source_count)
+async def _fts_projection_counts_async(conn: aiosqlite.Connection, tables: TablePresence) -> StatusCounts:
+    projection_counts: StatusCounts = {}
+    for descriptor in _FTS_DESCRIPTORS:
+        projection_counts.update(await descriptor.counts_async(conn, tables))
+    return projection_counts
 
 
 def _materialized_counts_sync(
@@ -322,213 +712,29 @@ def _materialized_counts_sync(
     *,
     verify_freshness: bool,
 ) -> StatusCounts:
-    profile_row_count = _count_sync(conn, SESSION_PROFILE_COUNT_SQL) if tables["session_profiles"] else 0
-    thread_count = _count_sync(conn, WORK_THREAD_COUNT_SQL) if tables["work_threads"] else 0
     counts: StatusCounts = {
         "total_conversations": _count_sync(conn, TOTAL_CONVERSATIONS_SQL),
-        "root_threads": _count_sync(conn, ROOT_THREAD_COUNT_SQL) if verify_freshness else thread_count,
-        "profile_row_count": profile_row_count,
-        "work_event_inference_count": (
-            _count_sync(conn, SESSION_WORK_EVENT_COUNT_SQL) if tables["session_work_events"] else 0
-        ),
-        "phase_inference_count": _count_sync(conn, SESSION_PHASE_COUNT_SQL) if tables["session_phases"] else 0,
-        "thread_count": thread_count,
-        "tag_rollup_count": _count_sync(conn, SESSION_TAG_ROLLUP_COUNT_SQL) if tables["session_tag_rollups"] else 0,
-        "day_summary_count": _count_sync(conn, DAY_SESSION_SUMMARY_COUNT_SQL) if tables["day_session_summaries"] else 0,
     }
-    counts["profile_merged_fts_count"] = _sync_fts_doc_count(
-        conn,
-        tables,
-        table_key="session_profiles_fts",
-        table_name="session_profiles_fts",
-        distinct_sql=SESSION_PROFILE_MERGED_FTS_DOC_COUNT_SQL,
-        verify_freshness=verify_freshness,
-    )
-    counts["profile_evidence_fts_count"] = _sync_fts_doc_count(
-        conn,
-        tables,
-        table_key="session_profile_evidence_fts",
-        table_name="session_profile_evidence_fts",
-        distinct_sql=SESSION_PROFILE_EVIDENCE_FTS_DOC_COUNT_SQL,
-        verify_freshness=verify_freshness,
-    )
-    counts["profile_inference_fts_count"] = _sync_fts_doc_count(
-        conn,
-        tables,
-        table_key="session_profile_inference_fts",
-        table_name="session_profile_inference_fts",
-        distinct_sql=SESSION_PROFILE_INFERENCE_FTS_DOC_COUNT_SQL,
-        verify_freshness=verify_freshness,
-    )
-    counts["profile_enrichment_fts_count"] = _sync_fts_doc_count(
-        conn,
-        tables,
-        table_key="session_profile_enrichment_fts",
-        table_name="session_profile_enrichment_fts",
-        distinct_sql=SESSION_PROFILE_ENRICHMENT_FTS_DOC_COUNT_SQL,
-        verify_freshness=verify_freshness,
-    )
-    counts["work_event_inference_fts_count"] = _sync_fts_doc_count(
-        conn,
-        tables,
-        table_key="session_work_events_fts",
-        table_name="session_work_events_fts",
-        distinct_sql=SESSION_WORK_EVENT_FTS_DOC_COUNT_SQL,
-        verify_freshness=verify_freshness,
-    )
-    counts["thread_fts_count"] = _sync_fts_doc_count(
-        conn,
-        tables,
-        table_key="work_threads_fts",
-        table_name="work_threads_fts",
-        distinct_sql=WORK_THREAD_FTS_DOC_COUNT_SQL,
-        verify_freshness=verify_freshness,
-    )
+    counts.update(_table_row_counts_sync(conn, tables))
+    counts["root_threads"] = _count_sync(conn, ROOT_THREAD_COUNT_SQL) if verify_freshness else counts["thread_count"]
+    counts.update(_fts_projection_counts_sync(conn, tables, counts=counts, verify_freshness=verify_freshness))
     return counts
 
 
-def _sync_fts_duplicate_counts(
+def _descriptor_counts_sync(
     conn: sqlite3.Connection,
     tables: TablePresence,
     counts: StatusCounts,
     *,
     verify_freshness: bool,
 ) -> StatusCounts:
-    profile_row_count = counts["profile_row_count"]
-    return {
-        "profile_merged_fts_duplicate_count": _sync_fts_duplicate_count(
-            conn,
-            tables,
-            table_key="session_profiles_fts",
-            duplicate_sql=SESSION_PROFILE_MERGED_FTS_DUPLICATE_COUNT_SQL,
-            indexed_count=counts["profile_merged_fts_count"],
-            source_count=profile_row_count,
-            verify_freshness=verify_freshness,
-        ),
-        "profile_evidence_fts_duplicate_count": _sync_fts_duplicate_count(
-            conn,
-            tables,
-            table_key="session_profile_evidence_fts",
-            duplicate_sql=SESSION_PROFILE_EVIDENCE_FTS_DUPLICATE_COUNT_SQL,
-            indexed_count=counts["profile_evidence_fts_count"],
-            source_count=profile_row_count,
-            verify_freshness=verify_freshness,
-        ),
-        "profile_inference_fts_duplicate_count": _sync_fts_duplicate_count(
-            conn,
-            tables,
-            table_key="session_profile_inference_fts",
-            duplicate_sql=SESSION_PROFILE_INFERENCE_FTS_DUPLICATE_COUNT_SQL,
-            indexed_count=counts["profile_inference_fts_count"],
-            source_count=profile_row_count,
-            verify_freshness=verify_freshness,
-        ),
-        "profile_enrichment_fts_duplicate_count": _sync_fts_duplicate_count(
-            conn,
-            tables,
-            table_key="session_profile_enrichment_fts",
-            duplicate_sql=SESSION_PROFILE_ENRICHMENT_FTS_DUPLICATE_COUNT_SQL,
-            indexed_count=counts["profile_enrichment_fts_count"],
-            source_count=profile_row_count,
-            verify_freshness=verify_freshness,
-        ),
-        "work_event_inference_fts_duplicate_count": _sync_fts_duplicate_count(
-            conn,
-            tables,
-            table_key="session_work_events_fts",
-            duplicate_sql=SESSION_WORK_EVENT_FTS_DUPLICATE_COUNT_SQL,
-            indexed_count=counts["work_event_inference_fts_count"],
-            source_count=counts["work_event_inference_count"],
-            verify_freshness=verify_freshness,
-        ),
-        "thread_fts_duplicate_count": _sync_fts_duplicate_count(
-            conn,
-            tables,
-            table_key="work_threads_fts",
-            duplicate_sql=WORK_THREAD_FTS_DUPLICATE_COUNT_SQL,
-            indexed_count=counts["thread_fts_count"],
-            source_count=counts["thread_count"],
-            verify_freshness=verify_freshness,
-        ),
-    }
-
-
-def _sync_repair_counts(
-    conn: sqlite3.Connection,
-    tables: TablePresence,
-    counts: StatusCounts,
-    *,
-    verify_freshness: bool,
-) -> StatusCounts:
-    return {
-        "missing_profile_row_count": (
-            _count_sync(conn, MISSING_SESSION_PROFILE_COUNT_SQL)
-            if tables["session_profiles"]
-            else counts["total_conversations"]
-        ),
-        "stale_profile_row_count": (
-            _count_sync(conn, STALE_SESSION_PROFILE_COUNT_SQL, SESSION_PRODUCT_MATERIALIZER_VERSION)
-            if verify_freshness and tables["session_profiles"]
-            else 0
-        ),
-        "orphan_profile_row_count": (
-            _count_sync(conn, ORPHAN_SESSION_PROFILE_COUNT_SQL)
-            if verify_freshness and tables["session_profiles"]
-            else 0
-        ),
-        "expected_work_event_inference_count": (
-            _count_sync(conn, EXPECTED_WORK_EVENT_COUNT_SQL) if tables["session_profiles"] else 0
-        ),
-        "expected_phase_inference_count": (
-            _count_sync(conn, EXPECTED_PHASE_COUNT_SQL) if tables["session_profiles"] else 0
-        ),
-        "stale_work_event_inference_count": (
-            _count_sync(conn, STALE_WORK_EVENT_COUNT_SQL, SESSION_PRODUCT_MATERIALIZER_VERSION)
-            if verify_freshness and tables["session_work_events"]
-            else 0
-        ),
-        "orphan_work_event_inference_count": (
-            _count_sync(conn, ORPHAN_SESSION_WORK_EVENT_COUNT_SQL)
-            if verify_freshness and tables["session_work_events"]
-            else 0
-        ),
-        "stale_phase_inference_count": (
-            _count_sync(conn, STALE_SESSION_PHASE_COUNT_SQL, SESSION_PRODUCT_MATERIALIZER_VERSION)
-            if verify_freshness and tables["session_phases"]
-            else 0
-        ),
-        "orphan_phase_inference_count": (
-            _count_sync(conn, ORPHAN_SESSION_PHASE_COUNT_SQL) if verify_freshness and tables["session_phases"] else 0
-        ),
-        "stale_thread_count": (
-            _count_sync(conn, STALE_WORK_THREAD_COUNT_SQL, SESSION_PRODUCT_MATERIALIZER_VERSION)
-            if verify_freshness and tables["work_threads"]
-            else 0
-        ),
-        "orphan_thread_count": (
-            _count_sync(conn, ORPHAN_WORK_THREAD_COUNT_SQL) if verify_freshness and tables["work_threads"] else 0
-        ),
-        "expected_tag_rollup_count": (
-            _count_sync(conn, EXPECTED_SESSION_TAG_ROLLUP_COUNT_SQL)
-            if verify_freshness and tables["session_profiles"]
-            else counts["tag_rollup_count"]
-        ),
-        "stale_tag_rollup_count": (
-            _count_sync(conn, STALE_SESSION_TAG_ROLLUP_COUNT_SQL, SESSION_PRODUCT_MATERIALIZER_VERSION)
-            if verify_freshness and tables["session_tag_rollups"]
-            else 0
-        ),
-        "expected_day_summary_count": (
-            _count_sync(conn, EXPECTED_DAY_SESSION_SUMMARY_COUNT_SQL)
-            if verify_freshness and tables["session_profiles"]
-            else counts["day_summary_count"]
-        ),
-        "stale_day_summary_count": (
-            _count_sync(conn, STALE_DAY_SESSION_SUMMARY_COUNT_SQL, SESSION_PRODUCT_MATERIALIZER_VERSION)
-            if verify_freshness and tables["day_session_summaries"]
-            else 0
-        ),
-    }
+    descriptor_counts: StatusCounts = {}
+    for descriptor in _COUNT_DESCRIPTORS:
+        key, value = descriptor.count_sync(
+            conn, tables, {**counts, **descriptor_counts}, verify_freshness=verify_freshness
+        )
+        descriptor_counts[key] = value
+    return descriptor_counts
 
 
 def _status_counts_sync(
@@ -538,8 +744,7 @@ def _status_counts_sync(
     verify_freshness: bool,
 ) -> StatusCounts:
     counts = _materialized_counts_sync(conn, tables, verify_freshness=verify_freshness)
-    counts.update(_sync_fts_duplicate_counts(conn, tables, counts, verify_freshness=verify_freshness))
-    counts.update(_sync_repair_counts(conn, tables, counts, verify_freshness=verify_freshness))
+    counts.update(_descriptor_counts_sync(conn, tables, counts, verify_freshness=verify_freshness))
     return counts
 
 
@@ -547,73 +752,25 @@ def _status_payload(
     tables: TablePresence,
     counts: StatusCounts,
 ) -> SessionProductStatusSnapshot:
-    profile_count = counts["profile_row_count"]
-    work_event_count = counts["work_event_inference_count"]
-    phase_count = counts["phase_inference_count"]
-    thread_count = counts["thread_count"]
-    tag_rollup_count = counts["tag_rollup_count"]
-    day_summary_count = counts["day_summary_count"]
-    missing_profile_count = counts["missing_profile_row_count"]
-    stale_profile_count = counts["stale_profile_row_count"]
-    orphan_profile_count = counts["orphan_profile_row_count"]
-    expected_work_event_count = counts["expected_work_event_inference_count"]
-    stale_work_event_count = counts["stale_work_event_inference_count"]
-    orphan_work_event_count = counts["orphan_work_event_inference_count"]
-    expected_phase_count = counts["expected_phase_inference_count"]
-    stale_phase_count = counts["stale_phase_inference_count"]
-    orphan_phase_count = counts["orphan_phase_inference_count"]
-    stale_thread_count = counts["stale_thread_count"]
-    orphan_thread_count = counts["orphan_thread_count"]
-    expected_tag_rollup_count = counts["expected_tag_rollup_count"]
-    stale_tag_rollup_count = counts["stale_tag_rollup_count"]
-    expected_day_summary_count = counts["expected_day_summary_count"]
-    stale_day_summary_count = counts["stale_day_summary_count"]
-
+    ready_flags: dict[SessionProductReadyFlag, bool] = {
+        descriptor.ready_key: descriptor.ready(tables, counts) for descriptor in _READY_DESCRIPTORS
+    }
+    ready_flags.update({descriptor.ready_key: descriptor.ready(tables, counts) for descriptor in _FTS_DESCRIPTORS})
     return SessionProductStatusSnapshot(
         **counts,
-        profile_rows_ready=tables["session_profiles"]
-        and missing_profile_count == 0
-        and stale_profile_count == 0
-        and orphan_profile_count == 0,
-        profile_merged_fts_ready=tables["session_profiles_fts"]
-        and counts["profile_merged_fts_count"] == profile_count
-        and counts["profile_merged_fts_duplicate_count"] == 0,
-        profile_evidence_fts_ready=tables["session_profile_evidence_fts"]
-        and counts["profile_evidence_fts_count"] == profile_count
-        and counts["profile_evidence_fts_duplicate_count"] == 0,
-        profile_inference_fts_ready=tables["session_profile_inference_fts"]
-        and counts["profile_inference_fts_count"] == profile_count
-        and counts["profile_inference_fts_duplicate_count"] == 0,
-        profile_enrichment_fts_ready=tables["session_profile_enrichment_fts"]
-        and counts["profile_enrichment_fts_count"] == profile_count
-        and counts["profile_enrichment_fts_duplicate_count"] == 0,
-        work_event_inference_rows_ready=tables["session_work_events"]
-        and work_event_count == expected_work_event_count
-        and stale_work_event_count == 0
-        and orphan_work_event_count == 0,
-        work_event_inference_fts_ready=tables["session_work_events_fts"]
-        and counts["work_event_inference_fts_count"] == work_event_count
-        and counts["work_event_inference_fts_duplicate_count"] == 0,
-        phase_inference_rows_ready=tables["session_phases"]
-        and phase_count == expected_phase_count
-        and stale_phase_count == 0
-        and orphan_phase_count == 0,
-        threads_ready=tables["work_threads"]
-        and thread_count == counts["root_threads"]
-        and stale_thread_count == 0
-        and orphan_thread_count == 0,
-        threads_fts_ready=tables["work_threads_fts"]
-        and counts["thread_fts_count"] == thread_count
-        and counts["thread_fts_duplicate_count"] == 0,
-        tag_rollups_ready=tables["session_tag_rollups"]
-        and tag_rollup_count == expected_tag_rollup_count
-        and stale_tag_rollup_count == 0,
-        day_summaries_ready=tables["day_session_summaries"]
-        and day_summary_count == expected_day_summary_count
-        and stale_day_summary_count == 0,
-        week_summaries_ready=tables["day_session_summaries"]
-        and day_summary_count == expected_day_summary_count
-        and stale_day_summary_count == 0,
+        profile_rows_ready=ready_flags["profile_rows_ready"],
+        profile_merged_fts_ready=ready_flags["profile_merged_fts_ready"],
+        profile_evidence_fts_ready=ready_flags["profile_evidence_fts_ready"],
+        profile_inference_fts_ready=ready_flags["profile_inference_fts_ready"],
+        profile_enrichment_fts_ready=ready_flags["profile_enrichment_fts_ready"],
+        work_event_inference_rows_ready=ready_flags["work_event_inference_rows_ready"],
+        work_event_inference_fts_ready=ready_flags["work_event_inference_fts_ready"],
+        phase_inference_rows_ready=ready_flags["phase_inference_rows_ready"],
+        threads_ready=ready_flags["threads_ready"],
+        threads_fts_ready=ready_flags["threads_fts_ready"],
+        tag_rollups_ready=ready_flags["tag_rollups_ready"],
+        day_summaries_ready=ready_flags["day_summaries_ready"],
+        week_summaries_ready=ready_flags["week_summaries_ready"],
     )
 
 
@@ -646,133 +803,35 @@ def session_product_status_sync(
 
 
 async def _materialized_counts_async(conn: aiosqlite.Connection, tables: TablePresence) -> StatusCounts:
-    return {
+    counts: StatusCounts = {
         "total_conversations": await _count_async(conn, TOTAL_CONVERSATIONS_SQL),
         "root_threads": await _count_async(conn, ROOT_THREAD_COUNT_SQL),
-        "profile_row_count": await _count_async(conn, SESSION_PROFILE_COUNT_SQL) if tables["session_profiles"] else 0,
-        "profile_merged_fts_count": await _count_async(conn, SESSION_PROFILE_MERGED_FTS_DOC_COUNT_SQL)
-        if tables["session_profiles_fts"]
-        else 0,
-        "profile_merged_fts_duplicate_count": await _count_async(conn, SESSION_PROFILE_MERGED_FTS_DUPLICATE_COUNT_SQL)
-        if tables["session_profiles_fts"]
-        else 0,
-        "profile_evidence_fts_count": await _count_async(conn, SESSION_PROFILE_EVIDENCE_FTS_DOC_COUNT_SQL)
-        if tables["session_profile_evidence_fts"]
-        else 0,
-        "profile_evidence_fts_duplicate_count": await _count_async(
-            conn, SESSION_PROFILE_EVIDENCE_FTS_DUPLICATE_COUNT_SQL
-        )
-        if tables["session_profile_evidence_fts"]
-        else 0,
-        "profile_inference_fts_count": await _count_async(conn, SESSION_PROFILE_INFERENCE_FTS_DOC_COUNT_SQL)
-        if tables["session_profile_inference_fts"]
-        else 0,
-        "profile_inference_fts_duplicate_count": await _count_async(
-            conn, SESSION_PROFILE_INFERENCE_FTS_DUPLICATE_COUNT_SQL
-        )
-        if tables["session_profile_inference_fts"]
-        else 0,
-        "profile_enrichment_fts_count": await _count_async(conn, SESSION_PROFILE_ENRICHMENT_FTS_DOC_COUNT_SQL)
-        if tables["session_profile_enrichment_fts"]
-        else 0,
-        "profile_enrichment_fts_duplicate_count": await _count_async(
-            conn, SESSION_PROFILE_ENRICHMENT_FTS_DUPLICATE_COUNT_SQL
-        )
-        if tables["session_profile_enrichment_fts"]
-        else 0,
-        "work_event_inference_count": await _count_async(conn, SESSION_WORK_EVENT_COUNT_SQL)
-        if tables["session_work_events"]
-        else 0,
-        "work_event_inference_fts_count": await _count_async(conn, SESSION_WORK_EVENT_FTS_DOC_COUNT_SQL)
-        if tables["session_work_events_fts"]
-        else 0,
-        "work_event_inference_fts_duplicate_count": await _count_async(conn, SESSION_WORK_EVENT_FTS_DUPLICATE_COUNT_SQL)
-        if tables["session_work_events_fts"]
-        else 0,
-        "phase_inference_count": await _count_async(conn, SESSION_PHASE_COUNT_SQL) if tables["session_phases"] else 0,
-        "thread_count": await _count_async(conn, WORK_THREAD_COUNT_SQL) if tables["work_threads"] else 0,
-        "thread_fts_count": await _count_async(conn, WORK_THREAD_FTS_DOC_COUNT_SQL)
-        if tables["work_threads_fts"]
-        else 0,
-        "thread_fts_duplicate_count": await _count_async(conn, WORK_THREAD_FTS_DUPLICATE_COUNT_SQL)
-        if tables["work_threads_fts"]
-        else 0,
-        "tag_rollup_count": await _count_async(conn, SESSION_TAG_ROLLUP_COUNT_SQL)
-        if tables["session_tag_rollups"]
-        else 0,
-        "day_summary_count": await _count_async(conn, DAY_SESSION_SUMMARY_COUNT_SQL)
-        if tables["day_session_summaries"]
-        else 0,
     }
+    counts.update(await _table_row_counts_async(conn, tables))
+    counts.update(await _fts_projection_counts_async(conn, tables))
+    return counts
 
 
-async def _async_repair_counts(
+async def _descriptor_counts_async(
     conn: aiosqlite.Connection,
     tables: TablePresence,
     counts: StatusCounts,
 ) -> StatusCounts:
-    return {
-        "missing_profile_row_count": await _count_async(conn, MISSING_SESSION_PROFILE_COUNT_SQL)
-        if tables["session_profiles"]
-        else counts["total_conversations"],
-        "stale_profile_row_count": await _count_async(
-            conn, STALE_SESSION_PROFILE_COUNT_SQL, SESSION_PRODUCT_MATERIALIZER_VERSION
+    descriptor_counts: StatusCounts = {}
+    for descriptor in _COUNT_DESCRIPTORS:
+        key, value = await descriptor.count_async(
+            conn,
+            tables,
+            {**counts, **descriptor_counts},
+            verify_freshness=True,
         )
-        if tables["session_profiles"]
-        else counts["total_conversations"],
-        "orphan_profile_row_count": await _count_async(conn, ORPHAN_SESSION_PROFILE_COUNT_SQL)
-        if tables["session_profiles"]
-        else 0,
-        "expected_work_event_inference_count": await _count_async(conn, EXPECTED_WORK_EVENT_COUNT_SQL)
-        if tables["session_profiles"]
-        else 0,
-        "expected_phase_inference_count": await _count_async(conn, EXPECTED_PHASE_COUNT_SQL)
-        if tables["session_profiles"]
-        else 0,
-        "stale_work_event_inference_count": await _count_async(
-            conn, STALE_WORK_EVENT_COUNT_SQL, SESSION_PRODUCT_MATERIALIZER_VERSION
-        )
-        if tables["session_work_events"]
-        else counts["expected_work_event_inference_count"],
-        "orphan_work_event_inference_count": await _count_async(conn, ORPHAN_SESSION_WORK_EVENT_COUNT_SQL)
-        if tables["session_work_events"]
-        else 0,
-        "stale_phase_inference_count": await _count_async(
-            conn, STALE_SESSION_PHASE_COUNT_SQL, SESSION_PRODUCT_MATERIALIZER_VERSION
-        )
-        if tables["session_phases"]
-        else counts["expected_phase_inference_count"],
-        "orphan_phase_inference_count": await _count_async(conn, ORPHAN_SESSION_PHASE_COUNT_SQL)
-        if tables["session_phases"]
-        else 0,
-        "stale_thread_count": await _count_async(
-            conn, STALE_WORK_THREAD_COUNT_SQL, SESSION_PRODUCT_MATERIALIZER_VERSION
-        )
-        if tables["work_threads"]
-        else counts["root_threads"],
-        "orphan_thread_count": await _count_async(conn, ORPHAN_WORK_THREAD_COUNT_SQL) if tables["work_threads"] else 0,
-        "expected_tag_rollup_count": await _count_async(conn, EXPECTED_SESSION_TAG_ROLLUP_COUNT_SQL)
-        if tables["session_profiles"]
-        else 0,
-        "stale_tag_rollup_count": await _count_async(
-            conn, STALE_SESSION_TAG_ROLLUP_COUNT_SQL, SESSION_PRODUCT_MATERIALIZER_VERSION
-        )
-        if tables["session_tag_rollups"]
-        else counts["expected_tag_rollup_count"],
-        "expected_day_summary_count": await _count_async(conn, EXPECTED_DAY_SESSION_SUMMARY_COUNT_SQL)
-        if tables["session_profiles"]
-        else 0,
-        "stale_day_summary_count": await _count_async(
-            conn, STALE_DAY_SESSION_SUMMARY_COUNT_SQL, SESSION_PRODUCT_MATERIALIZER_VERSION
-        )
-        if tables["day_session_summaries"]
-        else counts["expected_day_summary_count"],
-    }
+        descriptor_counts[key] = value
+    return descriptor_counts
 
 
 async def _status_counts_async(conn: aiosqlite.Connection, tables: TablePresence) -> StatusCounts:
     counts = await _materialized_counts_async(conn, tables)
-    counts.update(await _async_repair_counts(conn, tables, counts))
+    counts.update(await _descriptor_counts_async(conn, tables, counts))
     return counts
 
 
@@ -783,6 +842,10 @@ async def session_product_status_async(conn: aiosqlite.Connection) -> SessionPro
 
 
 __all__ = [
+    "SessionProductCountDescriptor",
+    "SessionProductFtsDescriptor",
+    "SessionProductReadyDescriptor",
+    "SessionProductTableDescriptor",
     "session_product_status_async",
     "session_product_status_sync",
     "session_profile_repair_candidate_ids_async",
