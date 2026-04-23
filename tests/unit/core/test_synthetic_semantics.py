@@ -24,7 +24,7 @@ from typing import Protocol
 
 import pytest
 
-from polylogue.paths import Source
+from polylogue.config import Source
 from polylogue.scenarios import CorpusProfile, CorpusSpec
 from polylogue.schemas.synthetic import (
     PROVIDER_WIRE_FORMATS,

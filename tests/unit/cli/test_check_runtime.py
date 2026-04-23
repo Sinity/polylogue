@@ -21,8 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.config import Config
-from polylogue.paths import Source
+from polylogue.config import Config, Source
 from polylogue.readiness import ReadinessReport, VerifyStatus, run_runtime_readiness
 
 pytestmark = pytest.mark.machine_contract

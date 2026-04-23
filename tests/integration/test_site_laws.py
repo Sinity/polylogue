@@ -14,7 +14,7 @@ from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 from polylogue.lib.models import ConversationSummary
-from polylogue.paths import safe_path_component
+from polylogue.paths.sanitize import safe_path_component
 from polylogue.site.builder import ArchiveIndexStats, ConversationIndex, SiteBuilder, SiteConfig
 from polylogue.types import SearchProvider
 from tests.infra.strategies import (

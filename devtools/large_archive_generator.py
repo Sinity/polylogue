@@ -290,7 +290,7 @@ async def generate_archive(
     Returns:
         ArchiveMetrics with timing, size, and count data.
     """
-    from polylogue.paths import Source
+    from polylogue.config import Source
     from polylogue.pipeline.prepare import prepare_records
     from polylogue.schemas.synthetic import SyntheticCorpus
     from polylogue.sources import iter_source_conversations

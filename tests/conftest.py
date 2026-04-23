@@ -23,7 +23,7 @@ pytest_plugins = ("tests.infra.corpus_fixtures",)
 if TYPE_CHECKING:
     from click.testing import CliRunner
 
-    from polylogue.paths import Source
+    from polylogue.config import Source
     from polylogue.storage.backends import SQLiteBackend
     from polylogue.storage.repository import ConversationRepository
     from tests.infra.storage_records import ConversationBuilder
@@ -509,7 +509,7 @@ def seeded_db(tmp_path_factory: pytest.TempPathFactory) -> Path:
     import hashlib
     from datetime import datetime, timezone
 
-    from polylogue.paths import Source
+    from polylogue.config import Source
     from polylogue.pipeline.prepare import prepare_records
     from polylogue.schemas.synthetic import SyntheticCorpus
     from polylogue.sources import iter_source_conversations
@@ -684,7 +684,7 @@ def synthetic_source(tmp_path: Path) -> Callable[[str, int, range, int], Source]
             # Multiple files:
             source = synthetic_source("claude-code", count=3)
     """
-    from polylogue.paths import Source
+    from polylogue.config import Source
     from polylogue.schemas.synthetic import SyntheticCorpus
 
     def _factory(

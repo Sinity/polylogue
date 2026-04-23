@@ -39,7 +39,7 @@ from polylogue.archive_products import (
 from polylogue.lib.conversation_models import ConversationSummary
 from polylogue.lib.query_spec import ConversationQuerySpec
 from polylogue.maintenance_targets import build_maintenance_target_catalog
-from polylogue.paths import conversation_render_root
+from polylogue.paths.sanitize import conversation_render_root
 from polylogue.services import RuntimeServices, build_runtime_services
 from polylogue.storage.backends.connection import connection_context
 from polylogue.storage.backends.queries.stats import ProviderMetricsRow
