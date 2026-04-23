@@ -116,6 +116,7 @@
         polylogue --action-text "pytest -q" list
         polylogue "pytest -q tests<PATH>" --retrieval-l
   ane actions --limit 5
+        polylogue --tail --provider claude-code --latest list
         polylogue --action other stats --by tool --format json
         polylogue --provider claude-code --since 2026-01-01 stats --by repo --form
   at json
@@ -198,6 +199,8 @@
                                     tool, unknown)
     --set TEXT...                   Set metadata key value
     --add-tag TEXT                  Add tags (comma-separated)
+    --tail                          Tail ahead-of-archive Claude Code source
+                                    state during queries
     --plain                         Force non-interactive plain output
     -v, --verbose                   Verbose output
     --version                       Show the version and exit.
@@ -248,6 +251,7 @@
         polylogue --action-text "pytest -q" list
         polylogue "pytest -q tests<PATH>
   ts.py" --retrieval-lane actions --limit 5
+        polylogue --tail --provider claude-code --latest list
         polylogue --action other stats --by tool --format json
         polylogue --provider claude-code --since 2026-01-01 st
   ats --by repo --format json
@@ -367,6 +371,9 @@
                                     tool, unknown)
     --set TEXT...                   Set metadata key value
     --add-tag TEXT                  Add tags (comma-separated)
+    --tail                          Tail ahead-of-archive Clau
+  de Code source
+                                    state during queries
     --plain                         Force non-interactive plai
   n output
     -v, --verbose                   Verbose output
@@ -425,6 +432,7 @@
         polylogue --action-sequence file_read,file_edit,shell list
         polylogue --action-text "pytest -q" list
         polylogue "pytest -q tests<PATH>" --retrieval-lane actions --limit 5
+        polylogue --tail --provider claude-code --latest list
         polylogue --action other stats --by tool --format json
         polylogue --provider claude-code --since 2026-01-01 stats --by repo --format json
         polylogue --tool bash --exclude-tool read list
@@ -504,6 +512,8 @@
                                     tool, unknown)
     --set TEXT...                   Set metadata key value
     --add-tag TEXT                  Add tags (comma-separated)
+    --tail                          Tail ahead-of-archive Claude Code source
+                                    state during queries
     --plain                         Force non-interactive plain output
     -v, --verbose                   Verbose output
     --version                       Show the version and exit.

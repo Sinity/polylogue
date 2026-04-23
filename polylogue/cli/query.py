@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import inspect
 from collections.abc import Awaitable, Iterable, Sequence
+from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, TypeVar, overload
 
 import click
@@ -31,6 +32,7 @@ from polylogue.cli.types import AppEnv
 from polylogue.lib.json import JSONDocument
 from polylogue.lib.query_spec import QuerySpecError
 from polylogue.logging import get_logger
+from polylogue.pipeline.tail_overlay import TailOverlayUnavailableError, tail_overlay_services
 from polylogue.surface_payloads import ConversationListRowPayload
 from polylogue.sync_bridge import run_coroutine_sync
 
@@ -49,9 +51,13 @@ if TYPE_CHECKING:
         TagStore,
         VectorProvider,
     )
+    from polylogue.storage.backends.async_sqlite import SQLiteBackend
 
     class QueryExecutionStore(ConversationArchiveStatsStore, ConversationQueryRuntimeStore, TagStore, Protocol):
         """Repository surface needed by query execution and grouped stats helpers."""
+
+        @property
+        def backend(self) -> SQLiteBackend: ...
 
 
 _T = TypeVar("_T")
@@ -273,12 +279,12 @@ def execute_query_request(env: AppEnv, request: RootModeRequest) -> None:
     run_coroutine_sync(async_execute_query_request(env, request))
 
 
-def _create_query_vector_provider(config: Config) -> VectorProvider | None:
+def _create_query_vector_provider(config: Config, *, db_path: Path | None = None) -> VectorProvider | None:
     """Best-effort vector provider setup for query execution."""
     from polylogue.storage.search_providers import create_vector_provider
 
     try:
-        return create_vector_provider(config)
+        return create_vector_provider(config, db_path=db_path or config.db_path)
     except (ValueError, ImportError):
         return None
     except Exception as exc:
@@ -363,29 +369,18 @@ async def async_execute_query(env: AppEnv, params: QueryParams) -> None:
     await async_execute_query_request(env, RootModeRequest.from_params(params))
 
 
-async def async_execute_query_request(env: AppEnv, request: RootModeRequest) -> None:
-    """Async core of query execution over a typed request."""
+async def _execute_query_plan(
+    env: AppEnv,
+    params: QueryParams,
+    *,
+    config: Config,
+    repo: QueryExecutionStore,
+    plan: QueryExecutionPlan,
+) -> None:
     from polylogue.cli import query_actions as _query_actions
     from polylogue.cli import query_output as _query_output
-    from polylogue.cli.helpers import fail, load_effective_config
-    from polylogue.config import ConfigError
 
-    params = request.query_params()
-
-    try:
-        config = load_effective_config(env)
-    except ConfigError as exc:
-        fail("query", str(exc))
-
-    repo: QueryExecutionStore = env.repository
-
-    vector_provider = _create_query_vector_provider(config)
-
-    try:
-        plan = build_query_execution_plan(params)
-    except QueryPlanError as exc:
-        click.echo(f"Error: {exc}", err=True)
-        raise SystemExit(1) from exc
+    vector_provider = _create_query_vector_provider(config, db_path=repo.backend.db_path)
 
     if plan.selection.similar_text and vector_provider is None:
         click.echo(
@@ -600,6 +595,58 @@ async def async_execute_query_request(env: AppEnv, request: RootModeRequest) -> 
         selection=plan.selection,
         diagnostics=output_diagnostics,
     )
+
+
+async def async_execute_query_request(env: AppEnv, request: RootModeRequest) -> None:
+    """Async core of query execution over a typed request."""
+    from polylogue.cli.helpers import fail, load_effective_config
+    from polylogue.config import ConfigError
+
+    params = request.query_params()
+
+    try:
+        config = load_effective_config(env)
+    except ConfigError as exc:
+        fail("query", str(exc))
+
+    repo: QueryExecutionStore = env.repository
+
+    try:
+        plan = build_query_execution_plan(params)
+    except QueryPlanError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        raise SystemExit(1) from exc
+
+    tail_requested = bool(params.get("tail"))
+    if tail_requested and plan.action in {QueryAction.MODIFY, QueryAction.DELETE}:
+        click.echo(
+            "Error: --tail is read-only. Mutation and delete routes must target the stable archive.",
+            err=True,
+        )
+        raise SystemExit(1)
+    if tail_requested and plan.action == QueryAction.OPEN:
+        click.echo(
+            "Error: --tail does not support `open` yet because rendered artifacts reflect stable archive state.",
+            err=True,
+        )
+        raise SystemExit(1)
+
+    if not tail_requested:
+        await _execute_query_plan(env, params, config=config, repo=repo, plan=plan)
+        return
+
+    try:
+        async with tail_overlay_services(env.services) as overlay_services:
+            await _execute_query_plan(
+                env,
+                params,
+                config=overlay_services.get_config(),
+                repo=overlay_services.get_repository(),
+                plan=plan,
+            )
+    except TailOverlayUnavailableError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        raise SystemExit(1) from exc
 
 
 __all__ = [

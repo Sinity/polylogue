@@ -12,6 +12,7 @@ from polylogue.lib.message_models import DialoguePair, Message
 from polylogue.lib.message_roles import normalize_message_roles
 from polylogue.lib.messages import MessageCollection
 from polylogue.lib.roles import Role
+from polylogue.lib.tail_overlay import TailOverlayInfo, tail_overlay_from_provider_meta
 from polylogue.types import ConversationId
 
 if TYPE_CHECKING:
@@ -96,6 +97,10 @@ class ConversationRuntimeMixin:
     @property
     def tags(self) -> list[str]:
         return _metadata_tags(self.metadata)
+
+    @property
+    def tail_overlay(self) -> TailOverlayInfo | None:
+        return tail_overlay_from_provider_meta(self.provider_meta)
 
     def filter(self, predicate: Callable[[Message], bool]) -> Self:
         filtered_messages = [message for message in self.messages if predicate(message)]
