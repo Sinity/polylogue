@@ -205,7 +205,7 @@ def _empty_cursor_state() -> CursorStatePayload:
         )
     )
 )
-@settings(max_examples=40)
+@settings(max_examples=40, suppress_health_check=[HealthCheck.too_slow])
 def test_detect_provider_recognizes_generated_payloads(case: tuple[str, object]) -> None:
     """Generated provider payloads are self-identifying without filename hints."""
     provider, payload = case
@@ -253,7 +253,7 @@ def test_entry_payload_detection_overrides_misleading_grouped_fallback_law(
 
 
 @given(provider_payload_case_strategy(_CANONICAL_PROVIDERS))
-@settings(max_examples=35)
+@settings(max_examples=35, suppress_health_check=[HealthCheck.too_slow])
 def test_parse_payload_generated_exports_produce_provider_named_conversations(case: tuple[str, object]) -> None:
     """Runtime dispatch parses generated provider payloads into provider-owned conversations."""
     provider, payload = case

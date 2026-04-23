@@ -71,8 +71,9 @@ class TestMCPRealRepositoryPaths:
 
             parsed = json.loads(result)
             assert len(parsed) == 1
-            assert parsed[0]["id"] == "chatgpt:needle"
-            assert parsed[0]["provider"] == "chatgpt"
+            assert parsed[0]["conversation"]["id"] == "chatgpt:needle"
+            assert parsed[0]["conversation"]["provider"] == "chatgpt"
+            assert parsed[0]["match"]["match_surface"] == "message"
         finally:
             await backend.close()
 
