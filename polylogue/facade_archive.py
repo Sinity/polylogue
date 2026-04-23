@@ -15,6 +15,7 @@ from polylogue.archive_products import (
 from polylogue.storage.session_product_runtime import SessionProductStatusSnapshot
 
 if TYPE_CHECKING:
+    from polylogue.archive_resume import ResumeBrief
     from polylogue.config import Config
     from polylogue.lib.conversation_models import Conversation
     from polylogue.lib.filters import ConversationFilter
@@ -75,6 +76,13 @@ if TYPE_CHECKING:
             self,
             conversation_ids: Sequence[str] | None = None,
         ) -> SessionProductCounts: ...
+
+        async def build_resume_brief(
+            self,
+            session_id: str,
+            *,
+            related_limit: int = 6,
+        ) -> ResumeBrief | None: ...
 
 
 class PolylogueArchiveMixin:
@@ -178,3 +186,12 @@ class PolylogueArchiveMixin:
     ) -> SessionProductCounts:
         """Rebuild durable session-product read models."""
         return await self.operations.rebuild_session_products(conversation_ids=conversation_ids)
+
+    async def resume_brief(
+        self,
+        session_id: str,
+        *,
+        related_limit: int = 6,
+    ) -> ResumeBrief | None:
+        """Build a compact handoff brief for an archived session."""
+        return await self.operations.build_resume_brief(session_id, related_limit=related_limit)

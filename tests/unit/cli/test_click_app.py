@@ -450,6 +450,7 @@ class TestCliMetadata:
             "dashboard",
             "neighbors",
             "export",
+            "resume",
             "products",
             "audit",
             "schema",

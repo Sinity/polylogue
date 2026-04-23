@@ -8,10 +8,10 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 
 ## Snapshot
 
-- subjects: `9038`
+- subjects: `9039`
 - claims: `22`
 - runner bindings: `22`
-- proof obligations: `9123`
+- proof obligations: `9126`
 
 ## Quality Checks
 
@@ -31,7 +31,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | --- | ---: |
 | `archive.query_law` | 1 |
 | `artifact.path` | 27 |
-| `cli.command` | 42 |
+| `cli.command` | 43 |
 | `cli.json_command` | 2 |
 | `diagnostic.observable` | 1 |
 | `error.surface` | 2 |
@@ -72,6 +72,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `polylogue products week-summaries` | `polylogue/cli/commands/products.py:92` `polylogue.cli.commands.products._make_callback.<locals>.callback` |
 | `polylogue products work-events` | `polylogue/cli/commands/products.py:92` `polylogue.cli.commands.products._make_callback.<locals>.callback` |
 | `polylogue reset` | `polylogue/cli/commands/reset.py:23` `polylogue.cli.commands.reset.reset_command` |
+| `polylogue resume` | `polylogue/cli/commands/resume.py:22` `polylogue.cli.commands.resume.resume_command` |
 | `polylogue run` | `polylogue/cli/commands/run.py:164` `polylogue.cli.commands.run.run_command` |
 | `polylogue run acquire` | `polylogue/cli/commands/run.py:357` `polylogue.cli.commands.run.run_acquire_stage` |
 | `polylogue run all` | `polylogue/cli/commands/run.py:407` `polylogue.cli.commands.run.run_all_stage` |
@@ -186,10 +187,10 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | --- | ---: |
 | `archive.query.provider_filter_consistency` | 1 |
 | `artifact.path.dependency_closure` | 11 |
-| `cli.command.help` | 42 |
+| `cli.command.help` | 43 |
 | `cli.command.json_envelope` | 2 |
-| `cli.command.no_traceback` | 42 |
-| `cli.command.plain_mode` | 42 |
+| `cli.command.no_traceback` | 43 |
+| `cli.command.plain_mode` | 43 |
 | `diagnostic.observable_trace_mapping` | 1 |
 | `error.machine_user_context` | 2 |
 | `generated.scenario.family_registered` | 9 |

@@ -15,10 +15,10 @@ Current registry snapshot:
 - mutation campaigns: `19`
 - benchmark campaigns: `3`
 - synthetic benchmark campaigns: `6`
-- scenario projections: `241`
+- scenario projections: `242`
 - inferred corpus scenarios: `5`
   - benchmark-campaign: `3`
-  - exercise: `135`
+  - exercise: `136`
   - inferred-corpus-scenario: `5`
   - mutation-campaign: `19`
   - synthetic-benchmark: `6`
@@ -347,6 +347,7 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `exercise` | `help-products-week-summaries` | `week-summary-query-loop` | `day_session_summary_rows`<br>`week_session_summary_results` | `cli.help`<br>`query-week-session-summaries` | — | `generated`<br>`help`<br>`structural` | products week-summaries help |
 | `exercise` | `help-products-work-events` | `session-work-event-query-loop` | `session_work_event_rows`<br>`session_work_event_fts`<br>`session_work_event_results` | `cli.help`<br>`query-session-work-events` | — | `generated`<br>`help`<br>`structural` | products work-events help |
 | `exercise` | `help-reset` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | reset help |
+| `exercise` | `help-resume` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | resume help |
 | `exercise` | `help-run` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | run help |
 | `exercise` | `help-run-acquire` | `source-acquisition-loop` | `configured_sources`<br>`source_payload_stream`<br>`raw_validation_state`<br>`artifact_observation_rows` | `cli.help`<br>`acquire-raw-conversations` | — | `generated`<br>`help`<br>`structural` | run acquire help |
 | `exercise` | `help-run-all` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | run all help |
