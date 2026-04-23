@@ -74,6 +74,16 @@ class SessionProfileDocument(TypedDict):
     parent_id: str | None
 
 
+class WorkThreadMemberEvidenceDocument(TypedDict):
+    conversation_id: str
+    parent_id: str | None
+    role: str
+    depth: int
+    confidence: float
+    support_signals: list[str]
+    evidence: list[str]
+
+
 class WorkThreadDocument(TypedDict):
     thread_id: str
     root_id: str
@@ -89,6 +99,10 @@ class WorkThreadDocument(TypedDict):
     dominant_repo: str | None
     provider_breakdown: dict[str, int]
     work_event_breakdown: dict[str, int]
+    confidence: float
+    support_level: str
+    support_signals: list[str]
+    member_evidence: list[WorkThreadMemberEvidenceDocument]
 
 
 __all__ = [
@@ -96,4 +110,5 @@ __all__ = [
     "SessionProfileDocument",
     "WorkEventDocument",
     "WorkThreadDocument",
+    "WorkThreadMemberEvidenceDocument",
 ]

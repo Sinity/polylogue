@@ -6,18 +6,19 @@ from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
-from typing import TypeAlias
+from typing import TypeAlias, cast
 
 from polylogue.lib.payload_coercion import (
     coerce_float,
     coerce_int,
+    mapping_sequence,
     optional_datetime,
     optional_string,
     string_int_mapping,
     string_sequence,
 )
 from polylogue.lib.repo_identity import normalize_repo_names
-from polylogue.lib.session_payload_documents import WorkThreadDocument
+from polylogue.lib.session_payload_documents import WorkThreadDocument, WorkThreadMemberEvidenceDocument
 from polylogue.lib.session_profile import SessionProfile
 
 WorkThreadPayload: TypeAlias = WorkThreadDocument
@@ -39,6 +40,12 @@ def _work_thread_payload(thread: WorkThread) -> WorkThreadPayload:
         "dominant_repo": thread.dominant_repo,
         "provider_breakdown": dict(thread.provider_breakdown),
         "work_event_breakdown": dict(thread.work_event_breakdown),
+        "confidence": thread.confidence,
+        "support_level": thread.support_level,
+        "support_signals": list(thread.support_signals),
+        "member_evidence": [
+            cast(WorkThreadMemberEvidenceDocument, member.to_dict()) for member in thread.member_evidence
+        ],
     }
 
 
@@ -57,7 +64,47 @@ def _work_thread_from_mapping(payload: Mapping[str, object]) -> WorkThread:
         dominant_repo=optional_string(payload.get("dominant_repo")),
         provider_breakdown=string_int_mapping(payload.get("provider_breakdown")),
         work_event_breakdown=string_int_mapping(payload.get("work_event_breakdown")),
+        confidence=coerce_float(payload.get("confidence"), 0.0),
+        support_level=optional_string(payload.get("support_level")) or "weak",
+        support_signals=string_sequence(payload.get("support_signals")),
+        member_evidence=tuple(
+            WorkThreadMemberEvidence.from_dict(item) for item in mapping_sequence(payload.get("member_evidence"))
+        ),
     )
+
+
+@dataclass(frozen=True)
+class WorkThreadMemberEvidence:
+    conversation_id: str
+    parent_id: str | None
+    role: str
+    depth: int
+    confidence: float
+    support_signals: tuple[str, ...]
+    evidence: tuple[str, ...]
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "conversation_id": self.conversation_id,
+            "parent_id": self.parent_id,
+            "role": self.role,
+            "depth": self.depth,
+            "confidence": self.confidence,
+            "support_signals": list(self.support_signals),
+            "evidence": list(self.evidence),
+        }
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, object]) -> WorkThreadMemberEvidence:
+        return cls(
+            conversation_id=str(payload["conversation_id"]),
+            parent_id=optional_string(payload.get("parent_id")),
+            role=optional_string(payload.get("role")) or "member",
+            depth=coerce_int(payload.get("depth"), 0),
+            confidence=coerce_float(payload.get("confidence"), 0.0),
+            support_signals=string_sequence(payload.get("support_signals")),
+            evidence=string_sequence(payload.get("evidence")),
+        )
 
 
 @dataclass(frozen=True)
@@ -75,6 +122,10 @@ class WorkThread:
     dominant_repo: str | None
     provider_breakdown: dict[str, int]
     work_event_breakdown: dict[str, int]
+    confidence: float
+    support_level: str
+    support_signals: tuple[str, ...]
+    member_evidence: tuple[WorkThreadMemberEvidence, ...]
 
     def to_dict(self) -> WorkThreadPayload:
         return _work_thread_payload(self)
@@ -104,6 +155,81 @@ def _bfs_depth(adjacency: dict[str, list[str]], root: str) -> int:
         depth += 1
         frontier = next_frontier
     return depth
+
+
+def _member_depths(children: dict[str, list[str]], root: str) -> dict[str, int]:
+    depths = {root: 0}
+    frontier = [root]
+    while frontier:
+        next_frontier: list[str] = []
+        for parent_id in frontier:
+            for child_id in children.get(parent_id, []):
+                if child_id in depths:
+                    continue
+                depths[child_id] = depths[parent_id] + 1
+                next_frontier.append(child_id)
+        frontier = next_frontier
+    return depths
+
+
+def _thread_member_evidence(
+    thread_profiles: Iterable[SessionProfile],
+    *,
+    root_id: str,
+    depths: Mapping[str, int],
+) -> tuple[WorkThreadMemberEvidence, ...]:
+    members: list[WorkThreadMemberEvidence] = []
+    for profile in thread_profiles:
+        conversation_id = profile.conversation_id
+        parent_id = profile.parent_id
+        if conversation_id == root_id:
+            role = "root"
+            signals: tuple[str, ...] = ("root_conversation", "explicit_lineage")
+            evidence: tuple[str, ...] = ("conversation has no archived parent inside this thread",)
+        else:
+            role = "parent_continuation"
+            signals = ("parent_conversation_id", "explicit_lineage")
+            evidence = (f"parent_id={parent_id}", f"root_id={root_id}")
+        members.append(
+            WorkThreadMemberEvidence(
+                conversation_id=conversation_id,
+                parent_id=parent_id,
+                role=role,
+                depth=depths.get(conversation_id, 0),
+                confidence=1.0,
+                support_signals=signals,
+                evidence=evidence,
+            )
+        )
+    return tuple(members)
+
+
+def _thread_support_signals(
+    *,
+    session_count: int,
+    branch_count: int,
+    dominant_repo: str | None,
+    start_time: datetime | None,
+    end_time: datetime | None,
+) -> tuple[str, ...]:
+    signals = ["explicit_lineage"]
+    if session_count > 1:
+        signals.append("multi_session_thread")
+    if branch_count > 1:
+        signals.append("branching_continuations")
+    if dominant_repo is not None:
+        signals.append("dominant_repo")
+    if start_time is not None and end_time is not None:
+        signals.append("wallclock_bounds")
+    return tuple(signals)
+
+
+def _thread_support_level(*, session_count: int) -> str:
+    return "strong" if session_count > 1 else "moderate"
+
+
+def _thread_confidence(*, session_count: int) -> float:
+    return 1.0 if session_count > 1 else 0.85
 
 
 def build_session_threads(profiles: Iterable[SessionProfile]) -> list[WorkThread]:
@@ -145,6 +271,20 @@ def build_session_threads(profiles: Iterable[SessionProfile]) -> list[WorkThread
             work_event_counter.update(
                 event.kind.value if hasattr(event.kind, "value") else str(event.kind) for event in profile.work_events
             )
+        dominant_repo = repo_counter.most_common(1)[0][0] if repo_counter else None
+        member_depths = _member_depths(children, root.conversation_id)
+        member_evidence = _thread_member_evidence(
+            thread_profiles,
+            root_id=root.conversation_id,
+            depths=member_depths,
+        )
+        support_signals = _thread_support_signals(
+            session_count=len(thread_ids),
+            branch_count=sum(1 for conversation_id in thread_ids if not children.get(conversation_id)),
+            dominant_repo=dominant_repo,
+            start_time=start_time,
+            end_time=end_time,
+        )
 
         threads.append(
             WorkThread(
@@ -158,12 +298,16 @@ def build_session_threads(profiles: Iterable[SessionProfile]) -> list[WorkThread
                 wall_duration_ms=wall_ms,
                 total_messages=sum(profile.message_count for profile in thread_profiles),
                 total_cost_usd=sum(profile.total_cost_usd for profile in thread_profiles),
-                dominant_repo=repo_counter.most_common(1)[0][0] if repo_counter else None,
+                dominant_repo=dominant_repo,
                 provider_breakdown=dict(provider_counter),
                 work_event_breakdown=dict(work_event_counter),
+                confidence=_thread_confidence(session_count=len(thread_ids)),
+                support_level=_thread_support_level(session_count=len(thread_ids)),
+                support_signals=support_signals,
+                member_evidence=member_evidence,
             )
         )
     return threads
 
 
-__all__ = ["WorkThread", "build_session_threads"]
+__all__ = ["WorkThread", "WorkThreadMemberEvidence", "build_session_threads"]
