@@ -32,6 +32,8 @@ def path_only_sidecars() -> dict[str, str]:
 
 
 def looks_like_conversation_document(payload: JSONDocument) -> bool:
+    if payload.get("polylogue_capture_kind") == "browser_llm_session":
+        return True
     if isinstance(payload.get("mapping"), dict):
         return True
     if isinstance(payload.get("chat_messages"), list):

@@ -1,0 +1,32 @@
+{
+  "manifest_version": 3,
+  "name": "Polylogue Browser Capture",
+  "version": "0.1.0",
+  "description": "Capture supported web LLM sessions into the local Polylogue inbox.",
+  "permissions": ["activeTab", "scripting", "storage", "tabs"],
+  "host_permissions": [
+    "https://chatgpt.com/*",
+    "https://claude.ai/*",
+    "http://127.0.0.1:8765/*"
+  ],
+  "background": {
+    "service_worker": "src/background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Polylogue Capture",
+    "default_popup": "src/popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://chatgpt.com/*"],
+      "js": ["src/common.js", "src/content/chatgpt.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://claude.ai/*"],
+      "js": ["src/common.js", "src/content/claude.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
