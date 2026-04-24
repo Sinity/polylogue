@@ -394,6 +394,9 @@ class TestPolylogueArchiveProducts:
         assert any(item.conversation_id == "conv-root" for item in phases)
         assert len(threads) == 1
         assert threads[0].thread.session_count == 2
+        assert threads[0].thread.support_level == "strong"
+        assert threads[0].thread.member_evidence[1].role == "parent_continuation"
+        assert threads[0].thread.member_evidence[1].parent_id == "conv-root"
 
         tag_rollups = await archive.list_session_tag_rollup_products(SessionTagRollupQuery(provider="claude-code"))
         day_summaries = await archive.list_day_session_summary_products(

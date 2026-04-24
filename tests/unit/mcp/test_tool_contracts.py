@@ -11,6 +11,7 @@ import pytest
 from polylogue.archive_product_models import (
     DaySessionSummaryPayload,
     WeekSessionSummaryPayload,
+    WorkThreadMemberEvidencePayload,
     WorkThreadPayload,
 )
 from polylogue.archive_products import (
@@ -621,7 +622,23 @@ class TestProductTools:
             root_id="conv-1",
             dominant_repo="polylogue",
             provenance=_provenance(),
-            thread=WorkThreadPayload(session_count=2),
+            thread=WorkThreadPayload(
+                session_ids=("conv-1", "conv-2"),
+                session_count=2,
+                confidence=1.0,
+                support_level="strong",
+                support_signals=("explicit_lineage",),
+                member_evidence=(
+                    WorkThreadMemberEvidencePayload(
+                        conversation_id="conv-1",
+                        role="root",
+                        depth=0,
+                        confidence=1.0,
+                        support_signals=("root_conversation",),
+                        evidence=("conversation has no archived parent inside this thread",),
+                    ),
+                ),
+            ),
         )
         tag_rollup = SessionTagRollupProduct(
             tag="provider:claude-code",
@@ -755,6 +772,8 @@ class TestProductTools:
         assert phases_payload["items"][0]["product_kind"] == "session_phase"
         assert tags_payload["items"][0]["product_kind"] == "session_tag_rollup"
         assert threads_payload["items"][0]["product_kind"] == "work_thread"
+        assert threads_payload["items"][0]["thread"]["support_level"] == "strong"
+        assert threads_payload["items"][0]["thread"]["member_evidence"][0]["role"] == "root"
         assert day_payload["items"][0]["product_kind"] == "day_session_summary"
         assert week_payload["items"][0]["product_kind"] == "week_session_summary"
         assert analytics_payload["items"][0]["product_kind"] == "provider_analytics"
