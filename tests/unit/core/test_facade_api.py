@@ -9,7 +9,9 @@ import pytest
 from polylogue import Polylogue
 from polylogue.archive_products import (
     ArchiveDebtProductQuery,
+    CostRollupProductQuery,
     DaySessionSummaryProductQuery,
+    SessionCostProductQuery,
     SessionEnrichmentProductQuery,
     SessionPhaseProductQuery,
     SessionProfileProductQuery,
@@ -306,6 +308,7 @@ class TestPolylogueArchiveProducts:
             ConversationBuilder(db_path, "conv-root")
             .provider("claude-code")
             .title("Root Thread")
+            .provider_meta({"total_cost_usd": 1.25, "model": "claude-sonnet-4-5"})
             .updated_at("2026-03-01T10:10:00+00:00")
             .add_message(
                 "u1",
@@ -406,6 +409,10 @@ class TestPolylogueArchiveProducts:
             WeekSessionSummaryProductQuery(provider="claude-code", limit=10)
         )
         archive_debt = await archive.list_archive_debt_products(ArchiveDebtProductQuery(limit=10))
+        session_costs = await archive.list_session_cost_products(
+            SessionCostProductQuery(provider="claude-code", limit=10)
+        )
+        cost_rollups = await archive.list_cost_rollup_products(CostRollupProductQuery(provider="claude-code"))
 
         assert any(item.tag == "provider:claude-code" for item in tag_rollups)
         assert len(day_summaries) == 1
@@ -413,6 +420,8 @@ class TestPolylogueArchiveProducts:
         assert len(week_summaries) == 1
         assert week_summaries[0].summary.session_count == 2
         assert any(item.product_kind == "archive_debt" for item in archive_debt)
+        assert any(item.conversation_id == "conv-root" and item.estimate.status == "exact" for item in session_costs)
+        assert cost_rollups[0].total_usd == pytest.approx(1.25)
 
     @pytest.mark.asyncio
     async def test_archive_stats_health_and_rebuild_products_are_public(

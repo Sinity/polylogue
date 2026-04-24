@@ -655,6 +655,10 @@ class ConversationBuilder:
         self.conv = self.conv.model_copy(update={"metadata": metadata})
         return self
 
+    def provider_meta(self, provider_meta: JSONRecord | None) -> ConversationBuilder:
+        self.conv = self.conv.model_copy(update={"provider_meta": provider_meta})
+        return self
+
     def parent_conversation(self, parent_id: str) -> ConversationBuilder:
         self.conv = self.conv.model_copy(update={"parent_conversation_id": _conversation_id(parent_id)})
         return self

@@ -19,8 +19,10 @@ from polylogue.archive_products import (
     ArchiveEnrichmentProvenance,
     ArchiveInferenceProvenance,
     ArchiveProductProvenance,
+    CostRollupProduct,
     DaySessionSummaryProduct,
     ProviderAnalyticsProduct,
+    SessionCostProduct,
     SessionEnrichmentPayload,
     SessionEnrichmentProduct,
     SessionEvidencePayload,
@@ -38,6 +40,7 @@ from polylogue.archive_products import (
 )
 from polylogue.lib.models import Conversation, ConversationSummary
 from polylogue.lib.neighbor_candidates import ConversationNeighborCandidate, NeighborReason
+from polylogue.lib.pricing import CostEstimatePayload, CostUsagePayload
 from polylogue.lib.query_miss_diagnostics import QueryMissDiagnostics, QueryMissReason
 from polylogue.lib.query_spec import ConversationQuerySpec
 from polylogue.lib.search_hits import ConversationSearchHit
@@ -675,6 +678,35 @@ class TestProductTools:
             tool_use_percentage=100.0,
             thinking_percentage=0.0,
         )
+        session_cost = SessionCostProduct(
+            conversation_id="conv-root",
+            provider_name="claude-code",
+            title="Root Thread",
+            estimate=CostEstimatePayload(
+                provider_name="claude-code",
+                conversation_id="conv-root",
+                model_name="claude-sonnet-4-5",
+                normalized_model="claude-sonnet-4-5",
+                status="exact",
+                confidence=1.0,
+                total_usd=1.25,
+                provenance=("archive_provider_reported_cost",),
+            ),
+            provenance=_provenance(),
+        )
+        cost_rollup = CostRollupProduct(
+            provider_name="claude-code",
+            model_name="claude-sonnet-4-5",
+            normalized_model="claude-sonnet-4-5",
+            session_count=1,
+            priced_session_count=1,
+            unavailable_session_count=0,
+            status_counts={"exact": 1},
+            total_usd=1.25,
+            usage=CostUsagePayload(),
+            confidence=1.0,
+            provenance=_provenance(),
+        )
         debt = ArchiveDebtProduct(
             debt_name="session_products",
             category="products",
@@ -695,6 +727,8 @@ class TestProductTools:
             mock_ops.list_day_session_summary_products = AsyncMock(return_value=[day_summary])
             mock_ops.list_week_session_summary_products = AsyncMock(return_value=[week_summary])
             mock_ops.list_provider_analytics_products = AsyncMock(return_value=[analytics])
+            mock_ops.list_session_cost_products = AsyncMock(return_value=[session_cost])
+            mock_ops.list_cost_rollup_products = AsyncMock(return_value=[cost_rollup])
             mock_ops.list_archive_debt_products = AsyncMock(return_value=[debt])
             mock_get_archive_ops.return_value = mock_ops
 
@@ -747,6 +781,18 @@ class TestProductTools:
                 provider="claude-code",
                 limit=5,
             )
+            costs_raw = await invoke_surface_async(
+                mcp_server._tool_manager._tools["session_costs"].fn,
+                provider="claude-code",
+                status="exact",
+                limit=5,
+            )
+            cost_rollups_raw = await invoke_surface_async(
+                mcp_server._tool_manager._tools["cost_rollups"].fn,
+                provider="claude-code",
+                model="claude-sonnet-4-5",
+                limit=5,
+            )
             debt_raw = await invoke_surface_async(
                 mcp_server._tool_manager._tools["archive_debt"].fn,
                 category="products",
@@ -763,6 +809,8 @@ class TestProductTools:
         day_payload = json.loads(day_raw)
         week_payload = json.loads(week_raw)
         analytics_payload = json.loads(analytics_raw)
+        costs_payload = json.loads(costs_raw)
+        cost_rollups_payload = json.loads(cost_rollups_raw)
         debt_payload = json.loads(debt_raw)
 
         assert profiles_payload["count"] == 1
@@ -777,6 +825,10 @@ class TestProductTools:
         assert day_payload["items"][0]["product_kind"] == "day_session_summary"
         assert week_payload["items"][0]["product_kind"] == "week_session_summary"
         assert analytics_payload["items"][0]["product_kind"] == "provider_analytics"
+        assert costs_payload["items"][0]["product_kind"] == "session_cost"
+        assert costs_payload["items"][0]["estimate"]["status"] == "exact"
+        assert cost_rollups_payload["items"][0]["product_kind"] == "cost_rollup"
+        assert cost_rollups_payload["items"][0]["total_usd"] == 1.25
         assert debt_payload["items"][0]["product_kind"] == "archive_debt"
         debt_query = mock_ops.list_archive_debt_products.await_args.args[0]
         assert debt_query.category == "products"

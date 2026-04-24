@@ -7,10 +7,14 @@ from typing import TYPE_CHECKING, Protocol
 from polylogue.archive_products import (
     ArchiveDebtProduct,
     ArchiveDebtProductQuery,
+    CostRollupProduct,
+    CostRollupProductQuery,
     DaySessionSummaryProduct,
     DaySessionSummaryProductQuery,
     ProviderAnalyticsProduct,
     ProviderAnalyticsProductQuery,
+    SessionCostProduct,
+    SessionCostProductQuery,
     SessionPhaseProduct,
     SessionPhaseProductQuery,
     SessionTagRollupProduct,
@@ -72,6 +76,16 @@ if TYPE_CHECKING:
             self,
             query: ProviderAnalyticsProductQuery | None = None,
         ) -> list[ProviderAnalyticsProduct]: ...
+
+        async def list_session_cost_products(
+            self,
+            query: SessionCostProductQuery | None = None,
+        ) -> list[SessionCostProduct]: ...
+
+        async def list_cost_rollup_products(
+            self,
+            query: CostRollupProductQuery | None = None,
+        ) -> list[CostRollupProduct]: ...
 
         async def list_archive_debt_products(
             self,
@@ -141,6 +155,18 @@ class PolylogueProductsMixin:
         query: ProviderAnalyticsProductQuery | None = None,
     ) -> list[ProviderAnalyticsProduct]:
         return await self.operations.list_provider_analytics_products(query)
+
+    async def list_session_cost_products(
+        self,
+        query: SessionCostProductQuery | None = None,
+    ) -> list[SessionCostProduct]:
+        return await self.operations.list_session_cost_products(query)
+
+    async def list_cost_rollup_products(
+        self,
+        query: CostRollupProductQuery | None = None,
+    ) -> list[CostRollupProduct]:
+        return await self.operations.list_cost_rollup_products(query)
 
     async def list_archive_debt_products(
         self,

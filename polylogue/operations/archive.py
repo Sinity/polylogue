@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, TypeVar, cast
@@ -16,11 +17,16 @@ from polylogue.archive_product_summaries import (
 from polylogue.archive_products import (
     ArchiveDebtProduct,
     ArchiveDebtProductQuery,
+    ArchiveProductProvenance,
     ArchiveProductUnavailableError,
+    CostRollupProduct,
+    CostRollupProductQuery,
     DaySessionSummaryProduct,
     DaySessionSummaryProductQuery,
     ProviderAnalyticsProduct,
     ProviderAnalyticsProductQuery,
+    SessionCostProduct,
+    SessionCostProductQuery,
     SessionEnrichmentProduct,
     SessionEnrichmentProductQuery,
     SessionPhaseProduct,
@@ -39,6 +45,7 @@ from polylogue.archive_products import (
 from polylogue.archive_resume import ResumeBrief, ResumeOperations, build_resume_brief
 from polylogue.lib.content_projection import ContentProjectionSpec
 from polylogue.lib.conversation_models import ConversationSummary
+from polylogue.lib.pricing import CostUsagePayload, _normalize_model, estimate_conversation_cost, generated_at
 from polylogue.lib.query_spec import ConversationQuerySpec
 from polylogue.maintenance_targets import build_maintenance_target_catalog
 from polylogue.paths.sanitize import conversation_render_root
@@ -62,6 +69,7 @@ from polylogue.storage.session_product_runtime import (
     SessionProductReadyFlag,
     SessionProductStatusSnapshot,
 )
+from polylogue.storage.store_constants import SESSION_PRODUCT_MATERIALIZER_VERSION
 from polylogue.types import Provider
 
 logger = structlog.get_logger(__name__)
@@ -212,6 +220,36 @@ def provider_analytics_product(row: ProviderMetricsRow) -> ProviderAnalyticsProd
         tool_use_percentage=tool_use_percentage,
         thinking_percentage=thinking_percentage,
     )
+
+
+def _session_cost_product(conversation: Conversation, *, materialized_at: str) -> SessionCostProduct:
+    estimate = estimate_conversation_cost(conversation)
+    source_updated = conversation.updated_at or conversation.created_at
+    return SessionCostProduct(
+        conversation_id=str(conversation.id),
+        provider_name=str(conversation.provider),
+        title=conversation.title,
+        created_at=conversation.created_at.isoformat() if conversation.created_at is not None else None,
+        updated_at=conversation.updated_at.isoformat() if conversation.updated_at is not None else None,
+        estimate=estimate,
+        provenance=ArchiveProductProvenance(
+            materializer_version=SESSION_PRODUCT_MATERIALIZER_VERSION,
+            materialized_at=materialized_at,
+            source_updated_at=source_updated.isoformat() if source_updated is not None else None,
+            source_sort_key=source_updated.timestamp() if source_updated is not None else None,
+        ),
+    )
+
+
+def _cost_model_matches(product: SessionCostProduct, model_filter: str | None) -> bool:
+    if not model_filter:
+        return True
+    normalized_filter = _normalize_model(model_filter)
+    return product.estimate.model_name == model_filter or product.estimate.normalized_model == normalized_filter
+
+
+def _cost_status_matches(product: SessionCostProduct, status_filter: str | None) -> bool:
+    return not status_filter or product.estimate.status == status_filter
 
 
 def _require_ready_flag(
@@ -694,6 +732,105 @@ class ArchiveProductAggregateMixin:
         if request.provider:
             products = [product for product in products if product.provider_name == request.provider]
         return _slice_products(products, offset=request.offset, limit=request.limit)
+
+    async def list_session_cost_products(
+        self,
+        query: SessionCostProductQuery | None = None,
+    ) -> list[SessionCostProduct]:
+        request = _default_query(query, SessionCostProductQuery)
+        conversations = await self.repository.list(
+            provider=request.provider,
+            since=request.since,
+            until=request.until,
+            limit=None,
+        )
+        materialized_at = generated_at()
+        products = [
+            _session_cost_product(conversation, materialized_at=materialized_at) for conversation in conversations
+        ]
+        if request.conversation_id:
+            products = [product for product in products if product.conversation_id == request.conversation_id]
+        products = [product for product in products if _cost_model_matches(product, request.model)]
+        products = [product for product in products if _cost_status_matches(product, request.status)]
+        products.sort(key=lambda product: product.provenance.source_sort_key or 0.0, reverse=True)
+        return _slice_products(products, offset=request.offset, limit=request.limit)
+
+    async def list_cost_rollup_products(
+        self,
+        query: CostRollupProductQuery | None = None,
+    ) -> list[CostRollupProduct]:
+        request = _default_query(query, CostRollupProductQuery)
+        session_products = await self.list_session_cost_products(
+            SessionCostProductQuery(
+                provider=request.provider,
+                since=request.since,
+                until=request.until,
+                model=request.model,
+                limit=None,
+            )
+        )
+        grouped: dict[tuple[str, str | None], list[SessionCostProduct]] = {}
+        for product in session_products:
+            key = (product.provider_name, product.estimate.normalized_model or product.estimate.model_name)
+            grouped.setdefault(key, []).append(product)
+
+        rollups: list[CostRollupProduct] = []
+        for (provider_name, normalized_model), products in sorted(
+            grouped.items(),
+            key=lambda item: (item[0][0], item[0][1] or ""),
+        ):
+            usage = CostUsagePayload()
+            status_counts: Counter[str] = Counter()
+            total_usd = 0.0
+            priced_count = 0
+            confidence_total = 0.0
+            source_updated_at = max(
+                (
+                    product.provenance.source_updated_at
+                    for product in products
+                    if product.provenance.source_updated_at is not None
+                ),
+                default=None,
+            )
+            source_sort_key = max(
+                (
+                    product.provenance.source_sort_key
+                    for product in products
+                    if product.provenance.source_sort_key is not None
+                ),
+                default=None,
+            )
+            model_names = Counter(product.estimate.model_name for product in products if product.estimate.model_name)
+            for product in products:
+                estimate = product.estimate
+                usage = usage.plus(estimate.usage)
+                status_counts[estimate.status] += 1
+                total_usd += estimate.total_usd
+                if estimate.priced:
+                    priced_count += 1
+                    confidence_total += estimate.confidence
+            rollups.append(
+                CostRollupProduct(
+                    provider_name=provider_name,
+                    model_name=model_names.most_common(1)[0][0] if model_names else None,
+                    normalized_model=normalized_model,
+                    session_count=len(products),
+                    priced_session_count=priced_count,
+                    unavailable_session_count=status_counts["unavailable"],
+                    status_counts=dict(sorted(status_counts.items())),
+                    total_usd=total_usd,
+                    usage=usage,
+                    confidence=(confidence_total / priced_count if priced_count else 0.0),
+                    provenance=ArchiveProductProvenance(
+                        materializer_version=SESSION_PRODUCT_MATERIALIZER_VERSION,
+                        materialized_at=generated_at(),
+                        source_updated_at=source_updated_at,
+                        source_sort_key=source_sort_key,
+                    ),
+                )
+            )
+        rollups.sort(key=lambda product: product.total_usd, reverse=True)
+        return _slice_products(rollups, offset=request.offset, limit=request.limit)
 
     async def get_product_readiness_report(
         self,
