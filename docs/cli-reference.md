@@ -124,25 +124,26 @@ Options:
   -h, --help                      Show this message and exit.
 
 Commands:
-  audit        Run archive QA: schema audit and artifact proof checks.
-  auth         Authenticate with external services (Google Drive for...
-  completions  Generate shell completion scripts.
-  count        Print count of matched conversations.
-  dashboard    Launch the dashboard TUI.
-  delete       Delete matched conversations.
-  doctor       Health check with optional maintenance and cleanup previews.
-  export       Export one known conversation by ID.
-  list         List matched conversations.
-  mcp          Start the MCP server for AI assistant integration.
-  neighbors    Show explainable neighboring or near-duplicate candidates.
-  open         Open matched conversation in browser/editor.
-  products     Inspect durable archive data products.
-  reset        Reset database, blob store, assets, rendered outputs, or...
-  resume       Reconstruct work-state context for a fresh agent session.
-  run          Run pipeline stages on configured sources.
-  schema       Inspect schema packages, versions, and evidence.
-  stats        Show statistics for matched conversations.
-  tags         List all tags with conversation counts.
+  audit            Run archive QA: schema audit and artifact proof checks.
+  auth             Authenticate with external services (Google Drive for...
+  browser-capture  Receive browser-extension captures into the normal inbox.
+  completions      Generate shell completion scripts.
+  count            Print count of matched conversations.
+  dashboard        Launch the dashboard TUI.
+  delete           Delete matched conversations.
+  doctor           Health check with optional maintenance and cleanup...
+  export           Export one known conversation by ID.
+  list             List matched conversations.
+  mcp              Start the MCP server for AI assistant integration.
+  neighbors        Show explainable neighboring or near-duplicate...
+  open             Open matched conversation in browser/editor.
+  products         Inspect durable archive data products.
+  reset            Reset database, blob store, assets, rendered outputs,...
+  resume           Reconstruct work-state context for a fresh agent session.
+  run              Run pipeline stages on configured sources.
+  schema           Inspect schema packages, versions, and evidence.
+  stats            Show statistics for matched conversations.
+  tags             List all tags with conversation counts.
 ```
 
 ## List Verb

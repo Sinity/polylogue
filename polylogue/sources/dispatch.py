@@ -14,7 +14,7 @@ from polylogue.logging import get_logger
 from polylogue.types import Provider
 
 from .decoders import _decode_json_bytes, _iter_json_stream
-from .parsers import chatgpt, claude, codex, drive
+from .parsers import browser_capture, chatgpt, claude, codex, drive
 from .parsers.base import ParsedConversation, extract_messages_from_list
 
 if TYPE_CHECKING:
@@ -32,6 +32,7 @@ PayloadRecord: TypeAlias = JSONDocument
 PayloadSequence: TypeAlias = list[JSONValue]
 LoweredPayloadMode: TypeAlias = Literal[
     "bundle_record",
+    "browser_capture",
     "chunked_prompt",
     "generic_messages",
     "grouped_records",
@@ -77,6 +78,10 @@ def _looks_like_gemini_mapping(record: PayloadRecord) -> bool:
 
 
 def _detect_provider_from_record(record: PayloadRecord) -> Provider | None:
+    if browser_capture.looks_like(record):
+        session = record.get("session")
+        provider = session.get("provider") if isinstance(session, dict) else None
+        return Provider.from_string(provider if isinstance(provider, str) else None)
     if chatgpt.looks_like(record):
         return Provider.CHATGPT
     if claude.looks_like_ai(record):
@@ -340,6 +345,16 @@ def _lower_payload_specs(
 
     shaped_payload = _schema_guided_payload(runtime_provider, payload, schema_resolution)
     record = _payload_record(shaped_payload)
+    if record is not None and browser_capture.looks_like(record):
+        provider = _detect_provider_from_record(record) or runtime_provider
+        return [
+            LoweredPayloadSpec(
+                provider=provider,
+                fallback_id=fallback_id,
+                mode="browser_capture",
+                payload=record,
+            )
+        ]
     if record is not None and (conversations := _record_conversations(record)):
         lowered_specs: list[LoweredPayloadSpec] = []
         for index, item in enumerate(conversations):
@@ -393,6 +408,10 @@ def _generic_messages_conversation(
 
 
 def _parse_lowered_spec(spec: LoweredPayloadSpec) -> list[ParsedConversation]:
+    if spec.mode == "browser_capture":
+        record = _payload_record(spec.payload)
+        return [browser_capture.parse(record, spec.fallback_id)] if record is not None else []
+
     if spec.provider is Provider.CHATGPT:
         record = _payload_record(spec.payload)
         return [chatgpt.parse(record, spec.fallback_id)] if record is not None else []

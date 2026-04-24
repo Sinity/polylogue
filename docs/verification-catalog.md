@@ -8,10 +8,10 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 
 ## Snapshot
 
-- subjects: `9043`
+- subjects: `9046`
 - claims: `22`
 - runner bindings: `22`
-- proof obligations: `9138`
+- proof obligations: `9147`
 
 ## Quality Checks
 
@@ -31,7 +31,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | --- | ---: |
 | `archive.query_law` | 1 |
 | `artifact.path` | 27 |
-| `cli.command` | 47 |
+| `cli.command` | 50 |
 | `cli.json_command` | 2 |
 | `diagnostic.observable` | 1 |
 | `error.surface` | 2 |
@@ -50,6 +50,9 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `polylogue` | `polylogue/cli/click_app.py:51` `polylogue.cli.click_app.cli` |
 | `polylogue audit` | `polylogue/cli/commands/qa.py:21` `polylogue.cli.commands.qa.qa_command` |
 | `polylogue auth` | `polylogue/cli/commands/auth.py:16` `polylogue.cli.commands.auth.auth_command` |
+| `polylogue browser-capture` | `polylogue/cli/commands/browser_capture.py:14` `polylogue.cli.commands.browser_capture.browser_capture_command` |
+| `polylogue browser-capture serve` | `polylogue/cli/commands/browser_capture.py:38` `polylogue.cli.commands.browser_capture.serve_command` |
+| `polylogue browser-capture status` | `polylogue/cli/commands/browser_capture.py:19` `polylogue.cli.commands.browser_capture.status_command` |
 | `polylogue completions` | `polylogue/cli/commands/completions.py:9` `polylogue.cli.commands.completions.completions_command` |
 | `polylogue count` | `polylogue/cli/query_verbs.py:41` `polylogue.cli.query_verbs.count_verb` |
 | `polylogue dashboard` | `polylogue/cli/commands/dashboard.py:10` `polylogue.cli.commands.dashboard.dashboard_command` |
@@ -191,10 +194,10 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | --- | ---: |
 | `archive.query.provider_filter_consistency` | 1 |
 | `artifact.path.dependency_closure` | 11 |
-| `cli.command.help` | 47 |
+| `cli.command.help` | 50 |
 | `cli.command.json_envelope` | 2 |
-| `cli.command.no_traceback` | 47 |
-| `cli.command.plain_mode` | 47 |
+| `cli.command.no_traceback` | 50 |
+| `cli.command.plain_mode` | 50 |
 | `diagnostic.observable_trace_mapping` | 1 |
 | `error.machine_user_context` | 2 |
 | `generated.scenario.family_registered` | 9 |

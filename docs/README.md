@@ -16,6 +16,7 @@ This directory holds the current repository-facing documentation.
 | [Architecture](architecture.md) | System rings, ownership boundaries, and data flow. |
 | [Internals](internals.md) | Working implementation reference and debugging landmarks. |
 | [MCP Integration](mcp-integration.md) | Model Context Protocol server setup and usage. |
+| [Browser Capture](browser-capture.md) | Local browser extension capture for ChatGPT and Claude.ai sessions. |
 | [Generate](generate.md) | Synthetic archive generation, seed mode, and demo workflows. |
 | [Providers](providers/README.md) | Provider-specific parsing and export-format notes. |
 | [Test Quality Workflows](test-quality-workflows.md) | Generated validation lanes, mutation campaigns, and benchmark campaigns. |

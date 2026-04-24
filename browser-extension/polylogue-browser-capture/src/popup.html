@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Polylogue Capture</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --ink: #172026;
+        --muted: #5f6b76;
+        --line: #d7dde2;
+        --surface: #ffffff;
+        --panel: #f4f7f9;
+        --ok: #14764e;
+        --warn: #9a5b00;
+        --bad: #ad2f2f;
+        --accent: #325d8f;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        width: 360px;
+        margin: 0;
+        color: var(--ink);
+        background: var(--surface);
+        font: 13px/1.4 system-ui, sans-serif;
+      }
+      main {
+        padding: 14px;
+      }
+      header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding-bottom: 12px;
+        border-bottom: 1px solid var(--line);
+      }
+      h1 {
+        margin: 0;
+        font-size: 16px;
+        letter-spacing: 0;
+      }
+      .subtitle {
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .badge {
+        min-width: 72px;
+        padding: 4px 8px;
+        border-radius: 999px;
+        color: #fff;
+        text-align: center;
+        font-size: 12px;
+        background: var(--muted);
+      }
+      .badge.ok { background: var(--ok); }
+      .badge.warn { background: var(--warn); }
+      .badge.bad { background: var(--bad); }
+      section {
+        padding: 12px 0;
+        border-bottom: 1px solid var(--line);
+      }
+      section:last-child {
+        border-bottom: 0;
+        padding-bottom: 0;
+      }
+      .row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin: 7px 0;
+      }
+      .label {
+        color: var(--muted);
+      }
+      .value {
+        max-width: 220px;
+        overflow: hidden;
+        text-align: right;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .controls {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+      }
+      button {
+        width: 100%;
+        min-height: 34px;
+        padding: 7px 10px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        color: var(--ink);
+        background: var(--panel);
+        font: inherit;
+      }
+      button.primary {
+        border-color: var(--accent);
+        color: #fff;
+        background: var(--accent);
+      }
+      input {
+        width: 100%;
+        padding: 7px 8px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        font: inherit;
+      }
+      .setting-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 86px;
+        gap: 8px;
+        margin-top: 6px;
+      }
+      #state {
+        min-height: 38px;
+        margin: 0;
+        color: var(--muted);
+        white-space: pre-wrap;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <div>
+          <h1>Polylogue Capture</h1>
+          <div class="subtitle">ChatGPT and Claude.ai web sync</div>
+        </div>
+        <div id="badge" class="badge">checking</div>
+      </header>
+
+      <section>
+        <div class="row"><span class="label">Page</span><span id="page" class="value">Unknown</span></div>
+        <div class="row"><span class="label">Receiver</span><span id="receiver" class="value">127.0.0.1:8765</span></div>
+        <div class="row"><span class="label">Archive</span><span id="archive" class="value">Not checked</span></div>
+      </section>
+
+      <section>
+        <p id="state">Checking receiver...</p>
+        <div class="controls">
+          <button id="capture" class="primary">Capture page</button>
+          <button id="check">Check status</button>
+        </div>
+      </section>
+
+      <section>
+        <label class="label" for="receiver-url">Local receiver URL</label>
+        <div class="setting-row">
+          <input id="receiver-url" value="http://127.0.0.1:8765">
+          <button id="save">Save</button>
+        </div>
+      </section>
+    </main>
+    <script src="popup.js"></script>
+  </body>
+</html>
