@@ -445,6 +445,7 @@ class TestCliMetadata:
 
         expected = {
             "run",
+            "browser-capture",
             "doctor",
             "reset",
             "mcp",

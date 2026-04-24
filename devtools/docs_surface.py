@@ -27,6 +27,11 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
     DocsEntry("Architecture", "docs/architecture.md", "System rings, ownership boundaries, and data flow."),
     DocsEntry("Internals", "docs/internals.md", "Working implementation reference and debugging landmarks."),
     DocsEntry("MCP Integration", "docs/mcp-integration.md", "Model Context Protocol server setup and usage."),
+    DocsEntry(
+        "Browser Capture",
+        "docs/browser-capture.md",
+        "Local browser extension capture for ChatGPT and Claude.ai sessions.",
+    ),
     DocsEntry("Generate", "docs/generate.md", "Synthetic archive generation, seed mode, and demo workflows."),
     DocsEntry("Providers", "docs/providers/README.md", "Provider-specific parsing and export-format notes."),
     DocsEntry(
