@@ -25,8 +25,10 @@ import click
 from polylogue.archive_products import (
     ArchiveDebtProductQuery,
     ArchiveProductModel,
+    CostRollupProductQuery,
     DaySessionSummaryProductQuery,
     ProviderAnalyticsProductQuery,
+    SessionCostProductQuery,
     SessionEnrichmentProductQuery,
     SessionPhaseProductQuery,
     SessionProfileProductQuery,
@@ -512,6 +514,54 @@ register(
             ProductField("avg_messages", _formatted_float("avg_messages_per_conversation"), group=0),
             ProductField("tools", _count_with_percentage("tool_use_count", "tool_use_percentage"), group=1),
             ProductField("thinking", _count_with_percentage("thinking_count", "thinking_percentage"), group=1),
+        ),
+    )
+)
+
+register(
+    ProductType(
+        name="session_costs",
+        display_name="Session Costs",
+        json_key="session_costs",
+        empty_message="No session cost estimates matched.",
+        query_model=SessionCostProductQuery,
+        operations_method_name="list_session_cost_products",
+        cli_command_name="costs",
+        cli_help="List session-level cost estimates.",
+        cli_options=(
+            CliOption("conversation_id", ("--conversation-id",), help="Only one conversation"),
+            CliOption("model", ("--model",), help="Only this model or normalized model"),
+            CliOption("status", ("--status",), type=click.Choice(["exact", "priced", "partial", "unavailable"])),
+        ),
+        fields=(
+            ProductField("", _id_with_provider("conversation_id"), group=0),
+            ProductField("status", _nested("estimate", "status"), group=0),
+            ProductField("model", _nested("estimate", "normalized_model"), group=0),
+            ProductField("usd", _nested("estimate", "total_usd", "0"), group=1),
+            ProductField("confidence", _nested("estimate", "confidence", "0"), group=1),
+        ),
+    )
+)
+
+register(
+    ProductType(
+        name="cost_rollups",
+        display_name="Cost Rollups",
+        json_key="cost_rollups",
+        empty_message="No cost rollups matched.",
+        query_model=CostRollupProductQuery,
+        operations_method_name="list_cost_rollup_products",
+        cli_command_name="cost-rollups",
+        cli_help="List provider/model cost rollups.",
+        cli_options=(CliOption("model", ("--model",), help="Only this model or normalized model"),),
+        fields=(
+            ProductField("", _attr("provider_name"), group=0),
+            ProductField("model", _attr("normalized_model"), group=0),
+            ProductField("sessions", _attr("session_count", "0"), group=0),
+            ProductField("priced", _attr("priced_session_count", "0"), group=1),
+            ProductField("unavailable", _attr("unavailable_session_count", "0"), group=1),
+            ProductField("usd", _attr("total_usd", "0"), group=1),
+            ProductField("confidence", _attr("confidence", "0"), group=1),
         ),
     )
 )

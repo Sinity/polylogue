@@ -7,10 +7,14 @@ from typing import TYPE_CHECKING
 from polylogue.archive_products import (
     ArchiveDebtProduct,
     ArchiveDebtProductQuery,
+    CostRollupProduct,
+    CostRollupProductQuery,
     DaySessionSummaryProduct,
     DaySessionSummaryProductQuery,
     ProviderAnalyticsProduct,
     ProviderAnalyticsProductQuery,
+    SessionCostProduct,
+    SessionCostProductQuery,
     SessionEnrichmentProduct,
     SessionEnrichmentProductQuery,
     SessionPhaseProduct,
@@ -114,6 +118,18 @@ class SyncProductQueriesMixin:
         query: ProviderAnalyticsProductQuery | None = None,
     ) -> list[ProviderAnalyticsProduct]:
         return run_coroutine_sync(self._facade.list_provider_analytics_products(query))
+
+    def list_session_cost_products(
+        self,
+        query: SessionCostProductQuery | None = None,
+    ) -> list[SessionCostProduct]:
+        return run_coroutine_sync(self._facade.list_session_cost_products(query))
+
+    def list_cost_rollup_products(
+        self,
+        query: CostRollupProductQuery | None = None,
+    ) -> list[CostRollupProduct]:
+        return run_coroutine_sync(self._facade.list_cost_rollup_products(query))
 
     def list_archive_debt_products(
         self,

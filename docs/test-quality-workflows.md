@@ -15,10 +15,10 @@ Current registry snapshot:
 - mutation campaigns: `19`
 - benchmark campaigns: `3`
 - synthetic benchmark campaigns: `6`
-- scenario projections: `244`
+- scenario projections: `246`
 - inferred corpus scenarios: `5`
   - benchmark-campaign: `3`
-  - exercise: `138`
+  - exercise: `140`
   - inferred-corpus-scenario: `5`
   - mutation-campaign: `19`
   - synthetic-benchmark: `6`
@@ -337,6 +337,8 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `exercise` | `help-open` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | open help |
 | `exercise` | `help-products` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | products help |
 | `exercise` | `help-products-analytics` | `provider-analytics-query-loop` | `session_product_rows`<br>`provider_analytics_results` | `cli.help`<br>`query-provider-analytics` | — | `generated`<br>`help`<br>`structural` | products analytics help |
+| `exercise` | `help-products-cost-rollups` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | products cost-rollups help |
+| `exercise` | `help-products-costs` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | products costs help |
 | `exercise` | `help-products-day-summaries` | `day-summary-query-loop` | `day_session_summary_rows`<br>`day_session_summary_results` | `cli.help`<br>`query-day-session-summaries` | — | `generated`<br>`help`<br>`structural` | products day-summaries help |
 | `exercise` | `help-products-debt` | `archive-debt-query-loop` | `action_event_readiness`<br>`session_product_readiness`<br>`archive_readiness`<br>`archive_debt_results` | `cli.help`<br>`query-archive-debt` | — | `generated`<br>`help`<br>`structural` | products debt help |
 | `exercise` | `help-products-enrichments` | `session-enrichment-query-loop` | `session_profile_rows`<br>`session_profile_enrichment_fts`<br>`session_enrichment_results` | `cli.help`<br>`query-session-enrichments` | — | `generated`<br>`help`<br>`structural` | products enrichments help |
