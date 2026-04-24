@@ -6,7 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from polylogue.lib.session_payload_documents import SessionPhaseDocument, WorkEventDocument
 
-ARCHIVE_PRODUCT_CONTRACT_VERSION = 4
+ARCHIVE_PRODUCT_CONTRACT_VERSION = 5
 
 
 class ArchiveProductModel(BaseModel):
@@ -133,6 +133,16 @@ class SessionEnrichmentPayload(ArchiveProductModel):
     input_band_summary: dict[str, int] = Field(default_factory=dict)
 
 
+class WorkThreadMemberEvidencePayload(ArchiveProductModel):
+    conversation_id: str
+    parent_id: str | None = None
+    role: str
+    depth: int = 0
+    confidence: float = 0.0
+    support_signals: tuple[str, ...] = ()
+    evidence: tuple[str, ...] = ()
+
+
 class WorkThreadPayload(ArchiveProductModel):
     start_time: str | None = None
     end_time: str | None = None
@@ -144,7 +154,12 @@ class WorkThreadPayload(ArchiveProductModel):
     total_messages: int = 0
     total_cost_usd: float = 0.0
     wall_duration_ms: int = 0
+    provider_breakdown: dict[str, int] = Field(default_factory=dict)
     work_event_breakdown: dict[str, int] = Field(default_factory=dict)
+    confidence: float = 0.0
+    support_level: str = "weak"
+    support_signals: tuple[str, ...] = ()
+    member_evidence: tuple[WorkThreadMemberEvidencePayload, ...] = ()
 
 
 class DaySessionSummaryPayload(ArchiveProductModel):
@@ -185,4 +200,5 @@ __all__ = [
     "WorkEventEvidencePayload",
     "WorkEventInferencePayload",
     "WorkThreadPayload",
+    "WorkThreadMemberEvidencePayload",
 ]

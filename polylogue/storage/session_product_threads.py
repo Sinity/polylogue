@@ -99,6 +99,9 @@ def thread_search_text(thread: WorkThread) -> str:
         thread.dominant_repo or "",
         *thread.session_ids,
         *thread.work_event_breakdown.keys(),
+        thread.support_level,
+        *thread.support_signals,
+        *(signal for member in thread.member_evidence for signal in member.support_signals),
     ]
     search_text = " \n".join(part.strip() for part in parts if part and str(part).strip())
     return search_text or thread.thread_id
@@ -155,8 +158,23 @@ def _thread_payload_document(record: WorkThreadRecord) -> WorkThreadDocument:
         "total_messages": payload.total_messages,
         "total_cost_usd": payload.total_cost_usd,
         "dominant_repo": payload.dominant_repo,
-        "provider_breakdown": {},
+        "provider_breakdown": dict(payload.provider_breakdown),
         "work_event_breakdown": dict(payload.work_event_breakdown),
+        "confidence": payload.confidence,
+        "support_level": payload.support_level,
+        "support_signals": list(payload.support_signals),
+        "member_evidence": [
+            {
+                "conversation_id": member.conversation_id,
+                "parent_id": member.parent_id,
+                "role": member.role,
+                "depth": member.depth,
+                "confidence": member.confidence,
+                "support_signals": list(member.support_signals),
+                "evidence": list(member.evidence),
+            }
+            for member in payload.member_evidence
+        ],
     }
 
 

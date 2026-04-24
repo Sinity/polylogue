@@ -11,6 +11,7 @@ import click
 import pytest
 from click.testing import CliRunner, Result
 
+from polylogue.archive_product_models import ARCHIVE_PRODUCT_CONTRACT_VERSION
 from polylogue.archive_products import ProviderAnalyticsProduct
 from polylogue.cli.click_app import cli
 from polylogue.cli.commands.products import _make_callback
@@ -153,7 +154,7 @@ def test_products_profiles_json(cli_workspace: CliWorkspace) -> None:
     first = next(item for item in profiles if item["conversation_id"] == "conv-root")
     evidence = json_object(first["evidence"])
     inference = json_object(first["inference"])
-    assert json_int(first["contract_version"]) == 4
+    assert json_int(first["contract_version"]) == ARCHIVE_PRODUCT_CONTRACT_VERSION
     assert first["product_kind"] == "session_profile"
     assert first["semantic_tier"] == "merged"
     assert evidence["canonical_session_date"] == "2026-03-01"
@@ -344,7 +345,7 @@ def test_products_enrichments_json(cli_workspace: CliWorkspace) -> None:
     first = json_object_list(payload["session_enrichments"])[0]
     enrichment_provenance = json_object(first["enrichment_provenance"])
     enrichment = json_object(first["enrichment"])
-    assert json_int(first["contract_version"]) == 4
+    assert json_int(first["contract_version"]) == ARCHIVE_PRODUCT_CONTRACT_VERSION
     assert first["product_kind"] == "session_enrichment"
     assert first["semantic_tier"] == "enrichment"
     assert enrichment_provenance["enrichment_family"] == "scored_session_enrichment"
@@ -612,7 +613,16 @@ def test_products_threads_json(cli_workspace: CliWorkspace) -> None:
 
     threads_payload = extract_json_result(threads.output)
     assert json_int(threads_payload["count"]) == 1
-    assert json_object_list(threads_payload["work_threads"])[0]["product_kind"] == "work_thread"
+    thread = json_object_list(threads_payload["work_threads"])[0]
+    assert thread["product_kind"] == "work_thread"
+    thread_payload = json_object(thread["thread"])
+    assert thread_payload["support_level"] == "strong"
+    assert "explicit_lineage" in json_array(thread_payload["support_signals"])
+    members = json_object_list(thread_payload["member_evidence"])
+    assert [member["conversation_id"] for member in members] == ["conv-root", "conv-child"]
+    assert members[0]["role"] == "root"
+    assert members[1]["role"] == "parent_continuation"
+    assert members[1]["parent_id"] == "conv-root"
 
 
 def test_products_tag_and_summary_rollups_json(cli_workspace: CliWorkspace) -> None:
