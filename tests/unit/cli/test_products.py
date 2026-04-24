@@ -141,6 +141,36 @@ def _seed_products(cli_workspace: CliWorkspace) -> None:
         rebuild_action_event_read_model_sync(conn)
 
 
+def _seed_cost_products(cli_workspace: CliWorkspace) -> None:
+    db_path = cli_workspace["db_path"]
+    (
+        ConversationBuilder(db_path, "conv-exact-cost")
+        .provider("claude-code")
+        .title("Exact Cost")
+        .provider_meta({"total_cost_usd": 1.25, "model": "claude-sonnet-4-5"})
+        .updated_at("2026-03-01T12:00:00+00:00")
+        .add_message("u1", role="user", text="Run exact-cost task", timestamp="2026-03-01T11:55:00+00:00")
+        .save()
+    )
+    (
+        ConversationBuilder(db_path, "conv-priced-cost")
+        .provider("chatgpt")
+        .title("Priced Cost")
+        .provider_meta({"model": "openai/gpt-4o-2024-08-06", "usage": {"input_tokens": 1000, "output_tokens": 500}})
+        .updated_at("2026-03-01T13:00:00+00:00")
+        .add_message("u2", role="user", text="Run priced-cost task", timestamp="2026-03-01T12:55:00+00:00")
+        .save()
+    )
+    (
+        ConversationBuilder(db_path, "conv-unavailable-cost")
+        .provider("chatgpt")
+        .title("Unavailable Cost")
+        .updated_at("2026-03-01T14:00:00+00:00")
+        .add_message("u3", role="user", text="Run unavailable-cost task", timestamp="2026-03-01T13:55:00+00:00")
+        .save()
+    )
+
+
 def test_products_profiles_json(cli_workspace: CliWorkspace) -> None:
     _seed_products(cli_workspace)
 
@@ -168,6 +198,50 @@ def test_products_profiles_json(cli_workspace: CliWorkspace) -> None:
     assert "evidence" in first
     assert "inference" in first
     assert "provenance" in first
+
+
+def test_products_costs_json(cli_workspace: CliWorkspace) -> None:
+    _seed_cost_products(cli_workspace)
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["products", "costs", "--json"], catch_exceptions=False)
+
+    assert result.exit_code == 0
+    payload = extract_json_result(result.output)
+    costs = json_object_list(payload["session_costs"])
+    exact = next(item for item in costs if item["conversation_id"] == "conv-exact-cost")
+    priced = next(item for item in costs if item["conversation_id"] == "conv-priced-cost")
+    unavailable = next(item for item in costs if item["conversation_id"] == "conv-unavailable-cost")
+    exact_estimate = json_object(exact["estimate"])
+    priced_estimate = json_object(priced["estimate"])
+    unavailable_estimate = json_object(unavailable["estimate"])
+    assert exact["product_kind"] == "session_cost"
+    assert exact_estimate["status"] == "exact"
+    assert json_number(exact_estimate["total_usd"]) == pytest.approx(1.25)
+    assert priced_estimate["status"] == "priced"
+    assert priced_estimate["normalized_model"] == "gpt-4o"
+    assert json_number(priced_estimate["total_usd"]) == pytest.approx(0.0075)
+    assert unavailable_estimate["status"] == "unavailable"
+    assert "missing_token_usage" in json_array(unavailable_estimate["missing_reasons"])
+
+
+def test_products_cost_rollups_json(cli_workspace: CliWorkspace) -> None:
+    _seed_cost_products(cli_workspace)
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["products", "cost-rollups", "--json"], catch_exceptions=False)
+
+    assert result.exit_code == 0
+    payload = extract_json_result(result.output)
+    rollups = json_object_list(payload["cost_rollups"])
+    claude = next(item for item in rollups if item["provider_name"] == "claude-code")
+    gpt = next(item for item in rollups if item["normalized_model"] == "gpt-4o")
+    unknown = next(item for item in rollups if item["provider_name"] == "chatgpt" and item["normalized_model"] is None)
+    assert claude["product_kind"] == "cost_rollup"
+    assert json_number(claude["total_usd"]) == pytest.approx(1.25)
+    assert json_int(claude["priced_session_count"]) == 1
+    assert json_number(gpt["total_usd"]) == pytest.approx(0.0075)
+    assert json_int(unknown["unavailable_session_count"]) == 1
 
 
 def test_products_profiles_support_wallclock_filters_and_sort(cli_workspace: CliWorkspace) -> None:

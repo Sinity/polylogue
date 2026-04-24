@@ -297,6 +297,8 @@ Options:
 
 Commands:
   analytics       List provider-level analytics products.
+  cost-rollups    List provider/model cost rollups.
+  costs           List session-level cost estimates.
   day-summaries   List durable day-level session summary products.
   debt            List archive debt and maintenance readiness products.
   enrichments     List durable probabilistic session-enrichment products.

@@ -23,6 +23,7 @@ from polylogue.archive_product_models import (
     WorkEventInferencePayload,
     WorkThreadPayload,
 )
+from polylogue.lib.pricing import CostEstimatePayload, CostUsagePayload
 from polylogue.lib.session_profile import SessionProfile
 from polylogue.storage.repair import ArchiveDebtStatus
 from polylogue.storage.store import (
@@ -121,6 +122,17 @@ class WeekSessionSummaryProductQuery(ProviderTimeWindowProductQuery):
 
 class ProviderAnalyticsProductQuery(PaginatedProductQuery):
     provider: str | None = None
+    limit: int | None = None
+
+
+class SessionCostProductQuery(ProviderTimeWindowProductQuery):
+    conversation_id: str | None = None
+    model: str | None = None
+    status: str | None = None
+
+
+class CostRollupProductQuery(ProviderTimeWindowProductQuery):
+    model: str | None = None
     limit: int | None = None
 
 
@@ -360,6 +372,36 @@ class ProviderAnalyticsProduct(ArchiveProductModel):
     thinking_percentage: float
 
 
+class SessionCostProduct(ArchiveProductModel):
+    contract_version: int = ARCHIVE_PRODUCT_CONTRACT_VERSION
+    product_kind: str = "session_cost"
+    semantic_tier: str = "estimate"
+    conversation_id: str
+    provider_name: str
+    title: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+    estimate: CostEstimatePayload
+    provenance: ArchiveProductProvenance
+
+
+class CostRollupProduct(ArchiveProductModel):
+    contract_version: int = ARCHIVE_PRODUCT_CONTRACT_VERSION
+    product_kind: str = "cost_rollup"
+    semantic_tier: str = "estimate"
+    provider_name: str
+    model_name: str | None = None
+    normalized_model: str | None = None
+    session_count: int = 0
+    priced_session_count: int = 0
+    unavailable_session_count: int = 0
+    status_counts: dict[str, int]
+    total_usd: float = 0.0
+    usage: CostUsagePayload
+    confidence: float = 0.0
+    provenance: ArchiveProductProvenance
+
+
 class ArchiveDebtProduct(ArchiveProductModel):
     contract_version: int = ARCHIVE_PRODUCT_CONTRACT_VERSION
     product_kind: str = "archive_debt"
@@ -458,11 +500,15 @@ __all__ = [
     "ArchiveInferenceProvenance",
     "ArchiveProductModel",
     "ArchiveProductProvenance",
+    "CostRollupProduct",
+    "CostRollupProductQuery",
     "ArchiveProductUnavailableError",
     "DaySessionSummaryProduct",
     "DaySessionSummaryProductQuery",
     "ProviderAnalyticsProduct",
     "ProviderAnalyticsProductQuery",
+    "SessionCostProduct",
+    "SessionCostProductQuery",
     "SessionEnrichmentPayload",
     "SessionEnrichmentProduct",
     "SessionEnrichmentProductQuery",
