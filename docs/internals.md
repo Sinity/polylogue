@@ -50,6 +50,39 @@ debugging landmarks. For the conceptual system shape, see
 | `pipeline/ids.py` | Content hashing and ID generation |
 | `pipeline/services/ingest_batch.py` | Batch ingest (largest pipeline file) |
 
+## Source Layer Map
+
+The source layer has three distinct responsibilities:
+
+- acquisition and walking: `source_acquisition*.py`, `source_walk.py`,
+  decoders, token storage, and Drive source clients;
+- provider detection and parsing: `dispatch.py`, `parsers/`, and assembly
+  helpers;
+- provider payload models: `providers/`.
+
+Keep provider-specific implementation behind one of those boundaries. New Drive
+source code should not add more `drive_*` modules at the package root unless it
+is genuinely shared source-layer infrastructure. New parser/provider model code
+should use provider names consistently and avoid historical catch-all files.
+
+The larger import-aware cleanup of Drive, Claude, provider models, and oversized
+source tests is tracked in GitHub issue #403.
+
+## Source Test Map
+
+Source tests should be named by the contract they protect:
+
+- acquisition, walking, decoding, and token-store tests stay close to the source
+  acquisition boundary;
+- parser tests stay provider-specific unless they assert a shared parser law;
+- provider model tests should identify the provider or schema family under test;
+- law/property tests should stay small enough that a failing assertion points to
+  one semantic contract.
+
+The current large files under `tests/unit/sources/` are accepted legacy shape,
+not a model for new tests. Split new coverage by behavior rather than appending
+to `test_source_laws.py`, `test_models.py`, or `test_parsers_base.py`.
+
 ## Extension Points
 
 **Adding a provider**: Start at `sources/dispatch.py:detect_provider()`. Add a
