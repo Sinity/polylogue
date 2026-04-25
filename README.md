@@ -6,17 +6,39 @@
   <a href="https://github.com/sinity/polylogue/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/sinity/polylogue/ci.yml?branch=master&label=ci" alt="CI status"></a>
 </p>
 
-Polylogue is a local archive for AI conversation exports. It ingests provider
-exports into a SQLite archive with lexical search, optional semantic retrieval,
-derived products, and rendered outputs.
+Polylogue is a local archive and analysis layer for AI conversations. It turns
+ChatGPT, Claude, Claude Code, Codex, and Gemini exports or captures into one
+SQLite archive with search, materialized session products, cost estimates,
+static publication output, MCP access, and verification tooling.
+
+![Synthetic Polylogue static-site preview](docs/assets/readme/synthetic-site.png)
+
+The screenshot above is generated from the committed synthetic corpus workflow,
+not from a private archive.
 
 ## What It Does
 
-- Ingest exports from ChatGPT, Claude, Claude Code, Codex, and Gemini
-- Full-text and semantic search across all conversations
-- Derived products: session profiles, work events, threads, summaries
-- CLI, Python API, MCP server, static site, dashboard
-- Synthetic corpora, QA exercises, mutation testing, benchmarks
+- Imports provider exports and local session logs into a normalized archive.
+- Captures ChatGPT and Claude.ai browser sessions through a local receiver and
+  extension path.
+- Tails source sessions such as Claude Code at query time, so recent work can be
+  inspected before the durable import catches up.
+- Searches conversations with provider, date, tag, attachment, and semantic
+  filters from the CLI, Python API, and MCP server.
+- Builds durable products: session profiles, work events, phases, threads, day
+  summaries, tag rollups, and cost estimates.
+- Renders a static HTML archive for local browsing or controlled publication.
+- Maintains synthetic corpora, proof obligations, semantic evidence runners,
+  validation lanes, mutation campaigns, and benchmark campaigns for repo
+  verification.
+
+## Privacy Posture
+
+Polylogue is local-first. The default archive database, inbox, rendered
+Markdown, and generated site live under your XDG data directory unless you point
+the runtime elsewhere. README media and examples use synthetic data. When you
+publish a rendered site or screenshot, treat it like publishing the underlying
+conversation text and review it accordingly.
 
 ## Quickstart
 
@@ -31,7 +53,7 @@ direnv allow   # or: nix develop
 ### Try It With Synthetic Data
 
 ```bash
-eval "$(polylogue audit generate --seed --env-only)"
+eval "$(devtools lab-corpus seed --count 8 --env-only)"
 
 polylogue "error handling" list --limit 5
 polylogue products profiles --limit 5
@@ -53,9 +75,13 @@ Typical flow:
 
 ```bash
 cp ~/Downloads/conversations.json ~/.local/share/polylogue/inbox/
-polylogue run all
+polylogue run acquire parse materialize render index
 polylogue -p chatgpt --latest open
 ```
+
+Use `polylogue run site` when you explicitly want the static HTML site. Keeping
+site generation separate is useful for unattended catch-up services where import
+freshness matters more than rebuilding publication output every run.
 
 ## CLI Shape
 
@@ -64,6 +90,7 @@ The root command is query-first:
 ```bash
 polylogue "error handling" list --limit 10
 polylogue --provider claude-ai --since "last week" stats --by provider
+polylogue --tail --provider claude-code list --limit 10
 polylogue --latest open
 polylogue "urgent" --tag review delete --dry-run
 ```
@@ -78,8 +105,8 @@ stored `provider_id`, `id`, `fileId`, and `driveId` metadata return hits with
 The pipeline and archive-maintenance surfaces are explicit verbs:
 
 ```bash
-polylogue run all
-polylogue run materialize
+polylogue run acquire parse materialize render index
+polylogue browser-capture serve --host 127.0.0.1 --port 8765
 polylogue doctor --repair --preview
 polylogue audit --only exercises --tier 0
 polylogue mcp
@@ -109,6 +136,7 @@ values for recent conversation IDs, tags, tools, and configured sources.
 - provider detection from file content
 - full-text search with composable filters
 - optional vector search for semantic similarity
+- query-time tail overlays for source sessions that are newer than the archive
 
 ### Durable Products
 
@@ -116,9 +144,27 @@ values for recent conversation IDs, tags, tools, and configured sources.
 polylogue products profiles --limit 10
 polylogue products phases --limit 10
 polylogue products threads --limit 10
+polylogue products costs --limit 10
+polylogue products cost-rollups
 ```
 
-Products are materialized from the archive and updated incrementally.
+Products are materialized from the archive and updated incrementally. Cost
+products use provider/model usage when available and mark estimates explicitly
+when exact billing data is not present.
+
+### Browser Capture and Catch-Up
+
+```bash
+polylogue browser-capture serve --host 127.0.0.1 --port 8765
+polylogue browser-capture status
+```
+
+The browser receiver accepts local extension envelopes for ChatGPT and Claude.ai
+and writes them into the same archive pipeline as exported files. The unpacked
+extension source lives in `browser-extension/polylogue-browser-capture/`.
+Scheduled `polylogue run ...` jobs are durable catch-up and materialization.
+They are not the realtime mechanism; fresh-source inspection is handled by
+capture and query-time tailing.
 
 ### Publication and MCP
 
@@ -129,6 +175,18 @@ polylogue mcp
 
 - static HTML archive with search
 - archive queries for AI assistants via MCP
+
+### Verification Lab
+
+```bash
+devtools render-verification-catalog --check
+devtools affected-obligations --path polylogue/cli/query.py
+devtools verify --lab
+```
+
+The verification lab records proof-obligation subjects, claim runners, semantic
+evidence, and changed-file routing so agents can choose focused checks before
+escalating to the full repository baseline.
 
 ### Library API
 
@@ -172,7 +230,11 @@ For the full docs map, see [docs/README.md](docs/README.md).
 | [CLI Reference](docs/cli-reference.md) | Generated command reference from live help output. |
 | [Configuration](docs/configuration.md) | XDG paths, environment variables, and runtime configuration. |
 | [Library API](docs/library-api.md) | Async archive API, filters, and query patterns. |
+| [Browser Capture](docs/browser-capture.md) | Local browser extension capture for ChatGPT and Claude.ai sessions. |
+| [MCP Integration](docs/mcp-integration.md) | Model Context Protocol server setup and usage. |
 | [Developer Tools](docs/devtools.md) | `devtools` guide for generated surfaces, validation, and repo hygiene. |
+| [Verification Catalog](docs/verification-catalog.md) | Generated proof-obligation subjects, claims, runners, and catalog self-checks. |
+| [Verification Lab](docs/verification-lab.md) | Accepted command-surface decision for proof catalog, routing, and evidence operators. |
 | [Architecture](docs/architecture.md) | System rings, ownership boundaries, and data flow. |
 | [Providers](docs/providers/README.md) | Provider-specific parsing and export-format notes. |
 

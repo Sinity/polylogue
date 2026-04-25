@@ -67,7 +67,11 @@ README_DOC_TITLES: tuple[str, ...] = (
     "CLI Reference",
     "Configuration",
     "Library API",
+    "Browser Capture",
+    "MCP Integration",
     "Developer Tools",
+    "Verification Catalog",
+    "Verification Lab",
     "Architecture",
     "Providers",
 )
