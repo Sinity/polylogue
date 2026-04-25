@@ -11,7 +11,6 @@ from devtools.command_catalog import control_plane_command
 from devtools.docs_surface import (
     DOCS_REFERENCE_ENTRIES,
     README_DOC_TITLES,
-    README_GUIDE_TITLES,
     REPO_GUIDE_ENTRIES,
     DocsEntry,
 )
@@ -47,25 +46,61 @@ def _select_entries(entries: tuple[DocsEntry, ...], titles: tuple[str, ...]) -> 
     return tuple(by_title[title] for title in titles)
 
 
+def _docs_by_title(entries: tuple[DocsEntry, ...]) -> dict[str, DocsEntry]:
+    return {entry.title: entry for entry in entries}
+
+
+def _render_named_table(by_title: dict[str, DocsEntry], titles: tuple[str, ...], *, from_dir: str = "") -> str:
+    return _render_table(tuple(by_title[title] for title in titles), from_dir=from_dir)
+
+
 def build_docs_readme(
     docs_entries: tuple[DocsEntry, ...] = DOCS_REFERENCE_ENTRIES,
     repo_entries: tuple[DocsEntry, ...] = REPO_GUIDE_ENTRIES,
 ) -> str:
+    docs_by_title = _docs_by_title(docs_entries)
+    repo_by_title = _docs_by_title(repo_entries)
     return "\n".join(
         [
             GENERATED_NOTE,
             "",
             "# Polylogue Docs Map",
             "",
-            "This directory holds the current repository-facing documentation.",
+            "Use this map when you need the complete repository documentation surface. "
+            "The top-level README links the shortest public path; this page keeps "
+            "operator, architecture, verification, and contributor references separate.",
             "",
-            "## Core References",
+            "## Orientation",
             "",
-            _render_table(docs_entries, from_dir="docs"),
+            _render_named_table(
+                docs_by_title,
+                ("Architecture", "Data Model", "Internals", "Configuration"),
+                from_dir="docs",
+            ),
             "",
-            "## Repository Guides",
+            "## User and Integration Surfaces",
             "",
-            _render_table(repo_entries, from_dir="docs"),
+            _render_named_table(
+                docs_by_title,
+                ("CLI Reference", "Library API", "MCP Integration", "Browser Capture", "Generate", "Providers"),
+                from_dir="docs",
+            ),
+            "",
+            "## Verification and Quality",
+            "",
+            _render_named_table(
+                docs_by_title,
+                ("Developer Tools", "Verification Lab", "Verification Catalog", "Test Quality Workflows"),
+                from_dir="docs",
+            ),
+            "",
+            "## Contributor Workflow",
+            "",
+            _render_named_table(repo_by_title, ("Contributing", "Testing", "Agent Guide"), from_dir="docs"),
+            "",
+            "## Local State",
+            "",
+            _render_named_table(repo_by_title, ("Local Cache Layout", "Local Working Outputs"), from_dir="docs"),
             "",
         ]
     )
@@ -76,19 +111,15 @@ def build_readme_section(
     repo_entries: tuple[DocsEntry, ...] = REPO_GUIDE_ENTRIES,
 ) -> str:
     featured_docs = _select_entries(docs_entries, README_DOC_TITLES)
-    featured_guides = _select_entries(repo_entries, README_GUIDE_TITLES)
     return "\n".join(
         [
             "<!-- BEGIN GENERATED: docs-surface -->",
             "## Documentation",
             "",
-            "For the full docs map, see [docs/README.md](docs/README.md).",
+            "Start with the generated command and architecture references; "
+            "use [docs/README.md](docs/README.md) for the complete map.",
             "",
             _render_table(featured_docs),
-            "",
-            "## Contributor Guides",
-            "",
-            _render_table(featured_guides),
             "",
             "<!-- END GENERATED: docs-surface -->",
         ]

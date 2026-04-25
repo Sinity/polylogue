@@ -2,33 +2,48 @@
 
 # Polylogue Docs Map
 
-This directory holds the current repository-facing documentation.
+Use this map when you need the complete repository documentation surface. The top-level README links the shortest public path; this page keeps operator, architecture, verification, and contributor references separate.
 
-## Core References
+## Orientation
+
+| Document | Description |
+|----------|-------------|
+| [Architecture](architecture.md) | System rings, ownership boundaries, and data flow. |
+| [Data Model](data-model.md) | Archive entities, storage shape, and metadata rules. |
+| [Internals](internals.md) | Working implementation reference and debugging landmarks. |
+| [Configuration](configuration.md) | XDG paths, environment variables, and runtime configuration. |
+
+## User and Integration Surfaces
 
 | Document | Description |
 |----------|-------------|
 | [CLI Reference](cli-reference.md) | Generated command reference from live help output. |
-| [Developer Tools](devtools.md) | `devtools` guide for generated surfaces, validation, and repo hygiene. |
 | [Library API](library-api.md) | Async archive API, filters, and query patterns. |
-| [Data Model](data-model.md) | Archive entities, storage shape, and metadata rules. |
-| [Configuration](configuration.md) | XDG paths, environment variables, and runtime configuration. |
-| [Architecture](architecture.md) | System rings, ownership boundaries, and data flow. |
-| [Internals](internals.md) | Working implementation reference and debugging landmarks. |
 | [MCP Integration](mcp-integration.md) | Model Context Protocol server setup and usage. |
 | [Browser Capture](browser-capture.md) | Local browser extension capture for ChatGPT and Claude.ai sessions. |
 | [Generate](generate.md) | Synthetic archive generation, seed mode, and demo workflows. |
 | [Providers](providers/README.md) | Provider-specific parsing and export-format notes. |
-| [Test Quality Workflows](test-quality-workflows.md) | Generated validation lanes, mutation campaigns, and benchmark campaigns. |
-| [Verification Catalog](verification-catalog.md) | Generated proof-obligation subjects, claims, runners, and catalog self-checks. |
-| [Verification Lab](verification-lab.md) | Accepted command-surface decision for proof catalog, routing, and evidence operators. |
 
-## Repository Guides
+## Verification and Quality
+
+| Document | Description |
+|----------|-------------|
+| [Developer Tools](devtools.md) | `devtools` guide for generated surfaces, validation, and repo hygiene. |
+| [Verification Lab](verification-lab.md) | Accepted command-surface decision for proof catalog, routing, and evidence operators. |
+| [Verification Catalog](verification-catalog.md) | Generated proof-obligation subjects, claims, runners, and catalog self-checks. |
+| [Test Quality Workflows](test-quality-workflows.md) | Generated validation lanes, mutation campaigns, and benchmark campaigns. |
+
+## Contributor Workflow
 
 | Document | Description |
 |----------|-------------|
 | [Contributing](../CONTRIBUTING.md) | Branching, issues, PRs, squash-merge history, and repo policy. |
 | [Testing](../TESTING.md) | Baseline test matrix, protected surfaces, and QA entrypoints. |
 | [Agent Guide](../CLAUDE.md) | Agent memory and working rules. |
+
+## Local State
+
+| Document | Description |
+|----------|-------------|
 | [Local Cache Layout](../.cache/README.md) | Disposable cache roots chosen by the repo itself. |
 | [Local Working Outputs](../.local/README.md) | Untracked local outputs such as campaigns, showcases, and reports. |

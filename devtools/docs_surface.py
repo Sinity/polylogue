@@ -64,29 +64,21 @@ REPO_GUIDE_ENTRIES: tuple[DocsEntry, ...] = (
 )
 
 README_DOC_TITLES: tuple[str, ...] = (
+    "Architecture",
     "CLI Reference",
-    "Configuration",
-    "Library API",
     "Browser Capture",
+    "Library API",
     "MCP Integration",
+    "Configuration",
     "Developer Tools",
     "Verification Catalog",
     "Verification Lab",
-    "Architecture",
     "Providers",
 )
-
-README_GUIDE_TITLES: tuple[str, ...] = (
-    "Contributing",
-    "Testing",
-    "Agent Guide",
-)
-
 
 __all__ = [
     "DOCS_REFERENCE_ENTRIES",
     "README_DOC_TITLES",
-    "README_GUIDE_TITLES",
     "REPO_GUIDE_ENTRIES",
     "DocsEntry",
 ]
