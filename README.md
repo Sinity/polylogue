@@ -13,8 +13,9 @@ static publication output, MCP access, and verification tooling.
 
 ![Synthetic Polylogue static-site preview](docs/assets/readme/synthetic-site.png)
 
-The screenshot above is generated from the committed synthetic corpus workflow,
-not from a private archive.
+Demo media in this README uses generated fixture data, not a private archive.
+
+![Polylogue CLI quickstart screencast](docs/assets/readme/polylogue-quickstart.gif)
 
 ## What It Does
 
