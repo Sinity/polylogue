@@ -1,0 +1,11 @@
+Usage: polylogue products cost-rollups [OPTIONS]
+
+  List provider/model cost rollups.
+
+Options:
+  --model TEXT      Only this model or normalized model
+  --limit INTEGER   Maximum rows  [default: 50]
+  --offset INTEGER  Start offset  [default: 0]
+  --json            Output as JSON
+  --format [json]   Output format
+  -h, --help        Show this message and exit.

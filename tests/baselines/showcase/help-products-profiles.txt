@@ -11,6 +11,16 @@ Options:
                                   is on/after this date
   --session-date-until TEXT       Only sessions whose canonical session date
                                   is on/before this date
+  --min-wallclock-seconds INTEGER
+                                  Only sessions whose wallclock span is at
+                                  least this many seconds
+  --max-wallclock-seconds INTEGER
+                                  Only sessions whose wallclock span is at
+                                  most this many seconds
+  --sort [source|first-message|last-message|wallclock]
+                                  Sort by source recency, first message time,
+                                  last message time, or wallclock span
+                                  [default: source]
   --tier [merged|evidence|inference]
                                   Return merged, evidence-only, or inference-
                                   only profile products  [default: merged]
