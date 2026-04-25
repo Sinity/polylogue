@@ -1,0 +1,10 @@
+Usage: polylogue browser-capture [OPTIONS] COMMAND [ARGS]...
+
+  Receive browser-extension captures into the normal inbox.
+
+Options:
+  -h, --help  Show this message and exit.
+
+Commands:
+  serve   Run the local browser-capture receiver.
+  status  Show receiver configuration and inbox target.

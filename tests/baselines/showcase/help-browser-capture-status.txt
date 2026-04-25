@@ -1,0 +1,8 @@
+Usage: polylogue browser-capture status [OPTIONS]
+
+  Show receiver configuration and inbox target.
+
+Options:
+  --inbox PATH
+  --json
+  -h, --help    Show this message and exit.

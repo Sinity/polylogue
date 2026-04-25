@@ -3,17 +3,27 @@ Usage: polylogue products enrichments [OPTIONS]
   List durable probabilistic session-enrichment products.
 
 Options:
-  --first-message-since TEXT  Only sessions whose first message is on/after
-                              this timestamp
-  --first-message-until TEXT  Only sessions whose first message is on/before
-                              this timestamp
-  --session-date-since TEXT   Only sessions whose canonical session date is
-                              on/after this date
-  --session-date-until TEXT   Only sessions whose canonical session date is
-                              on/before this date
-  --query TEXT                FTS query against product search text
-  --limit INTEGER             Maximum rows  [default: 50]
-  --offset INTEGER            Start offset  [default: 0]
-  --json                      Output as JSON
-  --format [json]             Output format
-  -h, --help                  Show this message and exit.
+  --first-message-since TEXT      Only sessions whose first message is
+                                  on/after this timestamp
+  --first-message-until TEXT      Only sessions whose first message is
+                                  on/before this timestamp
+  --session-date-since TEXT       Only sessions whose canonical session date
+                                  is on/after this date
+  --session-date-until TEXT       Only sessions whose canonical session date
+                                  is on/before this date
+  --min-wallclock-seconds INTEGER
+                                  Only sessions whose wallclock span is at
+                                  least this many seconds
+  --max-wallclock-seconds INTEGER
+                                  Only sessions whose wallclock span is at
+                                  most this many seconds
+  --sort [source|first-message|last-message|wallclock]
+                                  Sort by source recency, first message time,
+                                  last message time, or wallclock span
+                                  [default: source]
+  --query TEXT                    FTS query against product search text
+  --limit INTEGER                 Maximum rows  [default: 50]
+  --offset INTEGER                Start offset  [default: 0]
+  --json                          Output as JSON
+  --format [json]                 Output format
+  -h, --help                      Show this message and exit.

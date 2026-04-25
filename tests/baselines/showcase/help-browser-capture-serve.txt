@@ -1,0 +1,9 @@
+Usage: polylogue browser-capture serve [OPTIONS]
+
+  Run the local browser-capture receiver.
+
+Options:
+  --host TEXT     [default: 127.0.0.1]
+  --port INTEGER  [default: 8765]
+  --inbox PATH
+  -h, --help      Show this message and exit.
