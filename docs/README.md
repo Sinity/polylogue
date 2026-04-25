@@ -40,10 +40,3 @@ Use this map when you need the complete repository documentation surface. The to
 | [Contributing](../CONTRIBUTING.md) | Branching, issues, PRs, squash-merge history, and repo policy. |
 | [Testing](../TESTING.md) | Baseline test matrix, protected surfaces, and QA entrypoints. |
 | [Agent Guide](../CLAUDE.md) | Agent memory and working rules. |
-
-## Local State
-
-| Document | Description |
-|----------|-------------|
-| [Local Cache Layout](../.cache/README.md) | Disposable cache roots chosen by the repo itself. |
-| [Local Working Outputs](../.local/README.md) | Untracked local outputs such as campaigns, showcases, and reports. |

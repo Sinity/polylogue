@@ -162,7 +162,7 @@ polylogue browser-capture status
 
 The browser receiver accepts local extension envelopes for ChatGPT and Claude.ai
 and writes them into the same archive pipeline as exported files. The unpacked
-extension source lives in `browser-extension/polylogue-browser-capture/`.
+extension source lives in `browser-extension/`.
 Scheduled `polylogue run ...` jobs are durable catch-up and materialization.
 They are not the realtime mechanism; fresh-source inspection is handled by
 capture and query-time tailing.

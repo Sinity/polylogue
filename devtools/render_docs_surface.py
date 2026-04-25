@@ -98,10 +98,6 @@ def build_docs_readme(
             "",
             _render_named_table(repo_by_title, ("Contributing", "Testing", "Agent Guide"), from_dir="docs"),
             "",
-            "## Local State",
-            "",
-            _render_named_table(repo_by_title, ("Local Cache Layout", "Local Working Outputs"), from_dir="docs"),
-            "",
         ]
     )
 
