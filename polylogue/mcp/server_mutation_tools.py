@@ -17,11 +17,14 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     @mcp.tool()
     async def add_tag(conversation_id: str, tag: str) -> str:
         async def run() -> str:
-            await hooks.get_tag_store().add_tag(conversation_id, tag)
+            resolved = await hooks.get_query_store().resolve_id(conversation_id, strict=True)
+            if not resolved:
+                return hooks.error_json("conversation not found", conversation_id=conversation_id)
+            await hooks.get_tag_store().add_tag(resolved, tag)
             return hooks.json_payload(
                 MCPMutationStatusPayload(
                     status="ok",
-                    conversation_id=conversation_id,
+                    conversation_id=resolved,
                     tag=tag,
                 ),
                 exclude_none=True,
@@ -32,11 +35,14 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     @mcp.tool()
     async def remove_tag(conversation_id: str, tag: str) -> str:
         async def run() -> str:
-            await hooks.get_tag_store().remove_tag(conversation_id, tag)
+            resolved = await hooks.get_query_store().resolve_id(conversation_id, strict=True)
+            if not resolved:
+                return hooks.error_json("conversation not found", conversation_id=conversation_id)
+            await hooks.get_tag_store().remove_tag(resolved, tag)
             return hooks.json_payload(
                 MCPMutationStatusPayload(
                     status="ok",
-                    conversation_id=conversation_id,
+                    conversation_id=resolved,
                     tag=tag,
                 ),
                 exclude_none=True,
@@ -51,12 +57,12 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 return hooks.error_json("bulk_tag_conversations requires at least one conversation_id")
             if not tags:
                 return hooks.error_json("bulk_tag_conversations requires at least one tag")
+            if len(conversation_ids) > 100:
+                return hooks.error_json("bulk_tag_conversations supports at most 100 conversation_ids")
+            if len(tags) > 20:
+                return hooks.error_json("bulk_tag_conversations supports at most 20 tags")
             tag_store = hooks.get_tag_store()
-            applied_count = 0
-            for conversation_id in conversation_ids:
-                for tag in tags:
-                    await tag_store.add_tag(conversation_id, tag)
-                    applied_count += 1
+            applied_count = await tag_store.bulk_add_tags(conversation_ids, tags)
             return hooks.json_payload(
                 MCPRootPayload(
                     root={
@@ -89,15 +95,18 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     @mcp.tool()
     async def set_metadata(conversation_id: str, key: str, value: str) -> str:
         async def run() -> str:
+            resolved = await hooks.get_query_store().resolve_id(conversation_id, strict=True)
+            if not resolved:
+                return hooks.error_json("conversation not found", conversation_id=conversation_id)
             try:
                 parsed_value = json.loads(value)
             except (json.JSONDecodeError, TypeError):
                 parsed_value = value
-            await hooks.get_tag_store().update_metadata(conversation_id, key, parsed_value)
+            await hooks.get_tag_store().update_metadata(resolved, key, parsed_value)
             return hooks.json_payload(
                 MCPMutationStatusPayload(
                     status="ok",
-                    conversation_id=conversation_id,
+                    conversation_id=resolved,
                     key=key,
                 ),
                 exclude_none=True,
@@ -108,11 +117,14 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     @mcp.tool()
     async def delete_metadata(conversation_id: str, key: str) -> str:
         async def run() -> str:
-            await hooks.get_tag_store().delete_metadata(conversation_id, key)
+            resolved = await hooks.get_query_store().resolve_id(conversation_id, strict=True)
+            if not resolved:
+                return hooks.error_json("conversation not found", conversation_id=conversation_id)
+            await hooks.get_tag_store().delete_metadata(resolved, key)
             return hooks.json_payload(
                 MCPMutationStatusPayload(
                     status="ok",
-                    conversation_id=conversation_id,
+                    conversation_id=resolved,
                     key=key,
                 ),
                 exclude_none=True,
@@ -128,11 +140,14 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                     "Safety guard: set confirm=true to delete",
                     conversation_id=conversation_id,
                 )
-            deleted = await hooks.get_query_store().delete_conversation(conversation_id)
+            resolved = await hooks.get_query_store().resolve_id(conversation_id, strict=True)
+            if not resolved:
+                return hooks.error_json("conversation not found", conversation_id=conversation_id)
+            deleted = await hooks.get_query_store().delete_conversation(resolved)
             return hooks.json_payload(
                 MCPMutationStatusPayload(
                     status="deleted" if deleted else "not_found",
-                    conversation_id=conversation_id,
+                    conversation_id=resolved,
                 ),
                 exclude_none=True,
             )

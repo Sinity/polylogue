@@ -168,6 +168,7 @@ ON CONFLICT(conversation_id) DO UPDATE SET
     sort_key = excluded.sort_key,
     content_hash = excluded.content_hash,
     provider_meta = excluded.provider_meta,
+    metadata = COALESCE(excluded.metadata, conversations.metadata),
     parent_conversation_id = excluded.parent_conversation_id,
     branch_type = excluded.branch_type,
     raw_id = COALESCE(excluded.raw_id, conversations.raw_id)
@@ -432,7 +433,7 @@ def _write_conversation(conn: sqlite3.Connection, cdata: ConversationData) -> tu
 
     content_unchanged = _check_content_unchanged(conn, cdata.conversation_id, cdata.content_hash)
 
-    # Always upsert conversation record (updates metadata even if content unchanged)
+    # Upsert conversation record — WHERE clause prevents the update when content_hash matches
     conn.execute(_CONVERSATION_UPSERT_SQL, _resolved_conversation_tuple(conn, cdata))
 
     if content_unchanged:

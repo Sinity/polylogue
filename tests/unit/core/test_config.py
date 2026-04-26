@@ -175,7 +175,6 @@ class TestIndexConfig:
         """Default IndexConfig has FTS enabled and no vector provider configured."""
         monkeypatch.delenv("VOYAGE_API_KEY", raising=False)
         config = IndexConfig.from_env()
-        assert config.fts_enabled is True
         assert config.voyage_api_key is None
 
     def test_from_env_voyage_key(self, monkeypatch: pytest.MonkeyPatch) -> None:

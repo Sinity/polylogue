@@ -29,8 +29,8 @@ class RepositoryArchiveConversationMixin:
         _backend: RepositoryBackendProtocol
         queries: SQLiteQueryStore
 
-    async def resolve_id(self, id_prefix: str) -> ConversationId | None:
-        resolved = await self.queries.resolve_id(id_prefix)
+    async def resolve_id(self, id_prefix: str, *, strict: bool = False) -> ConversationId | None:
+        resolved = await self.queries.resolve_id(id_prefix, strict=strict)
         from polylogue.types import ConversationId
 
         return ConversationId(resolved) if resolved else None

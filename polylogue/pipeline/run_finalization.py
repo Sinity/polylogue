@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypedDict
 from uuid import uuid4
-
-from typing_extensions import TypedDict
 
 from polylogue.lib.json import JSONDocument
 from polylogue.pipeline.run_support import write_run_json

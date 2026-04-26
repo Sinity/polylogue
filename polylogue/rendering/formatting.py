@@ -139,6 +139,13 @@ def _conv_to_html(conv: Conversation) -> str:
     return render_conversation_html(conv)
 
 
+def _csv_safe(value: str) -> str:
+    """Prevent CSV formula injection by prefixing dangerous leading characters."""
+    if value and value[0] in ("=", "+", "-", "@"):
+        return "'" + value
+    return value
+
+
 def _conv_to_csv_messages(conv: Conversation) -> str:
     """Convert a single conversation's messages to CSV rows."""
     buf = io.StringIO()
@@ -151,9 +158,9 @@ def _conv_to_csv_messages(conv: Conversation) -> str:
             [
                 str(conv.id),
                 str(msg.id),
-                msg.role or "",
-                msg.timestamp.isoformat() if msg.timestamp else "",
-                msg.text,
+                _csv_safe(msg.role or ""),
+                _csv_safe(msg.timestamp.isoformat() if msg.timestamp else ""),
+                _csv_safe(msg.text),
             ]
         )
     return buf.getvalue().rstrip()

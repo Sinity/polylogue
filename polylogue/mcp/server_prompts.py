@@ -4,9 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, TypeAlias
-
-from typing_extensions import TypedDict
+from typing import TYPE_CHECKING, TypeAlias, TypedDict
 
 from polylogue.mcp.payloads import MCPFencedCodeBlock
 from polylogue.mcp.query_contracts import MCPConversationQueryRequest

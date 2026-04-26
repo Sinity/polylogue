@@ -30,9 +30,6 @@ RAW_ARCHIVE_DDL = """
         ON raw_conversations(payload_provider)
         WHERE payload_provider IS NOT NULL;
 
-        CREATE INDEX IF NOT EXISTS idx_raw_conv_source
-        ON raw_conversations(source_path);
-
         CREATE INDEX IF NOT EXISTS idx_raw_conv_source_mtime
         ON raw_conversations(source_path, file_mtime)
         WHERE file_mtime IS NOT NULL;

@@ -79,17 +79,17 @@ def _json_payload(payload: BaseModel, *, exclude_none: bool = False) -> str:
 
 
 def _clamp_limit(limit: int | object) -> int:
-    """Ensure limit is a positive integer, defaulting to 10 on bad input."""
+    """Ensure limit is a positive integer capped at 1000, defaulting to 10 on bad input."""
     try:
         if isinstance(limit, bool):
             raise TypeError
         if isinstance(limit, int):
-            return max(1, limit)
+            return max(1, min(limit, 1000))
         if isinstance(limit, float):
-            return max(1, int(limit))
+            return max(1, min(int(limit), 1000))
         if isinstance(limit, str | bytes | bytearray):
-            return max(1, int(limit))
-        return max(1, int(str(limit)))
+            return max(1, min(int(limit), 1000))
+        return max(1, min(int(str(limit)), 1000))
     except (TypeError, ValueError):
         return 10
 

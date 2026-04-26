@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -58,7 +59,7 @@ class CustomBuildHook(BuildHookInterface):
 
     def finalize(self, version: str, build_data: dict[str, object], artifact_path: str) -> None:
         del version, build_data, artifact_path
-        if self._generated_build_info:
+        if self._generated_build_info and not os.environ.get("POLYLOGUE_SDIST_BUILD"):
             self._build_info_path.unlink(missing_ok=True)
 
     def _register_build_info_artifact(self, build_data: dict[str, object]) -> None:

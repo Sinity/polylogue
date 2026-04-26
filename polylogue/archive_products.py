@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Protocol
 
 from polylogue.archive_product_models import (
@@ -432,7 +432,12 @@ def profile_bucket_day(profile: SessionProfile) -> date | None:
     timestamp = profile.first_message_at or profile.created_at or profile.updated_at or profile.last_message_at
     if timestamp is None:
         return None
-    return timestamp.date() if isinstance(timestamp, datetime) else timestamp
+    if isinstance(timestamp, datetime):
+        # Ensure timezone-awareness: assume UTC for naive datetimes
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=timezone.utc)
+        return timestamp.date()
+    return timestamp
 
 
 def profile_timestamp_values(profile: SessionProfile) -> tuple[list[str], list[float]]:
@@ -452,6 +457,11 @@ def profile_timestamp_values(profile: SessionProfile) -> tuple[list[str], list[f
     )
 
 
+def _parse_iso_timestamp(value: str) -> datetime:
+    """Parse an ISO 8601 timestamp string to a timezone-aware datetime."""
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
 def records_provenance(
     rows: Iterable[object],
     *,
@@ -460,14 +470,18 @@ def records_provenance(
     source_sort_key_attr: str = "source_sort_key",
 ) -> ArchiveProductProvenance:
     row_list = list(rows)
-    materialized_at = max(
-        (str(getattr(row, materialized_at_attr)) for row in row_list if getattr(row, materialized_at_attr, None)),
-        default="1970-01-01T00:00:00+00:00",
-    )
-    source_updated_at = max(
-        (str(getattr(row, source_updated_at_attr)) for row in row_list if getattr(row, source_updated_at_attr, None)),
-        default=None,
-    )
+    materialized_at_values = [
+        _parse_iso_timestamp(str(getattr(row, materialized_at_attr)))
+        for row in row_list
+        if getattr(row, materialized_at_attr, None)
+    ]
+    materialized_at = max(materialized_at_values).isoformat() if materialized_at_values else "1970-01-01T00:00:00+00:00"
+    source_updated_at_values = [
+        _parse_iso_timestamp(str(getattr(row, source_updated_at_attr)))
+        for row in row_list
+        if getattr(row, source_updated_at_attr, None)
+    ]
+    source_updated_at = max(source_updated_at_values).isoformat() if source_updated_at_values else None
     source_sort_key = max(
         (
             float(getattr(row, source_sort_key_attr))
