@@ -22,7 +22,7 @@ from .base import (
     ParsedProviderEvent,
     content_blocks_from_segments,
 )
-from .claude_common import extract_message_text, normalize_timestamp
+from .claude_common import extract_message_text, normalize_timestamp, reclassify_tool_result_envelope
 
 _TAG_RE = re.compile(r"<[^>]+>")
 _WHITESPACE_RE = re.compile(r"\s+")
@@ -139,13 +139,15 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedCo
         text = record.text_content or extract_message_text(
             record.message.get("content") if isinstance(record.message, dict) else None
         )
+        envelope_role = Role.normalize(record.role) if record.role else Role.UNKNOWN
+        content_blocks = _content_blocks_from_record(record, text)
         messages.append(
             ParsedMessage(
                 provider_message_id=str(record.uuid or f"msg-{index}"),
-                role=Role.normalize(record.role) if record.role else Role.UNKNOWN,
+                role=reclassify_tool_result_envelope(envelope_role, content_blocks),
                 text=text or "",
                 timestamp=timestamp,
-                content_blocks=_content_blocks_from_record(record, text),
+                content_blocks=content_blocks,
                 parent_message_provider_id=record.parentUuid,
             )
         )
