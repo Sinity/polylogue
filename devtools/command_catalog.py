@@ -248,6 +248,17 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools verify-file-budgets", "devtools verify-file-budgets --json"),
     ),
     CommandSpec(
+        "verify-test-ownership",
+        "verification",
+        "Verify each production module is imported by at least one unit test.",
+        "devtools.verify_test_ownership",
+        use_when=(
+            "Catch production modules without test coverage at the import level. Modules that do "
+            "not require unit tests are listed in docs/plans/test-ownership.yaml under untested:."
+        ),
+        examples=("devtools verify-test-ownership", "devtools verify-test-ownership --json"),
+    ),
+    CommandSpec(
         "pipeline-probe",
         "verification",
         "Run typed pipeline probes against synthetic, staged, or archive-subset inputs.",
