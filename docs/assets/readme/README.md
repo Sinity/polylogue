@@ -1,12 +1,13 @@
 # README Media
 
-These assets are generated from Polylogue's fixture corpus workflow. Do not use
-private archive screenshots or recordings for committed README media.
+These assets are generated from Polylogue's synthetic lab-corpus workflow. Do
+not use private archive screenshots or recordings for committed README media.
 
-Regenerate the terminal media with:
+Regenerate the CLI screencast with:
 
 ```bash
-bash docs/assets/readme/render-readme-media.sh
+vhs validate docs/assets/readme/polylogue-quickstart.tape
+vhs docs/assets/readme/polylogue-quickstart.tape
 ```
 
 Regenerate the static-site screenshot by seeding a demo workspace, rendering the

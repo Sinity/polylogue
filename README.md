@@ -11,6 +11,12 @@ ChatGPT, Claude, Claude Code, Codex, and Gemini exports or captures into one
 SQLite archive with search, materialized session products, cost estimates,
 static publication output, MCP access, and verification tooling.
 
+![Synthetic Polylogue static-site preview](docs/assets/readme/synthetic-site.png)
+
+Demo media in this README uses generated fixture data, not a private archive.
+
+![Polylogue CLI quickstart screencast](docs/assets/readme/polylogue-quickstart.gif)
+
 ## What It Does
 
 - Imports provider exports and local session logs into a normalized archive.
@@ -26,20 +32,6 @@ static publication output, MCP access, and verification tooling.
 - Maintains synthetic corpora, proof obligations, semantic evidence runners,
   validation lanes, mutation campaigns, and benchmark campaigns for repo
   verification.
-
-## Tour
-
-### Archive and Query
-
-![Polylogue query demo](docs/assets/readme/polylogue-query.gif)
-
-### Products and Publication
-
-![Polylogue products demo](docs/assets/readme/polylogue-products.gif)
-
-### Verification Routing
-
-![Polylogue verification routing demo](docs/assets/readme/polylogue-verification.gif)
 
 ## Privacy Posture
 
@@ -184,8 +176,6 @@ polylogue mcp
 
 - static HTML archive with search
 - archive queries for AI assistants via MCP
-
-![Synthetic Polylogue static-site preview](docs/assets/readme/synthetic-site.png)
 
 ### Verification Lab
 
