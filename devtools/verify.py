@@ -48,6 +48,7 @@ def build_verify_steps(*, quick: bool, lab: bool) -> list[tuple[str, list[str]]]
         ("verify-topology", ["devtools", "verify-topology"]),
         ("verify-file-budgets", ["devtools", "verify-file-budgets"]),
         ("verify-test-ownership", ["devtools", "verify-test-ownership"]),
+        ("verify-migrations", ["devtools", "verify-migrations"]),
     ]
 
     if not quick:
