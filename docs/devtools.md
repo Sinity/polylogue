@@ -109,6 +109,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools semantic-axis-evidence` | Generate verification-lab performance evidence across synthetic semantic scale tiers. |
 | `devtools verify` | Run the local verification baseline before pushing or creating a PR. |
 | `devtools verify-cluster-cohesion` | Validate proposed clusters from the topology projection using the import graph. |
+| `devtools verify-file-budgets` | Enforce per-file LOC budgets declared in docs/plans/file-size-budgets.yaml. |
 | `devtools verify-showcase` | Verify committed showcase/demo surfaces. |
 | `devtools verify-topology` | Verify the realized polylogue tree against the topology projection. |
 
