@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "witness_id": "storage.blob-store-layout",
+  "path": "tests/data/witnesses/blob-store-layout.json",
+  "origin": "synthetic",
+  "committed": true,
+  "provenance": {
+    "fixture_kind": "blob-store-on-disk-shape",
+    "source_test": "tests/unit/storage/test_blob_store_layout_witness.py",
+    "raw_material": "synthetic",
+    "generator": "polylogue.storage.blob_store.BlobStore.write_from_bytes"
+  },
+  "preserved_semantic_facts": [
+    "blob addressing is SHA-256 of the raw bytes",
+    "blobs land at root/<hash[:2]>/<hash[2:]> — 2/62 directory split",
+    "size returned by write_from_bytes equals len(input)",
+    "content-addressing is content-only — no metadata or framing affects the hash"
+  ],
+  "minimization_status": "minimized",
+  "privacy": {
+    "private_material": "not_observed",
+    "transformed": false,
+    "redacted": false,
+    "discarded": false,
+    "retained": false,
+    "notes": [
+      "fixtures are 5–6 bytes of synthetic ASCII content"
+    ]
+  },
+  "known_failing": false,
+  "xfail_strict": false,
+  "linked_issue": null,
+  "rejection_reason": null,
+  "notes": [
+    "any change to the on-disk addressing scheme requires a migration plan and a coordinated witness update"
+  ]
+}
