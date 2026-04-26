@@ -11,12 +11,6 @@ ChatGPT, Claude, Claude Code, Codex, and Gemini exports or captures into one
 SQLite archive with search, materialized session products, cost estimates,
 static publication output, MCP access, and verification tooling.
 
-![Synthetic Polylogue static-site preview](docs/assets/readme/synthetic-site.png)
-
-Demo media in this README uses generated fixture data, not a private archive.
-
-![Polylogue CLI quickstart screencast](docs/assets/readme/polylogue-quickstart.gif)
-
 ## What It Does
 
 - Imports provider exports and local session logs into a normalized archive.
@@ -37,9 +31,8 @@ Demo media in this README uses generated fixture data, not a private archive.
 
 Polylogue is local-first. The default archive database, inbox, rendered
 Markdown, and generated site live under your XDG data directory unless you point
-the runtime elsewhere. README media and examples use synthetic data. When you
-publish a rendered site or screenshot, treat it like publishing the underlying
-conversation text and review it accordingly.
+the runtime elsewhere. When you publish a rendered site or screenshot, treat it
+like publishing the underlying conversation text and review it accordingly.
 
 ## Quickstart
 
