@@ -104,27 +104,6 @@ def open_verb(ctx: click.Context, print_path: bool, target_terms: tuple[str, ...
     _execute_query_verb(ctx, request.append_query_terms(target_terms))
 
 
-@click.command("show")
-@click.argument("target_terms", nargs=-1, shell_complete=complete_open_targets)
-@click.pass_context
-def show_verb(ctx: click.Context, target_terms: tuple[str, ...]) -> None:
-    """Show matched conversation content (default streaming output).
-
-    Accepts an optional ``provider:id`` positional that routes directly
-    to the conversation by id (prefix match), bypassing FTS search.
-    """
-    request = _parent_request(ctx)
-    parent_terms = _parent_query_terms(ctx)
-    candidates = parent_terms + target_terms
-    if len(candidates) == 1 and ":" in candidates[0]:
-        _execute_query_verb(
-            ctx,
-            request.with_query_terms(()).with_param_updates(conv_id=candidates[0]),
-        )
-        return
-    _execute_query_verb(ctx, request.append_query_terms(target_terms))
-
-
 @click.command("bulk-export")
 @click.option(
     "--format",

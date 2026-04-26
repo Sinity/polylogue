@@ -207,7 +207,9 @@ def conversation_content_hash(convo: ParsedConversation) -> ContentHash:
                 "name": _normalize_for_hash(att.name),
                 "mime_type": _normalize_for_hash(att.mime_type),
                 "size_bytes": _normalize_for_hash(att.size_bytes),
-                "digest": _normalize_for_hash(att.provider_meta.get("sha256") if att.provider_meta else None),
+                "digest": _normalize_for_hash(
+                    str(att.provider_meta["sha256"]) if att.provider_meta and att.provider_meta.get("sha256") else None
+                ),
             }
             for att in convo.attachments
         ],
