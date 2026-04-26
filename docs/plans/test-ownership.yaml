@@ -1,0 +1,30 @@
+# Test-ownership manifest — tracked by #437.
+#
+# Each production module under polylogue/ is expected to be imported by at
+# least one unit test under tests/unit/. Modules that legitimately do not
+# require unit tests are listed in `untested:` with a justification.
+#
+# Cross-cutting test infrastructure that does not own one production
+# module is listed in `shared:`.
+#
+# Seeded 2026-04-26 from realized state. The seed is intentionally
+# permissive: untested entries should be re-evaluated when their owning
+# refactor lands, and the list should shrink over time.
+
+untested: []
+
+shared:
+  - path: tests/unit/__init__.py
+    reason: package marker
+
+  - path: tests/unit/architecture/test_topology_invariants.py
+    reason: structural test — uses pathlib only, by design
+
+  - path: tests/unit/cli/test_terminal_snapshots.py
+    reason: terminal-snapshot test — invokes CLI via subprocess without Python import
+
+  - path: tests/unit/infra/test_growth_budgets.py
+    reason: cross-cutting growth-budget test infrastructure
+
+  - path: tests/unit/test_entrypoints_runtime.py
+    reason: tests Python entrypoints via importlib.metadata, not direct import
