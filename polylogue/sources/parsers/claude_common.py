@@ -16,6 +16,27 @@ from .base import (
 )
 
 
+def reclassify_tool_result_envelope(role: Role, content_blocks: list[ParsedContentBlock]) -> Role:
+    """Reclassify a ``role: user`` envelope whose content is all ``tool_result`` to ``Role.TOOL``.
+
+    The Anthropic API protocol requires ``tool_result`` blocks to be carried by
+    ``role: user`` messages — the assistant emits ``tool_use`` blocks and the
+    runtime replies with corresponding ``tool_result`` blocks under the
+    protocol-mandated ``user`` role. Polylogue's outer-envelope role
+    normalization classifies these as ``Role.USER``, polluting
+    ``--message-role user`` filters with non-typed content.
+
+    See `#428 <https://github.com/Sinity/polylogue/issues/428>`_.
+    """
+    if role is not Role.USER:
+        return role
+    if not content_blocks:
+        return role
+    if all(block.type == ContentBlockType.TOOL_RESULT for block in content_blocks):
+        return Role.TOOL
+    return role
+
+
 def extract_text_from_segments(segments: list[object]) -> str | None:
     lines: list[str] = []
     for segment in segments:
@@ -97,6 +118,8 @@ def extract_messages_from_chat_messages(
         content_blocks = content_blocks_from_segments(raw_content) if isinstance(raw_content, list) else []
         if not content_blocks and text:
             content_blocks = [ParsedContentBlock(type=ContentBlockType.TEXT, text=text)]
+
+        role = reclassify_tool_result_envelope(role, content_blocks)
 
         if text:
             messages.append(
