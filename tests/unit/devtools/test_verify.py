@@ -15,6 +15,7 @@ def test_quick_verify_omits_pytest() -> None:
         "verify-topology",
         "verify-file-budgets",
         "verify-test-ownership",
+        "verify-migrations",
     ]
 
 

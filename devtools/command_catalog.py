@@ -259,6 +259,21 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools verify-test-ownership", "devtools verify-test-ownership --json"),
     ),
     CommandSpec(
+        "verify-migrations",
+        "verification",
+        "Verify migration-completeness against docs/plans/migrations.yaml.",
+        "devtools.verify_migrations",
+        use_when=(
+            "Catch incomplete retirement work — fails when a migration's must_vanish_* entries "
+            "still survive. Default mode is informational; use --strict <name> to block."
+        ),
+        examples=(
+            "devtools verify-migrations",
+            "devtools verify-migrations --strict retire-audit-qa-showcase",
+            "devtools verify-migrations --json",
+        ),
+    ),
+    CommandSpec(
         "pipeline-probe",
         "verification",
         "Run typed pipeline probes against synthetic, staged, or archive-subset inputs.",
