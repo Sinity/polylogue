@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "witness_id": "topology.projection_v1",
+  "path": "docs/plans/topology-target.yaml",
+  "origin": "synthetic",
+  "committed": true,
+  "provenance": {
+    "fixture_kind": "structural-cohesion-projection",
+    "source_test": "tests/unit/devtools/test_topology_projection_witness.py",
+    "raw_material": "synthetic",
+    "generator": "devtools.build_topology_projection"
+  },
+  "preserved_semantic_facts": [
+    "every polylogue/**/*.py file has a declared cell with a target path",
+    "every owner key in the projection has at least one member file",
+    "every cell entry is well-formed (has path and loc)"
+  ],
+  "minimization_status": "not_applicable",
+  "privacy": {
+    "private_material": "not_observed",
+    "transformed": false,
+    "redacted": false,
+    "discarded": false,
+    "retained": false,
+    "notes": [
+      "projection is generated from the public source tree; nothing private is stored"
+    ]
+  },
+  "known_failing": false,
+  "xfail_strict": false,
+  "linked_issue": null,
+  "rejection_reason": null,
+  "notes": [
+    "regenerate via `devtools build-topology-projection`; verified by `devtools verify-topology` and `devtools verify-cluster-cohesion`"
+  ]
+}
