@@ -30,6 +30,7 @@ from polylogue.pipeline.stage_specs import (
     PipelineStageSpec,
     stage_sequence_suspends_fts,
     stage_specs_for_sequence,
+    validate_stage_contract,
 )
 from polylogue.storage.backends import create_backend
 from polylogue.storage.repository import ConversationRepository
@@ -107,6 +108,7 @@ async def run_sources(
         stage_specs = stage_specs_for_sequence(normalized_stage_sequence)
         explicit_sequence = stage_sequence is not None
         executed_stages: set[str] = set()
+        executed_specs: list[PipelineStageSpec] = []
         index_outcome = IndexStageOutcome(indexed=False, item_count=0)
 
         async def _run_acquire_stage(spec: PipelineStageSpec) -> None:
@@ -264,7 +266,9 @@ async def run_sources(
             nonlocal index_outcome
             if not spec.pipeline_managed:
                 executed_stages.add(spec.name)
+                executed_specs.append(spec)
                 return
+            validate_stage_contract(spec, executed_specs=executed_specs)
             execution_stage = spec.execution_stage(
                 requested_stage=stage,
                 explicit_sequence=explicit_sequence,
@@ -287,6 +291,7 @@ async def run_sources(
             else:
                 raise ValueError(f"Unknown pipeline stage spec: {spec.name}")
             executed_stages.add(spec.name)
+            executed_specs.append(spec)
 
         # Suspend FTS triggers during bulk pipeline operations.
         # Triggers fire per-row during message INSERTs, causing massive
