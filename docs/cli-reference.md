@@ -142,6 +142,7 @@ Commands:
   resume           Reconstruct work-state context for a fresh agent session.
   run              Run pipeline stages on configured sources.
   schema           Inspect schema packages, versions, and evidence.
+  show             Show matched conversation content (default streaming...
   stats            Show statistics for matched conversations.
   tags             List all tags with conversation counts.
 ```
