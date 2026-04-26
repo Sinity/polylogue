@@ -40,7 +40,7 @@ def _root_message_roles(ctx: click.Context) -> tuple[object, ...]:
 @click.option("--fields", help="Fields for JSON/YAML outputs")
 @click.pass_context
 def export_command(ctx: click.Context, conversation_id: str, output_format: str, fields: str | None) -> None:
-    """Export one known conversation by ID."""
+    """Export one known conversation by ID. IDs can use the provider:id-prefix form (e.g. claude-ai:abc123)."""
     env: AppEnv = ctx.obj
     conversation = run_coroutine_sync(env.operations.get_conversation(conversation_id))
     if conversation is None:

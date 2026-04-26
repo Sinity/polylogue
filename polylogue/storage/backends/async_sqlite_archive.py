@@ -111,9 +111,9 @@ class SQLiteArchiveMixin:
         async with self._get_connection() as conn:
             return await conversations_q.list_conversations_by_parent(conn, parent_id)
 
-    async def resolve_id(self, id_prefix: str) -> str | None:
+    async def resolve_id(self, id_prefix: str, *, strict: bool = False) -> str | None:
         """Resolve a partial conversation ID to a full ID."""
-        return await self.queries.resolve_id(id_prefix)
+        return await self.queries.resolve_id(id_prefix, strict=strict)
 
     async def get_last_sync_timestamp(self) -> str | None:
         """Return the timestamp of the most recent ingestion run, or None."""

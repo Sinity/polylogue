@@ -17,6 +17,7 @@ from polylogue.lib.json import JSONDocument, json_document
 from polylogue.lib.outcomes import OutcomeCheck, OutcomeReport, OutcomeStatus
 from polylogue.maintenance_models import DerivedModelStatus
 from polylogue.maintenance_targets import build_maintenance_target_catalog
+from polylogue.paths import db_path
 from polylogue.storage.repair import ArchiveDebtStatus
 
 # Re-export canonical types for downstream consumers.
@@ -594,8 +595,8 @@ def quick_readiness_summary(archive_root: Path) -> str:
     try:
         from polylogue.storage.backends.schema import SCHEMA_VERSION
 
-        db_path = archive_root / "polylogue.db"
-        with _open_readiness_probe_connection(db_path) as conn:
+        db_path_val = db_path()
+        with _open_readiness_probe_connection(db_path_val) as conn:
             version = conn.execute("PRAGMA user_version").fetchone()[0]
             if version != SCHEMA_VERSION:
                 return f"schema v{version} (expected v{SCHEMA_VERSION})"

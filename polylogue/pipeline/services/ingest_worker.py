@@ -14,9 +14,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
-
-from typing_extensions import TypedDict
+from typing import TYPE_CHECKING, Literal, TypedDict
 
 from polylogue.lib.artifact_taxonomy import ArtifactClassification, classify_artifact
 from polylogue.lib.branch_type import BranchType

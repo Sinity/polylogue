@@ -482,7 +482,7 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
         ),
         code_refs=(
             "polylogue.cli.embed_stats.embedding_status_payload",
-            "polylogue.cli.commands.embed._embedding_status_payload",
+            "polylogue.cli.embed_stats.show_embedding_stats",
         ),
         readiness_surfaces=("embed", "doctor", "retrieval", "cli"),
     ),

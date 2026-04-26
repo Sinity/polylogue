@@ -92,6 +92,7 @@ class BlobStore:
                         heartbeat()
             os.close(fd)
             fd = None
+            os.chmod(tmp_path, 0o600)
             os.replace(tmp_path, dest)
             tmp_path = None
         finally:
@@ -142,6 +143,7 @@ class BlobStore:
             dest.parent.mkdir(parents=True, exist_ok=True)
             os.close(fd)
             fd = None
+            os.chmod(tmp_path, 0o600)
             os.replace(tmp_path, dest)
             tmp_path = None
         finally:
@@ -171,6 +173,7 @@ class BlobStore:
             os.write(fd, data)
             os.close(fd)
             fd = None
+            os.chmod(tmp_path, 0o600)
             os.replace(tmp_path, dest)
             tmp_path = None
         finally:

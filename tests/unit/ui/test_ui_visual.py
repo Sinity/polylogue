@@ -264,7 +264,7 @@ class TestRendererFactory:
         assert isinstance(formats, list)
         assert "markdown" in formats
         assert "html" in formats
-        assert len(formats) == 2
+        assert len(formats) >= 2
 
 
 class TestRendererIntegration:

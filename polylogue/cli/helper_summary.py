@@ -135,6 +135,15 @@ def print_summary_impl(
             total_convs = sum(count for _, count in counts)
             ui.console.print(f"[bold]Archive:[/bold] {total_convs:,} conversations")
 
+            if total_convs == 0:
+                ui.console.print()
+                inbox = config.archive_root / "inbox"
+                ui.console.print(
+                    "[yellow]No conversations yet. Drop export files in[/yellow] "
+                    f"[bold]{inbox}[/bold]"
+                    " [yellow]and run[/yellow] [bold]polylogue run all[/bold]"
+                )
+
             max_width = 30
             for provider_name, conv_count in counts:
                 if total_convs > 0:

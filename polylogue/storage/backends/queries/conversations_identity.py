@@ -12,7 +12,7 @@ from polylogue.storage.backends.connection import _build_source_scope_filter
 from polylogue.storage.backends.queries.mappers import _parse_json
 
 
-async def resolve_id(conn: aiosqlite.Connection, id_prefix: str) -> str | None:
+async def resolve_id(conn: aiosqlite.Connection, id_prefix: str, *, strict: bool = False) -> str | None:
     cursor = await conn.execute(
         "SELECT conversation_id FROM conversations WHERE conversation_id = ?",
         (id_prefix,),
@@ -20,6 +20,9 @@ async def resolve_id(conn: aiosqlite.Connection, id_prefix: str) -> str | None:
     row = await cursor.fetchone()
     if row:
         return str(row["conversation_id"])
+
+    if strict:
+        return None
 
     cursor = await conn.execute(
         "SELECT conversation_id FROM conversations WHERE conversation_id LIKE ? LIMIT 2",

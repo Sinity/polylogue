@@ -96,9 +96,9 @@ def extract_messages_from_chat_messages(
             continue
         message_id = str(item.get("uuid") or item.get("id") or item.get("message_id") or f"msg-{idx}")
         raw_role = item.get("sender") or item.get("role")
-        if not raw_role:
+        if not raw_role or not isinstance(raw_role, str):
             continue
-        role = Role.normalize(raw_role)
+        role = Role.normalize(str(raw_role))
 
         raw_ts = item.get("created_at") or item.get("create_time") or item.get("timestamp")
         timestamp = normalize_timestamp(raw_ts)

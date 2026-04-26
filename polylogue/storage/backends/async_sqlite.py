@@ -12,6 +12,7 @@ Performance characteristics:
 from __future__ import annotations
 
 import asyncio
+import os
 from collections.abc import AsyncIterator
 from contextlib import AbstractAsyncContextManager, asynccontextmanager, suppress
 from pathlib import Path
@@ -99,6 +100,8 @@ def initialize_backend_state(backend: SQLiteBackend, db_path: Path | None) -> No
     """Initialize backend state and shared query accessors."""
     backend._db_path = Path(db_path) if db_path is not None else _paths.db_path()
     backend._db_path.parent.mkdir(parents=True, exist_ok=True)
+    if backend._db_path.exists():
+        backend._db_path.chmod(0o600)
 
     backend._write_lock = asyncio.Lock()
     backend._schema_lock = asyncio.Lock()
@@ -122,6 +125,7 @@ async def ensure_schema_once(backend: SQLiteBackend) -> None:
         if backend._schema_ensured:
             return
         async with aiosqlite.connect(backend._db_path, timeout=DB_TIMEOUT) as init_conn:
+            os.chmod(backend._db_path, 0o600)
             await configure_connection(init_conn)
             await backend._ensure_schema(init_conn)
         backend._schema_ensured = True
@@ -323,6 +327,7 @@ async def _get_connection(backend: SQLiteBackend) -> AsyncIterator[aiosqlite.Con
         return
 
     async with aiosqlite.connect(backend._db_path, timeout=DB_TIMEOUT) as conn:
+        os.chmod(backend._db_path, 0o600)
         await configure_connection(conn)
         yield conn
 

@@ -204,7 +204,7 @@ def _normalize_model(model: str) -> str:
     lowered = lowered.removeprefix("gemini/")
     if lowered in PRICING:
         return lowered
-    for key in PRICING:
+    for key in sorted(PRICING, key=len, reverse=True):
         if lowered.startswith(key):
             return key
     return lowered

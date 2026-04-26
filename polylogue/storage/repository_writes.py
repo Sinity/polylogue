@@ -122,6 +122,11 @@ class RepositoryWriteMixin:
         await self._metadata_read_modify_write(conversation_id, _delete)
 
     async def add_tag(self, conversation_id: str, tag: str) -> None:
+        if not tag or not tag.strip():
+            raise ValueError("tag must be a non-empty string")
+        if len(tag) > 200:
+            raise ValueError("tag must be at most 200 characters")
+
         def _add(meta: JSONDocument) -> bool:
             tags = list(string_sequence(meta.get("tags")))
             if tag not in tags:
@@ -132,6 +137,45 @@ class RepositoryWriteMixin:
             return False
 
         await self._metadata_read_modify_write(conversation_id, _add)
+
+    async def bulk_add_tags(self, conversation_ids: list[str], tags: list[str]) -> int:
+        """Add tags to multiple conversations within a single transaction.
+
+        Args:
+            conversation_ids: List of conversation IDs to tag.
+            tags: List of tag strings to apply to each conversation.
+
+        Returns:
+            Number of conversations whose tags were actually changed.
+        """
+        backend = self._backend
+        applied_count = 0
+        async with backend.transaction(), backend.connection() as conn:
+            for conversation_id in conversation_ids:
+                exists = await conn.execute(
+                    "SELECT 1 FROM conversations WHERE conversation_id = ?",
+                    (conversation_id,),
+                )
+                if not await exists.fetchone():
+                    continue
+                current = await conversations_q.get_metadata(conn, conversation_id)
+                meta: JSONDocument = dict(current) if current else {}
+                existing_tags = list(string_sequence(meta.get("tags")))
+                changed = False
+                for tag in tags:
+                    if tag not in existing_tags:
+                        existing_tags.append(tag)
+                        changed = True
+                if changed:
+                    tag_payload: list[JSONValue] = list(existing_tags)
+                    meta["tags"] = tag_payload
+                    await conversations_q.update_metadata_raw(
+                        conn,
+                        conversation_id,
+                        meta,
+                    )
+                    applied_count += 1
+        return applied_count
 
     async def remove_tag(self, conversation_id: str, tag: str) -> None:
         def _remove(meta: JSONDocument) -> bool:

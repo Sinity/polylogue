@@ -65,9 +65,9 @@ class SQLiteQueryStoreArchiveMixin:
         async with self._connection_factory() as conn:
             return await conversations_q.conversation_exists_by_hash(conn, content_hash)
 
-    async def resolve_id(self, id_prefix: str) -> str | None:
+    async def resolve_id(self, id_prefix: str, *, strict: bool = False) -> str | None:
         async with self._connection_factory() as conn:
-            return await conversations_q.resolve_id(conn, id_prefix)
+            return await conversations_q.resolve_id(conn, id_prefix, strict=strict)
 
     async def search_conversations(self, query: str, limit: int = 100, providers: list[str] | None = None) -> list[str]:
         return (await self.search_conversation_hits(query, limit=limit, providers=providers)).conversation_ids()

@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-
-from typing_extensions import TypedDict
+from typing import TypedDict
 
 from polylogue.lib.json import JSONDocument
 from polylogue.storage.session_product_runtime import SessionProductRefreshChunkPayload

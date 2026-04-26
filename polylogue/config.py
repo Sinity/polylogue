@@ -65,14 +65,12 @@ class DriveConfig:
 class IndexConfig:
     """Search indexing configuration."""
 
-    fts_enabled: bool = True
     voyage_api_key: str | None = None
 
     @classmethod
     def from_env(cls) -> IndexConfig:
         """Load IndexConfig from environment variables."""
         return cls(
-            fts_enabled=True,
             voyage_api_key=os.environ.get("VOYAGE_API_KEY"),
         )
 

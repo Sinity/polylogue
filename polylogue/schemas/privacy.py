@@ -94,6 +94,7 @@ _CONTENT_FIELD_NAMES = frozenset(
         "location",
         "query",
         "prompt",
+        "name",
         "summary",
         "instructions",
         # Free-form message/IO content — never structural
@@ -216,7 +217,7 @@ def _is_safe_enum_value(
     The goal is to preserve structural enum metadata in committed schemas
     without leaking personal data from conversations.
     """
-    effective_max_len = max_length or _SAFE_ENUM_MAX_LEN
+    effective_max_len = max_length if max_length is not None else _SAFE_ENUM_MAX_LEN
 
     # Check config-level overrides first (highest precedence)
     privacy_config = config if isinstance(config, SchemaPrivacyConfig) else None

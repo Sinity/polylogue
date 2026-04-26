@@ -151,9 +151,9 @@ files:
     loc: 20
     target: polylogue/cli/commands/dashboard.py
     owner: stable
-  - path: polylogue/cli/commands/embed.py
-    loc: 35
-    target: polylogue/cli/commands/embed.py
+  - path: polylogue/rendering/renderers/plaintext.py
+    loc: 20
+    target: polylogue/rendering/renderers/plaintext.py
     owner: stable
   - path: polylogue/cli/commands/export.py
     loc: 54

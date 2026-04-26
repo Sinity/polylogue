@@ -71,12 +71,12 @@ SESSION_PRODUCT_PROFILE_DDL = """
 
         CREATE TRIGGER IF NOT EXISTS session_profiles_fts_ad
         AFTER DELETE ON session_profiles BEGIN
-            DELETE FROM session_profiles_fts WHERE conversation_id = old.conversation_id;
+            DELETE FROM session_profiles_fts WHERE rowid = old.rowid;
         END;
 
         CREATE TRIGGER IF NOT EXISTS session_profiles_fts_au
         AFTER UPDATE ON session_profiles BEGIN
-            DELETE FROM session_profiles_fts WHERE conversation_id = old.conversation_id;
+            DELETE FROM session_profiles_fts WHERE rowid = old.rowid;
             INSERT INTO session_profiles_fts (conversation_id, provider_name, text)
             VALUES (new.conversation_id, new.provider_name, new.search_text);
         END;
@@ -96,12 +96,12 @@ SESSION_PRODUCT_PROFILE_DDL = """
 
         CREATE TRIGGER IF NOT EXISTS session_profile_evidence_fts_ad
         AFTER DELETE ON session_profiles BEGIN
-            DELETE FROM session_profile_evidence_fts WHERE conversation_id = old.conversation_id;
+            DELETE FROM session_profile_evidence_fts WHERE rowid = old.rowid;
         END;
 
         CREATE TRIGGER IF NOT EXISTS session_profile_evidence_fts_au
         AFTER UPDATE ON session_profiles BEGIN
-            DELETE FROM session_profile_evidence_fts WHERE conversation_id = old.conversation_id;
+            DELETE FROM session_profile_evidence_fts WHERE rowid = old.rowid;
             INSERT INTO session_profile_evidence_fts (conversation_id, provider_name, text)
             VALUES (new.conversation_id, new.provider_name, new.evidence_search_text);
         END;
@@ -121,12 +121,12 @@ SESSION_PRODUCT_PROFILE_DDL = """
 
         CREATE TRIGGER IF NOT EXISTS session_profile_inference_fts_ad
         AFTER DELETE ON session_profiles BEGIN
-            DELETE FROM session_profile_inference_fts WHERE conversation_id = old.conversation_id;
+            DELETE FROM session_profile_inference_fts WHERE rowid = old.rowid;
         END;
 
         CREATE TRIGGER IF NOT EXISTS session_profile_inference_fts_au
         AFTER UPDATE ON session_profiles BEGIN
-            DELETE FROM session_profile_inference_fts WHERE conversation_id = old.conversation_id;
+            DELETE FROM session_profile_inference_fts WHERE rowid = old.rowid;
             INSERT INTO session_profile_inference_fts (conversation_id, provider_name, text)
             VALUES (new.conversation_id, new.provider_name, new.inference_search_text);
         END;
@@ -146,12 +146,12 @@ SESSION_PRODUCT_PROFILE_DDL = """
 
         CREATE TRIGGER IF NOT EXISTS session_profile_enrichment_fts_ad
         AFTER DELETE ON session_profiles BEGIN
-            DELETE FROM session_profile_enrichment_fts WHERE conversation_id = old.conversation_id;
+            DELETE FROM session_profile_enrichment_fts WHERE rowid = old.rowid;
         END;
 
         CREATE TRIGGER IF NOT EXISTS session_profile_enrichment_fts_au
         AFTER UPDATE ON session_profiles BEGIN
-            DELETE FROM session_profile_enrichment_fts WHERE conversation_id = old.conversation_id;
+            DELETE FROM session_profile_enrichment_fts WHERE rowid = old.rowid;
             INSERT INTO session_profile_enrichment_fts (conversation_id, provider_name, text)
             VALUES (new.conversation_id, new.provider_name, new.enrichment_search_text);
         END;

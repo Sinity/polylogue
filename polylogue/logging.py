@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from collections.abc import Iterable, Iterator
 from types import TracebackType
@@ -143,9 +144,11 @@ def configure_logging(verbose: bool = False, json_logs: bool = False) -> None:
     if json_logs:
         processors.append(structlog.processors.JSONRenderer())
     else:
+        env_force = os.environ.get("POLYLOGUE_FORCE_PLAIN")
+        force_plain = bool(env_force and env_force.lower() not in {"0", "false", "no"})
         processors.append(
             structlog.dev.ConsoleRenderer(
-                colors=sys.stderr.isatty(),
+                colors=sys.stderr.isatty() and not force_plain,
             )
         )
 
