@@ -289,6 +289,17 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "verify-cross-cuts",
+        "verification",
+        "Verify cross-cut tags in the topology projection match module-name conventions.",
+        "devtools.verify_cross_cuts",
+        use_when=(
+            "Catch manual edits or rule changes that desync the cross_cut tags from the "
+            "module names they describe. Phase 1 of #432."
+        ),
+        examples=("devtools verify-cross-cuts", "devtools verify-cross-cuts --json"),
+    ),
+    CommandSpec(
         "pipeline-probe",
         "verification",
         "Run typed pipeline probes against synthetic, staged, or archive-subset inputs.",
