@@ -197,6 +197,46 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools verify-showcase",),
     ),
     CommandSpec(
+        "verify-topology",
+        "verification",
+        "Verify the realized polylogue tree against the topology projection.",
+        "devtools.verify_topology",
+        use_when=(
+            "Detect orphans, conflicts, kernel-rule violations, or stale TBD cells against "
+            "docs/plans/topology-target.yaml after moving files between packages."
+        ),
+        examples=(
+            "devtools verify-topology",
+            "devtools verify-topology --json",
+            "devtools verify-topology --strict-tbd",
+        ),
+    ),
+    CommandSpec(
+        "verify-cluster-cohesion",
+        "verification",
+        "Validate proposed clusters from the topology projection using the import graph.",
+        "devtools.verify_cluster_cohesion",
+        use_when=(
+            "Check whether a proposed subpackage split would be cohesive — flags cross-cluster "
+            "imports through internals and cycles between clusters before any file is moved."
+        ),
+        examples=(
+            "devtools verify-cluster-cohesion",
+            "devtools verify-cluster-cohesion --cluster lib/query",
+        ),
+    ),
+    CommandSpec(
+        "build-topology-projection",
+        "generated surfaces",
+        "Generate docs/plans/topology-target.yaml from the current tree using placement rules.",
+        "devtools.build_topology_projection",
+        use_when=(
+            "Refresh the topology projection after editing placement rules in this script "
+            "or after a topology refactor lands."
+        ),
+        examples=("devtools build-topology-projection",),
+    ),
+    CommandSpec(
         "pipeline-probe",
         "verification",
         "Run typed pipeline probes against synthetic, staged, or archive-subset inputs.",
