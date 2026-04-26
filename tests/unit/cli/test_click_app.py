@@ -464,6 +464,7 @@ class TestCliMetadata:
             "count",
             "stats",
             "open",
+            "show",
             "delete",
         }
         assert set(cli.commands.keys()) == expected

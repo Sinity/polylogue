@@ -123,6 +123,51 @@ def test_open_verb_routes_single_id_or_appends_target_terms() -> None:
     assert appended_request.query_params()["open_result"] is True
 
 
+def test_show_verb_routes_provider_id_from_target_terms() -> None:
+    _, child = _context_pair(query_terms=())
+    wrapped = getattr(query_verbs.show_verb.callback, "__wrapped__", None)
+    assert callable(wrapped)
+
+    with patch("polylogue.cli.query_verbs._execute_query_verb") as execute:
+        wrapped(child, ("codex:019dbae3-699e-7d42",))
+
+    request = execute.call_args.args[1]
+    assert isinstance(request, RootModeRequest)
+    assert request.query_params()["conv_id"] == "codex:019dbae3-699e-7d42"
+    assert request.query_params()["query"] == ()
+
+
+def test_show_verb_routes_provider_id_from_parent_query_terms() -> None:
+    """Regression: ``polylogue codex:abc show`` captured ``codex:abc`` as a
+    bare query term before ``show`` was a verb. Now the verb consumes the
+    parent term and routes to a direct id lookup."""
+    _, child = _context_pair(query_terms=("claude-code:b78f986e-995",))
+    wrapped = getattr(query_verbs.show_verb.callback, "__wrapped__", None)
+    assert callable(wrapped)
+
+    with patch("polylogue.cli.query_verbs._execute_query_verb") as execute:
+        wrapped(child, ())
+
+    request = execute.call_args.args[1]
+    assert isinstance(request, RootModeRequest)
+    assert request.query_params()["conv_id"] == "claude-code:b78f986e-995"
+    assert request.query_params()["query"] == ()
+
+
+def test_show_verb_falls_back_to_search_for_non_id_terms() -> None:
+    _, child = _context_pair(query_terms=("error",))
+    wrapped = getattr(query_verbs.show_verb.callback, "__wrapped__", None)
+    assert callable(wrapped)
+
+    with patch("polylogue.cli.query_verbs._execute_query_verb") as execute:
+        wrapped(child, ("regression",))
+
+    request = execute.call_args.args[1]
+    assert isinstance(request, RootModeRequest)
+    assert "conv_id" not in request.query_params() or not request.query_params().get("conv_id")
+    assert request.query_params()["query"] == ("error", "regression")
+
+
 def test_delete_verb_updates_force_and_dry_run_flags() -> None:
     _, child = _context_pair(query_terms=("alpha",))
     wrapped = getattr(query_verbs.delete_verb.callback, "__wrapped__", None)
