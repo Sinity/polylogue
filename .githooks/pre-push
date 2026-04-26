@@ -2,8 +2,30 @@
 # Pre-push gate: full verification baseline (quick mode).
 # Runs format + lint + render-all --check. Tests run in CI.
 # Installed automatically by the devshell (shellHook in flake.nix).
+#
+# Distinguishes "verify rejected your changes" from "devtools could not even
+# import in this shell" — the latter usually means polylogue's devshell isn't
+# loaded in the current terminal (see #423).
 
 set -euo pipefail
+
+# Pre-flight: confirm devtools imports cleanly. If it doesn't, the active
+# shell isn't pointing at polylogue's Python env, and a verify failure here
+# is environmental, not a defect in the diff being pushed.
+if ! devtools --help >/dev/null 2>&1; then
+    cat >&2 <<'MSG'
+pre-push: devtools is not importable in this shell.
+
+This usually means polylogue's devshell isn't loaded — the push isn't being
+rejected for any defect in your diff. To run the gate against the diff:
+
+    nix develop --command git push <args...>
+
+or re-enter the project directory under direnv (run `direnv allow` once if
+you haven't), and try the push again.
+MSG
+    exit 1
+fi
 
 echo "pre-push: running quick verification baseline" >&2
 devtools verify --quick
