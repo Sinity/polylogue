@@ -212,7 +212,7 @@ async def build_site_publication_manifest(
     return SitePublicationManifest(
         publication_id=f"site-{uuid4().hex[:16]}",
         generated_at=generated_at,
-        output_dir=str(output_dir),
+        output_dir=".",
         duration_ms=duration_ms,
         config=config.to_payload(),
         archive=_archive_publication_summary(archive_stats),

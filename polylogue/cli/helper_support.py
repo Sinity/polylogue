@@ -4,12 +4,15 @@ from __future__ import annotations
 
 from typing import NoReturn
 
+import click
+
 from polylogue.cli.types import AppEnv
 from polylogue.config import Config
 
 
 def fail(command: str, message: str) -> NoReturn:
-    raise SystemExit(f"{command}: {message}")
+    click.echo(f"Error: {message}", err=True)
+    raise SystemExit(1)
 
 
 def load_effective_config(env: AppEnv) -> Config:

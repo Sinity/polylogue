@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shutil
+import unicodedata
 from pathlib import Path
 from typing import TypeAlias
 
@@ -70,12 +71,14 @@ def _normalize_for_hash(value: HashScalar) -> JSONValue:
         return _NULL_SENTINEL
     if value == "":
         return _EMPTY_SENTINEL
+    if isinstance(value, str):
+        return unicodedata.normalize("NFC", value)
     return value
 
 
 def attachment_seed(provider_name: str, attachment: ParsedAttachment) -> str:
     return "|".join(
-        str(value)
+        str(value) if value is not None else "<null>"
         for value in [
             provider_name,
             attachment.provider_attachment_id,
@@ -85,7 +88,6 @@ def attachment_seed(provider_name: str, attachment: ParsedAttachment) -> str:
             attachment.size_bytes,
             attachment.path,
         ]
-        if value is not None
     )
 
 
@@ -205,6 +207,7 @@ def conversation_content_hash(convo: ParsedConversation) -> ContentHash:
                 "name": _normalize_for_hash(att.name),
                 "mime_type": _normalize_for_hash(att.mime_type),
                 "size_bytes": _normalize_for_hash(att.size_bytes),
+                "digest": _normalize_for_hash(att.provider_meta.get("sha256") if att.provider_meta else None),
             }
             for att in convo.attachments
         ],

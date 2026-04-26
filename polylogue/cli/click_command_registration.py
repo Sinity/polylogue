@@ -6,7 +6,7 @@ import click
 
 from polylogue.cli.commands.auth import auth_command
 from polylogue.cli.commands.browser_capture import browser_capture_command
-from polylogue.cli.commands.check import check_command
+from polylogue.cli.commands.check import check_command, doctor_command
 from polylogue.cli.commands.completions import completions_command
 from polylogue.cli.commands.dashboard import dashboard_command
 from polylogue.cli.commands.export import export_command
@@ -24,6 +24,7 @@ ROOT_COMMANDS: tuple[click.Command, ...] = (
     run_command,
     browser_capture_command,
     check_command,
+    doctor_command,
     reset_command,
     mcp_command,
     auth_command,

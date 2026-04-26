@@ -46,6 +46,7 @@ async def save_conversation_record(
             sort_key = excluded.sort_key,
             content_hash = excluded.content_hash,
             provider_meta = excluded.provider_meta,
+            metadata = COALESCE(excluded.metadata, conversations.metadata),
             parent_conversation_id = excluded.parent_conversation_id,
             branch_type = excluded.branch_type,
             raw_id = COALESCE(excluded.raw_id, conversations.raw_id)

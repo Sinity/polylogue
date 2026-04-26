@@ -8,12 +8,13 @@ project-level → CLI flags.
 
 from __future__ import annotations
 
-import os
 import sys
 from dataclasses import dataclass, field
 from fnmatch import fnmatch
 from pathlib import Path
 from typing import Literal, Protocol, TypeAlias, runtime_checkable
+
+from polylogue.paths import config_root
 
 if sys.version_info >= (3, 11):
     import tomllib
@@ -135,11 +136,6 @@ class PrivacyConfig:
         return None
 
 
-def _xdg_config_home() -> Path:
-    """Return XDG_CONFIG_HOME, defaulting to ~/.config."""
-    return Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
-
-
 def load_privacy_config(
     *,
     cli_overrides: PrivacyConfigSection | None = None,
@@ -156,7 +152,7 @@ def load_privacy_config(
     merged_deny_patterns: PatternList = []
 
     # 1. XDG base config
-    xdg_path = _xdg_config_home() / "polylogue" / "schemas.toml"
+    xdg_path = config_root() / "polylogue" / "schemas.toml"
     if xdg_path.exists():
         section = _load_toml_section(xdg_path)
         _merge_into(section, merged, merged_field_overrides, merged_allow_patterns, merged_deny_patterns)

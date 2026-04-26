@@ -54,7 +54,10 @@ def format_message_text(text: str) -> str:
 
 def _escape_message_section_markers(text: str) -> str:
     """Prevent message body lines from masquerading as renderer section headers."""
-    return "\n".join(f"\\{line}" if line.startswith("## ") else line for line in text.split("\n"))
+    return "\n".join(
+        f"\\{line}" if line.startswith(("# ", "## ", "### ", "#### ", "##### ", "###### ")) else line
+        for line in text.split("\n")
+    )
 
 
 def append_attachment_markdown(att: MarkdownAttachment, lines: list[str], archive_root: Path) -> None:

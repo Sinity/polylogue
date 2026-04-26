@@ -55,6 +55,7 @@
             google-api-python-client
             google-auth-httplib2
             httpx
+            h2
             rich
             textual
             jinja2

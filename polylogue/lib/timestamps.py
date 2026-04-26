@@ -25,6 +25,10 @@ def parse_timestamp(value: str | int | float | None) -> datetime | None:
     if value is None:
         return None
 
+    # Reject Python repr strings (e.g. from str(non_string_value))
+    if isinstance(value, str) and value and value[0] in ("{", "[", "("):
+        return None
+
     try:
         # Handle int/float epoch directly - use UTC to avoid DST issues
         if isinstance(value, (int, float)):

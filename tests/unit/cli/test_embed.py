@@ -12,11 +12,8 @@ import pytest
 from click.testing import CliRunner
 
 from polylogue.cli.click_app import cli
-from polylogue.cli.commands.embed import (
-    _embed_batch,
-    _embed_single,
-    _show_embedding_stats,
-)
+from polylogue.cli.embed_runtime import embed_batch, embed_single
+from polylogue.cli.embed_stats import show_embedding_stats
 from polylogue.storage.embedding_stats_models import EmbeddingStatsSnapshot
 
 MessageRow: TypeAlias = dict[str, str]
@@ -121,7 +118,7 @@ class TestShowEmbeddingStats:
         ):
             mock_open.return_value.__enter__ = MagicMock(return_value=mock_conn)
             mock_open.return_value.__exit__ = MagicMock(return_value=False)
-            _show_embedding_stats(mock_env)
+            show_embedding_stats(mock_env)
 
         captured = capsys.readouterr()
         assert "Embedding Statistics" in captured.out
@@ -142,7 +139,7 @@ class TestShowEmbeddingStats:
         ):
             mock_open.return_value.__enter__ = MagicMock(return_value=mock_conn)
             mock_open.return_value.__exit__ = MagicMock(return_value=False)
-            _show_embedding_stats(mock_env)
+            show_embedding_stats(mock_env)
 
         captured = capsys.readouterr()
         assert "Embedding Statistics" in captured.out
@@ -170,7 +167,7 @@ class TestShowEmbeddingStats:
         ):
             mock_open.return_value.__enter__ = MagicMock(return_value=mock_conn)
             mock_open.return_value.__exit__ = MagicMock(return_value=False)
-            _show_embedding_stats(mock_env, json_output=True)
+            show_embedding_stats(mock_env, json_output=True)
 
         payload = json.loads(capsys.readouterr().out)
         assert payload["status"] == "partial"
@@ -181,35 +178,35 @@ class TestShowEmbeddingStats:
 
 
 class TestEmbedSingle:
-    def test_embed_single_success(
+    def testembed_single_success(
         self, mock_env: MagicMock, mock_repository_async: MagicMock, capsys: pytest.CaptureFixture[str]
     ) -> None:
         mock_vec_provider = MagicMock()
-        _embed_single(mock_env, mock_repository_async, mock_vec_provider, "conv-123")
+        embed_single(mock_env, mock_repository_async, mock_vec_provider, "conv-123")
         mock_vec_provider.upsert.assert_called_once_with("conv-123", mock_repository_async.get_messages.return_value)
         captured = capsys.readouterr()
         assert "Embedding 2 messages" in captured.out
         assert "✓ Embedded" in captured.out
 
-    def test_embed_single_conversation_not_found(self, mock_env: MagicMock, mock_repository_async: MagicMock) -> None:
+    def testembed_single_conversation_not_found(self, mock_env: MagicMock, mock_repository_async: MagicMock) -> None:
         mock_repository_async.view = AsyncMock(return_value=None)
         with pytest.raises(click.Abort):
-            _embed_single(mock_env, mock_repository_async, MagicMock(), "nonexistent")
+            embed_single(mock_env, mock_repository_async, MagicMock(), "nonexistent")
 
-    def test_embed_single_no_messages(
+    def testembed_single_no_messages(
         self, mock_env: MagicMock, mock_repository_async: MagicMock, capsys: pytest.CaptureFixture[str]
     ) -> None:
         mock_repository_async.get_messages = AsyncMock(return_value=[])
         mock_vec_provider = MagicMock()
-        _embed_single(mock_env, mock_repository_async, mock_vec_provider, "conv-123")
+        embed_single(mock_env, mock_repository_async, mock_vec_provider, "conv-123")
         mock_vec_provider.upsert.assert_not_called()
         assert "No messages to embed" in capsys.readouterr().out
 
-    def test_embed_single_upsert_exception(self, mock_env: MagicMock, mock_repository_async: MagicMock) -> None:
+    def testembed_single_upsert_exception(self, mock_env: MagicMock, mock_repository_async: MagicMock) -> None:
         mock_vec_provider = MagicMock()
         mock_vec_provider.upsert.side_effect = ValueError("API error")
         with pytest.raises(click.Abort):
-            _embed_single(mock_env, mock_repository_async, mock_vec_provider, "conv-123")
+            embed_single(mock_env, mock_repository_async, mock_vec_provider, "conv-123")
 
 
 class TestEmbedBatch:
@@ -222,7 +219,7 @@ class TestEmbedBatch:
             (3, None, True, "Embedding 3 conversations"),
         ],
     )
-    def test_embed_batch_variants(
+    def testembed_batch_variants(
         self,
         mock_env: MagicMock,
         mock_repository: MagicMock,
@@ -242,23 +239,23 @@ class TestEmbedBatch:
             mock_open.return_value.__enter__ = MagicMock(return_value=mock_conn)
             mock_open.return_value.__exit__ = MagicMock(return_value=False)
             if limit is None:
-                _embed_batch(mock_env, mock_repository, mock_vec_provider, rebuild=rebuild)
+                embed_batch(mock_env, mock_repository, mock_vec_provider, rebuild=rebuild)
             else:
-                _embed_batch(mock_env, mock_repository, mock_vec_provider, limit=limit, rebuild=rebuild)
+                embed_batch(mock_env, mock_repository, mock_vec_provider, limit=limit, rebuild=rebuild)
 
         assert expected_output in capsys.readouterr().out
 
-    def test_embed_batch_rebuild_flag(self, mock_env: MagicMock, mock_repository: MagicMock) -> None:
+    def testembed_batch_rebuild_flag(self, mock_env: MagicMock, mock_repository: MagicMock) -> None:
         mock_vec_provider = MagicMock()
         with patch("polylogue.storage.backends.connection.open_connection") as mock_open:
             mock_conn = MagicMock()
             mock_conn.execute.return_value.fetchmany.side_effect = [[], []]
             mock_open.return_value.__enter__ = MagicMock(return_value=mock_conn)
             mock_open.return_value.__exit__ = MagicMock(return_value=False)
-            _embed_batch(mock_env, mock_repository, mock_vec_provider, rebuild=True)
+            embed_batch(mock_env, mock_repository, mock_vec_provider, rebuild=True)
         assert any("ORDER BY updated_at DESC" in str(call) for call in mock_conn.execute.call_args_list)
 
-    def test_embed_batch_error_handling(
+    def testembed_batch_error_handling(
         self, mock_env: MagicMock, mock_repository: MagicMock, capsys: pytest.CaptureFixture[str]
     ) -> None:
         mock_vec_provider = MagicMock()
@@ -275,7 +272,7 @@ class TestEmbedBatch:
             mock_conn.execute.return_value.fetchmany.side_effect = [convs, []]
             mock_open.return_value.__enter__ = MagicMock(return_value=mock_conn)
             mock_open.return_value.__exit__ = MagicMock(return_value=False)
-            _embed_batch(mock_env, mock_repository, mock_vec_provider)
+            embed_batch(mock_env, mock_repository, mock_vec_provider)
         assert "error" in capsys.readouterr().out.lower()
 
 
@@ -359,7 +356,7 @@ class TestEmbedBatchRichMode:
             (1, [{"message_id": "m1"}], RuntimeError),
         ],
     )
-    def test_embed_batch_rich_mode_variants(
+    def testembed_batch_rich_mode_variants(
         self,
         mock_env_rich: MagicMock,
         mock_repository: MagicMock,
@@ -386,7 +383,7 @@ class TestEmbedBatchRichMode:
             mock_conn.execute.return_value.fetchmany.side_effect = [convs, []]
             mock_open.return_value.__enter__ = MagicMock(return_value=mock_conn)
             mock_open.return_value.__exit__ = MagicMock(return_value=False)
-            _embed_batch(mock_env_rich, mock_repository, mock_vec_provider)
+            embed_batch(mock_env_rich, mock_repository, mock_vec_provider)
 
         captured = capsys.readouterr()
         if exception_type is None:

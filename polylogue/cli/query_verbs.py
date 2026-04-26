@@ -75,6 +75,20 @@ def stats_verb(ctx: click.Context, stats_by: str | None, output_format: str | No
     _execute_query_verb(ctx, request)
 
 
+@click.command("show")
+@click.argument("target_terms", nargs=-1)
+@click.pass_context
+def show_verb(ctx: click.Context, target_terms: tuple[str, ...]) -> None:
+    """Show matched conversations with default full-content output."""
+    request = _parent_request(ctx)
+    parent_terms = _parent_query_terms(ctx)
+    candidates = parent_terms + target_terms
+    if len(candidates) == 1 and ":" in candidates[0]:
+        _execute_query_verb(ctx, request.with_query_terms(()).with_param_updates(conv_id=candidates[0]))
+        return
+    _execute_query_verb(ctx, request.append_query_terms(target_terms))
+
+
 @click.command("open")
 @click.option("--print-path", is_flag=True, help="Print the matched render path instead of opening it")
 @click.argument("target_terms", nargs=-1, shell_complete=complete_open_targets)
@@ -82,8 +96,10 @@ def stats_verb(ctx: click.Context, stats_by: str | None, output_format: str | No
 def open_verb(ctx: click.Context, print_path: bool, target_terms: tuple[str, ...]) -> None:
     """Open matched conversation in browser/editor."""
     request = _parent_request(ctx).with_param_updates(open_result=True, print_path=print_path)
-    if not _parent_query_terms(ctx) and len(target_terms) == 1 and ":" in target_terms[0]:
-        _execute_query_verb(ctx, request.with_param_updates(conv_id=target_terms[0]))
+    parent_terms = _parent_query_terms(ctx)
+    candidates = parent_terms + target_terms
+    if len(candidates) == 1 and ":" in candidates[0]:
+        _execute_query_verb(ctx, request.with_query_terms(()).with_param_updates(conv_id=candidates[0]))
         return
     _execute_query_verb(ctx, request.append_query_terms(target_terms))
 

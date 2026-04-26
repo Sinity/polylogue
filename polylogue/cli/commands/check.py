@@ -28,7 +28,7 @@ def _format_count_mapping(counts: dict[str, int]) -> str:
     return _format_count_mapping_impl(counts)
 
 
-@click.command("doctor")
+@click.command("check")
 @apply_check_command_options
 @click.pass_obj
 def check_command(
@@ -109,4 +109,12 @@ def _parse_schema_samples(raw: str) -> int | None:
     return _parse_schema_samples_impl(raw)
 
 
-__all__ = ["check_command"]
+# Hidden alias for backward compatibility
+doctor_command = click.Command(
+    name="doctor",
+    hidden=True,
+    callback=check_command.callback,
+    params=check_command.params,
+)
+
+__all__ = ["check_command", "doctor_command"]

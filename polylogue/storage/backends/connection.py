@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sqlite3
 import threading
 from collections.abc import Iterator, Sequence
@@ -87,6 +88,7 @@ def _get_cached_connection(path: Path) -> sqlite3.Connection:
 
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path, timeout=DB_TIMEOUT)
+    os.chmod(path, 0o600)
     conn.row_factory = sqlite3.Row
     _apply_pragma_statements(conn, WRITE_CONNECTION_PRAGMA_STATEMENTS)
     _load_sqlite_vec(conn)

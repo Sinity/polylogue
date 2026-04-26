@@ -70,12 +70,12 @@ ACTION_FTS_DDL = """
 
         CREATE TRIGGER IF NOT EXISTS action_events_fts_ad
         AFTER DELETE ON action_events BEGIN
-            DELETE FROM action_events_fts WHERE event_id = old.event_id;
+            DELETE FROM action_events_fts WHERE rowid = old.rowid;
         END;
 
         CREATE TRIGGER IF NOT EXISTS action_events_fts_au
         AFTER UPDATE ON action_events BEGIN
-            DELETE FROM action_events_fts WHERE event_id = old.event_id;
+            DELETE FROM action_events_fts WHERE rowid = old.rowid;
             INSERT INTO action_events_fts (event_id, message_id, conversation_id, action_kind, tool_name, text)
             VALUES (
                 new.event_id,

@@ -114,8 +114,8 @@ _MESSAGE_FTS_TRIGGER_DDL = [
 _ACTION_FTS_TRIGGER_DDL = [
     """CREATE TRIGGER IF NOT EXISTS action_events_fts_ai
        AFTER INSERT ON action_events BEGIN
-           INSERT INTO action_events_fts(rowid, event_id, conversation_id, action_kind, tool_name, path, summary, search_text)
-           VALUES (new.rowid, new.event_id, new.conversation_id, new.action_kind, new.tool_name, new.path, new.summary, new.search_text);
+           INSERT INTO action_events_fts(event_id, message_id, conversation_id, action_kind, tool_name, text)
+           VALUES (new.event_id, new.message_id, new.conversation_id, new.action_kind, new.normalized_tool_name, new.search_text);
        END""",
     """CREATE TRIGGER IF NOT EXISTS action_events_fts_ad
        AFTER DELETE ON action_events BEGIN
@@ -124,8 +124,8 @@ _ACTION_FTS_TRIGGER_DDL = [
     """CREATE TRIGGER IF NOT EXISTS action_events_fts_au
        AFTER UPDATE ON action_events BEGIN
            DELETE FROM action_events_fts WHERE rowid = old.rowid;
-           INSERT INTO action_events_fts(rowid, event_id, conversation_id, action_kind, tool_name, path, summary, search_text)
-           VALUES (new.rowid, new.event_id, new.conversation_id, new.action_kind, new.tool_name, new.path, new.summary, new.search_text);
+           INSERT INTO action_events_fts(event_id, message_id, conversation_id, action_kind, tool_name, text)
+           VALUES (new.event_id, new.message_id, new.conversation_id, new.action_kind, new.normalized_tool_name, new.search_text);
        END""",
 ]
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from polylogue.mcp.payloads import (
     MCPArchiveStatsPayload,
@@ -211,7 +211,7 @@ def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         return await hooks.async_safe_call("get_session_tree", run)
 
     @mcp.tool()
-    async def get_stats_by(group_by: str = "provider") -> str:
+    async def get_stats_by(group_by: Literal["provider", "month", "year"] = "provider") -> str:
         async def run() -> str:
             root = await hooks.get_archive_ops().get_stats_by(group_by)
             return hooks.json_payload(MCPStatsByPayload(root=root))
