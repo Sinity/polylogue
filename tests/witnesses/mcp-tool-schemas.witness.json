@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "witness_id": "mcp.tool-schemas",
+  "path": "tests/data/witnesses/mcp-tool-schemas.json",
+  "origin": "synthetic",
+  "committed": true,
+  "provenance": {
+    "fixture_kind": "mcp-tool-wire-schema",
+    "source_test": "tests/unit/mcp/test_tool_schema_witness.py",
+    "raw_material": "synthetic",
+    "generator": "polylogue.mcp.server.build_server"
+  },
+  "preserved_semantic_facts": [
+    "the wire-visible MCP tool catalog (every registered tool name)",
+    "each tool's published JSON Schema for its arguments",
+    "argument required/optional shape — drift here breaks existing clients silently"
+  ],
+  "minimization_status": "not_applicable",
+  "privacy": {
+    "private_material": "not_observed",
+    "transformed": false,
+    "redacted": false,
+    "discarded": false,
+    "retained": false,
+    "notes": [
+      "schema is generated synthetically from the server registration code"
+    ]
+  },
+  "known_failing": false,
+  "xfail_strict": false,
+  "linked_issue": null,
+  "rejection_reason": null,
+  "notes": [
+    "regenerate via tests/unit/mcp/test_tool_schema_witness.py with --update-witness or by running the snapshot helper"
+  ]
+}
