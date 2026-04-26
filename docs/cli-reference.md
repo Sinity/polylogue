@@ -127,6 +127,7 @@ Commands:
   audit            Run archive QA: schema audit and artifact proof checks.
   auth             Authenticate with external services (Google Drive for...
   browser-capture  Receive browser-extension captures into the normal inbox.
+  bulk-export      Bulk export every matched conversation in one process.
   completions      Generate shell completion scripts.
   count            Print count of matched conversations.
   dashboard        Launch the dashboard TUI.

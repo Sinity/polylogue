@@ -12,7 +12,9 @@ from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shell_completion_values import complete_open_targets
 from polylogue.cli.types import AppEnv
 
-VERB_NAMES = frozenset({"list", "count", "stats", "open", "show", "delete"})
+VERB_NAMES = frozenset({"list", "count", "stats", "open", "show", "bulk-export", "delete"})
+
+_BULK_EXPORT_FORMATS = ("jsonl", "json", "markdown", "yaml", "plaintext", "html", "obsidian", "org")
 
 
 @click.command("list")
@@ -107,6 +109,34 @@ def show_verb(ctx: click.Context, target_terms: tuple[str, ...]) -> None:
     _execute_query_verb(ctx, request.append_query_terms(target_terms))
 
 
+@click.command("bulk-export")
+@click.option(
+    "--format",
+    "-f",
+    "output_format",
+    type=click.Choice(_BULK_EXPORT_FORMATS),
+    default="jsonl",
+    show_default=True,
+    help="Output format. jsonl emits one conversation JSON per line.",
+)
+@click.option("--fields", help="Fields for JSON/YAML outputs")
+@click.pass_context
+def bulk_export_verb(ctx: click.Context, output_format: str, fields: str | None) -> None:
+    """Bulk export every matched conversation in one process.
+
+    Reuses the parent filter chain (``--provider``, ``--since``, ``--path``,
+    ``--message-role``, etc.). Default ``--format jsonl`` emits one
+    single-line conversation JSON per line, suitable for piping into ``jq``
+    or downstream analysis tools. Other formats are concatenated with
+    ``\\n---\\n`` separators where appropriate.
+    """
+    from polylogue.cli.bulk_export import run_bulk_export
+
+    request = _parent_request(ctx)
+    env: AppEnv = ctx.obj
+    run_bulk_export(env, request, output_format=output_format, fields=fields)
+
+
 @click.command("delete")
 @click.option("--dry-run", is_flag=True, help="Preview without deleting")
 @click.option("--force", is_flag=True, help="Skip confirmation")
@@ -149,12 +179,13 @@ def _execute_query_verb(
     execute_query_request(env, request)
 
 
-QUERY_VERBS = (list_verb, count_verb, stats_verb, open_verb, show_verb, delete_verb)
+QUERY_VERBS = (list_verb, count_verb, stats_verb, open_verb, show_verb, bulk_export_verb, delete_verb)
 
 
 __all__ = [
     "QUERY_VERBS",
     "VERB_NAMES",
+    "bulk_export_verb",
     "count_verb",
     "delete_verb",
     "list_verb",

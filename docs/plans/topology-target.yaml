@@ -74,6 +74,10 @@ files:
     loc: 6
     target: polylogue/cli/__main__.py
     owner: stable
+  - path: polylogue/cli/bulk_export.py
+    loc: 63
+    target: polylogue/cli/bulk_export.py
+    owner: stable
   - path: polylogue/cli/check_maintenance.py
     loc: 52
     target: polylogue/cli/check_maintenance.py
@@ -152,7 +156,7 @@ files:
     target: polylogue/cli/commands/embed.py
     owner: stable
   - path: polylogue/cli/commands/export.py
-    loc: 34
+    loc: 54
     target: polylogue/cli/commands/export.py
     owner: stable
   - path: polylogue/cli/commands/mcp.py
@@ -301,7 +305,7 @@ files:
     target: polylogue/cli/query_stats.py
     owner: stable
   - path: polylogue/cli/query_verbs.py
-    loc: 142
+    loc: 173
     target: polylogue/cli/query_verbs.py
     owner: stable
   - path: polylogue/cli/resume_rendering.py
@@ -464,7 +468,7 @@ files:
     target: polylogue/lib/embeddings/__init__.py
     owner: stable
   - path: polylogue/lib/embeddings/runtime.py
-    loc: 147
+    loc: 144
     target: polylogue/lib/embeddings/runtime.py
     owner: stable
   - path: polylogue/lib/embeddings/stats.py
@@ -1926,11 +1930,11 @@ files:
     target: polylogue/sources/parsers/claude/code_detection.py
     owner: #403
   - path: polylogue/sources/parsers/claude_code_parser.py
-    loc: 232
+    loc: 234
     target: polylogue/sources/parsers/claude/code_parser.py
     owner: #403
   - path: polylogue/sources/parsers/claude_common.py
-    loc: 138
+    loc: 161
     target: polylogue/sources/parsers/claude/common.py
     owner: #403
   - path: polylogue/sources/parsers/claude_index.py
