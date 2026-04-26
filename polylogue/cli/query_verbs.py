@@ -12,7 +12,7 @@ from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shell_completion_values import complete_open_targets
 from polylogue.cli.types import AppEnv
 
-VERB_NAMES = frozenset({"list", "count", "stats", "open", "delete"})
+VERB_NAMES = frozenset({"list", "count", "stats", "open", "show", "delete"})
 
 
 @click.command("list")
@@ -86,6 +86,27 @@ def open_verb(ctx: click.Context, print_path: bool, target_terms: tuple[str, ...
     _execute_query_verb(ctx, request.append_query_terms(target_terms))
 
 
+@click.command("show")
+@click.argument("target_terms", nargs=-1, shell_complete=complete_open_targets)
+@click.pass_context
+def show_verb(ctx: click.Context, target_terms: tuple[str, ...]) -> None:
+    """Show matched conversation content (default streaming output).
+
+    Accepts an optional ``provider:id`` positional that routes directly
+    to the conversation by id (prefix match), bypassing FTS search.
+    """
+    request = _parent_request(ctx)
+    parent_terms = _parent_query_terms(ctx)
+    candidates = parent_terms + target_terms
+    if len(candidates) == 1 and ":" in candidates[0]:
+        _execute_query_verb(
+            ctx,
+            request.with_query_terms(()).with_param_updates(conv_id=candidates[0]),
+        )
+        return
+    _execute_query_verb(ctx, request.append_query_terms(target_terms))
+
+
 @click.command("delete")
 @click.option("--dry-run", is_flag=True, help="Preview without deleting")
 @click.option("--force", is_flag=True, help="Skip confirmation")
@@ -128,7 +149,7 @@ def _execute_query_verb(
     execute_query_request(env, request)
 
 
-QUERY_VERBS = (list_verb, count_verb, stats_verb, open_verb, delete_verb)
+QUERY_VERBS = (list_verb, count_verb, stats_verb, open_verb, show_verb, delete_verb)
 
 
 __all__ = [
@@ -138,5 +159,6 @@ __all__ = [
     "delete_verb",
     "list_verb",
     "open_verb",
+    "show_verb",
     "stats_verb",
 ]
