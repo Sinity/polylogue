@@ -45,6 +45,7 @@ def build_verify_steps(*, quick: bool, lab: bool) -> list[tuple[str, list[str]]]
         ("ruff check", ["ruff", "check", "polylogue/", "tests/", "devtools/"]),
         ("mypy", ["mypy"]),
         ("render-all", ["devtools", "render-all", "--check"]),
+        ("verify-topology", ["devtools", "verify-topology"]),
     ]
 
     if not quick:

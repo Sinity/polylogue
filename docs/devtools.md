@@ -80,6 +80,7 @@ These are the commands worth remembering during normal repo work:
 
 | Command | Description |
 | --- | --- |
+| `devtools build-topology-projection` | Generate docs/plans/topology-target.yaml from the current tree using placement rules. |
 | `devtools render-agents` | Render AGENTS.md from CLAUDE.md and its included files. |
 | `devtools render-all` | Refresh or verify generated docs and agent files. |
 | `devtools render-cli-reference` | Render docs/cli-reference.md from live CLI help. |
@@ -107,7 +108,9 @@ These are the commands worth remembering during normal repo work:
 | `devtools schema-promote` | Promote a schema evidence cluster into a registered package version. |
 | `devtools semantic-axis-evidence` | Generate verification-lab performance evidence across synthetic semantic scale tiers. |
 | `devtools verify` | Run the local verification baseline before pushing or creating a PR. |
+| `devtools verify-cluster-cohesion` | Validate proposed clusters from the topology projection using the import graph. |
 | `devtools verify-showcase` | Verify committed showcase/demo surfaces. |
+| `devtools verify-topology` | Verify the realized polylogue tree against the topology projection. |
 
 ### Campaigns
 
