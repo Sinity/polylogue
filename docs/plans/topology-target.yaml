@@ -1440,10 +1440,6 @@ files:
     target: polylogue/schemas/semantic_inference_runtime.py
     owner: stable
     cross_cut: { lifecycle: runtime }
-  - path: polylogue/schemas/semantic_inference_scoring.py
-    loc: 13
-    target: polylogue/schemas/semantic_inference_scoring.py
-    owner: stable
   - path: polylogue/schemas/shape_fingerprint.py
     loc: 73
     target: polylogue/schemas/shape_fingerprint.py
