@@ -313,7 +313,10 @@ async def run_sources(
             duration_ms=int((time.perf_counter() - start) * 1000),
         )
     finally:
-        # Restore FTS triggers that were suspended for bulk operations
+        # Restore FTS triggers that were suspended for bulk operations.
+        # Failure here leaves the search index in a degraded state until the
+        # next full rebuild; surface it loudly so operators see degraded state
+        # in logs rather than discovering stale results later.
         try:
             from polylogue.storage.fts_lifecycle import restore_fts_triggers_async
 
@@ -321,7 +324,10 @@ async def run_sources(
                 await restore_fts_triggers_async(conn)
                 await conn.commit()
         except Exception:
-            pass  # Don't fail on trigger restore — index rebuild handles FTS
+            logger.exception(
+                "FTS trigger restoration failed; search index may return stale "
+                "results until the next 'devtools verify' or 'polylogue run index' rebuild",
+            )
         if owns_repository:
             await active_repository.close()
         elif owns_backend:

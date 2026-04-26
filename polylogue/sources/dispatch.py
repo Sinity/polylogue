@@ -144,6 +144,11 @@ def _detect_provider_from_raw_bytes(
     try:
         payloads = list(_iter_json_stream(BytesIO(raw_bytes), stream_name))
     except Exception:
+        logger.exception(
+            "Provider detection by JSON-stream parsing failed for %s; falling back to %s",
+            stream_name,
+            fallback_provider.value,
+        )
         return fallback_provider
 
     return detect_provider(payloads) or fallback_provider

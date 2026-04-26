@@ -23,6 +23,7 @@ from polylogue.lib.branch_type import BranchType
 from polylogue.lib.json import dumps as json_dumps
 from polylogue.lib.raw_payload_decode import RawPayloadEnvelope
 from polylogue.lib.roles import Role
+from polylogue.logging import get_logger
 from polylogue.pipeline.materialization_runtime import (
     MaterializedContentBlock,
     MaterializedConversation,
@@ -58,6 +59,7 @@ if TYPE_CHECKING:
     from polylogue.sources.parsers.base import ParsedConversation
 
 
+logger = get_logger(__name__)
 _SOURCE_HASH_SUFFIX = re.compile(r"-(?:[0-9a-f]{16,64})$", re.IGNORECASE)
 _SCHEMA_REGISTRY: SchemaRegistry | None = None
 
@@ -405,6 +407,14 @@ def _build_stream_parse_plan(
             jsonl_dict_only=True,
         )
     except Exception:
+        # Sampling helper failed entirely (file I/O, decode, or worse). Logging
+        # this is critical because the caller falls back to a different parser
+        # path on `None`, which can produce different content hashes for the
+        # same input depending on whether the helper happened to succeed.
+        logger.exception(
+            "JSONL sample probe failed for %s; falling back to non-stream parsing",
+            stream_name,
+        )
         return None
 
     runtime_provider = Provider.from_string(payload_provider or context.raw_record.provider_name)

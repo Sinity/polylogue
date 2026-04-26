@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import re
 import sqlite3
-from contextlib import suppress
 from dataclasses import dataclass
 from typing import Literal, TypeAlias
 
 import aiosqlite
 
 from polylogue.errors import DatabaseError
+from polylogue.logging import get_logger
 from polylogue.storage.backends.schema_ddl import (
     _ACTION_EVENT_DDL,
     _ACTION_FTS_DDL,
@@ -21,6 +21,8 @@ from polylogue.storage.backends.schema_ddl import (
     SCHEMA_DDL,
     SCHEMA_VERSION,
 )
+
+logger = get_logger(__name__)
 
 _RAW_SOURCE_MTIME_INDEX_SQL = (
     "CREATE INDEX IF NOT EXISTS idx_raw_conv_source_mtime "
@@ -600,15 +602,36 @@ async def apply_schema_extension_plan_async(conn: aiosqlite.Connection, plan: Sc
 
 
 def ensure_vec0_table(conn: sqlite3.Connection) -> None:
-    with suppress(Exception):
+    # Probe gates whether vec0 is available; absence is the common case
+    # (extension not loaded) and is intentionally silent. DDL failure after
+    # the probe succeeds is corruption-shaped and must surface in logs.
+    try:
         conn.execute("SELECT vec_version()")
+    except Exception:
+        return
+    try:
         conn.execute(_VEC0_DDL)
+    except Exception:
+        logger.exception(
+            "vec_version() succeeded but _VEC0_DDL failed; vector table may be "
+            "partially initialized — semantic search will return empty results "
+            "until the database is reset",
+        )
 
 
 async def ensure_vec0_table_async(conn: aiosqlite.Connection) -> None:
-    with suppress(Exception):
+    try:
         await conn.execute("SELECT vec_version()")
+    except Exception:
+        return
+    try:
         await conn.execute(_VEC0_DDL)
+    except Exception:
+        logger.exception(
+            "vec_version() succeeded but _VEC0_DDL failed; vector table may be "
+            "partially initialized — semantic search will return empty results "
+            "until the database is reset",
+        )
 
 
 __all__ = [
