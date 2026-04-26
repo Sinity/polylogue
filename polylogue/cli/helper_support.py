@@ -12,7 +12,7 @@ from polylogue.config import Config
 
 def fail(command: str, message: str) -> NoReturn:
     click.echo(f"Error: {message}", err=True)
-    raise SystemExit(message)
+    raise SystemExit(f"{command}: {message}")
 
 
 def load_effective_config(env: AppEnv) -> Config:
