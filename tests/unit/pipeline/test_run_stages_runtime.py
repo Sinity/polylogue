@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import ANY, AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import click
 import pytest
@@ -383,7 +383,13 @@ async def test_execute_site_stage_covers_success_and_error_paths(tmp_path: Path)
 async def test_execute_embed_stage_covers_stats_errors_single_and_batch_paths() -> None:
     config = SimpleNamespace()
 
-    with patch("polylogue.cli.embed_stats.show_embedding_stats") as show_stats:
+    stats_payload = {
+        "status": "complete",
+        "total_conversations": 5,
+        "embedded_conversations": 5,
+        "pending_conversations": 0,
+    }
+    with patch("polylogue.lib.embeddings.stats.embedding_status_payload", return_value=stats_payload) as show_stats:
         stats = await run_stages.execute_embed_stage(
             config=config, backend=SimpleNamespace(), stats_only=True, json_output=True
         )
@@ -400,26 +406,33 @@ async def test_execute_embed_stage_covers_stats_errors_single_and_batch_paths() 
                 await run_stages.execute_embed_stage(config=config, backend=SimpleNamespace())
 
     provider = SimpleNamespace(model="voyage-4")
+    from polylogue.lib.embeddings.runtime import EmbedConversationOutcome
+
+    embedded_outcome = EmbedConversationOutcome(status="embedded", conversation_id="conv-1", embedded_message_count=2)
     with patch.dict("os.environ", {"VOYAGE_API_KEY": "key"}, clear=True):
         with patch("polylogue.storage.search_providers.create_vector_provider", return_value=provider):
-            with patch("polylogue.cli.embed_runtime.embed_single") as embed_single:
-                with patch("polylogue.cli.embed_runtime.embed_batch") as embed_batch:
-                    with patch("polylogue.storage.repository.ConversationRepository", return_value="repo"):
-                        single = await run_stages.execute_embed_stage(
-                            config=config,
-                            backend=SimpleNamespace(),
-                            conversation_id="conv-1",
-                            model="voyage-4-large",
-                        )
+            with patch(
+                "polylogue.lib.embeddings.runtime.embed_conversation_sync",
+                return_value=embedded_outcome,
+            ) as embed_one:
+                with patch("polylogue.storage.repository.ConversationRepository", return_value="repo"):
+                    single = await run_stages.execute_embed_stage(
+                        config=config,
+                        backend=SimpleNamespace(),
+                        conversation_id="conv-1",
+                        model="voyage-4-large",
+                    )
     assert provider.model == "voyage-4-large"
     assert single == EmbedStageOutcome(embedded_count=1, error_count=0)
-    embed_single.assert_called_once_with(ANY, "repo", provider, "conv-1")
-    embed_batch.assert_not_called()
+    embed_one.assert_called_once()
 
     provider = SimpleNamespace(model="voyage-4")
     with patch.dict("os.environ", {"VOYAGE_API_KEY": "key"}, clear=True):
         with patch("polylogue.storage.search_providers.create_vector_provider", return_value=provider):
-            with patch("polylogue.cli.embed_runtime.embed_batch") as embed_batch:
+            with patch(
+                "polylogue.lib.embeddings.runtime.iter_pending_conversations",
+                return_value=[],
+            ) as iter_pending:
                 with patch("polylogue.storage.repository.ConversationRepository", return_value="repo"):
                     batch = await run_stages.execute_embed_stage(
                         config=config,
@@ -428,6 +441,6 @@ async def test_execute_embed_stage_covers_stats_errors_single_and_batch_paths() 
                         limit=3,
                     )
     assert batch == EmbedStageOutcome(embedded_count=0, error_count=0)
-    embed_batch.assert_called_once_with(ANY, "repo", provider, rebuild=True, limit=3)
-    assert embed_batch.call_args.kwargs["rebuild"] is True
-    assert embed_batch.call_args.kwargs["limit"] == 3
+    iter_pending.assert_called_once()
+    assert iter_pending.call_args.kwargs["rebuild"] is True
+    assert iter_pending.call_args.kwargs["limit"] == 3

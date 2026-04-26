@@ -1,4 +1,4 @@
-"""Embedding execution helpers."""
+"""CLI wrappers for the embedding substrate."""
 
 from __future__ import annotations
 
@@ -6,11 +6,15 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 import click
 
+from polylogue.lib.embeddings.runtime import (
+    EmbedConversationOutcome,
+    embed_conversation_sync,
+    iter_pending_conversations,
+)
+
 if TYPE_CHECKING:
-    from polylogue.lib.models import Conversation
+    from polylogue.lib.embeddings.runtime import _EmbedConversationStore
     from polylogue.protocols import VectorProvider
-    from polylogue.storage.repository_contracts import RepositoryBackendProtocol
-    from polylogue.storage.store import MessageRecord
 
 
 class _ProgressHandle(Protocol):
@@ -39,50 +43,31 @@ class _HasUI(Protocol):
     ui: _EmbedUI
 
 
-class _EmbedConversationStore(Protocol):
-    @property
-    def backend(self) -> RepositoryBackendProtocol: ...
-
-    async def get_messages(self, conversation_id: str) -> list[MessageRecord]: ...
-
-    async def view(self, conversation_id: str) -> Conversation | None: ...
-
-
 def embed_single(
     env: object,
     repo: _EmbedConversationStore,
     vec_provider: VectorProvider,
     conversation_id: str,
 ) -> None:
-    """Embed a single conversation."""
-    from polylogue.sync_bridge import run_coroutine_sync
+    """Embed a single conversation, with CLI-style status output."""
+    del env  # CLI surface doesn't need env state for the single path
 
-    async def _fetch() -> tuple[Conversation, list[MessageRecord]] | None:
-        conv = await repo.view(conversation_id)
-        if conv is None:
-            return None
-        messages = await repo.get_messages(str(conv.id))
-        return conv, messages
-
-    result = run_coroutine_sync(_fetch())
-    if result is None:
+    outcome = embed_conversation_sync(repo, vec_provider, conversation_id, fetch_title=True)
+    if outcome.status == "not_found":
         click.echo(f"Error: Conversation {conversation_id} not found", err=True)
         raise click.Abort()
-
-    conv, messages = result
-
-    if not messages:
-        click.echo(f"No messages to embed in {conversation_id}")
+    if outcome.status == "no_messages":
+        click.echo(f"No messages to embed in {outcome.conversation_id}")
         return
 
-    click.echo(f"Embedding {len(messages)} messages from {conv.title or conversation_id[:12]}...")
+    label = outcome.title or outcome.conversation_id[:12]
+    click.echo(f"Embedding {outcome.embedded_message_count} messages from {label}...")
 
-    try:
-        vec_provider.upsert(str(conv.id), messages)
-        click.echo(f"✓ Embedded {str(conv.id)[:12]}")
-    except Exception as exc:
-        click.echo(f"Error embedding {conversation_id}: {exc}", err=True)
-        raise click.Abort() from exc
+    if outcome.status == "error":
+        click.echo(f"Error embedding {conversation_id}: {outcome.error}", err=True)
+        raise click.Abort()
+
+    click.echo(f"✓ Embedded {outcome.conversation_id[:12]}")
 
 
 def embed_batch(
@@ -93,66 +78,38 @@ def embed_batch(
     rebuild: bool = False,
     limit: int | None = None,
 ) -> None:
-    """Embed multiple conversations."""
-    from polylogue.storage.backends.connection import open_read_connection
-    from polylogue.sync_bridge import run_coroutine_sync
-
+    """Embed pending conversations using the rich CLI progress UI."""
     if not isinstance(env, _HasUI):
         raise TypeError(f"Embedding environment must expose ui, got {type(env).__name__}")
     ui = env.ui
-    backend = repo.backend
-    conv_ids: list[tuple[str, str | None]] = []
-    with open_read_connection(backend.db_path) as conn:
-        if rebuild:
-            cursor = conn.execute("SELECT conversation_id, title FROM conversations ORDER BY updated_at DESC")
-        else:
-            cursor = conn.execute(
-                """
-                SELECT c.conversation_id, c.title
-                FROM conversations c
-                LEFT JOIN embedding_status e ON c.conversation_id = e.conversation_id
-                WHERE e.conversation_id IS NULL OR e.needs_reindex = 1
-                ORDER BY c.updated_at DESC
-                """
-            )
-        while True:
-            rows = cursor.fetchmany(500)
-            if not rows:
-                break
-            for row in rows:
-                conv_ids.append((row["conversation_id"], row["title"]))
-                if limit and len(conv_ids) >= limit:
-                    break
-            if limit and len(conv_ids) >= limit:
-                break
 
-    if not conv_ids:
+    pending = iter_pending_conversations(repo.backend, rebuild=rebuild, limit=limit)
+    if not pending:
         click.echo("All conversations are already embedded.")
         return
 
-    click.echo(f"Embedding {len(conv_ids)} conversations...")
+    click.echo(f"Embedding {len(pending)} conversations...")
 
     embedded_count = 0
     error_count = 0
 
-    def _embed_one(conversation_id: str) -> bool:
-        messages = run_coroutine_sync(repo.get_messages(conversation_id))
-        if messages:
-            vec_provider.upsert(conversation_id, messages)
-            return True
-        return False
-
-    with ui.progress("Embedding conversations", total=len(conv_ids)) as progress:
-        for i, (conv_id, title) in enumerate(conv_ids, 1):
+    with ui.progress("Embedding conversations", total=len(pending)) as progress:
+        for index, item in enumerate(pending, 1):
+            label = item.title or item.conversation_id[:12]
             if not ui.plain:
-                progress.update(description=f"Embedding {title or conv_id[:12]}...")
-            try:
-                if _embed_one(conv_id):
-                    embedded_count += 1
-            except Exception as exc:
+                progress.update(description=f"Embedding {label}...")
+            outcome = embed_conversation_sync(repo, vec_provider, item.conversation_id)
+            if outcome.status == "embedded":
+                embedded_count += 1
+            elif outcome.status == "error":
                 error_count += 1
-                label = title or conv_id[:12]
-                ui.console.print(f"Warning: [{i}/{len(conv_ids)}] {label}: {exc}")
+                ui.console.print(f"Warning: [{index}/{len(pending)}] {label}: {outcome.error}")
             progress.advance()
 
-    click.echo(f"\n✓ Embedded {embedded_count} conversations" + (f" ({error_count} errors)" if error_count else ""))
+    summary = f"\n✓ Embedded {embedded_count} conversations"
+    if error_count:
+        summary += f" ({error_count} errors)"
+    click.echo(summary)
+
+
+__all__ = ["EmbedConversationOutcome", "embed_batch", "embed_single"]

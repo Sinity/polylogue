@@ -192,12 +192,12 @@ files:
     target: polylogue/cli/commands/tags.py
     owner: stable
   - path: polylogue/cli/embed_runtime.py
-    loc: 158
+    loc: 115
     target: polylogue/cli/embed_runtime.py
     owner: stable
     cross_cut: { lifecycle: runtime }
   - path: polylogue/cli/embed_stats.py
-    loc: 202
+    loc: 91
     target: polylogue/cli/embed_stats.py
     owner: stable
   - path: polylogue/cli/filter_picker.py
@@ -459,6 +459,18 @@ files:
     target: polylogue/lib/dates.py
     owner: lib-root
     reason: "lib-root primitive per #424"
+  - path: polylogue/lib/embeddings/__init__.py
+    loc: 25
+    target: polylogue/lib/embeddings/__init__.py
+    owner: stable
+  - path: polylogue/lib/embeddings/runtime.py
+    loc: 147
+    target: polylogue/lib/embeddings/runtime.py
+    owner: stable
+  - path: polylogue/lib/embeddings/stats.py
+    loc: 150
+    target: polylogue/lib/embeddings/stats.py
+    owner: stable
   - path: polylogue/lib/filter_builder.py
     loc: 204
     target: polylogue/lib/filter/builder.py
@@ -876,7 +888,7 @@ files:
     target: polylogue/pipeline/prepare_transform_content.py
     owner: stable
   - path: polylogue/pipeline/run_execution.py
-    loc: 337
+    loc: 342
     target: polylogue/pipeline/run_execution.py
     owner: stable
   - path: polylogue/pipeline/run_finalization.py
@@ -888,7 +900,7 @@ files:
     target: polylogue/pipeline/run_planning.py
     owner: stable
   - path: polylogue/pipeline/run_stages.py
-    loc: 550
+    loc: 555
     target: polylogue/pipeline/run_stages.py
     owner: stable
   - path: polylogue/pipeline/run_state.py
@@ -1001,7 +1013,7 @@ files:
     owner: stable
     cross_cut: { lifecycle: model }
   - path: polylogue/pipeline/stage_specs.py
-    loc: 88
+    loc: 171
     target: polylogue/pipeline/stage_specs.py
     owner: stable
   - path: polylogue/pipeline/tail_overlay.py
