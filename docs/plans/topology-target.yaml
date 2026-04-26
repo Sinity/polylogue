@@ -397,11 +397,11 @@ files:
     owner: #424
   - path: polylogue/lib/action_events.py
     loc: 122
-    target: polylogue/lib/action_event/.py
+    target: polylogue/lib/action_event/action_events.py
     owner: #424
   - path: polylogue/lib/artifact_taxonomy.py
     loc: 18
-    target: polylogue/lib/artifact_taxonomy/.py
+    target: polylogue/lib/artifact_taxonomy/artifact_taxonomy.py
     owner: #424
   - path: polylogue/lib/artifact_taxonomy_models.py
     loc: 35
@@ -424,15 +424,15 @@ files:
     cross_cut: { lifecycle: model }
   - path: polylogue/lib/attribution.py
     loc: 278
-    target: polylogue/lib/conversation/.py
+    target: polylogue/lib/conversation/attribution.py
     owner: #424
   - path: polylogue/lib/branch_type.py
     loc: 20
-    target: polylogue/lib/conversation/.py
+    target: polylogue/lib/conversation/branch_type.py
     owner: #424
   - path: polylogue/lib/content_projection.py
     loc: 326
-    target: polylogue/lib/semantic/.py
+    target: polylogue/lib/semantic/content_projection.py
     owner: #424
   - path: polylogue/lib/conversation_models.py
     loc: 63
@@ -469,7 +469,7 @@ files:
     owner: #424
   - path: polylogue/lib/filters.py
     loc: 101
-    target: polylogue/lib/filter/.py
+    target: polylogue/lib/filter/filters.py
     owner: #424
   - path: polylogue/lib/hashing.py
     loc: 61
@@ -497,7 +497,7 @@ files:
     owner: #424
   - path: polylogue/lib/messages.py
     loc: 135
-    target: polylogue/lib/message/.py
+    target: polylogue/lib/message/messages.py
     owner: #424
   - path: polylogue/lib/metrics.py
     loc: 205
@@ -511,7 +511,7 @@ files:
     reason: "lib-root primitive per #424"
   - path: polylogue/lib/neighbor_candidates.py
     loc: 567
-    target: polylogue/lib/conversation/.py
+    target: polylogue/lib/conversation/neighbor_candidates.py
     owner: #424
   - path: polylogue/lib/outcomes.py
     loc: 149
@@ -629,7 +629,7 @@ files:
     owner: #424
   - path: polylogue/lib/raw_payload.py
     loc: 35
-    target: polylogue/lib/raw_payload/.py
+    target: polylogue/lib/raw_payload/raw_payload.py
     owner: #424
   - path: polylogue/lib/raw_payload_decode.py
     loc: 287
@@ -691,7 +691,7 @@ files:
     owner: #424
   - path: polylogue/lib/session_profile.py
     loc: 16
-    target: polylogue/lib/session/.py
+    target: polylogue/lib/session/session_profile.py
     owner: #424
   - path: polylogue/lib/session_profile_models.py
     loc: 205
@@ -705,7 +705,7 @@ files:
     cross_cut: { lifecycle: runtime }
   - path: polylogue/lib/session_summaries.py
     loc: 163
-    target: polylogue/lib/session/.py
+    target: polylogue/lib/session/session_summaries.py
     owner: #424
   - path: polylogue/lib/stats.py
     loc: 90
@@ -719,7 +719,7 @@ files:
     reason: "lib-root primitive per #424"
   - path: polylogue/lib/threads.py
     loc: 313
-    target: polylogue/lib/conversation/.py
+    target: polylogue/lib/conversation/threads.py
     owner: #424
   - path: polylogue/lib/timestamps.py
     loc: 77
@@ -741,7 +741,7 @@ files:
     owner: #424
   - path: polylogue/lib/viewports.py
     loc: 31
-    target: polylogue/lib/viewport/.py
+    target: polylogue/lib/viewport/viewports.py
     owner: #424
   - path: polylogue/lib/work_event_extraction.py
     loc: 513
@@ -876,7 +876,7 @@ files:
     target: polylogue/pipeline/prepare_transform_content.py
     owner: stable
   - path: polylogue/pipeline/run_execution.py
-    loc: 331
+    loc: 337
     target: polylogue/pipeline/run_execution.py
     owner: stable
   - path: polylogue/pipeline/run_finalization.py
@@ -940,7 +940,7 @@ files:
     target: polylogue/pipeline/services/ingest_batch.py
     owner: stable
   - path: polylogue/pipeline/services/ingest_worker.py
-    loc: 969
+    loc: 979
     target: polylogue/pipeline/services/ingest_worker.py
     owner: stable
   - path: polylogue/pipeline/services/parsing.py
@@ -1833,7 +1833,7 @@ files:
     target: polylogue/sources/decoders.py
     owner: stable
   - path: polylogue/sources/dispatch.py
-    loc: 545
+    loc: 550
     target: polylogue/sources/dispatch.py
     owner: stable
   - path: polylogue/sources/drive.py
@@ -2283,7 +2283,7 @@ files:
     target: polylogue/storage/backends/schema.py
     owner: stable
   - path: polylogue/storage/backends/schema_bootstrap.py
-    loc: 636
+    loc: 659
     target: polylogue/storage/backends/schema_bootstrap.py
     owner: stable
   - path: polylogue/storage/backends/schema_ddl.py
@@ -2335,7 +2335,7 @@ files:
     reason: "storage-root cross-cutting helper per #425"
   - path: polylogue/storage/derived_status.py
     loc: 291
-    target: polylogue/storage/derived/.py
+    target: polylogue/storage/derived/derived_status.py
     owner: #425
   - path: polylogue/storage/derived_status_products.py
     loc: 393
@@ -2343,7 +2343,7 @@ files:
     owner: #425
   - path: polylogue/storage/embedding_stats.py
     loc: 254
-    target: polylogue/storage/embeddings/.py
+    target: polylogue/storage/embeddings/embedding_stats.py
     owner: #425
   - path: polylogue/storage/embedding_stats_models.py
     loc: 22
@@ -2360,7 +2360,7 @@ files:
     owner: #425
   - path: polylogue/storage/fts_lifecycle.py
     loc: 374
-    target: polylogue/storage/fts/.py
+    target: polylogue/storage/fts/fts_lifecycle.py
     owner: #425
   - path: polylogue/storage/fts_lifecycle_sql.py
     loc: 117
@@ -2378,7 +2378,7 @@ files:
     reason: "storage-root cross-cutting helper per #425"
   - path: polylogue/storage/product_read_support.py
     loc: 35
-    target: polylogue/storage/products/.py
+    target: polylogue/storage/products/product_read_support.py
     owner: #425
     cross_cut: { layer: read }
   - path: polylogue/storage/query_models.py
@@ -2403,7 +2403,7 @@ files:
     reason: "storage-root cross-cutting helper per #425"
   - path: polylogue/storage/repository.py
     loc: 102
-    target: polylogue/storage/repository/__init__.pyinit__.py
+    target: polylogue/storage/repository/__init__.pyrepository.py
     owner: #425
   - path: polylogue/storage/repository_action_reads.py
     loc: 46
@@ -2433,7 +2433,7 @@ files:
     owner: #425
   - path: polylogue/storage/repository_contracts.py
     loc: 35
-    target: polylogue/storage/repository/.py
+    target: polylogue/storage/repository/repository_contracts.py
     owner: #425
   - path: polylogue/storage/repository_product_profile_reads.py
     loc: 166
@@ -2457,11 +2457,11 @@ files:
     cross_cut: { layer: read }
   - path: polylogue/storage/repository_raw.py
     loc: 191
-    target: polylogue/storage/repository/raw/.py
+    target: polylogue/storage/repository/raw/repository_raw.py
     owner: #425
   - path: polylogue/storage/repository_vectors.py
     loc: 196
-    target: polylogue/storage/repository/vectors/.py
+    target: polylogue/storage/repository/vectors/repository_vectors.py
     owner: #425
   - path: polylogue/storage/repository_write_conversations.py
     loc: 291
@@ -2475,7 +2475,7 @@ files:
     cross_cut: { layer: write }
   - path: polylogue/storage/repository_writes.py
     loc: 162
-    target: polylogue/storage/repository/archive/.py
+    target: polylogue/storage/repository/archive/repository_writes.py
     owner: #425
     cross_cut: { layer: write }
   - path: polylogue/storage/run_state.py
@@ -2485,7 +2485,7 @@ files:
     reason: "storage-root cross-cutting helper per #425"
   - path: polylogue/storage/search.py
     loc: 50
-    target: polylogue/storage/search/__init__.pyinit__.py
+    target: polylogue/storage/search/__init__.pysearch.py
     owner: #425
   - path: polylogue/storage/search_cache.py
     loc: 103
@@ -2589,11 +2589,11 @@ files:
     owner: #425
   - path: polylogue/storage/store.py
     loc: 86
-    target: polylogue/storage/runtime/__init__.pyinit__.py
+    target: polylogue/storage/runtime/__init__.pystore.py
     owner: #425
   - path: polylogue/storage/store_constants.py
     loc: 20
-    target: polylogue/storage/runtime/.py
+    target: polylogue/storage/runtime/store_constants.py
     owner: #425
   - path: polylogue/storage/store_product_aggregate_records.py
     loc: 60

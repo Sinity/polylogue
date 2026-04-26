@@ -229,6 +229,30 @@ def loc(path: Path) -> int:
         return 0
 
 
+def _resolve_target(name: str, sub: str, prefix: str) -> str:
+    """Build a unique target path for a module that matches a given subpackage prefix.
+
+    When the module name equals the prefix exactly, keep the full name as the
+    target stem (so e.g. ``session_payload`` lands at
+    ``lib/session/session_payload.py``, not at the cluster's ``__init__.py``
+    where it would collide with sibling modules).
+
+    When the prefix has a trailing underscore (``query_``, ``store_runtime_``),
+    strip it from the stem so ``query_runtime`` becomes ``runtime.py``.
+    """
+    stem = name[len(prefix) :]
+    if not stem:
+        # Module name == prefix; preserve the full name to avoid colliding
+        # at the subpackage __init__.py.
+        return f"polylogue/{sub}{name}"
+    if not stem.endswith(".py"):
+        stem = stem + ".py"
+    stem = stem.lstrip("_")
+    if not stem or stem == ".py":
+        return f"polylogue/{sub}{name}"
+    return f"polylogue/{sub}{stem}"
+
+
 def lib_target(name: str) -> str:
     """Return target path for a polylogue/lib/<name> file, or 'TBD'."""
     if name in LIB_ROOT_PRIMITIVES:
@@ -236,12 +260,7 @@ def lib_target(name: str) -> str:
     # match longest prefix first
     for prefix in sorted(LIB_PREFIX_TO_SUBPACKAGE, key=len, reverse=True):
         if name.startswith(prefix):
-            sub = LIB_PREFIX_TO_SUBPACKAGE[prefix]
-            stem = name[len(prefix) :] or "__init__.py"
-            if not stem.endswith(".py"):
-                stem = stem + ".py"
-            stem = stem.lstrip("_") or "__init__.py"
-            return f"polylogue/{sub}{stem}"
+            return _resolve_target(name, LIB_PREFIX_TO_SUBPACKAGE[prefix], prefix)
     return "TBD"
 
 
@@ -250,12 +269,7 @@ def storage_target(name: str) -> str:
         return f"polylogue/storage/{name}"
     for prefix in sorted(STORAGE_PREFIX_TO_SUBPACKAGE, key=len, reverse=True):
         if name.startswith(prefix):
-            sub = STORAGE_PREFIX_TO_SUBPACKAGE[prefix]
-            stem = name[len(prefix) :] or "__init__.py"
-            if not stem.endswith(".py"):
-                stem = stem + ".py"
-            stem = stem.lstrip("_") or "__init__.py"
-            return f"polylogue/{sub}{stem}"
+            return _resolve_target(name, STORAGE_PREFIX_TO_SUBPACKAGE[prefix], prefix)
     return "TBD"
 
 
