@@ -162,7 +162,7 @@ polylogue browser-capture status
 
 The browser receiver accepts local extension envelopes for ChatGPT and Claude.ai
 and writes them into the same archive pipeline as exported files. The unpacked
-extension source lives in `browser-extension/polylogue-browser-capture/`.
+extension source lives in `browser-extension/`.
 Scheduled `polylogue run ...` jobs are durable catch-up and materialization.
 They are not the realtime mechanism; fresh-source inspection is handled by
 capture and query-time tailing.
@@ -224,36 +224,19 @@ See [docs/devtools.md](docs/devtools.md) for the full command catalog.
 <!-- BEGIN GENERATED: docs-surface -->
 ## Documentation
 
-For the full docs map, see [docs/README.md](docs/README.md).
+Start with the generated command and architecture references; use [docs/README.md](docs/README.md) for the complete map.
 
 | Document | Description |
 |----------|-------------|
+| [Architecture](docs/architecture.md) | System rings, ownership boundaries, and data flow. |
 | [CLI Reference](docs/cli-reference.md) | Generated command reference from live help output. |
-| [Configuration](docs/configuration.md) | XDG paths, environment variables, and runtime configuration. |
-| [Library API](docs/library-api.md) | Async archive API, filters, and query patterns. |
 | [Browser Capture](docs/browser-capture.md) | Local browser extension capture for ChatGPT and Claude.ai sessions. |
+| [Library API](docs/library-api.md) | Async archive API, filters, and query patterns. |
 | [MCP Integration](docs/mcp-integration.md) | Model Context Protocol server setup and usage. |
+| [Configuration](docs/configuration.md) | XDG paths, environment variables, and runtime configuration. |
 | [Developer Tools](docs/devtools.md) | `devtools` guide for generated surfaces, validation, and repo hygiene. |
 | [Verification Catalog](docs/verification-catalog.md) | Generated proof-obligation subjects, claims, runners, and catalog self-checks. |
 | [Verification Lab](docs/verification-lab.md) | Accepted command-surface decision for proof catalog, routing, and evidence operators. |
-| [Architecture](docs/architecture.md) | System rings, ownership boundaries, and data flow. |
 | [Providers](docs/providers/README.md) | Provider-specific parsing and export-format notes. |
 
-## Contributor Guides
-
-| Document | Description |
-|----------|-------------|
-| [Contributing](CONTRIBUTING.md) | Branching, issues, PRs, squash-merge history, and repo policy. |
-| [Testing](TESTING.md) | Baseline test matrix, protected surfaces, and QA entrypoints. |
-| [Agent Guide](CLAUDE.md) | Agent memory and working rules. |
-
 <!-- END GENERATED: docs-surface -->
-
-## Development
-
-See [CONTRIBUTING.md](CONTRIBUTING.md), [TESTING.md](TESTING.md), and
-[docs/internals.md](docs/internals.md).
-
-## License
-
-[MIT](LICENSE)

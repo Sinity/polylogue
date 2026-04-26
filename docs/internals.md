@@ -94,6 +94,6 @@ devtools lab-scenario verify-baselines
 
 ## Local State
 
-- [`.cache/README.md`](../.cache/README.md): disposable caches (hypothesis, pytest, mypy, ruff)
-- [`.local/README.md`](../.local/README.md): untracked outputs (campaigns, showcases, build artifacts)
+- `.cache/`: disposable caches (hypothesis, pytest, mypy, ruff)
+- `.local/`: untracked outputs (campaigns, showcases, build artifacts)
 - `.local/result`: out-link for `devtools build-package`

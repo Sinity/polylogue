@@ -20,12 +20,12 @@ atomically under the configured inbox at `browser-capture/<provider>/...json`.
 The filename is deterministic from provider and provider session id, so repeated
 observation of the same web session replaces the same source artifact.
 
-The extension lives in `browser-extension/polylogue-browser-capture/` and can be
-loaded unpacked in Chrome. It includes ChatGPT and Claude.ai DOM adapters, a
-popup control panel, receiver configuration, current-page capture controls,
-badge state, and archive-state feedback. Provider adapters are intentionally
-thin; the shared envelope carries session, turn, attachment, provenance, and
-provider metadata semantics.
+The extension lives in `browser-extension/` and can be loaded unpacked in
+Chrome. It includes ChatGPT and Claude.ai DOM adapters, a popup control panel,
+receiver configuration, current-page capture controls, badge state, and
+archive-state feedback. Provider adapters are intentionally thin; the shared
+envelope carries session, turn, attachment, provenance, and provider metadata
+semantics.
 
 The transport is local-only. Browser origins are allowlisted to ChatGPT,
 Claude.ai, and extension pages. If the receiver is unavailable, the extension

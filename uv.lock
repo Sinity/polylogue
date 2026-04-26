@@ -1384,6 +1384,7 @@ dev = [
     { name = "pytest-xdist" },
     { name = "ruff" },
     { name = "syrupy" },
+    { name = "types-dateparser" },
     { name = "types-pyyaml" },
 ]
 fuzz = [
@@ -1471,6 +1472,7 @@ requires-dist = [
     { name = "tree-sitter-rust", marker = "extra == 'tree-sitter'", specifier = ">=0.21.0" },
     { name = "tree-sitter-typescript", marker = "extra == 'tree-sitter'", specifier = ">=0.21.0" },
     { name = "tree-sitter-yaml", marker = "extra == 'tree-sitter'", specifier = ">=0.6.0" },
+    { name = "types-dateparser", marker = "extra == 'dev'", specifier = ">=1.2.0" },
     { name = "types-pyyaml", marker = "extra == 'dev'", specifier = ">=6.0" },
 ]
 provides-extras = ["dev", "ocr", "fuzz", "tree-sitter"]
@@ -2751,6 +2753,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/6c/e7/9525defa7b30792623f56b1fba9bbba361752348875b165b8975b87398fd/tree_sitter_yaml-0.7.2-cp310-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:74ca712c50fc9d7dbc68cb36b4a7811d6e67a5466b5a789f19bf8dd6084ef752", size = 90455, upload-time = "2025-10-07T14:40:33.778Z" },
     { url = "https://files.pythonhosted.org/packages/4a/d6/8d1e1ace03db3b02e64e91daf21d1347941d1bbecc606a5473a1a605250d/tree_sitter_yaml-0.7.2-cp310-abi3-win_amd64.whl", hash = "sha256:7587b5ca00fc4f9a548eff649697a3b395370b2304b399ceefa2087d8a6c9186", size = 45514, upload-time = "2025-10-07T14:40:34.562Z" },
     { url = "https://files.pythonhosted.org/packages/d8/c7/dcf3ea1c4f5da9b10353b9af4455d756c92d728a8f58f03c480d3ef0ead5/tree_sitter_yaml-0.7.2-cp310-abi3-win_arm64.whl", hash = "sha256:f63c227b18e7ce7587bce124578f0bbf1f890ac63d3e3cd027417574273642c4", size = 44065, upload-time = "2025-10-07T14:40:35.337Z" },
+]
+
+[[package]]
+name = "types-dateparser"
+version = "1.4.0.20260408"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/2b/d1/69a8d9a460ba4e64d1365340044c339b521f2a0414d3764f443b2d1ec84f/types_dateparser-1.4.0.20260408.tar.gz", hash = "sha256:cb3d23bca24c2a874556c6cfadb229fd3c9ee567263a9c191bd7241f48091e75", size = 17539, upload-time = "2026-04-08T04:29:09.254Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/86/a6/e8be322e1ee6d4f5f9ba5e8050e03b884e741688e28b1b327be4bfea7772/types_dateparser-1.4.0.20260408-py3-none-any.whl", hash = "sha256:5577e991f416096f6120da15eda076dbcf5f7837565529158e44c8edeba114d0", size = 24876, upload-time = "2026-04-08T04:29:08.339Z" },
 ]
 
 [[package]]

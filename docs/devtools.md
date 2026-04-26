@@ -137,14 +137,14 @@ devtools lab-scenario verify-baselines
 devtools query-memory-budget --max-rss-mb 1536 -- polylogue --plain stats
 ```
 
-Campaign outputs live under [`.local/README.md`](../.local/README.md), not in
-tracked docs trees.
+Campaign outputs live under `.local/`, not in tracked docs trees.
 
 ## Local State Layout
 
-- [`.cache/README.md`](../.cache/README.md): disposable cache state
-- [`.local/README.md`](../.local/README.md): untracked local outputs
-- `.venv/` and `.direnv/`: kept at the repo root because their tooling expects those locations
-- `.local/result`: preferred repo-local out-link for `devtools build-package`; a top-level `result` symlink is just Nix's default ad-hoc out-link
+- `.cache/`: disposable cache state.
+- `.local/`: untracked local outputs such as campaigns, showcases, and reports.
+- `.venv/` and `.direnv/`: kept at the repo root because their tooling expects those locations.
+- `.local/result`: preferred repo-local out-link for `devtools build-package`; a top-level `result` symlink is just Nix's default ad-hoc out-link.
 
-Keep new repo-local outputs in one of those hidden roots.
+Keep new repo-local outputs in `.cache/` or `.local/` instead of adding new
+top-level output roots.
