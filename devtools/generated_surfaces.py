@@ -11,6 +11,7 @@ from devtools import (
     render_devtools_reference,
     render_docs_surface,
     render_quality_reference,
+    render_topology_status,
     render_verification_catalog,
 )
 from devtools.command_catalog import control_plane_argv
@@ -69,6 +70,13 @@ GENERATED_SURFACES: tuple[GeneratedSurface, ...] = (
         description="Render docs/README.md and the generated docs table in README.md.",
         command=control_plane_argv("render-docs-surface"),
         main=render_docs_surface.main,
+    ),
+    GeneratedSurface(
+        name="topology-status",
+        label="Topology status",
+        description="Render docs/topology-status.md from the topology projection and realized tree.",
+        command=control_plane_argv("render-topology-status"),
+        main=render_topology_status.main,
     ),
 )
 

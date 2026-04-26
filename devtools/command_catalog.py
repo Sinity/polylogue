@@ -241,6 +241,17 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools build-topology-projection",),
     ),
     CommandSpec(
+        "render-topology-status",
+        "generated surfaces",
+        "Render docs/topology-status.md from the topology projection and realized tree.",
+        "devtools.render_topology_status",
+        use_when=(
+            "Refresh the topology drift dashboard after a refactor PR lands. "
+            "Wired into devtools render-all so drift fails the generated-surface check."
+        ),
+        examples=("devtools render-topology-status", "devtools render-topology-status --check"),
+    ),
+    CommandSpec(
         "verify-file-budgets",
         "verification",
         "Enforce per-file LOC budgets declared in docs/plans/file-size-budgets.yaml.",

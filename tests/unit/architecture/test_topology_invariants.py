@@ -146,10 +146,9 @@ def test_topology_projection_yaml_exists() -> None:
     assert (ROOT / "docs" / "plans" / "topology-target.yaml").exists()
 
 
-# -------- #429 Phase 3: drift dashboard rendered --------
+# -------- #429 Phase 3: drift dashboard rendered (passing) --------
 
 
-@pytest.mark.xfail(strict=True, reason="topology refactor: drift dashboard not rendered, see #429 Phase 3")
 def test_topology_status_doc_rendered() -> None:
     path = ROOT / "docs" / "topology-status.md"
     assert path.exists()

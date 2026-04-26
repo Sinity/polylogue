@@ -87,6 +87,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools render-devtools-reference` | Render the command catalog inside docs/devtools.md. |
 | `devtools render-docs-surface` | Render docs/README.md and the README documentation table. |
 | `devtools render-quality-reference` | Render docs/test-quality-workflows.md from live validation, mutation, and benchmark registries. |
+| `devtools render-topology-status` | Render docs/topology-status.md from the topology projection and realized tree. |
 | `devtools render-verification-catalog` | Render the verification-lab proof catalog from obligation registries. |
 
 ### Verification
