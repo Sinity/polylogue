@@ -58,7 +58,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `polylogue dashboard` | `polylogue/cli/commands/dashboard.py:10` `polylogue.cli.commands.dashboard.dashboard_command` |
 | `polylogue delete` | `polylogue/cli/query_verbs.py:89` `polylogue.cli.query_verbs.delete_verb` |
 | `polylogue doctor` | `polylogue/cli/commands/check.py:31` `polylogue.cli.commands.check.check_command` |
-| `polylogue export` | `polylogue/cli/commands/export.py:13` `polylogue.cli.commands.export.export_command` |
+| `polylogue export` | `polylogue/cli/commands/export.py:29` `polylogue.cli.commands.export.export_command` |
 | `polylogue list` | `polylogue/cli/query_verbs.py:18` `polylogue.cli.query_verbs.list_verb` |
 | `polylogue mcp` | `polylogue/cli/commands/mcp.py:10` `polylogue.cli.commands.mcp.mcp_command` |
 | `polylogue neighbors` | `polylogue/cli/commands/neighbors.py:42` `polylogue.cli.commands.neighbors.neighbors_command` |

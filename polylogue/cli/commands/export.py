@@ -6,8 +6,24 @@ import click
 
 from polylogue.cli.helper_support import fail
 from polylogue.cli.types import AppEnv
+from polylogue.lib.message_roles import normalize_message_roles
 from polylogue.rendering.formatting import CONVERSATION_OUTPUT_FORMATS, format_conversation
 from polylogue.sync_bridge import run_coroutine_sync
+
+
+def _root_message_roles(ctx: click.Context) -> tuple[object, ...]:
+    """Read the parent ``--message-role`` filter; honor ``--dialogue-only``."""
+    parent = ctx.parent
+    if parent is None:
+        return ()
+    raw_roles = parent.params.get("message_role")
+    if raw_roles:
+        return tuple(normalize_message_roles(raw_roles))
+    if parent.params.get("dialogue_only"):
+        from polylogue.lib.roles import Role
+
+        return (Role.USER, Role.ASSISTANT)
+    return ()
 
 
 @click.command("export")
@@ -22,12 +38,16 @@ from polylogue.sync_bridge import run_coroutine_sync
     help="Output format",
 )
 @click.option("--fields", help="Fields for JSON/YAML outputs")
-@click.pass_obj
-def export_command(env: AppEnv, conversation_id: str, output_format: str, fields: str | None) -> None:
+@click.pass_context
+def export_command(ctx: click.Context, conversation_id: str, output_format: str, fields: str | None) -> None:
     """Export one known conversation by ID."""
+    env: AppEnv = ctx.obj
     conversation = run_coroutine_sync(env.operations.get_conversation(conversation_id))
     if conversation is None:
         fail("export", f"Conversation not found: {conversation_id}")
+    roles = _root_message_roles(ctx)
+    if roles:
+        conversation = conversation.with_roles(roles)
     click.echo(format_conversation(conversation, output_format, fields))
 
 
