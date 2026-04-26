@@ -1,0 +1,1277 @@
+[
+  {
+    "name": "add_tag",
+    "parameters": {
+      "properties": {
+        "conversation_id": {
+          "title": "Conversation Id",
+          "type": "string"
+        },
+        "tag": {
+          "title": "Tag",
+          "type": "string"
+        }
+      },
+      "required": [
+        "conversation_id",
+        "tag"
+      ],
+      "title": "add_tagArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "archive_coverage",
+    "parameters": {
+      "properties": {},
+      "title": "archive_coverageArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "archive_debt",
+    "parameters": {
+      "properties": {
+        "kw": {
+          "title": "kw",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kw"
+      ],
+      "title": "archive_debtArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "bulk_tag_conversations",
+    "parameters": {
+      "properties": {
+        "conversation_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Conversation Ids",
+          "type": "array"
+        },
+        "tags": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Tags",
+          "type": "array"
+        }
+      },
+      "required": [
+        "conversation_ids",
+        "tags"
+      ],
+      "title": "bulk_tag_conversationsArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "cost_rollups",
+    "parameters": {
+      "properties": {
+        "kw": {
+          "title": "kw",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kw"
+      ],
+      "title": "cost_rollupsArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "day_session_summaries",
+    "parameters": {
+      "properties": {
+        "kw": {
+          "title": "kw",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kw"
+      ],
+      "title": "day_session_summariesArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "delete_conversation",
+    "parameters": {
+      "properties": {
+        "confirm": {
+          "default": false,
+          "title": "Confirm",
+          "type": "boolean"
+        },
+        "conversation_id": {
+          "title": "Conversation Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "conversation_id"
+      ],
+      "title": "delete_conversationArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "delete_metadata",
+    "parameters": {
+      "properties": {
+        "conversation_id": {
+          "title": "Conversation Id",
+          "type": "string"
+        },
+        "key": {
+          "title": "Key",
+          "type": "string"
+        }
+      },
+      "required": [
+        "conversation_id",
+        "key"
+      ],
+      "title": "delete_metadataArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "export_conversation",
+    "parameters": {
+      "properties": {
+        "format": {
+          "default": "markdown",
+          "title": "Format",
+          "type": "string"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "no_code_blocks": {
+          "default": false,
+          "title": "No Code Blocks",
+          "type": "boolean"
+        },
+        "no_file_reads": {
+          "default": false,
+          "title": "No File Reads",
+          "type": "boolean"
+        },
+        "no_tool_calls": {
+          "default": false,
+          "title": "No Tool Calls",
+          "type": "boolean"
+        },
+        "no_tool_outputs": {
+          "default": false,
+          "title": "No Tool Outputs",
+          "type": "boolean"
+        },
+        "prose_only": {
+          "default": false,
+          "title": "Prose Only",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "title": "export_conversationArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "export_query_results",
+    "parameters": {
+      "properties": {
+        "action": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Action"
+        },
+        "action_sequence": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Action Sequence"
+        },
+        "action_text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Action Text"
+        },
+        "exclude_action": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Exclude Action"
+        },
+        "exclude_tool": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Exclude Tool"
+        },
+        "format": {
+          "default": "markdown",
+          "title": "Format",
+          "type": "string"
+        },
+        "has_thinking": {
+          "default": false,
+          "title": "Has Thinking",
+          "type": "boolean"
+        },
+        "has_tool_use": {
+          "default": false,
+          "title": "Has Tool Use",
+          "type": "boolean"
+        },
+        "limit": {
+          "default": 10,
+          "title": "Limit",
+          "type": "integer"
+        },
+        "min_messages": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Min Messages"
+        },
+        "min_words": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Min Words"
+        },
+        "no_code_blocks": {
+          "default": false,
+          "title": "No Code Blocks",
+          "type": "boolean"
+        },
+        "no_file_reads": {
+          "default": false,
+          "title": "No File Reads",
+          "type": "boolean"
+        },
+        "no_tool_calls": {
+          "default": false,
+          "title": "No Tool Calls",
+          "type": "boolean"
+        },
+        "no_tool_outputs": {
+          "default": false,
+          "title": "No Tool Outputs",
+          "type": "boolean"
+        },
+        "path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Path"
+        },
+        "prose_only": {
+          "default": false,
+          "title": "Prose Only",
+          "type": "boolean"
+        },
+        "provider": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Provider"
+        },
+        "query": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Query"
+        },
+        "retrieval_lane": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Retrieval Lane"
+        },
+        "since": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Since"
+        },
+        "sort": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sort"
+        },
+        "tag": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tag"
+        },
+        "title": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Title"
+        },
+        "tool": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tool"
+        }
+      },
+      "title": "export_query_resultsArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "get_conversation",
+    "parameters": {
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "no_code_blocks": {
+          "default": false,
+          "title": "No Code Blocks",
+          "type": "boolean"
+        },
+        "no_file_reads": {
+          "default": false,
+          "title": "No File Reads",
+          "type": "boolean"
+        },
+        "no_tool_calls": {
+          "default": false,
+          "title": "No Tool Calls",
+          "type": "boolean"
+        },
+        "no_tool_outputs": {
+          "default": false,
+          "title": "No Tool Outputs",
+          "type": "boolean"
+        },
+        "prose_only": {
+          "default": false,
+          "title": "Prose Only",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "title": "get_conversationArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "get_conversation_summary",
+    "parameters": {
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "title": "get_conversation_summaryArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "get_metadata",
+    "parameters": {
+      "properties": {
+        "conversation_id": {
+          "title": "Conversation Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "conversation_id"
+      ],
+      "title": "get_metadataArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "get_session_tree",
+    "parameters": {
+      "properties": {
+        "conversation_id": {
+          "title": "Conversation Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "conversation_id"
+      ],
+      "title": "get_session_treeArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "get_stats_by",
+    "parameters": {
+      "properties": {
+        "group_by": {
+          "default": "provider",
+          "title": "Group By",
+          "type": "string"
+        }
+      },
+      "title": "get_stats_byArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "list_conversations",
+    "parameters": {
+      "properties": {
+        "action": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Action"
+        },
+        "action_sequence": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Action Sequence"
+        },
+        "action_text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Action Text"
+        },
+        "exclude_action": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Exclude Action"
+        },
+        "exclude_tool": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Exclude Tool"
+        },
+        "has_thinking": {
+          "default": false,
+          "title": "Has Thinking",
+          "type": "boolean"
+        },
+        "has_tool_use": {
+          "default": false,
+          "title": "Has Tool Use",
+          "type": "boolean"
+        },
+        "limit": {
+          "default": 10,
+          "title": "Limit",
+          "type": "integer"
+        },
+        "min_messages": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Min Messages"
+        },
+        "min_words": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Min Words"
+        },
+        "path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Path"
+        },
+        "provider": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Provider"
+        },
+        "retrieval_lane": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Retrieval Lane"
+        },
+        "since": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Since"
+        },
+        "sort": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sort"
+        },
+        "tag": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tag"
+        },
+        "title": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Title"
+        },
+        "tool": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tool"
+        }
+      },
+      "title": "list_conversationsArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "list_tags",
+    "parameters": {
+      "properties": {
+        "provider": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Provider"
+        }
+      },
+      "title": "list_tagsArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "neighbor_candidates",
+    "parameters": {
+      "properties": {
+        "id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Id"
+        },
+        "limit": {
+          "default": 10,
+          "title": "Limit",
+          "type": "integer"
+        },
+        "provider": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Provider"
+        },
+        "query": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Query"
+        },
+        "window_hours": {
+          "default": 24,
+          "title": "Window Hours",
+          "type": "integer"
+        }
+      },
+      "title": "neighbor_candidatesArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "provider_analytics",
+    "parameters": {
+      "properties": {
+        "kw": {
+          "title": "kw",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kw"
+      ],
+      "title": "provider_analyticsArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "readiness_check",
+    "parameters": {
+      "properties": {},
+      "title": "readiness_checkArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "rebuild_index",
+    "parameters": {
+      "properties": {},
+      "title": "rebuild_indexArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "rebuild_session_products",
+    "parameters": {
+      "properties": {
+        "conversation_ids": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Conversation Ids"
+        }
+      },
+      "title": "rebuild_session_productsArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "remove_tag",
+    "parameters": {
+      "properties": {
+        "conversation_id": {
+          "title": "Conversation Id",
+          "type": "string"
+        },
+        "tag": {
+          "title": "Tag",
+          "type": "string"
+        }
+      },
+      "required": [
+        "conversation_id",
+        "tag"
+      ],
+      "title": "remove_tagArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "search",
+    "parameters": {
+      "properties": {
+        "action": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Action"
+        },
+        "action_sequence": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Action Sequence"
+        },
+        "action_text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Action Text"
+        },
+        "exclude_action": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Exclude Action"
+        },
+        "exclude_tool": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Exclude Tool"
+        },
+        "has_thinking": {
+          "default": false,
+          "title": "Has Thinking",
+          "type": "boolean"
+        },
+        "has_tool_use": {
+          "default": false,
+          "title": "Has Tool Use",
+          "type": "boolean"
+        },
+        "limit": {
+          "default": 10,
+          "title": "Limit",
+          "type": "integer"
+        },
+        "min_messages": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Min Messages"
+        },
+        "min_words": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Min Words"
+        },
+        "path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Path"
+        },
+        "provider": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Provider"
+        },
+        "query": {
+          "title": "Query",
+          "type": "string"
+        },
+        "retrieval_lane": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Retrieval Lane"
+        },
+        "since": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Since"
+        },
+        "tool": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tool"
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "title": "searchArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "session_costs",
+    "parameters": {
+      "properties": {
+        "kw": {
+          "title": "kw",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kw"
+      ],
+      "title": "session_costsArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "session_enrichments",
+    "parameters": {
+      "properties": {
+        "kw": {
+          "title": "kw",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kw"
+      ],
+      "title": "session_enrichmentsArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "session_phases",
+    "parameters": {
+      "properties": {
+        "kw": {
+          "title": "kw",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kw"
+      ],
+      "title": "session_phasesArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "session_profile",
+    "parameters": {
+      "properties": {
+        "conversation_id": {
+          "title": "Conversation Id",
+          "type": "string"
+        },
+        "tier": {
+          "default": "merged",
+          "title": "Tier",
+          "type": "string"
+        }
+      },
+      "required": [
+        "conversation_id"
+      ],
+      "title": "session_profileArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "session_profiles",
+    "parameters": {
+      "properties": {
+        "kw": {
+          "title": "kw",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kw"
+      ],
+      "title": "session_profilesArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "session_tag_rollups",
+    "parameters": {
+      "properties": {
+        "kw": {
+          "title": "kw",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kw"
+      ],
+      "title": "session_tag_rollupsArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "session_work_events",
+    "parameters": {
+      "properties": {
+        "kw": {
+          "title": "kw",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kw"
+      ],
+      "title": "session_work_eventsArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "set_metadata",
+    "parameters": {
+      "properties": {
+        "conversation_id": {
+          "title": "Conversation Id",
+          "type": "string"
+        },
+        "key": {
+          "title": "Key",
+          "type": "string"
+        },
+        "value": {
+          "title": "Value",
+          "type": "string"
+        }
+      },
+      "required": [
+        "conversation_id",
+        "key",
+        "value"
+      ],
+      "title": "set_metadataArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "stats",
+    "parameters": {
+      "properties": {},
+      "title": "statsArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "update_index",
+    "parameters": {
+      "properties": {
+        "conversation_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Conversation Ids",
+          "type": "array"
+        }
+      },
+      "required": [
+        "conversation_ids"
+      ],
+      "title": "update_indexArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "week_session_summaries",
+    "parameters": {
+      "properties": {
+        "kw": {
+          "title": "kw",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kw"
+      ],
+      "title": "week_session_summariesArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "work_threads",
+    "parameters": {
+      "properties": {
+        "kw": {
+          "title": "kw",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kw"
+      ],
+      "title": "work_threadsArguments",
+      "type": "object"
+    }
+  }
+]
