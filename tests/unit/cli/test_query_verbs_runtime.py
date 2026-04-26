@@ -123,6 +123,27 @@ def test_open_verb_routes_single_id_or_appends_target_terms() -> None:
     assert appended_request.query_params()["open_result"] is True
 
 
+def test_bulk_export_verb_invokes_run_bulk_export_with_parent_request() -> None:
+    _, child = _context_pair(
+        params={"provider": "claude-code", "limit": 5},
+        query_terms=("alpha",),
+    )
+    wrapped = getattr(query_verbs.bulk_export_verb.callback, "__wrapped__", None)
+    assert callable(wrapped)
+
+    with patch("polylogue.cli.bulk_export.run_bulk_export") as run_export:
+        wrapped(child, "jsonl", None)
+
+    assert run_export.call_count == 1
+    args, kwargs = run_export.call_args
+    env_arg, request_arg = args
+    assert env_arg is child.obj
+    assert isinstance(request_arg, RootModeRequest)
+    assert request_arg.query_params()["provider"] == "claude-code"
+    assert request_arg.query_params()["query"] == ("alpha",)
+    assert kwargs == {"output_format": "jsonl", "fields": None}
+
+
 def test_delete_verb_updates_force_and_dry_run_flags() -> None:
     _, child = _context_pair(query_terms=("alpha",))
     wrapped = getattr(query_verbs.delete_verb.callback, "__wrapped__", None)
