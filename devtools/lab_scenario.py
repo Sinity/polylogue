@@ -133,7 +133,36 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Update baselines to current output instead of comparing.",
     )
+
+    list_parser = subparsers.add_parser("list", help="List available showcase scenarios.")
+    list_parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON.")
     return parser
+
+
+def list_scenarios(*, as_json: bool) -> int:
+    """List available showcase scenarios with their tier-0 exercise inventory."""
+    tier_0 = get_tier_0_exercises()
+    payload = {
+        "scenarios": [
+            {
+                "name": name,
+                "tier_0_exercise_count": len(tier_0),
+                "baseline_dir": str(BASELINE_DIR.relative_to(BASELINE_DIR.parent.parent.parent))
+                if BASELINE_DIR.exists()
+                else None,
+                "baselines_committed": len(list(BASELINE_DIR.glob("*.txt"))) if BASELINE_DIR.exists() else 0,
+            }
+            for name in _SCENARIO_NAMES
+        ]
+    }
+    if as_json:
+        print(json.dumps(payload, indent=2))
+        return 0
+    for entry in payload["scenarios"]:
+        print(f"{entry['name']:<20s}  tier-0 exercises: {entry['tier_0_exercise_count']}")
+        if entry["baselines_committed"]:
+            print(f"  baselines: {entry['baselines_committed']} ({entry['baseline_dir']})")
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -141,6 +170,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.action == "verify-baselines":
         return verify_showcase_baselines(update=bool(args.update))
+    if args.action == "list":
+        return list_scenarios(as_json=bool(args.json))
     if args.action != "run":
         parser.error(f"unknown action: {args.action}")
     request = build_qa_session_request(
