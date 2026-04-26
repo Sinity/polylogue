@@ -237,6 +237,17 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools build-topology-projection",),
     ),
     CommandSpec(
+        "verify-file-budgets",
+        "verification",
+        "Enforce per-file LOC budgets declared in docs/plans/file-size-budgets.yaml.",
+        "devtools.verify_file_budgets",
+        use_when=(
+            "Catch file-size accretion early — fails when a module or test exceeds its declared "
+            "ceiling, or when a tracked exception's sunset issue closes."
+        ),
+        examples=("devtools verify-file-budgets", "devtools verify-file-budgets --json"),
+    ),
+    CommandSpec(
         "pipeline-probe",
         "verification",
         "Run typed pipeline probes against synthetic, staged, or archive-subset inputs.",

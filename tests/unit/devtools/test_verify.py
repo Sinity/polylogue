@@ -7,7 +7,14 @@ def test_quick_verify_omits_pytest() -> None:
     steps = build_verify_steps(quick=True, lab=False)
 
     labels = [label for label, _command in steps]
-    assert labels == ["ruff format", "ruff check", "mypy", "render-all", "verify-topology"]
+    assert labels == [
+        "ruff format",
+        "ruff check",
+        "mypy",
+        "render-all",
+        "verify-topology",
+        "verify-file-budgets",
+    ]
 
 
 def test_full_verify_includes_pytest() -> None:
