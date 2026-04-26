@@ -84,9 +84,18 @@ def render_artifact_graph(*, as_json: bool) -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--json", action="store_true", help="Emit the artifact graph as JSON.")
+    parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="Fail with exit 1 if any artifacts, operations, or maintenance targets are uncovered.",
+    )
     args = parser.parse_args(argv)
     sys.stdout.write(render_artifact_graph(as_json=args.json))
     sys.stdout.write("\n")
+    if args.strict:
+        coverage = build_runtime_scenario_coverage()
+        if coverage.uncovered_artifacts or coverage.uncovered_operations or coverage.uncovered_maintenance_targets:
+            return 1
     return 0
 
 

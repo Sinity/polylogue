@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -39,12 +40,33 @@ def _build_parser() -> argparse.ArgumentParser:
     seed_parser = subparsers.add_parser("seed", help="Seed a complete demo archive workspace.")
     _add_corpus_options(seed_parser)
     seed_parser.add_argument("--env-only", action="store_true", help="Print shell exports for the seeded workspace.")
+
+    list_parser = subparsers.add_parser("list", help="List available corpus sources.")
+    list_parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON.")
     return parser
+
+
+def list_corpus_sources(*, as_json: bool) -> int:
+    """List the corpus source kinds available for `generate` / `seed`."""
+    payload = {
+        "corpus_sources": [
+            {"name": kind.value, "is_default": kind is CorpusSourceKind.DEFAULT} for kind in CorpusSourceKind
+        ]
+    }
+    if as_json:
+        print(json.dumps(payload, indent=2))
+        return 0
+    for entry in payload["corpus_sources"]:
+        marker = " (default)" if entry["is_default"] else ""
+        print(f"  {entry['name']}{marker}")
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
+    if args.action == "list":
+        return list_corpus_sources(as_json=bool(args.json))
     providers = tuple(str(provider) for provider in args.providers)
     corpus_source = CorpusSourceKind(str(args.corpus_source))
     try:

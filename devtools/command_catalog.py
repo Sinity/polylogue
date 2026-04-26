@@ -174,7 +174,11 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "Render the runtime artifact, operation, and scenario-coverage map.",
         "devtools.artifact_graph",
         use_when="Inspect the authored runtime graph and see which scenarios currently cover declared artifacts and operations.",
-        examples=("devtools artifact-graph", "devtools artifact-graph --json"),
+        examples=(
+            "devtools artifact-graph",
+            "devtools artifact-graph --json",
+            "devtools artifact-graph --strict",
+        ),
     ),
     CommandSpec(
         "scenario-projections",
@@ -313,6 +317,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "devtools.lab_corpus",
         use_when="Seed synthetic corpus files or complete demo workspaces for lab exercises.",
         examples=(
+            "devtools lab-corpus list",
             "devtools lab-corpus generate --provider chatgpt --count 5",
             "devtools lab-corpus seed --env-only",
         ),
@@ -324,6 +329,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "devtools.lab_scenario",
         use_when="Run showcase exercise smoke scenarios and committed baseline checks outside the product CLI.",
         examples=(
+            "devtools lab-scenario list",
             "devtools lab-scenario run archive-smoke --tier 0",
             "devtools lab-scenario verify-baselines",
         ),
