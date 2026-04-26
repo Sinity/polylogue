@@ -55,38 +55,24 @@ REPO_GUIDE_ENTRIES: tuple[DocsEntry, ...] = (
     DocsEntry("Contributing", "CONTRIBUTING.md", "Branching, issues, PRs, squash-merge history, and repo policy."),
     DocsEntry("Testing", "TESTING.md", "Baseline test matrix, protected surfaces, and QA entrypoints."),
     DocsEntry("Agent Guide", "CLAUDE.md", "Agent memory and working rules."),
-    DocsEntry("Local Cache Layout", ".cache/README.md", "Disposable cache roots chosen by the repo itself."),
-    DocsEntry(
-        "Local Working Outputs",
-        ".local/README.md",
-        "Untracked local outputs such as campaigns, showcases, and reports.",
-    ),
 )
 
 README_DOC_TITLES: tuple[str, ...] = (
+    "Architecture",
     "CLI Reference",
-    "Configuration",
-    "Library API",
     "Browser Capture",
+    "Library API",
     "MCP Integration",
+    "Configuration",
     "Developer Tools",
     "Verification Catalog",
     "Verification Lab",
-    "Architecture",
     "Providers",
 )
-
-README_GUIDE_TITLES: tuple[str, ...] = (
-    "Contributing",
-    "Testing",
-    "Agent Guide",
-)
-
 
 __all__ = [
     "DOCS_REFERENCE_ENTRIES",
     "README_DOC_TITLES",
-    "README_GUIDE_TITLES",
     "REPO_GUIDE_ENTRIES",
     "DocsEntry",
 ]

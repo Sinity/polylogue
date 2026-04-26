@@ -65,6 +65,7 @@ dev = [
   "pyte>=0.8.0",  # Terminal emulator for deterministic output snapshot tests
   "mutmut>=3.0.0",  # Mutation testing for coverage verification
   "mypy>=1.17,<1.18",
+  "types-dateparser>=1.2.0",  # dateparser library stubs for mypy
   "types-PyYAML>=6.0",  # yaml library stubs for mypy
   "ruff>=0.1.0",
   "pre-commit>=3.5.0",
@@ -154,7 +155,6 @@ disallow_any_generics = true
 disallow_incomplete_defs = true
 disallow_untyped_defs = true
 cache_dir = ".cache/mypy"
-mypy_path = "stubs"
 plugins = []
 files = [
   "polylogue",
