@@ -455,7 +455,7 @@ async def execute_embed_stage(
     import click
 
     if stats_only:
-        from polylogue.cli.embed_stats import show_embedding_stats
+        from polylogue.lib.embeddings.stats import embedding_status_payload
 
         class _StatsEnv:
             def __init__(self, cfg: Config) -> None:
@@ -465,7 +465,15 @@ async def execute_embed_stage(
             def config(self) -> Config:
                 return self._config
 
-        show_embedding_stats(_StatsEnv(config), json_output=json_output)
+        payload = embedding_status_payload(_StatsEnv(config))
+        if json_output:
+            import json as _json
+
+            click.echo(_json.dumps(payload, indent=2, sort_keys=True))
+        else:
+            click.echo(f"Embedding status: {payload['status']}")
+            click.echo(f"  Embedded: {payload['embedded_conversations']}/{payload['total_conversations']}")
+            click.echo(f"  Pending:  {payload['pending_conversations']}")
         return EmbedStageOutcome(embedded_count=0, error_count=0, stats_only=True)
 
     voyage_key = os.environ.get("VOYAGE_API_KEY")
@@ -484,52 +492,49 @@ async def execute_embed_stage(
     if model != "voyage-4":
         vec_provider.model = model
 
-    from polylogue.cli.embed_runtime import embed_batch, embed_single
+    from polylogue.lib.embeddings.runtime import (
+        embed_conversation_sync,
+        iter_pending_conversations,
+    )
     from polylogue.storage.repository import ConversationRepository as _Repo
 
     repo = _Repo(backend=backend)
 
-    class _PlainUI:
-        plain = True
-
-        class _Console:
-            @staticmethod
-            def print(*args: object, **kwargs: object) -> None:
-                del kwargs
-                click.echo(" ".join(str(a) for a in args))
-
-        console = _Console()
-
-        class _NullProgress:
-            def update(self, **kwargs: object) -> None:
-                del kwargs
-
-            def advance(self, advance: float = 1) -> None:
-                del advance
-
-            def __enter__(self) -> _PlainUI._NullProgress:
-                return self
-
-            def __exit__(self, *args: object) -> None:
-                del args
-
-        @staticmethod
-        def progress(description: str, total: int = 0) -> _PlainUI._NullProgress:
-            del description, total
-            return _PlainUI._NullProgress()
-
-    class _EmbedEnv:
-        def __init__(self, ui_obj: _PlainUI) -> None:
-            self.ui = ui_obj
-
-    env = _EmbedEnv(_PlainUI())
-
     if conversation_id:
-        embed_single(env, repo, vec_provider, conversation_id)
+        outcome = embed_conversation_sync(repo, vec_provider, conversation_id, fetch_title=True)
+        if outcome.status == "not_found":
+            click.echo(f"Error: Conversation {conversation_id} not found", err=True)
+            raise click.Abort()
+        if outcome.status == "no_messages":
+            click.echo(f"No messages to embed in {outcome.conversation_id}")
+            return EmbedStageOutcome(embedded_count=0, error_count=0)
+        if outcome.status == "error":
+            click.echo(f"Error embedding {conversation_id}: {outcome.error}", err=True)
+            raise click.Abort()
+        click.echo(f"✓ Embedded {outcome.conversation_id[:12]}")
         return EmbedStageOutcome(embedded_count=1, error_count=0)
 
-    embed_batch(env, repo, vec_provider, rebuild=rebuild, limit=limit)
-    return EmbedStageOutcome(embedded_count=0, error_count=0)
+    pending = iter_pending_conversations(backend, rebuild=rebuild, limit=limit)
+    if not pending:
+        click.echo("All conversations are already embedded.")
+        return EmbedStageOutcome(embedded_count=0, error_count=0)
+
+    click.echo(f"Embedding {len(pending)} conversations...")
+    embedded_count = 0
+    error_count = 0
+    for index, item in enumerate(pending, 1):
+        outcome = embed_conversation_sync(repo, vec_provider, item.conversation_id)
+        if outcome.status == "embedded":
+            embedded_count += 1
+        elif outcome.status == "error":
+            error_count += 1
+            label = item.title or item.conversation_id[:12]
+            click.echo(f"Warning: [{index}/{len(pending)}] {label}: {outcome.error}", err=True)
+    summary = f"✓ Embedded {embedded_count} conversations"
+    if error_count:
+        summary += f" ({error_count} errors)"
+    click.echo(summary)
+    return EmbedStageOutcome(embedded_count=embedded_count, error_count=error_count)
 
 
 __all__ = [
