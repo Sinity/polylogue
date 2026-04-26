@@ -1,0 +1,70 @@
+# File-size budgets — tracked by #435.
+#
+# Defaults are intentionally moderate; exceptions name a sunset issue
+# whose closure deletes the exception. Stale exceptions fail the lint.
+#
+# Updated 2026-04-26 from realized tree.
+
+defaults:
+  source_loc_ceiling: 1100
+  test_loc_ceiling: 1500
+
+per_package:
+  devtools/:
+    source_loc_ceiling: 1500
+  polylogue/proof/:
+    source_loc_ceiling: 1500
+  polylogue/pipeline/services/:
+    source_loc_ceiling: 1300
+  polylogue/operations/:
+    source_loc_ceiling: 1100
+  polylogue/storage/:
+    source_loc_ceiling: 1100
+  tests/infra/:
+    test_loc_ceiling: 1200
+
+exceptions:
+  - path: tests/unit/sources/test_source_laws.py
+    ceiling: 2500
+    until: "#403"
+    reason: "tracked split into source-walk/parser-dispatch/provider-contracts/laws"
+
+  - path: tests/unit/cli/test_query_exec_laws.py
+    ceiling: 2200
+    until: "#419"
+    reason: "tracked split into routing/execution/output/stream contracts"
+
+  - path: tests/unit/storage/test_store_ops.py
+    ceiling: 2000
+    until: "#419"
+    reason: "tracked split into CRUD/FTS/hybrid/product-persistence contracts"
+
+  - path: tests/unit/sources/test_models.py
+    ceiling: 1700
+    until: "#403"
+    reason: "tracked split into per-provider model contract suites"
+
+  - path: tests/unit/storage/test_fts5.py
+    ceiling: 1500
+    until: "#419"
+    reason: "tracked split for FTS escaping vs hybrid ranking"
+
+  - path: tests/unit/sources/test_parsers_base.py
+    ceiling: 1400
+    until: "#403"
+    reason: "renamed; comment '# MERGED FROM test_parsers.py' indicates pending split"
+
+  - path: tests/unit/mcp/test_tool_contracts.py
+    ceiling: 1400
+    until: "#419"
+    reason: "tracked split into archive-query vs product-tool contracts"
+
+  - path: tests/unit/pipeline/test_run_sources.py
+    ceiling: 1400
+    until: "#419"
+    reason: "tracked split alongside pipeline-stage independence work"
+
+  - path: tests/unit/cli/test_query_exec.py
+    ceiling: 1300
+    until: "#419"
+    reason: "tracked split into routing/execution/output suites"
