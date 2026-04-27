@@ -82,14 +82,16 @@ def _detect_provider_from_record(record: PayloadRecord) -> Provider | None:
         session = record.get("session")
         provider = session.get("provider") if isinstance(session, dict) else None
         return Provider.from_string(provider if isinstance(provider, str) else None)
+    # Specific type-level checks first (Codex, Claude Code use Pydantic
+    # validation), then weaker dict-key checks (ChatGPT, Claude AI, Gemini).
+    if codex.looks_like([dict(record)]):
+        return Provider.CODEX
+    if claude.looks_like_code([dict(record)]):
+        return Provider.CLAUDE_CODE
     if chatgpt.looks_like(record):
         return Provider.CHATGPT
     if claude.looks_like_ai(record):
         return Provider.CLAUDE_AI
-    if claude.looks_like_code([dict(record)]):
-        return Provider.CLAUDE_CODE
-    if codex.looks_like([dict(record)]):
-        return Provider.CODEX
     if _looks_like_gemini_mapping(record):
         return Provider.GEMINI
     return None

@@ -5,6 +5,7 @@ from __future__ import annotations
 from jinja2 import DictLoader, Environment, select_autoescape
 
 from polylogue.rendering.renderers.html import PygmentsHighlighter
+from polylogue.rendering.renderers.html_sanitizer import sanitize_html
 from polylogue.site.templates import (
     CONVERSATION_TEMPLATE,
     DASHBOARD_TEMPLATE,
@@ -13,11 +14,13 @@ from polylogue.site.templates import (
 
 
 def _build_environment(templates: dict[str, str]) -> Environment:
-    return Environment(
+    env = Environment(
         loader=DictLoader(templates),
         autoescape=select_autoescape(["html", "xml"]),
         enable_async=True,
     )
+    env.filters["sanitize_html"] = sanitize_html
+    return env
 
 
 def build_template_environments(highlighter: PygmentsHighlighter) -> tuple[Environment, Environment]:

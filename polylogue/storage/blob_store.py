@@ -59,39 +59,36 @@ class BlobStore:
         If a blob with the same hash already exists, the write is skipped
         (content-addressed deduplication).
         """
-        hasher = hashlib.sha256()
-        size = 0
-        with open(source, "rb") as src:
-            while True:
-                chunk = src.read(_CHUNK_SIZE)
-                if not chunk:
-                    break
-                hasher.update(chunk)
-                size += len(chunk)
-                if heartbeat is not None:
-                    heartbeat()
-
-        hash_hex = hasher.hexdigest()
-        dest = self.blob_path(hash_hex)
-
-        if dest.exists():
-            return hash_hex, size
-
-        dest.parent.mkdir(parents=True, exist_ok=True)
+        # Single-pass: hash and write to temp file simultaneously.
+        dest_parent = self.root
         fd = None
         tmp_path: str | None = None
         try:
-            fd, tmp_path = tempfile.mkstemp(dir=dest.parent, prefix=".blob.")
+            hasher = hashlib.sha256()
+            size = 0
+            fd, tmp_path = tempfile.mkstemp(dir=dest_parent, prefix=".blob.")
             with open(source, "rb") as src:
                 while True:
                     chunk = src.read(_CHUNK_SIZE)
                     if not chunk:
                         break
+                    hasher.update(chunk)
                     os.write(fd, chunk)
+                    size += len(chunk)
                     if heartbeat is not None:
                         heartbeat()
             os.close(fd)
             fd = None
+
+            hash_hex = hasher.hexdigest()
+            dest = self.blob_path(hash_hex)
+
+            if dest.exists():
+                os.unlink(tmp_path)
+                tmp_path = None
+                return hash_hex, size
+
+            dest.parent.mkdir(parents=True, exist_ok=True)
             os.chmod(tmp_path, 0o600)
             os.replace(tmp_path, dest)
             tmp_path = None

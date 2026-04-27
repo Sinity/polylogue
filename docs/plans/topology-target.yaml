@@ -1144,6 +1144,10 @@ files:
     loc: 33
     target: polylogue/rendering/renderers/html_template.py
     owner: stable
+  - path: polylogue/rendering/renderers/html_sanitizer.py
+    loc: 27
+    target: polylogue/rendering/renderers/html_sanitizer.py
+    owner: stable
   - path: polylogue/rendering/renderers/markdown.py
     loc: 56
     target: polylogue/rendering/renderers/markdown.py
