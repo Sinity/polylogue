@@ -16,6 +16,12 @@ concurrency:
 jobs:
   validate:
     name: Validate PR metadata
+    # Skip dependabot — it generates its own conventional title via the
+    # `chore(deps):` prefix but doesn't fill the human PR template, and the
+    # branch name follows `dependabot/<ecosystem>/<dep>-<version>`. The
+    # changes are mechanical version bumps that don't need the same review
+    # framing.
+    if: github.event.pull_request.user.login != 'dependabot[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 1
     steps:
