@@ -156,7 +156,7 @@ files:
     target: polylogue/cli/click_app.py
     owner: stable
   - path: polylogue/cli/click_command_registration.py
-    loc: 56
+    loc: 58
     target: polylogue/cli/click_command_registration.py
     owner: stable
   - path: polylogue/cli/click_option_groups.py
@@ -230,6 +230,10 @@ files:
   - path: polylogue/cli/commands/tags.py
     loc: 62
     target: polylogue/cli/commands/tags.py
+    owner: stable
+  - path: polylogue/cli/commands/watch.py
+    loc: 61
+    target: polylogue/cli/commands/watch.py
     owner: stable
   - path: polylogue/cli/embed_runtime.py
     loc: 115
@@ -1928,6 +1932,18 @@ files:
   - path: polylogue/sources/emitter.py
     loc: 426
     target: polylogue/sources/emitter.py
+    owner: stable
+  - path: polylogue/sources/live/__init__.py
+    loc: 12
+    target: polylogue/sources/live/__init__.py
+    owner: stable
+  - path: polylogue/sources/live/cursor.py
+    loc: 63
+    target: polylogue/sources/live/cursor.py
+    owner: stable
+  - path: polylogue/sources/live/watcher.py
+    loc: 146
+    target: polylogue/sources/live/watcher.py
     owner: stable
   - path: polylogue/sources/parsers/base.py
     loc: 32

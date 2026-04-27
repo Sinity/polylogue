@@ -8,10 +8,10 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 
 ## Snapshot
 
-- subjects: `246`
+- subjects: `247`
 - claims: `21`
 - runner bindings: `21`
-- proof obligations: `351`
+- proof obligations: `354`
 
 ## Quality Checks
 
@@ -31,7 +31,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | --- | ---: |
 | `archive.query_law` | 1 |
 | `artifact.path` | 27 |
-| `cli.command` | 52 |
+| `cli.command` | 53 |
 | `cli.json_command` | 2 |
 | `diagnostic.observable` | 1 |
 | `error.surface` | 2 |
@@ -99,6 +99,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `polylogue show` | `polylogue/cli/query_verbs.py:78` `polylogue.cli.query_verbs.show_verb` |
 | `polylogue stats` | `polylogue/cli/query_verbs.py:50` `polylogue.cli.query_verbs.stats_verb` |
 | `polylogue tags` | `polylogue/cli/commands/tags.py:12` `polylogue.cli.commands.tags.tags_command` |
+| `polylogue watch` | `polylogue/cli/commands/watch.py:35` `polylogue.cli.commands.watch.watch_command` |
 
 ## Schema Annotation Subjects
 
@@ -189,10 +190,10 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | --- | ---: |
 | `archive.query.provider_filter_consistency` | 1 |
 | `artifact.path.dependency_closure` | 11 |
-| `cli.command.help` | 52 |
+| `cli.command.help` | 53 |
 | `cli.command.json_envelope` | 2 |
-| `cli.command.no_traceback` | 52 |
-| `cli.command.plain_mode` | 52 |
+| `cli.command.no_traceback` | 53 |
+| `cli.command.plain_mode` | 53 |
 | `diagnostic.observable_trace_mapping` | 1 |
 | `error.machine_user_context` | 2 |
 | `generated.scenario.family_registered` | 9 |

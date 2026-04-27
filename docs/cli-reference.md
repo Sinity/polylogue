@@ -146,6 +146,7 @@ Commands:
   show             Show matched conversations with default full-content...
   stats            Show statistics for matched conversations.
   tags             List all tags with conversation counts.
+  watch            Watch source directories and ingest new sessions live.
 ```
 
 ## List Verb
