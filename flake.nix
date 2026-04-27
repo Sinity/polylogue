@@ -75,6 +75,7 @@
             glom
             mcp
             pyyaml
+            watchfiles
           ];
 
           # Skip tests in build (run in checks instead)
