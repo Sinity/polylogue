@@ -46,7 +46,7 @@ Primary modules:
 These expose the archive and its products:
 
 - CLI: `polylogue/cli/`
-- Python API: `polylogue/facade.py`
+- Python API: `polylogue/api/__init__.py`
 - MCP server: `polylogue/mcp/`
 - site generation: `polylogue/site/`
 - dashboard and TUI: `polylogue/ui/`

@@ -6,6 +6,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.showcase.invariants import check_invariants
 from polylogue.showcase.qa_runner_models import QAResult
 from polylogue.showcase.qa_runner_reporting import save_qa_reports
@@ -18,7 +19,6 @@ from polylogue.showcase.workspace import (
     run_pipeline_for_configured_sources,
     seed_workspace_from_corpus_request,
 )
-from polylogue.sync_bridge import run_coroutine_sync
 
 
 @dataclass(frozen=True, slots=True)

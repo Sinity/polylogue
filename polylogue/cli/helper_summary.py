@@ -6,6 +6,7 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Protocol
 
+from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.archive_products import ProviderAnalyticsProduct
 from polylogue.cli.helper_support import load_effective_config
 from polylogue.cli.types import AppEnv
@@ -15,7 +16,6 @@ from polylogue.readiness import ReadinessReport
 from polylogue.services import RuntimeServices
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.store_runtime_archive_records import RunRecord
-from polylogue.sync_bridge import run_coroutine_sync
 from polylogue.ui.theme import provider_color
 
 logger = get_logger(__name__)

@@ -15,8 +15,8 @@ from pathlib import Path
 from polylogue.config import Config
 from polylogue.lib.json import JSONDocument, json_document
 from polylogue.lib.outcomes import OutcomeCheck, OutcomeReport, OutcomeStatus
-from polylogue.maintenance_models import DerivedModelStatus
-from polylogue.maintenance_targets import build_maintenance_target_catalog
+from polylogue.maintenance.models import DerivedModelStatus
+from polylogue.maintenance.targets import build_maintenance_target_catalog
 from polylogue.paths import db_path
 from polylogue.storage.repair import ArchiveDebtStatus
 

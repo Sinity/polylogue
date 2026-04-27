@@ -9,22 +9,22 @@ from pydantic import RootModel
 from typing_extensions import TypedDict
 
 from polylogue.lib.json import JSONDocument
-from polylogue.surface_payloads import (
+from polylogue.surfaces.payloads import (
     ConversationDetailPayload as MCPConversationDetailPayload,
 )
-from polylogue.surface_payloads import (
+from polylogue.surfaces.payloads import (
     ConversationMessagePayload as MCPMessagePayload,
 )
-from polylogue.surface_payloads import (
+from polylogue.surfaces.payloads import (
     ConversationNeighborCandidatePayload as MCPConversationNeighborCandidatePayload,
 )
-from polylogue.surface_payloads import (
+from polylogue.surfaces.payloads import (
     ConversationSearchHitPayload as MCPConversationSearchHitPayload,
 )
-from polylogue.surface_payloads import (
+from polylogue.surfaces.payloads import (
     ConversationSummaryPayload as MCPConversationSummaryPayload,
 )
-from polylogue.surface_payloads import (
+from polylogue.surfaces.payloads import (
     SurfacePayloadModel,
     model_json_document,
     normalize_role,

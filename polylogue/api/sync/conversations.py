@@ -5,10 +5,10 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from polylogue.sync_bridge import run_coroutine_sync
+from polylogue.api.sync.bridge import run_coroutine_sync
 
 if TYPE_CHECKING:
-    from polylogue.facade import ArchiveStats, Polylogue
+    from polylogue.api import ArchiveStats, Polylogue
     from polylogue.lib.conversation_models import Conversation, ConversationSummary
     from polylogue.storage.search import SearchResult
 

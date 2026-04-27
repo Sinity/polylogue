@@ -8,11 +8,11 @@ from pathlib import Path
 
 import click
 
-from polylogue.artifact_graph import ArtifactGraph, build_artifact_graph
+from polylogue.artifacts.graph import ArtifactGraph, build_artifact_graph
 from polylogue.cli.command_inventory import CommandPath, iter_command_paths
 from polylogue.lib.json import JSONDocument, json_document, json_document_list, require_json_value
 from polylogue.lib.provider_capabilities import iter_provider_capabilities
-from polylogue.maintenance_targets import MaintenanceTargetCatalog, build_maintenance_target_catalog
+from polylogue.maintenance.targets import MaintenanceTargetCatalog, build_maintenance_target_catalog
 from polylogue.operations import build_declared_operation_catalog
 from polylogue.proof.generated_scenarios import generated_scenario_subjects
 from polylogue.proof.models import SourceSpan, SubjectRef
@@ -204,7 +204,7 @@ def artifact_path_subjects(graph: ArtifactGraph | None = None) -> tuple[SubjectR
                 kind="artifact.path",
                 id=f"artifact.path.{path.name}",
                 attrs=attrs,
-                source_span=SourceSpan(path="polylogue/artifacts.py", symbol=path.name),
+                source_span=SourceSpan(path="polylogue/artifacts/__init__.py", symbol=path.name),
             )
         )
     return tuple(sorted(subjects, key=lambda subject: subject.id))
@@ -222,7 +222,7 @@ def maintenance_target_subjects(
                     kind="maintenance.target",
                     id=f"maintenance.target.{target.name}",
                     attrs=target.to_dict(),
-                    source_span=SourceSpan(path="polylogue/maintenance_targets.py", symbol=target.name),
+                    source_span=SourceSpan(path="polylogue/maintenance/targets.py", symbol=target.name),
                 )
                 for target in maintenance_catalog.specs
             ),

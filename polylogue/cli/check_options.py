@@ -6,7 +6,7 @@ from collections.abc import Callable
 
 import click
 
-from polylogue.maintenance_targets import MAINTENANCE_TARGET_NAMES, build_maintenance_target_catalog
+from polylogue.maintenance.targets import MAINTENANCE_TARGET_NAMES, build_maintenance_target_catalog
 
 _MAINTENANCE_TARGET_HELP = build_maintenance_target_catalog().help_text()
 

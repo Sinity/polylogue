@@ -7,6 +7,7 @@ from pathlib import Path
 
 import click
 
+from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.cli.helpers import (
     complete_run_source_names,
     fail,
@@ -45,7 +46,6 @@ from polylogue.pipeline.run_support import RUN_STAGE_CHOICES, expand_requested_s
 from polylogue.pipeline.runner import plan_sources
 from polylogue.sources import DriveError
 from polylogue.storage.run_state import RunResult
-from polylogue.sync_bridge import run_coroutine_sync
 
 INTERACTIVE_RUN_STAGE_CHOICES: tuple[str, ...] = (
     "all",

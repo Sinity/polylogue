@@ -6,7 +6,7 @@ import sys
 from collections.abc import Mapping
 
 from polylogue.lib.json import JSONDocument, require_json_document
-from polylogue.surface_payloads import (
+from polylogue.surfaces.payloads import (
     MachineErrorPayload,
     MachineSuccessPayload,
 )

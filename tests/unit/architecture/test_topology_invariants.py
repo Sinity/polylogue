@@ -58,7 +58,6 @@ def test_no_archive_product_modules_at_root() -> None:
 # -------- #426: facade/sync consolidate into polylogue/api/ --------
 
 
-@pytest.mark.xfail(strict=True, reason="topology refactor: facade/sync at root, see #426")
 def test_no_facade_or_sync_modules_at_root() -> None:
     files = root_files()
     legacy = {f for f in files if f.startswith("facade") or f.startswith("sync")}
