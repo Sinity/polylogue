@@ -8,10 +8,10 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 
 ## Snapshot
 
-- subjects: `9048`
-- claims: `22`
-- runner bindings: `22`
-- proof obligations: `9153`
+- subjects: `246`
+- claims: `21`
+- runner bindings: `21`
+- proof obligations: `351`
 
 ## Quality Checks
 
@@ -39,7 +39,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `maintenance.target` | 8 |
 | `operation.spec` | 43 |
 | `provider.capability` | 3 |
-| `schema.annotation` | 8897 |
+| `schema.annotation` | 95 |
 | `trace.operation` | 1 |
 | `workflow.claim` | 2 |
 
@@ -105,13 +105,8 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | Provider | Element | Annotation | Count | Example Subject |
 | --- | --- | --- | ---: | --- |
 | `chatgpt` | `conversation_document` | `x-polylogue-foreign-keys` | 7 | `chatgpt:v1:conversation_document:x-polylogue-foreign-keys:0:$.mapping.*.id:$.mapping` |
-| `chatgpt` | `conversation_document` | `x-polylogue-mutually-exclusive` | 6065 | `chatgpt:v1:conversation_document:x-polylogue-mutually-exclusive:0:$:email,title` |
-| `claude-ai` | `conversation_document` | `x-polylogue-mutually-exclusive` | 312 | `claude-ai:v1:conversation_document:x-polylogue-mutually-exclusive:0:$.chat_messages[*].content[*]:start_timestamp,thinking` |
-| `claude-code` | `conversation_record_stream` | `x-polylogue-mutually-exclusive` | 1353 | `claude-code:v1:conversation_record_stream:x-polylogue-mutually-exclusive:0:$:messageId,parentUuid` |
 | `claude-code` | `conversation_record_stream` | `x-polylogue-values` | 42 | `claude-code:v1:conversation_record_stream:x-polylogue-values:$.data.command` |
-| `codex` | `conversation_record_stream` | `x-polylogue-mutually-exclusive` | 787 | `codex:v1:conversation_record_stream:x-polylogue-mutually-exclusive:0:$.payload:cwd,type` |
 | `codex` | `conversation_record_stream` | `x-polylogue-values` | 32 | `codex:v1:conversation_record_stream:x-polylogue-values:$.payload.agent_nickname` |
-| `gemini` | `conversation_document` | `x-polylogue-mutually-exclusive` | 285 | `gemini:v1:conversation_document:x-polylogue-mutually-exclusive:0:$:applets,runSettings` |
 | `gemini` | `conversation_document` | `x-polylogue-values` | 14 | `gemini:v1:conversation_document:x-polylogue-values:$.chunkedPrompt.chunks[*].finishReason` |
 
 ## Provider Capability Subjects
@@ -149,7 +144,6 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `provider.capability.partial_coverage_declared` | `serious` | `provider.capability.implicit-gap`<br>`provider-semantics.untracked-partial-support` | A provider with absent or partial facets but no explicit gap record hides verification scope. |
 | `schema.values.value_closure` | `serious` | `schema.value-domain.drift`<br>`schema.privacy.enum-leak` | A generated payload outside the annotated value set is a counterexample. |
 | `schema.foreign_key.resolves` | `serious` | `schema.relationship.drift`<br>`synthetic-corpus.integrity` | A source path pointing at a missing target path breaks the relation claim. |
-| `schema.mutual_exclusion.exclusive` | `serious` | `schema.mutual-exclusion.drift`<br>`synthetic-corpus.invalid-combination` | A generated record containing two fields from the same exclusion group is a counterexample. |
 | `operation.spec.routing_metadata` | `serious` | `operation.routing.metadata-missing`<br>`agent-verification.unroutable-operation` | An operation without stable routing metadata cannot be mapped to focused proof checks. |
 | `artifact.path.dependency_closure` | `serious` | `artifact-graph.unresolved-dependency`<br>`structural-proof.missing-derived-layer` | A runtime path with unresolved dependencies or no derived/index/projection layer breaks routing. |
 | `maintenance.repair.crash_consistency` | `serious` | `maintenance.failure-state.ambiguous`<br>`destructive-repair.preview-mismatch` | A repair failure without an explicit unchanged/changed/rolled-back/partial state is ambiguous. |
@@ -176,7 +170,6 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `provider-capability-static-contract:provider.capability.partial_coverage_declared` | `provider.capability.partial_coverage_declared` | `structural` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
 | `schema-annotation-static-contract:schema.values.value_closure` | `schema.values.value_closure` | `structural` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
 | `schema-annotation-static-contract:schema.foreign_key.resolves` | `schema.foreign_key.resolves` | `structural` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
-| `schema-annotation-static-contract:schema.mutual_exclusion.exclusive` | `schema.mutual_exclusion.exclusive` | `structural` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
 | `operation-spec-static-contract:operation.spec.routing_metadata` | `operation.spec.routing_metadata` | `structural` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
 | `artifact-path-static-contract:artifact.path.dependency_closure` | `artifact.path.dependency_closure` | `structural` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
 | `maintenance-repair-state-contract:maintenance.repair.crash_consistency` | `maintenance.repair.crash_consistency` | `structural` | `unit` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
@@ -211,7 +204,6 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `provider.capability.identity_bridge` | 3 |
 | `provider.capability.partial_coverage_declared` | 3 |
 | `schema.foreign_key.resolves` | 7 |
-| `schema.mutual_exclusion.exclusive` | 8802 |
 | `schema.values.value_closure` | 88 |
 | `trace.operation.surface_equivalence` | 1 |
 | `workflow.generated_surfaces_current` | 1 |

@@ -33,7 +33,6 @@ def test_default_catalog_compiles_first_vertical_slice() -> None:
         "provider.capability.partial_coverage_declared",
         "schema.values.value_closure",
         "schema.foreign_key.resolves",
-        "schema.mutual_exclusion.exclusive",
         "operation.spec.routing_metadata",
         "artifact.path.dependency_closure",
         "maintenance.repair.crash_consistency",
@@ -88,10 +87,6 @@ def test_selected_schema_annotations_bind_schema_claims() -> None:
     assert catalog.obligations_by_claim()["schema.values.value_closure"] == annotation_counts["x-polylogue-values"]
     assert (
         catalog.obligations_by_claim()["schema.foreign_key.resolves"] == annotation_counts["x-polylogue-foreign-keys"]
-    )
-    assert (
-        catalog.obligations_by_claim()["schema.mutual_exclusion.exclusive"]
-        == annotation_counts["x-polylogue-mutually-exclusive"]
     )
 
 

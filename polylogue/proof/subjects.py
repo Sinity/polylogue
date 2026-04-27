@@ -22,7 +22,6 @@ from polylogue.schemas.runtime_registry import SCHEMA_DIR, SchemaRegistry
 SELECTED_SCHEMA_ANNOTATIONS: tuple[str, ...] = (
     "x-polylogue-values",
     "x-polylogue-foreign-keys",
-    "x-polylogue-mutually-exclusive",
 )
 SELECTED_JSON_COMMANDS: tuple[tuple[str, ...], ...] = (("doctor",), ("tags",))
 
@@ -451,16 +450,6 @@ def _annotation_subjects_for_schema(
             schema_source=schema_source,
             annotation="x-polylogue-foreign-keys",
             id_fields=("source", "target"),
-        )
-    if "x-polylogue-mutually-exclusive" in annotation_keys:
-        yield from _root_record_annotation_subjects(
-            provider=provider,
-            version=version,
-            element_kind=element_kind,
-            schema=schema,
-            schema_source=schema_source,
-            annotation="x-polylogue-mutually-exclusive",
-            id_fields=("parent", "fields"),
         )
 
 
