@@ -59,14 +59,20 @@ class BlobStore:
         If a blob with the same hash already exists, the write is skipped
         (content-addressed deduplication).
         """
-        # Single-pass: hash and write to temp file simultaneously.
-        dest_parent = self.root
+        # Single-pass: hash and write to temp file simultaneously. The temp
+        # lives at the blob-store root so the final ``os.replace`` to the
+        # sharded ``aa/bb/...`` destination stays on the same filesystem.
+        # Ensure the root exists; in a fresh archive (and in tests) it has
+        # not been created yet, and ``tempfile.mkstemp`` would raise
+        # ``FileNotFoundError`` — which the source-acquisition layer would
+        # then mis-attribute as a TOCTOU race against the source file.
+        self.root.mkdir(parents=True, exist_ok=True)
         fd = None
         tmp_path: str | None = None
         try:
             hasher = hashlib.sha256()
             size = 0
-            fd, tmp_path = tempfile.mkstemp(dir=dest_parent, prefix=".blob.")
+            fd, tmp_path = tempfile.mkstemp(dir=self.root, prefix=".blob.")
             with open(source, "rb") as src:
                 while True:
                     chunk = src.read(_CHUNK_SIZE)
