@@ -52,8 +52,16 @@ jobs:
         run: uv run pip-audit --strict --vulnerability-service osv --disable-pip -r requirements-audit.txt
 
   dependency-review:
+    # Best-effort PR-time delta scan. Requires the GitHub Dependency Graph
+    # feature to be enabled in repo settings (Settings → Code security and
+    # analysis → Dependency graph). Until that's on, the action errors out
+    # with "Dependency review is not supported on this repository", so we
+    # mark the whole job continue-on-error and rely on pip-audit (above) as
+    # the blocking signal. Flip continue-on-error to false once the graph
+    # is enabled.
     name: Dependency Review
     if: github.event_name == 'pull_request'
+    continue-on-error: true
     timeout-minutes: 5
     runs-on: ubuntu-latest
     permissions:
