@@ -26,7 +26,7 @@ files:
     target: polylogue/products/archive_summaries.py
     owner: #414
   - path: polylogue/archive_products.py
-    loc: 538
+    loc: 552
     target: polylogue/products/archive.py
     owner: #414
   - path: polylogue/archive_resume.py
@@ -151,10 +151,6 @@ files:
     loc: 20
     target: polylogue/cli/commands/dashboard.py
     owner: stable
-  - path: polylogue/rendering/renderers/plaintext.py
-    loc: 20
-    target: polylogue/rendering/renderers/plaintext.py
-    owner: stable
   - path: polylogue/cli/commands/export.py
     loc: 54
     target: polylogue/cli/commands/export.py
@@ -221,11 +217,11 @@ files:
     target: polylogue/cli/helper_source_state.py
     owner: stable
   - path: polylogue/cli/helper_summary.py
-    loc: 181
+    loc: 190
     target: polylogue/cli/helper_summary.py
     owner: stable
   - path: polylogue/cli/helper_support.py
-    loc: 20
+    loc: 23
     target: polylogue/cli/helper_support.py
     owner: stable
   - path: polylogue/cli/helpers.py
@@ -305,7 +301,7 @@ files:
     target: polylogue/cli/query_stats.py
     owner: stable
   - path: polylogue/cli/query_verbs.py
-    loc: 173
+    loc: 190
     target: polylogue/cli/query_verbs.py
     owner: stable
   - path: polylogue/cli/resume_rendering.py
@@ -357,7 +353,7 @@ files:
     target: polylogue/cli/types.py
     owner: stable
   - path: polylogue/config.py
-    loc: 146
+    loc: 144
     target: polylogue/config.py
     owner: kernel
     reason: "kernel rule per #426"
@@ -423,7 +419,7 @@ files:
     owner: #424
   - path: polylogue/lib/attachment_models.py
     loc: 17
-    target: polylogue/lib/conversation/models.py
+    target: polylogue/lib/attachment/models.py
     owner: #424
     cross_cut: { lifecycle: model }
   - path: polylogue/lib/attribution.py
@@ -472,7 +468,7 @@ files:
     target: polylogue/lib/embeddings/runtime.py
     owner: stable
   - path: polylogue/lib/embeddings/stats.py
-    loc: 150
+    loc: 148
     target: polylogue/lib/embeddings/stats.py
     owner: stable
   - path: polylogue/lib/filter_builder.py
@@ -536,35 +532,37 @@ files:
     reason: "lib-root primitive per #424"
   - path: polylogue/lib/payload_coercion.py
     loc: 126
-    target: TBD
-    owner: #424
+    target: polylogue/lib/payload_coercion.py
+    owner: lib-root
+    reason: "lib-root primitive per #424"
   - path: polylogue/lib/phase_extraction.py
     loc: 108
-    target: TBD
+    target: polylogue/lib/phase/extraction.py
     owner: #424
   - path: polylogue/lib/pricing.py
     loc: 573
-    target: TBD
-    owner: #424
+    target: polylogue/lib/pricing.py
+    owner: lib-root
+    reason: "lib-root primitive per #424"
   - path: polylogue/lib/projection_filter_mixin.py
     loc: 73
-    target: TBD
+    target: polylogue/lib/projection/filter_mixin.py
     owner: #424
   - path: polylogue/lib/projection_terminal_mixin.py
     loc: 78
-    target: TBD
+    target: polylogue/lib/projection/terminal_mixin.py
     owner: #424
   - path: polylogue/lib/projection_transform_mixin.py
     loc: 68
-    target: TBD
+    target: polylogue/lib/projection/transform_mixin.py
     owner: #424
   - path: polylogue/lib/projections.py
     loc: 52
-    target: TBD
+    target: polylogue/lib/projection/projections.py
     owner: #424
   - path: polylogue/lib/provider_capabilities.py
     loc: 264
-    target: TBD
+    target: polylogue/lib/provider/capabilities.py
     owner: #424
   - path: polylogue/lib/provider_identity.py
     loc: 90
@@ -573,7 +571,7 @@ files:
     reason: "lib-root primitive per #424"
   - path: polylogue/lib/provider_semantics.py
     loc: 228
-    target: TBD
+    target: polylogue/lib/provider/semantics.py
     owner: #424
   - path: polylogue/lib/query_fields.py
     loc: 664
@@ -738,7 +736,7 @@ files:
     target: polylogue/lib/conversation/threads.py
     owner: #424
   - path: polylogue/lib/timestamps.py
-    loc: 77
+    loc: 81
     target: polylogue/lib/timestamps.py
     owner: lib-root
     reason: "lib-root primitive per #424"
@@ -764,7 +762,7 @@ files:
     target: polylogue/lib/conversation/extraction.py
     owner: #424
   - path: polylogue/logging.py
-    loc: 163
+    loc: 166
     target: polylogue/logging.py
     owner: kernel
     reason: "kernel rule per #426"
@@ -782,7 +780,7 @@ files:
     target: polylogue/mcp/__init__.py
     owner: stable
   - path: polylogue/mcp/payloads.py
-    loc: 349
+    loc: 348
     target: polylogue/mcp/payloads.py
     owner: stable
   - path: polylogue/mcp/product_tool_contracts.py
@@ -802,7 +800,7 @@ files:
     target: polylogue/mcp/server_maintenance_tools.py
     owner: stable
   - path: polylogue/mcp/server_mutation_tools.py
-    loc: 143
+    loc: 158
     target: polylogue/mcp/server_mutation_tools.py
     owner: stable
   - path: polylogue/mcp/server_product_tools.py
@@ -810,7 +808,7 @@ files:
     target: polylogue/mcp/server_product_tools.py
     owner: stable
   - path: polylogue/mcp/server_prompts.py
-    loc: 260
+    loc: 258
     target: polylogue/mcp/server_prompts.py
     owner: stable
   - path: polylogue/mcp/server_resources.py
@@ -854,7 +852,7 @@ files:
     target: polylogue/pipeline/__init__.py
     owner: stable
   - path: polylogue/pipeline/ids.py
-    loc: 227
+    loc: 232
     target: polylogue/pipeline/ids.py
     owner: stable
   - path: polylogue/pipeline/materialization_runtime.py
@@ -867,7 +865,7 @@ files:
     target: polylogue/pipeline/observers.py
     owner: stable
   - path: polylogue/pipeline/payload_types.py
-    loc: 137
+    loc: 136
     target: polylogue/pipeline/payload_types.py
     owner: stable
   - path: polylogue/pipeline/prepare.py
@@ -896,7 +894,7 @@ files:
     target: polylogue/pipeline/run_execution.py
     owner: stable
   - path: polylogue/pipeline/run_finalization.py
-    loc: 150
+    loc: 148
     target: polylogue/pipeline/run_finalization.py
     owner: stable
   - path: polylogue/pipeline/run_planning.py
@@ -920,7 +918,7 @@ files:
     target: polylogue/pipeline/runner.py
     owner: stable
   - path: polylogue/pipeline/semantic_capture.py
-    loc: 218
+    loc: 216
     target: polylogue/pipeline/semantic_capture.py
     owner: stable
   - path: polylogue/pipeline/semantic_metadata.py
@@ -940,7 +938,7 @@ files:
     target: polylogue/pipeline/services/acquisition_persistence.py
     owner: stable
   - path: polylogue/pipeline/services/acquisition_records.py
-    loc: 70
+    loc: 69
     target: polylogue/pipeline/services/acquisition_records.py
     owner: stable
   - path: polylogue/pipeline/services/acquisition_streams.py
@@ -948,15 +946,15 @@ files:
     target: polylogue/pipeline/services/acquisition_streams.py
     owner: stable
   - path: polylogue/pipeline/services/indexing.py
-    loc: 313
+    loc: 312
     target: polylogue/pipeline/services/indexing.py
     owner: stable
   - path: polylogue/pipeline/services/ingest_batch.py
-    loc: 1250
+    loc: 1251
     target: polylogue/pipeline/services/ingest_batch.py
     owner: stable
   - path: polylogue/pipeline/services/ingest_worker.py
-    loc: 979
+    loc: 977
     target: polylogue/pipeline/services/ingest_worker.py
     owner: stable
   - path: polylogue/pipeline/services/parsing.py
@@ -1085,7 +1083,7 @@ files:
     target: polylogue/proof/witnesses.py
     owner: stable
   - path: polylogue/protocols.py
-    loc: 448
+    loc: 450
     target: polylogue/protocols.py
     owner: kernel
     reason: "kernel rule per #426"
@@ -1094,7 +1092,7 @@ files:
     target: polylogue/publication/__init__.py
     owner: #426
   - path: polylogue/readiness.py
-    loc: 618
+    loc: 619
     target: polylogue/readiness/__init__.py
     owner: #426
   - path: polylogue/rendering/block_models.py
@@ -1115,7 +1113,7 @@ files:
     target: polylogue/rendering/core_formatter.py
     owner: stable
   - path: polylogue/rendering/core_markdown.py
-    loc: 224
+    loc: 227
     target: polylogue/rendering/core_markdown.py
     owner: stable
   - path: polylogue/rendering/core_messages.py
@@ -1123,11 +1121,11 @@ files:
     target: polylogue/rendering/core_messages.py
     owner: stable
   - path: polylogue/rendering/formatting.py
-    loc: 233
+    loc: 240
     target: polylogue/rendering/formatting.py
     owner: stable
   - path: polylogue/rendering/renderers/__init__.py
-    loc: 76
+    loc: 93
     target: polylogue/rendering/renderers/__init__.py
     owner: stable
   - path: polylogue/rendering/renderers/html.py
@@ -1149,6 +1147,10 @@ files:
   - path: polylogue/rendering/renderers/markdown.py
     loc: 56
     target: polylogue/rendering/renderers/markdown.py
+    owner: stable
+  - path: polylogue/rendering/renderers/plaintext.py
+    loc: 81
+    target: polylogue/rendering/renderers/plaintext.py
     owner: stable
   - path: polylogue/scenarios/__init__.py
     loc: 135
@@ -1374,11 +1376,11 @@ files:
     target: polylogue/schemas/pinning.py
     owner: stable
   - path: polylogue/schemas/privacy.py
-    loc: 276
+    loc: 277
     target: polylogue/schemas/privacy.py
     owner: stable
   - path: polylogue/schemas/privacy_config.py
-    loc: 244
+    loc: 240
     target: polylogue/schemas/privacy_config.py
     owner: stable
   - path: polylogue/schemas/redaction_report.py
@@ -1596,158 +1598,128 @@ files:
     reason: "kernel rule per #426"
   - path: polylogue/showcase/catalog_loader.py
     loc: 195
-    target: TBD
+    target: polylogue/scenarios/catalog_loader.py
     owner: #413
-    reason: showcase dismantling — substrate vs lab vs proof split
   - path: polylogue/showcase/cli_boundary.py
     loc: 55
-    target: TBD
+    target: devtools/lab_runner/cli_boundary.py
     owner: #413
-    reason: showcase dismantling — substrate vs lab vs proof split
   - path: polylogue/showcase/context.py
     loc: 114
-    target: TBD
+    target: polylogue/scenarios/context.py
     owner: #413
-    reason: showcase dismantling — substrate vs lab vs proof split
   - path: polylogue/showcase/corpus_requests.py
     loc: 43
-    target: TBD
+    target: polylogue/scenarios/corpus_requests.py
     owner: #413
-    reason: showcase dismantling — substrate vs lab vs proof split
   - path: polylogue/showcase/dimensions.py
     loc: 105
-    target: TBD
+    target: polylogue/scenarios/dimensions.py
     owner: #413
-    reason: showcase dismantling — substrate vs lab vs proof split
   - path: polylogue/showcase/exercise_models.py
     loc: 71
-    target: TBD
+    target: polylogue/scenarios/exercise_models.py
     owner: #413
-    reason: showcase dismantling — substrate vs lab vs proof split
     cross_cut: { lifecycle: model }
   - path: polylogue/showcase/exercises.py
     loc: 85
-    target: TBD
+    target: polylogue/scenarios/exercises.py
     owner: #413
-    reason: showcase dismantling — substrate vs lab vs proof split
   - path: polylogue/showcase/generators.py
     loc: 556
-    target: TBD
+    target: devtools/lab_corpus/generators.py
     owner: #413
-    reason: showcase dismantling — substrate vs lab vs proof split
   - path: polylogue/showcase/invariants.py
     loc: 237
-    target: TBD
+    target: polylogue/scenarios/invariants.py
     owner: #413
-    reason: showcase dismantling — substrate vs lab vs proof split
   - path: polylogue/showcase/lab_corpus.py
     loc: 147
-    target: TBD
+    target: devtools/lab_corpus/corpus.py
     owner: #413
-    reason: showcase dismantling — substrate vs lab vs proof split
   - path: polylogue/showcase/qa_markdown.py
     loc: 192
-    target: TBD
+    target: devtools/lab_report/markdown.py
     owner: #413
-    reason: showcase dismantling — substrate vs lab vs proof split
   - path: polylogue/showcase/qa_report.py
     loc: 43
-    target: TBD
+    target: devtools/lab_report/report.py
     owner: #413
-    reason: showcase dismantling — substrate vs lab vs proof split
   - path: polylogue/showcase/qa_runner.py
     loc: 19
-    target: TBD
+    target: devtools/lab_runner/qa.py
     owner: #413
-    reason: showcase dismantling — substrate vs lab vs proof split
   - path: polylogue/showcase/qa_runner_models.py
     loc: 94
-    target: TBD
+    target: devtools/lab_runner/qa_models.py
     owner: #413
-    reason: showcase dismantling — substrate vs lab vs proof split
     cross_cut: { lifecycle: model }
   - path: polylogue/showcase/qa_runner_reporting.py
     loc: 66
-    target: TBD
+    target: devtools/lab_runner/qa_reporting.py
     owner: #413
-    reason: showcase dismantling — substrate vs lab vs proof split
   - path: polylogue/showcase/qa_runner_request.py
     loc: 158
-    target: TBD
+    target: devtools/lab_runner/qa_request.py
     owner: #413
-    reason: showcase dismantling — substrate vs lab vs proof split
   - path: polylogue/showcase/qa_runner_stages.py
     loc: 43
-    target: TBD
+    target: devtools/lab_runner/qa_stages.py
     owner: #413
-    reason: showcase dismantling — substrate vs lab vs proof split
   - path: polylogue/showcase/qa_runner_workflow.py
     loc: 173
-    target: TBD
+    target: devtools/lab_runner/qa_workflow.py
     owner: #413
-    reason: showcase dismantling — substrate vs lab vs proof split
   - path: polylogue/showcase/qa_session_payload.py
     loc: 69
-    target: TBD
+    target: devtools/lab_report/session_payload.py
     owner: #413
-    reason: showcase dismantling — substrate vs lab vs proof split
   - path: polylogue/showcase/qa_summary.py
     loc: 102
-    target: TBD
+    target: devtools/lab_report/summary.py
     owner: #413
-    reason: showcase dismantling — substrate vs lab vs proof split
   - path: polylogue/showcase/report_common.py
     loc: 39
-    target: TBD
+    target: devtools/lab_report/common.py
     owner: #413
-    reason: showcase dismantling — substrate vs lab vs proof split
   - path: polylogue/showcase/report_files.py
     loc: 69
-    target: TBD
+    target: devtools/lab_report/files.py
     owner: #413
-    reason: showcase dismantling — substrate vs lab vs proof split
   - path: polylogue/showcase/report_models.py
     loc: 342
-    target: TBD
+    target: devtools/lab_report/models.py
     owner: #413
-    reason: showcase dismantling — substrate vs lab vs proof split
     cross_cut: { lifecycle: model }
   - path: polylogue/showcase/runner.py
     loc: 133
-    target: TBD
+    target: devtools/lab_runner/runner.py
     owner: #413
-    reason: showcase dismantling — substrate vs lab vs proof split
   - path: polylogue/showcase/showcase_report_payloads.py
     loc: 79
-    target: TBD
+    target: devtools/lab_report/payloads.py
     owner: #413
-    reason: showcase dismantling — substrate vs lab vs proof split
   - path: polylogue/showcase/showcase_report_text.py
     loc: 172
-    target: TBD
+    target: devtools/lab_report/text.py
     owner: #413
-    reason: showcase dismantling — substrate vs lab vs proof split
   - path: polylogue/showcase/showcase_runner_models.py
     loc: 124
-    target: TBD
+    target: devtools/lab_runner/models.py
     owner: #413
-    reason: showcase dismantling — substrate vs lab vs proof split
     cross_cut: { lifecycle: model }
   - path: polylogue/showcase/showcase_runner_support.py
     loc: 181
-    target: TBD
+    target: devtools/lab_runner/support.py
     owner: #413
-    reason: showcase dismantling — substrate vs lab vs proof split
   - path: polylogue/showcase/vhs.py
     loc: 128
-    target: TBD
+    target: devtools/lab_runner/vhs.py
     owner: #413
-    reason: showcase dismantling — substrate vs lab vs proof split
   - path: polylogue/showcase/workspace.py
     loc: 439
-    target: TBD
+    target: devtools/lab_runner/workspace.py
     owner: #413
-    reason: showcase dismantling — substrate vs lab vs proof split
   - path: polylogue/site/builder.py
     loc: 215
     target: polylogue/site/builder.py
@@ -1817,7 +1789,7 @@ files:
     target: polylogue/sources/__init__.py
     owner: stable
   - path: polylogue/sources/assembly.py
-    loc: 91
+    loc: 89
     target: polylogue/sources/assembly.py
     owner: stable
   - path: polylogue/sources/assembly_claude_code.py
@@ -1865,7 +1837,7 @@ files:
     target: polylogue/sources/drive/auth_support.py
     owner: #403
   - path: polylogue/sources/drive_gateway.py
-    loc: 252
+    loc: 251
     target: polylogue/sources/drive/gateway.py
     owner: #403
   - path: polylogue/sources/drive_source.py
@@ -2097,7 +2069,7 @@ files:
     target: polylogue/storage/backends/__init__.py
     owner: stable
   - path: polylogue/storage/backends/async_sqlite.py
-    loc: 562
+    loc: 567
     target: polylogue/storage/backends/async_sqlite.py
     owner: stable
   - path: polylogue/storage/backends/async_sqlite_archive.py
@@ -2109,7 +2081,7 @@ files:
     target: polylogue/storage/backends/async_sqlite_raw.py
     owner: stable
   - path: polylogue/storage/backends/connection.py
-    loc: 232
+    loc: 234
     target: polylogue/storage/backends/connection.py
     owner: stable
   - path: polylogue/storage/backends/connection_profile.py
@@ -2149,7 +2121,7 @@ files:
     target: polylogue/storage/backends/queries/conversations.py
     owner: stable
   - path: polylogue/storage/backends/queries/conversations_identity.py
-    loc: 155
+    loc: 158
     target: polylogue/storage/backends/queries/conversations_identity.py
     owner: stable
   - path: polylogue/storage/backends/queries/conversations_reads.py
@@ -2162,7 +2134,7 @@ files:
     target: polylogue/storage/backends/queries/conversations_search.py
     owner: stable
   - path: polylogue/storage/backends/queries/conversations_writes.py
-    loc: 143
+    loc: 144
     target: polylogue/storage/backends/queries/conversations_writes.py
     owner: stable
     cross_cut: { layer: write }
@@ -2271,7 +2243,7 @@ files:
     owner: stable
     cross_cut: { layer: write }
   - path: polylogue/storage/backends/queries/stats.py
-    loc: 316
+    loc: 317
     target: polylogue/storage/backends/queries/stats.py
     owner: stable
   - path: polylogue/storage/backends/query_store.py
@@ -2311,7 +2283,7 @@ files:
     target: polylogue/storage/backends/schema_ddl_actions.py
     owner: stable
   - path: polylogue/storage/backends/schema_ddl_archive.py
-    loc: 285
+    loc: 282
     target: polylogue/storage/backends/schema_ddl_archive.py
     owner: stable
   - path: polylogue/storage/backends/schema_ddl_aux.py
@@ -2335,7 +2307,7 @@ files:
     target: polylogue/storage/backends/sqlite_vec_extension.py
     owner: stable
   - path: polylogue/storage/blob_store.py
-    loc: 284
+    loc: 287
     target: polylogue/storage/blob_store.py
     owner: storage-root
     reason: "storage-root cross-cutting helper per #425"
@@ -2398,7 +2370,7 @@ files:
     owner: #425
     cross_cut: { layer: read }
   - path: polylogue/storage/query_models.py
-    loc: 228
+    loc: 227
     target: polylogue/storage/query_models.py
     owner: storage-root
     reason: "storage-root cross-cutting helper per #425"
@@ -2423,7 +2395,7 @@ files:
     owner: #425
   - path: polylogue/storage/repository_action_reads.py
     loc: 46
-    target: polylogue/storage/repository/archive/reads.py
+    target: polylogue/storage/repository/action/reads.py
     owner: #425
     cross_cut: { layer: read }
   - path: polylogue/storage/repository_archive_conversations.py
@@ -2481,21 +2453,21 @@ files:
     owner: #425
   - path: polylogue/storage/repository_write_conversations.py
     loc: 291
-    target: polylogue/storage/repository/archive/conversations.py
+    target: polylogue/storage/repository/archive/writes/conversations.py
     owner: #425
     cross_cut: { layer: write }
   - path: polylogue/storage/repository_write_metadata.py
     loc: 24
-    target: polylogue/storage/repository/archive/metadata.py
+    target: polylogue/storage/repository/archive/writes/metadata.py
     owner: #425
     cross_cut: { layer: write }
   - path: polylogue/storage/repository_writes.py
-    loc: 162
+    loc: 206
     target: polylogue/storage/repository/archive/repository_writes.py
     owner: #425
     cross_cut: { layer: write }
   - path: polylogue/storage/run_state.py
-    loc: 480
+    loc: 479
     target: polylogue/storage/run_state.py
     owner: storage-root
     reason: "storage-root cross-cutting helper per #425"
@@ -2583,7 +2555,7 @@ files:
     target: polylogue/storage/products/session/refresh.py
     owner: #425
   - path: polylogue/storage/session_product_runtime.py
-    loc: 136
+    loc: 134
     target: polylogue/storage/products/session/runtime.py
     owner: #425
     cross_cut: { lifecycle: runtime }
@@ -2639,7 +2611,7 @@ files:
     owner: #425
     cross_cut: { lifecycle: runtime }
   - path: polylogue/surface_payloads.py
-    loc: 380
+    loc: 379
     target: polylogue/surfaces/payloads.py
     owner: #426
   - path: polylogue/sync.py
