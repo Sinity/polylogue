@@ -459,6 +459,7 @@ class TestCliMetadata:
             "audit",
             "schema",
             "tags",
+            "watch",
             # Query verbs
             "list",
             "count",
