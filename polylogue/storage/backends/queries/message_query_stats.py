@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import aiosqlite
 
-from polylogue.lib.message_roles import message_role_count_key, message_role_sql_values
+from polylogue.lib.message.roles import message_role_count_key, message_role_sql_values
 from polylogue.lib.roles import Role
 
 

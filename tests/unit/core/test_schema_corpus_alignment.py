@@ -14,7 +14,7 @@ from collections import Counter
 import pytest
 
 from polylogue.lib.json import JSONDocument, JSONValue, json_document
-from polylogue.lib.raw_payload_sampling_extract import (
+from polylogue.lib.raw_payload.sampling_extract import (
     extract_payload_samples,
     extract_record_samples_from_raw_content,
 )

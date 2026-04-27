@@ -15,7 +15,7 @@ from polylogue.cli.shell_completion_values import (
     complete_tool_values,
 )
 from polylogue.lib.provider_identity import CORE_SCHEMA_PROVIDERS
-from polylogue.lib.query_spec import QUERY_ACTION_TYPES, QUERY_RETRIEVAL_LANES
+from polylogue.lib.query.spec import QUERY_ACTION_TYPES, QUERY_RETRIEVAL_LANES
 
 ClickCallable: TypeAlias = Callable[..., object]
 

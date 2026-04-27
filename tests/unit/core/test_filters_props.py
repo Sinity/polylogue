@@ -28,9 +28,9 @@ from hypothesis import strategies as st
 from typing_extensions import TypedDict
 
 from polylogue.cli.filter_picker import pick_filter
-from polylogue.lib.conversation_models import Conversation
-from polylogue.lib.filter_types import SortField
-from polylogue.lib.filters import ConversationFilter
+from polylogue.lib.conversation.models import Conversation
+from polylogue.lib.filter.filters import ConversationFilter
+from polylogue.lib.filter.types import SortField
 from polylogue.lib.models import ConversationSummary
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.backends.connection import open_connection

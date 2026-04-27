@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
-from polylogue.lib.session_profile import SessionProfile
-from polylogue.lib.session_summaries import summarize_day, summarize_days, summarize_week, summarize_weeks
-from polylogue.lib.work_event_extraction import WorkEvent, WorkEventKind
+from polylogue.lib.conversation.extraction import WorkEvent, WorkEventKind
+from polylogue.lib.session.session_profile import SessionProfile
+from polylogue.lib.session.session_summaries import summarize_day, summarize_days, summarize_week, summarize_weeks
 
 
 def _profile(

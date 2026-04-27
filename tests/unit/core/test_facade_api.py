@@ -20,7 +20,7 @@ from polylogue.archive_products import (
     WeekSessionSummaryProductQuery,
     WorkThreadProductQuery,
 )
-from polylogue.lib.content_projection import ContentProjectionSpec
+from polylogue.lib.semantic.content_projection import ContentProjectionSpec
 from tests.infra.builders import make_conv, make_msg
 from tests.infra.storage_records import ConversationBuilder, make_conversation, make_message
 

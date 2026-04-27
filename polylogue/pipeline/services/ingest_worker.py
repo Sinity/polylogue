@@ -19,9 +19,9 @@ from typing import TYPE_CHECKING, Literal
 from typing_extensions import TypedDict
 
 from polylogue.lib.artifact_taxonomy import ArtifactClassification, classify_artifact
-from polylogue.lib.branch_type import BranchType
+from polylogue.lib.conversation.branch_type import BranchType
 from polylogue.lib.json import dumps as json_dumps
-from polylogue.lib.raw_payload_decode import RawPayloadEnvelope
+from polylogue.lib.raw_payload.decode import RawPayloadEnvelope
 from polylogue.lib.roles import Role
 from polylogue.logging import get_logger
 from polylogue.pipeline.materialization_runtime import (
@@ -53,7 +53,7 @@ from polylogue.types import (
 )
 
 if TYPE_CHECKING:
-    from polylogue.lib.action_events import ActionEvent
+    from polylogue.lib.action_event.action_events import ActionEvent
     from polylogue.schemas.packages import SchemaResolution
     from polylogue.schemas.runtime_registry import SchemaRegistry
     from polylogue.sources.parsers.base import ParsedConversation
@@ -395,7 +395,7 @@ def _build_stream_parse_plan(
     *,
     payload_provider: str | None,
 ) -> _ParsePlan | None:
-    from polylogue.lib.raw_payload_decode import _sample_jsonl_payload_with_detail
+    from polylogue.lib.raw_payload.decode import _sample_jsonl_payload_with_detail
     from polylogue.sources.dispatch import detect_provider
 
     stream_name = context.raw_record.source_path or context.raw_record.raw_id
@@ -951,7 +951,7 @@ def _build_action_event_tuples(
     Uses the lightweight action event builder that works from content blocks
     without needing full Pydantic MessageRecord hydration.
     """
-    from polylogue.lib.action_events import build_action_events, build_tool_calls_from_content_blocks
+    from polylogue.lib.action_event.action_events import build_action_events, build_tool_calls_from_content_blocks
     from polylogue.storage.hydrators import message_from_record
 
     provider = Provider.from_string(conversation.provider_name)

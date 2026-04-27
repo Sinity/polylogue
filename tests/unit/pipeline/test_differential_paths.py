@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.config import Config, get_config
-from polylogue.lib.raw_payload_decode import JSONValue
+from polylogue.lib.raw_payload.decode import JSONValue
 
 # ---------------------------------------------------------------------------
 # 1. Sample decoder vs streaming decoder (JSONL)
@@ -27,7 +27,7 @@ class TestDecoderConvergence:
     @staticmethod
     def _sample_decode(raw_bytes: bytes) -> tuple[list[JSONValue], int]:
         """Run the sample decoder path, return (valid_records, malformed_count)."""
-        from polylogue.lib.raw_payload_decode import _sample_jsonl_payload_with_detail
+        from polylogue.lib.raw_payload.decode import _sample_jsonl_payload_with_detail
 
         records, malformed_count, _error = _sample_jsonl_payload_with_detail(raw_bytes)
         return records, malformed_count

@@ -7,7 +7,7 @@ import uuid
 from collections.abc import Sequence
 from typing import Protocol, TypeAlias
 
-from polylogue.lib.raw_payload_decode import JSONValue
+from polylogue.lib.raw_payload.decode import JSONValue
 from polylogue.schemas.synthetic.models import SchemaRecord, SchemaValue
 from polylogue.schemas.synthetic.semantic_values import SemanticValueGenerator
 from polylogue.schemas.synthetic.showcase import ConversationTheme

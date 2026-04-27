@@ -13,7 +13,7 @@ import pytest
 from pydantic import TypeAdapter
 
 from polylogue.lib.json import JSONDocument, JSONValue, json_document
-from polylogue.lib.messages import MessageCollection
+from polylogue.lib.message.messages import MessageCollection
 from polylogue.lib.models import Message
 from polylogue.lib.provider_identity import (
     canonical_runtime_provider,
@@ -21,7 +21,7 @@ from polylogue.lib.provider_identity import (
 )
 from polylogue.lib.raw_payload import build_raw_payload_envelope
 from polylogue.lib.roles import Role
-from polylogue.lib.viewports import ToolCall, classify_tool
+from polylogue.lib.viewport.viewports import ToolCall, classify_tool
 from polylogue.schemas.code_detection import LANGUAGE_PATTERNS, detect_language, extract_code_block
 from polylogue.storage.hydrators import (
     attachment_from_record,

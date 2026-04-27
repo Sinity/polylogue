@@ -19,7 +19,7 @@ from typing import TypeAlias
 
 import pytest
 
-from polylogue.lib.viewports import ContentType
+from polylogue.lib.viewport.viewports import ContentType
 from polylogue.sources.providers.chatgpt import (
     ChatGPTAuthor,
     ChatGPTContent,
@@ -736,7 +736,7 @@ class TestGeminiExtractContentBlocksExtra:
     def test_extract_content_blocks(
         self, kwargs: RawRecordKwargs, expected_len: int | None, expected_type: str | None, test_id: str
     ) -> None:
-        from polylogue.lib.viewports import ContentType
+        from polylogue.lib.viewport.viewports import ContentType
 
         msg = GeminiMessage.model_validate(kwargs)
         blocks = msg.extract_content_blocks()
@@ -749,7 +749,7 @@ class TestGeminiExtractContentBlocksExtra:
             assert blocks[0].type == ContentType.THINKING
 
     def test_extract_content_blocks_drive_inline_and_youtube(self) -> None:
-        from polylogue.lib.viewports import ContentType
+        from polylogue.lib.viewport.viewports import ContentType
 
         msg = GeminiMessage(
             text="",
@@ -847,7 +847,7 @@ class TestClaudeAIChatMessageToContentBlocks:
         ],
     )
     def test_to_content_blocks(self, text: str, sender: str, test_id: str) -> None:
-        from polylogue.lib.viewports import ContentType
+        from polylogue.lib.viewport.viewports import ContentType
 
         msg = ClaudeAIChatMessage(uuid="1", text=text, sender=sender)
         blocks = msg.to_content_blocks()

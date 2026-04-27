@@ -16,7 +16,7 @@ import pytest
 
 from polylogue.lib.hashing import hash_payload, hash_text
 from polylogue.lib.json import JSONDocument
-from polylogue.lib.viewports import classify_tool
+from polylogue.lib.viewport.viewports import classify_tool
 from polylogue.pipeline.prepare import PrepareCache
 from polylogue.pipeline.semantic_metadata import extract_tool_metadata
 from polylogue.storage.action_events.rebuild_runtime import (

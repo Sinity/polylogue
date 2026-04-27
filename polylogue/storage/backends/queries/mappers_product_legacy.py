@@ -18,7 +18,7 @@ from polylogue.archive_product_models import (
     WorkEventInferencePayload,
 )
 from polylogue.lib.json import JSONDocument, JSONValue, json_document
-from polylogue.lib.session_payload_documents import SessionPhaseDocument, WorkEventDocument
+from polylogue.lib.session.documents import SessionPhaseDocument, WorkEventDocument
 from polylogue.storage.backends.queries.mappers_support import _parse_json, _row_get
 
 PayloadModel = TypeVar("PayloadModel", bound=BaseModel)

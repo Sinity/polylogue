@@ -195,7 +195,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         code_refs=(
             "polylogue.operations.archive.ArchiveSearchMixin.query_conversations",
             "polylogue.operations.archive.ArchiveSearchMixin.search",
-            "polylogue.lib.query_plan_execution",
+            "polylogue.lib.query.plan_execution",
         ),
         surfaces=("query", "facade", "mcp"),
         previewable=True,

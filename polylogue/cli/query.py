@@ -31,7 +31,7 @@ from polylogue.cli.query_feedback import emit_no_results
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.types import AppEnv
 from polylogue.lib.json import JSONDocument
-from polylogue.lib.query_spec import QuerySpecError
+from polylogue.lib.query.spec import QuerySpecError
 from polylogue.logging import get_logger
 from polylogue.pipeline.tail_overlay import TailOverlayUnavailableError, tail_overlay_services
 from polylogue.surfaces.payloads import ConversationListRowPayload
@@ -40,10 +40,10 @@ logger = get_logger(__name__)
 
 if TYPE_CHECKING:
     from polylogue.config import Config
-    from polylogue.lib.filters import ConversationFilter
+    from polylogue.lib.filter.filters import ConversationFilter
     from polylogue.lib.models import Conversation, ConversationSummary
-    from polylogue.lib.query_miss_diagnostics import QueryMissDiagnostics
-    from polylogue.lib.query_spec import ConversationQuerySpec
+    from polylogue.lib.query.miss_diagnostics import QueryMissDiagnostics
+    from polylogue.lib.query.spec import ConversationQuerySpec
     from polylogue.lib.search_hits import ConversationSearchHit
     from polylogue.protocols import (
         ConversationArchiveStatsStore,
@@ -302,7 +302,7 @@ async def _diagnose_query_miss(
     *,
     config: Config,
 ) -> QueryMissDiagnostics:
-    from polylogue.lib.query_miss_diagnostics import diagnose_query_miss
+    from polylogue.lib.query.miss_diagnostics import diagnose_query_miss
 
     return await diagnose_query_miss(repo, selection, config=config)
 
@@ -332,7 +332,7 @@ async def _search_hits_for_execution_plan(
     *,
     vector_provider: VectorProvider | None,
 ) -> list[ConversationSearchHit] | None:
-    from polylogue.lib.query_search_hits import plan_has_search_hit_evidence, search_hits_for_plan
+    from polylogue.lib.query.search_hits import plan_has_search_hit_evidence, search_hits_for_plan
 
     query_plan = plan.selection.to_plan(vector_provider=vector_provider)
     if not plan_has_search_hit_evidence(query_plan):

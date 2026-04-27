@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from polylogue.lib.raw_payload_decode import JSONValue, build_raw_payload_envelope, sample_jsonl_payload
+from polylogue.lib.raw_payload.decode import JSONValue, build_raw_payload_envelope, sample_jsonl_payload
 
 
 def _as_dict(sample: JSONValue) -> dict[str, JSONValue]:

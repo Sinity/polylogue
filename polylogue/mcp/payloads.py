@@ -33,9 +33,9 @@ from polylogue.surfaces.payloads import (
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from polylogue.lib.conversation.neighbor_candidates import ConversationNeighborCandidate
     from polylogue.lib.models import Conversation
-    from polylogue.lib.neighbor_candidates import ConversationNeighborCandidate
-    from polylogue.lib.query_miss_diagnostics import QueryMissDiagnostics, QueryMissReason
+    from polylogue.lib.query.miss_diagnostics import QueryMissDiagnostics, QueryMissReason
     from polylogue.lib.search_hits import ConversationSearchHit
     from polylogue.lib.stats import ArchiveStats
     from polylogue.readiness import ReadinessCheck, ReadinessReport

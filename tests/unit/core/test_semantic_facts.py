@@ -7,20 +7,21 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.lib import session_profile_runtime, work_event_extraction
-from polylogue.lib.messages import MessageCollection
+from polylogue.lib.conversation import extraction as work_event_extraction
+from polylogue.lib.message.messages import MessageCollection
 from polylogue.lib.models import Conversation as ConversationModel
 from polylogue.lib.models import ConversationSummary
-from polylogue.lib.phase_extraction import SessionPhase
-from polylogue.lib.phase_extraction import extract_phases as phase_extract_phases
+from polylogue.lib.phase.extraction import SessionPhase
+from polylogue.lib.phase.extraction import extract_phases as phase_extract_phases
 from polylogue.lib.pricing import harmonize_session_cost
-from polylogue.lib.semantic_facts import (
+from polylogue.lib.semantic.facts import (
     ConversationSemanticFacts,
     build_conversation_semantic_facts,
     build_mcp_summary_semantic_facts,
     build_projection_semantic_facts,
 )
-from polylogue.lib.session_profile import build_session_profile
+from polylogue.lib.session import runtime as session_profile_runtime
+from polylogue.lib.session.session_profile import build_session_profile
 from polylogue.storage.archive_views import ConversationRenderProjection
 from polylogue.types import ConversationId, Provider
 from tests.infra.builders import make_conv, make_msg

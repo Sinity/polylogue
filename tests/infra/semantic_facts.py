@@ -13,7 +13,7 @@ from dataclasses import dataclass
 
 from polylogue.lib.json import JSONDocument, json_document_list
 from polylogue.lib.models import Conversation
-from polylogue.lib.semantic_facts import build_conversation_semantic_facts
+from polylogue.lib.semantic.facts import build_conversation_semantic_facts
 from polylogue.storage.runtime import AttachmentRecord, ConversationRecord, MessageRecord
 
 

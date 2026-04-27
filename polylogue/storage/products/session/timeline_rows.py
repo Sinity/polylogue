@@ -10,11 +10,11 @@ from polylogue.archive_product_models import (
     WorkEventEvidencePayload,
     WorkEventInferencePayload,
 )
+from polylogue.lib.conversation.extraction import WorkEvent
 from polylogue.lib.hashing import hash_text
-from polylogue.lib.phase_extraction import SessionPhase
-from polylogue.lib.session_payload_documents import WorkEventDocument
-from polylogue.lib.session_profile import SessionProfile
-from polylogue.lib.work_event_extraction import WorkEvent
+from polylogue.lib.phase.extraction import SessionPhase
+from polylogue.lib.session.documents import WorkEventDocument
+from polylogue.lib.session.session_profile import SessionProfile
 from polylogue.storage.products.session.profiles import (
     event_fallback,
     event_summary,

@@ -9,9 +9,9 @@ import pytest
 
 from polylogue.archive_product_models import DaySessionSummaryPayload
 from polylogue.archive_product_summaries import aggregate_day_session_summary_products
-from polylogue.lib.action_events import ActionEvent
-from polylogue.lib.attribution import extract_attribution, extract_attribution_from_action_events
-from polylogue.lib.messages import MessageCollection
+from polylogue.lib.action_event.action_events import ActionEvent
+from polylogue.lib.conversation.attribution import extract_attribution, extract_attribution_from_action_events
+from polylogue.lib.message.messages import MessageCollection
 from polylogue.lib.models import Conversation, Message
 from polylogue.lib.repo_identity import (
     normalize_repo_name,
@@ -20,9 +20,9 @@ from polylogue.lib.repo_identity import (
     normalize_repo_paths,
 )
 from polylogue.lib.roles import Role
-from polylogue.lib.session_profile import SessionProfile, build_session_profile
-from polylogue.lib.session_summaries import summarize_day
-from polylogue.lib.viewports import ToolCategory
+from polylogue.lib.session.session_profile import SessionProfile, build_session_profile
+from polylogue.lib.session.session_summaries import summarize_day
+from polylogue.lib.viewport.viewports import ToolCategory
 from polylogue.storage.runtime import DaySessionSummaryRecord
 from polylogue.types import ConversationId, Provider
 

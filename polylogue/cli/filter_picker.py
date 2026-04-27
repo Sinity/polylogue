@@ -4,7 +4,7 @@ import sys
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from polylogue.lib.filters import ConversationFilter
+    from polylogue.lib.filter.filters import ConversationFilter
     from polylogue.lib.models import Conversation
 
 

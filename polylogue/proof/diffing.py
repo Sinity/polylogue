@@ -508,7 +508,7 @@ def _classify_path(path: str) -> ChangeKind:
         return "parser"
     if path.startswith("polylogue/schemas/providers/"):
         return "schema.annotation"
-    if path == "polylogue/lib/provider_capabilities.py":
+    if path == "polylogue/lib/provider/capabilities.py":
         return "provider.capability"
     if path.startswith("polylogue/cli/") or path == "polylogue/cli/command_inventory.py":
         return "command"

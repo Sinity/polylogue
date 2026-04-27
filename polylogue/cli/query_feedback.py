@@ -8,8 +8,8 @@ from polylogue.cli.machine_errors import error_no_results
 
 if TYPE_CHECKING:
     from polylogue.cli.types import AppEnv
-    from polylogue.lib.query_miss_diagnostics import QueryMissDiagnostics
-    from polylogue.lib.query_spec import ConversationQuerySpec
+    from polylogue.lib.query.miss_diagnostics import QueryMissDiagnostics
+    from polylogue.lib.query.spec import ConversationQuerySpec
 
 
 def emit_no_results(
