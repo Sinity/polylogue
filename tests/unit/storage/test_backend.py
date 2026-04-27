@@ -218,6 +218,16 @@ def test_schema_extension_plan_expands_catalog_descriptors() -> None:
         "ALTER TABLE session_profiles ADD COLUMN evidence_search_text" in statement for statement in plan.statements
     )
     assert any("UPDATE session_profiles" in statement for statement in plan.statements)
+    # Partial indexes scoping each backfill UPDATE to unbackfilled rows.
+    assert any("idx_session_profiles_evidence_search_text_unbackfilled" in statement for statement in plan.statements)
+    assert any("idx_session_profiles_inference_search_text_unbackfilled" in statement for statement in plan.statements)
+    assert any("idx_session_profiles_enrichment_search_text_unbackfilled" in statement for statement in plan.statements)
+    # Indexes precede the matching UPDATE so the optimizer can use them on first run.
+    statements = list(plan.statements)
+    for column in ("evidence_search_text", "inference_search_text", "enrichment_search_text"):
+        index_position = next(i for i, s in enumerate(statements) if f"idx_session_profiles_{column}_unbackfilled" in s)
+        update_position = next(i for i, s in enumerate(statements) if "UPDATE session_profiles" in s and column in s)
+        assert index_position < update_position, f"{column}: index must be created before its backfill UPDATE"
     assert len(plan.scripts) == 5
 
 
