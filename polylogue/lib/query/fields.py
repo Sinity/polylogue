@@ -228,6 +228,18 @@ QUERY_FIELD_DESCRIPTORS: tuple[QueryFieldDescriptor, ...] = (
         blocks_simple_message_hit=True,
     ),
     QueryFieldDescriptor(
+        name="cwd_prefix",
+        spec_attr="cwd_prefix",
+        plan_attr="cwd_prefix",
+        spec_active=_not_none,
+        plan_active=_not_none,
+        spec_description=_label("cwd-prefix"),
+        plan_description=_label("cwd-prefix"),
+        record_attr="cwd_prefix",
+        sql_param="cwd_prefix",
+        blocks_simple_message_hit=True,
+    ),
+    QueryFieldDescriptor(
         name="action_terms",
         spec_attr="action_terms",
         plan_attr="action_terms",

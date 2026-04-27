@@ -69,6 +69,7 @@ def cli(
     exclude_tag: str | None,
     title: str | None,
     path_terms: tuple[str, ...],
+    cwd_prefix: str | None,
     action: tuple[str, ...],
     exclude_action: tuple[str, ...],
     action_sequence: str | None,

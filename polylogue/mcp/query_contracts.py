@@ -39,6 +39,7 @@ class MCPConversationQueryRequest:
     tag: str | None = None
     title: str | None = None
     path: str | None = None
+    cwd_prefix: str | None = None
     action: str | None = None
     exclude_action: str | None = None
     action_sequence: str | None = None
@@ -62,6 +63,7 @@ class MCPConversationQueryRequest:
             tag=self.tag,
             title=self.title,
             path=self.path,
+            cwd_prefix=self.cwd_prefix,
             action=self.action,
             exclude_action=self.exclude_action,
             action_sequence=self.action_sequence,

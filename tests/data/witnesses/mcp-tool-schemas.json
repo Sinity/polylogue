@@ -107,14 +107,14 @@
     "name": "delete_conversation",
     "parameters": {
       "properties": {
-        "conversation_id": {
-          "title": "Conversation Id",
-          "type": "string"
-        },
         "confirm": {
           "default": false,
           "title": "Confirm",
           "type": "boolean"
+        },
+        "conversation_id": {
+          "title": "Conversation Id",
+          "type": "string"
         }
       },
       "required": [
@@ -149,18 +149,23 @@
     "name": "export_conversation",
     "parameters": {
       "properties": {
-        "id": {
-          "title": "Id",
-          "type": "string"
-        },
         "format": {
           "default": "markdown",
           "title": "Format",
           "type": "string"
         },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
         "no_code_blocks": {
           "default": false,
           "title": "No Code Blocks",
+          "type": "boolean"
+        },
+        "no_file_reads": {
+          "default": false,
+          "title": "No File Reads",
           "type": "boolean"
         },
         "no_tool_calls": {
@@ -171,11 +176,6 @@
         "no_tool_outputs": {
           "default": false,
           "title": "No Tool Outputs",
-          "type": "boolean"
-        },
-        "no_file_reads": {
-          "default": false,
-          "title": "No File Reads",
           "type": "boolean"
         },
         "prose_only": {
@@ -195,100 +195,6 @@
     "name": "export_query_results",
     "parameters": {
       "properties": {
-        "query": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Query"
-        },
-        "format": {
-          "default": "markdown",
-          "title": "Format",
-          "type": "string"
-        },
-        "limit": {
-          "default": 10,
-          "title": "Limit",
-          "type": "integer"
-        },
-        "retrieval_lane": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Retrieval Lane"
-        },
-        "provider": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Provider"
-        },
-        "since": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Since"
-        },
-        "tag": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Tag"
-        },
-        "title": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Title"
-        },
-        "path": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Path"
-        },
         "action": {
           "anyOf": [
             {
@@ -300,18 +206,6 @@
           ],
           "default": null,
           "title": "Action"
-        },
-        "exclude_action": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Exclude Action"
         },
         "action_sequence": {
           "anyOf": [
@@ -337,7 +231,7 @@
           "default": null,
           "title": "Action Text"
         },
-        "tool": {
+        "exclude_action": {
           "anyOf": [
             {
               "type": "string"
@@ -347,7 +241,7 @@
             }
           ],
           "default": null,
-          "title": "Tool"
+          "title": "Exclude Action"
         },
         "exclude_tool": {
           "anyOf": [
@@ -361,27 +255,25 @@
           "default": null,
           "title": "Exclude Tool"
         },
-        "sort": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Sort"
+        "format": {
+          "default": "markdown",
+          "title": "Format",
+          "type": "string"
+        },
+        "has_thinking": {
+          "default": false,
+          "title": "Has Thinking",
+          "type": "boolean"
         },
         "has_tool_use": {
           "default": false,
           "title": "Has Tool Use",
           "type": "boolean"
         },
-        "has_thinking": {
-          "default": false,
-          "title": "Has Thinking",
-          "type": "boolean"
+        "limit": {
+          "default": 10,
+          "title": "Limit",
+          "type": "integer"
         },
         "min_messages": {
           "anyOf": [
@@ -412,6 +304,11 @@
           "title": "No Code Blocks",
           "type": "boolean"
         },
+        "no_file_reads": {
+          "default": false,
+          "title": "No File Reads",
+          "type": "boolean"
+        },
         "no_tool_calls": {
           "default": false,
           "title": "No Tool Calls",
@@ -422,15 +319,118 @@
           "title": "No Tool Outputs",
           "type": "boolean"
         },
-        "no_file_reads": {
-          "default": false,
-          "title": "No File Reads",
-          "type": "boolean"
+        "path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Path"
         },
         "prose_only": {
           "default": false,
           "title": "Prose Only",
           "type": "boolean"
+        },
+        "provider": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Provider"
+        },
+        "query": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Query"
+        },
+        "retrieval_lane": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Retrieval Lane"
+        },
+        "since": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Since"
+        },
+        "sort": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sort"
+        },
+        "tag": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tag"
+        },
+        "title": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Title"
+        },
+        "tool": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tool"
         }
       },
       "title": "export_query_resultsArguments",
@@ -450,6 +450,11 @@
           "title": "No Code Blocks",
           "type": "boolean"
         },
+        "no_file_reads": {
+          "default": false,
+          "title": "No File Reads",
+          "type": "boolean"
+        },
         "no_tool_calls": {
           "default": false,
           "title": "No Tool Calls",
@@ -458,11 +463,6 @@
         "no_tool_outputs": {
           "default": false,
           "title": "No Tool Outputs",
-          "type": "boolean"
-        },
-        "no_file_reads": {
-          "default": false,
-          "title": "No File Reads",
           "type": "boolean"
         },
         "prose_only": {
@@ -549,83 +549,6 @@
     "name": "list_conversations",
     "parameters": {
       "properties": {
-        "limit": {
-          "default": 10,
-          "title": "Limit",
-          "type": "integer"
-        },
-        "retrieval_lane": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Retrieval Lane"
-        },
-        "provider": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Provider"
-        },
-        "since": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Since"
-        },
-        "tag": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Tag"
-        },
-        "title": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Title"
-        },
-        "path": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Path"
-        },
         "action": {
           "anyOf": [
             {
@@ -637,18 +560,6 @@
           ],
           "default": null,
           "title": "Action"
-        },
-        "exclude_action": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Exclude Action"
         },
         "action_sequence": {
           "anyOf": [
@@ -674,7 +585,7 @@
           "default": null,
           "title": "Action Text"
         },
-        "tool": {
+        "cwd_prefix": {
           "anyOf": [
             {
               "type": "string"
@@ -684,7 +595,19 @@
             }
           ],
           "default": null,
-          "title": "Tool"
+          "title": "Cwd Prefix"
+        },
+        "exclude_action": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Exclude Action"
         },
         "exclude_tool": {
           "anyOf": [
@@ -698,27 +621,20 @@
           "default": null,
           "title": "Exclude Tool"
         },
-        "sort": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Sort"
+        "has_thinking": {
+          "default": false,
+          "title": "Has Thinking",
+          "type": "boolean"
         },
         "has_tool_use": {
           "default": false,
           "title": "Has Tool Use",
           "type": "boolean"
         },
-        "has_thinking": {
-          "default": false,
-          "title": "Has Thinking",
-          "type": "boolean"
+        "limit": {
+          "default": 10,
+          "title": "Limit",
+          "type": "integer"
         },
         "min_messages": {
           "anyOf": [
@@ -743,6 +659,102 @@
           ],
           "default": null,
           "title": "Min Words"
+        },
+        "path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Path"
+        },
+        "provider": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Provider"
+        },
+        "retrieval_lane": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Retrieval Lane"
+        },
+        "since": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Since"
+        },
+        "sort": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sort"
+        },
+        "tag": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tag"
+        },
+        "title": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Title"
+        },
+        "tool": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tool"
         }
       },
       "title": "list_conversationsArguments",
@@ -786,17 +798,10 @@
           "default": null,
           "title": "Id"
         },
-        "query": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Query"
+        "limit": {
+          "default": 10,
+          "title": "Limit",
+          "type": "integer"
         },
         "provider": {
           "anyOf": [
@@ -810,10 +815,17 @@
           "default": null,
           "title": "Provider"
         },
-        "limit": {
-          "default": 10,
-          "title": "Limit",
-          "type": "integer"
+        "query": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Query"
         },
         "window_hours": {
           "default": 24,
@@ -906,63 +918,6 @@
     "name": "search",
     "parameters": {
       "properties": {
-        "query": {
-          "title": "Query",
-          "type": "string"
-        },
-        "limit": {
-          "default": 10,
-          "title": "Limit",
-          "type": "integer"
-        },
-        "retrieval_lane": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Retrieval Lane"
-        },
-        "provider": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Provider"
-        },
-        "since": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Since"
-        },
-        "path": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Path"
-        },
         "action": {
           "anyOf": [
             {
@@ -974,18 +929,6 @@
           ],
           "default": null,
           "title": "Action"
-        },
-        "exclude_action": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Exclude Action"
         },
         "action_sequence": {
           "anyOf": [
@@ -1011,7 +954,7 @@
           "default": null,
           "title": "Action Text"
         },
-        "tool": {
+        "cwd_prefix": {
           "anyOf": [
             {
               "type": "string"
@@ -1021,7 +964,19 @@
             }
           ],
           "default": null,
-          "title": "Tool"
+          "title": "Cwd Prefix"
+        },
+        "exclude_action": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Exclude Action"
         },
         "exclude_tool": {
           "anyOf": [
@@ -1035,15 +990,20 @@
           "default": null,
           "title": "Exclude Tool"
         },
+        "has_thinking": {
+          "default": false,
+          "title": "Has Thinking",
+          "type": "boolean"
+        },
         "has_tool_use": {
           "default": false,
           "title": "Has Tool Use",
           "type": "boolean"
         },
-        "has_thinking": {
-          "default": false,
-          "title": "Has Thinking",
-          "type": "boolean"
+        "limit": {
+          "default": 10,
+          "title": "Limit",
+          "type": "integer"
         },
         "min_messages": {
           "anyOf": [
@@ -1068,6 +1028,70 @@
           ],
           "default": null,
           "title": "Min Words"
+        },
+        "path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Path"
+        },
+        "provider": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Provider"
+        },
+        "query": {
+          "title": "Query",
+          "type": "string"
+        },
+        "retrieval_lane": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Retrieval Lane"
+        },
+        "since": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Since"
+        },
+        "tool": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tool"
         }
       },
       "required": [

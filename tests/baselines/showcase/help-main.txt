@@ -48,6 +48,8 @@ Options:
   --title TEXT                    Title contains
   --path TEXT                     Touched path contains substring (repeatable
                                   = AND)
+  --cwd-prefix TEXT               Filter conversations whose recorded working
+                                  directory starts with this prefix
   --action [file_read|file_write|file_edit|shell|git|search|web|agent|subagent|other|none]
                                   Require semantic action category (repeatable
                                   = AND)
