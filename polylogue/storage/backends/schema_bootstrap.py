@@ -370,6 +370,39 @@ _SCHEMA_EXTENSION_DESCRIPTORS: tuple[SchemaExtensionDescriptor, ...] = (
             "TEXT NOT NULL DEFAULT 'heuristic_session_semantics'"
         ),
     ),
+    # Partial indexes scoped to the gating WHERE clause of each backfill below.
+    # SQLite uses a partial index when the query's WHERE matches the index's WHERE
+    # exactly, so the backfill UPDATE becomes an index lookup. Once a row is
+    # backfilled the gating condition no longer holds and the row leaves the
+    # index, so subsequent connection bootstraps scan an empty index instead of
+    # the full session_profiles table.
+    SchemaIndexExtensionDescriptor(
+        table_name="session_profiles",
+        index_name="idx_session_profiles_evidence_search_text_unbackfilled",
+        ddl=(
+            "CREATE INDEX IF NOT EXISTS idx_session_profiles_evidence_search_text_unbackfilled "
+            "ON session_profiles(conversation_id) "
+            "WHERE TRIM(COALESCE(evidence_search_text, '')) = ''"
+        ),
+    ),
+    SchemaIndexExtensionDescriptor(
+        table_name="session_profiles",
+        index_name="idx_session_profiles_inference_search_text_unbackfilled",
+        ddl=(
+            "CREATE INDEX IF NOT EXISTS idx_session_profiles_inference_search_text_unbackfilled "
+            "ON session_profiles(conversation_id) "
+            "WHERE TRIM(COALESCE(inference_search_text, '')) = ''"
+        ),
+    ),
+    SchemaIndexExtensionDescriptor(
+        table_name="session_profiles",
+        index_name="idx_session_profiles_enrichment_search_text_unbackfilled",
+        ddl=(
+            "CREATE INDEX IF NOT EXISTS idx_session_profiles_enrichment_search_text_unbackfilled "
+            "ON session_profiles(conversation_id) "
+            "WHERE TRIM(COALESCE(enrichment_search_text, '')) = ''"
+        ),
+    ),
     SchemaBackfillDescriptor(
         table_name="session_profiles",
         ddl="""
