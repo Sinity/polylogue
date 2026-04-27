@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import unicodedata
 from hashlib import sha256
 from pathlib import Path
 
@@ -11,10 +12,16 @@ _SAFE_PATH_COMPONENT_RE = re.compile(r"[^A-Za-z0-9._-]")
 
 
 def safe_path_component(raw: object | None, *, fallback: str = "item") -> str:
-    """Return a filesystem-safe path component derived from raw input."""
+    """Return a filesystem-safe path component derived from raw input.
+
+    Input is NFC-normalized before sanitization so that visually-confusable
+    Unicode codepoints (e.g., NFKC-equivalent or compatibility-decomposed
+    forms) collapse to a stable canonical form before the ASCII allowlist
+    rewrites everything else to underscore-plus-digest.
+    """
     if raw is None:
         raw = ""
-    value = str(raw).strip()
+    value = unicodedata.normalize("NFC", str(raw)).strip()
     if not value:
         value = fallback
     has_sep = any(sep in value for sep in (os.sep, os.altsep) if sep)
