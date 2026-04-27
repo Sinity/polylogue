@@ -24,7 +24,7 @@ from polylogue.archive_product_models import (
     WorkThreadPayload,
 )
 from polylogue.lib.pricing import CostEstimatePayload, CostUsagePayload
-from polylogue.lib.session_profile import SessionProfile
+from polylogue.lib.session.session_profile import SessionProfile
 from polylogue.storage.repair import ArchiveDebtStatus
 from polylogue.storage.runtime import (
     SESSION_PRODUCT_MATERIALIZER_VERSION,

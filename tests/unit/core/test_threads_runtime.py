@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from polylogue.lib.session_profile import SessionProfile
-from polylogue.lib.threads import WorkThread, build_session_threads
+from polylogue.lib.conversation.threads import WorkThread, build_session_threads
+from polylogue.lib.session.session_profile import SessionProfile
 
 
 def _profile(

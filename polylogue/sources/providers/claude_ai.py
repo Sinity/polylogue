@@ -13,7 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from polylogue.lib.roles import Role
 from polylogue.lib.timestamps import parse_timestamp
-from polylogue.lib.viewports import ContentBlock, ContentType, MessageMeta, ReasoningTrace, ToolCall
+from polylogue.lib.viewport.viewports import ContentBlock, ContentType, MessageMeta, ReasoningTrace, ToolCall
 from polylogue.types import Provider
 
 ClaudeAIObject: TypeAlias = dict[str, object]

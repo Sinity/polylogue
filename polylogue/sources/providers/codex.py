@@ -17,10 +17,10 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict
 
 from polylogue.lib.json import JSONDocument, JSONDocumentList, json_document, json_document_list
-from polylogue.lib.provider_semantics import extract_codex_text
+from polylogue.lib.provider.semantics import extract_codex_text
 from polylogue.lib.roles import Role, normalize_role
 from polylogue.lib.timestamps import parse_timestamp
-from polylogue.lib.viewports import (
+from polylogue.lib.viewport.viewports import (
     ContentBlock,
     ContentType,
     MessageMeta,

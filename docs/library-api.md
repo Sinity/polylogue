@@ -14,7 +14,7 @@ The public Python surface is split into:
 ## Basic Usage
 
 ```python
-from polylogue.lib.filters import ConversationFilter
+from polylogue.lib.filter.filters import ConversationFilter
 from polylogue.storage.repository import ConversationRepository
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 
@@ -36,8 +36,8 @@ Semantic-analysis/reporting helpers are still public, but they are no longer
 re-exported from package roots. Import them from their actual modules:
 
 ```python
-from polylogue.lib.session_profile import build_session_profile, infer_auto_tags
-from polylogue.lib.threads import build_session_threads
+from polylogue.lib.session.session_profile import build_session_profile, infer_auto_tags
+from polylogue.lib.conversation.threads import build_session_threads
 ```
 
 Durable archive products are public too:

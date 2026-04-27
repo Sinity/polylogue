@@ -11,7 +11,7 @@ from polylogue.paths.sanitize import safe_path_component
 from polylogue.types import SearchProvider
 
 if TYPE_CHECKING:
-    from polylogue.lib.conversation_models import ConversationSummary
+    from polylogue.lib.conversation.models import ConversationSummary
 
 logger = get_logger(__name__)
 

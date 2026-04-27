@@ -18,12 +18,12 @@ from polylogue.archive_products import (
     WorkThreadProduct,
     WorkThreadProductQuery,
 )
-from polylogue.lib.action_events import build_tool_calls_from_content_blocks
-from polylogue.lib.conversation_models import Conversation
+from polylogue.lib.action_event.action_events import build_tool_calls_from_content_blocks
+from polylogue.lib.conversation.models import Conversation
 from polylogue.storage.search.query_support import normalize_fts5_query
 
 if TYPE_CHECKING:
-    from polylogue.lib.message_models import Message
+    from polylogue.lib.message.models import Message
 
 
 class ResumeLastMessage(ArchiveProductModel):

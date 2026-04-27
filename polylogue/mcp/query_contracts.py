@@ -5,8 +5,8 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
-from polylogue.lib.content_projection import ContentProjectionSpec
-from polylogue.lib.query_spec import ConversationQuerySpec
+from polylogue.lib.query.spec import ConversationQuerySpec
+from polylogue.lib.semantic.content_projection import ContentProjectionSpec
 
 _QUERY_PARAM_ALIASES = {
     "has_tool_use": "filter_has_tool_use",

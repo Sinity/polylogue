@@ -68,7 +68,7 @@ def test_build_document_includes_live_registry_sections() -> None:
                 MutationCampaignEntry(
                     name="filters",
                     description="Filter semantics.",
-                    paths_to_mutate=("polylogue/lib/filters.py",),
+                    paths_to_mutate=("polylogue/lib/filter/filters.py",),
                     tests=("tests/unit/core/test_filters.py",),
                 ),
             ),

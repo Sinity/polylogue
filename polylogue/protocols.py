@@ -26,12 +26,12 @@ from polylogue.types import Provider, ValidationMode, ValidationStatus
 if TYPE_CHECKING:
     import aiosqlite
 
-    from polylogue.lib.action_events import ActionEvent
-    from polylogue.lib.conversation_models import Conversation, ConversationSummary
-    from polylogue.lib.message_models import Message
-    from polylogue.lib.message_roles import MessageRoleFilter
+    from polylogue.lib.action_event.action_events import ActionEvent
+    from polylogue.lib.conversation.models import Conversation, ConversationSummary
+    from polylogue.lib.message.models import Message
+    from polylogue.lib.message.roles import MessageRoleFilter
     from polylogue.lib.search_hits import ConversationSearchHit
-    from polylogue.lib.session_profile import SessionProfile
+    from polylogue.lib.session.session_profile import SessionProfile
     from polylogue.lib.stats import ArchiveStats
     from polylogue.storage.action_events.artifacts import ActionEventArtifactState
     from polylogue.storage.archive_views import ConversationRenderProjection

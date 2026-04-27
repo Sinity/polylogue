@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from polylogue.lib.conversation_models import Conversation
+from polylogue.lib.conversation.models import Conversation
 from polylogue.storage.query_models import ConversationRecordQuery
 from polylogue.storage.runtime import ConversationRecord
 

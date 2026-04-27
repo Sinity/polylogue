@@ -13,12 +13,12 @@ from polylogue.cli import query_output, query_semantic, query_stats
 from polylogue.cli.query_actions import apply_modifiers, apply_transform, delete_conversations, resolve_stream_target
 from polylogue.cli.query_contracts import QueryDeliveryTarget, QueryMutationSpec, QueryOutputSpec
 from polylogue.cli.types import AppEnv
-from polylogue.lib.action_events import ActionEvent
+from polylogue.lib.action_event.action_events import ActionEvent
 from polylogue.lib.models import ConversationSummary
-from polylogue.lib.query_spec import ConversationQuerySpec
+from polylogue.lib.query.spec import ConversationQuerySpec
 from polylogue.lib.roles import Role
 from polylogue.lib.search_hits import ConversationSearchHit
-from polylogue.lib.viewport_enums import ToolCategory
+from polylogue.lib.viewport.enums import ToolCategory
 from polylogue.storage.action_events.artifacts import ActionEventArtifactState
 from polylogue.types import ConversationId, Provider
 from tests.infra.builders import make_conv, make_msg
@@ -382,7 +382,7 @@ async def test_query_stats_helpers_cover_structured_sql_and_profile_paths() -> N
         repo_names=("repo-a", "repo-b"), auto_tags=("kind:implementation",), work_events=[1], message_count=3
     )
     with (
-        patch("polylogue.lib.session_profile.build_session_profile", return_value=profile),
+        patch("polylogue.lib.session.session_profile.build_session_profile", return_value=profile),
         patch("polylogue.cli.query_stats._emit_grouped_stats_table") as emit_table,
         patch("polylogue.cli.query_stats.emit_no_results"),
     ):

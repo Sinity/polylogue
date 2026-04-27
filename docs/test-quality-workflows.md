@@ -222,10 +222,10 @@ Durable mutation ledgers live under `.local/mutation-campaigns/`; workflow polic
 
 | Campaign | Mutates | Tests | Description |
 | --- | --- | --- | --- |
-| `cli-query` | `polylogue/cli/query.py`<br>`polylogue/lib/query_plan.py`<br>`polylogue/cli/query_actions.py`<br>`polylogue/cli/query_output.py` | `tests/unit/cli/test_query_exec.py`<br>`tests/unit/cli/test_query_exec_laws.py`<br>`tests/unit/cli/test_query_fmt.py` | Query command planning, action routing, and summary output contracts |
+| `cli-query` | `polylogue/cli/query.py`<br>`polylogue/lib/query/plan.py`<br>`polylogue/cli/query_actions.py`<br>`polylogue/cli/query_output.py` | `tests/unit/cli/test_query_exec.py`<br>`tests/unit/cli/test_query_exec_laws.py`<br>`tests/unit/cli/test_query_fmt.py` | Query command planning, action routing, and summary output contracts |
 | `cli-run` | `polylogue/cli/commands/run.py` | `tests/unit/cli/test_run.py`<br>`tests/unit/cli/test_run_int.py`<br>`tests/unit/cli/test_run_laws.py` | Run command execution, display, and watch contracts |
 | `drive-client` | `polylogue/sources/drive_source.py`<br>`polylogue/sources/drive_gateway.py`<br>`polylogue/sources/drive_auth.py`<br>`polylogue/sources/drive.py` | `tests/unit/sources/test_drive_source_client.py`<br>`tests/unit/sources/test_drive_gateway.py`<br>`tests/unit/sources/test_drive_auth.py`<br>`tests/unit/sources/test_drive_ops.py` | Drive auth, transport, JSON payload parsing, and ingest attachment contracts |
-| `filters` | `polylogue/lib/filters.py` | `tests/unit/core/test_filters_schemas.py`<br>`tests/unit/core/test_filters_props.py` | ConversationFilter semantics and summary/picker contracts |
+| `filters` | `polylogue/lib/filter/filters.py` | `tests/unit/core/test_filters_schemas.py`<br>`tests/unit/core/test_filters_props.py` | ConversationFilter semantics and summary/picker contracts |
 | `fts5` | `polylogue/storage/search_providers/fts5.py` | `tests/unit/storage/test_fts5.py` | FTS5 query escaping and conversation search semantics |
 | `hybrid` | `polylogue/storage/search_providers/hybrid.py` | `tests/unit/storage/test_hybrid.py`<br>`tests/unit/storage/test_hybrid_laws.py` | Hybrid search fusion and ranked-conversation resolution |
 | `json` | `polylogue/lib/json.py` | `tests/unit/core/test_json.py` | JSON serialization and parser laws |

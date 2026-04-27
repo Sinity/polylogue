@@ -4,13 +4,13 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from polylogue.lib.query_fields import (
+from polylogue.lib.query.fields import (
     QUERY_FIELD_DESCRIPTORS,
     active_plan_field_names,
     storage_filters_require_stats_join,
 )
-from polylogue.lib.query_plan import ConversationQueryPlan
-from polylogue.lib.query_spec import ConversationQuerySpec
+from polylogue.lib.query.plan import ConversationQueryPlan
+from polylogue.lib.query.spec import ConversationQuerySpec
 from polylogue.storage.backends.queries.filter_builder import _needs_stats_join
 from polylogue.types import Provider
 

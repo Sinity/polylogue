@@ -20,7 +20,7 @@ from hypothesis import HealthCheck, given, settings
 from typing_extensions import TypedDict
 
 from polylogue.config import Source
-from polylogue.lib.raw_payload_decode import JSONValue
+from polylogue.lib.raw_payload.decode import JSONValue
 from polylogue.lib.roles import Role
 from polylogue.pipeline.services.acquisition import AcquisitionService
 from polylogue.pipeline.services.parsing import ParseResult, ParsingService

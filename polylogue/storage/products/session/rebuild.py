@@ -9,9 +9,9 @@ from dataclasses import dataclass
 
 import aiosqlite
 
-from polylogue.lib.branch_type import BranchType
-from polylogue.lib.conversation_models import Conversation
-from polylogue.lib.session_profile import SessionProfile, build_session_analysis, build_session_profile
+from polylogue.lib.conversation.branch_type import BranchType
+from polylogue.lib.conversation.models import Conversation
+from polylogue.lib.session.session_profile import SessionProfile, build_session_analysis, build_session_profile
 from polylogue.protocols import ProgressCallback
 from polylogue.storage.action_events.rows import attach_blocks_to_messages
 from polylogue.storage.backends.queries.attachments import get_attachments_batch

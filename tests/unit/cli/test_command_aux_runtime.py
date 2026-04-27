@@ -23,9 +23,13 @@ from polylogue.cli.commands.neighbors import (
 )
 from polylogue.cli.commands.tags import tags_command
 from polylogue.cli.filter_picker import _pick_index, pick_filter
-from polylogue.lib.filters import ConversationFilter
+from polylogue.lib.conversation.neighbor_candidates import (
+    ConversationNeighborCandidate,
+    NeighborDiscoveryError,
+    NeighborReason,
+)
+from polylogue.lib.filter.filters import ConversationFilter
 from polylogue.lib.models import ConversationSummary
-from polylogue.lib.neighbor_candidates import ConversationNeighborCandidate, NeighborDiscoveryError, NeighborReason
 from polylogue.types import ConversationId, Provider
 
 

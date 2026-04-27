@@ -11,8 +11,8 @@ import pytest
 
 from polylogue.config import Config
 from polylogue.lib.outcomes import OutcomeCheck, OutcomeStatus
-from polylogue.lib.query_miss_diagnostics import QueryMissDiagnostics, diagnose_query_miss
-from polylogue.lib.query_spec import ConversationQuerySpec
+from polylogue.lib.query.miss_diagnostics import QueryMissDiagnostics, diagnose_query_miss
+from polylogue.lib.query.spec import ConversationQuerySpec
 from polylogue.lib.stats import ArchiveStats
 from polylogue.readiness import ReadinessReport
 from polylogue.storage.action_events.artifacts import ActionEventArtifactState
@@ -97,7 +97,7 @@ async def test_diagnose_query_miss_reports_degraded_message_index() -> None:
         ]
     )
 
-    with patch("polylogue.lib.query_miss_diagnostics.get_readiness", return_value=report) as mock_readiness:
+    with patch("polylogue.lib.query.miss_diagnostics.get_readiness", return_value=report) as mock_readiness:
         diagnostics = await diagnose_query_miss(
             repo,
             ConversationQuerySpec(query_terms=("needle",)),

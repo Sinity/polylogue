@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from polylogue.lib.session_profile import SessionProfile
+from polylogue.lib.session.session_profile import SessionProfile
 from polylogue.storage.products.product_read_support import (
     hydrate_mapping,
     hydrate_optional,

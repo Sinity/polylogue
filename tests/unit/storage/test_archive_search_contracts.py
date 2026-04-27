@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.lib.conversation_models import Conversation
+from polylogue.lib.conversation.models import Conversation
 from polylogue.lib.json import JSONDocument
-from polylogue.lib.messages import MessageCollection
+from polylogue.lib.message.messages import MessageCollection
 from polylogue.pipeline.prepare import prepare_records
 from polylogue.sources.parsers.drive import parse_chunked_prompt
 from polylogue.storage.backends.async_sqlite import SQLiteBackend

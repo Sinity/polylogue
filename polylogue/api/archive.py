@@ -12,14 +12,14 @@ from polylogue.archive_products import (
     SessionProfileProduct,
     SessionProfileProductQuery,
 )
-from polylogue.lib.content_projection import ContentProjectionSpec
+from polylogue.lib.semantic.content_projection import ContentProjectionSpec
 from polylogue.storage.products.session.runtime import SessionProductStatusSnapshot
 
 if TYPE_CHECKING:
     from polylogue.archive_resume import ResumeBrief
     from polylogue.config import Config
-    from polylogue.lib.conversation_models import Conversation
-    from polylogue.lib.filters import ConversationFilter
+    from polylogue.lib.conversation.models import Conversation
+    from polylogue.lib.filter.filters import ConversationFilter
     from polylogue.operations import ArchiveStats
     from polylogue.product_export_bundles import ProductExportBundleRequest, ProductExportBundleResult
     from polylogue.product_readiness import ProductReadinessQuery, ProductReadinessReport
@@ -194,7 +194,7 @@ class PolylogueArchiveMixin:
         return await self.operations.list_session_enrichment_products(query)
 
     def filter(self) -> ConversationFilter:
-        from polylogue.lib.filters import ConversationFilter
+        from polylogue.lib.filter.filters import ConversationFilter
         from polylogue.storage.search_providers import create_vector_provider
 
         vector_provider = None

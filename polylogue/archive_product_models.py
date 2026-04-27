@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from polylogue.lib.session_payload_documents import SessionPhaseDocument, WorkEventDocument
+from polylogue.lib.session.documents import SessionPhaseDocument, WorkEventDocument
 
 ARCHIVE_PRODUCT_CONTRACT_VERSION = 5
 

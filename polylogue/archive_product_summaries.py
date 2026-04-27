@@ -15,8 +15,8 @@ from polylogue.archive_products import (
     profile_timestamp_values,
     records_provenance,
 )
-from polylogue.lib.session_profile import SessionProfile
-from polylogue.lib.session_summaries import DaySessionSummary, summarize_day, summarize_week
+from polylogue.lib.session.session_profile import SessionProfile
+from polylogue.lib.session.session_summaries import DaySessionSummary, summarize_day, summarize_week
 from polylogue.storage.runtime import DaySessionSummaryRecord
 
 

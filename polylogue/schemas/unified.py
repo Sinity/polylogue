@@ -23,7 +23,7 @@ import logging
 from pydantic import ValidationError
 
 from polylogue.lib.json import JSONDocument
-from polylogue.lib.provider_semantics import (
+from polylogue.lib.provider.semantics import (
     extract_chatgpt_text,
     extract_claude_code_text,
     extract_content_blocks,

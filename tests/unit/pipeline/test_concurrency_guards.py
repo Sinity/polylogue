@@ -23,7 +23,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from polylogue.lib.filters import ConversationFilter
+from polylogue.lib.filter.filters import ConversationFilter
 from polylogue.lib.models import Conversation
 from polylogue.lib.roles import Role
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
