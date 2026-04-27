@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import http.client
 import ipaddress
 import re
 import shlex
@@ -95,20 +96,21 @@ class NotificationObserver(RunObserver):
             pass
 
 
-def _validate_webhook_url(url: str) -> None:
-    """Validate a webhook URL for SSRF protection."""
-    parsed = urlparse(url)
+def _resolve_and_validate(hostname: str, port: int) -> str:
+    """Resolve hostname and return the validated IP address.
 
-    if parsed.scheme not in ("http", "https"):
-        raise ValueError(f"Webhook URL must use http or https scheme, got: {parsed.scheme!r}")
-    if not parsed.hostname:
-        raise ValueError("Webhook URL must have a hostname")
-
-    hostname = parsed.hostname
+    All resolved addresses are checked against the SSRF denylist (private,
+    loopback, link-local, reserved). The returned IP is what the actual
+    connection will use, closing the DNS-rebinding TOCTOU window between
+    validation and connect.
+    """
     try:
-        addr_infos = socket.getaddrinfo(hostname, parsed.port or 443, proto=socket.IPPROTO_TCP)
+        addr_infos = socket.getaddrinfo(hostname, port, proto=socket.IPPROTO_TCP)
     except socket.gaierror as exc:
         raise ValueError(f"Cannot resolve webhook hostname {hostname!r}: {exc}") from exc
+
+    if not addr_infos:
+        raise ValueError(f"Cannot resolve webhook hostname {hostname!r}: no addresses")
 
     for _family, _type, _proto, _canonname, sockaddr in addr_infos:
         ip = ipaddress.ip_address(sockaddr[0])
@@ -118,39 +120,78 @@ def _validate_webhook_url(url: str) -> None:
                 f"(hostname: {hostname!r}). This is blocked for SSRF protection."
             )
 
+    # Use the first resolved address — same one we'd pin the connection to.
+    address = addr_infos[0][4][0]
+    return str(address)
 
-def _webhook_request_target(url: str) -> tuple[str, str, int, str]:
-    _validate_webhook_url(url)
+
+def _validate_webhook_url(url: str) -> None:
+    """Validate a webhook URL for SSRF protection (URL form + DNS resolution)."""
     parsed = urlparse(url)
+
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError(f"Webhook URL must use http or https scheme, got: {parsed.scheme!r}")
+    if not parsed.hostname:
+        raise ValueError("Webhook URL must have a hostname")
+
+    _resolve_and_validate(parsed.hostname, parsed.port or (443 if parsed.scheme == "https" else 80))
+
+
+def _webhook_request_target(url: str) -> tuple[str, str, str, int, str]:
+    """Validate URL and return ``(scheme, hostname, validated_ip, port, path)``."""
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError(f"Webhook URL must use http or https scheme, got: {parsed.scheme!r}")
     if parsed.hostname is None:
         raise ValueError("Webhook URL must have a hostname")
     default_port = 443 if parsed.scheme == "https" else 80
+    port = parsed.port or default_port
+    validated_ip = _resolve_and_validate(parsed.hostname, port)
     path = parsed.path or "/"
     if parsed.query:
         path = f"{path}?{parsed.query}"
-    return parsed.scheme, parsed.hostname, parsed.port or default_port, path
+    return parsed.scheme, parsed.hostname, validated_ip, port, path
+
+
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    """HTTPSConnection that connects to a validated IP while keeping SNI/cert on the hostname.
+
+    Closes the DNS-rebinding window: ``_resolve_and_validate`` resolves the
+    hostname once, validates against the SSRF denylist, and the connection
+    is made directly to that IP rather than re-resolving at connect time.
+    SNI/cert verification still uses the original hostname.
+    """
+
+    def __init__(self, hostname: str, ip: str, *, port: int, timeout: float, context: ssl.SSLContext) -> None:
+        super().__init__(hostname, port=port, timeout=timeout, context=context)
+        self._validated_ip = ip
+        self._pinned_context = context
+
+    def connect(self) -> None:
+        sock = socket.create_connection((self._validated_ip, self.port), timeout=self.timeout)
+        self.sock = self._pinned_context.wrap_socket(sock, server_hostname=self.host)
 
 
 def _post_webhook(url: str, data: bytes) -> None:
-    import http.client
-
-    scheme, host, port, path = _webhook_request_target(url)
+    scheme, hostname, validated_ip, port, path = _webhook_request_target(url)
+    connection: http.client.HTTPConnection
     if scheme == "https":
-        connection: http.client.HTTPConnection = http.client.HTTPSConnection(
-            host,
+        connection = _PinnedHTTPSConnection(
+            hostname,
+            validated_ip,
             port=port,
             timeout=10,
             context=ssl.create_default_context(),
         )
     else:
-        connection = http.client.HTTPConnection(host, port=port, timeout=10)
+        connection = http.client.HTTPConnection(validated_ip, port=port, timeout=10)
     try:
-        connection.request(
-            "POST",
-            path,
-            body=data,
-            headers={"Content-Type": "application/json"},
-        )
+        headers = {"Content-Type": "application/json"}
+        if scheme == "http":
+            # Plain HTTP connects to validated IP; restore Host header so the
+            # server routes correctly when name-based virtual-hosted.
+            headers["Host"] = hostname if port in (80, 443) else f"{hostname}:{port}"
+        connection.request("POST", path, body=data, headers=headers)
         response = connection.getresponse()
         response.read()
     finally:
