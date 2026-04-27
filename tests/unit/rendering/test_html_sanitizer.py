@@ -18,6 +18,10 @@ from polylogue.rendering.renderers.html_sanitizer import sanitize_html
         "<p>before</p><script>alert(1)</script\t>",
         # Mixed case.
         "<p>before</p><SCRIPT>alert(1)</SCRIPT >",
+        # Closing tag with whitespace + attribute-like junk (CodeQL py-incomplete-multi-character).
+        "<p>before</p><script>alert(1)</script\t\n bar>",
+        "<script>alert(1)</script foo='bar'>",
+        "<script>alert(1)</script\u00a0>",  # non-breaking space
         # Attribute on opening tag.
         "<script type='text/javascript'>alert(1)</script>",
         # Multiline body.
