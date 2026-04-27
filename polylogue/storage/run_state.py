@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import ItemsView, KeysView, Mapping, ValuesView
-from typing import ClassVar, TypedDict, TypeVar
+from typing import ClassVar, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+from typing_extensions import TypedDict
 
 from polylogue.storage.cursor_state import CursorFailurePayload, CursorStatePayload
 from polylogue.types import PlanStage

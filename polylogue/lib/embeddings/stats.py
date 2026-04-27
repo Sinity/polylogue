@@ -8,7 +8,9 @@ and render in their own dialect.
 from __future__ import annotations
 
 import sqlite3
-from typing import TYPE_CHECKING, Protocol, TypedDict
+from typing import TYPE_CHECKING, Protocol
+
+from typing_extensions import TypedDict
 
 from polylogue.storage.embedding_stats_models import EmbeddingStatsSnapshot
 

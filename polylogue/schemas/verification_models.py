@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Literal, TypeAlias, TypedDict
+from typing import Literal, TypeAlias
+
+from typing_extensions import TypedDict
 
 CountPayload: TypeAlias = dict[str, int]
 AllLiteral: TypeAlias = Literal["all"]

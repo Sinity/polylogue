@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, Generic, TypedDict, TypeVar
+from typing import TYPE_CHECKING, Generic, TypeVar
 
 from pydantic import RootModel
+from typing_extensions import TypedDict
 
 from polylogue.lib.json import JSONDocument
 from polylogue.surface_payloads import (
