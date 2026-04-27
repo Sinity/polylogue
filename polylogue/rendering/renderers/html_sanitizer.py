@@ -12,7 +12,10 @@ import re
 
 from markupsafe import Markup
 
-_SCRIPT_RE = re.compile(r"<script[\s>].*?</script>", re.IGNORECASE | re.DOTALL)
+# Closing tag tolerates whitespace before the final ``>``: ``</script >`` is a
+# legal HTML closing tag and was accepted by the previous regex without being
+# stripped. Match ``</script\s*>`` so end tags with stray whitespace are caught.
+_SCRIPT_RE = re.compile(r"<script[\s>].*?</script\s*>", re.IGNORECASE | re.DOTALL)
 _EVENT_ATTR_RE = re.compile(r"\s+on\w+\s*=\s*[\"'][^\"']*[\"']", re.IGNORECASE)
 _JAVASCRIPT_URL_RE = re.compile(r"""href\s*=\s*["']javascript:[^"']*["']""", re.IGNORECASE)
 
