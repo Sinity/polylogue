@@ -131,13 +131,14 @@ def render_search_markup(config: SiteConfig) -> str:
                             .includes(term);
                     }).slice(0, 50);
 
+                    const esc = (s) => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
                     results.innerHTML = matches.map((doc) => `
                         <li class="conversation-card">
-                            <a href="${doc.path}" class="conversation-link">
-                                <h2 class="conversation-title">${doc.title}</h2>
+                            <a href="${esc(doc.path)}" class="conversation-link">
+                                <h2 class="conversation-title">${esc(doc.title)}</h2>
                                 <div class="conversation-meta">
-                                    <span class="badge">${doc.provider}</span>
-                                    <span>${doc.preview || ''}</span>
+                                    <span class="badge">${esc(doc.provider)}</span>
+                                    <span>${esc(doc.preview || '')}</span>
                                 </div>
                             </a>
                         </li>

@@ -41,12 +41,12 @@ async def iter_conversation_page_messages(
 ) -> AsyncIterator[RenderedMessage]:
     """Yield site message payloads lazily for a conversation page."""
     async for msg in repository.iter_messages(conversation_id):
-        if not msg.text:
+        if not msg.text and not msg.content_blocks:
             continue
         yield build_rendered_message(
             message_id=msg.id,
             role=msg.role or "unknown",
-            text=msg.text,
+            text=msg.text or "",
             timestamp=msg.timestamp,
             content_blocks=coerce_renderable_blocks(msg.content_blocks),
             parent_message_id=msg.parent_id,

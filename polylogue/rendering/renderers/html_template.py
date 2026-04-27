@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING
 
 from jinja2 import DictLoader, Environment, select_autoescape
 
+from polylogue.rendering.renderers.html_sanitizer import sanitize_html
+
 DEFAULT_HTML_TEMPLATE = (Path(__file__).parent.parent / "templates" / "conversation.html").read_text()
 
 _CACHED_TEMPLATE_ENV: Environment | None = None
@@ -16,10 +18,12 @@ if TYPE_CHECKING:
 
 
 def _build_template_environment() -> Environment:
-    return Environment(
+    env = Environment(
         loader=DictLoader({"conversation.html": DEFAULT_HTML_TEMPLATE}),
         autoescape=select_autoescape(["html", "xml"]),
     )
+    env.filters["sanitize_html"] = sanitize_html
+    return env
 
 
 def get_cached_template() -> Template:

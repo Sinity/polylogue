@@ -11,6 +11,7 @@ from polylogue.assets import asset_path
 from polylogue.lib.hashing import hash_file, hash_payload, hash_text
 from polylogue.lib.json import JSONValue
 from polylogue.sources import ParsedAttachment, ParsedConversation, ParsedMessage
+from polylogue.sources.parsers.base import ParsedContentBlock
 from polylogue.types import ContentHash, ConversationId, MessageId
 
 # Sentinel values to distinguish None from empty in hash computations
@@ -156,24 +157,33 @@ def message_id(conversation_id: ConversationId, provider_message_id: str) -> Mes
     return MessageId(f"{conversation_id}:{provider_message_id}")
 
 
+def _content_block_payload(block: ParsedContentBlock) -> dict[str, JSONValue]:
+    """Build a hash-stable payload for a single content block."""
+    payload: dict[str, JSONValue] = {
+        "type": str(block.type),
+        "text": _normalize_for_hash(block.text),
+    }
+    if block.tool_name:
+        payload["tool_name"] = _normalize_for_hash(block.tool_name)
+    if block.tool_id:
+        payload["tool_id"] = _normalize_for_hash(block.tool_id)
+    if block.tool_input is not None:
+        payload["tool_input"] = hash_payload(dict(block.tool_input))
+    if block.media_type:
+        payload["media_type"] = _normalize_for_hash(block.media_type)
+    return payload
+
+
 def message_content_hash(message: ParsedMessage, provider_message_id: str) -> ContentHash:
-    """Generate content hash for a message.
-
-    Uses sentinel values to distinguish None from empty string.
-
-    Args:
-        message: Parsed message object.
-        provider_message_id: Provider's message identifier.
-
-    Returns:
-        Content hash string.
-    """
+    """Generate content hash for a message."""
     payload: dict[str, JSONValue] = {
         "id": provider_message_id,
         "role": str(message.role),
         "text": _normalize_for_hash(message.text),
         "timestamp": _normalize_for_hash(message.timestamp),
     }
+    if message.content_blocks:
+        payload["content_blocks"] = [_content_block_payload(b) for b in message.content_blocks]
     return ContentHash(hash_payload(payload))
 
 
@@ -191,14 +201,15 @@ def conversation_content_hash(convo: ParsedConversation) -> ContentHash:
     messages_payload: list[dict[str, JSONValue]] = []
     for idx, msg in enumerate(convo.messages, start=1):
         message_id = msg.provider_message_id or f"msg-{idx}"
-        messages_payload.append(
-            {
-                "id": message_id,
-                "role": str(msg.role),
-                "text": _normalize_for_hash(msg.text),
-                "timestamp": _normalize_for_hash(msg.timestamp),
-            }
-        )
+        msg_payload: dict[str, JSONValue] = {
+            "id": message_id,
+            "role": str(msg.role),
+            "text": _normalize_for_hash(msg.text),
+            "timestamp": _normalize_for_hash(msg.timestamp),
+        }
+        if msg.content_blocks:
+            msg_payload["content_blocks"] = [_content_block_payload(b) for b in msg.content_blocks]
+        messages_payload.append(msg_payload)
     attachments_payload = sorted(
         [
             {
