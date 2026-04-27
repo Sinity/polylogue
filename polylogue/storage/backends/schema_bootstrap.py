@@ -189,6 +189,17 @@ _SCHEMA_EXTENSION_DESCRIPTORS: tuple[SchemaExtensionDescriptor, ...] = (
         ddl=_RAW_SOURCE_MTIME_INDEX_SQL,
         replace_on_drift=True,
     ),
+    # Expression index covering EFFECTIVE_RAW_PROVIDER_SQL. Without it, every
+    # raw provider-filter query becomes a full table scan because COALESCE
+    # cannot use idx_raw_conv_provider or idx_raw_conv_payload_provider.
+    SchemaIndexExtensionDescriptor(
+        table_name="raw_conversations",
+        index_name="idx_raw_conv_effective_provider",
+        ddl=(
+            "CREATE INDEX IF NOT EXISTS idx_raw_conv_effective_provider "
+            "ON raw_conversations(COALESCE(payload_provider, provider_name))"
+        ),
+    ),
     SchemaIndexExtensionDescriptor(
         table_name="content_blocks",
         index_name="idx_content_blocks_tool_use_conversation",

@@ -190,6 +190,7 @@ def test_schema_extension_catalog_declares_snapshot_scope() -> None:
     assert {"raw_conversations", "attachments", "session_profiles", "session_phases"}.issubset(table_names)
     assert {
         "idx_raw_conv_source_mtime",
+        "idx_raw_conv_effective_provider",
         "idx_content_blocks_tool_use_conversation",
         "idx_attachments_provider_meta_file_id",
         "idx_attachment_refs_provider_meta_drive_id",
@@ -214,6 +215,7 @@ def test_schema_extension_plan_expands_catalog_descriptors() -> None:
     assert "ALTER TABLE raw_conversations ADD COLUMN blob_size INTEGER NOT NULL DEFAULT 0" in plan.statements
     assert any("idx_content_blocks_tool_use_conversation" in statement for statement in plan.statements)
     assert any("idx_attachments_provider_meta_id" in statement for statement in plan.statements)
+    assert any("idx_raw_conv_effective_provider" in statement for statement in plan.statements)
     assert any(
         "ALTER TABLE session_profiles ADD COLUMN evidence_search_text" in statement for statement in plan.statements
     )
