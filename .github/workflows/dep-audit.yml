@@ -1,0 +1,61 @@
+name: Dependency Audit
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/dep-audit.yml"
+  pull_request:
+    branches: [master]
+    paths:
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/dep-audit.yml"
+  schedule:
+    # Weekly Monday 06:00 UTC — picks up newly-disclosed CVEs against the
+    # current pinned lockfile even when no PR touches dependencies.
+    - cron: "0 6 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pip-audit:
+    name: pip-audit
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v8.0.0
+        with:
+          python-version: "3.13"
+      - name: Install dependencies (frozen lockfile)
+        run: uv sync --extra dev --frozen
+      - name: Export hash-pinned requirements (excludes editable polylogue)
+        # `uv export` emits a deterministic, hash-pinned requirements.txt
+        # derived from `uv.lock`. We deliberately exclude the project itself
+        # (--no-emit-project) so pip-audit only sees external dependencies;
+        # the editable install of polylogue would otherwise fail the audit.
+        run: uv export --format requirements-txt --no-emit-project --frozen --extra dev > requirements-audit.txt
+      - name: Run pip-audit against locked dependencies
+        # --vulnerability-service osv: query the OSV database (covers PyPA
+        #   advisory DB, GHSA, and others) — broader than PyPI advisories alone.
+        # --strict: exit non-zero on any finding.
+        # --disable-pip: read packages from -r, don't shell out to pip install.
+        run: uv run pip-audit --strict --vulnerability-service osv --disable-pip -r requirements-audit.txt
+
+  # Dependency Review (PR-time delta scan) is intentionally omitted: it requires
+  # GitHub Dependency Graph to be enabled in Settings → Code security and
+  # analysis → Dependency graph. Until that's on, the action errors out with
+  # "Dependency review is not supported on this repository" and `continue-on-error`
+  # suppresses workflow failure but not the per-job check status. pip-audit
+  # (above) is the blocking signal across the full lockfile, which covers the
+  # same surface less narrowly. Re-enable this job after enabling the graph
+  # feature.
