@@ -111,6 +111,9 @@ class ConversationFilterBuilderMixin:
             path_terms=_extend_tuple(self._plan.path_terms, (pattern,)),
         )
 
+    def cwd_prefix(self, prefix: str) -> Self:
+        return _replace_plan(self, cwd_prefix=prefix)
+
     def action(self, *types: str) -> Self:
         return _replace_plan(
             self,

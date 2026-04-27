@@ -32,6 +32,7 @@ def _build_conversation_filters(
     until: str | None = None,
     title_contains: str | None = None,
     path_terms: list[str] | tuple[str, ...] | None = None,
+    cwd_prefix: str | None = None,
     action_terms: list[str] | tuple[str, ...] | None = None,
     excluded_action_terms: list[str] | tuple[str, ...] | None = None,
     tool_terms: list[str] | tuple[str, ...] | None = None,
@@ -108,6 +109,14 @@ def _build_conversation_filters(
                 f"WHERE ae.conversation_id = {conv_id_col} AND LOWER(path.value) LIKE ?)"
             )
             params.append(f"%{normalized}%")
+    if cwd_prefix:
+        provider_meta_col = "c.provider_meta" if needs_stats_join else "provider_meta"
+        escaped_prefix = cwd_prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        where_clauses.append(
+            f"EXISTS (SELECT 1 FROM json_each(COALESCE(json_extract({provider_meta_col}, '$.working_directories'), '[]')) cwd "
+            f"WHERE cwd.value LIKE ? ESCAPE '\\')"
+        )
+        params.append(f"{escaped_prefix}%")
     if action_terms:
         for term in action_terms:
             if str(term) == "none":
