@@ -36,10 +36,10 @@ from polylogue.storage.backends.schema_bootstrap import (
     schema_extension_snapshot_indexes,
     schema_extension_snapshot_tables,
 )
-from polylogue.storage.embedding_stats_models import EmbeddingStatsSnapshot
+from polylogue.storage.embeddings.models import EmbeddingStatsSnapshot
 from polylogue.storage.query_models import ConversationRecordQuery
 from polylogue.storage.repository import ConversationRepository
-from polylogue.storage.store import ConversationRecord
+from polylogue.storage.runtime import ConversationRecord
 from tests.infra.storage_records import (
     make_attachment,
     make_content_block,
@@ -1060,7 +1060,7 @@ async def test_save_conversation_replaces_runtime_rows_on_content_change(tmp_pat
 async def test_backend_delete_contracts(tmp_path: Path) -> None:
     """Deleting a conversation must remove rows, attachments, and FTS entries exactly once."""
     from polylogue.storage.index import ensure_index, update_index_for_conversations
-    from polylogue.storage.session_product_rebuild import rebuild_session_products_sync
+    from polylogue.storage.products.session.rebuild import rebuild_session_products_sync
 
     backend = SQLiteBackend(db_path=tmp_path / "delete.db")
     repo = ConversationRepository(backend=backend)
@@ -1208,7 +1208,9 @@ async def test_get_archive_stats_skips_retrieval_band_status(tmp_path: Path, mon
             pending_conversations=0,
         )
 
-    monkeypatch.setattr("polylogue.storage.repository_vectors.read_embedding_stats_async", fake_read_embedding_stats)
+    monkeypatch.setattr(
+        "polylogue.storage.repository.vectors.repository_vectors.read_embedding_stats_async", fake_read_embedding_stats
+    )
 
     stats = await repo.get_archive_stats()
 

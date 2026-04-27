@@ -25,7 +25,7 @@ from polylogue.pipeline.prepare_models import (
     _timestamp_sort_key,
 )
 from polylogue.pipeline.prepare_transform import transform_to_records
-from polylogue.storage.store import (
+from polylogue.storage.runtime import (
     AttachmentRecord,
     ContentBlockRecord,
     ConversationRecord,

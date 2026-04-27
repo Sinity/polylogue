@@ -200,7 +200,7 @@ def _materialize_content_block(
 
     metadata_json = json_dumps(semantic_metadata) if semantic_metadata is not None else None
 
-    from polylogue.storage.store import ContentBlockRecord
+    from polylogue.storage.runtime import ContentBlockRecord
 
     return MaterializedContentBlock(
         block_id=ContentBlockRecord.make_id(message_id, block_index),

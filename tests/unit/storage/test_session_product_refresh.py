@@ -6,8 +6,8 @@ import pytest
 
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.backends.connection import open_connection
-from polylogue.storage.session_product_aggregates import refresh_async_provider_day_aggregates
-from polylogue.storage.session_product_refresh import (
+from polylogue.storage.products.session.aggregates import refresh_async_provider_day_aggregates
+from polylogue.storage.products.session.refresh import (
     _apply_session_product_conversation_updates_async,
     _refresh_thread_roots_async,
 )

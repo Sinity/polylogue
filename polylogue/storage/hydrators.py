@@ -21,7 +21,7 @@ from polylogue.lib.message_models import Message
 from polylogue.lib.messages import MessageCollection
 from polylogue.lib.roles import Role
 from polylogue.lib.timestamps import parse_timestamp
-from polylogue.storage.store import (
+from polylogue.storage.runtime import (
     AttachmentRecord,
     ConversationRecord,
     MessageRecord,

@@ -105,7 +105,7 @@ async def test_execute_materialize_stage_covers_noop_and_rebuild_from_empty_path
         day_summaries=7,
     )
     with patch(
-        "polylogue.storage.session_product_rebuild.rebuild_session_products_async", new=AsyncMock(return_value=counts)
+        "polylogue.storage.products.session.rebuild.rebuild_session_products_async", new=AsyncMock(return_value=counts)
     ) as rebuild:
         outcome = await run_stages.execute_materialize_stage(
             stage="all",
@@ -190,7 +190,7 @@ async def test_execute_materialize_stage_covers_refresh_scoped_and_unscoped_path
         day_summaries=0,
     )
     with patch(
-        "polylogue.storage.session_product_rebuild.rebuild_session_products_async", new=AsyncMock(return_value=counts)
+        "polylogue.storage.products.session.rebuild.rebuild_session_products_async", new=AsyncMock(return_value=counts)
     ):
         unscoped = await run_stages.execute_materialize_stage(
             stage="materialize",

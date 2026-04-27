@@ -23,7 +23,7 @@ from polylogue.lib.roles import Role
 from polylogue.lib.session_profile import SessionProfile, build_session_profile
 from polylogue.lib.session_summaries import summarize_day
 from polylogue.lib.viewports import ToolCategory
-from polylogue.storage.store import DaySessionSummaryRecord
+from polylogue.storage.runtime import DaySessionSummaryRecord
 from polylogue.types import ConversationId, Provider
 
 REPO_ROOT = Path(__file__).resolve().parents[3]

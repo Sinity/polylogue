@@ -64,13 +64,13 @@ from polylogue.product_readiness import (
 from polylogue.services import RuntimeServices, build_runtime_services
 from polylogue.storage.backends.connection import connection_context
 from polylogue.storage.backends.queries.stats import ProviderMetricsRow
-from polylogue.storage.repair import collect_archive_debt_statuses_sync
-from polylogue.storage.search import SearchHit, SearchResult
-from polylogue.storage.session_product_runtime import (
+from polylogue.storage.products.session.runtime import (
     SessionProductReadyFlag,
     SessionProductStatusSnapshot,
 )
-from polylogue.storage.store_constants import SESSION_PRODUCT_MATERIALIZER_VERSION
+from polylogue.storage.repair import collect_archive_debt_statuses_sync
+from polylogue.storage.runtime.store_constants import SESSION_PRODUCT_MATERIALIZER_VERSION
+from polylogue.storage.search import SearchHit, SearchResult
 from polylogue.types import Provider
 
 logger = structlog.get_logger(__name__)
@@ -91,8 +91,8 @@ if TYPE_CHECKING:
     from polylogue.lib.search_hits import ConversationSearchHit
     from polylogue.lib.stats import ArchiveStats as StorageArchiveStats
     from polylogue.storage.backends.async_sqlite import SQLiteBackend
+    from polylogue.storage.products.session.runtime import SessionProductCounts
     from polylogue.storage.repository import ConversationRepository
-    from polylogue.storage.session_product_runtime import SessionProductCounts
 
 _ResultT = TypeVar("_ResultT")
 _QueryT = TypeVar("_QueryT")
@@ -889,7 +889,7 @@ class ArchiveMaintenanceMixin:
         conversation_ids: Sequence[str] | None = None,
     ) -> SessionProductCounts:
         """Rebuild durable session-product read models."""
-        from polylogue.storage.session_product_rebuild import rebuild_session_products_async
+        from polylogue.storage.products.session.rebuild import rebuild_session_products_async
 
         async with self.backend.bulk_connection(), self.backend.connection() as conn:
             return await rebuild_session_products_async(

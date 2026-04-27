@@ -38,7 +38,7 @@ def _seed_db(
     from polylogue.storage.backends.async_sqlite import SQLiteBackend
     from polylogue.storage.backends.connection import open_connection
     from polylogue.storage.repository import ConversationRepository
-    from polylogue.storage.store import RawConversationRecord
+    from polylogue.storage.runtime import RawConversationRecord
 
     db_path = tmp_path / "corpus_seeded.db"
     with open_connection(db_path):

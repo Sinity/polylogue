@@ -10,17 +10,17 @@ import aiosqlite
 from typing_extensions import TypedDict
 
 from polylogue.logging import get_logger
-from polylogue.storage.action_event_rebuild_runtime import (
+from polylogue.storage.action_events.rebuild_runtime import (
     action_event_repair_candidates_async,
     rebuild_action_event_read_model_async,
 )
-from polylogue.storage.fts_lifecycle import (
+from polylogue.storage.fts.fts_lifecycle import (
     ensure_fts_index_async,
     fts_index_status_async,
     rebuild_fts_index_async,
     repair_fts_index_async,
 )
-from polylogue.storage.search_cache import invalidate_search_cache
+from polylogue.storage.search.cache import invalidate_search_cache
 
 if TYPE_CHECKING:
     from polylogue.config import Config

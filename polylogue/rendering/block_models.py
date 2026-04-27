@@ -7,7 +7,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from polylogue.lib.json import JSONDocument, json_document
-from polylogue.storage.store import ContentBlockRecord
+from polylogue.storage.runtime import ContentBlockRecord
 
 
 @dataclass(frozen=True, slots=True)

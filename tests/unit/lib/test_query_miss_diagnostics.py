@@ -15,7 +15,7 @@ from polylogue.lib.query_miss_diagnostics import QueryMissDiagnostics, diagnose_
 from polylogue.lib.query_spec import ConversationQuerySpec
 from polylogue.lib.stats import ArchiveStats
 from polylogue.readiness import ReadinessReport
-from polylogue.storage.action_event_artifacts import ActionEventArtifactState
+from polylogue.storage.action_events.artifacts import ActionEventArtifactState
 from polylogue.types import Provider
 
 

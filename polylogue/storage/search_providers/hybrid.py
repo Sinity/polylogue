@@ -17,7 +17,7 @@ from polylogue.storage.backends.connection import (
 from polylogue.storage.backends.connection import (
     open_read_connection,
 )
-from polylogue.storage.search_models import ConversationSearchResult
+from polylogue.storage.search.models import ConversationSearchResult
 from polylogue.storage.search_providers.hybrid_conversations import (
     _resolve_ranked_conversation_hits,
     _resolve_ranked_conversation_ids,
@@ -26,8 +26,8 @@ from polylogue.storage.search_providers.hybrid_factory import create_hybrid_prov
 
 if TYPE_CHECKING:
     from polylogue.protocols import VectorProvider
+    from polylogue.storage.runtime import MessageRecord
     from polylogue.storage.search_providers.fts5 import FTS5Provider
-    from polylogue.storage.store import MessageRecord
 
 
 # ---------------------------------------------------------------------------

@@ -25,7 +25,7 @@ import pytest
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.index import rebuild_index
-from polylogue.storage.store import ContentBlockRecord, ConversationRecord, MessageRecord
+from polylogue.storage.runtime import ContentBlockRecord, ConversationRecord, MessageRecord
 from tests.infra.storage_records import make_content_block, make_conversation, make_message
 
 # ---------------------------------------------------------------------------
@@ -58,7 +58,7 @@ _CONVERSATION_PROFILES = [
 # Realistic tool names and content
 _TOOL_NAMES = ["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent", "WebFetch", "WebSearch"]
 _FILE_PATHS = [
-    "/workspace/polylogue/polylogue/storage/repository.py",
+    "/workspace/polylogue/polylogue/storage/repository/__init__.py",
     "/workspace/polylogue/polylogue/lib/models.py",
     "/workspace/polylogue/tests/unit/core/test_models.py",
     "/workspace/polylogue/polylogue/cli/commands/check.py",

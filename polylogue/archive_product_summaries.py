@@ -17,7 +17,7 @@ from polylogue.archive_products import (
 )
 from polylogue.lib.session_profile import SessionProfile
 from polylogue.lib.session_summaries import DaySessionSummary, summarize_day, summarize_week
-from polylogue.storage.store import DaySessionSummaryRecord
+from polylogue.storage.runtime import DaySessionSummaryRecord
 
 
 @dataclass(slots=True)

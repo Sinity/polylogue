@@ -9,7 +9,7 @@ from polylogue.storage.backends.queries.filter_builder import (
     _needs_stats_join,
 )
 from polylogue.storage.backends.queries.mappers import _row_to_conversation
-from polylogue.storage.store import ConversationRecord
+from polylogue.storage.runtime import ConversationRecord
 
 
 async def get_conversation(conn: aiosqlite.Connection, conversation_id: str) -> ConversationRecord | None:

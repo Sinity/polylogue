@@ -14,7 +14,7 @@ from click.testing import CliRunner
 from polylogue.cli.click_app import cli
 from polylogue.cli.embed_runtime import embed_batch, embed_single
 from polylogue.cli.embed_stats import show_embedding_stats
-from polylogue.storage.embedding_stats_models import EmbeddingStatsSnapshot
+from polylogue.storage.embeddings.models import EmbeddingStatsSnapshot
 
 MessageRow: TypeAlias = dict[str, str]
 
@@ -108,7 +108,7 @@ class TestShowEmbeddingStats:
         with (
             patch("polylogue.storage.backends.connection.open_connection") as mock_open,
             patch(
-                "polylogue.storage.embedding_stats.read_embedding_stats_sync",
+                "polylogue.storage.embeddings.embedding_stats.read_embedding_stats_sync",
                 return_value=EmbeddingStatsSnapshot(
                     embedded_conversations=int(query_results[1][0]),
                     embedded_messages=int(query_results[2][0]),
@@ -133,7 +133,7 @@ class TestShowEmbeddingStats:
         with (
             patch("polylogue.storage.backends.connection.open_connection") as mock_open,
             patch(
-                "polylogue.storage.embedding_stats.read_embedding_stats_sync",
+                "polylogue.storage.embeddings.embedding_stats.read_embedding_stats_sync",
                 return_value=EmbeddingStatsSnapshot(),
             ),
         ):
@@ -153,7 +153,7 @@ class TestShowEmbeddingStats:
         with (
             patch("polylogue.storage.backends.connection.open_connection") as mock_open,
             patch(
-                "polylogue.storage.embedding_stats.read_embedding_stats_sync",
+                "polylogue.storage.embeddings.embedding_stats.read_embedding_stats_sync",
                 return_value=EmbeddingStatsSnapshot(
                     embedded_conversations=40,
                     embedded_messages=200,

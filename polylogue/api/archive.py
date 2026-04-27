@@ -13,7 +13,7 @@ from polylogue.archive_products import (
     SessionProfileProductQuery,
 )
 from polylogue.lib.content_projection import ContentProjectionSpec
-from polylogue.storage.session_product_runtime import SessionProductStatusSnapshot
+from polylogue.storage.products.session.runtime import SessionProductStatusSnapshot
 
 if TYPE_CHECKING:
     from polylogue.archive_resume import ResumeBrief
@@ -24,9 +24,9 @@ if TYPE_CHECKING:
     from polylogue.product_export_bundles import ProductExportBundleRequest, ProductExportBundleResult
     from polylogue.product_readiness import ProductReadinessQuery, ProductReadinessReport
     from polylogue.readiness import ReadinessReport
+    from polylogue.storage.products.session.runtime import SessionProductCounts
     from polylogue.storage.repository import ConversationRepository
-    from polylogue.storage.search_models import SearchResult
-    from polylogue.storage.session_product_runtime import SessionProductCounts
+    from polylogue.storage.search.models import SearchResult
 
     class _ArchiveOperationsSurface(Protocol):
         async def get_conversation(

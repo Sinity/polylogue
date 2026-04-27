@@ -13,13 +13,13 @@ from tenacity import (
     wait_exponential,
 )
 
+from polylogue.storage.runtime import MessageRecord
 from polylogue.storage.search_providers.sqlite_vec_support import (
     BATCH_SIZE,
     DEFAULT_DIMENSION,
     VOYAGE_API_URL,
     SqliteVecError,
 )
-from polylogue.storage.store import MessageRecord
 
 
 class SqliteVecEmbeddingMixin:
