@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import atexit
 import os
 import sqlite3
 import threading
@@ -113,6 +114,9 @@ def _clear_connection_cache() -> None:
         with suppress(Exception):
             conn.close()
     _connection_cache.conns = {}
+
+
+atexit.register(_clear_connection_cache)
 
 
 @contextmanager

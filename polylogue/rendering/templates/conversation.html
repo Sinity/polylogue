@@ -373,7 +373,7 @@
                         {% endif %}
                     </header>
                     <div class="message-body">
-                        {{ msg.html_content | safe }}
+                        {{ msg.html_content | sanitize_html }}
                     </div>
                     {% if msg.branches %}
                     <details class="branches">
@@ -389,7 +389,7 @@
                                     {% endif %}
                                 </header>
                                 <div class="message-body">
-                                    {{ branch.html_content | safe }}
+                                    {{ branch.html_content | sanitize_html }}
                                 </div>
                             </div>
                         </div>

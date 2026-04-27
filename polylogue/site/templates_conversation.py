@@ -212,7 +212,7 @@ def _build_conversation_template() -> str:
         {{% for msg in messages %}}
         <div class="message message-{{{{ msg.role or 'unknown' }}}}">
             <div class="message-role">{{{{ msg.role or 'unknown' }}}}</div>
-            <div class="message-body">{{{{ msg.html_content | safe }}}}</div>
+            <div class="message-body">{{{{ msg.html_content | sanitize_html }}}}</div>
         </div>
         {{% endfor %}}
         </div>
