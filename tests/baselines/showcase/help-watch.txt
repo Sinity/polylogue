@@ -1,0 +1,10 @@
+Usage: polylogue watch [OPTIONS]
+
+  Watch source directories and ingest new sessions live.
+
+Options:
+  --root PATH         Override watch root (repeatable). Defaults to
+                      ~/.claude/projects and ~/.codex/sessions.
+  --debounce-s FLOAT  Quiet-period (seconds) before parsing a modified file.
+                      [default: 2.0]
+  -h, --help          Show this message and exit.

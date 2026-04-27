@@ -47,6 +47,7 @@ dependencies = [
   "mcp>=1.0.0",  # Model Context Protocol SDK
   "pyyaml>=6.0",  # YAML output format
   "typing-extensions>=4.7",  # TypedDict that pydantic accepts on Py<3.12
+  "watchfiles>=0.21",  # Rust-backed filesystem watcher for live ingestion
   # Transitive constraints to avoid known CVEs surfaced by pip-audit:
   "cryptography>=46.0.7",  # CVE-2026-39892 (transitive via google-auth)
   "python-multipart>=0.0.26",  # CVE-2026-40347 (transitive via mcp)

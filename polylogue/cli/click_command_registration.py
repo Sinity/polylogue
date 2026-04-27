@@ -19,6 +19,7 @@ from polylogue.cli.commands.resume import resume_command
 from polylogue.cli.commands.run import run_command
 from polylogue.cli.commands.schema import schema_command
 from polylogue.cli.commands.tags import tags_command
+from polylogue.cli.commands.watch import watch_command
 
 ROOT_COMMANDS: tuple[click.Command, ...] = (
     run_command,
@@ -36,6 +37,7 @@ ROOT_COMMANDS: tuple[click.Command, ...] = (
     tags_command,
     qa_command,
     schema_command,
+    watch_command,
 )
 
 
