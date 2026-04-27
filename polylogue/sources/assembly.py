@@ -8,7 +8,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, TypeAlias, TypedDict
+from typing import TYPE_CHECKING, Protocol, TypeAlias
+
+from typing_extensions import TypedDict
 
 from polylogue.types import Provider
 

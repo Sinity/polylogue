@@ -3,7 +3,7 @@ from __future__ import annotations
 import importlib
 from collections.abc import Callable
 from types import ModuleType
-from typing import ParamSpec, Protocol, TypeAlias, TypedDict, TypeVar, Unpack, runtime_checkable
+from typing import ParamSpec, Protocol, TypeAlias, TypeVar, Unpack, runtime_checkable
 
 from tenacity import (
     retry_if_exception_type,
@@ -11,6 +11,7 @@ from tenacity import (
     stop_after_attempt,
     wait_exponential,
 )
+from typing_extensions import TypedDict
 
 from polylogue.lib.json import JSONDocument, JSONDocumentList
 from polylogue.logging import get_logger

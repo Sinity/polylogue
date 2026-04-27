@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from typing import TypedDict
-
 import aiosqlite
+from typing_extensions import TypedDict
 
 from polylogue.storage.store import MessageRecord
 

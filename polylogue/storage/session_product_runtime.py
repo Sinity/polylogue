@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal, TypeAlias, TypedDict
+from typing import Literal, TypeAlias
+
+from typing_extensions import TypedDict
 
 ProviderDayGroup: TypeAlias = tuple[str, str]
 SessionProductReadyFlag: TypeAlias = Literal[

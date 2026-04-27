@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import AsyncIterable, AsyncIterator, Callable, Iterable
-from typing import TYPE_CHECKING, TypedDict
+from typing import TYPE_CHECKING
 
 import aiosqlite
+from typing_extensions import TypedDict
 
 from polylogue.logging import get_logger
 from polylogue.storage.action_event_rebuild_runtime import (

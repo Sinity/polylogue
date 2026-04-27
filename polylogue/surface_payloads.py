@@ -7,9 +7,10 @@ import sys
 from collections.abc import Mapping, Sequence
 from datetime import datetime
 from enum import Enum
-from typing import TYPE_CHECKING, Literal, NotRequired, TypedDict
+from typing import TYPE_CHECKING, Literal, NotRequired
 
 from pydantic import BaseModel, ConfigDict, Field
+from typing_extensions import TypedDict
 
 from polylogue.lib.content_projection import ContentProjectionSpec
 from polylogue.lib.json import JSONDocument, JSONValue, require_json_document

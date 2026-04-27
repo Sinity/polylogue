@@ -46,6 +46,7 @@ dependencies = [
   "glom>=24.7.0",  # Declarative data extraction
   "mcp>=1.0.0",  # Model Context Protocol SDK
   "pyyaml>=6.0",  # YAML output format
+  "typing-extensions>=4.7",  # TypedDict that pydantic accepts on Py<3.12
 ]
 
 [project.optional-dependencies]

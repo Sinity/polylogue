@@ -1,9 +1,6 @@
 Usage: polylogue show [OPTIONS] [TARGET_TERMS]...
 
-  Show matched conversation content (default streaming output).
-
-  Accepts an optional ``provider:id`` positional that routes directly to the
-  conversation by id (prefix match), bypassing FTS search.
+  Show matched conversations with default full-content output.
 
 Options:
   -h, --help  Show this message and exit.

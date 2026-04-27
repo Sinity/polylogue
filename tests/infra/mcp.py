@@ -125,8 +125,13 @@ async def invoke_surface_async(
     return result
 
 
-def make_query_store_mock() -> MagicMock:
-    """Create a query-store mock matching the current MCP read/query seam."""
+def make_query_store_mock(*, resolved_id: str | None = None) -> MagicMock:
+    """Create a query-store mock matching the current MCP read/query seam.
+
+    Pass ``resolved_id`` to make ``resolve_id`` return that value (the realistic
+    "conversation found" path used by mutation tools that gate on resolution).
+    Default ``None`` matches the unresolved path.
+    """
     store = MagicMock()
     store.list = AsyncMock(return_value=[])
     store.list_summaries = AsyncMock(return_value=[])
@@ -136,7 +141,7 @@ def make_query_store_mock() -> MagicMock:
     store.view = AsyncMock(return_value=None)
     store.get = AsyncMock(return_value=None)
     store.get_eager = AsyncMock(return_value=None)
-    store.resolve_id = AsyncMock(return_value=None)
+    store.resolve_id = AsyncMock(return_value=resolved_id)
     store.delete_conversation = AsyncMock(return_value=False)
     return store
 
@@ -146,6 +151,7 @@ def make_tag_store_mock() -> MagicMock:
     store = MagicMock()
     store.add_tag = AsyncMock(return_value=None)
     store.remove_tag = AsyncMock(return_value=None)
+    store.bulk_add_tags = AsyncMock(return_value=0)
     store.list_tags = AsyncMock(return_value={})
     store.get_metadata = AsyncMock(return_value={})
     store.update_metadata = AsyncMock(return_value=None)
