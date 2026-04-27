@@ -19,7 +19,7 @@ from polylogue.lib.query_spec import ConversationQuerySpec
 from polylogue.lib.roles import Role
 from polylogue.lib.search_hits import ConversationSearchHit
 from polylogue.lib.viewport_enums import ToolCategory
-from polylogue.storage.action_event_artifacts import ActionEventArtifactState
+from polylogue.storage.action_events.artifacts import ActionEventArtifactState
 from polylogue.types import ConversationId, Provider
 from tests.infra.builders import make_conv, make_msg
 

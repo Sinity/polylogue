@@ -13,8 +13,8 @@ import httpx
 import pytest
 
 from polylogue.lib.roles import Role
+from polylogue.storage.runtime import MessageRecord
 from polylogue.storage.search_providers.sqlite_vec import SqliteVecProvider
-from polylogue.storage.store import MessageRecord
 from polylogue.types import ContentHash, ConversationId, MessageId
 
 Embedding: TypeAlias = list[float]

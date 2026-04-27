@@ -23,10 +23,10 @@ from polylogue.pipeline.prepare import RecordBundle, save_bundle
 from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.index import rebuild_index, update_index_for_conversations
 from polylogue.storage.repository import ConversationRepository
+from polylogue.storage.runtime import ACTION_EVENT_MATERIALIZER_VERSION
 from polylogue.storage.search import escape_fts5_query, search_messages
 from polylogue.storage.search_providers import create_vector_provider
 from polylogue.storage.search_providers.fts5 import FTS5Provider
-from polylogue.storage.store import ACTION_EVENT_MATERIALIZER_VERSION
 from tests.infra.mutmut import preserved_mutmut_env
 from tests.infra.storage_records import (
     ConversationBuilder,
@@ -186,8 +186,8 @@ def test_rebuild_index_with_empty_database(test_conn: sqlite3.Connection) -> Non
 
 def test_action_event_status_ignores_orphan_tool_sources(test_conn: sqlite3.Connection) -> None:
     """Action-event readiness should ignore orphaned tool-use blocks outside reachable conversations."""
-    from polylogue.storage.action_event_rebuild_runtime import rebuild_action_event_read_model_sync
-    from polylogue.storage.action_event_status import action_event_read_model_status_sync
+    from polylogue.storage.action_events.rebuild_runtime import rebuild_action_event_read_model_sync
+    from polylogue.storage.action_events.status import action_event_read_model_status_sync
 
     conv = make_conversation("conv1", title="Action ready")
     msg = make_message(

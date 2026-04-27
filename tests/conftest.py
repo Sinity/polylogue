@@ -15,7 +15,7 @@ from hypothesis.database import DirectoryBasedExampleDatabase
 
 from polylogue.lib.models import Conversation
 from polylogue.scenarios import CorpusSpec, build_default_corpus_specs
-from polylogue.storage.store import RawConversationRecord
+from polylogue.storage.runtime import RawConversationRecord
 from tests.infra.builders import make_conv, make_msg
 
 pytest_plugins = ("tests.infra.corpus_fixtures",)
@@ -517,7 +517,7 @@ def seeded_db(tmp_path_factory: pytest.TempPathFactory) -> Path:
     from polylogue.storage.backends.connection import open_connection
     from polylogue.storage.blob_store import BlobStore
     from polylogue.storage.repository import ConversationRepository
-    from polylogue.storage.store import RawConversationRecord
+    from polylogue.storage.runtime import RawConversationRecord
 
     # Create session-scoped temp directory
     tmp_dir = tmp_path_factory.mktemp("seeded_db")
@@ -633,7 +633,7 @@ def raw_synthetic_samples() -> list[RawConversationRecord]:
     from datetime import datetime, timezone
 
     from polylogue.schemas.synthetic import SyntheticCorpus
-    from polylogue.storage.store import RawConversationRecord
+    from polylogue.storage.runtime import RawConversationRecord
 
     specs = build_default_corpus_specs(
         providers=SyntheticCorpus.available_providers(),

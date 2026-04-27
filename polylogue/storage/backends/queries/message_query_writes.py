@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import aiosqlite
 
-from polylogue.storage.store import MessageRecord
+from polylogue.storage.runtime import MessageRecord
 
 
 def topo_sort_messages(records: list[MessageRecord]) -> list[MessageRecord]:

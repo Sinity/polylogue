@@ -6,14 +6,14 @@ import sqlite3
 
 import pytest
 
-from polylogue.storage.embedding_stats_models import EmbeddingStatsSnapshot
-from polylogue.storage.session_product_runtime import SessionProductStatusSnapshot
+from polylogue.storage.embeddings.models import EmbeddingStatsSnapshot
+from polylogue.storage.products.session.runtime import SessionProductStatusSnapshot
 
 
 def test_collect_derived_statuses_skips_retrieval_band_recomputation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from polylogue.storage import derived_status as derived_status_mod
+    from polylogue.storage.derived import derived_status as derived_status_mod
 
     conn = sqlite3.connect(":memory:")
     try:
@@ -106,7 +106,7 @@ def test_collect_derived_statuses_skips_retrieval_band_recomputation(
 
 
 def test_build_retrieval_statuses_counts_stale_action_event_fts_rows() -> None:
-    from polylogue.storage.derived_status import build_retrieval_statuses
+    from polylogue.storage.derived.derived_status import build_retrieval_statuses
 
     statuses = build_retrieval_statuses(
         {

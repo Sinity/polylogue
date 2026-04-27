@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 
 from polylogue.pipeline.materialization_runtime import _timestamp_sort_key
 from polylogue.storage.archive_views import ExistingConversation
-from polylogue.storage.store import (
+from polylogue.storage.runtime import (
     AttachmentRecord,
     ContentBlockRecord,
     ConversationRecord,

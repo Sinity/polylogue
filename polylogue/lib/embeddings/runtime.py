@@ -19,8 +19,8 @@ from typing import TYPE_CHECKING, Literal, Protocol
 if TYPE_CHECKING:
     from polylogue.lib.models import Conversation
     from polylogue.protocols import VectorProvider
-    from polylogue.storage.repository_contracts import RepositoryBackendProtocol
-    from polylogue.storage.store import MessageRecord
+    from polylogue.storage.repository.repository_contracts import RepositoryBackendProtocol
+    from polylogue.storage.runtime import MessageRecord
 
 
 EmbedSingleStatus = Literal["embedded", "no_messages", "not_found", "error"]

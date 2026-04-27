@@ -11,7 +11,7 @@ from polylogue.pipeline.prepare_models import (
     TransformResult,
 )
 from polylogue.sources.parsers.base import ParsedConversation
-from polylogue.storage.store import (
+from polylogue.storage.runtime import (
     AttachmentRecord,
     ContentBlockRecord,
     ConversationRecord,

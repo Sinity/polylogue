@@ -2037,60 +2037,68 @@ files:
     target: polylogue/storage/__init__.py
     owner: storage-root
     reason: "storage-root cross-cutting helper per #425"
-  - path: polylogue/storage/action_event_artifacts.py
+  - path: polylogue/storage/action_events/__init__.py
+    loc: 0
+    target: polylogue/storage/action_events/__init__.py
+    owner: stable
+  - path: polylogue/storage/action_events/artifacts.py
     loc: 152
     target: polylogue/storage/action_events/artifacts.py
-    owner: #425
-  - path: polylogue/storage/action_event_rebuild_loading.py
+    owner: stable
+  - path: polylogue/storage/action_events/rebuild_loading.py
     loc: 151
     target: polylogue/storage/action_events/rebuild_loading.py
-    owner: #425
-  - path: polylogue/storage/action_event_rebuild_materialization.py
+    owner: stable
+  - path: polylogue/storage/action_events/rebuild_materialization.py
     loc: 36
     target: polylogue/storage/action_events/rebuild_materialization.py
-    owner: #425
-  - path: polylogue/storage/action_event_rebuild_runtime.py
+    owner: stable
+  - path: polylogue/storage/action_events/rebuild_runtime.py
     loc: 152
     target: polylogue/storage/action_events/rebuild_runtime.py
-    owner: #425
+    owner: stable
     cross_cut: { lifecycle: runtime }
-  - path: polylogue/storage/action_event_rebuild_sql.py
+  - path: polylogue/storage/action_events/rebuild_sql.py
     loc: 62
     target: polylogue/storage/action_events/rebuild_sql.py
-    owner: #425
-  - path: polylogue/storage/action_event_rebuild_storage.py
+    owner: stable
+  - path: polylogue/storage/action_events/rebuild_storage.py
     loc: 58
     target: polylogue/storage/action_events/rebuild_storage.py
-    owner: #425
-  - path: polylogue/storage/action_event_rows.py
+    owner: stable
+  - path: polylogue/storage/action_events/rows.py
     loc: 134
     target: polylogue/storage/action_events/rows.py
-    owner: #425
-  - path: polylogue/storage/action_event_status.py
+    owner: stable
+  - path: polylogue/storage/action_events/status.py
     loc: 349
     target: polylogue/storage/action_events/status.py
-    owner: #425
+    owner: stable
   - path: polylogue/storage/archive_views.py
     loc: 26
     target: polylogue/storage/archive_views.py
     owner: storage-root
     reason: "storage-root cross-cutting helper per #425"
-  - path: polylogue/storage/artifact_inspection.py
+  - path: polylogue/storage/artifacts/__init__.py
+    loc: 0
+    target: polylogue/storage/artifacts/__init__.py
+    owner: stable
+  - path: polylogue/storage/artifacts/inspection.py
     loc: 311
     target: polylogue/storage/artifacts/inspection.py
-    owner: #425
-  - path: polylogue/storage/artifact_persistence.py
+    owner: stable
+  - path: polylogue/storage/artifacts/persistence.py
     loc: 159
     target: polylogue/storage/artifacts/persistence.py
-    owner: #425
-  - path: polylogue/storage/artifact_queries.py
+    owner: stable
+  - path: polylogue/storage/artifacts/queries.py
     loc: 193
     target: polylogue/storage/artifacts/queries.py
-    owner: #425
-  - path: polylogue/storage/artifact_views.py
+    owner: stable
+  - path: polylogue/storage/artifacts/views.py
     loc: 58
     target: polylogue/storage/artifacts/views.py
-    owner: #425
+    owner: stable
   - path: polylogue/storage/backends/__init__.py
     loc: 29
     target: polylogue/storage/backends/__init__.py
@@ -2348,39 +2356,50 @@ files:
     target: polylogue/storage/cursor_state.py
     owner: storage-root
     reason: "storage-root cross-cutting helper per #425"
-  - path: polylogue/storage/derived_status.py
+  - path: polylogue/storage/derived/__init__.py
+    loc: 0
+    target: polylogue/storage/derived/__init__.py
+    owner: stable
+  - path: polylogue/storage/derived/derived_status.py
     loc: 291
     target: polylogue/storage/derived/derived_status.py
-    owner: #425
-  - path: polylogue/storage/derived_status_products.py
+    owner: stable
+  - path: polylogue/storage/derived/products.py
     loc: 393
     target: polylogue/storage/derived/products.py
-    owner: #425
-  - path: polylogue/storage/embedding_stats.py
+    owner: stable
+  - path: polylogue/storage/embeddings/__init__.py
+    loc: 0
+    target: polylogue/storage/embeddings/__init__.py
+    owner: stable
+  - path: polylogue/storage/embeddings/embedding_stats.py
     loc: 254
     target: polylogue/storage/embeddings/embedding_stats.py
-    owner: #425
-  - path: polylogue/storage/embedding_stats_models.py
+    owner: stable
+  - path: polylogue/storage/embeddings/models.py
     loc: 22
     target: polylogue/storage/embeddings/models.py
-    owner: #425
-    cross_cut: { lifecycle: model }
-  - path: polylogue/storage/embedding_stats_sql.py
+    owner: stable
+  - path: polylogue/storage/embeddings/sql.py
     loc: 45
     target: polylogue/storage/embeddings/sql.py
-    owner: #425
-  - path: polylogue/storage/embedding_stats_support.py
+    owner: stable
+  - path: polylogue/storage/embeddings/support.py
     loc: 237
     target: polylogue/storage/embeddings/support.py
-    owner: #425
-  - path: polylogue/storage/fts_lifecycle.py
+    owner: stable
+  - path: polylogue/storage/fts/__init__.py
+    loc: 0
+    target: polylogue/storage/fts/__init__.py
+    owner: stable
+  - path: polylogue/storage/fts/fts_lifecycle.py
     loc: 374
     target: polylogue/storage/fts/fts_lifecycle.py
-    owner: #425
-  - path: polylogue/storage/fts_lifecycle_sql.py
+    owner: stable
+  - path: polylogue/storage/fts/sql.py
     loc: 117
     target: polylogue/storage/fts/sql.py
-    owner: #425
+    owner: stable
   - path: polylogue/storage/hydrators.py
     loc: 178
     target: polylogue/storage/hydrators.py
@@ -2391,126 +2410,256 @@ files:
     target: polylogue/storage/index.py
     owner: storage-root
     reason: "storage-root cross-cutting helper per #425"
-  - path: polylogue/storage/product_read_support.py
+  - path: polylogue/storage/products/__init__.py
+    loc: 0
+    target: polylogue/storage/products/__init__.py
+    owner: stable
+  - path: polylogue/storage/products/aggregate/__init__.py
+    loc: 0
+    target: polylogue/storage/products/aggregate/__init__.py
+    owner: stable
+  - path: polylogue/storage/products/aggregate/records.py
+    loc: 60
+    target: polylogue/storage/products/aggregate/records.py
+    owner: stable
+  - path: polylogue/storage/products/product_read_support.py
     loc: 35
     target: polylogue/storage/products/product_read_support.py
-    owner: #425
+    owner: stable
     cross_cut: { layer: read }
+  - path: polylogue/storage/products/session/__init__.py
+    loc: 0
+    target: polylogue/storage/products/session/__init__.py
+    owner: stable
+  - path: polylogue/storage/products/session/aggregates.py
+    loc: 325
+    target: polylogue/storage/products/session/aggregates.py
+    owner: stable
+  - path: polylogue/storage/products/session/profiles.py
+    loc: 599
+    target: polylogue/storage/products/session/profiles.py
+    owner: stable
+  - path: polylogue/storage/products/session/rebuild.py
+    loc: 678
+    target: polylogue/storage/products/session/rebuild.py
+    owner: stable
+  - path: polylogue/storage/products/session/records.py
+    loc: 109
+    target: polylogue/storage/products/session/records.py
+    owner: stable
+  - path: polylogue/storage/products/session/refresh.py
+    loc: 538
+    target: polylogue/storage/products/session/refresh.py
+    owner: stable
+  - path: polylogue/storage/products/session/runtime.py
+    loc: 136
+    target: polylogue/storage/products/session/runtime.py
+    owner: stable
+  - path: polylogue/storage/products/session/status.py
+    loc: 853
+    target: polylogue/storage/products/session/status.py
+    owner: stable
+  - path: polylogue/storage/products/session/storage.py
+    loc: 603
+    target: polylogue/storage/products/session/storage.py
+    owner: stable
+  - path: polylogue/storage/products/session/threads.py
+    loc: 412
+    target: polylogue/storage/products/session/threads.py
+    owner: stable
+  - path: polylogue/storage/products/session/timeline_rows.py
+    loc: 355
+    target: polylogue/storage/products/session/timeline_rows.py
+    owner: stable
+  - path: polylogue/storage/products/timeline/__init__.py
+    loc: 0
+    target: polylogue/storage/products/timeline/__init__.py
+    owner: stable
+  - path: polylogue/storage/products/timeline/records.py
+    loc: 107
+    target: polylogue/storage/products/timeline/records.py
+    owner: stable
   - path: polylogue/storage/query_models.py
     loc: 228
     target: polylogue/storage/query_models.py
     owner: storage-root
     reason: "storage-root cross-cutting helper per #425"
     cross_cut: { lifecycle: model }
-  - path: polylogue/storage/raw_ingest_artifacts.py
+  - path: polylogue/storage/raw/__init__.py
+    loc: 0
+    target: polylogue/storage/raw/__init__.py
+    owner: stable
+  - path: polylogue/storage/raw/artifacts.py
     loc: 83
     target: polylogue/storage/raw/artifacts.py
-    owner: #425
-  - path: polylogue/storage/raw_state_models.py
+    owner: stable
+  - path: polylogue/storage/raw/models.py
     loc: 135
     target: polylogue/storage/raw/models.py
-    owner: #425
-    cross_cut: { lifecycle: model }
+    owner: stable
   - path: polylogue/storage/repair.py
     loc: 1080
     target: polylogue/storage/repair.py
     owner: storage-root
     reason: "storage-root cross-cutting helper per #425"
-  - path: polylogue/storage/repository.py
+  - path: polylogue/storage/repository/__init__.py
     loc: 102
-    target: polylogue/storage/repository/__init__.pyrepository.py
-    owner: #425
-  - path: polylogue/storage/repository_action_reads.py
+    target: polylogue/storage/repository/__init__.py
+    owner: stable
+  - path: polylogue/storage/repository/action/__init__.py
+    loc: 0
+    target: polylogue/storage/repository/action/__init__.py
+    owner: stable
+  - path: polylogue/storage/repository/action/reads.py
     loc: 46
     target: polylogue/storage/repository/action/reads.py
-    owner: #425
-    cross_cut: { layer: read }
-  - path: polylogue/storage/repository_archive_conversations.py
+    owner: stable
+  - path: polylogue/storage/repository/archive/__init__.py
+    loc: 0
+    target: polylogue/storage/repository/archive/__init__.py
+    owner: stable
+  - path: polylogue/storage/repository/archive/conversations.py
     loc: 163
     target: polylogue/storage/repository/archive/conversations.py
-    owner: #425
-  - path: polylogue/storage/repository_archive_queries.py
+    owner: stable
+  - path: polylogue/storage/repository/archive/queries.py
     loc: 231
     target: polylogue/storage/repository/archive/queries.py
-    owner: #425
-  - path: polylogue/storage/repository_archive_reads.py
+    owner: stable
+  - path: polylogue/storage/repository/archive/reads.py
     loc: 22
     target: polylogue/storage/repository/archive/reads.py
-    owner: #425
-    cross_cut: { layer: read }
-  - path: polylogue/storage/repository_archive_search.py
-    loc: 165
-    target: polylogue/storage/repository/archive/search.py
-    owner: #425
-  - path: polylogue/storage/repository_archive_tree.py
-    loc: 77
-    target: polylogue/storage/repository/archive/tree.py
-    owner: #425
-  - path: polylogue/storage/repository_contracts.py
-    loc: 35
-    target: polylogue/storage/repository/repository_contracts.py
-    owner: #425
-  - path: polylogue/storage/repository_product_profile_reads.py
-    loc: 166
-    target: polylogue/storage/repository/product/profile_reads.py
-    owner: #425
-    cross_cut: { layer: read }
-  - path: polylogue/storage/repository_product_summary_reads.py
-    loc: 66
-    target: polylogue/storage/repository/product/summary_reads.py
-    owner: #425
-    cross_cut: { layer: read }
-  - path: polylogue/storage/repository_product_thread_reads.py
-    loc: 74
-    target: polylogue/storage/repository/product/thread_reads.py
-    owner: #425
-    cross_cut: { layer: read }
-  - path: polylogue/storage/repository_product_timeline_reads.py
-    loc: 154
-    target: polylogue/storage/repository/product/timeline_reads.py
-    owner: #425
-    cross_cut: { layer: read }
-  - path: polylogue/storage/repository_raw.py
-    loc: 191
-    target: polylogue/storage/repository/raw/repository_raw.py
-    owner: #425
-  - path: polylogue/storage/repository_vectors.py
-    loc: 196
-    target: polylogue/storage/repository/vectors/repository_vectors.py
-    owner: #425
-  - path: polylogue/storage/repository_write_conversations.py
-    loc: 291
-    target: polylogue/storage/repository/archive/writes/conversations.py
-    owner: #425
-    cross_cut: { layer: write }
-  - path: polylogue/storage/repository_write_metadata.py
-    loc: 24
-    target: polylogue/storage/repository/archive/writes/metadata.py
-    owner: #425
-    cross_cut: { layer: write }
-  - path: polylogue/storage/repository_writes.py
+    owner: stable
+  - path: polylogue/storage/repository/archive/repository_writes.py
     loc: 206
     target: polylogue/storage/repository/archive/repository_writes.py
-    owner: #425
+    owner: stable
     cross_cut: { layer: write }
+  - path: polylogue/storage/repository/archive/search.py
+    loc: 165
+    target: polylogue/storage/repository/archive/search.py
+    owner: stable
+  - path: polylogue/storage/repository/archive/tree.py
+    loc: 77
+    target: polylogue/storage/repository/archive/tree.py
+    owner: stable
+  - path: polylogue/storage/repository/archive/writes/__init__.py
+    loc: 0
+    target: polylogue/storage/repository/archive/writes/__init__.py
+    owner: stable
+  - path: polylogue/storage/repository/archive/writes/conversations.py
+    loc: 291
+    target: polylogue/storage/repository/archive/writes/conversations.py
+    owner: stable
+  - path: polylogue/storage/repository/archive/writes/metadata.py
+    loc: 24
+    target: polylogue/storage/repository/archive/writes/metadata.py
+    owner: stable
+  - path: polylogue/storage/repository/product/__init__.py
+    loc: 0
+    target: polylogue/storage/repository/product/__init__.py
+    owner: stable
+  - path: polylogue/storage/repository/product/profile_reads.py
+    loc: 166
+    target: polylogue/storage/repository/product/profile_reads.py
+    owner: stable
+    cross_cut: { layer: read }
+  - path: polylogue/storage/repository/product/summary_reads.py
+    loc: 66
+    target: polylogue/storage/repository/product/summary_reads.py
+    owner: stable
+    cross_cut: { layer: read }
+  - path: polylogue/storage/repository/product/thread_reads.py
+    loc: 74
+    target: polylogue/storage/repository/product/thread_reads.py
+    owner: stable
+    cross_cut: { layer: read }
+  - path: polylogue/storage/repository/product/timeline_reads.py
+    loc: 154
+    target: polylogue/storage/repository/product/timeline_reads.py
+    owner: stable
+    cross_cut: { layer: read }
+  - path: polylogue/storage/repository/raw/__init__.py
+    loc: 0
+    target: polylogue/storage/repository/raw/__init__.py
+    owner: stable
+  - path: polylogue/storage/repository/raw/repository_raw.py
+    loc: 191
+    target: polylogue/storage/repository/raw/repository_raw.py
+    owner: stable
+  - path: polylogue/storage/repository/repository_contracts.py
+    loc: 35
+    target: polylogue/storage/repository/repository_contracts.py
+    owner: stable
+  - path: polylogue/storage/repository/vectors/__init__.py
+    loc: 0
+    target: polylogue/storage/repository/vectors/__init__.py
+    owner: stable
+  - path: polylogue/storage/repository/vectors/repository_vectors.py
+    loc: 196
+    target: polylogue/storage/repository/vectors/repository_vectors.py
+    owner: stable
   - path: polylogue/storage/run_state.py
     loc: 480
     target: polylogue/storage/run_state.py
     owner: storage-root
     reason: "storage-root cross-cutting helper per #425"
-  - path: polylogue/storage/search.py
+  - path: polylogue/storage/runtime/__init__.py
+    loc: 86
+    target: polylogue/storage/runtime/__init__.py
+    owner: stable
+  - path: polylogue/storage/runtime/action/__init__.py
+    loc: 0
+    target: polylogue/storage/runtime/action/__init__.py
+    owner: stable
+  - path: polylogue/storage/runtime/action/records.py
+    loc: 46
+    target: polylogue/storage/runtime/action/records.py
+    owner: stable
+  - path: polylogue/storage/runtime/archive/__init__.py
+    loc: 0
+    target: polylogue/storage/runtime/archive/__init__.py
+    owner: stable
+  - path: polylogue/storage/runtime/archive/records.py
+    loc: 227
+    target: polylogue/storage/runtime/archive/records.py
+    owner: stable
+  - path: polylogue/storage/runtime/raw/__init__.py
+    loc: 0
+    target: polylogue/storage/runtime/raw/__init__.py
+    owner: stable
+  - path: polylogue/storage/runtime/raw/records.py
+    loc: 124
+    target: polylogue/storage/runtime/raw/records.py
+    owner: stable
+  - path: polylogue/storage/runtime/store_constants.py
+    loc: 20
+    target: polylogue/storage/runtime/store_constants.py
+    owner: stable
+  - path: polylogue/storage/search/__init__.py
     loc: 50
-    target: polylogue/storage/search/__init__.pysearch.py
-    owner: #425
-  - path: polylogue/storage/search_cache.py
+    target: polylogue/storage/search/__init__.py
+    owner: stable
+  - path: polylogue/storage/search/cache.py
     loc: 103
     target: polylogue/storage/search/cache.py
-    owner: #425
-  - path: polylogue/storage/search_models.py
+    owner: stable
+  - path: polylogue/storage/search/models.py
     loc: 68
     target: polylogue/storage/search/models.py
-    owner: #425
-    cross_cut: { lifecycle: model }
+    owner: stable
+  - path: polylogue/storage/search/query_builders.py
+    loc: 203
+    target: polylogue/storage/search/query_builders.py
+    owner: stable
+  - path: polylogue/storage/search/query_support.py
+    loc: 63
+    target: polylogue/storage/search/query_support.py
+    owner: stable
+  - path: polylogue/storage/search/runtime.py
+    loc: 114
+    target: polylogue/storage/search/runtime.py
+    owner: stable
   - path: polylogue/storage/search_providers/__init__.py
     loc: 110
     target: polylogue/storage/search_providers/__init__.py
@@ -2552,91 +2701,6 @@ files:
     loc: 35
     target: polylogue/storage/search_providers/sqlite_vec_support.py
     owner: stable
-  - path: polylogue/storage/search_query_builders.py
-    loc: 203
-    target: polylogue/storage/search/query_builders.py
-    owner: #425
-  - path: polylogue/storage/search_query_support.py
-    loc: 63
-    target: polylogue/storage/search/query_support.py
-    owner: #425
-  - path: polylogue/storage/search_runtime.py
-    loc: 114
-    target: polylogue/storage/search/runtime.py
-    owner: #425
-    cross_cut: { lifecycle: runtime }
-  - path: polylogue/storage/session_product_aggregates.py
-    loc: 325
-    target: polylogue/storage/products/session/aggregates.py
-    owner: #425
-  - path: polylogue/storage/session_product_profiles.py
-    loc: 599
-    target: polylogue/storage/products/session/profiles.py
-    owner: #425
-  - path: polylogue/storage/session_product_rebuild.py
-    loc: 678
-    target: polylogue/storage/products/session/rebuild.py
-    owner: #425
-  - path: polylogue/storage/session_product_refresh.py
-    loc: 538
-    target: polylogue/storage/products/session/refresh.py
-    owner: #425
-  - path: polylogue/storage/session_product_runtime.py
-    loc: 136
-    target: polylogue/storage/products/session/runtime.py
-    owner: #425
-    cross_cut: { lifecycle: runtime }
-  - path: polylogue/storage/session_product_status.py
-    loc: 853
-    target: polylogue/storage/products/session/status.py
-    owner: #425
-  - path: polylogue/storage/session_product_storage.py
-    loc: 603
-    target: polylogue/storage/products/session/storage.py
-    owner: #425
-  - path: polylogue/storage/session_product_threads.py
-    loc: 412
-    target: polylogue/storage/products/session/threads.py
-    owner: #425
-  - path: polylogue/storage/session_product_timeline_rows.py
-    loc: 355
-    target: polylogue/storage/products/session/timeline_rows.py
-    owner: #425
-  - path: polylogue/storage/store.py
-    loc: 86
-    target: polylogue/storage/runtime/__init__.pystore.py
-    owner: #425
-  - path: polylogue/storage/store_constants.py
-    loc: 20
-    target: polylogue/storage/runtime/store_constants.py
-    owner: #425
-  - path: polylogue/storage/store_product_aggregate_records.py
-    loc: 60
-    target: polylogue/storage/products/aggregate/records.py
-    owner: #425
-  - path: polylogue/storage/store_product_session_records.py
-    loc: 109
-    target: polylogue/storage/products/session/records.py
-    owner: #425
-  - path: polylogue/storage/store_product_timeline_records.py
-    loc: 107
-    target: polylogue/storage/products/timeline/records.py
-    owner: #425
-  - path: polylogue/storage/store_runtime_action_records.py
-    loc: 46
-    target: polylogue/storage/runtime/action/records.py
-    owner: #425
-    cross_cut: { lifecycle: runtime }
-  - path: polylogue/storage/store_runtime_archive_records.py
-    loc: 227
-    target: polylogue/storage/runtime/archive/records.py
-    owner: #425
-    cross_cut: { lifecycle: runtime }
-  - path: polylogue/storage/store_runtime_raw_records.py
-    loc: 124
-    target: polylogue/storage/runtime/raw/records.py
-    owner: #425
-    cross_cut: { lifecycle: runtime }
   - path: polylogue/surfaces/__init__.py
     loc: 0
     target: polylogue/surfaces/__init__.py

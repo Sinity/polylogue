@@ -156,7 +156,7 @@ def _skipped_index_check(db_error: str) -> ReadinessCheck:
 
 
 def _message_index_check(conn: sqlite3.Connection, *, exact_counts: bool) -> ReadinessCheck:
-    from polylogue.storage.fts_lifecycle import message_fts_readiness_sync
+    from polylogue.storage.fts.fts_lifecycle import message_fts_readiness_sync
 
     index_readiness = message_fts_readiness_sync(conn, verify_total_rows=exact_counts)
     if not index_readiness["exists"]:
@@ -298,7 +298,7 @@ def _transcript_embedding_checks(derived_statuses: dict[str, DerivedModelStatus]
 
 
 def run_archive_readiness(config: Config, *, deep: bool = False, probe_only: bool = False) -> ReadinessReport:
-    from polylogue.storage.derived_status import collect_derived_model_statuses_sync
+    from polylogue.storage.derived.derived_status import collect_derived_model_statuses_sync
     from polylogue.storage.repair import collect_archive_debt_statuses_sync
 
     checks: list[ReadinessCheck] = []

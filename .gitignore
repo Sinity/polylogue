@@ -31,7 +31,7 @@ venv/
 .mypy_cache/
 .ruff_cache/
 .benchmarks/
-artifacts/
+/artifacts/
 
 # Coverage
 .coverage

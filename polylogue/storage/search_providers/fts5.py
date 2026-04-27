@@ -9,10 +9,10 @@ from __future__ import annotations
 from pathlib import Path
 
 from polylogue.storage.backends.connection import connection_context, open_read_connection
-from polylogue.storage.fts_lifecycle import replace_fts_rows_for_messages_sync
+from polylogue.storage.fts.fts_lifecycle import replace_fts_rows_for_messages_sync
 from polylogue.storage.index import ensure_index
-from polylogue.storage.search_cache import invalidate_search_cache
-from polylogue.storage.store import MessageRecord
+from polylogue.storage.runtime import MessageRecord
+from polylogue.storage.search.cache import invalidate_search_cache
 
 
 class FTS5Provider:

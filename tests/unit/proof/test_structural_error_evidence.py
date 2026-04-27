@@ -22,7 +22,7 @@ from polylogue.proof.runners import (
 from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.blob_store import get_blob_store
 from polylogue.storage.repair import count_orphaned_messages_sync, repair_orphaned_messages
-from polylogue.storage.store import RawConversationRecord
+from polylogue.storage.runtime import RawConversationRecord
 from polylogue.surfaces.payloads import MachineErrorPayload
 from tests.infra.storage_records import ConversationBuilder, db_setup
 

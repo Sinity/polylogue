@@ -296,7 +296,7 @@ async def generate_archive(
     from polylogue.sources import iter_source_conversations
     from polylogue.storage.backends.async_sqlite import SQLiteBackend
     from polylogue.storage.repository import ConversationRepository
-    from polylogue.storage.store import RawConversationRecord
+    from polylogue.storage.runtime import RawConversationRecord
 
     t0 = time.monotonic()
     output_dir.mkdir(parents=True, exist_ok=True)

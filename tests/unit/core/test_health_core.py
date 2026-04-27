@@ -143,7 +143,7 @@ def test_run_health_embedding_status_contract(
         )
     )
     with patch(
-        "polylogue.storage.derived_status.collect_derived_model_statuses_sync",
+        "polylogue.storage.derived.derived_status.collect_derived_model_statuses_sync",
         return_value={
             "messages_fts": DerivedModelStatus(
                 name="messages_fts",

@@ -42,7 +42,7 @@ from polylogue.storage.backends.queries import (
 from polylogue.storage.backends.queries import stats as stats_q
 from polylogue.storage.backends.query_store import SQLiteQueryStore
 from polylogue.storage.backends.schema import SCHEMA_DDL, ensure_schema_async
-from polylogue.storage.store import (
+from polylogue.storage.runtime import (
     ActionEventRecord,
     MessageRecord,
     SessionPhaseRecord,

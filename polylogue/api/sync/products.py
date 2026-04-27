@@ -31,7 +31,7 @@ from polylogue.archive_products import (
     WorkThreadProduct,
     WorkThreadProductQuery,
 )
-from polylogue.storage.session_product_runtime import SessionProductStatusSnapshot
+from polylogue.storage.products.session.runtime import SessionProductStatusSnapshot
 
 if TYPE_CHECKING:
     from polylogue.api import Polylogue

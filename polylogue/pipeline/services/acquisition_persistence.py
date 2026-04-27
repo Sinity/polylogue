@@ -5,8 +5,8 @@ from __future__ import annotations
 from polylogue.logging import get_logger
 from polylogue.pipeline.stage_models import AcquireResult
 from polylogue.protocols import RawPersistenceStore
-from polylogue.storage.artifact_inspection import inspect_raw_artifact
-from polylogue.storage.store import RawConversationRecord
+from polylogue.storage.artifacts.inspection import inspect_raw_artifact
+from polylogue.storage.runtime import RawConversationRecord
 
 logger = get_logger(__name__)
 

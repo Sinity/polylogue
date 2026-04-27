@@ -7,7 +7,7 @@ import aiosqlite
 from polylogue.lib.json import json_document
 from polylogue.storage.backends.queries.mappers import _parse_json
 from polylogue.storage.run_state import RunCounts
-from polylogue.storage.store import RunRecord, _json_or_none
+from polylogue.storage.runtime import RunRecord, _json_or_none
 
 __all__ = [
     "get_latest_run",

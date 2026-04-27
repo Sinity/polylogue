@@ -25,9 +25,9 @@ from polylogue.schemas.verification_models import (
     ProviderSchemaVerification,
     SchemaVerificationReport,
 )
-from polylogue.storage.artifact_views import ArtifactCohortSummary
+from polylogue.storage.artifacts.views import ArtifactCohortSummary
 from polylogue.storage.backends.connection import open_connection
-from polylogue.storage.store import ArtifactObservationRecord
+from polylogue.storage.runtime import ArtifactObservationRecord
 from polylogue.types import ArtifactSupportStatus, Provider
 from polylogue.ui import create_ui
 from tests.infra.json_contracts import (
@@ -148,7 +148,7 @@ class TestReadinessReportConstruction:
 
 
 def test_check_records_scoped_maintenance_preview(cli_workspace: WorkspacePaths, cli_runner: CliRunner) -> None:
-    from polylogue.storage.session_product_rebuild import rebuild_session_products_sync
+    from polylogue.storage.products.session.rebuild import rebuild_session_products_sync
 
     db_path = cli_workspace["db_path"]
     (
@@ -188,7 +188,7 @@ def test_check_records_scoped_maintenance_preview(cli_workspace: WorkspacePaths,
 
 
 def test_check_records_scoped_maintenance_apply(cli_workspace: WorkspacePaths, cli_runner: CliRunner) -> None:
-    from polylogue.storage.session_product_rebuild import rebuild_session_products_sync
+    from polylogue.storage.products.session.rebuild import rebuild_session_products_sync
 
     db_path = cli_workspace["db_path"]
     (
@@ -230,7 +230,7 @@ def test_check_records_scoped_maintenance_apply(cli_workspace: WorkspacePaths, c
 def test_check_plain_preview_summarizes_changes_not_issues(
     cli_workspace: WorkspacePaths, cli_runner: CliRunner
 ) -> None:
-    from polylogue.storage.session_product_rebuild import rebuild_session_products_sync
+    from polylogue.storage.products.session.rebuild import rebuild_session_products_sync
 
     db_path = cli_workspace["db_path"]
     (

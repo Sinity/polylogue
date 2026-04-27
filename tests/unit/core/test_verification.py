@@ -26,7 +26,7 @@ from polylogue.schemas.verification_requests import (
     ArtifactProofRequest,
     SchemaVerificationRequest,
 )
-from polylogue.storage.artifact_inspection import artifact_observation_id
+from polylogue.storage.artifacts.inspection import artifact_observation_id
 from polylogue.storage.backends.connection import open_connection
 
 
@@ -482,8 +482,8 @@ class TestProveRawArtifactCoverage:
                 return package
             return None
 
-        monkeypatch.setattr("polylogue.storage.artifact_inspection.SchemaRegistry.resolve_payload", _resolve_payload)
-        monkeypatch.setattr("polylogue.storage.artifact_inspection.SchemaRegistry.get_package", _get_package)
+        monkeypatch.setattr("polylogue.storage.artifacts.inspection.SchemaRegistry.resolve_payload", _resolve_payload)
+        monkeypatch.setattr("polylogue.storage.artifacts.inspection.SchemaRegistry.get_package", _get_package)
 
         report = prove_raw_artifact_coverage(
             db_path=db_path,
@@ -644,8 +644,8 @@ class TestProveRawArtifactCoverage:
                 return package
             return None
 
-        monkeypatch.setattr("polylogue.storage.artifact_inspection.SchemaRegistry.resolve_payload", _resolve_payload)
-        monkeypatch.setattr("polylogue.storage.artifact_inspection.SchemaRegistry.get_package", _get_package)
+        monkeypatch.setattr("polylogue.storage.artifacts.inspection.SchemaRegistry.resolve_payload", _resolve_payload)
+        monkeypatch.setattr("polylogue.storage.artifacts.inspection.SchemaRegistry.get_package", _get_package)
 
         report = prove_raw_artifact_coverage(
             db_path=db_path,
@@ -750,8 +750,8 @@ class TestProveRawArtifactCoverage:
                 return package
             return None
 
-        monkeypatch.setattr("polylogue.storage.artifact_inspection.SchemaRegistry.resolve_payload", _resolve_payload)
-        monkeypatch.setattr("polylogue.storage.artifact_inspection.SchemaRegistry.get_package", _get_package)
+        monkeypatch.setattr("polylogue.storage.artifacts.inspection.SchemaRegistry.resolve_payload", _resolve_payload)
+        monkeypatch.setattr("polylogue.storage.artifacts.inspection.SchemaRegistry.get_package", _get_package)
 
         rows = list_artifact_observation_rows(
             db_path=db_path,
@@ -858,8 +858,8 @@ class TestProveRawArtifactCoverage:
                 return package
             return None
 
-        monkeypatch.setattr("polylogue.storage.artifact_inspection.SchemaRegistry.resolve_payload", _resolve_payload)
-        monkeypatch.setattr("polylogue.storage.artifact_inspection.SchemaRegistry.get_package", _get_package)
+        monkeypatch.setattr("polylogue.storage.artifacts.inspection.SchemaRegistry.resolve_payload", _resolve_payload)
+        monkeypatch.setattr("polylogue.storage.artifacts.inspection.SchemaRegistry.get_package", _get_package)
 
         report = prove_raw_artifact_coverage(
             db_path=db_path,

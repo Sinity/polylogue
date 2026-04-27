@@ -20,7 +20,7 @@ from polylogue.archive_products import (
 )
 from polylogue.lib.action_events import build_tool_calls_from_content_blocks
 from polylogue.lib.conversation_models import Conversation
-from polylogue.storage.search_query_support import normalize_fts5_query
+from polylogue.storage.search.query_support import normalize_fts5_query
 
 if TYPE_CHECKING:
     from polylogue.lib.message_models import Message

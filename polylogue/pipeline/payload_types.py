@@ -7,7 +7,7 @@ from pathlib import Path
 from typing_extensions import TypedDict
 
 from polylogue.lib.json import JSONDocument
-from polylogue.storage.session_product_runtime import SessionProductRefreshChunkPayload
+from polylogue.storage.products.session.runtime import SessionProductRefreshChunkPayload
 from polylogue.types import SearchProvider
 
 

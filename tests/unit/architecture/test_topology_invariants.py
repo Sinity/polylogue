@@ -89,12 +89,10 @@ def test_no_query_runtime_at_lib_root() -> None:
 # -------- #425: storage subpackages exist --------
 
 
-@pytest.mark.xfail(strict=True, reason="topology refactor: storage flat, see #425")
 def test_storage_has_products_session_subpackage() -> None:
     assert (ROOT / "polylogue" / "storage" / "products" / "session" / "__init__.py").exists()
 
 
-@pytest.mark.xfail(strict=True, reason="topology refactor: storage flat, see #425")
 def test_no_session_product_at_storage_root() -> None:
     files = {p.name for p in (ROOT / "polylogue" / "storage").glob("*.py")}
     legacy = {f for f in files if f.startswith("session_product_") or f.startswith("store_product_")}

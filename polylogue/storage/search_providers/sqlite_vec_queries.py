@@ -7,9 +7,9 @@ from typing import TYPE_CHECKING
 
 import httpx
 
-from polylogue.storage.embedding_stats import read_embedding_stats_sync
+from polylogue.storage.embeddings.embedding_stats import read_embedding_stats_sync
+from polylogue.storage.runtime import MessageRecord
 from polylogue.storage.search_providers.sqlite_vec_support import SqliteVecError, _serialize_f32, logger
-from polylogue.storage.store import MessageRecord
 
 
 class SqliteVecQueryMixin:

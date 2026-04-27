@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
-from polylogue.storage.store import RawConversationRecord
+from polylogue.storage.runtime import RawConversationRecord
 from tests.infra.storage_records import make_conversation, make_raw_conversation
 
 # test_db and test_conn fixtures are in conftest.py

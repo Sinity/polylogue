@@ -32,7 +32,7 @@ from polylogue.sources.parsers.base import (
     RawConversationData,
 )
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
-from polylogue.storage.store import RawConversationRecord
+from polylogue.storage.runtime import RawConversationRecord
 from polylogue.types import ContentBlockType, Provider, ValidationStatus
 from tests.infra.strategies import (
     AcquisitionInputSpec,

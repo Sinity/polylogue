@@ -16,7 +16,7 @@ from polylogue.pipeline.services.validation_flow import (
 )
 from polylogue.pipeline.stage_models import ValidateResult
 from polylogue.protocols import ProgressCallback
-from polylogue.storage.store import RawConversationRecord
+from polylogue.storage.runtime import RawConversationRecord
 from polylogue.types import ValidationMode
 
 if TYPE_CHECKING:

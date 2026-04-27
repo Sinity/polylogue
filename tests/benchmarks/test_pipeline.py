@@ -19,11 +19,11 @@ from polylogue.lib.json import JSONDocument
 from polylogue.lib.viewports import classify_tool
 from polylogue.pipeline.prepare import PrepareCache
 from polylogue.pipeline.semantic_metadata import extract_tool_metadata
-from polylogue.storage.action_event_rebuild_runtime import (
+from polylogue.storage.action_events.rebuild_runtime import (
     rebuild_action_event_read_model_sync,
     valid_action_event_source_ids_sync,
 )
-from polylogue.storage.fts_lifecycle import repair_fts_index_sync
+from polylogue.storage.fts.fts_lifecycle import repair_fts_index_sync
 from polylogue.storage.index import rebuild_index, update_index_for_conversations
 from tests.benchmarks.helpers import (
     BenchmarkFixture,

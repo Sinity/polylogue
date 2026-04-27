@@ -17,7 +17,7 @@ from polylogue.protocols import ProgressCallback
 from polylogue.sources.drive_types import DriveUILike
 from polylogue.sources.source_acquisition import iter_source_raw_data
 from polylogue.storage.cursor_state import CursorStatePayload
-from polylogue.storage.store import RawConversationRecord
+from polylogue.storage.runtime import RawConversationRecord
 
 if TYPE_CHECKING:
     from polylogue.config import DriveConfig, Source

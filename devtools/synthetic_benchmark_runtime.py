@@ -279,7 +279,7 @@ async def run_startup_readiness_campaign(db_path: Path) -> CampaignResult:
 
 def run_action_event_materialization_campaign(db_path: Path) -> CampaignResult:
     """Benchmark full action-event read-model rebuild."""
-    from polylogue.storage.action_event_rebuild_runtime import rebuild_action_event_read_model_sync
+    from polylogue.storage.action_events.rebuild_runtime import rebuild_action_event_read_model_sync
     from polylogue.storage.backends.connection import open_connection
 
     stats_before = _db_row_counts(db_path)
@@ -315,7 +315,7 @@ def run_action_event_materialization_campaign(db_path: Path) -> CampaignResult:
 def run_session_product_materialization_campaign(db_path: Path) -> CampaignResult:
     """Benchmark full durable session-product rebuild."""
     from polylogue.storage.backends.connection import open_connection
-    from polylogue.storage.session_product_rebuild import rebuild_session_products_sync
+    from polylogue.storage.products.session.rebuild import rebuild_session_products_sync
 
     stats_before = _session_product_table_counts(db_path)
 

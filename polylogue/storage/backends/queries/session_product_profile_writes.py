@@ -6,12 +6,12 @@ from collections.abc import Sequence
 
 import aiosqlite
 
-from polylogue.storage.session_product_storage import (
+from polylogue.storage.products.session.storage import (
     build_insert_sql,
     session_profile_insert_columns,
     session_profile_insert_values,
 )
-from polylogue.storage.store import SessionProfileRecord
+from polylogue.storage.runtime import SessionProfileRecord
 
 _ASYNC_COLUMN_CACHE: dict[tuple[int, str], bool] = {}
 

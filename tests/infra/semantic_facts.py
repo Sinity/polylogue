@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from polylogue.lib.json import JSONDocument, json_document_list
 from polylogue.lib.models import Conversation
 from polylogue.lib.semantic_facts import build_conversation_semantic_facts
-from polylogue.storage.store import AttachmentRecord, ConversationRecord, MessageRecord
+from polylogue.storage.runtime import AttachmentRecord, ConversationRecord, MessageRecord
 
 
 def _string_value(value: object) -> str:

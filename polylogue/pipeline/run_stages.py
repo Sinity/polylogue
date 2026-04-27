@@ -24,8 +24,8 @@ if TYPE_CHECKING:
     from polylogue.pipeline.stage_models import AcquireResult
     from polylogue.protocols import ProgressCallback
     from polylogue.storage.backends.async_sqlite import SQLiteBackend
+    from polylogue.storage.products.session.runtime import SessionProductCounts
     from polylogue.storage.repository import ConversationRepository
-    from polylogue.storage.session_product_runtime import SessionProductCounts
 
 
 @dataclass(slots=True)
@@ -197,7 +197,7 @@ async def execute_materialize_stage(
     progress_callback: ProgressCallback | None = None,
 ) -> MaterializeStageOutcome:
     from polylogue.pipeline.services.ingest_batch import refresh_session_products_bulk
-    from polylogue.storage.session_product_rebuild import rebuild_session_products_async
+    from polylogue.storage.products.session.rebuild import rebuild_session_products_async
 
     if stage in {"all", "reprocess"}:
         conversation_ids = sorted(processed_ids)

@@ -21,7 +21,7 @@ from polylogue.storage.backends.queries.mappers_archive import (
 )
 from polylogue.storage.hydrators import conversation_from_records
 from polylogue.storage.repository import ConversationRepository
-from polylogue.storage.store import AttachmentRecord, ContentBlockRecord, ConversationRecord, MessageRecord
+from polylogue.storage.runtime import AttachmentRecord, ContentBlockRecord, ConversationRecord, MessageRecord
 from polylogue.types import AttachmentId, ConversationId, MessageId
 from tests.infra.semantic_facts import ConversationFacts
 from tests.infra.storage_records import ConversationBuilder, JSONRecord, db_setup

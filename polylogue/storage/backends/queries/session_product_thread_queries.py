@@ -5,9 +5,9 @@ from __future__ import annotations
 import aiosqlite
 
 from polylogue.storage.backends.queries.mappers import _row_to_work_thread_record
+from polylogue.storage.products.session.storage import work_thread_insert_values
 from polylogue.storage.query_models import WorkThreadListQuery
-from polylogue.storage.session_product_storage import work_thread_insert_values
-from polylogue.storage.store import WorkThreadRecord
+from polylogue.storage.runtime import WorkThreadRecord
 
 __all__ = [
     "get_work_thread",

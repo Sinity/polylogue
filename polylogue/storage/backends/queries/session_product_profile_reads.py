@@ -6,7 +6,7 @@ import aiosqlite
 
 from polylogue.storage.backends.queries.mappers import _row_to_session_profile_record
 from polylogue.storage.query_models import SessionProfileListQuery
-from polylogue.storage.store import SessionProfileRecord
+from polylogue.storage.runtime import SessionProfileRecord
 
 __all__ = [
     "get_session_profile",

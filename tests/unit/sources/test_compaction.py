@@ -438,7 +438,7 @@ class TestProfileCompactionCounting:
 
     def test_profile_evidence_payload_populates_compaction(self) -> None:
         from polylogue.lib.session_profile_models import SessionProfile
-        from polylogue.storage.session_product_profiles import profile_evidence_payload
+        from polylogue.storage.products.session.profiles import profile_evidence_payload
 
         profile = SessionProfile(
             conversation_id="test",
@@ -471,7 +471,7 @@ class TestProfileCompactionCounting:
 
     def test_profile_evidence_payload_zero_compaction(self) -> None:
         from polylogue.lib.session_profile_models import SessionProfile
-        from polylogue.storage.session_product_profiles import profile_evidence_payload
+        from polylogue.storage.products.session.profiles import profile_evidence_payload
 
         profile = SessionProfile(
             conversation_id="test",

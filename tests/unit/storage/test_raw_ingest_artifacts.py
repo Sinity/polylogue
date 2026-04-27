@@ -7,12 +7,12 @@ import pytest
 
 from polylogue.pipeline.services.planning_backlog import collect_parse_backlog, collect_validation_backlog
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
-from polylogue.storage.raw_ingest_artifacts import (
+from polylogue.storage.raw.artifacts import (
     RawIngestArtifactState,
     parse_backlog_query_spec,
     validation_backlog_query_spec,
 )
-from polylogue.storage.store import RawConversationRecord
+from polylogue.storage.runtime import RawConversationRecord
 from polylogue.types import ValidationStatus
 
 

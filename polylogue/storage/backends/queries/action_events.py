@@ -5,7 +5,7 @@ from __future__ import annotations
 import aiosqlite
 
 from polylogue.storage.backends.queries.mappers import _row_to_action_event
-from polylogue.storage.store import ActionEventRecord, _json_array_or_none
+from polylogue.storage.runtime import ActionEventRecord, _json_array_or_none
 
 __all__ = [
     "get_action_events",

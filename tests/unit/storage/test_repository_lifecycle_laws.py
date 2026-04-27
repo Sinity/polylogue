@@ -174,7 +174,7 @@ async def test_repository_resave_existing_conversation_is_idempotent(workspace_e
 
 def test_domain_conversation_to_record_generates_content_hash(workspace_env: Mapping[str, Path]) -> None:
     """Hydrated domain conversations remain convertible even without stored metadata hashes."""
-    from polylogue.storage.repository_write_conversations import conversation_to_record
+    from polylogue.storage.repository.archive.writes.conversations import conversation_to_record
 
     scenario = ArchiveScenario(
         name="domain-record",

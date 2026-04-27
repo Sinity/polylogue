@@ -47,8 +47,8 @@ from polylogue.storage.conversation_replacement import (
     recount_and_prune_attachments_sync,
     replace_conversation_runtime_state_sync,
 )
-from polylogue.storage.raw_state_models import RawConversationStateUpdate
-from polylogue.storage.store import RawConversationRecord
+from polylogue.storage.raw.models import RawConversationStateUpdate
+from polylogue.storage.runtime import RawConversationRecord
 
 if TYPE_CHECKING:
     import aiosqlite
@@ -808,7 +808,7 @@ def _process_ingest_batch_sync(
     ingest_workers: int | None,
     measure_ingest_result_size: bool,
 ) -> _IngestBatchSummary:
-    from polylogue.storage.fts_lifecycle import suspend_fts_triggers_sync
+    from polylogue.storage.fts.fts_lifecycle import suspend_fts_triggers_sync
 
     summary = _new_ingest_batch_summary(raw_records, ingest_workers=ingest_workers)
     worker_request = _make_ingest_worker_request(
@@ -1163,7 +1163,7 @@ async def refresh_session_products_bulk(
     thread_elapsed = 0.0
     aggregate_elapsed = 0.0
     try:
-        from polylogue.storage.session_product_refresh import (
+        from polylogue.storage.products.session.refresh import (
             _apply_session_product_conversation_updates_async,
             _refresh_thread_roots_async,
             refresh_async_provider_day_aggregates,

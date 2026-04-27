@@ -6,14 +6,14 @@ from collections.abc import Sequence
 
 import aiosqlite
 
-from polylogue.storage.session_product_storage import (
+from polylogue.storage.products.session.storage import (
     build_insert_sql,
     session_phase_insert_columns,
     session_phase_insert_values,
     session_work_event_insert_columns,
     session_work_event_insert_values,
 )
-from polylogue.storage.store import SessionPhaseRecord, SessionWorkEventRecord
+from polylogue.storage.runtime import SessionPhaseRecord, SessionWorkEventRecord
 
 __all__ = [
     "replace_session_phases",

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import aiosqlite
 
-from polylogue.storage.store import AttachmentRecord, _json_or_none, _make_ref_id
+from polylogue.storage.runtime import AttachmentRecord, _json_or_none, _make_ref_id
 
 
 async def save_attachments(

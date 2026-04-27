@@ -19,13 +19,13 @@ from polylogue.storage.backends.queries.stats import (
     ProviderMetricsRow,
 )
 from polylogue.storage.query_models import ConversationRecordQuery
-from polylogue.storage.search_models import ConversationSearchEvidenceHit, ConversationSearchResult
-from polylogue.storage.store import (
+from polylogue.storage.runtime import (
     AttachmentRecord,
     ContentBlockRecord,
     ConversationRecord,
     MessageRecord,
 )
+from polylogue.storage.search.models import ConversationSearchEvidenceHit, ConversationSearchResult
 
 
 class SQLiteQueryStoreArchiveMixin:

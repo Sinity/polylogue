@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import aiosqlite
 
-from polylogue.storage.store import ArtifactObservationRecord
+from polylogue.storage.runtime import ArtifactObservationRecord
 
 __all__ = ["save_artifact_observation"]
 

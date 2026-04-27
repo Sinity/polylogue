@@ -16,9 +16,9 @@ from polylogue.product_readiness import (
     build_product_readiness_report,
 )
 from polylogue.storage.backends.connection import open_connection
-from polylogue.storage.session_product_rebuild import rebuild_session_products_sync
-from polylogue.storage.session_product_status import session_product_status_sync
-from polylogue.storage.store_constants import SESSION_PRODUCT_MATERIALIZER_VERSION
+from polylogue.storage.products.session.rebuild import rebuild_session_products_sync
+from polylogue.storage.products.session.status import session_product_status_sync
+from polylogue.storage.runtime.store_constants import SESSION_PRODUCT_MATERIALIZER_VERSION
 from tests.infra.storage_records import ConversationBuilder
 
 

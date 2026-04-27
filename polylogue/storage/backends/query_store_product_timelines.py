@@ -12,7 +12,7 @@ from polylogue.storage.backends.queries import (
     session_product_timeline_reads as session_product_timelines_q,
 )
 from polylogue.storage.query_models import SessionTimelineListQuery
-from polylogue.storage.store import SessionPhaseRecord, SessionWorkEventRecord
+from polylogue.storage.runtime import SessionPhaseRecord, SessionWorkEventRecord
 
 
 class SQLiteQueryStoreProductTimelinesMixin:

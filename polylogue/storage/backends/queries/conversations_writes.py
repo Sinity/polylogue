@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import aiosqlite
 
-from polylogue.storage.store import ConversationRecord, _json_or_none
+from polylogue.storage.runtime import ConversationRecord, _json_or_none
 
 
 async def conversation_exists_by_hash(conn: aiosqlite.Connection, content_hash: str) -> bool:

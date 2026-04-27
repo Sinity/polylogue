@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Protocol
 
 from typing_extensions import TypedDict
 
-from polylogue.storage.embedding_stats_models import EmbeddingStatsSnapshot
+from polylogue.storage.embeddings.models import EmbeddingStatsSnapshot
 
 if TYPE_CHECKING:
     from polylogue.config import Config
@@ -141,7 +141,7 @@ def _payload_from_stats(
 def embedding_status_payload(env: _HasConfig) -> EmbeddingStatusPayload:
     """Read canonical embedding-status statistics for operator surfaces."""
     from polylogue.storage.backends.connection import open_read_connection
-    from polylogue.storage.embedding_stats import read_embedding_stats_sync
+    from polylogue.storage.embeddings.embedding_stats import read_embedding_stats_sync
 
     with open_read_connection(env.config.db_path) as conn:
         total_conversations = _total_conversations(conn)

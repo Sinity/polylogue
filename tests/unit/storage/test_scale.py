@@ -28,7 +28,7 @@ from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.index import rebuild_index
 from polylogue.storage.query_models import ConversationRecordQuery
 from polylogue.storage.repository import ConversationRepository
-from polylogue.storage.store import ContentBlockRecord
+from polylogue.storage.runtime import ContentBlockRecord
 from tests.infra.storage_records import make_content_block, make_conversation, make_message
 
 # Number of conversations for scale tests.
@@ -366,7 +366,7 @@ class TestPerformanceBudget:
                     )
                 )
         await backend.save_content_blocks(blocks)
-        from polylogue.storage.action_event_rebuild_runtime import rebuild_action_event_read_model_sync
+        from polylogue.storage.action_events.rebuild_runtime import rebuild_action_event_read_model_sync
 
         with open_connection(backend.db_path) as conn:
             rebuild_action_event_read_model_sync(conn)

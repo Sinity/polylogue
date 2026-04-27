@@ -5,7 +5,7 @@ from __future__ import annotations
 import aiosqlite
 
 from polylogue.maintenance.targets import build_maintenance_target_catalog
-from polylogue.storage.search_models import ConversationSearchEvidenceHit, ConversationSearchResult
+from polylogue.storage.search.models import ConversationSearchEvidenceHit, ConversationSearchResult
 
 _MAINTENANCE_TARGET_CATALOG = build_maintenance_target_catalog()
 _MESSAGE_SEARCH_REPAIR_HINT = _MAINTENANCE_TARGET_CATALOG.repair_hint(("dangling_fts",), include_run_all=True)
@@ -22,7 +22,7 @@ async def search_conversation_hits(
     providers: list[str] | None = None,
 ) -> ConversationSearchResult:
     from polylogue.errors import DatabaseError
-    from polylogue.storage.fts_lifecycle import message_fts_readiness_async
+    from polylogue.storage.fts.fts_lifecycle import message_fts_readiness_async
 
     readiness = await message_fts_readiness_async(conn)
     if not bool(readiness["exists"]):
@@ -54,7 +54,7 @@ async def search_conversation_evidence_hits(
     since: str | None = None,
 ) -> list[ConversationSearchEvidenceHit]:
     from polylogue.errors import DatabaseError
-    from polylogue.storage.fts_lifecycle import message_fts_readiness_async
+    from polylogue.storage.fts.fts_lifecycle import message_fts_readiness_async
     from polylogue.storage.search import build_ranked_conversation_search_query
 
     readiness = await message_fts_readiness_async(conn)
@@ -105,7 +105,7 @@ async def search_action_conversation_hits(
     providers: list[str] | None = None,
 ) -> ConversationSearchResult:
     from polylogue.errors import DatabaseError
-    from polylogue.storage.action_event_status import action_event_read_model_status_async
+    from polylogue.storage.action_events.status import action_event_read_model_status_async
     from polylogue.storage.search import build_ranked_action_search_query
 
     status = await action_event_read_model_status_async(conn)

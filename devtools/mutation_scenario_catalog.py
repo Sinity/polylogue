@@ -207,7 +207,7 @@ MUTATION_CAMPAIGNS: dict[str, MutationCampaign] = {
     "repository": MutationCampaign(
         name="repository",
         description="Repository query, projection, and CRUD contracts",
-        paths_to_mutate=("polylogue/storage/repository.py",),
+        paths_to_mutate=("polylogue/storage/repository/__init__.py",),
         tests=(
             "tests/unit/storage/test_store_ops.py",
             "tests/unit/storage/test_tree_laws.py",

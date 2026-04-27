@@ -29,7 +29,7 @@ from polylogue.storage.hydrators import (
     conversation_summary_from_record,
     message_from_record,
 )
-from polylogue.storage.store import (
+from polylogue.storage.runtime import (
     MessageRecord,
 )
 from polylogue.types import ContentHash, ConversationId, MessageId, Provider, SemanticBlockType

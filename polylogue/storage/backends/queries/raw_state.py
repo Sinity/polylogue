@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 import aiosqlite
 
 from polylogue.storage.backends.connection import _build_source_scope_filter
-from polylogue.storage.raw_state_models import UNSET, RawConversationStateUpdate, _RawStateUnset
+from polylogue.storage.raw.models import UNSET, RawConversationStateUpdate, _RawStateUnset
 from polylogue.types import Provider, ValidationMode, ValidationStatus
 
 EFFECTIVE_RAW_PROVIDER_SQL = "COALESCE(payload_provider, provider_name)"

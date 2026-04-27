@@ -14,12 +14,12 @@ from polylogue.sources.parsers.drive import parse_chunked_prompt
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.backends.query_store import SQLiteQueryStore
 from polylogue.storage.repository import ConversationRepository
-from polylogue.storage.repository_archive_search import RepositoryArchiveSearchMixin
-from polylogue.storage.search_models import ConversationSearchEvidenceHit, ConversationSearchResult
+from polylogue.storage.repository.archive.search import RepositoryArchiveSearchMixin
+from polylogue.storage.runtime import ConversationRecord
+from polylogue.storage.search.models import ConversationSearchEvidenceHit, ConversationSearchResult
 from polylogue.storage.search_providers.hybrid_conversations import (
     _resolve_ranked_conversation_hits,
 )
-from polylogue.storage.store import ConversationRecord
 from polylogue.types import ContentHash, ConversationId, Provider
 
 

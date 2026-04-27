@@ -28,7 +28,7 @@ from polylogue.storage.backends.queries.mappers_support import (
     _row_int,
     _row_text,
 )
-from polylogue.storage.store import SessionPhaseRecord, SessionWorkEventRecord, WorkThreadRecord
+from polylogue.storage.runtime import SessionPhaseRecord, SessionWorkEventRecord, WorkThreadRecord
 from polylogue.types import ConversationId
 
 

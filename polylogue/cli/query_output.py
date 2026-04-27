@@ -53,7 +53,7 @@ if TYPE_CHECKING:
     from polylogue.lib.query_spec import ConversationQuerySpec
     from polylogue.lib.search_hits import ConversationSearchHit
     from polylogue.protocols import ConversationOutputStore
-    from polylogue.storage.store import MessageRecord
+    from polylogue.storage.runtime import MessageRecord
 
 ConversationStats: TypeAlias = dict[str, int]
 MACHINE_OUTPUT_FORMATS = frozenset({"json", "yaml", "csv"})

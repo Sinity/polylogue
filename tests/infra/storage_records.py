@@ -16,7 +16,7 @@ from polylogue.lib.json import dumps, require_json_document, require_json_value
 from polylogue.lib.roles import Role
 from polylogue.pipeline.prepare import _timestamp_sort_key
 from polylogue.storage.backends.connection import connection_context, open_connection
-from polylogue.storage.store import (
+from polylogue.storage.runtime import (
     AttachmentRecord,
     ContentBlockRecord,
     ConversationRecord,

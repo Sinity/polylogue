@@ -8,8 +8,8 @@ import aiosqlite
 
 from polylogue.storage.backends.connection import _build_provider_scope_filter
 from polylogue.storage.backends.queries.mappers import _json_object, _parse_json
-from polylogue.storage.search_models import ConversationSearchEvidenceHit
-from polylogue.storage.store import AttachmentRecord
+from polylogue.storage.runtime import AttachmentRecord
+from polylogue.storage.search.models import ConversationSearchEvidenceHit
 from polylogue.types import ConversationId
 
 

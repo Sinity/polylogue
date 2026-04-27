@@ -51,8 +51,8 @@ from polylogue.lib.query_spec import ConversationQuerySpec, QuerySpecError
 from polylogue.lib.roles import Role
 from polylogue.lib.search_hits import ConversationSearchHit
 from polylogue.services import build_runtime_services
-from polylogue.storage.action_event_artifacts import ActionEventArtifactState
-from polylogue.storage.store import ContentBlockRecord, ConversationRecord, MessageRecord
+from polylogue.storage.action_events.artifacts import ActionEventArtifactState
+from polylogue.storage.runtime import ContentBlockRecord, ConversationRecord, MessageRecord
 from polylogue.types import ContentBlockType, ContentHash, ConversationId, MessageId, Provider, SemanticBlockType
 from polylogue.ui.facade_console import ConsoleLike
 from tests.infra.builders import make_conv, make_msg

@@ -299,7 +299,7 @@ async def run_sources(
         # stage rebuilds FTS at the end anyway, making trigger updates
         # pure waste during ingest.
         if stage_sequence_suspends_fts(stage_specs):
-            from polylogue.storage.fts_lifecycle import suspend_fts_triggers_async
+            from polylogue.storage.fts.fts_lifecycle import suspend_fts_triggers_async
 
             async with active_backend.connection() as conn:
                 await suspend_fts_triggers_async(conn)
@@ -323,7 +323,7 @@ async def run_sources(
         # next full rebuild; surface it loudly so operators see degraded state
         # in logs rather than discovering stale results later.
         try:
-            from polylogue.storage.fts_lifecycle import restore_fts_triggers_async
+            from polylogue.storage.fts.fts_lifecycle import restore_fts_triggers_async
 
             async with active_backend.connection() as conn:
                 await restore_fts_triggers_async(conn)

@@ -45,7 +45,7 @@ from polylogue.lib.query_miss_diagnostics import QueryMissDiagnostics, QueryMiss
 from polylogue.lib.query_spec import ConversationQuerySpec
 from polylogue.lib.search_hits import ConversationSearchHit
 from polylogue.lib.stats import ArchiveStats
-from polylogue.storage.session_product_runtime import SessionProductCounts
+from polylogue.storage.products.session.runtime import SessionProductCounts
 from polylogue.types import ConversationId, Provider
 from tests.infra.builders import make_conv, make_msg
 from tests.infra.mcp import (

@@ -41,9 +41,9 @@ from polylogue.pipeline.services.ingest_worker import (
     _make_ref_id,
 )
 from polylogue.storage.backends.connection import open_connection
-from polylogue.storage.raw_state_models import RawConversationStateUpdate
-from polylogue.storage.session_product_refresh import SessionProductRefreshChunkObservation
-from polylogue.storage.store import RawConversationRecord
+from polylogue.storage.products.session.refresh import SessionProductRefreshChunkObservation
+from polylogue.storage.raw.models import RawConversationStateUpdate
+from polylogue.storage.runtime import RawConversationRecord
 from polylogue.types import AttachmentId, ContentBlockType, ContentHash, ConversationId, MessageId
 
 
@@ -572,15 +572,15 @@ async def test_refresh_session_products_bulk_dedupes_related_refreshes(
     refresh_aggregates = AsyncMock()
 
     monkeypatch.setattr(
-        "polylogue.storage.session_product_refresh._apply_session_product_conversation_updates_async",
+        "polylogue.storage.products.session.refresh._apply_session_product_conversation_updates_async",
         _fake_apply,
     )
     monkeypatch.setattr(
-        "polylogue.storage.session_product_refresh._refresh_thread_roots_async",
+        "polylogue.storage.products.session.refresh._refresh_thread_roots_async",
         refresh_thread_roots,
     )
     monkeypatch.setattr(
-        "polylogue.storage.session_product_refresh.refresh_async_provider_day_aggregates",
+        "polylogue.storage.products.session.refresh.refresh_async_provider_day_aggregates",
         refresh_aggregates,
     )
 

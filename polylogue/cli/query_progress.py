@@ -15,7 +15,7 @@ from polylogue.lib.query_retrieval_candidates import uses_action_read_model
 from polylogue.lib.query_spec import ConversationQuerySpec
 
 if TYPE_CHECKING:
-    from polylogue.storage.action_event_artifacts import ActionEventArtifactState
+    from polylogue.storage.action_events.artifacts import ActionEventArtifactState
 
 _T = TypeVar("_T")
 

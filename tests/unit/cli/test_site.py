@@ -10,7 +10,7 @@ from click.testing import CliRunner
 
 from polylogue.cli import cli
 from polylogue.storage.backends.connection import open_connection
-from polylogue.storage.store import RunRecord
+from polylogue.storage.runtime import RunRecord
 from tests.infra.storage_records import ConversationBuilder, record_run
 
 

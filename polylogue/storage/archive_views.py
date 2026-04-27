@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 from pydantic import BaseModel
 
-from polylogue.storage.store import AttachmentRecord, ConversationRecord, MessageRecord
+from polylogue.storage.runtime import AttachmentRecord, ConversationRecord, MessageRecord
 
 
 class ExistingConversation(BaseModel):

@@ -11,7 +11,7 @@ import aiosqlite
 from polylogue.storage.backends.queries import publications as publications_q
 from polylogue.storage.backends.queries import raw as raw_queries
 from polylogue.storage.backends.queries import runs as runs_q
-from polylogue.storage.store import PublicationRecord, RunRecord
+from polylogue.storage.runtime import PublicationRecord, RunRecord
 
 
 class SQLiteQueryStoreMaintenanceMixin:

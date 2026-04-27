@@ -18,8 +18,8 @@ from polylogue.maintenance.targets import (
     build_maintenance_target_catalog,
 )
 from polylogue.protocols import ProgressCallback
-from polylogue.storage.action_event_artifacts import ActionEventArtifactState
-from polylogue.storage.session_product_runtime import SessionProductReadyFlag, SessionProductStatusSnapshot
+from polylogue.storage.action_events.artifacts import ActionEventArtifactState
+from polylogue.storage.products.session.runtime import SessionProductReadyFlag, SessionProductStatusSnapshot
 
 logger = get_logger(__name__)
 _MAINTENANCE_TARGET_CATALOG = build_maintenance_target_catalog()
@@ -396,7 +396,7 @@ def collect_archive_debt_statuses_sync(
     include_expensive: bool = True,
     probe_only: bool = False,
 ) -> dict[str, ArchiveDebtStatus]:
-    from polylogue.storage.derived_status import collect_derived_model_statuses_sync
+    from polylogue.storage.derived.derived_status import collect_derived_model_statuses_sync
 
     statuses = derived_statuses or collect_derived_model_statuses_sync(conn, verify_full=include_expensive)
 
@@ -702,8 +702,8 @@ def repair_session_products(
     progress_total: int | None = None,
 ) -> RepairResult:
     from polylogue.storage.backends.connection import connection_context
-    from polylogue.storage.session_product_rebuild import rebuild_session_products_sync
-    from polylogue.storage.session_product_status import session_product_status_sync
+    from polylogue.storage.products.session.rebuild import rebuild_session_products_sync
+    from polylogue.storage.products.session.status import session_product_status_sync
 
     try:
         with connection_context(None) as conn:
@@ -755,14 +755,14 @@ def preview_session_products(*, count: int) -> RepairResult:
 
 
 def repair_action_event_read_model(config: Config, dry_run: bool = False) -> RepairResult:
-    from polylogue.storage.action_event_rebuild_runtime import (
+    from polylogue.storage.action_events.rebuild_runtime import (
         action_event_repair_candidates_sync,
         rebuild_action_event_read_model_sync,
         valid_action_event_source_ids_sync,
     )
-    from polylogue.storage.action_event_status import action_event_read_model_status_sync
+    from polylogue.storage.action_events.status import action_event_read_model_status_sync
     from polylogue.storage.backends.connection import connection_context
-    from polylogue.storage.fts_lifecycle import repair_fts_index_sync
+    from polylogue.storage.fts.fts_lifecycle import repair_fts_index_sync
 
     try:
         with connection_context(None) as conn:
@@ -820,7 +820,7 @@ def preview_action_event_read_model(*, count: int) -> RepairResult:
 
 def repair_dangling_fts(config: Config, dry_run: bool = False) -> RepairResult:
     from polylogue.storage.backends.connection import connection_context
-    from polylogue.storage.fts_lifecycle_sql import FTS_INDEXABLE_MESSAGE_COUNT_SQL
+    from polylogue.storage.fts.sql import FTS_INDEXABLE_MESSAGE_COUNT_SQL
 
     try:
         with connection_context(None) as conn:

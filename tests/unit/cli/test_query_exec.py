@@ -27,7 +27,7 @@ from polylogue.lib.models import ConversationSummary
 from polylogue.lib.models import Message as MessageModel
 from polylogue.paths.sanitize import conversation_render_root
 from polylogue.services import build_runtime_services
-from polylogue.storage.action_event_artifacts import ActionEventArtifactState
+from polylogue.storage.action_events.artifacts import ActionEventArtifactState
 from polylogue.types import ConversationId, Provider
 from tests.infra.builders import make_conv, make_msg
 
