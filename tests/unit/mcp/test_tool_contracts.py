@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock, call, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -909,7 +909,11 @@ class TestStatsTool:
 
 class TestMutationTools:
     def test_add_tag_success(self, mcp_server: MCPServerUnderTest) -> None:
-        with patch("polylogue.mcp.server._get_tag_store") as mock_get_tag_store:
+        with (
+            patch("polylogue.mcp.server._get_query_store") as mock_get_query_store,
+            patch("polylogue.mcp.server._get_tag_store") as mock_get_tag_store,
+        ):
+            mock_get_query_store.return_value = make_query_store_mock(resolved_id="test:conv-123")
             mock_tag_store = make_tag_store_mock()
             mock_tag_store.add_tag.return_value = None
             mock_get_tag_store.return_value = mock_tag_store
@@ -923,7 +927,11 @@ class TestMutationTools:
         mock_tag_store.add_tag.assert_called_once_with("test:conv-123", "important")
 
     def test_add_tag_error(self, mcp_server: MCPServerUnderTest) -> None:
-        with patch("polylogue.mcp.server._get_tag_store") as mock_get_tag_store:
+        with (
+            patch("polylogue.mcp.server._get_query_store") as mock_get_query_store,
+            patch("polylogue.mcp.server._get_tag_store") as mock_get_tag_store,
+        ):
+            mock_get_query_store.return_value = make_query_store_mock(resolved_id="test:conv-123")
             mock_tag_store = make_tag_store_mock()
             mock_tag_store.add_tag.side_effect = ValueError("Invalid tag")
             mock_get_tag_store.return_value = mock_tag_store
@@ -936,7 +944,11 @@ class TestMutationTools:
         assert "Invalid tag" in parsed["error"]
 
     def test_remove_tag_success(self, mcp_server: MCPServerUnderTest) -> None:
-        with patch("polylogue.mcp.server._get_tag_store") as mock_get_tag_store:
+        with (
+            patch("polylogue.mcp.server._get_query_store") as mock_get_query_store,
+            patch("polylogue.mcp.server._get_tag_store") as mock_get_tag_store,
+        ):
+            mock_get_query_store.return_value = make_query_store_mock(resolved_id="test:conv-123")
             mock_tag_store = make_tag_store_mock()
             mock_tag_store.remove_tag.return_value = None
             mock_get_tag_store.return_value = mock_tag_store
@@ -950,7 +962,11 @@ class TestMutationTools:
         mock_tag_store.remove_tag.assert_called_once_with("test:conv-123", "important")
 
     def test_remove_tag_error(self, mcp_server: MCPServerUnderTest) -> None:
-        with patch("polylogue.mcp.server._get_tag_store") as mock_get_tag_store:
+        with (
+            patch("polylogue.mcp.server._get_query_store") as mock_get_query_store,
+            patch("polylogue.mcp.server._get_tag_store") as mock_get_tag_store,
+        ):
+            mock_get_query_store.return_value = make_query_store_mock(resolved_id="test:conv-123")
             mock_tag_store = make_tag_store_mock()
             mock_tag_store.remove_tag.side_effect = RuntimeError("Backend error")
             mock_get_tag_store.return_value = mock_tag_store
@@ -965,8 +981,12 @@ class TestMutationTools:
         self,
         mcp_server: MCPServerUnderTest,
     ) -> None:
+        # The current bulk_tag implementation delegates to bulk_add_tags;
+        # the previous N×M add_tag fan-out was replaced when the bulk method
+        # landed. The applied_count is whatever bulk_add_tags returns.
         with patch("polylogue.mcp.server._get_tag_store") as mock_get_tag_store:
             mock_tag_store = make_tag_store_mock()
+            mock_tag_store.bulk_add_tags = AsyncMock(return_value=4)
             mock_get_tag_store.return_value = mock_tag_store
 
             result = invoke_surface(
@@ -982,14 +1002,7 @@ class TestMutationTools:
             "tag_count": 2,
             "applied_count": 4,
         }
-        mock_tag_store.add_tag.assert_has_awaits(
-            [
-                call("conv-1", "review"),
-                call("conv-1", "important"),
-                call("conv-2", "review"),
-                call("conv-2", "important"),
-            ]
-        )
+        mock_tag_store.bulk_add_tags.assert_called_once_with(["conv-1", "conv-2"], ["review", "important"])
 
     def test_bulk_tag_conversations_rejects_empty_inputs(self, mcp_server: MCPServerUnderTest) -> None:
         result = invoke_surface(
@@ -1032,7 +1045,11 @@ class TestMutationTools:
         assert json.loads(result) == {"key": "value", "count": 42}
 
     def test_set_metadata_string_value(self, mcp_server: MCPServerUnderTest) -> None:
-        with patch("polylogue.mcp.server._get_tag_store") as mock_get_tag_store:
+        with (
+            patch("polylogue.mcp.server._get_query_store") as mock_get_query_store,
+            patch("polylogue.mcp.server._get_tag_store") as mock_get_tag_store,
+        ):
+            mock_get_query_store.return_value = make_query_store_mock(resolved_id="test:conv-123")
             mock_tag_store = make_tag_store_mock()
             mock_tag_store.update_metadata.return_value = None
             mock_get_tag_store.return_value = mock_tag_store
@@ -1048,7 +1065,11 @@ class TestMutationTools:
         mock_tag_store.update_metadata.assert_called_once_with("test:conv-123", "author", "john")
 
     def test_set_metadata_json_value(self, mcp_server: MCPServerUnderTest) -> None:
-        with patch("polylogue.mcp.server._get_tag_store") as mock_get_tag_store:
+        with (
+            patch("polylogue.mcp.server._get_query_store") as mock_get_query_store,
+            patch("polylogue.mcp.server._get_tag_store") as mock_get_tag_store,
+        ):
+            mock_get_query_store.return_value = make_query_store_mock(resolved_id="test:conv-123")
             mock_tag_store = make_tag_store_mock()
             mock_tag_store.update_metadata.return_value = None
             mock_get_tag_store.return_value = mock_tag_store
@@ -1064,7 +1085,11 @@ class TestMutationTools:
         mock_tag_store.update_metadata.assert_called_once_with("test:conv-123", "config", {"nested": True})
 
     def test_delete_metadata_success(self, mcp_server: MCPServerUnderTest) -> None:
-        with patch("polylogue.mcp.server._get_tag_store") as mock_get_tag_store:
+        with (
+            patch("polylogue.mcp.server._get_query_store") as mock_get_query_store,
+            patch("polylogue.mcp.server._get_tag_store") as mock_get_tag_store,
+        ):
+            mock_get_query_store.return_value = make_query_store_mock(resolved_id="test:conv-123")
             mock_tag_store = make_tag_store_mock()
             mock_tag_store.delete_metadata.return_value = None
             mock_get_tag_store.return_value = mock_tag_store
@@ -1097,7 +1122,7 @@ class TestMutationTools:
 
     def test_delete_with_confirm(self, mcp_server: MCPServerUnderTest) -> None:
         with patch("polylogue.mcp.server._get_query_store") as mock_get_query_store:
-            mock_query_store = make_query_store_mock()
+            mock_query_store = make_query_store_mock(resolved_id="test:conv-123")
             mock_query_store.delete_conversation.return_value = True
             mock_get_query_store.return_value = mock_query_store
 
@@ -1111,8 +1136,12 @@ class TestMutationTools:
         mock_query_store.delete_conversation.assert_called_once_with("test:conv-123")
 
     def test_delete_not_found(self, mcp_server: MCPServerUnderTest) -> None:
+        # Two not-found shapes: resolve_id returns None (id never existed) vs.
+        # resolve_id succeeds but delete_conversation returns False (race).
+        # The current contract returns "conversation not found" error for the
+        # former and {status: "not_found"} for the latter; exercise the latter.
         with patch("polylogue.mcp.server._get_query_store") as mock_get_query_store:
-            mock_query_store = make_query_store_mock()
+            mock_query_store = make_query_store_mock(resolved_id="nonexistent")
             mock_query_store.delete_conversation.return_value = False
             mock_get_query_store.return_value = mock_query_store
 

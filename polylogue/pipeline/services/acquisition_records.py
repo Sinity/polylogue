@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import TypedDict
+
+from typing_extensions import TypedDict
 
 from polylogue.lib.provider_identity import canonical_acquisition_provider
 from polylogue.sources.parsers.base import RawConversationData

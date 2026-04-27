@@ -143,11 +143,16 @@ def test_stderr_proxy_delegates_to_current_sys_stderr() -> None:
 
 def test_configure_logging_supports_console_and_json_modes_and_get_logger() -> None:
     with (
+        # POLYLOGUE_FORCE_PLAIN=1 (set by CI and devshell) forces colors off
+        # at the env-read site. The test exercises the colored-output branch,
+        # so isolate it from ambient env.
+        patch.dict("os.environ", {}, clear=False) as env,
         patch("polylogue.logging.structlog.configure") as configure,
         patch("polylogue.logging.structlog.dev.ConsoleRenderer", return_value="console-renderer") as console_renderer,
         patch("polylogue.logging.structlog.processors.JSONRenderer", return_value="json-renderer") as json_renderer,
         patch("sys.stderr.isatty", return_value=True),
     ):
+        env.pop("POLYLOGUE_FORCE_PLAIN", None)
         logging_mod.configure_logging(verbose=True, json_logs=False)
         console_processors = configure.call_args.kwargs["processors"]
         assert console_processors[-1] == "console-renderer"

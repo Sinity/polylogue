@@ -225,7 +225,7 @@
     resume           Reconstruct work-state context for a fresh agent session.
     run              Run pipeline stages on configured sources.
     schema           Inspect schema packages, versions, and evidence.
-    show             Show matched conversation content (default streaming...
+    show             Show matched conversations with default full-content...
     stats            Show statistics for matched conversations.
     tags             List all tags with conversation counts.
   '''
@@ -415,8 +415,8 @@
   .
     schema           Inspect schema packages, versions, and ev
   idence.
-    show             Show matched conversation content (defaul
-  t streaming...
+    show             Show matched conversations with default f
+  ull-content...
     stats            Show statistics for matched conversations
   .
     tags             List all tags with conversation counts.
@@ -550,7 +550,7 @@
     resume           Reconstruct work-state context for a fresh agent session.
     run              Run pipeline stages on configured sources.
     schema           Inspect schema packages, versions, and evidence.
-    show             Show matched conversation content (default streaming...
+    show             Show matched conversations with default full-content...
     stats            Show statistics for matched conversations.
     tags             List all tags with conversation counts.
   '''
