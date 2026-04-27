@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from polylogue.errors import DatabaseError
 from polylogue.pipeline.services.parsing_models import (
     IngestPhase,
     IngestResult,
@@ -51,7 +52,7 @@ class ParsingService:
         """Return the repository backend or fail explicitly."""
         backend = self.repository.backend
         if backend is None:
-            raise RuntimeError("repository backend is not initialized")
+            raise DatabaseError("repository backend is not initialized")
         return backend
 
     async def parse_sources(

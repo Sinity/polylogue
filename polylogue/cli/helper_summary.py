@@ -66,7 +66,7 @@ def print_summary_impl(
     try:
         archive_stats = run_coroutine_sync(env.repository.get_archive_stats())
     except Exception:
-        logger.debug("Archive stats computation failed", exc_info=True)
+        logger.warning("Archive stats computation failed; summary will omit stats", exc_info=True)
 
     lines = [
         f"Archive: {config.archive_root}",
@@ -184,7 +184,7 @@ def print_summary_impl(
                     ui.console.print()
 
     except Exception:
-        logger.debug("Analytics computation failed", exc_info=True)
+        logger.warning("Analytics computation failed; summary will omit analytics", exc_info=True)
 
 
 __all__ = ["print_summary_impl"]
