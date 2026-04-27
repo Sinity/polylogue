@@ -145,7 +145,6 @@ def default_claims() -> tuple[Claim, ...]:
     command_query = Kind("cli.command")
     values_query = _schema_annotation_query("x-polylogue-values")
     foreign_key_query = _schema_annotation_query("x-polylogue-foreign-keys")
-    mutual_exclusion_query = _schema_annotation_query("x-polylogue-mutually-exclusive")
     provider_capability_query = Kind("provider.capability")
     operation_query = Kind("operation.spec")
     artifact_path_query = And(
@@ -325,21 +324,6 @@ def default_claims() -> tuple[Claim, ...]:
             ),
             breaker=BreakerMetadata(
                 description="A source path pointing at a missing target path breaks the relation claim.",
-                issue="#332",
-                command=("devtools", "render-verification-catalog", "--check"),
-            ),
-        ),
-        Claim(
-            id="schema.mutual_exclusion.exclusive",
-            description="Schema mutual-exclusion annotations prevent co-populating exclusive fields.",
-            subject_query=mutual_exclusion_query,
-            evidence_schema=_evidence_schema("parent", "fields"),
-            bug_classes=("schema.mutual-exclusion.drift", "synthetic-corpus.invalid-combination"),
-            runner_classes=("schema_static",),
-            observed_facts=("parent", "fields", "co_populated_fields"),
-            staleness_conditions=("Schema mutual-exclusion annotations or generated payload construction changes.",),
-            breaker=BreakerMetadata(
-                description="A generated record containing two fields from the same exclusion group is a counterexample.",
                 issue="#332",
                 command=("devtools", "render-verification-catalog", "--check"),
             ),
