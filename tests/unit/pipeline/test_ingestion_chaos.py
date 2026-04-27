@@ -19,7 +19,7 @@ from hypothesis import given, settings
 from polylogue.lib.timestamps import parse_timestamp
 from polylogue.pipeline.services.parsing import ParsingService
 from polylogue.sources.decoders import _decode_json_bytes, _iter_json_stream
-from polylogue.storage.store import RawConversationRecord
+from polylogue.storage.runtime import RawConversationRecord
 from tests.infra.large_batches import (
     corrupt_line_bad_utf8,
     corrupt_line_malformed_json,

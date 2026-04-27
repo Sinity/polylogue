@@ -8,7 +8,7 @@ from pathlib import Path
 
 import aiosqlite
 
-from polylogue.storage.session_product_status import (
+from polylogue.storage.products.session.status import (
     SessionProductCountDescriptor,
     SessionProductFtsDescriptor,
     SessionProductReadyDescriptor,

@@ -9,7 +9,7 @@ from polylogue.lib.raw_payload import RawPayloadEnvelope, build_raw_payload_enve
 from polylogue.logging import get_logger
 from polylogue.schemas.validator import SchemaValidator
 from polylogue.storage.blob_store import BlobStore
-from polylogue.storage.store import RawConversationRecord
+from polylogue.storage.runtime import RawConversationRecord
 from polylogue.types import Provider, ValidationMode, ValidationStatus
 
 logger = get_logger(__name__)

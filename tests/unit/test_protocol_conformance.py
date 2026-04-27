@@ -26,9 +26,9 @@ import pytest
 from polylogue.protocols import OutputRenderer, SearchProvider, VectorProvider
 from polylogue.rendering.renderers.html import HTMLRenderer
 from polylogue.rendering.renderers.markdown import MarkdownRenderer
+from polylogue.storage.runtime import MessageRecord
 from polylogue.storage.search_providers.fts5 import FTS5Provider
 from polylogue.storage.search_providers.hybrid import HybridSearchProvider
-from polylogue.storage.store import MessageRecord
 from polylogue.ui.facade import ConsoleLike, PlainConsole
 from tests.infra.storage_records import make_conversation, make_message, upsert_conversation, upsert_message
 

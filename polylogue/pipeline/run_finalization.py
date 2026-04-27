@@ -13,7 +13,7 @@ from polylogue.pipeline.run_support import write_run_json
 from polylogue.storage.backends import create_backend
 from polylogue.storage.backends.queries import runs as runs_q
 from polylogue.storage.run_state import DriftBucketPayload, RunCountsPayload, RunDrift, RunDriftPayload, RunResult
-from polylogue.storage.store import RunRecord
+from polylogue.storage.runtime import RunRecord
 
 if TYPE_CHECKING:
     from polylogue.config import Config

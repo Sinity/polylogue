@@ -12,7 +12,7 @@ from polylogue.storage.backends.queries import (
     session_product_profile_reads as session_product_profiles_q,
 )
 from polylogue.storage.query_models import SessionProfileListQuery
-from polylogue.storage.store import SessionProfileRecord
+from polylogue.storage.runtime import SessionProfileRecord
 
 
 class SQLiteQueryStoreProductProfilesMixin:

@@ -11,7 +11,7 @@ from polylogue.pipeline.services.process_pool import process_pool_executor
 from polylogue.pipeline.services.validation_runtime import _validate_record_sync, _ValidationOutcome
 from polylogue.pipeline.stage_models import ValidatedRawRecord, ValidateResult
 from polylogue.protocols import ProgressCallback, RawValidationStore
-from polylogue.storage.store import RawConversationRecord
+from polylogue.storage.runtime import RawConversationRecord
 from polylogue.types import Provider, ValidationMode, ValidationStatus
 
 logger = get_logger(__name__)

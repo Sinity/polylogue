@@ -28,8 +28,8 @@ from polylogue.sources.parsers.base import RawConversationData
 from polylogue.storage.backends import create_backend
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.backends.connection import open_connection
+from polylogue.storage.products.session.runtime import SessionProductCounts
 from polylogue.storage.run_state import PlanCounts, PlanResult, RunCounts, RunDrift, RunResult
-from polylogue.storage.session_product_runtime import SessionProductCounts
 from polylogue.types import PlanStage
 from tests.infra.storage_records import make_conversation, make_message, store_records
 
@@ -613,7 +613,7 @@ class TestRunSourcesIntegration:
         )
 
         with patch(
-            "polylogue.storage.session_product_rebuild.rebuild_session_products_async",
+            "polylogue.storage.products.session.rebuild.rebuild_session_products_async",
             new_callable=AsyncMock,
         ) as mock_rebuild:
             mock_rebuild.return_value = SessionProductCounts(
@@ -651,7 +651,7 @@ class TestRunSourcesIntegration:
 
     def test_parse_stage_reuses_persisted_validation_status(self, workspace_env: Mapping[str, Path]) -> None:
         from polylogue.storage.blob_store import get_blob_store
-        from polylogue.storage.store import RawConversationRecord
+        from polylogue.storage.runtime import RawConversationRecord
 
         backend = create_backend(workspace_env["data_root"] / "polylogue" / "polylogue.db")
         raw_content = json.dumps(
@@ -1112,7 +1112,7 @@ class TestPlanSources:
 
     async def test_plan_accepts_explicit_leaf_stage_sequence(self, tmp_path: Path) -> None:
         from polylogue.storage.blob_store import get_blob_store
-        from polylogue.storage.store import RawConversationRecord
+        from polylogue.storage.runtime import RawConversationRecord
 
         backend = SQLiteBackend(db_path=tmp_path / "preview.db")
         raw_content = json.dumps(

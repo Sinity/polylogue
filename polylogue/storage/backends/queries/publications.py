@@ -6,7 +6,7 @@ import aiosqlite
 
 from polylogue.lib.json import json_document
 from polylogue.storage.backends.queries.mappers import _parse_json
-from polylogue.storage.store import PublicationRecord, _json_or_none
+from polylogue.storage.runtime import PublicationRecord, _json_or_none
 
 __all__ = [
     "get_latest_publication",

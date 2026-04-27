@@ -10,7 +10,7 @@ if TYPE_CHECKING:
     from polylogue.lib.models import Conversation, ConversationSummary
     from polylogue.lib.query_plan import ConversationQueryPlan
     from polylogue.protocols import ConversationQueryRuntimeStore
-    from polylogue.storage.action_event_artifacts import ActionEventArtifactState
+    from polylogue.storage.action_events.artifacts import ActionEventArtifactState
     from polylogue.storage.query_models import ConversationRecordQuery
 
 

@@ -15,7 +15,7 @@ from polylogue.archive_products import (
 )
 from polylogue.lib.repo_identity import normalize_repo_names
 from polylogue.lib.session_profile import SessionProfile
-from polylogue.storage.store import SessionTagRollupRecord
+from polylogue.storage.runtime import SessionTagRollupRecord
 
 
 @dataclass(slots=True)

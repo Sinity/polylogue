@@ -21,7 +21,7 @@ from polylogue.publication import (
     SitePublicationManifest,
 )
 from polylogue.site.models import ArchiveIndexStats, ConversationPageBuildStats, SiteConfig
-from polylogue.storage.store import PublicationRecord, RunRecord
+from polylogue.storage.runtime import PublicationRecord, RunRecord
 
 
 class _LatestRunQueries(Protocol):
@@ -128,7 +128,7 @@ def load_artifact_proof_summary(*, db_path: Path) -> ArtifactProofSummary:
 def load_archive_maintenance_summary(*, db_path: Path) -> ArchiveMaintenanceSummary:
     """Load the live derived-model maintenance snapshot for publication embedding."""
     from polylogue.storage.backends.connection import open_connection
-    from polylogue.storage.derived_status import collect_derived_model_statuses_sync
+    from polylogue.storage.derived.derived_status import collect_derived_model_statuses_sync
 
     with open_connection(db_path) as conn:
         statuses = collect_derived_model_statuses_sync(conn)

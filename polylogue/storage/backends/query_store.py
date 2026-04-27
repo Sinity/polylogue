@@ -23,13 +23,13 @@ from polylogue.storage.backends.query_store_product_profiles import (
 from polylogue.storage.backends.query_store_product_timelines import (
     SQLiteQueryStoreProductTimelinesMixin,
 )
+from polylogue.storage.products.session.runtime import SessionProductStatusSnapshot
 from polylogue.storage.query_models import (
     DaySessionSummaryListQuery,
     SessionTagRollupListQuery,
     WorkThreadListQuery,
 )
-from polylogue.storage.session_product_runtime import SessionProductStatusSnapshot
-from polylogue.storage.store import (
+from polylogue.storage.runtime import (
     ActionEventRecord,
     DaySessionSummaryRecord,
     SessionTagRollupRecord,
@@ -37,7 +37,7 @@ from polylogue.storage.store import (
 )
 
 if TYPE_CHECKING:
-    from polylogue.storage.action_event_artifacts import ActionEventArtifactState
+    from polylogue.storage.action_events.artifacts import ActionEventArtifactState
 
 
 class SQLiteQueryStore(
@@ -58,13 +58,13 @@ class SQLiteQueryStore(
     # -- Product status (formerly query_store_product_status.py) ------------
 
     async def get_action_event_artifact_state(self) -> ActionEventArtifactState:
-        from polylogue.storage.action_event_status import action_event_artifact_state_async
+        from polylogue.storage.action_events.status import action_event_artifact_state_async
 
         async with self._connection_factory() as conn:
             return await action_event_artifact_state_async(conn)
 
     async def get_session_product_status(self) -> SessionProductStatusSnapshot:
-        from polylogue.storage.session_product_status import session_product_status_async
+        from polylogue.storage.products.session.status import session_product_status_async
 
         async with self._connection_factory() as conn:
             return await session_product_status_async(conn)

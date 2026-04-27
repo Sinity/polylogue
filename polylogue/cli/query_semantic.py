@@ -16,7 +16,7 @@ if TYPE_CHECKING:
     from polylogue.lib.query_spec import ConversationQuerySpec
     from polylogue.lib.semantic_facts import ConversationSemanticFacts
     from polylogue.protocols import ConversationSemanticStatsStore
-    from polylogue.storage.store import AttachmentRecord
+    from polylogue.storage.runtime import AttachmentRecord
 
 
 # ---------------------------------------------------------------------------

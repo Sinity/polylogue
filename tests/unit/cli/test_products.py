@@ -16,11 +16,11 @@ from polylogue.archive_products import ProviderAnalyticsProduct
 from polylogue.cli.click_app import cli
 from polylogue.cli.commands.products import _make_callback
 from polylogue.products.registry import get_product_type, product_items_payload
-from polylogue.storage.action_event_rebuild_runtime import rebuild_action_event_read_model_sync
+from polylogue.storage.action_events.rebuild_runtime import rebuild_action_event_read_model_sync
 from polylogue.storage.backends.connection import open_connection
-from polylogue.storage.session_product_rebuild import rebuild_session_products_sync
-from polylogue.storage.session_product_status import session_product_status_sync
-from polylogue.storage.store_constants import SESSION_PRODUCT_MATERIALIZER_VERSION
+from polylogue.storage.products.session.rebuild import rebuild_session_products_sync
+from polylogue.storage.products.session.status import session_product_status_sync
+from polylogue.storage.runtime.store_constants import SESSION_PRODUCT_MATERIALIZER_VERSION
 from tests.infra.json_contracts import (
     extract_json_result,
     json_array,

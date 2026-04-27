@@ -309,6 +309,13 @@ def _resolve_target(name: str, sub: str, prefix: str) -> str:
     return f"polylogue/{sub}{stem}"
 
 
+def _apply_rule(name: str, prefix: str, sub: str) -> str:
+    # Exact-filename rule: value is a full target path (ends in .py).
+    if prefix == name and sub.endswith(".py"):
+        return f"polylogue/{sub}"
+    return _resolve_target(name, sub, prefix)
+
+
 def lib_target(name: str) -> str:
     """Return target path for a polylogue/lib/<name> file, or 'TBD'."""
     if name in LIB_ROOT_PRIMITIVES:
@@ -316,7 +323,7 @@ def lib_target(name: str) -> str:
     # match longest prefix first
     for prefix in sorted(LIB_PREFIX_TO_SUBPACKAGE, key=len, reverse=True):
         if name.startswith(prefix):
-            return _resolve_target(name, LIB_PREFIX_TO_SUBPACKAGE[prefix], prefix)
+            return _apply_rule(name, prefix, LIB_PREFIX_TO_SUBPACKAGE[prefix])
     return "TBD"
 
 
@@ -325,7 +332,7 @@ def storage_target(name: str) -> str:
         return f"polylogue/storage/{name}"
     for prefix in sorted(STORAGE_PREFIX_TO_SUBPACKAGE, key=len, reverse=True):
         if name.startswith(prefix):
-            return _resolve_target(name, STORAGE_PREFIX_TO_SUBPACKAGE[prefix], prefix)
+            return _apply_rule(name, prefix, STORAGE_PREFIX_TO_SUBPACKAGE[prefix])
     return "TBD"
 
 

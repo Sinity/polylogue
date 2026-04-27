@@ -35,7 +35,7 @@ def materialized_db(workspace_env: Mapping[str, Path]) -> Path:
     ).add_message(role="assistant", text="Here are the tests").add_message(role="user", text="Add edge cases").save()
 
     from polylogue.storage.backends.connection import open_connection
-    from polylogue.storage.session_product_rebuild import rebuild_session_products_sync
+    from polylogue.storage.products.session.rebuild import rebuild_session_products_sync
 
     with open_connection(db_path) as conn:
         rebuild_session_products_sync(conn)
@@ -102,7 +102,7 @@ class TestProductMaterializationIdempotence:
 
     def test_rebuild_is_idempotent(self, materialized_db: Path) -> None:
         from polylogue.storage.backends.connection import open_connection
-        from polylogue.storage.session_product_rebuild import rebuild_session_products_sync
+        from polylogue.storage.products.session.rebuild import rebuild_session_products_sync
 
         with open_connection(materialized_db) as conn:
             has_profiles = conn.execute(
