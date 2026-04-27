@@ -43,6 +43,7 @@ from polylogue.archive_products import (
     WorkThreadProductQuery,
 )
 from polylogue.archive_resume import ResumeBrief, ResumeOperations, build_resume_brief
+from polylogue.config import ConfigError
 from polylogue.lib.content_projection import ContentProjectionSpec
 from polylogue.lib.conversation_models import ConversationSummary
 from polylogue.lib.pricing import CostUsagePayload, _normalize_model, estimate_conversation_cost, generated_at
@@ -939,7 +940,7 @@ class ArchiveOperations(
     def config(self) -> Config:
         if self._config is None:
             if self._services is None:
-                raise RuntimeError("ArchiveOperations requires config or runtime services")
+                raise ConfigError("ArchiveOperations requires config or runtime services")
             self._config = self._services.get_config()
         return self._config
 
@@ -947,7 +948,7 @@ class ArchiveOperations(
     def repository(self) -> ConversationRepository:
         if self._repository is None:
             if self._services is None:
-                raise RuntimeError("ArchiveOperations requires repository or runtime services")
+                raise ConfigError("ArchiveOperations requires repository or runtime services")
             self._repository = self._services.get_repository()
         return self._repository
 

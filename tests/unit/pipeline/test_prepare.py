@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.errors import PolylogueError
 from polylogue.paths.sanitize import is_within_root
 from polylogue.pipeline.prepare import RecordBundle, save_bundle
 from polylogue.rendering.renderers import HTMLRenderer
@@ -297,7 +298,7 @@ def test_ingest_state_rejects_out_of_order_transition() -> None:
     from polylogue.pipeline.services.parsing import IngestState
 
     state = IngestState(source_names=("inbox",), parse_requested=True)
-    with pytest.raises(RuntimeError, match="expected phase acquired"):
+    with pytest.raises(PolylogueError, match="expected phase acquired"):
         state.record_validation_candidates(["raw-1"])
 
 

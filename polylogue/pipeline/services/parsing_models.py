@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING
 
+from polylogue.errors import PolylogueError
 from polylogue.pipeline.payload_types import IngestDiagnostics, ParseBatchObservation
 
 if TYPE_CHECKING:
@@ -84,7 +85,7 @@ class IngestState:
 
     def _expect_phase(self, expected: IngestPhase, action: str) -> None:
         if self.phase != expected:
-            raise RuntimeError(f"Cannot {action}: expected phase {expected.value}, got {self.phase.value}")
+            raise PolylogueError(f"Cannot {action}: expected phase {expected.value}, got {self.phase.value}")
 
 
 class ParseResult:

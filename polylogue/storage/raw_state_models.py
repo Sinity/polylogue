@@ -56,7 +56,8 @@ def _coerce_update_provider(value: Provider | str | None | _RawStateUnset) -> Pr
         return None
     if isinstance(value, Provider):
         return value
-    assert isinstance(value, str)
+    if not isinstance(value, str):
+        raise TypeError(f"expected str, got {type(value).__name__}")
     return Provider.from_string(value)
 
 
@@ -69,7 +70,8 @@ def _coerce_update_status(
         return None
     if isinstance(value, ValidationStatus):
         return value
-    assert isinstance(value, str)
+    if not isinstance(value, str):
+        raise TypeError(f"expected str, got {type(value).__name__}")
     return ValidationStatus.from_string(value)
 
 
@@ -80,7 +82,8 @@ def _coerce_update_mode(value: ValidationMode | str | None | _RawStateUnset) -> 
         return None
     if isinstance(value, ValidationMode):
         return value
-    assert isinstance(value, str)
+    if not isinstance(value, str):
+        raise TypeError(f"expected str, got {type(value).__name__}")
     return ValidationMode.from_string(value)
 
 
