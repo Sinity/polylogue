@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from polylogue import Polylogue
+from polylogue.api import ArchiveStats
 from polylogue.archive_products import (
     ArchiveDebtProductQuery,
     CostRollupProductQuery,
@@ -19,7 +20,6 @@ from polylogue.archive_products import (
     WeekSessionSummaryProductQuery,
     WorkThreadProductQuery,
 )
-from polylogue.facade import ArchiveStats
 from polylogue.lib.content_projection import ContentProjectionSpec
 from tests.infra.builders import make_conv, make_msg
 from tests.infra.storage_records import ConversationBuilder, make_conversation, make_message
@@ -327,7 +327,7 @@ class TestPolylogueArchiveProducts:
                             "type": "tool_use",
                             "tool_name": "Edit",
                             "semantic_type": "file_edit",
-                            "input": {"path": "/workspace/polylogue/polylogue/facade.py"},
+                            "input": {"path": "/workspace/polylogue/polylogue/api/__init__.py"},
                         }
                     ]
                 },

@@ -6,6 +6,7 @@ from collections.abc import Sequence
 
 import click
 
+from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.cli.formatting import (
     format_counts,
     format_cursors,
@@ -28,7 +29,6 @@ from polylogue.pipeline.runner import run_sources
 from polylogue.protocols import ProgressCallback
 from polylogue.sources import DriveError
 from polylogue.storage.run_state import PlanResult, RunResult
-from polylogue.sync_bridge import run_coroutine_sync
 
 
 def execute_sync_once(

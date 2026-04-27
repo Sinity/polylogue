@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from dataclasses import replace
 from typing import TypeAlias
 
-from polylogue.maintenance_models import DerivedModelStatus
+from polylogue.maintenance.models import DerivedModelStatus
 from polylogue.storage.action_event_artifacts import ActionEventArtifactState
 from polylogue.storage.store import ACTION_EVENT_MATERIALIZER_VERSION, SESSION_PRODUCT_MATERIALIZER_VERSION
 

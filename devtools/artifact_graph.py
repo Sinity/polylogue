@@ -7,7 +7,7 @@ import json
 import sys
 
 from devtools.scenario_coverage import build_runtime_scenario_coverage
-from polylogue.artifact_graph import build_artifact_graph
+from polylogue.artifacts.graph import build_artifact_graph
 
 
 def render_artifact_graph(*, as_json: bool) -> str:

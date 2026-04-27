@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import aiosqlite
 
-from polylogue.maintenance_targets import build_maintenance_target_catalog
+from polylogue.maintenance.targets import build_maintenance_target_catalog
 from polylogue.storage.search_models import ConversationSearchEvidenceHit, ConversationSearchResult
 
 _MAINTENANCE_TARGET_CATALOG = build_maintenance_target_catalog()

@@ -6,12 +6,12 @@ import json
 
 import click
 
+from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.cli.query import project_query_results
 from polylogue.cli.query_contracts import QueryExecutionPlan
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.types import AppEnv
 from polylogue.rendering.formatting import format_conversation
-from polylogue.sync_bridge import run_coroutine_sync
 
 _PER_LINE_FORMATS = frozenset({"jsonl"})
 _SEPARATED_FORMATS = frozenset({"markdown", "obsidian", "org", "plaintext", "html", "yaml"})

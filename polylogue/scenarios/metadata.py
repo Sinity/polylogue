@@ -15,9 +15,9 @@ from polylogue.authored_payloads import (
 )
 
 if TYPE_CHECKING:
-    from polylogue.artifact_graph import ArtifactGraph
     from polylogue.artifacts import ArtifactNode, ArtifactPath
-    from polylogue.maintenance_targets import MaintenanceTargetSpec
+    from polylogue.artifacts.graph import ArtifactGraph
+    from polylogue.maintenance.targets import MaintenanceTargetSpec
     from polylogue.operations import OperationSpec
 
 
@@ -54,7 +54,7 @@ def _object_string_tuple_attribute(obj: object, name: str) -> tuple[str, ...]:
 
 @lru_cache(maxsize=1)
 def runtime_artifact_graph() -> ArtifactGraph:
-    from polylogue.artifact_graph import build_artifact_graph
+    from polylogue.artifacts.graph import build_artifact_graph
 
     return build_artifact_graph()
 

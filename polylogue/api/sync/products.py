@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.archive_products import (
     ArchiveDebtProduct,
     ArchiveDebtProductQuery,
@@ -31,10 +32,9 @@ from polylogue.archive_products import (
     WorkThreadProductQuery,
 )
 from polylogue.storage.session_product_runtime import SessionProductStatusSnapshot
-from polylogue.sync_bridge import run_coroutine_sync
 
 if TYPE_CHECKING:
-    from polylogue.facade import Polylogue
+    from polylogue.api import Polylogue
 
 
 class SyncProductQueriesMixin:

@@ -12,7 +12,7 @@ from polylogue.artifacts import (
     build_runtime_artifact_paths,
 )
 from polylogue.lib.json import JSONDocument, json_document
-from polylogue.maintenance_targets import MaintenanceTargetSpec, build_maintenance_target_catalog
+from polylogue.maintenance.targets import MaintenanceTargetSpec, build_maintenance_target_catalog
 from polylogue.operations import OperationSpec, build_runtime_operation_catalog
 
 

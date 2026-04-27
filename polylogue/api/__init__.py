@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from polylogue.api.archive import PolylogueArchiveMixin
+from polylogue.api.ingest import PolylogueIngestMixin
+from polylogue.api.products import PolylogueProductsMixin
 from polylogue.config import Config
-from polylogue.facade_archive import PolylogueArchiveMixin
-from polylogue.facade_ingest import PolylogueIngestMixin
-from polylogue.facade_products import PolylogueProductsMixin
 from polylogue.operations import ArchiveOperations, ArchiveStats
 from polylogue.services import build_runtime_services
 from polylogue.storage.backends.async_sqlite import SQLiteBackend

@@ -17,23 +17,23 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from polylogue.api import ArchiveStats, Polylogue
+    from polylogue.api.sync import SyncPolylogue
     from polylogue.errors import PolylogueError
-    from polylogue.facade import ArchiveStats, Polylogue
     from polylogue.lib.conversation_models import Conversation
     from polylogue.lib.message_models import Message
     from polylogue.storage.search import SearchResult
-    from polylogue.sync import SyncPolylogue
 
 
 def __getattr__(name: str) -> object:
     lazy_exports = {
-        "ArchiveStats": ("polylogue.facade", "ArchiveStats"),
+        "ArchiveStats": ("polylogue.api", "ArchiveStats"),
         "Conversation": ("polylogue.lib.conversation_models", "Conversation"),
         "Message": ("polylogue.lib.message_models", "Message"),
-        "Polylogue": ("polylogue.facade", "Polylogue"),
+        "Polylogue": ("polylogue.api", "Polylogue"),
         "PolylogueError": ("polylogue.errors", "PolylogueError"),
         "SearchResult": ("polylogue.storage.search", "SearchResult"),
-        "SyncPolylogue": ("polylogue.sync", "SyncPolylogue"),
+        "SyncPolylogue": ("polylogue.api.sync", "SyncPolylogue"),
     }
     module_spec = lazy_exports.get(name)
     if module_spec is not None:

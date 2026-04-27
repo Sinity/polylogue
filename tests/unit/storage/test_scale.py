@@ -194,7 +194,7 @@ class TestFacadeScale:
 
     async def test_get_conversations_at_scale(self, tmp_path: Path) -> None:
         """Facade.get_conversations with 200 IDs returns correct results."""
-        from polylogue.facade import Polylogue
+        from polylogue.api import Polylogue
 
         db_path = tmp_path / "facade_scale.db"
         backend = SQLiteBackend(db_path=db_path)
@@ -210,7 +210,7 @@ class TestFacadeScale:
 
     async def test_get_conversations_empty_input(self, tmp_path: Path) -> None:
         """Facade.get_conversations with empty list returns empty."""
-        from polylogue.facade import Polylogue
+        from polylogue.api import Polylogue
 
         db_path = tmp_path / "facade_empty.db"
         # Just create the backend to initialize schema
@@ -224,7 +224,7 @@ class TestFacadeScale:
 
     async def test_list_conversations_at_scale(self, tmp_path: Path) -> None:
         """Facade.list_conversations with 200 conversations works."""
-        from polylogue.facade import Polylogue
+        from polylogue.api import Polylogue
 
         db_path = tmp_path / "facade_list.db"
         backend = SQLiteBackend(db_path=db_path)
@@ -238,7 +238,7 @@ class TestFacadeScale:
 
     async def test_list_conversations_with_provider_filter(self, tmp_path: Path) -> None:
         """Facade.list_conversations filtered by provider at scale."""
-        from polylogue.facade import Polylogue
+        from polylogue.api import Polylogue
 
         db_path = tmp_path / "facade_filter.db"
         backend = SQLiteBackend(db_path=db_path)

@@ -6,7 +6,7 @@ import sqlite3
 from collections.abc import Mapping
 from typing import TypeAlias
 
-from polylogue.maintenance_models import DerivedModelStatus
+from polylogue.maintenance.models import DerivedModelStatus
 from polylogue.storage.action_event_status import action_event_read_model_status_sync
 from polylogue.storage.derived_status_products import build_archive_product_statuses, pending_docs, pending_rows
 from polylogue.storage.embedding_stats import read_embedding_stats_sync

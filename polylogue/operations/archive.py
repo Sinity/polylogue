@@ -48,7 +48,7 @@ from polylogue.lib.content_projection import ContentProjectionSpec
 from polylogue.lib.conversation_models import ConversationSummary
 from polylogue.lib.pricing import CostUsagePayload, _normalize_model, estimate_conversation_cost, generated_at
 from polylogue.lib.query_spec import ConversationQuerySpec
-from polylogue.maintenance_targets import build_maintenance_target_catalog
+from polylogue.maintenance.targets import build_maintenance_target_catalog
 from polylogue.paths.sanitize import conversation_render_root
 from polylogue.product_export_bundles import (
     ProductExportBundleRequest,

@@ -13,7 +13,7 @@ from polylogue.mcp.payloads import MCPErrorPayload, MCPFencedCodeBlock
 from polylogue.operations import ArchiveOperations
 from polylogue.protocols import ConversationQueryRuntimeStore, TagStore
 from polylogue.services import RuntimeServices, build_runtime_services
-from polylogue.surface_payloads import serialize_surface_payload
+from polylogue.surfaces.payloads import serialize_surface_payload
 
 if TYPE_CHECKING:
     from polylogue.config import Config
