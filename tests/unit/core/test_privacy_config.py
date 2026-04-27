@@ -10,7 +10,20 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.schemas.privacy_config import PrivacyConfig, load_privacy_config
+from polylogue.schemas.privacy_config import PrivacyConfig, _privacy_level_value, load_privacy_config
+
+
+def test_privacy_level_value_rejects_unknown_level() -> None:
+    """Invalid privacy level must raise rather than silently fall back to standard."""
+    with pytest.raises(ValueError, match="Invalid privacy level"):
+        _privacy_level_value("paranoid")
+
+
+def test_privacy_level_value_passes_through_known_levels() -> None:
+    assert _privacy_level_value("strict") == "strict"
+    assert _privacy_level_value("standard") == "standard"
+    assert _privacy_level_value("permissive") == "permissive"
+    assert _privacy_level_value(None) == "standard"
 
 
 class TestPrivacyConfigPresets:

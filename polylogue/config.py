@@ -86,6 +86,17 @@ class Config:
     drive_config: DriveConfig | None = None
     index_config: IndexConfig | None = None
 
+    def __post_init__(self) -> None:
+        # Paths must be absolute. Relative paths are interpreted against the
+        # caller's CWD and silently change meaning across processes (CLI vs
+        # service vs MCP server). Catch the misuse at construction.
+        for attr in ("archive_root", "render_root", "db_path"):
+            value = getattr(self, attr)
+            if not isinstance(value, Path):
+                raise ConfigError(f"Config.{attr} must be a Path, got {type(value).__name__}")
+            if not value.is_absolute():
+                raise ConfigError(f"Config.{attr} must be an absolute path, got {value!r}")
+
 
 def get_sources() -> list[Source]:
     """Return the configured conversation sources."""

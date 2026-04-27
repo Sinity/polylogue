@@ -79,6 +79,32 @@ class TestConfig:
         assert config.drive_config is None
         assert config.index_config is None
 
+    def test_config_rejects_relative_archive_root(self, tmp_path: Path) -> None:
+        """Relative paths silently shift meaning across processes; reject at construction."""
+        with pytest.raises(ConfigError, match="archive_root must be an absolute path"):
+            Config(
+                archive_root=Path("relative/archive"),
+                render_root=tmp_path / "render",
+                sources=[],
+            )
+
+    def test_config_rejects_relative_render_root(self, tmp_path: Path) -> None:
+        with pytest.raises(ConfigError, match="render_root must be an absolute path"):
+            Config(
+                archive_root=tmp_path,
+                render_root=Path("relative/render"),
+                sources=[],
+            )
+
+    def test_config_rejects_relative_db_path(self, tmp_path: Path) -> None:
+        with pytest.raises(ConfigError, match="db_path must be an absolute path"):
+            Config(
+                archive_root=tmp_path,
+                render_root=tmp_path / "render",
+                sources=[],
+                db_path=Path("relative/db.sqlite"),
+            )
+
 
 class TestConfigError:
     """Tests for ConfigError exception."""
