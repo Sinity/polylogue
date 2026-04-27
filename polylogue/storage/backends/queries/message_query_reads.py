@@ -6,7 +6,7 @@ from collections.abc import AsyncIterator
 
 import aiosqlite
 
-from polylogue.lib.message_roles import MessageRoleFilter, message_role_sql_values
+from polylogue.lib.message.roles import MessageRoleFilter, message_role_sql_values
 from polylogue.lib.roles import Role
 from polylogue.storage.backends.queries.mappers import _row_to_message
 from polylogue.storage.runtime import MessageRecord

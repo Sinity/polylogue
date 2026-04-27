@@ -35,12 +35,12 @@ from polylogue.cli.query_output import (
     render_stream_transcript,
 )
 from polylogue.cli.query_output_contracts import StructuredRowsDocument
-from polylogue.lib.attachment_models import Attachment
-from polylogue.lib.content_projection import ContentProjectionSpec
-from polylogue.lib.messages import MessageCollection
+from polylogue.lib.attachment.models import Attachment
+from polylogue.lib.message.messages import MessageCollection
 from polylogue.lib.models import Conversation, ConversationSummary, Message
 from polylogue.lib.roles import Role
 from polylogue.lib.search_hits import ConversationSearchHit
+from polylogue.lib.semantic.content_projection import ContentProjectionSpec
 from polylogue.rendering.formatting import _conv_to_dict, _yaml_safe, format_conversation
 from polylogue.types import ConversationId, Provider
 from tests.infra.builders import make_conv as build_conv

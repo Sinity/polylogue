@@ -407,68 +407,83 @@ files:
     target: polylogue/lib/__init__.py
     owner: lib-root
     reason: "lib-root primitive per #424"
-  - path: polylogue/lib/action_event_fields.py
-    loc: 123
-    target: polylogue/lib/action_event/fields.py
-    owner: #424
-  - path: polylogue/lib/action_event_parsing.py
-    loc: 121
-    target: polylogue/lib/action_event/parsing.py
-    owner: #424
-  - path: polylogue/lib/action_events.py
+  - path: polylogue/lib/action_event/__init__.py
+    loc: 0
+    target: polylogue/lib/action_event/__init__.py
+    owner: stable
+  - path: polylogue/lib/action_event/action_events.py
     loc: 122
     target: polylogue/lib/action_event/action_events.py
-    owner: #424
-  - path: polylogue/lib/artifact_taxonomy.py
+    owner: stable
+  - path: polylogue/lib/action_event/fields.py
+    loc: 123
+    target: polylogue/lib/action_event/fields.py
+    owner: stable
+  - path: polylogue/lib/action_event/parsing.py
+    loc: 121
+    target: polylogue/lib/action_event/parsing.py
+    owner: stable
+  - path: polylogue/lib/artifact_taxonomy/__init__.py
     loc: 18
-    target: polylogue/lib/artifact_taxonomy/artifact_taxonomy.py
-    owner: #424
-  - path: polylogue/lib/artifact_taxonomy_models.py
+    target: polylogue/lib/artifact_taxonomy/__init__.py
+    owner: stable
+  - path: polylogue/lib/artifact_taxonomy/models.py
     loc: 35
     target: polylogue/lib/artifact_taxonomy/models.py
-    owner: #424
-    cross_cut: { lifecycle: model }
-  - path: polylogue/lib/artifact_taxonomy_runtime.py
+    owner: stable
+  - path: polylogue/lib/artifact_taxonomy/runtime.py
     loc: 187
     target: polylogue/lib/artifact_taxonomy/runtime.py
-    owner: #424
-    cross_cut: { lifecycle: runtime }
-  - path: polylogue/lib/artifact_taxonomy_support.py
+    owner: stable
+  - path: polylogue/lib/artifact_taxonomy/support.py
     loc: 120
     target: polylogue/lib/artifact_taxonomy/support.py
-    owner: #424
-  - path: polylogue/lib/attachment_models.py
+    owner: stable
+  - path: polylogue/lib/attachment/__init__.py
+    loc: 0
+    target: polylogue/lib/attachment/__init__.py
+    owner: stable
+  - path: polylogue/lib/attachment/models.py
     loc: 17
     target: polylogue/lib/attachment/models.py
-    owner: #424
-    cross_cut: { lifecycle: model }
-  - path: polylogue/lib/attribution.py
+    owner: stable
+  - path: polylogue/lib/conversation/__init__.py
+    loc: 0
+    target: polylogue/lib/conversation/__init__.py
+    owner: stable
+  - path: polylogue/lib/conversation/attribution.py
     loc: 278
     target: polylogue/lib/conversation/attribution.py
-    owner: #424
-  - path: polylogue/lib/branch_type.py
+    owner: stable
+  - path: polylogue/lib/conversation/branch_type.py
     loc: 20
     target: polylogue/lib/conversation/branch_type.py
-    owner: #424
-  - path: polylogue/lib/content_projection.py
-    loc: 326
-    target: polylogue/lib/semantic/content_projection.py
-    owner: #424
-  - path: polylogue/lib/conversation_models.py
+    owner: stable
+  - path: polylogue/lib/conversation/extraction.py
+    loc: 513
+    target: polylogue/lib/conversation/extraction.py
+    owner: stable
+  - path: polylogue/lib/conversation/models.py
     loc: 63
     target: polylogue/lib/conversation/models.py
-    owner: #424
-    cross_cut: { lifecycle: model }
-  - path: polylogue/lib/conversation_runtime.py
+    owner: stable
+  - path: polylogue/lib/conversation/neighbor_candidates.py
+    loc: 567
+    target: polylogue/lib/conversation/neighbor_candidates.py
+    owner: stable
+  - path: polylogue/lib/conversation/runtime.py
     loc: 231
     target: polylogue/lib/conversation/runtime.py
-    owner: #424
-    cross_cut: { lifecycle: runtime }
-  - path: polylogue/lib/conversation_summary_runtime.py
+    owner: stable
+  - path: polylogue/lib/conversation/summary_runtime.py
     loc: 85
     target: polylogue/lib/conversation/summary_runtime.py
-    owner: #424
+    owner: stable
     cross_cut: { lifecycle: runtime }
+  - path: polylogue/lib/conversation/threads.py
+    loc: 313
+    target: polylogue/lib/conversation/threads.py
+    owner: stable
   - path: polylogue/lib/coverage.py
     loc: 125
     target: polylogue/lib/coverage.py
@@ -491,18 +506,22 @@ files:
     loc: 150
     target: polylogue/lib/embeddings/stats.py
     owner: stable
-  - path: polylogue/lib/filter_builder.py
+  - path: polylogue/lib/filter/__init__.py
+    loc: 0
+    target: polylogue/lib/filter/__init__.py
+    owner: stable
+  - path: polylogue/lib/filter/builder.py
     loc: 204
     target: polylogue/lib/filter/builder.py
-    owner: #424
-  - path: polylogue/lib/filter_types.py
-    loc: 7
-    target: polylogue/lib/filter/types.py
-    owner: #424
-  - path: polylogue/lib/filters.py
+    owner: stable
+  - path: polylogue/lib/filter/filters.py
     loc: 101
     target: polylogue/lib/filter/filters.py
-    owner: #424
+    owner: stable
+  - path: polylogue/lib/filter/types.py
+    loc: 7
+    target: polylogue/lib/filter/types.py
+    owner: stable
   - path: polylogue/lib/hashing.py
     loc: 61
     target: polylogue/lib/hashing.py
@@ -513,24 +532,27 @@ files:
     target: polylogue/lib/json.py
     owner: lib-root
     reason: "lib-root primitive per #424"
-  - path: polylogue/lib/message_model_runtime.py
-    loc: 298
-    target: polylogue/lib/message/model_runtime.py
-    owner: #424
-    cross_cut: { lifecycle: runtime }
-  - path: polylogue/lib/message_models.py
-    loc: 64
-    target: polylogue/lib/message/models.py
-    owner: #424
-    cross_cut: { lifecycle: model }
-  - path: polylogue/lib/message_roles.py
-    loc: 87
-    target: polylogue/lib/message/roles.py
-    owner: #424
-  - path: polylogue/lib/messages.py
+  - path: polylogue/lib/message/__init__.py
+    loc: 0
+    target: polylogue/lib/message/__init__.py
+    owner: stable
+  - path: polylogue/lib/message/messages.py
     loc: 135
     target: polylogue/lib/message/messages.py
-    owner: #424
+    owner: stable
+  - path: polylogue/lib/message/model_runtime.py
+    loc: 298
+    target: polylogue/lib/message/model_runtime.py
+    owner: stable
+    cross_cut: { lifecycle: runtime }
+  - path: polylogue/lib/message/models.py
+    loc: 64
+    target: polylogue/lib/message/models.py
+    owner: stable
+  - path: polylogue/lib/message/roles.py
+    loc: 87
+    target: polylogue/lib/message/roles.py
+    owner: stable
   - path: polylogue/lib/metrics.py
     loc: 205
     target: polylogue/lib/metrics.py
@@ -541,10 +563,6 @@ files:
     target: polylogue/lib/models.py
     owner: lib-root
     reason: "lib-root primitive per #424"
-  - path: polylogue/lib/neighbor_candidates.py
-    loc: 567
-    target: polylogue/lib/conversation/neighbor_candidates.py
-    owner: #424
   - path: polylogue/lib/outcomes.py
     loc: 149
     target: polylogue/lib/outcomes.py
@@ -555,132 +573,144 @@ files:
     target: polylogue/lib/payload_coercion.py
     owner: lib-root
     reason: "lib-root primitive per #424"
-  - path: polylogue/lib/phase_extraction.py
+  - path: polylogue/lib/phase/__init__.py
+    loc: 0
+    target: polylogue/lib/phase/__init__.py
+    owner: stable
+  - path: polylogue/lib/phase/extraction.py
     loc: 108
     target: polylogue/lib/phase/extraction.py
-    owner: #424
+    owner: stable
   - path: polylogue/lib/pricing.py
     loc: 573
     target: polylogue/lib/pricing.py
     owner: lib-root
     reason: "lib-root primitive per #424"
-  - path: polylogue/lib/projection_filter_mixin.py
+  - path: polylogue/lib/projection/__init__.py
+    loc: 0
+    target: polylogue/lib/projection/__init__.py
+    owner: stable
+  - path: polylogue/lib/projection/filter_mixin.py
     loc: 73
     target: polylogue/lib/projection/filter_mixin.py
-    owner: #424
-  - path: polylogue/lib/projection_terminal_mixin.py
-    loc: 78
-    target: polylogue/lib/projection/terminal_mixin.py
-    owner: #424
-  - path: polylogue/lib/projection_transform_mixin.py
-    loc: 68
-    target: polylogue/lib/projection/transform_mixin.py
-    owner: #424
-  - path: polylogue/lib/projections.py
+    owner: stable
+  - path: polylogue/lib/projection/projections.py
     loc: 52
     target: polylogue/lib/projection/projections.py
-    owner: #424
-  - path: polylogue/lib/provider_capabilities.py
+    owner: stable
+  - path: polylogue/lib/projection/terminal_mixin.py
+    loc: 78
+    target: polylogue/lib/projection/terminal_mixin.py
+    owner: stable
+  - path: polylogue/lib/projection/transform_mixin.py
+    loc: 68
+    target: polylogue/lib/projection/transform_mixin.py
+    owner: stable
+  - path: polylogue/lib/provider/__init__.py
+    loc: 0
+    target: polylogue/lib/provider/__init__.py
+    owner: stable
+  - path: polylogue/lib/provider/capabilities.py
     loc: 264
     target: polylogue/lib/provider/capabilities.py
-    owner: #424
+    owner: stable
+  - path: polylogue/lib/provider/semantics.py
+    loc: 228
+    target: polylogue/lib/provider/semantics.py
+    owner: stable
   - path: polylogue/lib/provider_identity.py
     loc: 90
     target: polylogue/lib/provider_identity.py
     owner: lib-root
     reason: "lib-root primitive per #424"
-  - path: polylogue/lib/provider_semantics.py
-    loc: 228
-    target: polylogue/lib/provider/semantics.py
-    owner: #424
-  - path: polylogue/lib/query_fields.py
+  - path: polylogue/lib/query/__init__.py
+    loc: 0
+    target: polylogue/lib/query/__init__.py
+    owner: stable
+  - path: polylogue/lib/query/fields.py
     loc: 664
     target: polylogue/lib/query/fields.py
-    owner: #424
-  - path: polylogue/lib/query_miss_diagnostics.py
+    owner: stable
+  - path: polylogue/lib/query/miss_diagnostics.py
     loc: 289
     target: polylogue/lib/query/miss_diagnostics.py
-    owner: #424
-  - path: polylogue/lib/query_plan.py
+    owner: stable
+  - path: polylogue/lib/query/plan.py
     loc: 258
     target: polylogue/lib/query/plan.py
-    owner: #424
-  - path: polylogue/lib/query_plan_description.py
+    owner: stable
+  - path: polylogue/lib/query/plan_description.py
     loc: 35
     target: polylogue/lib/query/plan_description.py
-    owner: #424
-  - path: polylogue/lib/query_plan_execution.py
-    loc: 107
+    owner: stable
+  - path: polylogue/lib/query/plan_execution.py
+    loc: 106
     target: polylogue/lib/query/plan_execution.py
-    owner: #424
-  - path: polylogue/lib/query_retrieval.py
+    owner: stable
+  - path: polylogue/lib/query/retrieval.py
     loc: 49
     target: polylogue/lib/query/retrieval.py
-    owner: #424
-  - path: polylogue/lib/query_retrieval_candidates.py
+    owner: stable
+  - path: polylogue/lib/query/retrieval_candidates.py
     loc: 262
     target: polylogue/lib/query/retrieval_candidates.py
-    owner: #424
-  - path: polylogue/lib/query_retrieval_search.py
+    owner: stable
+  - path: polylogue/lib/query/retrieval_search.py
     loc: 228
     target: polylogue/lib/query/retrieval_search.py
-    owner: #424
-  - path: polylogue/lib/query_runtime.py
+    owner: stable
+  - path: polylogue/lib/query/runtime.py
     loc: 32
     target: polylogue/lib/query/runtime.py
-    owner: #424
-    cross_cut: { lifecycle: runtime }
-  - path: polylogue/lib/query_runtime_filters.py
+    owner: stable
+  - path: polylogue/lib/query/runtime_filters.py
     loc: 174
     target: polylogue/lib/query/runtime_filters.py
-    owner: #424
-    cross_cut: { lifecycle: runtime }
-  - path: polylogue/lib/query_runtime_matching.py
+    owner: stable
+  - path: polylogue/lib/query/runtime_matching.py
     loc: 94
     target: polylogue/lib/query/runtime_matching.py
-    owner: #424
-    cross_cut: { lifecycle: runtime }
-  - path: polylogue/lib/query_runtime_plan.py
+    owner: stable
+  - path: polylogue/lib/query/runtime_plan.py
     loc: 40
     target: polylogue/lib/query/runtime_plan.py
-    owner: #424
-    cross_cut: { lifecycle: runtime }
-  - path: polylogue/lib/query_search_hits.py
+    owner: stable
+  - path: polylogue/lib/query/search_hits.py
     loc: 77
     target: polylogue/lib/query/search_hits.py
-    owner: #424
-  - path: polylogue/lib/query_sorting.py
+    owner: stable
+  - path: polylogue/lib/query/sorting.py
     loc: 118
     target: polylogue/lib/query/sorting.py
-    owner: #424
-  - path: polylogue/lib/query_spec.py
+    owner: stable
+  - path: polylogue/lib/query/spec.py
     loc: 360
     target: polylogue/lib/query/spec.py
-    owner: #424
-  - path: polylogue/lib/query_support.py
+    owner: stable
+  - path: polylogue/lib/query/support.py
     loc: 43
     target: polylogue/lib/query/support.py
-    owner: #424
-  - path: polylogue/lib/raw_payload.py
+    owner: stable
+  - path: polylogue/lib/raw_payload/__init__.py
     loc: 35
-    target: polylogue/lib/raw_payload/raw_payload.py
-    owner: #424
-  - path: polylogue/lib/raw_payload_decode.py
-    loc: 287
+    target: polylogue/lib/raw_payload/__init__.py
+    owner: stable
+  - path: polylogue/lib/raw_payload/decode.py
+    loc: 290
     target: polylogue/lib/raw_payload/decode.py
-    owner: #424
-  - path: polylogue/lib/raw_payload_sampling_buckets.py
+    owner: stable
+  - path: polylogue/lib/raw_payload/sampling_buckets.py
     loc: 117
     target: polylogue/lib/raw_payload/sampling_buckets.py
-    owner: #424
-  - path: polylogue/lib/raw_payload_sampling_extract.py
+    owner: stable
+  - path: polylogue/lib/raw_payload/sampling_extract.py
     loc: 226
     target: polylogue/lib/raw_payload/sampling_extract.py
-    owner: #424
-  - path: polylogue/lib/raw_payload_streams.py
+    owner: stable
+  - path: polylogue/lib/raw_payload/streams.py
     loc: 26
     target: polylogue/lib/raw_payload/streams.py
-    owner: #424
+    owner: stable
   - path: polylogue/lib/repo_identity.py
     loc: 156
     target: polylogue/lib/repo_identity.py
@@ -706,41 +736,50 @@ files:
     target: polylogue/lib/security.py
     owner: lib-root
     reason: "lib-root primitive per #424"
-  - path: polylogue/lib/semantic_fact_models.py
+  - path: polylogue/lib/semantic/__init__.py
+    loc: 0
+    target: polylogue/lib/semantic/__init__.py
+    owner: stable
+  - path: polylogue/lib/semantic/content_projection.py
+    loc: 326
+    target: polylogue/lib/semantic/content_projection.py
+    owner: stable
+  - path: polylogue/lib/semantic/facts.py
+    loc: 442
+    target: polylogue/lib/semantic/facts.py
+    owner: stable
+  - path: polylogue/lib/semantic/models.py
     loc: 254
     target: polylogue/lib/semantic/models.py
-    owner: #424
-    cross_cut: { lifecycle: model }
-  - path: polylogue/lib/semantic_fact_support.py
+    owner: stable
+  - path: polylogue/lib/semantic/support.py
     loc: 145
     target: polylogue/lib/semantic/support.py
-    owner: #424
-  - path: polylogue/lib/semantic_facts.py
-    loc: 442
-    target: polylogue/lib/semantic/s.py
-    owner: #424
-  - path: polylogue/lib/session_payload_documents.py
+    owner: stable
+  - path: polylogue/lib/session/__init__.py
+    loc: 0
+    target: polylogue/lib/session/__init__.py
+    owner: stable
+  - path: polylogue/lib/session/documents.py
     loc: 114
     target: polylogue/lib/session/documents.py
-    owner: #424
-  - path: polylogue/lib/session_profile.py
-    loc: 16
-    target: polylogue/lib/session/session_profile.py
-    owner: #424
-  - path: polylogue/lib/session_profile_models.py
+    owner: stable
+  - path: polylogue/lib/session/models.py
     loc: 205
     target: polylogue/lib/session/models.py
-    owner: #424
-    cross_cut: { lifecycle: model }
-  - path: polylogue/lib/session_profile_runtime.py
+    owner: stable
+  - path: polylogue/lib/session/runtime.py
     loc: 111
     target: polylogue/lib/session/runtime.py
-    owner: #424
-    cross_cut: { lifecycle: runtime }
-  - path: polylogue/lib/session_summaries.py
+    owner: stable
+  - path: polylogue/lib/session/session_profile.py
+    loc: 16
+    target: polylogue/lib/session/session_profile.py
+    owner: stable
+  - path: polylogue/lib/session/session_summaries.py
     loc: 163
     target: polylogue/lib/session/session_summaries.py
-    owner: #424
+    owner: stable
   - path: polylogue/lib/stats.py
     loc: 90
     target: polylogue/lib/stats.py
@@ -751,36 +790,31 @@ files:
     target: polylogue/lib/tail_overlay.py
     owner: lib-root
     reason: "lib-root primitive per #424"
-  - path: polylogue/lib/threads.py
-    loc: 313
-    target: polylogue/lib/conversation/threads.py
-    owner: #424
   - path: polylogue/lib/timestamps.py
     loc: 81
     target: polylogue/lib/timestamps.py
     owner: lib-root
     reason: "lib-root primitive per #424"
-  - path: polylogue/lib/viewport_enums.py
+  - path: polylogue/lib/viewport/__init__.py
+    loc: 0
+    target: polylogue/lib/viewport/__init__.py
+    owner: stable
+  - path: polylogue/lib/viewport/enums.py
     loc: 36
     target: polylogue/lib/viewport/enums.py
-    owner: #424
-  - path: polylogue/lib/viewport_models.py
+    owner: stable
+  - path: polylogue/lib/viewport/models.py
     loc: 164
     target: polylogue/lib/viewport/models.py
-    owner: #424
-    cross_cut: { lifecycle: model }
-  - path: polylogue/lib/viewport_tools.py
+    owner: stable
+  - path: polylogue/lib/viewport/tools.py
     loc: 145
     target: polylogue/lib/viewport/tools.py
-    owner: #424
-  - path: polylogue/lib/viewports.py
+    owner: stable
+  - path: polylogue/lib/viewport/viewports.py
     loc: 31
     target: polylogue/lib/viewport/viewports.py
-    owner: #424
-  - path: polylogue/lib/work_event_extraction.py
-    loc: 513
-    target: polylogue/lib/conversation/extraction.py
-    owner: #424
+    owner: stable
   - path: polylogue/logging.py
     loc: 166
     target: polylogue/logging.py
@@ -851,7 +885,7 @@ files:
     target: polylogue/operations/__init__.py
     owner: stable
   - path: polylogue/operations/archive.py
-    loc: 1013
+    loc: 1016
     target: polylogue/operations/archive.py
     owner: stable
   - path: polylogue/operations/specs.py
@@ -2067,7 +2101,7 @@ files:
     target: polylogue/storage/action_events/rebuild_storage.py
     owner: stable
   - path: polylogue/storage/action_events/rows.py
-    loc: 134
+    loc: 138
     target: polylogue/storage/action_events/rows.py
     owner: stable
   - path: polylogue/storage/action_events/status.py
@@ -2419,7 +2453,7 @@ files:
     target: polylogue/storage/products/aggregate/__init__.py
     owner: stable
   - path: polylogue/storage/products/aggregate/records.py
-    loc: 60
+    loc: 59
     target: polylogue/storage/products/aggregate/records.py
     owner: stable
   - path: polylogue/storage/products/product_read_support.py
@@ -2444,7 +2478,7 @@ files:
     target: polylogue/storage/products/session/rebuild.py
     owner: stable
   - path: polylogue/storage/products/session/records.py
-    loc: 109
+    loc: 108
     target: polylogue/storage/products/session/records.py
     owner: stable
   - path: polylogue/storage/products/session/refresh.py
@@ -2476,7 +2510,7 @@ files:
     target: polylogue/storage/products/timeline/__init__.py
     owner: stable
   - path: polylogue/storage/products/timeline/records.py
-    loc: 107
+    loc: 106
     target: polylogue/storage/products/timeline/records.py
     owner: stable
   - path: polylogue/storage/query_models.py
@@ -2531,7 +2565,7 @@ files:
     target: polylogue/storage/repository/archive/reads.py
     owner: stable
   - path: polylogue/storage/repository/archive/repository_writes.py
-    loc: 206
+    loc: 205
     target: polylogue/storage/repository/archive/repository_writes.py
     owner: stable
     cross_cut: { layer: write }
@@ -2649,7 +2683,7 @@ files:
     target: polylogue/storage/search/models.py
     owner: stable
   - path: polylogue/storage/search/query_builders.py
-    loc: 203
+    loc: 202
     target: polylogue/storage/search/query_builders.py
     owner: stable
   - path: polylogue/storage/search/query_support.py
@@ -2657,7 +2691,7 @@ files:
     target: polylogue/storage/search/query_support.py
     owner: stable
   - path: polylogue/storage/search/runtime.py
-    loc: 114
+    loc: 113
     target: polylogue/storage/search/runtime.py
     owner: stable
   - path: polylogue/storage/search_providers/__init__.py

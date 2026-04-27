@@ -11,7 +11,7 @@ import click
 from polylogue.artifacts.graph import ArtifactGraph, build_artifact_graph
 from polylogue.cli.command_inventory import CommandPath, iter_command_paths
 from polylogue.lib.json import JSONDocument, json_document, json_document_list, require_json_value
-from polylogue.lib.provider_capabilities import iter_provider_capabilities
+from polylogue.lib.provider.capabilities import iter_provider_capabilities
 from polylogue.maintenance.targets import MaintenanceTargetCatalog, build_maintenance_target_catalog
 from polylogue.operations import build_declared_operation_catalog
 from polylogue.proof.generated_scenarios import generated_scenario_subjects
@@ -139,7 +139,7 @@ def provider_capability_subjects() -> tuple[SubjectRef, ...]:
             id=f"provider.capability.{capability.provider.value}",
             attrs=capability.to_payload(),
             source_span=SourceSpan(
-                path="polylogue/lib/provider_capabilities.py",
+                path="polylogue/lib/provider/capabilities.py",
                 symbol=capability.source_symbol,
             ),
         )

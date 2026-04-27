@@ -5,9 +5,9 @@ from __future__ import annotations
 from datetime import datetime
 
 from polylogue.lib.json import JSONDocument, json_document_list
-from polylogue.lib.provider_semantics import extract_display_text_from_content_blocks
+from polylogue.lib.provider.semantics import extract_display_text_from_content_blocks
 from polylogue.lib.roles import Role
-from polylogue.lib.viewports import ContentType, ReasoningTrace
+from polylogue.lib.viewport.viewports import ContentType, ReasoningTrace
 from polylogue.schemas.unified_models import HarmonizedMessage, _missing_role
 from polylogue.schemas.unified_provider_meta_coercion import (
     _coerce_content_blocks,

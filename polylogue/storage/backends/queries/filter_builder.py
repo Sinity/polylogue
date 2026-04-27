@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from polylogue.lib.query_fields import storage_filters_require_stats_join
-from polylogue.lib.viewports import ToolCategory
+from polylogue.lib.query.fields import storage_filters_require_stats_join
+from polylogue.lib.viewport.viewports import ToolCategory
 from polylogue.storage.backends.connection import _build_provider_scope_filter
 
 _SEMANTIC_ACTION_TYPES = tuple(category.value for category in ToolCategory)

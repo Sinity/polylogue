@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.config import Source
-from polylogue.lib.branch_type import BranchType
+from polylogue.lib.conversation.branch_type import BranchType
 from polylogue.lib.models import Conversation
 from polylogue.lib.roles import Role
 from polylogue.pipeline.prepare import prepare_records

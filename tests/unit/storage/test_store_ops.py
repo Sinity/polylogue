@@ -19,8 +19,8 @@ from hypothesis import strategies as st
 from pydantic import ValidationError
 from typing_extensions import TypedDict, Unpack
 
-from polylogue.lib.conversation_models import Conversation
-from polylogue.lib.messages import MessageCollection
+from polylogue.lib.conversation.models import Conversation
+from polylogue.lib.message.messages import MessageCollection
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.query_models import ConversationRecordQuery
@@ -448,7 +448,7 @@ def test_action_event_rebuild_omits_large_provider_meta_payloads(tmp_path: Path)
 @pytest.mark.asyncio
 async def test_filter_path_terms_apply_after_fts_search(tmp_path: Path) -> None:
     """Combined FTS + path queries must keep the path constraint after search ranking."""
-    from polylogue.lib.filters import ConversationFilter
+    from polylogue.lib.filter.filters import ConversationFilter
     from tests.infra.storage_records import ConversationBuilder
 
     db_path = tmp_path / "path-fts.db"
@@ -655,7 +655,7 @@ async def test_backend_action_terms_filter_contract(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_filter_action_terms_apply_after_fts_search(tmp_path: Path) -> None:
     """Combined FTS + action queries must preserve action constraints after search ranking."""
-    from polylogue.lib.filters import ConversationFilter
+    from polylogue.lib.filter.filters import ConversationFilter
     from tests.infra.storage_records import ConversationBuilder
 
     db_path = tmp_path / "action-fts.db"
@@ -721,7 +721,7 @@ async def test_filter_action_terms_apply_after_fts_search(tmp_path: Path) -> Non
 @pytest.mark.asyncio
 async def test_filter_action_terms_reconcile_runtime_semantics_after_sql_candidate_fetch(tmp_path: Path) -> None:
     """Runtime semantic facts must outrank stale persisted semantic_type labels."""
-    from polylogue.lib.filters import ConversationFilter
+    from polylogue.lib.filter.filters import ConversationFilter
     from tests.infra.storage_records import ConversationBuilder
 
     db_path = tmp_path / "action-runtime-reconcile.db"

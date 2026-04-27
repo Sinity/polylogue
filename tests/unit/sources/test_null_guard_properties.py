@@ -26,7 +26,7 @@ from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 from hypothesis.strategies import SearchStrategy
 
-from polylogue.lib.messages import MessageCollection
+from polylogue.lib.message.messages import MessageCollection
 from polylogue.lib.models import Conversation, ConversationSummary, Message
 from polylogue.lib.roles import Role
 from polylogue.lib.timestamps import parse_timestamp

@@ -6,7 +6,7 @@ from collections.abc import AsyncIterator
 from contextlib import AbstractAsyncContextManager
 from typing import TYPE_CHECKING
 
-from polylogue.lib.message_roles import MessageRoleFilter
+from polylogue.lib.message.roles import MessageRoleFilter
 from polylogue.storage.backends.queries import attachments as attachments_q
 from polylogue.storage.backends.queries import conversations as conversations_q
 from polylogue.storage.backends.queries import messages as messages_q

@@ -21,10 +21,10 @@ import pytest
 from polylogue.cli.query import QueryAction, QueryOutputSpec, QueryRoute
 from polylogue.cli.query_contracts import QueryDeliveryTarget
 from polylogue.cli.types import AppEnv
-from polylogue.lib.content_projection import ContentProjectionSpec
 from polylogue.lib.models import Conversation as ConversationModel
 from polylogue.lib.models import ConversationSummary
 from polylogue.lib.models import Message as MessageModel
+from polylogue.lib.semantic.content_projection import ContentProjectionSpec
 from polylogue.paths.sanitize import conversation_render_root
 from polylogue.services import build_runtime_services
 from polylogue.storage.action_events.artifacts import ActionEventArtifactState
@@ -184,7 +184,7 @@ def test_execute_query_stream_target_resolution_contract(
     with (
         patch("polylogue.cli.helpers.load_effective_config", return_value=MagicMock()),
         patch("polylogue.storage.search_providers.create_vector_provider", return_value=None),
-        patch("polylogue.lib.filters.ConversationFilter", return_value=mock_filter),
+        patch("polylogue.lib.filter.filters.ConversationFilter", return_value=mock_filter),
         patch("polylogue.cli.query_output.stream_conversation", new_callable=AsyncMock) as mock_stream,
         patch("click.echo") as mock_echo,
     ):
@@ -289,7 +289,7 @@ async def test_async_execute_query_reports_non_date_query_spec_errors() -> None:
         QueryOutputSpec,
         async_execute_query,
     )
-    from polylogue.lib.query_spec import QuerySpecError
+    from polylogue.lib.query.spec import QuerySpecError
 
     env = _make_env(repo=MagicMock(), config=MagicMock())
     selection = MagicMock()
@@ -317,7 +317,7 @@ async def test_async_execute_query_reports_non_date_query_spec_errors() -> None:
 
 @pytest.mark.asyncio
 async def test_query_plan_filters_ordered_action_sequence() -> None:
-    from polylogue.lib.query_spec import ConversationQuerySpec
+    from polylogue.lib.query.spec import ConversationQuerySpec
 
     matching = make_conv(
         id="conv-sequence-match",
@@ -411,7 +411,7 @@ async def test_query_plan_filters_ordered_action_sequence() -> None:
 
 @pytest.mark.asyncio
 async def test_query_plan_filters_action_text_terms() -> None:
-    from polylogue.lib.query_spec import ConversationQuerySpec
+    from polylogue.lib.query.spec import ConversationQuerySpec
 
     matching = make_conv(
         id="conv-action-text-match",
@@ -446,7 +446,7 @@ async def test_query_plan_filters_action_text_terms() -> None:
                     {
                         "type": "tool_use",
                         "tool_name": "Bash",
-                        "tool_input": {"command": "ruff check polylogue/lib/action_events.py"},
+                        "tool_input": {"command": "ruff check polylogue/lib/action_event/action_events.py"},
                         "semantic_type": "shell",
                     },
                 ],
@@ -466,7 +466,7 @@ async def test_query_plan_filters_action_text_terms() -> None:
 
 @pytest.mark.asyncio
 async def test_query_plan_batches_post_filter_candidate_fetches() -> None:
-    from polylogue.lib.query_spec import ConversationQuerySpec
+    from polylogue.lib.query.spec import ConversationQuerySpec
 
     matching = make_conv(
         id="conv-batched-match",
@@ -509,7 +509,7 @@ async def test_query_plan_batches_post_filter_candidate_fetches() -> None:
 
 @pytest.mark.asyncio
 async def test_query_plan_action_retrieval_lane_matches_tool_command_text() -> None:
-    from polylogue.lib.query_spec import ConversationQuerySpec
+    from polylogue.lib.query.spec import ConversationQuerySpec
 
     matching = make_conv(
         id="conv-actions-lane-match",
@@ -547,7 +547,7 @@ async def test_query_plan_action_retrieval_lane_matches_tool_command_text() -> N
 
 @pytest.mark.asyncio
 async def test_query_plan_action_retrieval_lane_falls_back_when_action_read_model_unready() -> None:
-    from polylogue.lib.query_spec import ConversationQuerySpec
+    from polylogue.lib.query.spec import ConversationQuerySpec
 
     matching = make_conv(
         id="conv-actions-lane-fallback",
@@ -593,7 +593,7 @@ async def test_query_plan_action_retrieval_lane_falls_back_when_action_read_mode
 
 @pytest.mark.asyncio
 async def test_query_plan_hybrid_retrieval_lane_combines_text_and_action_hits() -> None:
-    from polylogue.lib.query_spec import ConversationQuerySpec
+    from polylogue.lib.query.spec import ConversationQuerySpec
 
     text_hit = make_conv(
         id="conv-text-hit",
@@ -641,7 +641,7 @@ async def test_query_plan_hybrid_retrieval_lane_combines_text_and_action_hits() 
 
 @pytest.mark.asyncio
 async def test_query_plan_path_filters_fall_back_to_full_list_when_action_read_model_unready() -> None:
-    from polylogue.lib.query_spec import ConversationQuerySpec
+    from polylogue.lib.query.spec import ConversationQuerySpec
 
     matching = make_conv(
         id="conv-summary-path-match",
@@ -752,10 +752,10 @@ async def test_async_execute_query_uses_session_product_stats_lane_for_repo_stat
         patch("polylogue.cli.query_output.output_stats_by_profile_summaries", new_callable=AsyncMock) as mock_output,
         patch("polylogue.cli.query_output._output_stats_by") as mock_fallback,
         patch(
-            "polylogue.lib.filters.ConversationFilter.list_summaries",
+            "polylogue.lib.filter.filters.ConversationFilter.list_summaries",
             new=AsyncMock(return_value=[_make_summary("conv-semantic-1")]),
         ),
-        patch("polylogue.lib.filters.ConversationFilter.can_use_summaries", return_value=True),
+        patch("polylogue.lib.filter.filters.ConversationFilter.can_use_summaries", return_value=True),
     ):
         await async_execute_query(
             env,
@@ -814,7 +814,7 @@ async def test_stream_conversation_output_contract(
     expected_fragments: list[str],
 ) -> None:
     from polylogue.cli.query_output import stream_conversation
-    from polylogue.lib.message_roles import normalize_message_roles
+    from polylogue.lib.message.roles import normalize_message_roles
 
     repo = MagicMock()
     repo.get_render_projection = AsyncMock(

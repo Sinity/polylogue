@@ -6,8 +6,12 @@ from collections import defaultdict
 from collections.abc import Iterable, Sequence
 from datetime import datetime, timezone
 
-from polylogue.lib.action_events import ActionEvent, build_action_events, build_tool_calls_from_content_blocks
-from polylogue.lib.viewports import ToolCategory
+from polylogue.lib.action_event.action_events import (
+    ActionEvent,
+    build_action_events,
+    build_tool_calls_from_content_blocks,
+)
+from polylogue.lib.viewport.viewports import ToolCategory
 from polylogue.storage.hydrators import message_from_record
 from polylogue.storage.runtime import (
     ACTION_EVENT_MATERIALIZER_VERSION,

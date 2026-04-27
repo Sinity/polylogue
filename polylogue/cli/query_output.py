@@ -36,10 +36,10 @@ from polylogue.cli.query_stats import (
     output_stats_by_summaries,
     output_stats_sql,
 )
-from polylogue.lib.content_projection import ContentProjectionSpec, coerce_content_projection_spec
 from polylogue.lib.json import JSONDocument
-from polylogue.lib.message_roles import MessageRoleFilter, message_role_count_key, message_role_labels
+from polylogue.lib.message.roles import MessageRoleFilter, message_role_count_key, message_role_labels
 from polylogue.lib.roles import Role
+from polylogue.lib.semantic.content_projection import ContentProjectionSpec, coerce_content_projection_spec
 from polylogue.logging import get_logger
 from polylogue.rendering.formatting import format_conversation
 from polylogue.surfaces.payloads import ConversationListRowPayload, ConversationSearchHitPayload, model_json_document
@@ -49,8 +49,8 @@ logger = get_logger(__name__)
 if TYPE_CHECKING:
     from polylogue.cli.types import AppEnv
     from polylogue.lib.models import Conversation, ConversationSummary, Message
-    from polylogue.lib.query_miss_diagnostics import QueryMissDiagnostics
-    from polylogue.lib.query_spec import ConversationQuerySpec
+    from polylogue.lib.query.miss_diagnostics import QueryMissDiagnostics
+    from polylogue.lib.query.spec import ConversationQuerySpec
     from polylogue.lib.search_hits import ConversationSearchHit
     from polylogue.protocols import ConversationOutputStore
     from polylogue.storage.runtime import MessageRecord

@@ -8,7 +8,7 @@ from typing import TypeAlias
 from pydantic import BaseModel, ConfigDict
 
 from polylogue.lib.json import JSONDocument, JSONDocumentList, json_document, json_document_list
-from polylogue.lib.provider_semantics import (
+from polylogue.lib.provider.semantics import (
     extract_claude_code_text,
     extract_content_blocks,
     extract_reasoning_traces,
@@ -16,7 +16,7 @@ from polylogue.lib.provider_semantics import (
 )
 from polylogue.lib.roles import Role, normalize_role
 from polylogue.lib.timestamps import parse_timestamp
-from polylogue.lib.viewports import (
+from polylogue.lib.viewport.viewports import (
     ContentBlock,
     CostInfo,
     MessageMeta,

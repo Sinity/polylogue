@@ -14,7 +14,7 @@ from polylogue.archive_products import (
     records_provenance,
 )
 from polylogue.lib.repo_identity import normalize_repo_names
-from polylogue.lib.session_profile import SessionProfile
+from polylogue.lib.session.session_profile import SessionProfile
 from polylogue.storage.runtime import SessionTagRollupRecord
 
 

@@ -74,12 +74,10 @@ def test_polylogue_root_matches_kernel_rule() -> None:
 # -------- #424: lib subpackages exist --------
 
 
-@pytest.mark.xfail(strict=True, reason="topology refactor: lib flat, see #424")
 def test_lib_has_query_subpackage() -> None:
     assert (ROOT / "polylogue" / "lib" / "query" / "__init__.py").exists()
 
 
-@pytest.mark.xfail(strict=True, reason="topology refactor: lib flat, see #424")
 def test_no_query_runtime_at_lib_root() -> None:
     files = {p.name for p in (ROOT / "polylogue" / "lib").glob("*.py")}
     legacy = {f for f in files if f.startswith("query_")}

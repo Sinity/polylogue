@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.lib.viewports import ToolCategory
+from polylogue.lib.viewport.viewports import ToolCategory
 from polylogue.schemas.unified import (
     HarmonizedMessage,
     extract_from_provider_meta,

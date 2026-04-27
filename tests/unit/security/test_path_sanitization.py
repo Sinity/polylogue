@@ -168,7 +168,7 @@ class TestRegexReDoSSafety:
         """_PATH_PATTERN must handle long strings without backtracking."""
         import time
 
-        from polylogue.lib.viewports import _PATH_PATTERN
+        from polylogue.lib.viewport.viewports import _PATH_PATTERN
 
         # Adversarial: long string of dots and slashes that could cause
         # backtracking in a poorly-written path regex
@@ -182,7 +182,7 @@ class TestRegexReDoSSafety:
         """Quoted path segments must not cause exponential matching."""
         import time
 
-        from polylogue.lib.viewports import _PATH_PATTERN
+        from polylogue.lib.viewport.viewports import _PATH_PATTERN
 
         # Many alternating quote/space boundaries
         adversarial = " ".join(f'"/path/segment{i}"' for i in range(500))

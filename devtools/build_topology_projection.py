@@ -98,7 +98,8 @@ LIB_PREFIX_TO_SUBPACKAGE = {
     "message_": "lib/message/",
     "messages": "lib/message/",
     "conversation_": "lib/conversation/",
-    "semantic_fact": "lib/semantic/",
+    "semantic_fact_": "lib/semantic/",
+    "semantic_facts": "lib/semantic/facts.py",
     "content_projection": "lib/semantic/",
     "branch_type": "lib/conversation/",
     "threads": "lib/conversation/",
@@ -310,8 +311,8 @@ def _resolve_target(name: str, sub: str, prefix: str) -> str:
 
 
 def _apply_rule(name: str, prefix: str, sub: str) -> str:
-    # Exact-filename rule: value is a full target path (ends in .py).
-    if prefix == name and sub.endswith(".py"):
+    # Full-target rule: value ends in .py and prefix matches name (with or without .py).
+    if sub.endswith(".py") and (prefix == name or prefix == name.removesuffix(".py")):
         return f"polylogue/{sub}"
     return _resolve_target(name, sub, prefix)
 

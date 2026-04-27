@@ -1,6 +1,6 @@
 """Tests for ConversationFilter SQL pushdown and execution plan logic.
 
-Production code under test: polylogue/lib/filters.py
+Production code under test: polylogue/lib/filter/filters.py
 Methods: _sql_pushdown_params, _needs_content_loading, can_use_summaries, _has_post_filters
 """
 
@@ -11,7 +11,7 @@ from unittest.mock import MagicMock
 
 from hypothesis import given, settings
 
-from polylogue.lib.filters import ConversationFilter
+from polylogue.lib.filter.filters import ConversationFilter
 from tests.infra.strategies.filters import filter_chain_strategy
 
 

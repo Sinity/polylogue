@@ -44,10 +44,10 @@ from polylogue.cli.query_output import (
 )
 from polylogue.cli.types import AppEnv
 from polylogue.lib.json import JSONDocument
-from polylogue.lib.message_roles import MessageRoleFilter
+from polylogue.lib.message.roles import MessageRoleFilter
 from polylogue.lib.models import Conversation
-from polylogue.lib.query_miss_diagnostics import QueryMissDiagnostics, QueryMissReason
-from polylogue.lib.query_spec import ConversationQuerySpec, QuerySpecError
+from polylogue.lib.query.miss_diagnostics import QueryMissDiagnostics, QueryMissReason
+from polylogue.lib.query.spec import ConversationQuerySpec, QuerySpecError
 from polylogue.lib.roles import Role
 from polylogue.lib.search_hits import ConversationSearchHit
 from polylogue.services import build_runtime_services

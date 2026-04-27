@@ -412,7 +412,7 @@ def test_update_index_refreshes_action_entries_for_updated_tool_blocks(
             None,
             "Bash",
             "tool-refresh",
-            json.dumps({"command": "ruff check polylogue/lib/action_events.py"}),
+            json.dumps({"command": "ruff check polylogue/lib/action_event/action_events.py"}),
             None,
             None,
             "shell",

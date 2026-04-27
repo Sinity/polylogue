@@ -8,7 +8,7 @@ from pydantic import ValidationError
 
 from polylogue.lib.json import JSONDocument, json_document
 from polylogue.lib.timestamps import parse_timestamp
-from polylogue.lib.viewports import ContentBlock, CostInfo, ReasoningTrace, TokenUsage, ToolCall
+from polylogue.lib.viewport.viewports import ContentBlock, CostInfo, ReasoningTrace, TokenUsage, ToolCall
 from polylogue.schemas.unified_models import extract_token_usage
 from polylogue.types import Provider
 

@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from polylogue.lib.models import Conversation
-from polylogue.lib.session_profile import build_session_analysis, build_session_profile
+from polylogue.lib.session.session_profile import build_session_analysis, build_session_profile
 from polylogue.storage.products.session.profiles import (
     assistant_turn_texts,
     blocker_texts,

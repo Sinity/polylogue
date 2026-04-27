@@ -13,7 +13,7 @@ import pytest
 
 from polylogue.config import Config, Source
 from polylogue.errors import DatabaseError
-from polylogue.lib.raw_payload_decode import JSONValue
+from polylogue.lib.raw_payload.decode import JSONValue
 from polylogue.pipeline.payload_types import ParseBatchObservation
 from polylogue.pipeline.services.acquisition import AcquireResult, AcquisitionService
 from polylogue.pipeline.services.acquisition_records import ScanResult

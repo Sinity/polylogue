@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field, field_validator
 
-from polylogue.lib.branch_type import BranchType
+from polylogue.lib.conversation.branch_type import BranchType
 from polylogue.lib.hashing import hash_text
 from polylogue.lib.json import json_document
 from polylogue.lib.roles import Role

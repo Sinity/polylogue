@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from polylogue.lib.action_events import ActionEvent
+from polylogue.lib.action_event.action_events import ActionEvent
 from polylogue.storage.action_events.rows import hydrate_action_events
 from polylogue.storage.runtime import ActionEventRecord
 

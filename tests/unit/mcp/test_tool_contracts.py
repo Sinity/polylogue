@@ -38,11 +38,11 @@ from polylogue.archive_products import (
     WorkEventInferencePayload,
     WorkThreadProduct,
 )
+from polylogue.lib.conversation.neighbor_candidates import ConversationNeighborCandidate, NeighborReason
 from polylogue.lib.models import Conversation, ConversationSummary
-from polylogue.lib.neighbor_candidates import ConversationNeighborCandidate, NeighborReason
 from polylogue.lib.pricing import CostEstimatePayload, CostUsagePayload
-from polylogue.lib.query_miss_diagnostics import QueryMissDiagnostics, QueryMissReason
-from polylogue.lib.query_spec import ConversationQuerySpec
+from polylogue.lib.query.miss_diagnostics import QueryMissDiagnostics, QueryMissReason
+from polylogue.lib.query.spec import ConversationQuerySpec
 from polylogue.lib.search_hits import ConversationSearchHit
 from polylogue.lib.stats import ArchiveStats
 from polylogue.storage.products.session.runtime import SessionProductCounts

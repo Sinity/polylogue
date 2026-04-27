@@ -16,10 +16,10 @@ from polylogue.cli.query_feedback import emit_no_results
 
 if TYPE_CHECKING:
     from polylogue.cli.types import AppEnv
-    from polylogue.lib.action_events import ActionEvent
-    from polylogue.lib.filters import ConversationFilter
+    from polylogue.lib.action_event.action_events import ActionEvent
+    from polylogue.lib.filter.filters import ConversationFilter
     from polylogue.lib.models import Conversation, ConversationSummary
-    from polylogue.lib.query_spec import ConversationQuerySpec
+    from polylogue.lib.query.spec import ConversationQuerySpec
     from polylogue.protocols import ConversationArchiveStatsStore
 
 
@@ -454,7 +454,7 @@ def _semantic_grouped_payload(
         action_matches_slice,
         filtered_action_events,
     )
-    from polylogue.lib.semantic_facts import build_conversation_semantic_facts
+    from polylogue.lib.semantic.facts import build_conversation_semantic_facts
 
     semantic_slice = SemanticStatsSlice.from_selection(selection)
     groups: dict[str, dict[str, int]] = defaultdict(lambda: {"convs": 0, "facts": 0, "msgs": 0})
@@ -638,7 +638,7 @@ async def output_stats_by_profile_ids(
     if not conversation_ids:
         emit_no_results(env, selection=selection, output_format=output_format)
 
-    from polylogue.lib.session_profile import build_session_profile
+    from polylogue.lib.session.session_profile import build_session_profile
 
     groups: dict[str, dict[str, int]] = defaultdict(lambda: {"conversations": 0, "work_events": 0, "messages": 0})
     matched_conversations = 0

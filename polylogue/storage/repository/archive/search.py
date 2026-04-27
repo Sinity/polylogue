@@ -7,7 +7,7 @@ from dataclasses import replace
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from polylogue.lib.conversation_models import Conversation, ConversationSummary
+    from polylogue.lib.conversation.models import Conversation, ConversationSummary
     from polylogue.lib.search_hits import ConversationSearchHit
     from polylogue.storage.backends.query_store import SQLiteQueryStore
     from polylogue.storage.runtime import ConversationRecord

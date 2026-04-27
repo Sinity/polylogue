@@ -616,7 +616,7 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
         code_refs=(
             "polylogue.operations.archive.ArchiveSearchMixin.query_conversations",
             "polylogue.operations.archive.ArchiveSearchMixin.search",
-            "polylogue.lib.query_plan_execution",
+            "polylogue.lib.query.plan_execution",
         ),
         readiness_surfaces=("query", "mcp", "facade"),
     ),

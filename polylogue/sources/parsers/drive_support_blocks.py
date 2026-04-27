@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from polylogue.lib.json import JSONDocument, json_document, json_document_list
-from polylogue.lib.viewports import ContentBlock
+from polylogue.lib.viewport.viewports import ContentBlock
 from polylogue.types import ContentBlockType
 
 from .base import ParsedContentBlock

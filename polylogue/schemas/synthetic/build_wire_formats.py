@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Protocol, TypeAlias
 
-from polylogue.lib.raw_payload_decode import JSONValue
+from polylogue.lib.raw_payload.decode import JSONValue
 from polylogue.schemas.synthetic.semantic_values import _text_for_role
 from polylogue.schemas.synthetic.showcase import ConversationTheme
 

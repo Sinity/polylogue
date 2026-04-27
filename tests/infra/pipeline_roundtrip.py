@@ -6,7 +6,7 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
-from polylogue.lib.conversation_models import Conversation
+from polylogue.lib.conversation.models import Conversation
 from polylogue.lib.json import JSONValue, loads
 from polylogue.pipeline.prepare_models import TransformResult
 from polylogue.pipeline.prepare_transform import transform_to_records

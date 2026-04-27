@@ -44,10 +44,10 @@ from polylogue.archive_products import (
 )
 from polylogue.archive_resume import ResumeBrief, ResumeOperations, build_resume_brief
 from polylogue.config import ConfigError
-from polylogue.lib.content_projection import ContentProjectionSpec
-from polylogue.lib.conversation_models import ConversationSummary
+from polylogue.lib.conversation.models import ConversationSummary
 from polylogue.lib.pricing import CostUsagePayload, _normalize_model, estimate_conversation_cost, generated_at
-from polylogue.lib.query_spec import ConversationQuerySpec
+from polylogue.lib.query.spec import ConversationQuerySpec
+from polylogue.lib.semantic.content_projection import ContentProjectionSpec
 from polylogue.maintenance.targets import build_maintenance_target_catalog
 from polylogue.paths.sanitize import conversation_render_root
 from polylogue.product_export_bundles import (
@@ -85,9 +85,9 @@ _PROFILE_FTS_STATUS_BY_TIER: dict[str, SessionProductReadyFlag] = {
 
 if TYPE_CHECKING:
     from polylogue.config import Config
-    from polylogue.lib.conversation_models import Conversation
-    from polylogue.lib.neighbor_candidates import ConversationNeighborCandidate
-    from polylogue.lib.query_miss_diagnostics import QueryMissDiagnostics
+    from polylogue.lib.conversation.models import Conversation
+    from polylogue.lib.conversation.neighbor_candidates import ConversationNeighborCandidate
+    from polylogue.lib.query.miss_diagnostics import QueryMissDiagnostics
     from polylogue.lib.search_hits import ConversationSearchHit
     from polylogue.lib.stats import ArchiveStats as StorageArchiveStats
     from polylogue.storage.backends.async_sqlite import SQLiteBackend
@@ -332,7 +332,7 @@ class ArchiveSearchMixin:
         return [conversation.with_content_projection(content_projection) for conversation in conversations]
 
     async def search_conversation_hits(self, spec: ConversationQuerySpec) -> list[ConversationSearchHit]:
-        from polylogue.lib.query_search_hits import search_hits_for_plan
+        from polylogue.lib.query.search_hits import search_hits_for_plan
 
         hits = await search_hits_for_plan(spec.to_plan(), self.repository)
         if not hits:
@@ -349,7 +349,10 @@ class ArchiveSearchMixin:
         limit: int = 10,
         window_hours: int = 24,
     ) -> list[ConversationNeighborCandidate]:
-        from polylogue.lib.neighbor_candidates import NeighborDiscoveryRequest, discover_neighbor_candidates
+        from polylogue.lib.conversation.neighbor_candidates import (
+            NeighborDiscoveryRequest,
+            discover_neighbor_candidates,
+        )
 
         candidates = await discover_neighbor_candidates(
             self.repository,
@@ -367,7 +370,7 @@ class ArchiveSearchMixin:
         return [candidate.with_message_count(counts.get(candidate.conversation_id)) for candidate in candidates]
 
     async def diagnose_query_miss(self, spec: ConversationQuerySpec) -> QueryMissDiagnostics:
-        from polylogue.lib.query_miss_diagnostics import diagnose_query_miss
+        from polylogue.lib.query.miss_diagnostics import diagnose_query_miss
 
         return await diagnose_query_miss(self.repository, spec, config=self.config)
 

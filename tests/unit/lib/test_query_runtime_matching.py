@@ -4,18 +4,18 @@ from datetime import datetime, timezone
 
 import pytest
 
-from polylogue.lib.action_events import ActionEvent
-from polylogue.lib.conversation_models import Conversation
-from polylogue.lib.messages import MessageCollection
-from polylogue.lib.query_plan import ConversationQueryPlan
-from polylogue.lib.query_runtime_matching import (
+from polylogue.lib.action_event.action_events import ActionEvent
+from polylogue.lib.conversation.models import Conversation
+from polylogue.lib.message.messages import MessageCollection
+from polylogue.lib.query.plan import ConversationQueryPlan
+from polylogue.lib.query.runtime_matching import (
     matches_action_sequence,
     matches_action_terms,
     matches_action_text_terms,
     matches_path_terms,
     matches_tool_terms,
 )
-from polylogue.lib.viewport_enums import ToolCategory
+from polylogue.lib.viewport.enums import ToolCategory
 from polylogue.types import ConversationId, Provider
 
 
@@ -60,7 +60,7 @@ def _patch_events(
     monkeypatch: pytest.MonkeyPatch,
     events: tuple[ActionEvent, ...],
 ) -> None:
-    monkeypatch.setattr("polylogue.lib.query_runtime_matching._action_events_for", lambda _conversation: events)
+    monkeypatch.setattr("polylogue.lib.query.runtime_matching._action_events_for", lambda _conversation: events)
 
 
 def test_matches_path_terms_requires_each_term_across_affected_paths(monkeypatch: pytest.MonkeyPatch) -> None:

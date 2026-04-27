@@ -6,13 +6,13 @@ import builtins
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
-from polylogue.lib.conversation_models import Conversation, ConversationSummary
+from polylogue.lib.conversation.models import Conversation, ConversationSummary
 from polylogue.protocols import ConversationQueryRuntimeStore
 from polylogue.storage.backends.queries.stats import AggregateMessageStats
 from polylogue.storage.query_models import ConversationRecordQuery
 
 if TYPE_CHECKING:
-    from polylogue.lib.filters import ConversationFilter
+    from polylogue.lib.filter.filters import ConversationFilter
     from polylogue.storage.backends.query_store import SQLiteQueryStore
 
 
@@ -223,7 +223,7 @@ class RepositoryArchiveQueryMixin:
         )
 
     def filter(self: ConversationQueryRuntimeStore) -> ConversationFilter:
-        from polylogue.lib import filters
+        from polylogue.lib.filter import filters
 
         return filters.ConversationFilter(self)
 

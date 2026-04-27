@@ -7,10 +7,10 @@ from typing import TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from polylogue.lib.provider_semantics import extract_chatgpt_text
+from polylogue.lib.provider.semantics import extract_chatgpt_text
 from polylogue.lib.roles import Role
 from polylogue.lib.timestamps import parse_timestamp
-from polylogue.lib.viewports import (
+from polylogue.lib.viewport.viewports import (
     ContentBlock,
     ContentType,
     MessageMeta,

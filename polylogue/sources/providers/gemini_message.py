@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from polylogue.lib.json import json_document
 from polylogue.lib.roles import Role
 from polylogue.lib.timestamps import parse_timestamp
-from polylogue.lib.viewports import (
+from polylogue.lib.viewport.viewports import (
     ContentBlock,
     ContentType,
     MessageMeta,

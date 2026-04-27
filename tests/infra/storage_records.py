@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Final, TypeAlias, cast
 from uuid import uuid4
 
-from polylogue.lib.branch_type import BranchType
+from polylogue.lib.conversation.branch_type import BranchType
 from polylogue.lib.json import dumps, require_json_document, require_json_value
 from polylogue.lib.roles import Role
 from polylogue.pipeline.prepare import _timestamp_sort_key
@@ -39,7 +39,7 @@ from polylogue.types import (
 )
 
 if TYPE_CHECKING:
-    from polylogue.lib.conversation_models import Conversation
+    from polylogue.lib.conversation.models import Conversation
 
 JSONRecord: TypeAlias = dict[str, object]
 MessageMapping: TypeAlias = Mapping[str, object]

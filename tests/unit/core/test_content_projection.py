@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from polylogue.lib.attachment_models import Attachment
-from polylogue.lib.content_projection import ContentProjectionSpec
+from polylogue.lib.attachment.models import Attachment
+from polylogue.lib.semantic.content_projection import ContentProjectionSpec
 from tests.infra.builders import make_conv, make_msg
 
 

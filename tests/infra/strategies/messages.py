@@ -280,7 +280,7 @@ def parsed_attachment_model_strategy(draw: st.DrawFn) -> object:
 @st.composite
 def conversation_model_strategy(draw: st.DrawFn, *, min_messages: int = 0, max_messages: int = 10) -> Conversation:
     """Generate a Conversation model instance with arbitrary messages."""
-    from polylogue.lib.messages import MessageCollection
+    from polylogue.lib.message.messages import MessageCollection
     from polylogue.lib.models import Conversation as ConversationModel
 
     messages = draw(st.lists(message_model_strategy(), min_size=min_messages, max_size=max_messages))

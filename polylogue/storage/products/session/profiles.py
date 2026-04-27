@@ -10,6 +10,7 @@ from polylogue.archive_product_models import (
     SessionEvidencePayload,
     SessionInferencePayload,
 )
+from polylogue.lib.conversation.extraction import WorkEvent, WorkEventPayload
 from polylogue.lib.payload_coercion import (
     coerce_float,
     coerce_int,
@@ -19,15 +20,14 @@ from polylogue.lib.payload_coercion import (
     string_int_mapping,
     string_sequence,
 )
-from polylogue.lib.phase_extraction import SessionPhase
-from polylogue.lib.session_payload_documents import (
+from polylogue.lib.phase.extraction import SessionPhase
+from polylogue.lib.session.documents import (
     SessionPhaseDocument,
     SessionProfileDocument,
     WorkEventDocument,
 )
-from polylogue.lib.session_profile import SessionAnalysis, SessionProfile
-from polylogue.lib.session_profile_models import SessionPhasePayload
-from polylogue.lib.work_event_extraction import WorkEvent, WorkEventPayload
+from polylogue.lib.session.models import SessionPhasePayload
+from polylogue.lib.session.session_profile import SessionAnalysis, SessionProfile
 from polylogue.storage.runtime import (
     SESSION_ENRICHMENT_FAMILY,
     SESSION_ENRICHMENT_VERSION,

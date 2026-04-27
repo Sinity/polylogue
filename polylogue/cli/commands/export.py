@@ -7,7 +7,7 @@ import click
 from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.cli.helper_support import fail
 from polylogue.cli.types import AppEnv
-from polylogue.lib.message_roles import normalize_message_roles
+from polylogue.lib.message.roles import normalize_message_roles
 from polylogue.rendering.formatting import CONVERSATION_OUTPUT_FORMATS, format_conversation
 
 

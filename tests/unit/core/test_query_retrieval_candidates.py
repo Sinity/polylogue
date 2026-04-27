@@ -3,8 +3,8 @@ from __future__ import annotations
 import pytest
 
 from polylogue.errors import DatabaseError
-from polylogue.lib.query_plan import ConversationQueryPlan
-from polylogue.lib.query_retrieval_candidates import fetch_search_results
+from polylogue.lib.query.plan import ConversationQueryPlan
+from polylogue.lib.query.retrieval_candidates import fetch_search_results
 from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.repository import ConversationRepository
 from tests.infra.storage_records import ConversationBuilder

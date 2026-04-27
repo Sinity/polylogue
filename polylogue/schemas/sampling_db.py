@@ -15,7 +15,7 @@ from polylogue.lib.provider_identity import (
     canonical_schema_provider,
 )
 from polylogue.lib.raw_payload import extract_record_samples_from_raw_content
-from polylogue.lib.raw_payload_decode import RawPayloadEnvelope
+from polylogue.lib.raw_payload.decode import RawPayloadEnvelope
 from polylogue.logging import get_logger
 from polylogue.paths import db_path as archive_db_path
 from polylogue.schemas.observation import (

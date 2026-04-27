@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from polylogue.lib.json import JSONDocument, json_document, json_document_list
-from polylogue.lib.provider_semantics import (
+from polylogue.lib.provider.semantics import (
     extract_chatgpt_text,
     extract_claude_code_text,
     extract_content_blocks,
@@ -14,7 +14,7 @@ from polylogue.lib.provider_semantics import (
 )
 from polylogue.lib.roles import Role
 from polylogue.lib.timestamps import parse_timestamp
-from polylogue.lib.viewports import CostInfo, ReasoningTrace, TokenUsage
+from polylogue.lib.viewport.viewports import CostInfo, ReasoningTrace, TokenUsage
 from polylogue.schemas.unified_models import HarmonizedMessage, _missing_role, extract_token_usage
 from polylogue.types import Provider
 

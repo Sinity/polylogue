@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from polylogue.lib.threads import WorkThread
+from polylogue.lib.conversation.threads import WorkThread
 from polylogue.storage.products.product_read_support import hydrate_optional, hydrate_sequence
 from polylogue.storage.products.session.threads import hydrate_work_thread
 from polylogue.storage.query_models import WorkThreadListQuery

@@ -6,7 +6,7 @@ branch tracking, git context, and edge cases.
 
 from __future__ import annotations
 
-from polylogue.lib.branch_type import BranchType
+from polylogue.lib.conversation.branch_type import BranchType
 from polylogue.sources.parsers.base import ParsedConversation
 from polylogue.sources.parsers.codex import looks_like as _looks_like_impl
 from polylogue.sources.parsers.codex import parse as _parse_impl

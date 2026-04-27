@@ -115,7 +115,7 @@ class TestUnicodeHandling:
 
         with (
             patch("polylogue.mcp.server._get_query_store") as mock_get_query_store,
-            patch("polylogue.lib.filters.ConversationFilter") as mock_filter_cls,
+            patch("polylogue.lib.filter.filters.ConversationFilter") as mock_filter_cls,
         ):
             mock_query_store = make_query_store_mock()
             mock_query_store.search = AsyncMock(return_value=[])
@@ -144,7 +144,7 @@ class TestBoundaryParameters:
 
         with (
             patch("polylogue.mcp.server._get_query_store") as mock_get_query_store,
-            patch("polylogue.lib.filters.ConversationFilter") as mock_filter_cls,
+            patch("polylogue.lib.filter.filters.ConversationFilter") as mock_filter_cls,
         ):
             mock_query_store = make_query_store_mock()
             mock_query_store.list = AsyncMock(return_value=[])
@@ -165,7 +165,7 @@ class TestBoundaryParameters:
 
         with (
             patch("polylogue.mcp.server._get_query_store") as mock_get_query_store,
-            patch("polylogue.lib.filters.ConversationFilter") as mock_filter_cls,
+            patch("polylogue.lib.filter.filters.ConversationFilter") as mock_filter_cls,
         ):
             mock_query_store = make_query_store_mock()
             mock_query_store.list = AsyncMock(return_value=[])

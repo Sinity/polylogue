@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from polylogue.lib.conversation_models import Conversation, ConversationSummary
-from polylogue.lib.message_models import Message
-from polylogue.lib.messages import MessageCollection
+from polylogue.lib.conversation.models import Conversation, ConversationSummary
+from polylogue.lib.message.messages import MessageCollection
+from polylogue.lib.message.models import Message
 from polylogue.lib.roles import Role
 from polylogue.lib.search_hits import (
     build_search_snippet,
