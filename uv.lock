@@ -1363,6 +1363,7 @@ dependencies = [
     { name = "structlog" },
     { name = "tenacity" },
     { name = "textual" },
+    { name = "typing-extensions" },
 ]
 
 [package.optional-dependencies]
@@ -1474,6 +1475,7 @@ requires-dist = [
     { name = "tree-sitter-yaml", marker = "extra == 'tree-sitter'", specifier = ">=0.6.0" },
     { name = "types-dateparser", marker = "extra == 'dev'", specifier = ">=1.2.0" },
     { name = "types-pyyaml", marker = "extra == 'dev'", specifier = ">=6.0" },
+    { name = "typing-extensions", specifier = ">=4.7" },
 ]
 provides-extras = ["dev", "ocr", "fuzz", "tree-sitter"]
 
