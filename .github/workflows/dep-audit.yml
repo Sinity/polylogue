@@ -51,26 +51,11 @@ jobs:
         # --disable-pip: read packages from -r, don't shell out to pip install.
         run: uv run pip-audit --strict --vulnerability-service osv --disable-pip -r requirements-audit.txt
 
-  dependency-review:
-    # Best-effort PR-time delta scan. Requires the GitHub Dependency Graph
-    # feature to be enabled in repo settings (Settings → Code security and
-    # analysis → Dependency graph). Until that's on, the action errors out
-    # with "Dependency review is not supported on this repository", so we
-    # mark the whole job continue-on-error and rely on pip-audit (above) as
-    # the blocking signal. Flip continue-on-error to false once the graph
-    # is enabled.
-    name: Dependency Review
-    if: github.event_name == 'pull_request'
-    continue-on-error: true
-    timeout-minutes: 5
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: write
-    steps:
-      - uses: actions/checkout@v6
-      - name: Review dependency changes for known vulnerabilities
-        uses: actions/dependency-review-action@v4
-        with:
-          fail-on-severity: moderate
-          comment-summary-in-pr: on-failure
+  # Dependency Review (PR-time delta scan) is intentionally omitted: it requires
+  # GitHub Dependency Graph to be enabled in Settings → Code security and
+  # analysis → Dependency graph. Until that's on, the action errors out with
+  # "Dependency review is not supported on this repository" and `continue-on-error`
+  # suppresses workflow failure but not the per-job check status. pip-audit
+  # (above) is the blocking signal across the full lockfile, which covers the
+  # same surface less narrowly. Re-enable this job after enabling the graph
+  # feature.
