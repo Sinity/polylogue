@@ -14,6 +14,10 @@ _What was done. Key modules, contracts, and boundaries touched._
 
 _Exact commands run and any manual validation performed._
 
+## Changelog
+
+_If user-visible (new flags, renamed/removed commands, output changes, breaking migrations, security fixes), add a one-line entry to the `Unreleased` section of `CHANGELOG.md`. Skip for refactors, internal renames, and test-only PRs._
+
 ## Risks and Follow-ups
 
 _Remaining risks, migrations, rollout concerns, or deferred work. Delete this section if none._
