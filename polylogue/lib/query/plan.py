@@ -79,6 +79,7 @@ class ConversationQueryPlan:
     negative_terms: tuple[str, ...] = ()
     retrieval_lane: str = "auto"
     path_terms: tuple[str, ...] = ()
+    cwd_prefix: str | None = None
     action_terms: tuple[str, ...] = ()
     excluded_action_terms: tuple[str, ...] = ()
     action_sequence: tuple[str, ...] = ()

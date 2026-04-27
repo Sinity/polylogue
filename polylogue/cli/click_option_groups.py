@@ -99,6 +99,12 @@ FILTER_OPTION_DECORATORS: tuple[Callable[[ClickCallable], ClickCallable], ...] =
         help="Touched path contains substring (repeatable = AND)",
     ),
     click.option(
+        "--cwd-prefix",
+        "cwd_prefix",
+        default=None,
+        help="Filter conversations whose recorded working directory starts with this prefix",
+    ),
+    click.option(
         "--action",
         multiple=True,
         type=click.Choice(QUERY_ACTION_TYPES),

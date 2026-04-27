@@ -16,6 +16,7 @@ class ConversationListQueryKwargs(TypedDict):
     until: str | None
     title_contains: str | None
     path_terms: list[str] | None
+    cwd_prefix: str | None
     action_terms: list[str] | None
     excluded_action_terms: list[str] | None
     tool_terms: list[str] | None
@@ -37,6 +38,7 @@ class ConversationCountQueryKwargs(TypedDict):
     until: str | None
     title_contains: str | None
     path_terms: list[str] | None
+    cwd_prefix: str | None
     action_terms: list[str] | None
     excluded_action_terms: list[str] | None
     tool_terms: list[str] | None
@@ -60,6 +62,7 @@ class ConversationRecordQuery:
     until: str | None = None
     title_contains: str | None = None
     path_terms: tuple[str, ...] = ()
+    cwd_prefix: str | None = None
     action_terms: tuple[str, ...] = ()
     excluded_action_terms: tuple[str, ...] = ()
     tool_terms: tuple[str, ...] = ()
@@ -106,6 +109,7 @@ class ConversationRecordQuery:
             "until": self.until,
             "title_contains": self.title_contains,
             "path_terms": list(self.path_terms) or None,
+            "cwd_prefix": self.cwd_prefix,
             "action_terms": list(self.action_terms) or None,
             "excluded_action_terms": list(self.excluded_action_terms) or None,
             "tool_terms": list(self.tool_terms) or None,
@@ -128,6 +132,7 @@ class ConversationRecordQuery:
             "until": self.until,
             "title_contains": self.title_contains,
             "path_terms": list(self.path_terms) or None,
+            "cwd_prefix": self.cwd_prefix,
             "action_terms": list(self.action_terms) or None,
             "excluded_action_terms": list(self.excluded_action_terms) or None,
             "tool_terms": list(self.tool_terms) or None,
