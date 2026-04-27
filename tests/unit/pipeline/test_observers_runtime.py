@@ -69,35 +69,42 @@ def test_notification_observer_covers_changed_only_and_idle_paths() -> None:
 
 
 def test_webhook_request_target_and_post_webhook_cover_http_https_and_hostname_errors() -> None:
-    with patch("polylogue.pipeline.observers._validate_webhook_url") as validate:
-        scheme, host, port, path = observers_module._webhook_request_target("https://example.com/hook?x=1")
+    public_ip = "93.184.216.34"
+    with patch("polylogue.pipeline.observers.socket.getaddrinfo", return_value=[(2, 1, 6, "", (public_ip, 443))]):
+        scheme, host, validated_ip, port, path = observers_module._webhook_request_target(
+            "https://example.com/hook?x=1"
+        )
 
-    validate.assert_called_once_with("https://example.com/hook?x=1")
-    assert (scheme, host, port, path) == ("https", "example.com", 443, "/hook?x=1")
+    assert (scheme, host, validated_ip, port, path) == ("https", "example.com", public_ip, 443, "/hook?x=1")
 
-    with patch("polylogue.pipeline.observers._validate_webhook_url"):
-        try:
-            observers_module._webhook_request_target("http:///missing-host")
-        except ValueError as exc:
-            assert "hostname" in str(exc)
-        else:
-            raise AssertionError("expected ValueError for missing hostname")
+    try:
+        observers_module._webhook_request_target("http:///missing-host")
+    except ValueError as exc:
+        assert "hostname" in str(exc)
+    else:
+        raise AssertionError("expected ValueError for missing hostname")
 
     response = MagicMock()
     http_connection = MagicMock()
     http_connection.getresponse.return_value = response
-    https_connection = MagicMock()
-    https_connection.getresponse.return_value = response
-    with patch("http.client.HTTPConnection", return_value=http_connection):
-        observers_module._post_webhook("http://example.com/hook", b"{}")
+    pinned_https = MagicMock()
+    pinned_https.getresponse.return_value = response
+
+    with patch("polylogue.pipeline.observers.socket.getaddrinfo", return_value=[(2, 1, 6, "", (public_ip, 80))]):
+        with patch("polylogue.pipeline.observers.http.client.HTTPConnection", return_value=http_connection):
+            observers_module._post_webhook("http://example.com/hook", b"{}")
     http_connection.request.assert_called_once()
+    # HTTP path connects to the validated IP and restores the Host header.
+    request_kwargs = http_connection.request.call_args.kwargs
+    assert request_kwargs["headers"]["Host"] == "example.com"
     http_connection.close.assert_called_once()
 
-    with patch("http.client.HTTPSConnection", return_value=https_connection):
-        with patch("ssl.create_default_context", return_value="ctx"):
-            observers_module._post_webhook("https://example.com/hook", b"{}")
-    https_connection.request.assert_called_once()
-    https_connection.close.assert_called_once()
+    with patch("polylogue.pipeline.observers.socket.getaddrinfo", return_value=[(2, 1, 6, "", (public_ip, 443))]):
+        with patch("polylogue.pipeline.observers._PinnedHTTPSConnection", return_value=pinned_https):
+            with patch("polylogue.pipeline.observers.ssl.create_default_context", return_value="ctx"):
+                observers_module._post_webhook("https://example.com/hook", b"{}")
+    pinned_https.request.assert_called_once()
+    pinned_https.close.assert_called_once()
 
 
 def test_validate_webhook_url_rejects_bad_scheme_host_resolution_and_private_ips() -> None:

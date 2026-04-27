@@ -66,6 +66,17 @@ class TestSafePathComponent:
         result = safe_path_component("café")
         assert "-" in result
 
+    def test_unicode_nfc_normalization_collapses_confusables(self) -> None:
+        """NFC normalization collapses decomposed equivalents to one stable form.
+
+        ``café`` written as NFC ("é" U+00E9) and as NFD ("e" + U+0301) must
+        produce the same sanitized output, so a confusable/decomposed input
+        cannot bypass an existing path by hashing to a different prefix.
+        """
+        precomposed = "caf\u00e9"  # café (NFC)
+        decomposed = "cafe\u0301"  # café (NFD: e + combining acute)
+        assert safe_path_component(precomposed) == safe_path_component(decomposed)
+
     def test_deterministic(self) -> None:
         """Same input always produces same output."""
         r1 = safe_path_component("hello world")
