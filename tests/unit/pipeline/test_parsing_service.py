@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from polylogue.config import Config, Source
+from polylogue.errors import DatabaseError
 from polylogue.lib.raw_payload_decode import JSONValue
 from polylogue.pipeline.payload_types import ParseBatchObservation
 from polylogue.pipeline.services.acquisition import AcquireResult, AcquisitionService
@@ -322,7 +323,7 @@ class TestParsingServiceParseSources:
         service = ParsingService(repository=mock_repository, archive_root=Path("/tmp/archive"), config=mock_config)
         source = Source(name="test-source", path=Path("/tmp/inbox"))
 
-        with pytest.raises(RuntimeError, match="backend is not initialized"):
+        with pytest.raises(DatabaseError, match="backend is not initialized"):
             await service.parse_sources([source])
 
 

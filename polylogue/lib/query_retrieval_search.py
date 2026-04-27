@@ -7,7 +7,10 @@ from heapq import heappush, heappushpop
 from typing import TYPE_CHECKING
 
 from polylogue.lib.query_support import provider_values
+from polylogue.logging import get_logger
 from polylogue.storage.search_providers.hybrid import reciprocal_rank_fusion
+
+logger = get_logger(__name__)
 
 if TYPE_CHECKING:
     from polylogue.lib.models import Conversation
@@ -121,7 +124,13 @@ async def search_action_results(
         return await search_action_results_fallback(plan, repository, limit=limit)
     try:
         return await repository.search_actions(query, limit=limit, providers=provider_names)
-    except Exception:
+    except Exception as exc:
+        logger.warning(
+            "action search failed; falling back to slower path",
+            error=str(exc),
+            error_type=type(exc).__name__,
+            query=query,
+        )
         return await search_action_results_fallback(plan, repository, limit=limit)
 
 
@@ -143,7 +152,13 @@ async def search_hybrid_results(
                 limit=limit * 3,
                 vector_provider=plan.vector_provider,
             )
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "vector search failed; hybrid results will skip vector lane",
+                error=str(exc),
+                error_type=type(exc).__name__,
+                vector_provider=plan.vector_provider,
+            )
             vector_results = []
 
     text_ranked = [(str(conversation.id), float(rank)) for rank, conversation in enumerate(text_results, start=1)]

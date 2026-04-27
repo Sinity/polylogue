@@ -74,6 +74,17 @@ class TestSanitizePathTraversal:
     def test_none_returns_none(self) -> None:
         assert sanitize_path(None) is None
 
+    def test_symlink_check_oserror_treats_path_as_suspicious(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Filesystem errors during symlink probing must not silently bypass the guard."""
+
+        def _raise_permission_error(self: Path) -> bool:
+            raise PermissionError("simulated unreadable directory")
+
+        monkeypatch.setattr(Path, "is_symlink", _raise_permission_error)
+        result = sanitize_path("/some/safe/looking/path")
+        assert result is not None
+        assert result.startswith("_blocked_")
+
 
 # =============================================================================
 # FileTokenStore: key sanitization and permissions
