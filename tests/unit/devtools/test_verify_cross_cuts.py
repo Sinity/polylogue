@@ -16,14 +16,16 @@ def test_expected_for_models_suffix() -> None:
     assert verify_cross_cuts.expected_for("query_models.py")["lifecycle"] == "model"
 
 
-def test_expected_for_sync_prefix() -> None:
-    assert verify_cross_cuts.expected_for("sync_product_queries.py")["api"] == "sync"
-    assert verify_cross_cuts.expected_for("sync.py")["api"] == "sync"
+def test_expected_for_api_sync_path() -> None:
+    # After #426, sync API lives under polylogue/api/sync/.
+    assert verify_cross_cuts.expected_for("products.py", "polylogue/api/sync/products.py")["api"] == "sync"
+    assert verify_cross_cuts.expected_for("__init__.py", "polylogue/api/sync/__init__.py")["api"] == "sync"
 
 
-def test_expected_for_facade_prefix() -> None:
-    assert verify_cross_cuts.expected_for("facade.py")["api"] == "async"
-    assert verify_cross_cuts.expected_for("facade_archive.py")["api"] == "async"
+def test_expected_for_api_async_path() -> None:
+    # After #426, async API lives under polylogue/api/ (outside sync/).
+    assert verify_cross_cuts.expected_for("__init__.py", "polylogue/api/__init__.py")["api"] == "async"
+    assert verify_cross_cuts.expected_for("archive.py", "polylogue/api/archive.py")["api"] == "async"
 
 
 def test_expected_for_layer_writes() -> None:

@@ -141,7 +141,7 @@ def test_fetch_products_sync_uses_registry_dispatch() -> None:
         def list_provider_analytics_products(self, query: object) -> str:
             return f"sync:{query.provider}"
 
-    with patch("polylogue.sync_bridge.run_coroutine_sync", side_effect=lambda value: [value]):
+    with patch("polylogue.api.sync.bridge.run_coroutine_sync", side_effect=lambda value: [value]):
         assert fetch_products(product_type, _Operations(), provider="claude-code") == ["sync:claude-code"]
 
 

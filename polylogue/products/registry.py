@@ -630,7 +630,7 @@ def fetch_products(
 ) -> list[ArchiveProductModel]:
     """Fetch product items using the registry dispatch metadata."""
 
-    from polylogue.sync_bridge import run_coroutine_sync
+    from polylogue.api.sync.bridge import run_coroutine_sync
 
     query = _build_query(product_type, **kwargs)
     method = getattr(operations, product_type.operations_method_name)

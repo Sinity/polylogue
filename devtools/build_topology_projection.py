@@ -338,7 +338,7 @@ def owning_issue(target: str) -> str:
     return ""
 
 
-def cross_cut_tags(name: str) -> dict[str, Any]:
+def cross_cut_tags(name: str, rel: str = "") -> dict[str, Any]:
     tags: dict[str, Any] = {}
     if "_runtime" in name or name.endswith("_runtime.py"):
         tags["lifecycle"] = "runtime"
@@ -348,9 +348,14 @@ def cross_cut_tags(name: str) -> dict[str, Any]:
         tags["layer"] = "read"
     if "_writes" in name or "_write_" in name:
         tags["layer"] = "write"
-    if name.startswith("sync_") or name == "sync.py" or name == "sync_bridge.py":
+    # Path-based api tagging after #426 consolidation.
+    if rel.startswith("polylogue/api/sync/"):
         tags["api"] = "sync"
-    if name.startswith("facade"):
+    elif rel.startswith("polylogue/api/"):
+        tags["api"] = "async"
+    elif name.startswith("sync_") or name == "sync.py" or name == "sync_bridge.py":
+        tags["api"] = "sync"
+    elif name.startswith("facade"):
         tags["api"] = "async"
     return tags
 
@@ -433,7 +438,7 @@ def classify(path: Path) -> dict[str, Any]:
         "target": target,
         "owner": issue,
         "reason": reason,
-        "cross_cut": cross_cut_tags(name),
+        "cross_cut": cross_cut_tags(name, rel),
     }
 
 

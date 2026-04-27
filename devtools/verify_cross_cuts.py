@@ -5,8 +5,8 @@ tags on each module match what the module's name suggests:
 
 * a module named ``*_runtime.py`` should be tagged ``lifecycle: runtime``;
 * a module named ``*_models.py`` should be tagged ``lifecycle: model``;
-* a module under ``polylogue/sync*`` should be tagged ``api: sync``;
-* a module under ``polylogue/facade*`` should be tagged ``api: async``;
+* a module under ``polylogue/api/sync/`` should be tagged ``api: sync``;
+* a module under ``polylogue/api/`` (outside ``sync/``) should be tagged ``api: async``;
 * a module named ``*_reads`` should be tagged ``layer: read``;
 * a module named ``*_writes`` or ``*_write_*`` should be tagged ``layer: write``.
 
@@ -44,16 +44,11 @@ EXPECTED_LAYER: dict[str, str] = {
     "_write_": "write",
 }
 
-EXPECTED_API: dict[str, str] = {
-    "sync_": "sync",
-    "sync.py": "sync",
-    "sync_bridge.py": "sync",
-    "facade": "async",
-}
+EXPECTED_API: dict[str, str] = {}  # path-based after #426; see expected_for()
 
 
-def expected_for(name: str) -> dict[str, str]:
-    """Return the cross_cut tags the module's filename suggests."""
+def expected_for(name: str, path: str = "") -> dict[str, str]:
+    """Return the cross_cut tags the module's filename / path suggests."""
     expected: dict[str, str] = {}
     for suffix, value in EXPECTED_LIFECYCLE.items():
         if name.endswith(suffix):
@@ -68,14 +63,11 @@ def expected_for(name: str) -> dict[str, str]:
             if marker in name:
                 expected.setdefault("layer", value)
                 break
-    for marker, value in EXPECTED_API.items():
-        if marker.endswith(".py"):
-            if name == marker:
-                expected.setdefault("api", value)
-                break
-        elif name.startswith(marker):
-            expected.setdefault("api", value)
-            break
+    # Path-based api tagging after #426: polylogue/api/sync/* → sync, polylogue/api/* → async.
+    if path.startswith("polylogue/api/sync/"):
+        expected.setdefault("api", "sync")
+    elif path.startswith("polylogue/api/"):
+        expected.setdefault("api", "async")
     return expected
 
 
@@ -120,7 +112,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             continue
         name = filename_of(path)
         actual = parse_cross_cut(row.get("cross_cut", ""))
-        expected = expected_for(name)
+        expected = expected_for(name, path)
         for key, expected_value in expected.items():
             if key not in actual:
                 missing_tags.append({"path": path, "key": key, "expected": expected_value})

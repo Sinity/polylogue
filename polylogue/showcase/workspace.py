@@ -9,6 +9,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
+from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.config import Config, Source, get_config
 from polylogue.scenarios import (
     CorpusRequest,
@@ -20,7 +21,6 @@ from polylogue.scenarios import (
 )
 from polylogue.schemas.synthetic.models import SyntheticWrittenBatch
 from polylogue.storage.run_state import RunResult
-from polylogue.sync_bridge import run_coroutine_sync
 
 
 def _resolved_corpus_request(

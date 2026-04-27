@@ -7,10 +7,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from polylogue.facade_products import PolylogueProductsMixin
-from polylogue.sync import SyncPolylogue
-from polylogue.sync_conversation_queries import SyncConversationQueriesMixin
-from polylogue.sync_product_queries import SyncProductQueriesMixin
+from polylogue.api.products import PolylogueProductsMixin
+from polylogue.api.sync import SyncPolylogue
+from polylogue.api.sync.conversations import SyncConversationQueriesMixin
+from polylogue.api.sync.products import SyncProductQueriesMixin
 
 
 class _FilterStub:
@@ -55,7 +55,7 @@ def test_sync_conversation_queries_forward_through_sync_bridge() -> None:
     archive = _SyncHarness()
     archive._facade = facade
 
-    with patch("polylogue.sync_conversation_queries.run_coroutine_sync", side_effect=lambda coro: coro) as mock_run:
+    with patch("polylogue.api.sync.conversations.run_coroutine_sync", side_effect=lambda coro: coro) as mock_run:
         assert archive.get_conversation("conv-1") == ("get_conversation", "conv-1")
         assert archive.get_conversations(["a", "b"]) == ("get_conversations", ("a", "b"))
         assert archive.list_conversations(provider="claude-code", limit=3) == (
@@ -110,7 +110,7 @@ def test_sync_product_queries_forward_through_sync_bridge() -> None:
     archive = _SyncHarness()
     archive._facade = facade
 
-    with patch("polylogue.sync_product_queries.run_coroutine_sync", side_effect=lambda coro: coro) as mock_run:
+    with patch("polylogue.api.sync.products.run_coroutine_sync", side_effect=lambda coro: coro) as mock_run:
         assert archive.get_session_product_status() == "status-coro"
         assert archive.get_session_profile_product("conv-1", tier="evidence") == (
             "profile",
@@ -141,8 +141,8 @@ def test_sync_polylogue_wraps_async_facade_and_context_manager() -> None:
     facade.filter.return_value = "filter-object"
 
     with (
-        patch("polylogue.facade.Polylogue", return_value=facade) as mock_facade_class,
-        patch("polylogue.sync._run", return_value=None) as mock_run,
+        patch("polylogue.api.Polylogue", return_value=facade) as mock_facade_class,
+        patch("polylogue.api.sync._run", return_value=None) as mock_run,
     ):
         archive = SyncPolylogue(archive_root="archive-root", db_path="db.sqlite")
         assert archive.filter() == "filter-object"

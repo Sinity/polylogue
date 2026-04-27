@@ -104,7 +104,7 @@ def embed_conversation_sync(
     ``fetch_title=True`` issues an extra ``view`` lookup so callers can
     display a friendly label; when False the title field is left ``None``.
     """
-    from polylogue.sync_bridge import run_coroutine_sync
+    from polylogue.api.sync.bridge import run_coroutine_sync
 
     title: str | None = None
     if fetch_title:

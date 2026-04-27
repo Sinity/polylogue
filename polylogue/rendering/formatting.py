@@ -19,7 +19,7 @@ import json
 from typing import TYPE_CHECKING
 
 from polylogue.lib.content_projection import ContentProjectionSpec
-from polylogue.surface_payloads import (
+from polylogue.surfaces.payloads import (
     ConversationDetailPayload,
     ConversationListRowPayload,
     JSONDocument,

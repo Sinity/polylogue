@@ -7,7 +7,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from polylogue.errors import DatabaseError
-from polylogue.maintenance_targets import build_maintenance_target_catalog
+from polylogue.maintenance.targets import build_maintenance_target_catalog
 
 from .backends.connection import open_read_connection
 from .fts_lifecycle import message_fts_readiness_sync

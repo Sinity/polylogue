@@ -22,7 +22,7 @@ debugging landmarks. For the conceptual system shape, see
 
 | File | Purpose |
 | --- | --- |
-| `polylogue/facade.py` | Async library API |
+| `polylogue/api/__init__.py` | Async library API |
 | `polylogue/config.py` | Runtime configuration and XDG resolution |
 | `polylogue/cli/click_app.py` | Root query-first CLI dispatch |
 | `polylogue/cli/command_inventory.py` | CLI command inventory |

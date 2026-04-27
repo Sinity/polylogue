@@ -14,7 +14,7 @@ from polylogue.cli.check_models import CheckCommandResult, VacuumResult
 from polylogue.cli.check_workflow import CheckCommandOptions
 from polylogue.cli.types import AppEnv
 from polylogue.config import Config
-from polylogue.maintenance_targets import MaintenanceTargetMode
+from polylogue.maintenance.targets import MaintenanceTargetMode
 from polylogue.readiness import ReadinessCheck, ReadinessReport, VerifyStatus
 from polylogue.schemas.verification_models import SchemaVerificationReport
 from polylogue.storage.repair import RepairResult

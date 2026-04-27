@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Protocol, TypeVar, overload
 
 import click
 
+from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.cli.query_contracts import (
     QueryAction,
     QueryExecutionPlan,
@@ -33,8 +34,7 @@ from polylogue.lib.json import JSONDocument
 from polylogue.lib.query_spec import QuerySpecError
 from polylogue.logging import get_logger
 from polylogue.pipeline.tail_overlay import TailOverlayUnavailableError, tail_overlay_services
-from polylogue.surface_payloads import ConversationListRowPayload
-from polylogue.sync_bridge import run_coroutine_sync
+from polylogue.surfaces.payloads import ConversationListRowPayload
 
 logger = get_logger(__name__)
 

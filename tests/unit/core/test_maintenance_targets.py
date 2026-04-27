@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from polylogue.maintenance_models import MaintenanceCategory
-from polylogue.maintenance_targets import (
+from polylogue.maintenance.models import MaintenanceCategory
+from polylogue.maintenance.targets import (
     CLEANUP_TARGETS,
     MAINTENANCE_TARGET_NAMES,
     SAFE_REPAIR_TARGETS,

@@ -42,7 +42,7 @@ from polylogue.lib.message_roles import MessageRoleFilter, message_role_count_ke
 from polylogue.lib.roles import Role
 from polylogue.logging import get_logger
 from polylogue.rendering.formatting import format_conversation
-from polylogue.surface_payloads import ConversationListRowPayload, ConversationSearchHitPayload, model_json_document
+from polylogue.surfaces.payloads import ConversationListRowPayload, ConversationSearchHitPayload, model_json_document
 
 logger = get_logger(__name__)
 

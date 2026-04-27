@@ -8,7 +8,7 @@ from pathlib import Path
 import aiosqlite
 import pytest
 
-from polylogue.facade import Polylogue
+from polylogue.api import Polylogue
 from polylogue.product_readiness import (
     ProductReadinessEntry,
     ProductReadinessQuery,

@@ -9,6 +9,7 @@ from pathlib import Path
 from time import perf_counter
 from typing import TYPE_CHECKING
 
+from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.publication import SitePublicationManifest
 from polylogue.rendering.renderers.html import HTMLMessageRenderer, PygmentsHighlighter
 from polylogue.site.models import ArchiveIndexStats, ConversationIndex, ConversationPageBuildStats, SiteConfig
@@ -35,7 +36,6 @@ from polylogue.site.site_builder_pages import (
     write_template_stream_for_builder,
 )
 from polylogue.site.template_environment import build_template_environments
-from polylogue.sync_bridge import run_coroutine_sync
 
 if TYPE_CHECKING:
     from jinja2 import Template

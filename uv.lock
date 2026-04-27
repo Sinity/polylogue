@@ -1620,7 +1620,7 @@ requires-dist = [
     { name = "mcp", specifier = ">=1.0.0" },
     { name = "mutmut", marker = "extra == 'dev'", specifier = ">=3.0.0" },
     { name = "mutmut", marker = "extra == 'fuzz'", specifier = ">=3.0.0" },
-    { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.17,<1.18" },
+    { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.17,<1.21" },
     { name = "orjson", specifier = ">=3.9.0" },
     { name = "pillow", marker = "extra == 'ocr'" },
     { name = "pip-audit", marker = "extra == 'dev'", specifier = ">=2.7" },

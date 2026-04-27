@@ -8,7 +8,7 @@ from functools import lru_cache
 
 from polylogue.lib.json import JSONDocument, json_document
 from polylogue.lib.outcomes import OutcomeStatus
-from polylogue.maintenance_models import MaintenanceCategory
+from polylogue.maintenance.models import MaintenanceCategory
 
 
 class MaintenanceTargetMode(str, Enum):

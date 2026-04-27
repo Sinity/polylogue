@@ -15,7 +15,7 @@ from polylogue.authored_payloads import (
     payload_string,
     payload_string_tuple,
 )
-from polylogue.maintenance_targets import build_maintenance_target_catalog
+from polylogue.maintenance.targets import build_maintenance_target_catalog
 
 from .corpus import CorpusRequest, CorpusSourceKind
 from .metadata import ScenarioMetadata

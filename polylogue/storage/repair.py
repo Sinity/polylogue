@@ -10,8 +10,8 @@ from pathlib import Path
 from polylogue.config import Config
 from polylogue.lib.json import JSONDocument, json_document
 from polylogue.logging import get_logger
-from polylogue.maintenance_models import DerivedModelStatus, MaintenanceCategory
-from polylogue.maintenance_targets import (
+from polylogue.maintenance.models import DerivedModelStatus, MaintenanceCategory
+from polylogue.maintenance.targets import (
     CLEANUP_TARGETS,
     SAFE_REPAIR_TARGETS,
     MaintenanceTargetSpec,

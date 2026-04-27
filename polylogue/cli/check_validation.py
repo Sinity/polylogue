@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from polylogue.cli.helpers import fail
-from polylogue.maintenance_targets import MaintenanceTargetMode, build_maintenance_target_catalog
+from polylogue.maintenance.targets import MaintenanceTargetMode, build_maintenance_target_catalog
 
 if TYPE_CHECKING:
     from polylogue.cli.check_workflow import CheckCommandOptions

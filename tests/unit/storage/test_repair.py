@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from polylogue.maintenance_models import DerivedModelStatus
+from polylogue.maintenance.models import DerivedModelStatus
 from polylogue.storage import repair as repair_mod
 
 

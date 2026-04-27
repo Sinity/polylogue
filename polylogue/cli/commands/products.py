@@ -12,6 +12,7 @@ from pathlib import Path
 
 import click
 
+from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.archive_products import ArchiveProductUnavailableError
 from polylogue.cli.helper_support import fail
 from polylogue.cli.machine_errors import emit_success
@@ -31,7 +32,6 @@ from polylogue.products.registry import (
     fetch_products,
     render_product_items,
 )
-from polylogue.sync_bridge import run_coroutine_sync
 
 _ROOT_FILTER_KEYS = ("provider", "since", "until")
 

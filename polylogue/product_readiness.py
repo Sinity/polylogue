@@ -10,7 +10,7 @@ import aiosqlite
 from pydantic import Field
 
 from polylogue.archive_product_models import ARCHIVE_PRODUCT_CONTRACT_VERSION, ArchiveProductModel
-from polylogue.maintenance_targets import build_maintenance_target_catalog
+from polylogue.maintenance.targets import build_maintenance_target_catalog
 from polylogue.storage.session_product_runtime import SessionProductStatusSnapshot
 from polylogue.storage.store_constants import (
     SESSION_ENRICHMENT_VERSION,

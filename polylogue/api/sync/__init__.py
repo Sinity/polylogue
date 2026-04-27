@@ -6,7 +6,7 @@ summaries, and conversations without managing an event loop.
 
 Example::
 
-    from polylogue.sync import SyncPolylogue
+    from polylogue.api.sync import SyncPolylogue
 
     poly = SyncPolylogue()
     summaries = poly.list_summaries(since="2026-01-01")
@@ -21,12 +21,12 @@ from pathlib import Path
 from types import TracebackType
 from typing import TYPE_CHECKING, TypeVar
 
-from polylogue.sync_bridge import run_coroutine_sync
-from polylogue.sync_conversation_queries import SyncConversationQueriesMixin
-from polylogue.sync_product_queries import SyncProductQueriesMixin
+from polylogue.api.sync.bridge import run_coroutine_sync
+from polylogue.api.sync.conversations import SyncConversationQueriesMixin
+from polylogue.api.sync.products import SyncProductQueriesMixin
 
 if TYPE_CHECKING:
-    from polylogue.facade import Polylogue
+    from polylogue.api import Polylogue
     from polylogue.lib.filters import ConversationFilter
 
 T = TypeVar("T")
@@ -47,7 +47,7 @@ class SyncPolylogue(SyncConversationQueriesMixin, SyncProductQueriesMixin):
         archive_root: str | Path | None = None,
         db_path: str | Path | None = None,
     ) -> None:
-        from polylogue.facade import Polylogue
+        from polylogue.api import Polylogue
 
         self._facade = Polylogue(archive_root=archive_root, db_path=db_path)
 

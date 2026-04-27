@@ -6,11 +6,11 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
+from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.cli.click_app import cli
 from polylogue.config import Config, get_config
 from polylogue.pipeline.services.parsing import ParsingService
 from polylogue.services import RuntimeServices, build_runtime_services
-from polylogue.sync_bridge import run_coroutine_sync
 
 
 def _write_claude_code_session(

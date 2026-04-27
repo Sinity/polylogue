@@ -125,7 +125,7 @@ def test_run_health_embedding_status_contract(
     expected_text: str,
 ) -> None:
     from polylogue.config import get_config
-    from polylogue.maintenance_models import DerivedModelStatus
+    from polylogue.maintenance.models import DerivedModelStatus
     from polylogue.readiness import run_archive_readiness
     from tests.infra.storage_records import ConversationBuilder
 

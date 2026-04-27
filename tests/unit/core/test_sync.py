@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 
-from polylogue.sync import _run
+from polylogue.api.sync import _run
 
 
 def test_private_run_executes_coroutine_from_sync_code() -> None:

@@ -4,9 +4,9 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import TypeVar
 
+from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.config import Config, Source
 from polylogue.lib.json import JSONDocument, dumps
-from polylogue.sync_bridge import run_coroutine_sync
 
 T = TypeVar("T")
 

@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import click
 
+from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.cli.helper_support import fail
 from polylogue.cli.types import AppEnv
 from polylogue.lib.message_roles import normalize_message_roles
 from polylogue.rendering.formatting import CONVERSATION_OUTPUT_FORMATS, format_conversation
-from polylogue.sync_bridge import run_coroutine_sync
 
 
 def _root_message_roles(ctx: click.Context) -> tuple[object, ...]:

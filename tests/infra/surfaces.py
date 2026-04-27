@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from polylogue.facade import Polylogue
+from polylogue.api import Polylogue
 from polylogue.storage.backends.connection import open_connection
 from tests.infra.archive_scenarios import ArchiveScenario, repository_for_scenario_db
 from tests.infra.query_cases import ArchiveQueryCase
