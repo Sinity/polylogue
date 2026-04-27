@@ -96,9 +96,17 @@ hash plus the dirty marker when applicable.
 Routine PRs do not touch `version = "X.Y.Z"`. Change it only when this exact
 slice is cutting the matching `vX.Y.Z` tag.
 
-The release procedure is:
+User-visible changes (new flags, renamed or removed commands, output changes,
+breaking migrations, security fixes) get a one-line entry in the `Unreleased`
+section of [CHANGELOG.md](CHANGELOG.md) as part of the PR. Refactors and
+test-only changes are exempt.
 
-1. Update `pyproject.toml` to `X.Y.Z`.
+See [docs/release.md](docs/release.md) for the cut-time checklist
+(pre-flight checks, the `Unreleased → [X.Y.Z]` move, tagging, and post-cut
+verification). The condensed procedure:
+
+1. Update `pyproject.toml` to `X.Y.Z` and roll the `Unreleased` heading
+   in `CHANGELOG.md` to `[X.Y.Z] — YYYY-MM-DD`.
 2. Run:
 
 ```bash
@@ -110,7 +118,7 @@ nix flake check
 ```
 
 3. Commit the version bump as its own small change, normally `chore: release X.Y.Z`.
-4. Tag that exact commit as `vX.Y.Z`.
+4. Tag that exact commit as `vX.Y.Z` (signed and annotated).
 
 If this slice is not producing the matching tag, leave `pyproject.toml`
 unchanged.
