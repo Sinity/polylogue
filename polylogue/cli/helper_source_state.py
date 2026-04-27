@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
+
+from polylogue.paths import state_home
 
 
 def source_state_path() -> Path:
-    raw_state_root = os.environ.get("XDG_STATE_HOME")
-    state_root = Path(raw_state_root).expanduser() if raw_state_root else Path.home() / ".local/state"
-    return state_root / "polylogue" / "last-source.json"
+    return state_home() / "last-source.json"
 
 
 def load_last_source() -> str | None:

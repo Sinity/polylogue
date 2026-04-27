@@ -216,13 +216,11 @@ def _merge_into(
 
 
 def _privacy_level_value(value: PrivacySettingValue) -> PrivacyLevel:
-    if value == "strict":
-        return "strict"
-    if value == "standard":
+    if value is None:
         return "standard"
-    if value == "permissive":
-        return "permissive"
-    return "standard"
+    if value in ("strict", "standard", "permissive"):
+        return value  # type: ignore[return-value]
+    raise ValueError(f"Invalid privacy level {value!r}; expected one of: strict, standard, permissive")
 
 
 def _int_config_value(value: PrivacySettingValue, *, default: int) -> int:
