@@ -100,7 +100,6 @@ LIB_PREFIX_TO_SUBPACKAGE = {
     "conversation_": "lib/conversation/",
     "semantic_fact": "lib/semantic/",
     "content_projection": "lib/semantic/",
-    "attachment_": "lib/conversation/",
     "branch_type": "lib/conversation/",
     "threads": "lib/conversation/",
     "neighbor_candidates": "lib/conversation/",
@@ -108,6 +107,13 @@ LIB_PREFIX_TO_SUBPACKAGE = {
     "attribution": "lib/conversation/",
     "filter_": "lib/filter/",
     "filters": "lib/filter/",
+    # Subpackages added 2026-04-27 to resolve #424 lib/ TBDs
+    "phase_": "lib/phase/",
+    "projection_": "lib/projection/",
+    "projections": "lib/projection/",
+    "provider_": "lib/provider/",
+    # Split per #424 conflict (attachment_models.py vs conversation_models.py)
+    "attachment_": "lib/attachment/",
 }
 
 # Lib root primitives — stay at lib/ root per #424
@@ -130,6 +136,9 @@ LIB_ROOT_PRIMITIVES = frozenset(
         "search_hits.py",
         "run_activity.py",
         "provider_identity.py",
+        # Added 2026-04-27 to resolve #424 lib/ TBDs (standalone primitives)
+        "pricing.py",
+        "payload_coercion.py",
     }
 )
 
@@ -137,10 +146,12 @@ LIB_ROOT_PRIMITIVES = frozenset(
 STORAGE_PREFIX_TO_SUBPACKAGE = {
     "repository_archive_": "storage/repository/archive/",
     "repository_product_": "storage/repository/product/",
-    "repository_action_": "storage/repository/archive/",
+    # Split 2026-04-27 to resolve #425 conflict on archive/reads.py
+    "repository_action_": "storage/repository/action/",
     "repository_raw": "storage/repository/raw/",
     "repository_vectors": "storage/repository/vectors/",
-    "repository_write_": "storage/repository/archive/",
+    # Split 2026-04-27 to resolve #425 conflict on archive/conversations.py
+    "repository_write_": "storage/repository/archive/writes/",
     "repository_writes": "storage/repository/archive/",
     "repository_contracts": "storage/repository/",
     "repository.py": "storage/repository/__init__.py",
@@ -183,6 +194,46 @@ STORAGE_ROOT_KEEP = frozenset(
     }
 )
 
+# polylogue/showcase/ dismantling per #413 — explicit per-file targets
+# Pure scenario substrate moves to polylogue/scenarios/; runner/report/lab corpus
+# machinery moves under devtools/lab_*. Files leave the projection on move.
+SHOWCASE_MOVES = {
+    # Substrate -> polylogue/scenarios/
+    "exercises.py": "polylogue/scenarios/exercises.py",
+    "exercise_models.py": "polylogue/scenarios/exercise_models.py",
+    "dimensions.py": "polylogue/scenarios/dimensions.py",
+    "catalog_loader.py": "polylogue/scenarios/catalog_loader.py",
+    "context.py": "polylogue/scenarios/context.py",
+    "corpus_requests.py": "polylogue/scenarios/corpus_requests.py",
+    "invariants.py": "polylogue/scenarios/invariants.py",
+    # Runner machinery -> devtools/lab_runner/
+    "runner.py": "devtools/lab_runner/runner.py",
+    "showcase_runner_models.py": "devtools/lab_runner/models.py",
+    "showcase_runner_support.py": "devtools/lab_runner/support.py",
+    "qa_runner.py": "devtools/lab_runner/qa.py",
+    "qa_runner_models.py": "devtools/lab_runner/qa_models.py",
+    "qa_runner_reporting.py": "devtools/lab_runner/qa_reporting.py",
+    "qa_runner_request.py": "devtools/lab_runner/qa_request.py",
+    "qa_runner_stages.py": "devtools/lab_runner/qa_stages.py",
+    "qa_runner_workflow.py": "devtools/lab_runner/qa_workflow.py",
+    "vhs.py": "devtools/lab_runner/vhs.py",
+    "workspace.py": "devtools/lab_runner/workspace.py",
+    "cli_boundary.py": "devtools/lab_runner/cli_boundary.py",
+    # Reporting -> devtools/lab_report/
+    "qa_markdown.py": "devtools/lab_report/markdown.py",
+    "qa_report.py": "devtools/lab_report/report.py",
+    "qa_summary.py": "devtools/lab_report/summary.py",
+    "qa_session_payload.py": "devtools/lab_report/session_payload.py",
+    "report_common.py": "devtools/lab_report/common.py",
+    "report_files.py": "devtools/lab_report/files.py",
+    "report_models.py": "devtools/lab_report/models.py",
+    "showcase_report_payloads.py": "devtools/lab_report/payloads.py",
+    "showcase_report_text.py": "devtools/lab_report/text.py",
+    # Lab corpus -> devtools/lab_corpus/
+    "lab_corpus.py": "devtools/lab_corpus/corpus.py",
+    "generators.py": "devtools/lab_corpus/generators.py",
+}
+
 # Owning issue per target prefix
 TARGET_TO_ISSUE = [
     ("polylogue/products/", "#414"),
@@ -202,6 +253,11 @@ TARGET_TO_ISSUE = [
     ("polylogue/lib/conversation/", "#424"),
     ("polylogue/lib/semantic/", "#424"),
     ("polylogue/lib/filter/", "#424"),
+    # Added 2026-04-27 — TBD resolutions and conflict splits per #424
+    ("polylogue/lib/phase/", "#424"),
+    ("polylogue/lib/projection/", "#424"),
+    ("polylogue/lib/provider/", "#424"),
+    ("polylogue/lib/attachment/", "#424"),
     ("polylogue/storage/repository/", "#425"),
     ("polylogue/storage/products/", "#425"),
     ("polylogue/storage/runtime/", "#425"),
@@ -349,9 +405,10 @@ def classify(path: Path) -> dict[str, Any]:
             else:
                 issue = owning_issue(target) or "#425"
     elif rel.startswith("polylogue/showcase/"):
-        target = "TBD"
         issue = "#413"
-        reason = "showcase dismantling — substrate vs lab vs proof split"
+        target = SHOWCASE_MOVES.get(name, "TBD")
+        if target == "TBD":
+            reason = "showcase dismantling — no rule yet"
     elif rel.startswith("polylogue/sources/"):
         # Drive-specific files cluster
         suffix = rel[len("polylogue/sources/") :]
