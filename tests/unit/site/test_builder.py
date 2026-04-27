@@ -9,7 +9,7 @@ from polylogue.site.builder import SiteBuilder, SiteConfig
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.repository import ConversationRepository
-from polylogue.storage.store import RunRecord
+from polylogue.storage.runtime import RunRecord
 from polylogue.types import SearchProvider
 from tests.infra.storage_records import ConversationBuilder, record_run
 

@@ -7,12 +7,12 @@ import sqlite3
 import aiosqlite
 import pytest
 
-from polylogue.storage import embedding_stats as embedding_stats_mod
-from polylogue.storage.embedding_stats import (
+from polylogue.storage.embeddings import embedding_stats as embedding_stats_mod
+from polylogue.storage.embeddings.embedding_stats import (
     read_embedding_stats_async,
     read_embedding_stats_sync,
 )
-from polylogue.storage.session_product_runtime import SessionProductStatusSnapshot
+from polylogue.storage.products.session.runtime import SessionProductStatusSnapshot
 
 
 def test_read_embedding_stats_sync_missing_tables_returns_zeroes() -> None:

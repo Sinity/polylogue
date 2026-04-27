@@ -8,15 +8,15 @@ from polylogue.storage.backends.queries.mappers import (
     _row_to_day_session_summary_record,
     _row_to_session_tag_rollup_record,
 )
+from polylogue.storage.products.session.storage import (
+    day_session_summary_insert_values,
+    session_tag_rollup_insert_values,
+)
 from polylogue.storage.query_models import (
     DaySessionSummaryListQuery,
     SessionTagRollupListQuery,
 )
-from polylogue.storage.session_product_storage import (
-    day_session_summary_insert_values,
-    session_tag_rollup_insert_values,
-)
-from polylogue.storage.store import DaySessionSummaryRecord, SessionTagRollupRecord
+from polylogue.storage.runtime import DaySessionSummaryRecord, SessionTagRollupRecord
 
 __all__ = [
     "list_day_session_summaries",

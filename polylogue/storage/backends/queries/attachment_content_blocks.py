@@ -5,7 +5,7 @@ from __future__ import annotations
 import aiosqlite
 
 from polylogue.storage.backends.queries.mappers import _row_to_content_block
-from polylogue.storage.store import ContentBlockRecord
+from polylogue.storage.runtime import ContentBlockRecord
 
 
 async def get_content_blocks(

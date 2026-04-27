@@ -5,7 +5,7 @@ from __future__ import annotations
 import aiosqlite
 from typing_extensions import TypedDict
 
-from polylogue.storage.store import MessageRecord
+from polylogue.storage.runtime import MessageRecord
 
 
 class AggregateMessageStats(TypedDict):

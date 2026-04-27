@@ -19,7 +19,7 @@ from polylogue.cli.query_progress import (
     slow_query_notice_threshold,
 )
 from polylogue.lib.query_spec import ConversationQuerySpec
-from polylogue.storage.action_event_artifacts import ActionEventArtifactState
+from polylogue.storage.action_events.artifacts import ActionEventArtifactState
 
 
 def _output_spec(output_format: str) -> QueryOutputSpec:

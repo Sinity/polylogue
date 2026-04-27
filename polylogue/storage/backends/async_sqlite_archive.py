@@ -15,9 +15,9 @@ from polylogue.storage.backends.queries.stats import (
     ProviderConversationCountRow,
     ProviderMetricsRow,
 )
-from polylogue.storage.search_models import ConversationSearchResult
-from polylogue.storage.session_product_runtime import SessionProductStatusSnapshot
-from polylogue.storage.store import AttachmentRecord, ContentBlockRecord, ConversationRecord, MessageRecord
+from polylogue.storage.products.session.runtime import SessionProductStatusSnapshot
+from polylogue.storage.runtime import AttachmentRecord, ContentBlockRecord, ConversationRecord, MessageRecord
+from polylogue.storage.search.models import ConversationSearchResult
 
 if TYPE_CHECKING:
     import aiosqlite

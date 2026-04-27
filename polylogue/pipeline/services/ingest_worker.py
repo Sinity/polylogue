@@ -33,7 +33,7 @@ from polylogue.pipeline.materialization_runtime import (
 from polylogue.sources.decoders import _iter_json_stream
 from polylogue.sources.dispatch import STREAM_RECORD_PROVIDERS
 from polylogue.storage.blob_store import BlobStore
-from polylogue.storage.store import (
+from polylogue.storage.runtime import (
     ACTION_EVENT_MATERIALIZER_VERSION,
     ContentBlockRecord,
     MessageRecord,

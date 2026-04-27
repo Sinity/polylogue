@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import aiosqlite
 
-from polylogue.storage.store import RawConversationRecord
+from polylogue.storage.runtime import RawConversationRecord
 
 
 async def save_raw_conversation(

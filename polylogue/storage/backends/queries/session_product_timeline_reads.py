@@ -9,7 +9,7 @@ from polylogue.storage.backends.queries.mappers import (
     _row_to_session_work_event_record,
 )
 from polylogue.storage.query_models import SessionTimelineListQuery
-from polylogue.storage.store import SessionPhaseRecord, SessionWorkEventRecord
+from polylogue.storage.runtime import SessionPhaseRecord, SessionWorkEventRecord
 
 __all__ = [
     "get_session_phases",

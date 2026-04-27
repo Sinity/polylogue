@@ -301,7 +301,7 @@ class TestPolylogueArchiveProducts:
         cli_workspace: dict[str, Path],
     ) -> None:
         from polylogue.storage.backends.connection import open_connection
-        from polylogue.storage.session_product_rebuild import rebuild_session_products_sync
+        from polylogue.storage.products.session.rebuild import rebuild_session_products_sync
 
         db_path = cli_workspace["db_path"]
         (

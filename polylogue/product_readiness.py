@@ -11,8 +11,8 @@ from pydantic import Field
 
 from polylogue.archive_product_models import ARCHIVE_PRODUCT_CONTRACT_VERSION, ArchiveProductModel
 from polylogue.maintenance.targets import build_maintenance_target_catalog
-from polylogue.storage.session_product_runtime import SessionProductStatusSnapshot
-from polylogue.storage.store_constants import (
+from polylogue.storage.products.session.runtime import SessionProductStatusSnapshot
+from polylogue.storage.runtime.store_constants import (
     SESSION_ENRICHMENT_VERSION,
     SESSION_INFERENCE_VERSION,
     SESSION_PRODUCT_MATERIALIZER_VERSION,

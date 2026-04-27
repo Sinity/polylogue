@@ -25,7 +25,7 @@ from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.query_models import ConversationRecordQuery
 from polylogue.storage.repository import ConversationRepository
-from polylogue.storage.store import (
+from polylogue.storage.runtime import (
     AttachmentRecord,
     ContentBlockRecord,
     ConversationRecord,
@@ -289,7 +289,7 @@ async def test_aggregate_message_stats_reports_role_counts_and_words(tmp_path: P
 @pytest.mark.asyncio
 async def test_backend_path_terms_filter_contract(tmp_path: Path) -> None:
     """Low-level list/count filters must honor persisted semantic paths."""
-    from polylogue.storage.action_event_rebuild_runtime import rebuild_action_event_read_model_sync
+    from polylogue.storage.action_events.rebuild_runtime import rebuild_action_event_read_model_sync
     from tests.infra.storage_records import ConversationBuilder
 
     db_path = tmp_path / "path-filter.db"
@@ -390,7 +390,7 @@ async def test_list_summaries_by_query_omits_large_provider_meta_payloads(tmp_pa
 
 
 def test_action_event_rebuild_omits_large_provider_meta_payloads(tmp_path: Path) -> None:
-    from polylogue.storage.action_event_rebuild_runtime import rebuild_action_event_read_model_sync
+    from polylogue.storage.action_events.rebuild_runtime import rebuild_action_event_read_model_sync
     from tests.infra.storage_records import ConversationBuilder
 
     db_path = tmp_path / "action-event-provider-meta.db"
@@ -514,7 +514,7 @@ async def test_filter_path_terms_apply_after_fts_search(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_backend_action_terms_filter_contract(tmp_path: Path) -> None:
     """Low-level list/count filters must honor semantic action categories."""
-    from polylogue.storage.action_event_rebuild_runtime import rebuild_action_event_read_model_sync
+    from polylogue.storage.action_events.rebuild_runtime import rebuild_action_event_read_model_sync
     from tests.infra.storage_records import ConversationBuilder
 
     db_path = tmp_path / "action-filter.db"
@@ -1421,7 +1421,7 @@ class TestSearchCacheKey:
 
     def test_create_basic(self, tmp_path: Path) -> None:
         """Create a basic cache key."""
-        from polylogue.storage.search_cache import SearchCacheKey
+        from polylogue.storage.search.cache import SearchCacheKey
 
         key = SearchCacheKey.create(
             query="hello",
@@ -1435,7 +1435,7 @@ class TestSearchCacheKey:
 
     def test_create_with_all_params(self, tmp_path: Path) -> None:
         """Create a cache key with all parameters."""
-        from polylogue.storage.search_cache import SearchCacheKey
+        from polylogue.storage.search.cache import SearchCacheKey
 
         key = SearchCacheKey.create(
             query="test query",
@@ -1455,7 +1455,7 @@ class TestSearchCacheKey:
 
     def test_key_is_frozen(self, tmp_path: Path) -> None:
         """Cache key is immutable (frozen dataclass)."""
-        from polylogue.storage.search_cache import SearchCacheKey
+        from polylogue.storage.search.cache import SearchCacheKey
 
         key = SearchCacheKey.create(query="test", archive_root=tmp_path)
         attr_name = "query"
@@ -1464,7 +1464,7 @@ class TestSearchCacheKey:
 
     def test_same_params_same_key(self, tmp_path: Path) -> None:
         """Same parameters produce equal keys (same cache version)."""
-        from polylogue.storage.search_cache import SearchCacheKey
+        from polylogue.storage.search.cache import SearchCacheKey
 
         key1 = SearchCacheKey.create(query="test", archive_root=tmp_path, limit=10)
         key2 = SearchCacheKey.create(query="test", archive_root=tmp_path, limit=10)
@@ -1472,7 +1472,7 @@ class TestSearchCacheKey:
 
     def test_different_query_different_key(self, tmp_path: Path) -> None:
         """Different queries produce different keys."""
-        from polylogue.storage.search_cache import SearchCacheKey
+        from polylogue.storage.search.cache import SearchCacheKey
 
         key1 = SearchCacheKey.create(query="hello", archive_root=tmp_path)
         key2 = SearchCacheKey.create(query="world", archive_root=tmp_path)
@@ -1480,7 +1480,7 @@ class TestSearchCacheKey:
 
     def test_different_limit_different_key(self, tmp_path: Path) -> None:
         """Different limits produce different keys."""
-        from polylogue.storage.search_cache import SearchCacheKey
+        from polylogue.storage.search.cache import SearchCacheKey
 
         key1 = SearchCacheKey.create(query="test", archive_root=tmp_path, limit=10)
         key2 = SearchCacheKey.create(query="test", archive_root=tmp_path, limit=20)
@@ -1488,14 +1488,14 @@ class TestSearchCacheKey:
 
     def test_none_render_root(self, tmp_path: Path) -> None:
         """None render_root_path stored as None."""
-        from polylogue.storage.search_cache import SearchCacheKey
+        from polylogue.storage.search.cache import SearchCacheKey
 
         key = SearchCacheKey.create(query="test", archive_root=tmp_path, render_root_path=None)
         assert key.render_root_path is None
 
     def test_key_is_hashable(self, tmp_path: Path) -> None:
         """Cache key can be used as dict key (hashable)."""
-        from polylogue.storage.search_cache import SearchCacheKey
+        from polylogue.storage.search.cache import SearchCacheKey
 
         key = SearchCacheKey.create(query="test", archive_root=tmp_path)
         d = {key: "result"}
@@ -1507,7 +1507,7 @@ class TestInvalidateSearchCache:
 
     def test_invalidation_increments_version(self, tmp_path: Path) -> None:
         """Invalidation changes cache version."""
-        from polylogue.storage.search_cache import SearchCacheKey, invalidate_search_cache
+        from polylogue.storage.search.cache import SearchCacheKey, invalidate_search_cache
 
         key_before = SearchCacheKey.create(query="test", archive_root=tmp_path)
         invalidate_search_cache()
@@ -1519,7 +1519,7 @@ class TestInvalidateSearchCache:
 
     def test_multiple_invalidations(self, tmp_path: Path) -> None:
         """Multiple invalidations increment version each time."""
-        from polylogue.storage.search_cache import SearchCacheKey, invalidate_search_cache
+        from polylogue.storage.search.cache import SearchCacheKey, invalidate_search_cache
 
         v1 = SearchCacheKey.create(query="test", archive_root=tmp_path).cache_version
         invalidate_search_cache()
@@ -1535,7 +1535,7 @@ class TestCacheStats:
 
     def test_stats_returns_dict(self) -> None:
         """get_cache_stats returns a dictionary."""
-        from polylogue.storage.search_cache import get_cache_stats
+        from polylogue.storage.search.cache import get_cache_stats
 
         stats = get_cache_stats()
         assert isinstance(stats, dict)
@@ -1543,7 +1543,7 @@ class TestCacheStats:
 
     def test_stats_version_matches_current(self, tmp_path: Path) -> None:
         """Stats version matches what keys use."""
-        from polylogue.storage.search_cache import SearchCacheKey, get_cache_stats
+        from polylogue.storage.search.cache import SearchCacheKey, get_cache_stats
 
         key = SearchCacheKey.create(query="test", archive_root=tmp_path)
         stats = get_cache_stats()
@@ -1710,7 +1710,7 @@ class TestCacheThreadSafety:
         """Concurrent invalidation doesn't corrupt state."""
         import threading
 
-        from polylogue.storage.search_cache import get_cache_stats, invalidate_search_cache
+        from polylogue.storage.search.cache import get_cache_stats, invalidate_search_cache
 
         initial_stats = get_cache_stats()
         initial_version = initial_stats["cache_version"]

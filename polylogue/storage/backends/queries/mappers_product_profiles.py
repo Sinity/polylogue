@@ -24,7 +24,7 @@ from polylogue.storage.backends.queries.mappers_support import (
     _row_int,
     _row_text,
 )
-from polylogue.storage.store import SessionProfileRecord
+from polylogue.storage.runtime import SessionProfileRecord
 from polylogue.types import ConversationId
 
 

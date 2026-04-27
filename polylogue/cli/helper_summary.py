@@ -15,7 +15,7 @@ from polylogue.logging import get_logger
 from polylogue.readiness import ReadinessReport
 from polylogue.services import RuntimeServices
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
-from polylogue.storage.store_runtime_archive_records import RunRecord
+from polylogue.storage.runtime.archive.records import RunRecord
 from polylogue.ui.theme import provider_color
 
 logger = get_logger(__name__)

@@ -43,7 +43,7 @@ from polylogue.storage.backends.queries.raw_state import EFFECTIVE_RAW_PROVIDER_
 from polylogue.storage.blob_store import BlobStore, reset_blob_store
 from polylogue.storage.repository import ConversationRepository
 from polylogue.storage.run_state import RunResult
-from polylogue.storage.store import RawConversationRecord
+from polylogue.storage.runtime import RawConversationRecord
 from polylogue.types import Provider
 
 _EXT_MAP = {

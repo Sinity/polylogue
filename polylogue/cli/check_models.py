@@ -7,9 +7,9 @@ from dataclasses import dataclass
 from polylogue.lib.json import JSONDocument, json_document
 from polylogue.readiness import ReadinessReport
 from polylogue.schemas.verification_models import ArtifactProofReport, SchemaVerificationReport
-from polylogue.storage.artifact_views import ArtifactCohortSummary
+from polylogue.storage.artifacts.views import ArtifactCohortSummary
 from polylogue.storage.repair import RepairResult
-from polylogue.storage.store import ArtifactObservationRecord
+from polylogue.storage.runtime import ArtifactObservationRecord
 
 
 @dataclass(frozen=True)

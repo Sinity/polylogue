@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from polylogue.lib.json import JSONDocument, JSONValue
-from polylogue.storage.store import (
+from polylogue.storage.runtime import (
     ArtifactObservationRecord,
     AttachmentRecord,
     ConversationRecord,
@@ -33,11 +33,11 @@ if TYPE_CHECKING:
     from polylogue.lib.search_hits import ConversationSearchHit
     from polylogue.lib.session_profile import SessionProfile
     from polylogue.lib.stats import ArchiveStats
-    from polylogue.storage.action_event_artifacts import ActionEventArtifactState
+    from polylogue.storage.action_events.artifacts import ActionEventArtifactState
     from polylogue.storage.archive_views import ConversationRenderProjection
     from polylogue.storage.backends.queries.stats import AggregateMessageStats
     from polylogue.storage.query_models import ConversationRecordQuery
-    from polylogue.storage.store import ConversationRecord
+    from polylogue.storage.runtime import ConversationRecord
     from polylogue.types import ConversationId
 
 
