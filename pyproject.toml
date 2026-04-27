@@ -31,7 +31,7 @@ dependencies = [
   "textual>=0.47.0",
   "jinja2",
   "markdown-it-py",
-  "pygments",
+  "pygments>=2.20",
   "ijson",
   "sqlite-vec>=0.1.6",  # Self-contained vector search
   "questionary>=2.0.0",
@@ -47,11 +47,14 @@ dependencies = [
   "mcp>=1.0.0",  # Model Context Protocol SDK
   "pyyaml>=6.0",  # YAML output format
   "typing-extensions>=4.7",  # TypedDict that pydantic accepts on Py<3.12
+  # Transitive constraints to avoid known CVEs surfaced by pip-audit:
+  "cryptography>=46.0.7",  # CVE-2026-39892 (transitive via google-auth)
+  "python-multipart>=0.0.26",  # CVE-2026-40347 (transitive via mcp)
 ]
 
 [project.optional-dependencies]
 dev = [
-  "pytest>=8",
+  "pytest>=9.0.3",  # CVE-2025-71176
   "pytest-cov>=4",
   "pytest-asyncio>=0.23.0",  # Async test support
   "pytest-xdist>=3.5.0",  # Parallel test execution
@@ -70,6 +73,7 @@ dev = [
   "types-PyYAML>=6.0",  # yaml library stubs for mypy
   "ruff>=0.1.0",
   "pre-commit>=3.5.0",
+  "pip-audit>=2.7",  # OSV-backed CVE scanning over the locked dev environment
 ]
 ocr = [
   "pillow",
