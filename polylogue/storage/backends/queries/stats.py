@@ -220,7 +220,13 @@ async def upsert_conversation_stats(
 
 
 async def get_stats_by(conn: aiosqlite.Connection, group_by: str = "provider") -> dict[str, int]:
-    """Get conversation counts grouped by provider, month, or year."""
+    """Get conversation counts grouped by provider, month, or year.
+
+    Raises ValueError on unknown ``group_by`` rather than silently returning
+    provider counts. Each branch is a literal SQL constant — the validated
+    input never reaches string interpolation — but the explicit reject closes
+    the door on future branches that might.
+    """
     if group_by == "month":
         cursor = await conn.execute(
             """
@@ -239,7 +245,7 @@ async def get_stats_by(conn: aiosqlite.Connection, group_by: str = "provider") -
             GROUP BY period ORDER BY period DESC
             """
         )
-    else:
+    elif group_by == "provider":
         cursor = await conn.execute(
             """
             SELECT provider_name as period, COUNT(*) as count
@@ -247,6 +253,8 @@ async def get_stats_by(conn: aiosqlite.Connection, group_by: str = "provider") -
             GROUP BY provider_name ORDER BY count DESC
             """
         )
+    else:
+        raise ValueError(f"Unknown group_by {group_by!r}; expected one of: provider, month, year")
     rows = await cursor.fetchall()
     return {row["period"]: row["count"] for row in rows}
 
