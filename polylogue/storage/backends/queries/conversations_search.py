@@ -21,14 +21,10 @@ async def search_conversation_hits(
     limit: int = 100,
     providers: list[str] | None = None,
 ) -> ConversationSearchResult:
-    from polylogue.errors import DatabaseError
-    from polylogue.storage.fts.fts_lifecycle import message_fts_readiness_async
+    from polylogue.storage.fts.fts_lifecycle import check_fts_readiness, message_fts_readiness_async
 
-    readiness = await message_fts_readiness_async(conn)
-    if not bool(readiness["exists"]):
-        raise DatabaseError(f"Search index not built. {_MESSAGE_SEARCH_REPAIR_HINT}")
-    if not bool(readiness["ready"]):
-        raise DatabaseError(f"Search index is incomplete. {_MESSAGE_SEARCH_REPAIR_HINT}")
+    readiness = await message_fts_readiness_async(conn, exact_counts=True)
+    check_fts_readiness(readiness, _MESSAGE_SEARCH_REPAIR_HINT)
 
     from polylogue.storage.search import build_ranked_conversation_search_query
 
@@ -53,15 +49,11 @@ async def search_conversation_evidence_hits(
     providers: list[str] | None = None,
     since: str | None = None,
 ) -> list[ConversationSearchEvidenceHit]:
-    from polylogue.errors import DatabaseError
-    from polylogue.storage.fts.fts_lifecycle import message_fts_readiness_async
+    from polylogue.storage.fts.fts_lifecycle import check_fts_readiness, message_fts_readiness_async
     from polylogue.storage.search import build_ranked_conversation_search_query
 
-    readiness = await message_fts_readiness_async(conn)
-    if not bool(readiness["exists"]):
-        raise DatabaseError(f"Search index not built. {_MESSAGE_SEARCH_REPAIR_HINT}")
-    if not bool(readiness["ready"]):
-        raise DatabaseError(f"Search index is incomplete. {_MESSAGE_SEARCH_REPAIR_HINT}")
+    readiness = await message_fts_readiness_async(conn, exact_counts=True)
+    check_fts_readiness(readiness, _MESSAGE_SEARCH_REPAIR_HINT)
 
     query_spec = build_ranked_conversation_search_query(
         query=query,

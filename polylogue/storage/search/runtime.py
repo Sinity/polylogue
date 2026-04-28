@@ -9,7 +9,7 @@ from pathlib import Path
 from polylogue.errors import DatabaseError
 from polylogue.maintenance.targets import build_maintenance_target_catalog
 from polylogue.storage.backends.connection import open_read_connection
-from polylogue.storage.fts.fts_lifecycle import message_fts_readiness_sync
+from polylogue.storage.fts.fts_lifecycle import check_fts_readiness, message_fts_readiness_sync
 from polylogue.storage.search.cache import SearchCacheKey
 from polylogue.storage.search.models import SearchHit, SearchResult
 from polylogue.storage.search.query_builders import build_ranked_conversation_search_query, resolve_conversation_path
@@ -54,11 +54,8 @@ def search_messages_impl(
 
     sql, params = query_spec.sql, query_spec.params
     with open_read_connection(db_path) as conn:
-        readiness = message_fts_readiness_sync(conn)
-        if not bool(readiness["exists"]):
-            raise DatabaseError(f"Search index not built. {_MESSAGE_SEARCH_REPAIR_HINT}")
-        if not bool(readiness["ready"]):
-            raise DatabaseError(f"Search index is incomplete. {_MESSAGE_SEARCH_REPAIR_HINT}")
+        readiness = message_fts_readiness_sync(conn, exact_counts=True)
+        check_fts_readiness(readiness, _MESSAGE_SEARCH_REPAIR_HINT)
         try:
             rows = conn.execute(sql, tuple(params)).fetchall()
         except sqlite3.Error as exc:
