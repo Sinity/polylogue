@@ -9,7 +9,7 @@ from types import ModuleType
 from typing import Protocol
 
 from polylogue.logging import get_logger
-from polylogue.sources.drive_types import (
+from polylogue.sources.drive.types import (
     SCOPES,
     CachedCredentialState,
     DriveAuthError,

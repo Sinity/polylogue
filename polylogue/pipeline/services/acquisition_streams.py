@@ -18,7 +18,7 @@ from polylogue.storage.runtime import RawConversationRecord
 
 if TYPE_CHECKING:
     from polylogue.config import Source
-    from polylogue.sources.drive_types import DriveConfigLike, DriveUILike
+    from polylogue.sources.drive.types import DriveConfigLike, DriveUILike
 
 logger = get_logger(__name__)
 ObservationCallback = Callable[[JSONDocument], None]

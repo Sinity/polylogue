@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 from click.testing import CliRunner
 
 from polylogue.cli.commands.mcp import mcp_command
-from polylogue.sources.drive_source_factory import build_drive_source_client
+from polylogue.sources.drive.source_factory import build_drive_source_client
 
 
 def test_mcp_command_runs_stdio_server_and_handles_missing_dependency() -> None:
@@ -64,11 +64,11 @@ def test_build_drive_source_client_wires_auth_gateway_and_client(tmp_path: Path)
 
     with (
         patch(
-            "polylogue.sources.drive_source_factory.resolve_drive_retry_policy", return_value="retry-policy"
+            "polylogue.sources.drive.source_factory.resolve_drive_retry_policy", return_value="retry-policy"
         ) as mock_policy,
-        patch("polylogue.sources.drive_source_factory.DriveAuthManager", return_value="auth-manager") as mock_auth,
-        patch("polylogue.sources.drive_source_factory.DriveServiceGateway", return_value="gateway") as mock_gateway,
-        patch("polylogue.sources.drive_source_factory.DriveSourceClient", return_value="client") as mock_client,
+        patch("polylogue.sources.drive.source_factory.DriveAuthManager", return_value="auth-manager") as mock_auth,
+        patch("polylogue.sources.drive.source_factory.DriveServiceGateway", return_value="gateway") as mock_gateway,
+        patch("polylogue.sources.drive.source_factory.DriveSourceClient", return_value="client") as mock_client,
     ):
         client = build_drive_source_client(
             ui=ui,

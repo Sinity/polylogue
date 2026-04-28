@@ -355,7 +355,7 @@ def mock_media_downloader(monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
 
         return importlib.import_module(name)
 
-    import polylogue.sources.drive_gateway as drive_gateway
+    import polylogue.sources.drive.gateway as drive_gateway
 
     monkeypatch.setattr(drive_gateway, "_import_module", mock_import_module)
 
