@@ -28,6 +28,26 @@ ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / "docs" / "plans" / "migrations.yaml"
 
 
+def _strip_inline_comment(text: str) -> str:
+    """Strip a trailing YAML comment (`` # ...``) from a value line.
+
+    Only strips `` #`` when the ``#`` is outside any quoted string, so
+    ``value: "foo # bar"`` is not truncated.
+    """
+    in_quotes = False
+    quote_char: str | None = None
+    for i, ch in enumerate(text):
+        if ch in ('"', "'"):
+            if not in_quotes:
+                in_quotes = True
+                quote_char = ch
+            elif ch == quote_char:
+                in_quotes = False
+        elif ch == "#" and not in_quotes and i > 0 and text[i - 1] == " ":
+            return text[:i].rstrip()
+    return text
+
+
 def parse_yaml(text: str) -> dict[str, Any]:
     """Tiny YAML reader for the migrations schema."""
     out: dict[str, Any] = {"migrations": {}, "completed": []}
@@ -39,6 +59,7 @@ def parse_yaml(text: str) -> dict[str, Any]:
         line = raw.rstrip()
         if not line or line.lstrip().startswith("#"):
             continue
+        line = _strip_inline_comment(line)
         indent = len(line) - len(line.lstrip())
         stripped = line.lstrip()
         if indent == 0:
@@ -172,6 +193,15 @@ def main(argv: list[str] | None = None) -> int:
     args = p.parse_args(argv)
 
     manifest = parse_yaml(args.yaml.read_text())
+    migration_names = set(manifest["migrations"].keys())
+    unknown_strict = sorted(n for n in args.strict if n not in migration_names)
+    if unknown_strict:
+        msg = f"unknown --strict migration name(s): {unknown_strict}"
+        print(f"[error] {msg}")
+        if args.json:
+            json.dump({"blocking": True, "error": msg}, sys.stdout, indent=2)
+            sys.stdout.write("\n")
+        return 1
     results: list[dict[str, Any]] = []
     blocking = False
     for name, spec in manifest["migrations"].items():
