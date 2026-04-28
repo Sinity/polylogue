@@ -213,7 +213,7 @@ def extract_command(argv: list[str]) -> list[str]:
         "--tag",
         "--exclude-tag",
         "--title",
-        "--path",
+        "--referenced-path",
         "--action",
         "--exclude-action",
         "--action-sequence",

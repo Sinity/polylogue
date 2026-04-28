@@ -38,7 +38,7 @@ class MCPConversationQueryRequest:
     since: str | None = None
     tag: str | None = None
     title: str | None = None
-    path: str | None = None
+    referenced_path: str | None = None
     cwd_prefix: str | None = None
     action: str | None = None
     exclude_action: str | None = None
@@ -62,7 +62,7 @@ class MCPConversationQueryRequest:
             since=self.since,
             tag=self.tag,
             title=self.title,
-            path=self.path,
+            referenced_path=self.referenced_path,
             cwd_prefix=self.cwd_prefix,
             action=self.action,
             exclude_action=self.exclude_action,

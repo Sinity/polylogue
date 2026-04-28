@@ -84,10 +84,10 @@ QUERY_TOOL_CASES = [
     ),
     (
         "search",
-        {"query": "hello", "path": "/workspace/polylogue/README.md", "limit": 5},
+        {"query": "hello", "referenced_path": "/workspace/polylogue/README.md", "limit": 5},
         {
             "contains": ("hello",),
-            "path": ("/workspace/polylogue/README.md",),
+            "referenced_path": ("/workspace/polylogue/README.md",),
             "limit": (5,),
         },
     ),
@@ -165,9 +165,9 @@ QUERY_TOOL_CASES = [
     ),
     (
         "list_conversations",
-        {"path": "/workspace/polylogue/README.md", "limit": 2},
+        {"referenced_path": "/workspace/polylogue/README.md", "limit": 2},
         {
-            "path": ("/workspace/polylogue/README.md",),
+            "referenced_path": ("/workspace/polylogue/README.md",),
             "limit": (2,),
         },
     ),
@@ -361,7 +361,7 @@ class TestQueryTools:
                 assert spec.since == expected_value
             elif method_name == "retrieval_lane":
                 assert spec.retrieval_lane == expected_value
-            elif method_name == "path":
+            elif method_name == "referenced_path":
                 assert spec.path_terms == (expected_value,)
             elif method_name == "action":
                 assert spec.action_terms == (expected_value,)

@@ -505,7 +505,7 @@ async def test_filter_path_terms_apply_after_fts_search(tmp_path: Path) -> None:
     backend = SQLiteBackend(db_path=db_path)
     repo = ConversationRepository(backend=backend)
     try:
-        results = await ConversationFilter(repo).contains("parser regression").path(target_path).list()
+        results = await ConversationFilter(repo).contains("parser regression").referenced_path(target_path).list()
         assert [str(conversation.id) for conversation in results] == ["conv-match"]
     finally:
         await backend.close()

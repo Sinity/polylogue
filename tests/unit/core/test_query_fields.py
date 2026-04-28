@@ -28,7 +28,7 @@ def test_query_field_catalog_drives_spec_presence_and_descriptions() -> None:
     assert spec.has_filters() is True
     assert spec.describe() == [
         "search: sqlite locks",
-        "path: polylogue/storage",
+        "referenced-path: polylogue/storage",
         "provider: codex",
         "has: tool_use (sql)",
         "min_messages: 3",
@@ -51,7 +51,7 @@ def test_query_field_catalog_drives_plan_presence_descriptions_and_pushdown() ->
 
     assert active_plan_field_names(plan) == (
         "query_terms",
-        "path_terms",
+        "referenced_path",
         "tool_terms",
         "providers",
         "title",
@@ -62,7 +62,7 @@ def test_query_field_catalog_drives_plan_presence_descriptions_and_pushdown() ->
     assert plan.has_filters() is True
     assert plan.describe() == [
         "contains: sqlite",
-        "path: polylogue/storage",
+        "referenced-path: polylogue/storage",
         "tool: bash",
         "provider: codex",
         "title: locks",

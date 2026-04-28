@@ -113,7 +113,7 @@ class TestExecutionPlan:
 
     def test_content_required_for_path_filters(self) -> None:
         """Path filters reconcile against runtime semantic facts."""
-        f = _make_filter().path("/workspace/polylogue/README.md")
+        f = _make_filter().referenced_path("/workspace/polylogue/README.md")
         assert f.can_use_summaries() is False
         assert f._needs_content_loading() is True
 
@@ -185,13 +185,19 @@ class TestHasPostFilters:
 
     def test_semantic_filters_require_post_filter(self) -> None:
         """Path/action/tool filters need runtime semantic post-filtering."""
-        f = _make_filter().path("/workspace/polylogue/README.md").action("agent").tool("bash")
+        f = _make_filter().referenced_path("/workspace/polylogue/README.md").action("agent").tool("bash")
         assert f._has_post_filters() is True
         assert f.build_query_plan().can_count_in_sql() is False
 
     def test_candidate_query_keeps_stable_tool_filter_but_clears_unstable_action_filters(self) -> None:
         """Candidate fetch may keep raw tool-name narrowing while clearing stale action/path semantics."""
-        plan = _make_filter().path("/workspace/polylogue/README.md").action("agent").tool("bash").build_query_plan()
+        plan = (
+            _make_filter()
+            .referenced_path("/workspace/polylogue/README.md")
+            .action("agent")
+            .tool("bash")
+            .build_query_plan()
+        )
 
         candidate = plan.fetch_record_query()
         assert candidate.path_terms == ()

@@ -93,10 +93,10 @@ FILTER_OPTION_DECORATORS: tuple[Callable[[ClickCallable], ClickCallable], ...] =
     click.option("--exclude-tag", help="Exclude tags", shell_complete=complete_tag_values),
     click.option("--title", help="Title contains"),
     click.option(
-        "--path",
-        "path_terms",
+        "--referenced-path",
+        "referenced_path",
         multiple=True,
-        help="Touched path contains substring (repeatable = AND)",
+        help="Referenced file path contains substring (repeatable = AND)",
     ),
     click.option(
         "--cwd-prefix",
