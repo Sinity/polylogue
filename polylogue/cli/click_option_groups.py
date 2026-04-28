@@ -33,17 +33,18 @@ def _complete_providers(
 
 def _validate_provider_tokens(
     ctx: click.Context,
-    _param: click.Parameter,
+    param: click.Parameter,
     value: str | None,
 ) -> str | None:
     if not value:
-        return value
+        return None
     tokens = [t.strip() for t in value.split(",") if t.strip()]
     bad = [t for t in tokens if t not in _CLI_PROVIDER_CHOICES]
     if bad:
+        param_name = f"--{param.name.replace(chr(95), chr(45))}" if param.name else "--provider"
         raise click.BadParameter(
             f"Unknown provider(s): {', '.join(bad)}. Valid: {', '.join(_CLI_PROVIDER_CHOICES)}",
-            param_hint="--provider",
+            param_hint=param_name,
         )
     return value
 

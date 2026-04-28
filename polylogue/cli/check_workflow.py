@@ -87,6 +87,8 @@ def _runtime_only_requested(options: CheckCommandOptions) -> bool:
         (
             options.repair,
             options.cleanup,
+            options.preview,
+            options.vacuum,
             options.deep,
             options.check_blob,
             options.check_schemas,
@@ -111,7 +113,7 @@ def _artifact_query(options: CheckCommandOptions) -> ArtifactObservationQuery:
     )
 
 
-def _run_blob_store_check(env: AppEnv, config: Config) -> None:
+def _run_blob_store_check(env: AppEnv, config: Config, json_output: bool = False) -> None:
     from polylogue.storage.blob_store import get_blob_store
 
     blob_store = get_blob_store()
@@ -120,8 +122,24 @@ def _run_blob_store_check(env: AppEnv, config: Config) -> None:
         for row in conn.execute("SELECT raw_id FROM raw_conversations"):
             db_raw_ids.add(row[0])
     disk_hashes = set(blob_store.iter_all())
-    missing = db_raw_ids - disk_hashes
-    orphaned = disk_hashes - db_raw_ids
+    missing = sorted(db_raw_ids - disk_hashes)
+    orphaned = sorted(disk_hashes - db_raw_ids)
+
+    if json_output:
+        from polylogue.cli.machine_errors import emit_success
+
+        emit_success(
+            {
+                "total_blobs": len(disk_hashes),
+                "total_raw_records": len(db_raw_ids),
+                "missing_count": len(missing),
+                "orphaned_count": len(orphaned),
+                "missing": missing[:10],
+                "orphaned": orphaned[:10],
+            }
+        )
+        return
+
     env.ui.console.print(f"Blob store: {len(disk_hashes)} blobs on disk, {len(db_raw_ids)} raw records in DB")
     if missing:
         env.ui.console.print(f"  MISSING: {len(missing)} blobs referenced in DB but not on disk")
@@ -224,7 +242,7 @@ def run_check_workflow(env: AppEnv, options: CheckCommandOptions) -> CheckComman
         result.runtime_report = run_runtime_readiness(config)
 
     if options.check_blob:
-        _run_blob_store_check(env, config)
+        _run_blob_store_check(env, config, json_output=options.json_output)
 
     if options.check_schemas:
         result.schema_report = _run_schema_verification(options, config)

@@ -558,7 +558,7 @@ class TestRunCommand:
         assert result == "reprocess"
         _as_mock(env.ui.choose).assert_called_once_with(
             "Select workflow for run",
-            ["all", "reprocess", "acquire", "schema", "parse", "materialize", "render", "site", "index"],
+            ["all", "reprocess", "publish", "acquire", "schema", "parse", "materialize", "render", "site", "index"],
         )
 
     def test_maybe_prompt_run_stage_rejects_empty_choice(self) -> None:
