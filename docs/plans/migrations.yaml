@@ -11,7 +11,6 @@ migrations:
     issue: "#413"
     description: "Retire public audit/qa/showcase vocabulary from the product surface."
     must_vanish_paths:
-      - devtools/verify_showcase.py
       - polylogue/cli/commands/qa.py
       - polylogue/showcase/qa_runner_request.py
       - polylogue/showcase/qa_runner_workflow.py
@@ -21,7 +20,6 @@ migrations:
       - qa
       - showcase
     must_vanish_devtools_commands:
-      - verify-showcase
     accepted_aliases:
       - from: tests/baselines/showcase
         to: tests/baselines/cli_help
