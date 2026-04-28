@@ -23,7 +23,7 @@ def _drift_value(
     if drift is None:
         return 0
     bucket_mapping = drift.get(bucket)
-    if not isinstance(bucket_mapping, Mapping):
+    if not hasattr(bucket_mapping, "get"):
         return 0
     value = bucket_mapping.get(key)
     return value if isinstance(value, int) else 0

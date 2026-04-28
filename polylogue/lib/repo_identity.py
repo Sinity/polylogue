@@ -31,7 +31,7 @@ def _extract_local_path_candidate(value: str) -> str | None:
 
 def _iter_repo_root_candidates(path: Path) -> tuple[Path, ...]:
     expanded = path.expanduser()
-    current = expanded if not expanded.suffix else expanded.parent
+    current = expanded
     if current == Path("."):
         return ()
     return (current, *current.parents)

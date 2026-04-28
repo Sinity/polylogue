@@ -521,8 +521,14 @@ def estimate_conversation_cost(conversation: Conversation) -> CostEstimatePayloa
         provenance.extend(estimate.provenance)
     model_name, normalized_model = _dominant_model(message_estimates)
     missing_count = len(message_estimates) - len(priced)
-    status: CostEstimateStatus = "priced" if missing_count == 0 else "partial"
-    confidence = 0.85 if status == "priced" else 0.55
+    all_exact = bool(priced) and all(e.status == "exact" for e in priced)
+    if all_exact:
+        status: CostEstimateStatus = "exact"
+    elif missing_count == 0:
+        status = "priced"
+    else:
+        status = "partial"
+    confidence = 0.95 if status == "exact" else 0.85 if status == "priced" else 0.55
     if conversation_estimate is not None and conversation_estimate.status == "priced":
         # Prefer conversation-level usage when present; it avoids double-counting
         # per-message fallbacks from providers that report only session totals.

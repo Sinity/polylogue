@@ -495,7 +495,7 @@ async def discover_neighbor_candidates(
 
     target = await _load_target(store, request.conversation_id)
     source_id = str(target.id) if target is not None else None
-    provider = _canonical_provider(request.provider) or (str(target.provider) if target is not None else None)
+    provider = _canonical_provider(request.provider)
     providers = _provider_list(provider)
     pool_limit = max(request.candidate_pool_limit, request.limit)
     drafts: dict[str, _CandidateDraft] = {}
