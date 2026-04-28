@@ -14,6 +14,7 @@ from polylogue.pipeline.run_finalization import persist_run_result
 from polylogue.pipeline.run_stages import (
     IndexStageOutcome,
     execute_acquire_stage,
+    execute_embed_stage,
     execute_index_stage,
     execute_ingest_stage,
     execute_materialize_stage,
@@ -262,6 +263,21 @@ async def run_sources(
                 rendered_pages=site_outcome.rendered_pages,
             )
 
+        async def _run_embed_stage(spec: PipelineStageSpec) -> None:
+            sm = metrics.start_stage(spec.log_stage)
+            embed_outcome = await execute_embed_stage(
+                config=config,
+                backend=active_backend,
+                progress_callback=progress_callback,
+            )
+            sm.stop(items=embed_outcome.embedded_count)
+            logger.info(
+                "Embed stage complete",
+                **sm.to_dict(),
+                embedded=embed_outcome.embedded_count,
+                errors=embed_outcome.error_count,
+            )
+
         async def _run_stage_spec(spec: PipelineStageSpec) -> None:
             nonlocal index_outcome
             if not spec.pipeline_managed:
@@ -288,6 +304,8 @@ async def run_sources(
                 await _run_site_stage(spec)
             elif spec.name == "index":
                 index_outcome = await _run_index_stage(spec, execution_stage)
+            elif spec.name == "embed":
+                await _run_embed_stage(spec)
             else:
                 raise ValueError(f"Unknown pipeline stage spec: {spec.name}")
             executed_stages.add(spec.name)

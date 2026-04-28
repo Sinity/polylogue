@@ -32,7 +32,7 @@ RUN_STAGE_SEQUENCES: dict[str, tuple[str, ...]] = {
     "index": ("index",),
     "embed": ("embed",),
     "schema": ("schema",),
-    "reprocess": ("parse", "materialize", "render", "index"),
+    "reprocess": ("parse", "materialize", "render", "site", "index"),
     "all": ("acquire", "parse", "materialize", "render", "site", "index"),
     "publish": ("render", "site"),
 }

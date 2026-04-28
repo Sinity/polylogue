@@ -1,9 +1,9 @@
 """Batch ingest orchestration: ProcessPool workers + sync sqlite3 writes.
 
-Producer-consumer architecture:
+Architecture:
 - CPU-bound work (decode/validate/parse/transform) in ProcessPoolExecutor
 - DB writes in main thread via sync sqlite3 (no aiosqlite async overhead)
-- as_completed yields results as workers finish — parse and write overlap
+- as_completed yields results as workers finish; writes run after all results collected
 
 Replaces: parsing_batch.py, parsing_workflow.py, validation_flow.py.
 """
@@ -455,7 +455,8 @@ def _write_conversation(conn: sqlite3.Connection, cdata: ConversationData) -> tu
     if cdata.stats_tuple:
         conn.execute(_STATS_UPSERT_SQL, cdata.stats_tuple)
 
-    # Content blocks
+    # Content blocks (replace all for this conversation)
+    conn.execute("DELETE FROM content_blocks WHERE conversation_id = ?", (cdata.conversation_id,))
     if cdata.block_tuples:
         conn.executemany(_CONTENT_BLOCK_UPSERT_SQL, cdata.block_tuples)
 
