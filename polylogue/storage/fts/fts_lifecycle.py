@@ -398,9 +398,46 @@ async def message_fts_readiness_async(
     }
 
 
+FTS_GAP_THRESHOLD = 0.01
+
+
+def check_fts_readiness(readiness: dict[str, object], repair_hint: str = "") -> None:
+    """Raise DatabaseError if the FTS index doesn't exist.
+
+    Degrade gracefully on small gaps: if the gap is ≤ FTS_GAP_THRESHOLD
+    (default 1%), warn and return instead of raising.
+    """
+    from polylogue.errors import DatabaseError
+
+    if not bool(readiness["exists"]):
+        raise DatabaseError(f"Search index not built. {repair_hint}")
+    if bool(readiness["ready"]):
+        return
+    indexed = int(readiness.get("indexed_rows", 0))
+    total = int(readiness.get("total_rows", 0))
+    if total > 0 and indexed > 0:
+        gap_ratio = (total - indexed) / total
+        if gap_ratio <= FTS_GAP_THRESHOLD:
+            missing = total - indexed
+            pct = gap_ratio * 100
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "Search index is %d/%d messages behind (%.3f%%). "
+                "Results may be incomplete. Run `polylogue doctor --repair --target dangling_fts`.",
+                missing,
+                total,
+                pct,
+            )
+            return
+    raise DatabaseError(f"Search index is incomplete. {repair_hint}")
+
+
 __all__ = [
+    "FTS_GAP_THRESHOLD",
     "_MESSAGE_FTS_TRIGGER_DDL",
     "_chunked",
+    "check_fts_readiness",
     "ensure_fts_index_async",
     "ensure_fts_index_sync",
     "fts_index_status_async",
