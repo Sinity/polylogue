@@ -49,7 +49,7 @@ from polylogue.sources.drive import (
     drive_cache_file_path,
     iter_drive_raw_data,
 )
-from polylogue.sources.drive_types import DriveFile
+from polylogue.sources.drive.types import DriveFile
 from polylogue.sources.emitter import _ConversationEmitter
 from polylogue.sources.parsers import chatgpt as chatgpt_parser
 from polylogue.sources.parsers import claude as claude_parser

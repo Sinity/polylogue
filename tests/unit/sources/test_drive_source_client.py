@@ -13,7 +13,7 @@ import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-from polylogue.sources.drive_source import (
+from polylogue.sources.drive.source import (
     DriveSourceClient,
     _build_folder_lookup_query,
     _is_supported_drive_payload,
@@ -23,7 +23,7 @@ from polylogue.sources.drive_source import (
     _parse_modified_time,
     _parse_size,
 )
-from polylogue.sources.drive_types import (
+from polylogue.sources.drive.types import (
     GEMINI_PROMPT_MIME_TYPE,
     DriveFile,
     DriveNotFoundError,

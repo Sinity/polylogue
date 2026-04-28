@@ -14,7 +14,7 @@ from polylogue.pipeline.services.acquisition_records import ScanResult
 from polylogue.pipeline.services.acquisition_streams import iter_raw_record_stream
 from polylogue.pipeline.stage_models import AcquireResult
 from polylogue.protocols import ProgressCallback
-from polylogue.sources.drive_types import DriveUILike
+from polylogue.sources.drive.types import DriveUILike
 from polylogue.sources.source_acquisition import iter_source_raw_data
 from polylogue.storage.cursor_state import CursorStatePayload
 from polylogue.storage.runtime import RawConversationRecord

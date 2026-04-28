@@ -1889,11 +1889,11 @@ files:
     loc: 552
     target: polylogue/sources/dispatch.py
     owner: stable
-  - path: polylogue/sources/drive.py
+  - path: polylogue/sources/drive/__init__.py
     loc: 284
     target: polylogue/sources/drive/__init__.py
     owner: #403
-  - path: polylogue/sources/drive_auth.py
+  - path: polylogue/sources/drive/auth.py
     loc: 209
     target: polylogue/sources/drive/auth.py
     owner: #403
@@ -1901,19 +1901,19 @@ files:
     loc: 175
     target: polylogue/sources/drive/auth_support.py
     owner: #403
-  - path: polylogue/sources/drive_gateway.py
+  - path: polylogue/sources/drive/gateway.py
     loc: 252
     target: polylogue/sources/drive/gateway.py
     owner: #403
-  - path: polylogue/sources/drive_source.py
+  - path: polylogue/sources/drive/source.py
     loc: 42
     target: polylogue/sources/drive/source.py
     owner: #403
-  - path: polylogue/sources/drive_source_client.py
+  - path: polylogue/sources/drive/source_client.py
     loc: 175
     target: polylogue/sources/drive/source_client.py
     owner: #403
-  - path: polylogue/sources/drive_source_factory.py
+  - path: polylogue/sources/drive/source_factory.py
     loc: 39
     target: polylogue/sources/drive/source_factory.py
     owner: #403
@@ -1921,11 +1921,11 @@ files:
     loc: 19
     target: polylogue/sources/drive/source_protocol.py
     owner: #403
-  - path: polylogue/sources/drive_source_support.py
+  - path: polylogue/sources/drive/source_support.py
     loc: 166
     target: polylogue/sources/drive/source_support.py
     owner: #403
-  - path: polylogue/sources/drive_types.py
+  - path: polylogue/sources/drive/types.py
     loc: 148
     target: polylogue/sources/drive/types.py
     owner: #403
@@ -1966,27 +1966,27 @@ files:
     loc: 216
     target: polylogue/sources/parsers/chatgpt.py
     owner: stable
-  - path: polylogue/sources/parsers/claude.py
+  - path: polylogue/sources/parsers/claude/__init__.py
     loc: 93
     target: polylogue/sources/parsers/claude/py
     owner: #403
-  - path: polylogue/sources/parsers/claude_ai_parser.py
+  - path: polylogue/sources/parsers/claude/ai_parser.py
     loc: 80
     target: polylogue/sources/parsers/claude/ai_parser.py
     owner: #403
-  - path: polylogue/sources/parsers/claude_code_detection.py
+  - path: polylogue/sources/parsers/claude/code_detection.py
     loc: 36
     target: polylogue/sources/parsers/claude/code_detection.py
     owner: #403
-  - path: polylogue/sources/parsers/claude_code_parser.py
+  - path: polylogue/sources/parsers/claude/code_parser.py
     loc: 234
     target: polylogue/sources/parsers/claude/code_parser.py
     owner: #403
-  - path: polylogue/sources/parsers/claude_common.py
+  - path: polylogue/sources/parsers/claude/common.py
     loc: 161
     target: polylogue/sources/parsers/claude/common.py
     owner: #403
-  - path: polylogue/sources/parsers/claude_index.py
+  - path: polylogue/sources/parsers/claude/index.py
     loc: 195
     target: polylogue/sources/parsers/claude/index.py
     owner: #403
