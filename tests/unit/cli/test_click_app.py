@@ -393,7 +393,7 @@ class TestCliSetup:
 
     def test_ctx_obj_set_to_appenv(self, cli_runner: CliRunner) -> None:
         from polylogue.cli.click_app import cli
-        from polylogue.cli.types import AppEnv
+        from polylogue.cli.shared.types import AppEnv
 
         captured_env: dict[str, object] = {}
 
@@ -410,7 +410,7 @@ class TestShowStats:
         from polylogue.cli.click_app import _show_stats
 
         env = MagicMock()
-        with patch("polylogue.cli.helpers.print_summary") as mock_print:
+        with patch("polylogue.cli.shared.helpers.print_summary") as mock_print:
             _show_stats(env, verbose=True)
         mock_print.assert_called_once_with(env, verbose=True)
 
@@ -418,7 +418,7 @@ class TestShowStats:
         from polylogue.cli.click_app import _show_stats
 
         env = MagicMock()
-        with patch("polylogue.cli.helpers.print_summary") as mock_print:
+        with patch("polylogue.cli.shared.helpers.print_summary") as mock_print:
             _show_stats(env, verbose=False)
         mock_print.assert_called_once_with(env, verbose=False)
 

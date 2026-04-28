@@ -6,8 +6,8 @@ import shutil
 
 import click
 
-from polylogue.cli.helpers import fail
-from polylogue.cli.types import AppEnv
+from polylogue.cli.shared.helpers import fail
+from polylogue.cli.shared.types import AppEnv
 from polylogue.paths import (
     blob_store_root,
     cache_home,

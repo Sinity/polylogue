@@ -13,10 +13,10 @@ from pathlib import Path
 import click
 
 from polylogue.api.sync.bridge import run_coroutine_sync
-from polylogue.cli.helper_support import fail
 from polylogue.cli.machine_errors import emit_success
 from polylogue.cli.product_command_contracts import ProductCommandRequest, query_model_field_names
-from polylogue.cli.types import AppEnv
+from polylogue.cli.shared.helper_support import fail
+from polylogue.cli.shared.types import AppEnv
 from polylogue.products.archive import ArchiveProductUnavailableError
 from polylogue.products.export_bundles import (
     ProductExportBundleError,

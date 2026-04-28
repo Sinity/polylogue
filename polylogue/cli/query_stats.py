@@ -15,7 +15,7 @@ import click
 from polylogue.cli.query_feedback import emit_no_results
 
 if TYPE_CHECKING:
-    from polylogue.cli.types import AppEnv
+    from polylogue.cli.shared.types import AppEnv
     from polylogue.lib.action_event.action_events import ActionEvent
     from polylogue.lib.filter.filters import ConversationFilter
     from polylogue.lib.models import Conversation, ConversationSummary

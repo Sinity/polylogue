@@ -20,7 +20,7 @@ import pytest
 
 from polylogue.cli.query import QueryAction, QueryOutputSpec, QueryRoute
 from polylogue.cli.query_contracts import QueryDeliveryTarget
-from polylogue.cli.types import AppEnv
+from polylogue.cli.shared.types import AppEnv
 from polylogue.lib.models import Conversation as ConversationModel
 from polylogue.lib.models import ConversationSummary
 from polylogue.lib.models import Message as MessageModel
@@ -182,7 +182,7 @@ def test_execute_query_stream_target_resolution_contract(
     mock_filter.list_summaries = AsyncMock(return_value=[_make_summary("latest-conv-id")])
 
     with (
-        patch("polylogue.cli.helpers.load_effective_config", return_value=MagicMock()),
+        patch("polylogue.cli.shared.helpers.load_effective_config", return_value=MagicMock()),
         patch("polylogue.storage.search_providers.create_vector_provider", return_value=None),
         patch("polylogue.lib.filter.filters.ConversationFilter", return_value=mock_filter),
         patch("polylogue.cli.query_output.stream_conversation", new_callable=AsyncMock) as mock_stream,
@@ -211,7 +211,7 @@ async def test_async_execute_query_errors_for_similar_without_vector_support() -
     env = _make_env(repo=MagicMock(), config=MagicMock())
 
     with (
-        patch("polylogue.cli.helpers.load_effective_config", return_value=MagicMock()),
+        patch("polylogue.cli.shared.helpers.load_effective_config", return_value=MagicMock()),
         patch("polylogue.storage.search_providers.create_vector_provider", return_value=None),
         patch("click.echo") as mock_echo,
     ):
@@ -231,7 +231,7 @@ async def test_async_execute_query_rejects_tail_mutations() -> None:
     env = _make_env(repo=MagicMock(), config=MagicMock())
 
     with (
-        patch("polylogue.cli.helpers.load_effective_config", return_value=MagicMock()),
+        patch("polylogue.cli.shared.helpers.load_effective_config", return_value=MagicMock()),
         patch("click.echo") as mock_echo,
     ):
         with pytest.raises(SystemExit) as exc_info:
@@ -248,7 +248,7 @@ async def test_async_execute_query_rejects_tail_open() -> None:
     env = _make_env(repo=MagicMock(), config=MagicMock())
 
     with (
-        patch("polylogue.cli.helpers.load_effective_config", return_value=MagicMock()),
+        patch("polylogue.cli.shared.helpers.load_effective_config", return_value=MagicMock()),
         patch("click.echo") as mock_echo,
     ):
         with pytest.raises(SystemExit) as exc_info:
@@ -267,7 +267,7 @@ async def test_async_execute_query_errors_for_similar_without_embeddings() -> No
     env = _make_env(repo=repo, config=MagicMock())
 
     with (
-        patch("polylogue.cli.helpers.load_effective_config", return_value=MagicMock()),
+        patch("polylogue.cli.shared.helpers.load_effective_config", return_value=MagicMock()),
         patch("polylogue.storage.search_providers.create_vector_provider", return_value=MagicMock()),
         patch("click.echo") as mock_echo,
     ):
@@ -303,7 +303,7 @@ async def test_async_execute_query_reports_non_date_query_spec_errors() -> None:
     )
 
     with (
-        patch("polylogue.cli.helpers.load_effective_config", return_value=MagicMock()),
+        patch("polylogue.cli.shared.helpers.load_effective_config", return_value=MagicMock()),
         patch("polylogue.storage.search_providers.create_vector_provider", return_value=None),
         patch("polylogue.cli.query.build_query_execution_plan", return_value=plan),
         patch("click.echo") as mock_echo,
@@ -718,7 +718,7 @@ async def test_async_execute_query_uses_action_event_stats_lane_for_semantic_sta
     env = _make_env(repo=repo, config=MagicMock())
 
     with (
-        patch("polylogue.cli.helpers.load_effective_config", return_value=MagicMock()),
+        patch("polylogue.cli.shared.helpers.load_effective_config", return_value=MagicMock()),
         patch("polylogue.storage.search_providers.create_vector_provider", return_value=None),
         patch("polylogue.cli.query_output.output_stats_by_semantic_summaries", new_callable=AsyncMock) as mock_output,
         patch("polylogue.cli.query_output._output_stats_by") as mock_fallback,
@@ -747,7 +747,7 @@ async def test_async_execute_query_uses_session_product_stats_lane_for_repo_stat
     env = _make_env(repo=repo, config=MagicMock())
 
     with (
-        patch("polylogue.cli.helpers.load_effective_config", return_value=MagicMock()),
+        patch("polylogue.cli.shared.helpers.load_effective_config", return_value=MagicMock()),
         patch("polylogue.storage.search_providers.create_vector_provider", return_value=None),
         patch("polylogue.cli.query_output.output_stats_by_profile_summaries", new_callable=AsyncMock) as mock_output,
         patch("polylogue.cli.query_output._output_stats_by") as mock_fallback,
@@ -1065,8 +1065,8 @@ def test_open_result_contract(
     mock_print = _as_mock(env.ui.console.print)
     output = QueryOutputSpec.from_params(params)
     with (
-        patch("polylogue.cli.helpers.load_effective_config", return_value=MagicMock(render_root=render_root)),
-        patch("polylogue.cli.helpers.latest_render_path", return_value=fallback if latest_exists else None),
+        patch("polylogue.cli.shared.helpers.load_effective_config", return_value=MagicMock(render_root=render_root)),
+        patch("polylogue.cli.shared.helpers.latest_render_path", return_value=fallback if latest_exists else None),
         patch("webbrowser.open") as mock_open,
         patch("click.echo") as mock_echo,
     ):
@@ -1099,8 +1099,8 @@ def test_open_result_no_results_json_contract(capsys: pytest.CaptureFixture[str]
     env = _make_env(config=MagicMock(render_root=render_root))
 
     with (
-        patch("polylogue.cli.helpers.load_effective_config", return_value=MagicMock(render_root=render_root)),
-        patch("polylogue.cli.helpers.latest_render_path", return_value=None),
+        patch("polylogue.cli.shared.helpers.load_effective_config", return_value=MagicMock(render_root=render_root)),
+        patch("polylogue.cli.shared.helpers.latest_render_path", return_value=None),
         patch("webbrowser.open") as mock_open,
     ):
         mock_open = _as_mock(mock_open)

@@ -6,7 +6,7 @@ import click
 
 from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.cli.machine_errors import emit_success
-from polylogue.cli.types import AppEnv
+from polylogue.cli.shared.types import AppEnv
 
 
 @click.command("tags")

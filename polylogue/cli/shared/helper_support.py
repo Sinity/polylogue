@@ -6,7 +6,7 @@ from typing import NoReturn
 
 import click
 
-from polylogue.cli.types import AppEnv
+from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
 
 

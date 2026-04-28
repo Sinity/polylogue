@@ -12,7 +12,7 @@ import pytest
 from polylogue.cli import query_output, query_semantic, query_stats
 from polylogue.cli.query_actions import apply_modifiers, apply_transform, delete_conversations, resolve_stream_target
 from polylogue.cli.query_contracts import QueryDeliveryTarget, QueryMutationSpec, QueryOutputSpec
-from polylogue.cli.types import AppEnv
+from polylogue.cli.shared.types import AppEnv
 from polylogue.lib.action_event.action_events import ActionEvent
 from polylogue.lib.models import ConversationSummary
 from polylogue.lib.query.spec import ConversationQuerySpec
@@ -461,7 +461,7 @@ async def test_query_output_helpers_cover_stream_dates_headers_and_rich_lists(tm
     await query_output.output_summary_list(env, [_summary()], _output_spec("markdown"), repo=None)
 
     with (
-        patch("polylogue.cli.helpers.load_effective_config", side_effect=RuntimeError("boom")),
+        patch("polylogue.cli.shared.helpers.load_effective_config", side_effect=RuntimeError("boom")),
         patch("polylogue.paths.render_root", return_value=Path("/tmp/missing-render-root")),
         patch("click.echo") as echo,
     ):
@@ -473,13 +473,15 @@ async def test_query_output_helpers_cover_stream_dates_headers_and_rich_lists(tm
     render_root = tmp_path / "render-root"
     render_root.mkdir()
     with (
-        patch("polylogue.cli.helpers.load_effective_config", return_value=SimpleNamespace(render_root=render_root)),
+        patch(
+            "polylogue.cli.shared.helpers.load_effective_config", return_value=SimpleNamespace(render_root=render_root)
+        ),
         patch("polylogue.paths.render_root", return_value=render_root),
         patch(
             "polylogue.paths.sanitize.conversation_render_root",
             return_value=Path("/tmp/render-root/claude-code/conv-open"),
         ),
-        patch("polylogue.cli.helpers.latest_render_path", return_value=None),
+        patch("polylogue.cli.shared.helpers.latest_render_path", return_value=None),
         patch("click.echo") as echo,
     ):
         with pytest.raises(SystemExit) as missing_render:

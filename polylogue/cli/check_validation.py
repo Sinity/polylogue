@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from polylogue.cli.helpers import fail
+from polylogue.cli.shared.helpers import fail
 from polylogue.maintenance.targets import MaintenanceTargetMode, build_maintenance_target_catalog
 
 if TYPE_CHECKING:

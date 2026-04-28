@@ -39,7 +39,7 @@ class TestGetDrivePaths:
 
     def test_get_drive_paths_falls_back_on_config_error(self, tmp_path: Path) -> None:
         env = MagicMock()
-        with patch("polylogue.cli.helpers.load_effective_config", side_effect=Exception("config error")):
+        with patch("polylogue.cli.shared.helpers.load_effective_config", side_effect=Exception("config error")):
             creds_path, token_path = _get_drive_paths(env)
             assert creds_path is not None
             assert token_path is not None

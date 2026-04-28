@@ -14,8 +14,8 @@ from polylogue.cli.formatting import (
     format_plan_details,
     format_run_details,
 )
-from polylogue.cli.helpers import fail
-from polylogue.cli.types import AppEnv
+from polylogue.cli.shared.helpers import fail
+from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
 from polylogue.lib.timestamps import format_timestamp
 from polylogue.pipeline.run_support import expand_requested_stage
@@ -58,7 +58,7 @@ def display_result(
     env.ui.summary(title, run_lines)
 
     if "render" in normalized_stage_sequence:
-        from polylogue.cli.helpers import latest_render_path
+        from polylogue.cli.shared.helpers import latest_render_path
 
         latest = latest_render_path(cfg.render_root)
         if latest:

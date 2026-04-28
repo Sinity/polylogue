@@ -253,7 +253,7 @@ def test_display_result_reports_render_failures(mock_env: MagicMock, capsys: pyt
         render_failures=failures,
     )
 
-    with patch("polylogue.cli.helpers.latest_render_path", return_value=None):
+    with patch("polylogue.cli.shared.helpers.latest_render_path", return_value=None):
         display_result(mock_env, mock_config, result, "all", None)
 
     captured = capsys.readouterr()

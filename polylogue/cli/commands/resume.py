@@ -5,11 +5,11 @@ from __future__ import annotations
 import click
 
 from polylogue.api.sync.bridge import run_coroutine_sync
-from polylogue.cli.helper_support import fail
 from polylogue.cli.machine_errors import emit_success
 from polylogue.cli.product_command_contracts import find_root_params
 from polylogue.cli.resume_rendering import render_resume_brief
-from polylogue.cli.types import AppEnv
+from polylogue.cli.shared.helper_support import fail
+from polylogue.cli.shared.types import AppEnv
 
 
 def _wants_json(ctx: click.Context, *, json_mode: bool, output_format: str | None) -> bool:
