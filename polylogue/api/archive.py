@@ -12,7 +12,9 @@ from polylogue.archive_products import (
     SessionProfileProduct,
     SessionProfileProductQuery,
 )
+from polylogue.lib.message.roles import MessageRoleFilter
 from polylogue.lib.semantic.content_projection import ContentProjectionSpec
+from polylogue.storage.backends.queries.message_query_reads import MessageTypeName
 from polylogue.storage.products.session.runtime import SessionProductStatusSnapshot
 
 if TYPE_CHECKING:
@@ -238,6 +240,95 @@ class PolylogueArchiveMixin:
     ) -> ProductReadinessReport:
         """Return product materialization readiness for downstream consumers."""
         return await self.operations.get_product_readiness_report(query)
+
+    async def get_messages_paginated(
+        self,
+        conversation_id: str,
+        *,
+        message_role: MessageRoleFilter = (),
+        message_type: MessageTypeName | None = None,
+        limit: int = 50,
+        offset: int = 0,
+        content_projection: ContentProjectionSpec | None = None,
+    ) -> tuple[list[dict[str, object]], int] | None:
+        """Return paginated messages for a conversation."""
+        conv = await self.operations.get_conversation(conversation_id, content_projection=content_projection)
+        if conv is None:
+            return None
+
+        from polylogue.lib.message.roles import normalize_message_roles
+
+        messages = conv.messages if hasattr(conv, "messages") else []
+        roles: tuple = normalize_message_roles(message_role) if message_role else ()
+
+        if roles:
+            messages = [m for m in messages if str(getattr(m, "role", "")) in roles]
+
+        if message_type:
+            if message_type == "tool_use":
+                messages = [m for m in messages if getattr(m, "is_tool_use", False)]
+            elif message_type == "thinking":
+                messages = [m for m in messages if getattr(m, "is_thinking", False)]
+            elif message_type == "tool_result":
+                messages = [
+                    m
+                    for m in messages
+                    if any(b.get("type") == "tool_result" for b in (getattr(m, "content_blocks", None) or []))
+                ]
+            elif message_type == "summary":
+                messages = [
+                    m
+                    for m in messages
+                    if getattr(m, "is_system", False)
+                    and not getattr(m, "is_tool_use", False)
+                    and not getattr(m, "is_thinking", False)
+                ]
+
+        total = len(messages)
+        messages = messages[offset : offset + limit]
+
+        result = []
+        for m in messages:
+            result.append(
+                {
+                    "id": str(getattr(m, "id", "")),
+                    "role": str(getattr(m, "role", "")),
+                    "text": getattr(m, "text", None) or "",
+                    "sort_key": getattr(m, "sort_key", None),
+                    "has_tool_use": getattr(m, "is_tool_use", False),
+                    "has_thinking": getattr(m, "is_thinking", False),
+                }
+            )
+
+        return result, total
+
+    async def get_raw_records_for_conversation(
+        self,
+        conversation_id: str,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> tuple[list[dict[str, object]], int]:
+        """Return paginated raw provider records for a conversation."""
+        from polylogue.storage.backends.queries.raw import get_raw_records_for_conversation as _raw_query
+
+        async with self.repository._backend.connection() as conn:
+            records, total = await _raw_query(conn, conversation_id, limit=limit, offset=offset)
+            result = []
+            for r in records:
+                result.append(
+                    {
+                        "raw_id": getattr(r, "raw_id", ""),
+                        "provider_name": getattr(r, "provider_name", ""),
+                        "source_path": getattr(r, "source_path", ""),
+                        "source_name": getattr(r, "source_name", None),
+                        "blob_size": getattr(r, "blob_size", 0),
+                        "acquired_at": getattr(r, "acquired_at", None),
+                        "parsed_at": getattr(r, "parsed_at", None),
+                        "validation_status": getattr(r, "validation_status", None),
+                    }
+                )
+            return result, total
 
     async def export_product_bundle(
         self,

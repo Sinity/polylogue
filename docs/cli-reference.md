@@ -86,9 +86,15 @@ Options:
   --min-messages INTEGER          Minimum message count
   --max-messages INTEGER          Maximum message count
   --min-words INTEGER             Minimum total word count
+  --message-type [summary|tool_use|tool_result|thinking]
+                                  Filter by message content type (summary,
+                                  tool_use, tool_result, thinking)
+  --since-session TEXT            Show sessions in same cwd after this
+                                  conversation ID
   --since TEXT                    After date (ISO, 'yesterday', 'last week')
   --until TEXT                    Before date
   -n, --limit INTEGER             Max results
+  --offset INTEGER                Offset for paginated results
   --latest                        Most recent (= --sort date --limit 1)
   --sort [date|tokens|messages|words|longest|random]
                                   Sort by field
@@ -138,9 +144,11 @@ Commands:
   export           Export one known conversation by ID.
   list             List matched conversations.
   mcp              Start the MCP server for AI assistant integration.
+  messages         Show paginated messages for a conversation.
   neighbors        Show explainable neighboring or near-duplicate...
   open             Open matched conversation in browser/editor.
   products         Inspect durable archive data products.
+  raw              Show raw provider records for a conversation.
   reset            Reset database, blob store, assets, rendered outputs,...
   resume           Reconstruct work-state context for a fresh agent session.
   run              Run pipeline stages on configured sources.

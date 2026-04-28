@@ -87,12 +87,16 @@ if TYPE_CHECKING:
     from polylogue.config import Config
     from polylogue.lib.conversation.models import Conversation
     from polylogue.lib.conversation.neighbor_candidates import ConversationNeighborCandidate
+    from polylogue.lib.message.models import Message
+    from polylogue.lib.message.roles import MessageRoleFilter
     from polylogue.lib.query.miss_diagnostics import QueryMissDiagnostics
     from polylogue.lib.search_hits import ConversationSearchHit
     from polylogue.lib.stats import ArchiveStats as StorageArchiveStats
     from polylogue.storage.backends.async_sqlite import SQLiteBackend
+    from polylogue.storage.backends.queries.messages import MessageTypeName
     from polylogue.storage.products.session.runtime import SessionProductCounts
     from polylogue.storage.repository import ConversationRepository
+    from polylogue.storage.runtime import RawConversationRecord
 
 _ResultT = TypeVar("_ResultT")
 _QueryT = TypeVar("_QueryT")
@@ -376,6 +380,42 @@ class ArchiveSearchMixin:
 
     async def get_session_tree(self, conversation_id: str) -> list[Conversation]:
         return await self.repository.get_session_tree(conversation_id)
+
+    async def get_messages_paginated(
+        self,
+        conversation_id: str,
+        *,
+        message_role: MessageRoleFilter = (),
+        message_type: MessageTypeName | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> tuple[list[Message], int]:
+        resolved = await self.repository.resolve_id(conversation_id)
+        if not resolved:
+            return [], 0
+        return await self.repository.get_messages_paginated(
+            str(resolved),
+            message_role=message_role,
+            message_type=message_type,
+            limit=limit,
+            offset=offset,
+        )
+
+    async def get_raw_records_for_conversation(
+        self,
+        conversation_id: str,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> tuple[list[RawConversationRecord], int]:
+        resolved = await self.repository.resolve_id(conversation_id)
+        if not resolved:
+            return [], 0
+        return await self.repository.get_raw_records_for_conversation(
+            str(resolved),
+            limit=limit,
+            offset=offset,
+        )
 
     async def get_stats_by(self, group_by: str = "provider") -> dict[str, int]:
         return await self.repository.get_stats_by(group_by)

@@ -11,7 +11,7 @@ import aiosqlite
 from polylogue.storage.backends.queries import publications as publications_q
 from polylogue.storage.backends.queries import raw as raw_queries
 from polylogue.storage.backends.queries import runs as runs_q
-from polylogue.storage.runtime import PublicationRecord, RunRecord
+from polylogue.storage.runtime import PublicationRecord, RawConversationRecord, RunRecord
 
 
 class SQLiteQueryStoreMaintenanceMixin:
@@ -82,6 +82,21 @@ class SQLiteQueryStoreMaintenanceMixin:
     async def get_known_source_mtimes(self) -> dict[str, str]:
         async with self._connection_factory() as conn:
             return await raw_queries.get_known_source_mtimes(conn)
+
+    async def get_raw_records_for_conversation(
+        self,
+        conversation_id: str,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> tuple[list[RawConversationRecord], int]:
+        async with self._connection_factory() as conn:
+            return await raw_queries.get_raw_records_for_conversation(
+                conn,
+                conversation_id,
+                limit=limit,
+                offset=offset,
+            )
 
     async def get_latest_run(self) -> RunRecord | None:
         async with self._connection_factory() as conn:

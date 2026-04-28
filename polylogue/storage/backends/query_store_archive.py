@@ -13,6 +13,7 @@ from polylogue.storage.backends.queries import attachments as attachments_q
 from polylogue.storage.backends.queries import conversations as conversations_q
 from polylogue.storage.backends.queries import messages as messages_q
 from polylogue.storage.backends.queries import stats as stats_q
+from polylogue.storage.backends.queries.messages import MessageTypeName
 from polylogue.storage.backends.queries.stats import (
     AggregateMessageStats,
     ProviderConversationCountRow,
@@ -125,6 +126,32 @@ class SQLiteQueryStoreArchiveMixin:
             message.model_copy(update={"content_blocks": blocks_by_message.get(message.message_id, [])})
             for message in messages
         ]
+
+    async def get_messages_paginated(
+        self,
+        conversation_id: str,
+        *,
+        message_role: MessageRoleFilter = (),
+        message_type: MessageTypeName | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> tuple[list[MessageRecord], int]:
+        async with self._connection_factory() as conn:
+            messages, total = await messages_q.get_messages_paginated(
+                conn,
+                conversation_id,
+                message_role=message_role,
+                message_type=message_type,
+                limit=limit,
+                offset=offset,
+            )
+        if not messages:
+            return [], total
+        blocks_by_message = await self.get_content_blocks([message.message_id for message in messages])
+        return [
+            message.model_copy(update={"content_blocks": blocks_by_message.get(message.message_id, [])})
+            for message in messages
+        ], total
 
     async def get_messages_batch(self, conversation_ids: list[str]) -> dict[str, list[MessageRecord]]:
         if not conversation_ids:

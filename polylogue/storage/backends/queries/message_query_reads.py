@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from typing import Literal
 
 import aiosqlite
 
@@ -10,6 +11,13 @@ from polylogue.lib.message.roles import MessageRoleFilter, message_role_sql_valu
 from polylogue.lib.roles import Role
 from polylogue.storage.backends.queries.mappers import _row_to_message
 from polylogue.storage.runtime import MessageRecord
+
+MessageTypeName = Literal["summary", "tool_use", "tool_result", "thinking"]
+
+_MESSAGE_TYPE_SQL_COLUMNS: dict[str, str] = {
+    "tool_use": "has_tool_use",
+    "thinking": "has_thinking",
+}
 
 
 async def get_messages(
@@ -48,6 +56,88 @@ async def get_messages_batch(
         all_messages.append(msg)
 
     return result, all_messages
+
+
+async def get_messages_paginated(
+    conn: aiosqlite.Connection,
+    conversation_id: str,
+    *,
+    message_role: MessageRoleFilter = (),
+    message_type: MessageTypeName | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> tuple[list[MessageRecord], int]:
+    """Return paginated messages for a conversation with optional filters.
+
+    Returns (messages, total_count) where total_count is the unfiltered
+    count of messages matching the SQL-level filters (before limit/offset).
+    """
+    query = "SELECT * FROM messages WHERE conversation_id = ?"
+    count_query = "SELECT COUNT(*) FROM messages WHERE conversation_id = ?"
+    params: list[str | int] = [conversation_id]
+
+    role_values = message_role_sql_values(message_role)
+    if role_values:
+        placeholders = ",".join("?" for _ in role_values)
+        query += f" AND role IN ({placeholders})"
+        count_query += f" AND role IN ({placeholders})"
+        params.extend(role_values)
+
+    # SQL-pushable message_type filters
+    if message_type and message_type in _MESSAGE_TYPE_SQL_COLUMNS:
+        col = _MESSAGE_TYPE_SQL_COLUMNS[message_type]
+        query += f" AND {col} = 1"
+        count_query += f" AND {col} = 1"
+
+    # Get total count before pagination
+    count_cursor = await conn.execute(count_query, tuple(params))
+    total = (await count_cursor.fetchone())[0]
+
+    query += " ORDER BY (sort_key IS NULL), sort_key, message_id"
+    query += " LIMIT ? OFFSET ?"
+    params.extend([limit, offset])
+
+    cursor = await conn.execute(query, tuple(params))
+    rows = await cursor.fetchall()
+    messages = [_row_to_message(row) for row in rows]
+
+    # Post-filter for types that need content_blocks inspection
+    if message_type and message_type not in _MESSAGE_TYPE_SQL_COLUMNS and messages:
+        messages = await _post_filter_by_message_type(conn, messages, message_type)
+
+    return messages, total
+
+
+async def _post_filter_by_message_type(
+    conn: aiosqlite.Connection,
+    messages: list[MessageRecord],
+    message_type: str,
+) -> list[MessageRecord]:
+    """Filter messages by content-block-derived type (tool_result, summary)."""
+    message_ids = [m.message_id for m in messages]
+    placeholders = ",".join("?" for _ in message_ids)
+    cursor = await conn.execute(
+        f"SELECT message_id, type FROM content_blocks WHERE message_id IN ({placeholders})",
+        message_ids,
+    )
+    rows = await cursor.fetchall()
+
+    blocks_by_message: dict[str, list[str]] = {}
+    for row in rows:
+        blocks_by_message.setdefault(row["message_id"], []).append(row["type"])
+
+    if message_type == "tool_result":
+        return [m for m in messages if "tool_result" in blocks_by_message.get(m.message_id, [])]
+    if message_type == "summary":
+        # Summary messages: role is system, all content blocks are text
+        # (Claude Code type=summary records become system-role messages)
+        return [
+            m
+            for m in messages
+            if m.role == "system" and all(t in ("text",) for t in blocks_by_message.get(m.message_id, ["text"]))
+        ]
+
+    return messages
 
 
 async def iter_messages(
@@ -102,4 +192,4 @@ async def iter_messages(
             break
 
 
-__all__ = ["get_messages", "get_messages_batch", "iter_messages"]
+__all__ = ["get_messages", "get_messages_batch", "get_messages_paginated", "iter_messages"]

@@ -203,5 +203,14 @@ class ConversationFilterBuilderMixin:
     def has_branches(self, value: bool = True) -> Self:
         return _replace_plan(self, has_branches=value)
 
+    def since_session(self, conversation_id: str) -> Self:
+        return _replace_plan(self, since_session_id=conversation_id)
+
+    def message_type(self, value: str) -> Self:
+        return _replace_plan(self, message_type=value)
+
+    def offset(self, n: int) -> Self:
+        return _replace_plan(self, offset=n)
+
 
 __all__ = ["ConversationFilterBuilderMixin"]

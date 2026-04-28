@@ -15,10 +15,10 @@ Current registry snapshot:
 - mutation campaigns: `19`
 - benchmark campaigns: `3`
 - synthetic benchmark campaigns: `6`
-- scenario projections: `252`
+- scenario projections: `254`
 - inferred corpus scenarios: `5`
   - benchmark-campaign: `3`
-  - exercise: `146`
+  - exercise: `148`
   - inferred-corpus-scenario: `5`
   - mutation-campaign: `19`
   - synthetic-benchmark: `6`
@@ -337,6 +337,7 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `exercise` | `help-list` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | list help |
 | `exercise` | `help-main` | — | — | — | — | — | Main help screen |
 | `exercise` | `help-mcp` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | mcp help |
+| `exercise` | `help-messages` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | messages help |
 | `exercise` | `help-neighbors` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | neighbors help |
 | `exercise` | `help-open` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | open help |
 | `exercise` | `help-products` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | products help |
@@ -354,6 +355,7 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `exercise` | `help-products-threads` | `work-thread-query-loop` | `work_thread_rows`<br>`work_thread_fts`<br>`work_thread_results` | `cli.help`<br>`query-work-threads` | — | `generated`<br>`help`<br>`structural` | products threads help |
 | `exercise` | `help-products-week-summaries` | `week-summary-query-loop` | `day_session_summary_rows`<br>`week_session_summary_results` | `cli.help`<br>`query-week-session-summaries` | — | `generated`<br>`help`<br>`structural` | products week-summaries help |
 | `exercise` | `help-products-work-events` | `session-work-event-query-loop` | `session_work_event_rows`<br>`session_work_event_fts`<br>`session_work_event_results` | `cli.help`<br>`query-session-work-events` | — | `generated`<br>`help`<br>`structural` | products work-events help |
+| `exercise` | `help-raw` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | raw help |
 | `exercise` | `help-reset` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | reset help |
 | `exercise` | `help-resume` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | resume help |
 | `exercise` | `help-run` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | run help |

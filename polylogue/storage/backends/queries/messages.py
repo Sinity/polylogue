@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from polylogue.storage.backends.queries.message_query_reads import (
+    MessageTypeName,
     get_messages,
     get_messages_batch,
+    get_messages_paginated,
     iter_messages,
 )
 from polylogue.storage.backends.queries.message_query_stats import (
@@ -20,8 +22,10 @@ __all__ = [
     "topo_sort_messages",
     "get_messages",
     "get_messages_batch",
+    "get_messages_paginated",
     "save_messages",
     "iter_messages",
     "get_conversation_stats",
     "get_message_counts_batch",
+    "MessageTypeName",
 ]

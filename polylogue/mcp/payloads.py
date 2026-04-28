@@ -39,6 +39,7 @@ if TYPE_CHECKING:
     from polylogue.lib.search_hits import ConversationSearchHit
     from polylogue.lib.stats import ArchiveStats
     from polylogue.readiness import ReadinessCheck, ReadinessReport
+    from polylogue.storage.runtime import RawConversationRecord
 
 TRoot = TypeVar("TRoot")
 
@@ -259,6 +260,58 @@ class MCPStatsByPayload(MCPRootPayload[dict[str, int]]):
     root: dict[str, int]
 
 
+class MCPMessagesListPayload(SurfacePayloadModel):
+    """Paginated message list response for get_messages tool."""
+
+    conversation_id: str
+    messages: tuple[MCPMessagePayload, ...]
+    total: int
+    limit: int
+    offset: int
+
+
+class MCPRawRecordPayload(SurfacePayloadModel):
+    """One raw conversation record for raw_records tool."""
+
+    raw_id: str
+    provider_name: str
+    source_name: str | None = None
+    source_path: str
+    blob_size: int
+    acquired_at: str
+    parsed_at: str | None = None
+    parse_error: str | None = None
+    validated_at: str | None = None
+    validation_status: str | None = None
+    validation_error: str | None = None
+
+    @classmethod
+    def from_record(cls, record: RawConversationRecord) -> MCPRawRecordPayload:
+        return cls(
+            raw_id=record.raw_id,
+            provider_name=record.provider_name,
+            source_name=record.source_name,
+            source_path=record.source_path,
+            blob_size=record.blob_size,
+            acquired_at=record.acquired_at,
+            parsed_at=record.parsed_at,
+            parse_error=record.parse_error,
+            validated_at=record.validated_at,
+            validation_status=str(record.validation_status) if record.validation_status else None,
+            validation_error=record.validation_error,
+        )
+
+
+class MCPRawRecordsListPayload(SurfacePayloadModel):
+    """Paginated raw records list response for raw_records tool."""
+
+    conversation_id: str
+    raw_records: tuple[MCPRawRecordPayload, ...]
+    total: int
+    limit: int
+    offset: int
+
+
 class MCPReadinessCheckPayload(SurfacePayloadModel):
     name: str
     status: str
@@ -329,14 +382,17 @@ __all__ = [
     "MCPConversationSummaryPayload",
     "MCPErrorPayload",
     "MCPFencedCodeBlock",
-    "MCPReadinessCheckPayload",
-    "MCPReadinessReportPayload",
     "MCPMessagePayload",
+    "MCPMessagesListPayload",
     "MCPMetadataPayload",
-    "MCPRootPayload",
     "MCPMutationStatusPayload",
     "MCPQueryMissDiagnosticsPayload",
     "MCPQueryMissReasonPayload",
+    "MCPRawRecordPayload",
+    "MCPRawRecordsListPayload",
+    "MCPReadinessCheckPayload",
+    "MCPReadinessReportPayload",
+    "MCPRootPayload",
     "MCPStatsByPayload",
     "MCPTagCountsPayload",
     "conversation_neighbor_candidate_list_payload",

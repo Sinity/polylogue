@@ -51,6 +51,9 @@ class MCPConversationQueryRequest:
     has_thinking: bool = False
     min_messages: int | None = None
     min_words: int | None = None
+    since_session: str | None = None
+    message_type: str | None = None
+    offset: int = 0
     limit: int = 10
 
     def build_spec(self, clamp_limit: Callable[[int | object], int]) -> ConversationQuerySpec:
@@ -76,6 +79,9 @@ class MCPConversationQueryRequest:
             has_thinking=self.has_thinking,
             min_messages=self.min_messages,
             min_words=self.min_words,
+            since_session=self.since_session,
+            message_type=self.message_type,
+            offset=self.offset,
         )
 
 

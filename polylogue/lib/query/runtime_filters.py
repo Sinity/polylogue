@@ -154,6 +154,9 @@ def apply_full_filters(
     if plan.has_branches is False:
         results = [item for item in results if not conversation_has_branches(item)]
 
+    if plan.since_session_id:
+        results = _apply_since_session(results, plan.since_session_id)
+
     for predicate in plan.predicates:
         results = [conversation for conversation in results if predicate(conversation)]
 
@@ -167,6 +170,53 @@ def apply_full_filters(
         results = [conversation for conversation in results if matches_action_text_terms(plan, conversation)]
     if plan.tool_terms or plan.excluded_tool_terms:
         results = [conversation for conversation in results if matches_tool_terms(plan, conversation)]
+
+    return results
+
+
+def _apply_since_session(
+    conversations: list[Conversation],
+    reference_id: str,
+) -> list[Conversation]:
+    """Filter to conversations in same cwd after the reference session's last message."""
+    reference_conv = None
+    for c in conversations:
+        if str(c.id) == reference_id or str(c.id).startswith(reference_id):
+            reference_conv = c
+            break
+
+    if reference_conv is None:
+        return conversations
+
+    ref_cwds: list[str] = []
+    ref_meta = getattr(reference_conv, "provider_meta", None) or {}
+    if isinstance(ref_meta, dict):
+        wds = ref_meta.get("working_directories") or []
+        ref_cwds = [str(wd) for wd in wds if isinstance(wd, str) and wd]
+
+    last_ts = reference_conv.updated_at
+    if reference_conv.messages:
+        last_msg_ts = max(
+            (m.timestamp for m in reference_conv.messages if m.timestamp),
+            default=None,
+        )
+        if last_msg_ts:
+            last_ts = last_msg_ts
+
+    results: list[Conversation] = []
+    for c in conversations:
+        if str(c.id) == str(reference_conv.id):
+            continue
+        if last_ts and c.updated_at and c.updated_at <= last_ts:
+            continue
+        if ref_cwds:
+            c_meta = getattr(c, "provider_meta", None) or {}
+            if isinstance(c_meta, dict):
+                c_wds = c_meta.get("working_directories") or []
+                c_wd_strs = [str(wd) for wd in c_wds if isinstance(wd, str) and wd]
+                if c_wd_strs and not any(str(cwd).startswith(ref_cwd) for cwd in c_wd_strs for ref_cwd in ref_cwds):
+                    continue
+        results.append(c)
 
     return results
 

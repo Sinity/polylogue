@@ -52,6 +52,42 @@ def register_resources(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         tags = await hooks.get_tag_store().list_tags()
         return hooks.json_payload(MCPTagCountsPayload(root=tags))
 
+    @mcp.resource("polylogue://messages/{conv_id}")
+    async def messages_resource(conv_id: str) -> str:
+        ops = hooks.get_archive_ops()
+        try:
+            messages, total = await ops.get_messages_paginated(conv_id, limit=20, offset=0)
+        except Exception:
+            return hooks.error_json(f"Conversation not found: {conv_id}")
+        import json as _json
+
+        return _json.dumps(
+            {
+                "conversation_id": conv_id,
+                "messages": [
+                    {
+                        "id": str(getattr(m, "id", "")),
+                        "role": str(getattr(m, "role", "")),
+                        "text": (getattr(m, "text", None) or "")[:200],
+                    }
+                    for m in messages
+                ],
+                "total": total,
+            },
+            indent=2,
+        )
+
+    @mcp.resource("polylogue://session-tree/{conv_id}")
+    async def session_tree_resource(conv_id: str) -> str:
+        tree = await hooks.get_archive_ops().get_session_tree(conv_id)
+        return hooks.json_payload(conversation_summary_list_payload(tree))
+
+    @mcp.resource("polylogue://provider/{name}/recent")
+    async def provider_recent_resource(name: str) -> str:
+        spec = MCPConversationQueryRequest(provider=name, sort="date", limit=10).build_spec(hooks.clamp_limit)
+        convs = await spec.list(hooks.get_query_store())
+        return hooks.json_payload(conversation_summary_list_payload(convs))
+
     @mcp.resource("polylogue://readiness")
     def readiness_resource() -> str:
         try:

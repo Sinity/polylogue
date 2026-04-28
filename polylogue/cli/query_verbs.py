@@ -12,7 +12,7 @@ from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shell_completion_values import complete_open_targets
 from polylogue.cli.types import AppEnv
 
-VERB_NAMES = frozenset({"list", "count", "stats", "open", "show", "bulk-export", "delete"})
+VERB_NAMES = frozenset({"list", "count", "stats", "open", "show", "bulk-export", "delete", "messages", "raw"})
 
 _BULK_EXPORT_FORMATS = ("jsonl", "json", "markdown", "yaml", "plaintext", "html", "obsidian", "org")
 
@@ -174,7 +174,119 @@ def _execute_query_verb(
     execute_query_request(env, request)
 
 
-QUERY_VERBS = (list_verb, count_verb, stats_verb, open_verb, show_verb, bulk_export_verb, delete_verb)
+@click.command("messages")
+@click.argument("conversation_id", required=False)
+@click.option("--message-role", "-r", "message_role", multiple=True, help="Filter by message role")
+@click.option(
+    "--message-type",
+    "message_type",
+    type=click.Choice(["summary", "tool_use", "tool_result", "thinking"]),
+    help="Filter by message content type",
+)
+@click.option("--limit", "-n", type=int, default=50, help="Max messages to return")
+@click.option("--offset", type=int, default=0, help="Offset for pagination")
+@click.option("--no-code-blocks", is_flag=True, help="Exclude code blocks")
+@click.option("--no-tool-calls", is_flag=True, help="Exclude tool calls")
+@click.option("--no-tool-outputs", is_flag=True, help="Exclude tool outputs")
+@click.option("--no-file-reads", is_flag=True, help="Exclude file reads")
+@click.option("--prose-only", is_flag=True, help="Show only prose text")
+@click.option(
+    "--format", "-f", "output_format", type=click.Choice(["markdown", "json", "plaintext"]), help="Output format"
+)
+@click.pass_context
+def messages_verb(
+    ctx: click.Context,
+    conversation_id: str | None,
+    message_role: tuple[str, ...],
+    message_type: str | None,
+    limit: int,
+    offset: int,
+    no_code_blocks: bool,
+    no_tool_calls: bool,
+    no_tool_outputs: bool,
+    no_file_reads: bool,
+    prose_only: bool,
+    output_format: str | None,
+) -> None:
+    """Show paginated messages for a conversation."""
+    from polylogue.cli.messages import run_messages
+
+    env: AppEnv = ctx.obj
+    if conversation_id is None:
+        request = _parent_request(ctx)
+        params = dict(request.params)
+        conversation_id = params.get("conv_id")
+        if not conversation_id:
+            raise click.UsageError("messages requires a conversation ID (use --id or pass as argument)")
+    else:
+        request = _parent_request(ctx)
+
+    run_messages(
+        env,
+        request,
+        conversation_id=str(conversation_id),
+        message_role=message_role,
+        message_type=message_type,
+        limit=limit,
+        offset=offset,
+        no_code_blocks=no_code_blocks,
+        no_tool_calls=no_tool_calls,
+        no_tool_outputs=no_tool_outputs,
+        no_file_reads=no_file_reads,
+        prose_only=prose_only,
+        output_format=output_format,
+    )
+
+
+@click.command("raw")
+@click.argument("conversation_id", required=False)
+@click.option("--limit", "-n", type=int, default=50, help="Max records to return")
+@click.option("--offset", type=int, default=0, help="Offset for pagination")
+@click.option(
+    "--format", "-f", "output_format", type=click.Choice(["json", "yaml"]), default="json", help="Output format"
+)
+@click.pass_context
+def raw_verb(
+    ctx: click.Context,
+    conversation_id: str | None,
+    limit: int,
+    offset: int,
+    output_format: str,
+) -> None:
+    """Show raw provider records for a conversation."""
+    from polylogue.cli.messages import run_raw
+
+    env: AppEnv = ctx.obj
+    if conversation_id is None:
+        request = _parent_request(ctx)
+        params = dict(request.params)
+        conversation_id = params.get("conv_id")
+        if not conversation_id:
+            raise click.UsageError("raw requires a conversation ID (use --id or pass as argument)")
+    else:
+        request = _parent_request(ctx)
+
+    run_raw(
+        env,
+        request,
+        conversation_id=str(conversation_id),
+        limit=limit,
+        offset=offset,
+        output_format=output_format,
+    )
+
+
+QUERY_VERBS = (
+    list_verb,
+    count_verb,
+    stats_verb,
+    open_verb,
+    show_verb,
+    bulk_export_verb,
+    delete_verb,
+    messages_verb,
+    raw_verb,
+)
 
 
 __all__ = [

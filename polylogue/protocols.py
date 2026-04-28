@@ -35,6 +35,7 @@ if TYPE_CHECKING:
     from polylogue.lib.stats import ArchiveStats
     from polylogue.storage.action_events.artifacts import ActionEventArtifactState
     from polylogue.storage.archive_views import ConversationRenderProjection
+    from polylogue.storage.backends.queries.messages import MessageTypeName
     from polylogue.storage.backends.queries.stats import AggregateMessageStats
     from polylogue.storage.query_models import ConversationRecordQuery
     from polylogue.storage.runtime import ConversationRecord
@@ -269,6 +270,16 @@ class ArchiveMessageQueryStore(Protocol):
     """Low-level archive/message query band used by CLI output and stats helpers."""
 
     async def get_messages(self, conversation_id: str) -> list[MessageRecord]: ...
+
+    async def get_messages_paginated(
+        self,
+        conversation_id: str,
+        *,
+        message_role: MessageRoleFilter = (),
+        message_type: MessageTypeName | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> tuple[list[MessageRecord], int]: ...
 
     async def get_conversation_stats(self, conversation_id: str) -> dict[str, int]: ...
 

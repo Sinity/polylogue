@@ -20,6 +20,7 @@ from polylogue.storage.repository.repository_contracts import RepositoryBackendP
 from polylogue.storage.runtime import AttachmentRecord, ConversationRecord, MessageRecord
 
 if TYPE_CHECKING:
+    from polylogue.storage.backends.queries.messages import MessageTypeName
     from polylogue.storage.backends.query_store import SQLiteQueryStore
     from polylogue.types import ConversationId
 
@@ -70,6 +71,27 @@ class RepositoryArchiveConversationMixin:
 
     async def get_messages(self, conversation_id: str) -> list[MessageRecord]:
         return await self.queries.get_messages(conversation_id)
+
+    async def get_messages_paginated(
+        self,
+        conversation_id: str,
+        *,
+        message_role: MessageRoleFilter = (),
+        message_type: MessageTypeName | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> tuple[list[Message], int]:
+        conv_record = await self.queries.get_conversation(conversation_id)
+        provider_name = conv_record.provider_name if conv_record else None
+        records, total = await self.queries.get_messages_paginated(
+            conversation_id,
+            message_role=message_role,
+            message_type=message_type,
+            limit=limit,
+            offset=offset,
+        )
+        messages = [message_from_record(r, attachments=[], provider=provider_name) for r in records]
+        return messages, total
 
     async def get_conversations_batch(self, ids: list[str]) -> list[ConversationRecord]:
         return await self.queries.get_conversations_batch(ids)
