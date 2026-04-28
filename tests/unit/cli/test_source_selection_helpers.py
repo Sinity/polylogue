@@ -14,7 +14,7 @@ import pytest
 from typing_extensions import TypedDict
 
 from polylogue.cli import helpers
-from polylogue.cli.types import AppEnv
+from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config, Source
 from polylogue.services import build_runtime_services
 from polylogue.ui import UI, ConsoleLike
@@ -424,7 +424,7 @@ def _run_summary(
     archive_stats: SimpleNamespace | None = None,
     analytics_error: Exception | None = None,
 ) -> SummaryRunResult:
-    from polylogue.cli.helpers import print_summary
+    from polylogue.cli.shared.helpers import print_summary
 
     env, buffer, ui = _make_env(config, plain=plain)
     total_conversations = sum(count for _, count in counts or [])
@@ -446,12 +446,12 @@ def _run_summary(
 
     with (
         patch.object(env.repository, "get_archive_stats", new=AsyncMock(return_value=archive_stats)),
-        patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=last_run),
-        patch("polylogue.cli.helpers.quick_readiness_summary", return_value=quick_health) as mock_quick,
-        patch("polylogue.cli.helpers.get_readiness", return_value=health) as mock_get_readiness,
-        patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"),
-        patch("polylogue.cli.helpers.list_provider_analytics_products", metrics_mock),
-        patch("polylogue.cli.helpers.get_provider_counts", counts_mock),
+        patch("polylogue.cli.shared.helpers.latest_run", new_callable=AsyncMock, return_value=last_run),
+        patch("polylogue.cli.shared.helpers.quick_readiness_summary", return_value=quick_health) as mock_quick,
+        patch("polylogue.cli.shared.helpers.get_readiness", return_value=health) as mock_get_readiness,
+        patch("polylogue.cli.shared.helpers.format_sources_summary", return_value="inbox"),
+        patch("polylogue.cli.shared.helpers.list_provider_analytics_products", metrics_mock),
+        patch("polylogue.cli.shared.helpers.get_provider_counts", counts_mock),
     ):
         print_summary(env, verbose=verbose)
 

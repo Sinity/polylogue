@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import click
 
-from polylogue.cli.types import AppEnv
+from polylogue.cli.shared.types import AppEnv
 
 
 @click.command("mcp")

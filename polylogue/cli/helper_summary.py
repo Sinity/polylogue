@@ -7,8 +7,8 @@ from pathlib import Path
 from typing import Protocol
 
 from polylogue.api.sync.bridge import run_coroutine_sync
-from polylogue.cli.helper_support import load_effective_config
-from polylogue.cli.types import AppEnv
+from polylogue.cli.shared.helper_support import load_effective_config
+from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config, Source
 from polylogue.logging import get_logger
 from polylogue.products.archive import ProviderAnalyticsProduct

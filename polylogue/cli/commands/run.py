@@ -8,12 +8,6 @@ from pathlib import Path
 import click
 
 from polylogue.api.sync.bridge import run_coroutine_sync
-from polylogue.cli.helpers import (
-    complete_run_source_names,
-    fail,
-    maybe_prompt_sources,
-    resolve_sources,
-)
 from polylogue.cli.run_workflow import (
     WatchDisplayObserver as _WatchDisplayObserver,
 )
@@ -33,7 +27,13 @@ from polylogue.cli.run_workflow import (
 from polylogue.cli.run_workflow import (
     run_with_progress as _run_with_progress,
 )
-from polylogue.cli.types import AppEnv
+from polylogue.cli.shared.helpers import (
+    complete_run_source_names,
+    fail,
+    maybe_prompt_sources,
+    resolve_sources,
+)
+from polylogue.cli.shared.types import AppEnv
 from polylogue.pipeline.observers import (
     CompositeObserver,
     ExecObserver,

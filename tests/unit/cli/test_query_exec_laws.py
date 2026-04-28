@@ -42,7 +42,7 @@ from polylogue.cli.query_output import (
     output_stats_by_summaries,
     output_stats_sql,
 )
-from polylogue.cli.types import AppEnv
+from polylogue.cli.shared.types import AppEnv
 from polylogue.lib.json import JSONDocument
 from polylogue.lib.message.roles import MessageRoleFilter
 from polylogue.lib.models import Conversation
@@ -1193,7 +1193,7 @@ def test_async_execute_query_action_routing_contract(case: str, expected_helper:
     selection.build_filter.return_value = filter_chain
 
     with (
-        patch("polylogue.cli.helpers.load_effective_config", return_value=MagicMock()),
+        patch("polylogue.cli.shared.helpers.load_effective_config", return_value=MagicMock()),
         patch("polylogue.storage.search_providers.create_vector_provider", return_value=None),
         patch("polylogue.cli.query.build_query_execution_plan", return_value=plan),
         patch("click.echo") as mock_echo,
@@ -1316,7 +1316,7 @@ def test_async_execute_query_summary_list_uses_evidence_hits_for_search_contract
     repo.search_summary_hits = AsyncMock(return_value=[hit])
 
     with (
-        patch("polylogue.cli.helpers.load_effective_config", return_value=MagicMock()),
+        patch("polylogue.cli.shared.helpers.load_effective_config", return_value=MagicMock()),
         patch("polylogue.storage.search_providers.create_vector_provider", return_value=None),
         patch("polylogue.cli.query.build_query_execution_plan", return_value=plan),
         patch("polylogue.cli.query_output.output_search_hits", new_callable=AsyncMock) as mock_output_search_hits,
@@ -1341,7 +1341,7 @@ def test_async_execute_query_open_falls_back_to_full_results_without_summaries_c
     selection.build_filter.return_value = filter_chain
 
     with (
-        patch("polylogue.cli.helpers.load_effective_config", return_value=MagicMock()),
+        patch("polylogue.cli.shared.helpers.load_effective_config", return_value=MagicMock()),
         patch("polylogue.storage.search_providers.create_vector_provider", return_value=None),
         patch("polylogue.cli.query.build_query_execution_plan", return_value=plan),
         patch("polylogue.cli.query_output._open_result") as mock_open_result,
@@ -1364,7 +1364,7 @@ def test_async_execute_query_stats_by_falls_back_to_full_results_without_summari
     selection.build_filter.return_value = filter_chain
 
     with (
-        patch("polylogue.cli.helpers.load_effective_config", return_value=MagicMock()),
+        patch("polylogue.cli.shared.helpers.load_effective_config", return_value=MagicMock()),
         patch("polylogue.storage.search_providers.create_vector_provider", return_value=None),
         patch("polylogue.cli.query.build_query_execution_plan", return_value=plan),
         patch("polylogue.cli.query_output._output_stats_by") as mock_output_stats_by,
@@ -1390,7 +1390,7 @@ def test_async_execute_query_semantic_stats_by_uses_summary_batches_contract() -
     selection.build_filter.return_value = filter_chain
 
     with (
-        patch("polylogue.cli.helpers.load_effective_config", return_value=MagicMock()),
+        patch("polylogue.cli.shared.helpers.load_effective_config", return_value=MagicMock()),
         patch("polylogue.storage.search_providers.create_vector_provider", return_value=None),
         patch("polylogue.cli.query.build_query_execution_plan", return_value=plan),
         patch(
@@ -1417,7 +1417,7 @@ def test_async_execute_query_semantic_stats_by_falls_back_without_summaries_cont
     selection.build_filter.return_value = filter_chain
 
     with (
-        patch("polylogue.cli.helpers.load_effective_config", return_value=MagicMock()),
+        patch("polylogue.cli.shared.helpers.load_effective_config", return_value=MagicMock()),
         patch("polylogue.storage.search_providers.create_vector_provider", return_value=None),
         patch("polylogue.cli.query.build_query_execution_plan", return_value=plan),
         patch(
@@ -1444,7 +1444,7 @@ def test_async_execute_query_profile_stats_by_uses_summary_batches_contract() ->
     selection.build_filter.return_value = filter_chain
 
     with (
-        patch("polylogue.cli.helpers.load_effective_config", return_value=MagicMock()),
+        patch("polylogue.cli.shared.helpers.load_effective_config", return_value=MagicMock()),
         patch("polylogue.storage.search_providers.create_vector_provider", return_value=None),
         patch("polylogue.cli.query.build_query_execution_plan", return_value=plan),
         patch(
@@ -1470,7 +1470,7 @@ def test_async_execute_query_summary_list_no_results_contract() -> None:
     selection.build_filter.return_value = filter_chain
 
     with (
-        patch("polylogue.cli.helpers.load_effective_config", return_value=MagicMock()),
+        patch("polylogue.cli.shared.helpers.load_effective_config", return_value=MagicMock()),
         patch("polylogue.storage.search_providers.create_vector_provider", return_value=None),
         patch("polylogue.cli.query.build_query_execution_plan", return_value=plan),
         patch("polylogue.cli.query.no_results", side_effect=SystemExit(2)) as mock_no_results,
@@ -1490,7 +1490,7 @@ def test_async_execute_query_query_spec_error_contract() -> None:
     selection.build_filter.side_effect = QuerySpecError("since", "not-a-date")
 
     with (
-        patch("polylogue.cli.helpers.load_effective_config", return_value=MagicMock()),
+        patch("polylogue.cli.shared.helpers.load_effective_config", return_value=MagicMock()),
         patch("polylogue.storage.search_providers.create_vector_provider", return_value=None),
         patch("polylogue.cli.query.build_query_execution_plan", return_value=plan),
         patch("click.echo") as mock_echo,
@@ -1523,7 +1523,7 @@ def test_async_execute_query_show_projects_results_before_output_contract() -> N
     selection.build_filter.return_value = filter_chain
 
     with (
-        patch("polylogue.cli.helpers.load_effective_config", return_value=MagicMock()),
+        patch("polylogue.cli.shared.helpers.load_effective_config", return_value=MagicMock()),
         patch("polylogue.storage.search_providers.create_vector_provider", return_value=None),
         patch("polylogue.cli.query.build_query_execution_plan", return_value=plan),
         patch("polylogue.cli.query_output.output_results") as mock_output_results,
@@ -1555,7 +1555,7 @@ def test_async_execute_query_slow_human_query_emits_progress_note() -> None:
     selection.build_filter.return_value = filter_chain
 
     with (
-        patch("polylogue.cli.helpers.load_effective_config", return_value=MagicMock()),
+        patch("polylogue.cli.shared.helpers.load_effective_config", return_value=MagicMock()),
         patch("polylogue.storage.search_providers.create_vector_provider", return_value=None),
         patch("polylogue.cli.query.build_query_execution_plan", return_value=plan),
         patch("polylogue.cli.query_progress.SLOW_QUERY_NOTICE_SECONDS", 0.001),
@@ -1593,7 +1593,7 @@ def test_async_execute_query_slow_json_query_suppresses_progress_note() -> None:
     selection.build_filter.return_value = filter_chain
 
     with (
-        patch("polylogue.cli.helpers.load_effective_config", return_value=MagicMock()),
+        patch("polylogue.cli.shared.helpers.load_effective_config", return_value=MagicMock()),
         patch("polylogue.storage.search_providers.create_vector_provider", return_value=None),
         patch("polylogue.cli.query.build_query_execution_plan", return_value=plan),
         patch("polylogue.cli.query_progress.SLOW_QUERY_NOTICE_SECONDS", 0.001),

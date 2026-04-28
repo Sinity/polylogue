@@ -47,7 +47,7 @@ from polylogue.surfaces.payloads import ConversationListRowPayload, Conversation
 logger = get_logger(__name__)
 
 if TYPE_CHECKING:
-    from polylogue.cli.types import AppEnv
+    from polylogue.cli.shared.types import AppEnv
     from polylogue.lib.models import Conversation, ConversationSummary, Message
     from polylogue.lib.query.miss_diagnostics import QueryMissDiagnostics
     from polylogue.lib.query.spec import ConversationQuerySpec
@@ -284,7 +284,7 @@ def open_result(
 
     conv = results[0]
 
-    from polylogue.cli.helpers import latest_render_path, load_effective_config
+    from polylogue.cli.shared.helpers import latest_render_path, load_effective_config
 
     try:
         config = load_effective_config(env)
