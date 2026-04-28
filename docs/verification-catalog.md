@@ -8,10 +8,10 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 
 ## Snapshot
 
-- subjects: `247`
+- subjects: `249`
 - claims: `21`
 - runner bindings: `21`
-- proof obligations: `354`
+- proof obligations: `360`
 
 ## Quality Checks
 
@@ -31,7 +31,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | --- | ---: |
 | `archive.query_law` | 1 |
 | `artifact.path` | 27 |
-| `cli.command` | 53 |
+| `cli.command` | 55 |
 | `cli.json_command` | 2 |
 | `diagnostic.observable` | 1 |
 | `error.surface` | 2 |
@@ -62,6 +62,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `polylogue export` | `polylogue/cli/commands/export.py:29` `polylogue.cli.commands.export.export_command` |
 | `polylogue list` | `polylogue/cli/query_verbs.py:20` `polylogue.cli.query_verbs.list_verb` |
 | `polylogue mcp` | `polylogue/cli/commands/mcp.py:10` `polylogue.cli.commands.mcp.mcp_command` |
+| `polylogue messages` | `polylogue/cli/query_verbs.py:177` `polylogue.cli.query_verbs.messages_verb` |
 | `polylogue neighbors` | `polylogue/cli/commands/neighbors.py:42` `polylogue.cli.commands.neighbors.neighbors_command` |
 | `polylogue open` | `polylogue/cli/query_verbs.py:92` `polylogue.cli.query_verbs.open_verb` |
 | `polylogue products` | `polylogue/cli/commands/products.py:139` `polylogue.cli.commands.products.products_command` |
@@ -79,6 +80,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `polylogue products threads` | `polylogue/cli/commands/products.py:102` `polylogue.cli.commands.products._make_callback.<locals>.callback` |
 | `polylogue products week-summaries` | `polylogue/cli/commands/products.py:102` `polylogue.cli.commands.products._make_callback.<locals>.callback` |
 | `polylogue products work-events` | `polylogue/cli/commands/products.py:102` `polylogue.cli.commands.products._make_callback.<locals>.callback` |
+| `polylogue raw` | `polylogue/cli/query_verbs.py:241` `polylogue.cli.query_verbs.raw_verb` |
 | `polylogue reset` | `polylogue/cli/commands/reset.py:23` `polylogue.cli.commands.reset.reset_command` |
 | `polylogue resume` | `polylogue/cli/commands/resume.py:22` `polylogue.cli.commands.resume.resume_command` |
 | `polylogue run` | `polylogue/cli/commands/run.py:164` `polylogue.cli.commands.run.run_command` |
@@ -190,10 +192,10 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | --- | ---: |
 | `archive.query.provider_filter_consistency` | 1 |
 | `artifact.path.dependency_closure` | 11 |
-| `cli.command.help` | 53 |
+| `cli.command.help` | 55 |
 | `cli.command.json_envelope` | 2 |
-| `cli.command.no_traceback` | 53 |
-| `cli.command.plain_mode` | 53 |
+| `cli.command.no_traceback` | 55 |
+| `cli.command.plain_mode` | 55 |
 | `diagnostic.observable_trace_mapping` | 1 |
 | `error.machine_user_context` | 2 |
 | `generated.scenario.family_registered` | 9 |

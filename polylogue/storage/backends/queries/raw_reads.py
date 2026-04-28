@@ -275,6 +275,44 @@ async def iter_raw_conversations(
             break
 
 
+async def get_raw_records_for_conversation(
+    conn: aiosqlite.Connection,
+    conversation_id: str,
+    *,
+    limit: int = 50,
+    offset: int = 0,
+) -> tuple[list[RawConversationRecord], int]:
+    """Look up raw conversation records for a given conversation ID.
+
+    Resolves the raw_id from the conversations table and queries the
+    raw_conversations table. Returns ([], 0) if the conversation has no
+    associated raw record.
+    """
+    cursor = await conn.execute(
+        "SELECT raw_id FROM conversations WHERE conversation_id = ?",
+        (conversation_id,),
+    )
+    row = await cursor.fetchone()
+    if row is None or row["raw_id"] is None:
+        return [], 0
+
+    raw_id: str = str(row["raw_id"])
+
+    cursor = await conn.execute(
+        "SELECT COUNT(*) as cnt FROM raw_conversations WHERE raw_id = ?",
+        (raw_id,),
+    )
+    total_row = await cursor.fetchone()
+    total = int(total_row["cnt"]) if total_row is not None else 0
+
+    cursor = await conn.execute(
+        "SELECT * FROM raw_conversations WHERE raw_id = ? ORDER BY acquired_at DESC, raw_id ASC LIMIT ? OFFSET ?",
+        (raw_id, limit, offset),
+    )
+    records = [_row_to_raw_conversation(row) for row in await cursor.fetchall()]
+    return records, total
+
+
 async def get_raw_conversation_count(conn: aiosqlite.Connection, provider: str | None = None) -> int:
     query = "SELECT COUNT(*) as cnt FROM raw_conversations"
     params: tuple[str, ...] = ()
@@ -293,6 +331,7 @@ __all__ = [
     "get_raw_conversation_count",
     "get_raw_conversation_states",
     "get_raw_conversations_batch",
+    "get_raw_records_for_conversation",
     "iter_raw_headers",
     "iter_raw_conversations",
     "iter_raw_ids",

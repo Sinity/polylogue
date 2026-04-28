@@ -22,6 +22,7 @@ from polylogue.storage.search.models import ConversationSearchResult
 if TYPE_CHECKING:
     import aiosqlite
 
+    from polylogue.storage.backends.queries.messages import MessageTypeName
     from polylogue.storage.backends.query_store import SQLiteQueryStore
 
 
@@ -64,6 +65,28 @@ class SQLiteArchiveMixin:
     async def get_messages(self, conversation_id: str) -> list[MessageRecord]:
         """Get all messages for a conversation, with content_blocks attached."""
         return await self.queries.get_messages(conversation_id)
+
+    async def get_messages_paginated(
+        self,
+        conversation_id: str,
+        *,
+        message_role: MessageRoleFilter = (),
+        message_type: MessageTypeName | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> tuple[list[MessageRecord], int]:
+        """Get paginated messages for a conversation with optional filters.
+
+        Returns (messages, total_count) where total_count is the count of
+        messages matching the filters before pagination.
+        """
+        return await self.queries.get_messages_paginated(
+            conversation_id,
+            message_role=message_role,
+            message_type=message_type,
+            limit=limit,
+            offset=offset,
+        )
 
     async def get_messages_batch(self, conversation_ids: list[str]) -> dict[str, list[MessageRecord]]:
         """Get messages for multiple conversations in a single query, with content_blocks."""

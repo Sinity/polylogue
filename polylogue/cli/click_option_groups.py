@@ -159,9 +159,21 @@ FILTER_OPTION_DECORATORS: tuple[Callable[[ClickCallable], ClickCallable], ...] =
     click.option("--min-messages", type=int, help="Minimum message count"),
     click.option("--max-messages", type=int, help="Maximum message count"),
     click.option("--min-words", type=int, help="Minimum total word count"),
+    click.option(
+        "--message-type",
+        "message_type",
+        type=click.Choice(["summary", "tool_use", "tool_result", "thinking"]),
+        help="Filter by message content type (summary, tool_use, tool_result, thinking)",
+    ),
+    click.option(
+        "--since-session",
+        "since_session_id",
+        help="Show sessions in same cwd after this conversation ID",
+    ),
     click.option("--since", help="After date (ISO, 'yesterday', 'last week')"),
     click.option("--until", help="Before date"),
     click.option("--limit", "-n", type=int, help="Max results"),
+    click.option("--offset", type=int, default=0, help="Offset for paginated results"),
     click.option("--latest", is_flag=True, help="Most recent (= --sort date --limit 1)"),
     click.option(
         "--sort",

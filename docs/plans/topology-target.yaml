@@ -345,8 +345,12 @@ files:
     target: polylogue/cli/query_stats.py
     owner: stable
   - path: polylogue/cli/query_verbs.py
-    loc: 190
+    loc: 260
     target: polylogue/cli/query_verbs.py
+    owner: stable
+  - path: polylogue/cli/messages.py
+    loc: 135
+    target: polylogue/cli/messages.py
     owner: stable
   - path: polylogue/cli/resume_rendering.py
     loc: 83

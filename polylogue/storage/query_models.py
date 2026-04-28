@@ -74,6 +74,8 @@ class ConversationRecordQuery:
     min_messages: int | None = None
     max_messages: int | None = None
     min_words: int | None = None
+    since_session_id: str | None = None
+    message_type: str | None = None
 
     def with_limit(self, limit: int | None) -> ConversationRecordQuery:
         return replace(self, limit=limit)
