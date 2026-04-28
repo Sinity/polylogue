@@ -45,7 +45,7 @@ exceptions:
     reason: "tracked split into per-provider model contract suites"
 
   - path: tests/unit/storage/test_fts5.py
-    ceiling: 1500
+    ceiling: 1510
     until: "#419"
     reason: "tracked split for FTS escaping vs hybrid ranking"
 

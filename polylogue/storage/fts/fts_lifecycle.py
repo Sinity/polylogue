@@ -65,14 +65,40 @@ def _status_int(status: dict[str, object], key: str) -> int:
 # Trigger suspension for bulk writes
 # ---------------------------------------------------------------------------
 
-_FTS_TRIGGER_NAMES = (
+_MESSAGE_FTS_TRIGGER_NAMES = (
     "messages_fts_ai",
     "messages_fts_ad",
     "messages_fts_au",
+)
+
+_ACTION_EVENT_FTS_TRIGGER_NAMES = (
     "action_events_fts_ai",
     "action_events_fts_ad",
     "action_events_fts_au",
 )
+
+_FTS_TRIGGER_NAMES = _MESSAGE_FTS_TRIGGER_NAMES + _ACTION_EVENT_FTS_TRIGGER_NAMES
+
+
+def _triggers_present_sync(conn: sqlite3.Connection, names: tuple[str, ...]) -> bool:
+    """Check whether every named trigger exists in sqlite_master."""
+    placeholders = ", ".join("?" for _ in names)
+    row = conn.execute(
+        f"SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name IN ({placeholders})",
+        names,
+    ).fetchone()
+    return row is not None and row[0] == len(names)
+
+
+async def _triggers_present_async(conn: aiosqlite.Connection, names: tuple[str, ...]) -> bool:
+    """Check whether every named trigger exists in sqlite_master."""
+    placeholders = ", ".join("?" for _ in names)
+    cursor = await conn.execute(
+        f"SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name IN ({placeholders})",
+        names,
+    )
+    row = await cursor.fetchone()
+    return row is not None and row[0] == len(names)
 
 
 async def suspend_fts_triggers_async(conn: aiosqlite.Connection) -> None:
@@ -143,15 +169,17 @@ def restore_fts_triggers_sync(conn: sqlite3.Connection) -> None:
 
 
 def ensure_fts_index_sync(conn: sqlite3.Connection) -> None:
-    """Ensure the FTS5 tables exist on a sync SQLite connection."""
+    """Ensure the FTS5 tables and triggers exist on a sync SQLite connection."""
     conn.execute(FTS_MESSAGES_TABLE_SQL)
     conn.execute(FTS_ACTIONS_TABLE_SQL)
+    restore_fts_triggers_sync(conn)
 
 
 async def ensure_fts_index_async(conn: aiosqlite.Connection) -> None:
-    """Ensure the FTS5 tables exist on an async SQLite connection."""
+    """Ensure the FTS5 tables and triggers exist on an async SQLite connection."""
     await conn.execute(FTS_MESSAGES_TABLE_SQL)
     await conn.execute(FTS_ACTIONS_TABLE_SQL)
+    await restore_fts_triggers_async(conn)
 
 
 def rebuild_fts_index_sync(conn: sqlite3.Connection) -> None:
@@ -318,19 +346,22 @@ def message_fts_readiness_sync(
         indexed_rows = _status_int(status, "count")
         exists = bool(status.get("exists", False))
         total_messages = _row_int(conn.execute(FTS_INDEXABLE_MESSAGE_COUNT_SQL).fetchone(), 0)
-        ready = exists and indexed_rows == total_messages
+        triggers_present = exists and _triggers_present_sync(conn, _MESSAGE_FTS_TRIGGER_NAMES)
+        ready = exists and triggers_present and indexed_rows == total_messages
     else:
         exists = bool(conn.execute(FTS_INDEX_EXISTS_SQL).fetchone())
         has_indexed_rows = exists and bool(conn.execute("SELECT 1 FROM messages_fts LIMIT 1").fetchone())
         has_indexable_messages = bool(conn.execute("SELECT 1 FROM messages WHERE text IS NOT NULL LIMIT 1").fetchone())
+        triggers_present = exists and _triggers_present_sync(conn, _MESSAGE_FTS_TRIGGER_NAMES)
         indexed_rows = 0
         total_messages = 0
-        ready = exists and (has_indexed_rows or not has_indexable_messages)
+        ready = exists and triggers_present and (has_indexed_rows or not has_indexable_messages)
     return {
         "exists": exists,
         "indexed_rows": indexed_rows,
         "total_rows": total_messages,
         "ready": ready,
+        "triggers_present": triggers_present,
     }
 
 
@@ -346,25 +377,29 @@ async def message_fts_readiness_async(
         exists = bool(status.get("exists", False))
         row = await (await conn.execute(FTS_INDEXABLE_MESSAGE_COUNT_SQL)).fetchone()
         total_messages = _row_int(row, 0)
-        ready = exists and indexed_rows == total_messages
+        triggers_present = exists and await _triggers_present_async(conn, _MESSAGE_FTS_TRIGGER_NAMES)
+        ready = exists and triggers_present and indexed_rows == total_messages
     else:
         exists = bool(await (await conn.execute(FTS_INDEX_EXISTS_SQL)).fetchone())
         has_indexed_rows = exists and bool(await (await conn.execute("SELECT 1 FROM messages_fts LIMIT 1")).fetchone())
         has_indexable_messages = bool(
             await (await conn.execute("SELECT 1 FROM messages WHERE text IS NOT NULL LIMIT 1")).fetchone()
         )
+        triggers_present = exists and await _triggers_present_async(conn, _MESSAGE_FTS_TRIGGER_NAMES)
         indexed_rows = 0
         total_messages = 0
-        ready = exists and (has_indexed_rows or not has_indexable_messages)
+        ready = exists and triggers_present and (has_indexed_rows or not has_indexable_messages)
     return {
         "exists": exists,
         "indexed_rows": indexed_rows,
         "total_rows": total_messages,
         "ready": ready,
+        "triggers_present": triggers_present,
     }
 
 
 __all__ = [
+    "_MESSAGE_FTS_TRIGGER_DDL",
     "_chunked",
     "ensure_fts_index_async",
     "ensure_fts_index_sync",

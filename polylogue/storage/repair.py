@@ -859,6 +859,9 @@ def repair_dangling_fts(config: Config, dry_run: bool = False) -> RepairResult:
             inserted = conn.execute(
                 "INSERT INTO messages_fts (rowid, message_id, conversation_id, text) SELECT m.rowid, m.message_id, m.conversation_id, m.text FROM messages m WHERE m.text IS NOT NULL AND NOT EXISTS (SELECT 1 FROM messages_fts f WHERE f.rowid = m.rowid)"
             ).rowcount
+            from polylogue.storage.fts.fts_lifecycle import restore_fts_triggers_sync
+
+            restore_fts_triggers_sync(conn)
             conn.commit()
             total = deleted + inserted
             return _repair_result(
