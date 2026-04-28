@@ -195,6 +195,7 @@ def render_conversation_rich(env: AppEnv, conv: Conversation) -> None:
             )
             console.print(panel)
         except Exception:
+            logger.exception("render_conversation_rich: Panel rendering failed for role %s", role)
             console.print(f"[{rc.label}]{role.capitalize()}:[/{rc.label}] {msg.text[:200]}")
         console.print()
 
