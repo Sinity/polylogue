@@ -808,7 +808,11 @@ def _process_ingest_batch_sync(
     ingest_workers: int | None,
     measure_ingest_result_size: bool,
 ) -> _IngestBatchSummary:
-    from polylogue.storage.fts.fts_lifecycle import suspend_fts_triggers_sync
+    from polylogue.storage.fts.fts_lifecycle import (
+        repair_fts_index_sync,
+        restore_fts_triggers_sync,
+        suspend_fts_triggers_sync,
+    )
 
     summary = _new_ingest_batch_summary(raw_records, ingest_workers=ingest_workers)
     worker_request = _make_ingest_worker_request(
@@ -829,6 +833,7 @@ def _process_ingest_batch_sync(
     pending_by_parent: dict[str, list[_ConversationEntry]] = {}
     _observe_current_rss(summary)
 
+    changed_ids: set[str] = set()
     try:
         _consume_ingest_results(
             conn,
@@ -844,10 +849,14 @@ def _process_ingest_batch_sync(
             materialized_ids=materialized_ids,
             pending_by_parent=pending_by_parent,
         )
+        changed_ids = set(summary.changed_conversation_ids)
     except Exception:
         conn.rollback()
         raise
     finally:
+        restore_fts_triggers_sync(conn)
+        if changed_ids:
+            repair_fts_index_sync(conn, list(changed_ids))
         conn.close()
 
     summary.elapsed_s = time.perf_counter() - t_start

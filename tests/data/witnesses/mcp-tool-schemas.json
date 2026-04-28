@@ -319,18 +319,6 @@
           "title": "No Tool Outputs",
           "type": "boolean"
         },
-        "path": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Path"
-        },
         "prose_only": {
           "default": false,
           "title": "Prose Only",
@@ -359,6 +347,18 @@
           ],
           "default": null,
           "title": "Query"
+        },
+        "referenced_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Referenced Path"
         },
         "retrieval_lane": {
           "anyOf": [
@@ -660,18 +660,6 @@
           "default": null,
           "title": "Min Words"
         },
-        "path": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Path"
-        },
         "provider": {
           "anyOf": [
             {
@@ -683,6 +671,18 @@
           ],
           "default": null,
           "title": "Provider"
+        },
+        "referenced_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Referenced Path"
         },
         "retrieval_lane": {
           "anyOf": [
@@ -1029,18 +1029,6 @@
           "default": null,
           "title": "Min Words"
         },
-        "path": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Path"
-        },
         "provider": {
           "anyOf": [
             {
@@ -1056,6 +1044,18 @@
         "query": {
           "title": "Query",
           "type": "string"
+        },
+        "referenced_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Referenced Path"
         },
         "retrieval_lane": {
           "anyOf": [

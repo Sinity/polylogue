@@ -105,7 +105,7 @@ class ConversationFilterBuilderMixin:
     def title(self, pattern: str) -> Self:
         return _replace_plan(self, title=pattern)
 
-    def path(self, pattern: str) -> Self:
+    def referenced_path(self, pattern: str) -> Self:
         return _replace_plan(
             self,
             path_terms=_extend_tuple(self._plan.path_terms, (pattern,)),

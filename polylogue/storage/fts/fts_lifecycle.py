@@ -136,6 +136,12 @@ def suspend_fts_triggers_sync(conn: sqlite3.Connection) -> None:
         conn.execute(f"DROP TRIGGER IF EXISTS {name}")
 
 
+def restore_fts_triggers_sync(conn: sqlite3.Connection) -> None:
+    """Re-create FTS triggers after bulk insert."""
+    for ddl in _MESSAGE_FTS_TRIGGER_DDL + _ACTION_FTS_TRIGGER_DDL:
+        conn.execute(ddl)
+
+
 def ensure_fts_index_sync(conn: sqlite3.Connection) -> None:
     """Ensure the FTS5 tables exist on a sync SQLite connection."""
     conn.execute(FTS_MESSAGES_TABLE_SQL)
@@ -371,4 +377,6 @@ __all__ = [
     "repair_fts_index_async",
     "repair_fts_index_sync",
     "replace_fts_rows_for_messages_sync",
+    "restore_fts_triggers_sync",
+    "suspend_fts_triggers_sync",
 ]

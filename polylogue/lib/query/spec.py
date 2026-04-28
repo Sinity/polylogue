@@ -168,7 +168,7 @@ def build_query_spec_from_params(
         contains_terms=as_tuple(params.get("contains")),
         exclude_text_terms=as_tuple(params.get("exclude_text")),
         retrieval_lane=str(params.get("retrieval_lane") or "auto"),
-        path_terms=as_tuple(params.get("path_terms") or params.get("path")),
+        path_terms=as_tuple(params.get("path_terms") or params.get("referenced_path")),
         cwd_prefix=optional_text(params.get("cwd_prefix")),
         action_terms=normalize_action_terms("action", params.get("action")),
         excluded_action_terms=normalize_action_terms("exclude_action", params.get("exclude_action")),
