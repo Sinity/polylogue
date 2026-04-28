@@ -9,8 +9,8 @@ from typing import Literal
 import aiosqlite
 from pydantic import Field
 
-from polylogue.archive_product_models import ARCHIVE_PRODUCT_CONTRACT_VERSION, ArchiveProductModel
 from polylogue.maintenance.targets import build_maintenance_target_catalog
+from polylogue.products.archive_models import ARCHIVE_PRODUCT_CONTRACT_VERSION, ArchiveProductModel
 from polylogue.storage.products.session.runtime import SessionProductStatusSnapshot
 from polylogue.storage.runtime.store_constants import (
     SESSION_ENRICHMENT_VERSION,

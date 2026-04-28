@@ -6,7 +6,9 @@ from collections.abc import Iterable
 from datetime import date, datetime, timedelta, timezone
 from typing import Protocol
 
-from polylogue.archive_product_models import (
+from polylogue.lib.pricing import CostEstimatePayload, CostUsagePayload
+from polylogue.lib.session.session_profile import SessionProfile
+from polylogue.products.archive_models import (
     ARCHIVE_PRODUCT_CONTRACT_VERSION,
     ArchiveEnrichmentProvenance,
     ArchiveInferenceProvenance,
@@ -23,8 +25,6 @@ from polylogue.archive_product_models import (
     WorkEventInferencePayload,
     WorkThreadPayload,
 )
-from polylogue.lib.pricing import CostEstimatePayload, CostUsagePayload
-from polylogue.lib.session.session_profile import SessionProfile
 from polylogue.storage.repair import ArchiveDebtStatus
 from polylogue.storage.runtime import (
     SESSION_PRODUCT_MATERIALIZER_VERSION,

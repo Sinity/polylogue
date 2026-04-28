@@ -13,18 +13,18 @@ from pathlib import Path
 import click
 
 from polylogue.api.sync.bridge import run_coroutine_sync
-from polylogue.archive_products import ArchiveProductUnavailableError
 from polylogue.cli.helper_support import fail
 from polylogue.cli.machine_errors import emit_success
 from polylogue.cli.product_command_contracts import ProductCommandRequest, query_model_field_names
 from polylogue.cli.types import AppEnv
-from polylogue.product_export_bundles import (
+from polylogue.products.archive import ArchiveProductUnavailableError
+from polylogue.products.export_bundles import (
     ProductExportBundleError,
     ProductExportBundleRequest,
     ProductExportBundleResult,
     ProductExportFormat,
 )
-from polylogue.product_readiness import ProductReadinessQuery, ProductReadinessReport, known_product_readiness_names
+from polylogue.products.readiness import ProductReadinessQuery, ProductReadinessReport, known_product_readiness_names
 from polylogue.products.registry import (
     PRODUCT_REGISTRY,
     ProductQueryError,

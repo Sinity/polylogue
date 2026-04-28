@@ -9,8 +9,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal, Protocol
 
-from polylogue.archive_product_models import ARCHIVE_PRODUCT_CONTRACT_VERSION, ArchiveProductModel
-from polylogue.archive_products import (
+from polylogue.config import Config
+from polylogue.lib.json import JSONDocument, dumps, require_json_document
+from polylogue.products.archive import (
     ArchiveProductUnavailableError,
     DaySessionSummaryProduct,
     ProviderAnalyticsProduct,
@@ -22,9 +23,8 @@ from polylogue.archive_products import (
     WeekSessionSummaryProduct,
     WorkThreadProduct,
 )
-from polylogue.config import Config
-from polylogue.lib.json import JSONDocument, dumps, require_json_document
-from polylogue.product_readiness import ProductReadinessQuery, ProductReadinessReport
+from polylogue.products.archive_models import ARCHIVE_PRODUCT_CONTRACT_VERSION, ArchiveProductModel
+from polylogue.products.readiness import ProductReadinessQuery, ProductReadinessReport
 from polylogue.products.registry import PRODUCT_REGISTRY, ProductQueryError, ProductType, fetch_products_async
 from polylogue.version import VERSION_INFO
 

@@ -11,10 +11,10 @@ import click
 import pytest
 from click.testing import CliRunner, Result
 
-from polylogue.archive_product_models import ARCHIVE_PRODUCT_CONTRACT_VERSION
-from polylogue.archive_products import ProviderAnalyticsProduct
 from polylogue.cli.click_app import cli
 from polylogue.cli.commands.products import _make_callback
+from polylogue.products.archive import ProviderAnalyticsProduct
+from polylogue.products.archive_models import ARCHIVE_PRODUCT_CONTRACT_VERSION
 from polylogue.products.registry import get_product_type, product_items_payload
 from polylogue.storage.action_events.rebuild_runtime import rebuild_action_event_read_model_sync
 from polylogue.storage.backends.connection import open_connection

@@ -7,8 +7,8 @@ from unittest.mock import patch
 
 import pytest
 
-from polylogue.archive_products import ProviderAnalyticsProduct
 from polylogue.products import registry as product_registry
+from polylogue.products.archive import ProviderAnalyticsProduct
 from polylogue.products.registry import (
     CliOption,
     ProductField,

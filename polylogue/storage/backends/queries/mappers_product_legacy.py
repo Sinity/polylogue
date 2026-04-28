@@ -8,7 +8,9 @@ from typing import TypeAlias, TypeVar
 
 from pydantic import BaseModel
 
-from polylogue.archive_product_models import (
+from polylogue.lib.json import JSONDocument, JSONValue, json_document
+from polylogue.lib.session.documents import SessionPhaseDocument, WorkEventDocument
+from polylogue.products.archive_models import (
     SessionEnrichmentPayload,
     SessionEvidencePayload,
     SessionInferencePayload,
@@ -17,8 +19,6 @@ from polylogue.archive_product_models import (
     WorkEventEvidencePayload,
     WorkEventInferencePayload,
 )
-from polylogue.lib.json import JSONDocument, JSONValue, json_document
-from polylogue.lib.session.documents import SessionPhaseDocument, WorkEventDocument
 from polylogue.storage.backends.queries.mappers_support import _parse_json, _row_get
 
 PayloadModel = TypeVar("PayloadModel", bound=BaseModel)

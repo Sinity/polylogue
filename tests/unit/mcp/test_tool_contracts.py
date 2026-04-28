@@ -8,13 +8,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from polylogue.archive_product_models import (
-    DaySessionSummaryPayload,
-    WeekSessionSummaryPayload,
-    WorkThreadMemberEvidencePayload,
-    WorkThreadPayload,
-)
-from polylogue.archive_products import (
+from polylogue.lib.conversation.neighbor_candidates import ConversationNeighborCandidate, NeighborReason
+from polylogue.lib.models import Conversation, ConversationSummary
+from polylogue.lib.pricing import CostEstimatePayload, CostUsagePayload
+from polylogue.lib.query.miss_diagnostics import QueryMissDiagnostics, QueryMissReason
+from polylogue.lib.query.spec import ConversationQuerySpec
+from polylogue.lib.search_hits import ConversationSearchHit
+from polylogue.lib.stats import ArchiveStats
+from polylogue.products.archive import (
     ArchiveDebtProduct,
     ArchiveEnrichmentProvenance,
     ArchiveInferenceProvenance,
@@ -38,13 +39,12 @@ from polylogue.archive_products import (
     WorkEventInferencePayload,
     WorkThreadProduct,
 )
-from polylogue.lib.conversation.neighbor_candidates import ConversationNeighborCandidate, NeighborReason
-from polylogue.lib.models import Conversation, ConversationSummary
-from polylogue.lib.pricing import CostEstimatePayload, CostUsagePayload
-from polylogue.lib.query.miss_diagnostics import QueryMissDiagnostics, QueryMissReason
-from polylogue.lib.query.spec import ConversationQuerySpec
-from polylogue.lib.search_hits import ConversationSearchHit
-from polylogue.lib.stats import ArchiveStats
+from polylogue.products.archive_models import (
+    DaySessionSummaryPayload,
+    WeekSessionSummaryPayload,
+    WorkThreadMemberEvidencePayload,
+    WorkThreadPayload,
+)
 from polylogue.storage.products.session.runtime import SessionProductCounts
 from polylogue.types import ConversationId, Provider
 from tests.infra.builders import make_conv, make_msg

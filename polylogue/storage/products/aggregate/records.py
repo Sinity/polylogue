@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, field_validator
 
-from polylogue.archive_product_models import DaySessionSummaryPayload
+from polylogue.products.archive_models import DaySessionSummaryPayload
 from polylogue.storage.runtime.store_constants import SESSION_PRODUCT_MATERIALIZER_VERSION
 
 
