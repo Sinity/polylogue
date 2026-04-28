@@ -264,11 +264,11 @@ files:
     loc: 190
     target: polylogue/cli/helper_summary.py
     owner: stable
-  - path: polylogue/cli/helper_support.py
+  - path: polylogue/cli/shared/helper_support.py
     loc: 23
     target: polylogue/cli/helper_support.py
     owner: stable
-  - path: polylogue/cli/helpers.py
+  - path: polylogue/cli/shared/helpers.py
     loc: 71
     target: polylogue/cli/helpers.py
     owner: stable
@@ -392,7 +392,7 @@ files:
     loc: 222
     target: polylogue/cli/shell_completion_values.py
     owner: stable
-  - path: polylogue/cli/types.py
+  - path: polylogue/cli/shared/types.py
     loc: 36
     target: polylogue/cli/types.py
     owner: stable

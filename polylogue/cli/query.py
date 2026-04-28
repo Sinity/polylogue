@@ -29,7 +29,7 @@ from polylogue.cli.query_contracts import (
 )
 from polylogue.cli.query_feedback import emit_no_results
 from polylogue.cli.root_request import RootModeRequest
-from polylogue.cli.types import AppEnv
+from polylogue.cli.shared.types import AppEnv
 from polylogue.lib.json import JSONDocument
 from polylogue.lib.query.spec import QuerySpecError
 from polylogue.logging import get_logger
@@ -599,7 +599,7 @@ async def _execute_query_plan(
 
 async def async_execute_query_request(env: AppEnv, request: RootModeRequest) -> None:
     """Async core of query execution over a typed request."""
-    from polylogue.cli.helpers import fail, load_effective_config
+    from polylogue.cli.shared.helpers import fail, load_effective_config
     from polylogue.config import ConfigError
 
     params = request.query_params()

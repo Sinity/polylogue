@@ -12,7 +12,7 @@ from polylogue.cli.run_display_workflow import (
     render_sources,
 )
 from polylogue.cli.run_watch_workflow import WatchDisplayObserver, WatchStatusObserver
-from polylogue.cli.types import AppEnv
+from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
 from polylogue.sources import DriveError
 from polylogue.storage.run_state import (
@@ -69,7 +69,7 @@ def test_display_result_renders_summary_latest_render_and_failure_hints() -> Non
         patch("polylogue.cli.run_display_workflow.format_counts", return_value="3 conversations"),
         patch("polylogue.cli.run_display_workflow.format_run_details", return_value=["new=1", "changed=1"]),
         patch("polylogue.cli.run_display_workflow.format_index_status", return_value="Index status: failed"),
-        patch("polylogue.cli.helpers.latest_render_path", return_value=Path("/tmp/render/latest.html")),
+        patch("polylogue.cli.shared.helpers.latest_render_path", return_value=Path("/tmp/render/latest.html")),
         patch("click.echo") as echo,
     ):
         display_result(

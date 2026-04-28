@@ -16,8 +16,8 @@ from polylogue.cli.check_maintenance import (
 )
 from polylogue.cli.check_models import CheckCommandResult, VacuumResult
 from polylogue.cli.check_validation import validate_check_options as _validate_check_options
-from polylogue.cli.helpers import load_effective_config
-from polylogue.cli.types import AppEnv
+from polylogue.cli.shared.helpers import load_effective_config
+from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
 from polylogue.protocols import ProgressCallback
 from polylogue.readiness import ReadinessReport, get_readiness, run_runtime_readiness

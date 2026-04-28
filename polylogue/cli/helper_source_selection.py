@@ -6,8 +6,8 @@ import click
 from click.shell_completion import CompletionItem
 
 from polylogue.cli.helper_source_state import load_last_source, save_last_source
-from polylogue.cli.helper_support import fail
-from polylogue.cli.types import AppEnv
+from polylogue.cli.shared.helper_support import fail
+from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config, get_config
 
 

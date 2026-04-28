@@ -198,7 +198,7 @@ def test_display_result_title_and_render_lookup_contract(
         result = _run_result(conversations=conversations)
         latest_path = tmp_path / "render" / "latest" if latest_exists else None
 
-        with patch("polylogue.cli.helpers.latest_render_path", return_value=latest_path) as mock_latest:
+        with patch("polylogue.cli.shared.helpers.latest_render_path", return_value=latest_path) as mock_latest:
             _display_result(env, cfg, result, stage, source_names)
 
         title = env.ui.summary.call_args.args[0]

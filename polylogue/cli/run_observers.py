@@ -9,7 +9,7 @@ from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
 from polylogue.cli.formatting import format_counts
-from polylogue.cli.types import AppEnv
+from polylogue.cli.shared.types import AppEnv
 from polylogue.pipeline.observers import RunObserver
 from polylogue.storage.run_state import RunResult
 

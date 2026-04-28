@@ -14,7 +14,7 @@ from pathlib import Path
 import click
 
 from polylogue.api import Polylogue
-from polylogue.cli.types import AppEnv
+from polylogue.cli.shared.types import AppEnv
 from polylogue.sources.live import LiveWatcher, WatchSource
 from polylogue.sources.live.watcher import default_sources
 

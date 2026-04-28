@@ -7,7 +7,7 @@ from collections.abc import Sequence
 
 import click
 
-from polylogue.cli.types import AppEnv
+from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
 from polylogue.lib.run_activity import conversation_activity_counts
 from polylogue.pipeline.observers import RunObserver

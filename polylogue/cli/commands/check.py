@@ -20,7 +20,7 @@ from polylogue.cli.check_support import (
 from polylogue.cli.check_support import run_vacuum as _run_vacuum_impl
 from polylogue.cli.check_support import vacuum_database as _vacuum_database_impl
 from polylogue.cli.check_workflow import CheckCommandOptions, run_check_workflow, validate_check_options
-from polylogue.cli.types import AppEnv
+from polylogue.cli.shared.types import AppEnv
 from polylogue.protocols import ProgressCallback
 
 

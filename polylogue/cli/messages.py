@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.cli.root_request import RootModeRequest
-from polylogue.cli.types import AppEnv
+from polylogue.cli.shared.types import AppEnv
 from polylogue.lib.message.roles import MessageRoleFilter, normalize_message_roles
 from polylogue.lib.semantic.content_projection import ContentProjectionSpec
 

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import click
 
-from polylogue.cli.types import AppEnv
+from polylogue.cli.shared.types import AppEnv
 from polylogue.logging import get_logger
 from polylogue.sources.drive.auth import DriveAuthManager
 
@@ -45,7 +45,7 @@ def auth_command(env: AppEnv, service: str, refresh: bool, revoke: bool) -> None
 
 def _get_drive_paths(env: AppEnv) -> tuple[Path, Path]:
     """Get credentials and token paths from config or defaults."""
-    from polylogue.cli.helpers import load_effective_config
+    from polylogue.cli.shared.helpers import load_effective_config
     from polylogue.sources.drive.auth import default_credentials_path, default_token_path
 
     try:

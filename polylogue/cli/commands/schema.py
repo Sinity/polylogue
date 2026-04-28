@@ -7,13 +7,13 @@ from typing import TypeVar
 
 import click
 
-from polylogue.cli.helpers import fail
 from polylogue.cli.schema_rendering import (
     render_schema_compare_result,
     render_schema_explain_result,
     render_schema_list_result,
 )
-from polylogue.cli.types import AppEnv
+from polylogue.cli.shared.helpers import fail
+from polylogue.cli.shared.types import AppEnv
 from polylogue.schemas.operator_models import (
     SchemaCompareRequest,
     SchemaExplainRequest,

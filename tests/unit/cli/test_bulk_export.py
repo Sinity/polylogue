@@ -13,7 +13,7 @@ from click.testing import CliRunner
 from polylogue.cli import bulk_export, query_verbs
 from polylogue.cli.click_app import cli
 from polylogue.cli.root_request import RootModeRequest
-from polylogue.cli.types import AppEnv
+from polylogue.cli.shared.types import AppEnv
 from polylogue.lib.models import Conversation
 from tests.infra.builders import make_conv, make_msg
 

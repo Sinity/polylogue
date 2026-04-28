@@ -12,7 +12,7 @@ import pytest
 from polylogue.cli import check_workflow, formatting
 from polylogue.cli.check_models import CheckCommandResult, VacuumResult
 from polylogue.cli.check_workflow import CheckCommandOptions
-from polylogue.cli.types import AppEnv
+from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
 from polylogue.maintenance.targets import MaintenanceTargetMode
 from polylogue.readiness import ReadinessCheck, ReadinessReport, VerifyStatus

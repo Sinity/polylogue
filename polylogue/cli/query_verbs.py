@@ -9,8 +9,8 @@ from __future__ import annotations
 import click
 
 from polylogue.cli.root_request import RootModeRequest
+from polylogue.cli.shared.types import AppEnv
 from polylogue.cli.shell_completion_values import complete_open_targets
-from polylogue.cli.types import AppEnv
 
 VERB_NAMES = frozenset({"list", "count", "stats", "open", "show", "bulk-export", "delete", "messages", "raw"})
 

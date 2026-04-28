@@ -13,7 +13,7 @@ from click.testing import CliRunner, Result
 
 from polylogue.cli.click_app import cli
 from polylogue.cli.commands.run import maybe_prompt_run_stage
-from polylogue.cli.types import AppEnv
+from polylogue.cli.shared.types import AppEnv
 from polylogue.sources import DriveError
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.repository import ConversationRepository
@@ -228,7 +228,10 @@ def _invoke_run_direct(
         )
         mock_latest = _as_mock(
             stack.enter_context(
-                patch("polylogue.cli.helpers.latest_render_path", return_value=Path("/render/latest/conversation.html"))
+                patch(
+                    "polylogue.cli.shared.helpers.latest_render_path",
+                    return_value=Path("/render/latest/conversation.html"),
+                )
             ),
         )
 

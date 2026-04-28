@@ -68,7 +68,7 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
         code_refs=(
             "polylogue.config.Source",
             "polylogue.pipeline.run_planning.plan_sources",
-            "polylogue.cli.helpers.resolve_sources",
+            "polylogue.cli.shared.helpers.resolve_sources",
         ),
         readiness_surfaces=("run", "sources"),
     ),
