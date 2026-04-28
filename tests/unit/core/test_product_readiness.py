@@ -9,7 +9,7 @@ import aiosqlite
 import pytest
 
 from polylogue.api import Polylogue
-from polylogue.product_readiness import (
+from polylogue.products.readiness import (
     ProductReadinessEntry,
     ProductReadinessQuery,
     ProductReadinessReport,

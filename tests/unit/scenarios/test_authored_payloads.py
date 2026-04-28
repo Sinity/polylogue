@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 import pytest
 
-from polylogue.authored_payloads import (
+from polylogue.products.authored_payloads import (
     PayloadDict,
     canonical_payload_json,
     merge_unique_string_tuples,

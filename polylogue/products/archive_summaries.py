@@ -7,16 +7,16 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 
-from polylogue.archive_product_models import DaySessionSummaryPayload, WeekSessionSummaryPayload
-from polylogue.archive_products import (
+from polylogue.lib.session.session_profile import SessionProfile
+from polylogue.lib.session.session_summaries import DaySessionSummary, summarize_day, summarize_week
+from polylogue.products.archive import (
     DaySessionSummaryProduct,
     WeekSessionSummaryProduct,
     profile_bucket_day,
     profile_timestamp_values,
     records_provenance,
 )
-from polylogue.lib.session.session_profile import SessionProfile
-from polylogue.lib.session.session_summaries import DaySessionSummary, summarize_day, summarize_week
+from polylogue.products.archive_models import DaySessionSummaryPayload, WeekSessionSummaryPayload
 from polylogue.storage.runtime import DaySessionSummaryRecord
 
 

@@ -415,7 +415,7 @@ class TestCodexParserProviderEvents:
 
 class TestProfileCompactionCounting:
     def test_evidence_payload_includes_compaction_fields(self) -> None:
-        from polylogue.archive_products import SessionEvidencePayload
+        from polylogue.products.archive import SessionEvidencePayload
 
         # Default values
         payload = SessionEvidencePayload()
@@ -428,7 +428,7 @@ class TestProfileCompactionCounting:
         assert payload.has_compaction is True
 
     def test_evidence_payload_roundtrips(self) -> None:
-        from polylogue.archive_products import SessionEvidencePayload
+        from polylogue.products.archive import SessionEvidencePayload
 
         payload = SessionEvidencePayload(compaction_count=2, has_compaction=True)
         dumped = payload.model_dump()

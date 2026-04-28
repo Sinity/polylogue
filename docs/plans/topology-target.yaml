@@ -52,27 +52,27 @@ files:
     target: polylogue/api/sync/products.py
     owner: stable
     cross_cut: { api: sync }
-  - path: polylogue/archive_product_models.py
+  - path: polylogue/products/archive_models.py
     loc: 204
     target: polylogue/products/archive_models.py
-    owner: #414
+    owner: stable
     cross_cut: { lifecycle: model }
-  - path: polylogue/archive_product_rollups.py
+  - path: polylogue/products/archive_rollups.py
     loc: 126
     target: polylogue/products/archive_rollups.py
-    owner: #414
-  - path: polylogue/archive_product_summaries.py
+    owner: stable
+  - path: polylogue/products/archive_summaries.py
     loc: 179
     target: polylogue/products/archive_summaries.py
-    owner: #414
-  - path: polylogue/archive_products.py
+    owner: stable
+  - path: polylogue/products/archive.py
     loc: 552
     target: polylogue/products/archive.py
-    owner: #414
-  - path: polylogue/archive_resume.py
+    owner: stable
+  - path: polylogue/products/resume.py
     loc: 452
     target: polylogue/products/resume.py
-    owner: #414
+    owner: stable
   - path: polylogue/artifacts/__init__.py
     loc: 1072
     target: polylogue/artifacts/__init__.py
@@ -86,10 +86,10 @@ files:
     target: polylogue/assets.py
     owner: kernel
     reason: "kernel rule per #426"
-  - path: polylogue/authored_payloads.py
+  - path: polylogue/products/authored_payloads.py
     loc: 163
     target: polylogue/products/authored_payloads.py
-    owner: #414
+    owner: stable
   - path: polylogue/browser_capture/__init__.py
     loc: 33
     target: polylogue/browser_capture/__init__.py
@@ -287,10 +287,6 @@ files:
   - path: polylogue/cli/products_rendering.py
     loc: 49
     target: polylogue/cli/products_rendering.py
-    owner: stable
-  - path: polylogue/cli/products_workflow.py
-    loc: 12
-    target: polylogue/cli/products_workflow.py
     owner: stable
   - path: polylogue/cli/qa_capture.py
     loc: 49
@@ -1091,14 +1087,14 @@ files:
     loc: 67
     target: polylogue/pipeline/watch.py
     owner: stable
-  - path: polylogue/product_export_bundles.py
+  - path: polylogue/products/export_bundles.py
     loc: 327
     target: polylogue/products/export_bundles.py
-    owner: #414
-  - path: polylogue/product_readiness.py
+    owner: stable
+  - path: polylogue/products/readiness.py
     loc: 569
     target: polylogue/products/readiness.py
-    owner: #414
+    owner: stable
   - path: polylogue/products/__init__.py
     loc: 30
     target: polylogue/products/__init__.py

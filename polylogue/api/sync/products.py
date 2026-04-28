@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from polylogue.api.sync.bridge import run_coroutine_sync
-from polylogue.archive_products import (
+from polylogue.products.archive import (
     ArchiveDebtProduct,
     ArchiveDebtProductQuery,
     CostRollupProduct,

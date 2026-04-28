@@ -6,25 +6,25 @@ from collections.abc import Sequence
 from contextlib import suppress
 from typing import TYPE_CHECKING, Protocol
 
-from polylogue.archive_products import (
+from polylogue.lib.message.roles import MessageRoleFilter
+from polylogue.lib.semantic.content_projection import ContentProjectionSpec
+from polylogue.products.archive import (
     SessionEnrichmentProduct,
     SessionEnrichmentProductQuery,
     SessionProfileProduct,
     SessionProfileProductQuery,
 )
-from polylogue.lib.message.roles import MessageRoleFilter
-from polylogue.lib.semantic.content_projection import ContentProjectionSpec
 from polylogue.storage.backends.queries.message_query_reads import MessageTypeName
 from polylogue.storage.products.session.runtime import SessionProductStatusSnapshot
 
 if TYPE_CHECKING:
-    from polylogue.archive_resume import ResumeBrief
     from polylogue.config import Config
     from polylogue.lib.conversation.models import Conversation
     from polylogue.lib.filter.filters import ConversationFilter
     from polylogue.operations import ArchiveStats
-    from polylogue.product_export_bundles import ProductExportBundleRequest, ProductExportBundleResult
-    from polylogue.product_readiness import ProductReadinessQuery, ProductReadinessReport
+    from polylogue.products.export_bundles import ProductExportBundleRequest, ProductExportBundleResult
+    from polylogue.products.readiness import ProductReadinessQuery, ProductReadinessReport
+    from polylogue.products.resume import ResumeBrief
     from polylogue.readiness import ReadinessReport
     from polylogue.storage.products.session.runtime import SessionProductCounts
     from polylogue.storage.repository import ConversationRepository

@@ -22,7 +22,7 @@ from typing import TypeAlias
 
 import click
 
-from polylogue.archive_products import (
+from polylogue.products.archive import (
     ArchiveDebtProductQuery,
     ArchiveProductModel,
     CostRollupProductQuery,

@@ -5,11 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from polylogue.archive_product_models import (
-    SessionEnrichmentPayload,
-    SessionEvidencePayload,
-    SessionInferencePayload,
-)
 from polylogue.lib.conversation.extraction import WorkEvent, WorkEventPayload
 from polylogue.lib.payload_coercion import (
     coerce_float,
@@ -28,6 +23,11 @@ from polylogue.lib.session.documents import (
 )
 from polylogue.lib.session.models import SessionPhasePayload
 from polylogue.lib.session.session_profile import SessionAnalysis, SessionProfile
+from polylogue.products.archive_models import (
+    SessionEnrichmentPayload,
+    SessionEvidencePayload,
+    SessionInferencePayload,
+)
 from polylogue.storage.runtime import (
     SESSION_ENRICHMENT_FAMILY,
     SESSION_ENRICHMENT_VERSION,

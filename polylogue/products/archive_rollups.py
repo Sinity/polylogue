@@ -7,14 +7,14 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
-from polylogue.archive_products import (
+from polylogue.lib.repo_identity import normalize_repo_names
+from polylogue.lib.session.session_profile import SessionProfile
+from polylogue.products.archive import (
     SessionTagRollupProduct,
     profile_bucket_day,
     profile_timestamp_values,
     records_provenance,
 )
-from polylogue.lib.repo_identity import normalize_repo_names
-from polylogue.lib.session.session_profile import SessionProfile
 from polylogue.storage.runtime import SessionTagRollupRecord
 
 

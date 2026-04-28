@@ -7,11 +7,11 @@ from pathlib import Path
 from typing import Protocol
 
 from polylogue.api.sync.bridge import run_coroutine_sync
-from polylogue.archive_products import ProviderAnalyticsProduct
 from polylogue.cli.helper_support import load_effective_config
 from polylogue.cli.types import AppEnv
 from polylogue.config import Config, Source
 from polylogue.logging import get_logger
+from polylogue.products.archive import ProviderAnalyticsProduct
 from polylogue.readiness import ReadinessReport
 from polylogue.services import RuntimeServices
 from polylogue.storage.backends.async_sqlite import SQLiteBackend

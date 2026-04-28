@@ -5,7 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 
-from polylogue.authored_payloads import (
+from polylogue.maintenance.targets import build_maintenance_target_catalog
+from polylogue.products.authored_payloads import (
     PayloadDict,
     PayloadMap,
     merge_unique_string_tuples,
@@ -15,7 +16,6 @@ from polylogue.authored_payloads import (
     payload_string,
     payload_string_tuple,
 )
-from polylogue.maintenance.targets import build_maintenance_target_catalog
 
 from .corpus import CorpusRequest, CorpusSourceKind
 from .metadata import ScenarioMetadata

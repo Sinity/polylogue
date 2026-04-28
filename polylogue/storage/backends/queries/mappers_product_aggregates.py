@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 
-from polylogue.archive_product_models import DaySessionSummaryPayload
+from polylogue.products.archive_models import DaySessionSummaryPayload
 from polylogue.storage.backends.queries.mappers_support import (
     _json_int_dict,
     _json_text_tuple,

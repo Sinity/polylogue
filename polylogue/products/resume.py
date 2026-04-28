@@ -8,8 +8,9 @@ from typing import TYPE_CHECKING, Protocol
 
 from pydantic import Field
 
-from polylogue.archive_product_models import ArchiveProductModel
-from polylogue.archive_products import (
+from polylogue.lib.action_event.action_events import build_tool_calls_from_content_blocks
+from polylogue.lib.conversation.models import Conversation
+from polylogue.products.archive import (
     ArchiveProductUnavailableError,
     SessionEnrichmentProduct,
     SessionPhaseProduct,
@@ -18,8 +19,7 @@ from polylogue.archive_products import (
     WorkThreadProduct,
     WorkThreadProductQuery,
 )
-from polylogue.lib.action_event.action_events import build_tool_calls_from_content_blocks
-from polylogue.lib.conversation.models import Conversation
+from polylogue.products.archive_models import ArchiveProductModel
 from polylogue.storage.search.query_support import normalize_fts5_query
 
 if TYPE_CHECKING:

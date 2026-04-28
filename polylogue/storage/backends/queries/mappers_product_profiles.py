@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 
-from polylogue.archive_product_models import (
+from polylogue.products.archive_models import (
     SessionEnrichmentPayload,
     SessionEvidencePayload,
     SessionInferencePayload,

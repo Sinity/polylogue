@@ -12,13 +12,13 @@ import click
 import pytest
 
 from polylogue.cli.commands import products as products_module
-from polylogue.product_export_bundles import (
+from polylogue.products.export_bundles import (
     ProductExportBundleError,
     ProductExportBundleManifest,
     ProductExportBundleResult,
     ProductExportFileSummary,
 )
-from polylogue.product_readiness import (
+from polylogue.products.readiness import (
     ProductProviderCoverage,
     ProductReadinessEntry,
     ProductReadinessReport,
