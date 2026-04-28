@@ -22,7 +22,14 @@ CORE_SCHEMA_PROVIDERS: Final[tuple[str, ...]] = (
     "gemini",
 )
 
-_RUNTIME_PROVIDER_ALIASES: Final[dict[str, str]] = {}
+_RUNTIME_PROVIDER_ALIASES: Final[dict[str, str]] = {
+    "claude": "claude-ai",
+    "anthropic": "claude-ai",
+    "openai": "chatgpt",
+    "google": "gemini",
+    "google-gemini": "gemini",
+    "cursor": "codex",
+}
 
 
 def normalize_provider_token(value: str | None) -> str:

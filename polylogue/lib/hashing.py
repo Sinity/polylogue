@@ -10,8 +10,6 @@ import hashlib
 import unicodedata
 from pathlib import Path
 
-import orjson
-
 
 def hash_text(text: str) -> str:
     """Hash UTF-8 text to full SHA-256 hex digest (64 chars).
@@ -36,16 +34,17 @@ def hash_text_short(text: str, length: int = 16) -> str:
 def hash_payload(payload: object) -> str:
     """Hash a JSON-serializable object to full SHA-256 hex digest.
 
-    Note: String values within the payload are NOT normalized here.
+    Uses stdlib json for deterministic output across environments.
+    orjson would be faster but can produce different byte output for
+    non-ASCII content between versions, breaking content-addressed storage.
+
+    String values within the payload are NOT NFC-normalized here.
     Callers should normalize strings before including in payload if
     normalization-invariant hashing is required.
     """
-    try:
-        serialized = orjson.dumps(payload, option=orjson.OPT_SORT_KEYS)
-    except TypeError:
-        import json
+    import json
 
-        serialized = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    serialized = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(serialized).hexdigest()
 
 
