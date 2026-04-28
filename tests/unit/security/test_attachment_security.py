@@ -32,13 +32,15 @@ def test_attachment_path_traversal_rejected() -> None:
     assert not str(normalized).endswith("/etc/passwd")
 
 
-def test_attachment_absolute_path_preserved() -> None:
+def test_attachment_absolute_path_blocked() -> None:
+    """Absolute paths are rejected to prevent sandbox escape."""
     att = ParsedAttachment(
         provider_attachment_id="att2",
         path="/etc/shadow",
         name="shadow",
     )
-    assert att.path == "/etc/shadow"
+    assert att.path is not None
+    assert att.path.startswith("_blocked_")
 
 
 def test_attachment_path_null_byte_rejected() -> None:
