@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,6 +12,8 @@ from polylogue.lib.json import JSONDocument
 from polylogue.lib.query.retrieval_candidates import uses_action_read_model
 from polylogue.lib.query.spec import ConversationQuerySpec
 from polylogue.readiness import VerifyStatus, get_readiness
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from polylogue.config import Config
@@ -87,6 +90,7 @@ async def _call_optional(repository: object, method_name: str, *args: object, **
     try:
         return await method(*args, **kwargs)
     except Exception:
+        logger.exception("_call_optional: repository method `%s` failed", method_name)
         return None
 
 
@@ -144,12 +148,14 @@ def _readiness_index_reason(config: Config | None, selection: ConversationQueryS
     try:
         plan = selection.to_plan()
     except Exception:
+        logger.exception("_readiness_index_reason: selection.to_plan() failed")
         return None
     if not plan.fts_terms:
         return None
     try:
         report = get_readiness(config, probe_only=True)
     except Exception:
+        logger.exception("_readiness_index_reason: get_readiness() failed")
         return None
     index_check = next((check for check in report.checks if check.name == "index"), None)
     if index_check is None or index_check.status is VerifyStatus.OK:
@@ -187,6 +193,7 @@ async def _action_read_model_reason(
     try:
         plan = selection.to_plan()
     except Exception:
+        logger.exception("_action_read_model_reason: selection.to_plan() failed")
         return None
     if not uses_action_read_model(plan):
         return None

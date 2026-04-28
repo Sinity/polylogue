@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -13,6 +14,8 @@ import click
 from polylogue.cli.query_contracts import QueryOutputSpec
 from polylogue.lib.query.retrieval_candidates import uses_action_read_model
 from polylogue.lib.query.spec import ConversationQuerySpec
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from polylogue.storage.action_events.artifacts import ActionEventArtifactState
@@ -83,6 +86,7 @@ async def _action_event_state(repository: object) -> ActionEventArtifactState | 
     try:
         result = await method()
     except Exception:
+        logger.exception("_action_event_state: get_action_event_artifact_state() failed")
         return None
     return cast("ActionEventArtifactState | None", result)
 
@@ -106,6 +110,7 @@ async def build_query_slow_notice(
         try:
             plan = selection.to_plan()
         except Exception:
+            logger.exception("build_query_slow_notice: selection.to_plan() failed")
             plan = None
         if plan is not None:
             retrieval_lane = plan.retrieval_lane

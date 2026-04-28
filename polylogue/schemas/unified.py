@@ -83,6 +83,7 @@ def try_schema_extraction(provider: Provider | str, raw: JSONDocument) -> Harmon
     except FileNotFoundError:
         return None
     except Exception:
+        logger.exception("try_schema_extraction: unexpected failure for provider %s", p)
         return None
 
 

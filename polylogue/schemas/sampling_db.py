@@ -110,6 +110,7 @@ def _iter_record_stream_units(
             record_type_key=config.record_type_key,
         )
     except Exception:
+        logger.exception("Failed to extract record samples from raw content: %s", raw_content)
         samples = []
 
     if not samples:
@@ -144,6 +145,7 @@ def _build_raw_payload_envelope_for_row(
             jsonl_dict_only=config.sample_granularity == "record",
         )
     except Exception:
+        logger.exception("Failed to build raw payload envelope for %s", raw_content)
         return None
 
 
