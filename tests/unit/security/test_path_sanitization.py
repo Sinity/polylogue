@@ -59,17 +59,27 @@ class TestSanitizePathTraversal:
                 "conversations/chatgpt/export.json",
                 ("conversations", "chatgpt"),
             ),
-            (
-                "/home/user/conversations/export.json",
-                ("/", "conversations"),
-            ),
         ],
     )
-    def test_safe_paths_remain_usable(self, raw_path: str, checks: tuple[str, ...]) -> None:
+    def test_safe_relative_paths_remain_usable(self, raw_path: str, checks: tuple[str, ...]) -> None:
         result = sanitize_path(raw_path)
         assert result is not None
         for check in checks:
-            assert check in result or result.startswith(check)
+            assert check in result
+
+    @pytest.mark.parametrize(
+        "raw_path",
+        [
+            "/etc/passwd",
+            "/home/user/conversations/export.json",
+            "/",
+        ],
+    )
+    def test_absolute_paths_are_blocked(self, raw_path: str) -> None:
+        """Absolute paths are rejected to prevent sandbox escape."""
+        result = sanitize_path(raw_path)
+        assert result is not None
+        assert result.startswith("_blocked_")
 
     def test_none_returns_none(self) -> None:
         assert sanitize_path(None) is None
