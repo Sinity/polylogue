@@ -110,4 +110,4 @@ def apply_check_command_options(func: Callable[..., object]) -> Callable[..., ob
     return func
 
 
-__all__ = ["CHECK_COMMAND_OPTION_DECORATORS", "apply_check_command_options"]
+__all__ = ["CHECK_COMMAND_OPTION_DECORATORS", "CheckCommandDecorator", "apply_check_command_options"]

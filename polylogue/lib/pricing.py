@@ -153,6 +153,8 @@ PRICING: dict[str, ModelPricing] = {
     "gemini-2.5-pro": ModelPricing("google", 1.25, 10.0),
 }
 
+_PRICING_KEYS_DESC = tuple(sorted(PRICING, key=len, reverse=True))
+
 
 def _coerce_float(value: object) -> float | None:
     if isinstance(value, bool) or value is None:
@@ -204,7 +206,7 @@ def _normalize_model(model: str) -> str:
     lowered = lowered.removeprefix("gemini/")
     if lowered in PRICING:
         return lowered
-    for key in sorted(PRICING, key=len, reverse=True):
+    for key in _PRICING_KEYS_DESC:
         if lowered.startswith(key):
             return key
     return lowered
