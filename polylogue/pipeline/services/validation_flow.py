@@ -97,7 +97,8 @@ async def validate_raw_ids(
         )
         result.merge(batch_result)
 
-        missing = [raw_id for raw_id in batch_ids if raw_id not in {record.raw_id for record in raw_records}]
+        raw_records_ids = {record.raw_id for record in raw_records}
+        missing = [raw_id for raw_id in batch_ids if raw_id not in raw_records_ids]
         processed = batch_start + len(raw_records)
         for missing_index, raw_id in enumerate(missing, start=1):
             result.errors += 1

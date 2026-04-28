@@ -194,6 +194,13 @@ def _post_webhook(url: str, data: bytes) -> None:
         connection.request("POST", path, body=data, headers=headers)
         response = connection.getresponse()
         response.read()
+        response_status = response.status
+        if isinstance(response_status, int) and not (200 <= response_status < 300):
+            logger.warning(
+                "Webhook returned non-2xx status: %s %s",
+                response_status,
+                response.reason,
+            )
     finally:
         connection.close()
 
