@@ -50,6 +50,7 @@ from polylogue.storage.run_state import RunResult
 INTERACTIVE_RUN_STAGE_CHOICES: tuple[str, ...] = (
     "all",
     "reprocess",
+    "publish",
     "acquire",
     "schema",
     "parse",
@@ -408,6 +409,12 @@ def run_reprocess_stage() -> RunStageRequest:
 def run_all_stage() -> RunStageRequest:
     """Run the full pipeline."""
     return _make_stage_request("all")
+
+
+@run_command.command("publish")
+def run_publish_stage() -> RunStageRequest:
+    """Render and build the static site."""
+    return _make_stage_request("publish")
 
 
 @run_command.command("site")
