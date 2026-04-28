@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 from polylogue.logging import get_logger
@@ -44,14 +45,19 @@ def sanitize_path(v: str | None) -> str | None:
 
     # If traversal or symlinks were detected, hash to prevent re-assembly
     if has_traversal or has_symlink:
-        import hashlib
-
         original_hash = hashlib.sha256(original_v.encode()).hexdigest()[:12]
         return f"_blocked_{original_hash}"
 
-    # Safe path: clean up components but preserve absolute/relative structure
+    # Safe path: clean up components
     parts = [c.strip() for c in v.split("/") if c.strip() and c.strip() not in (".", "..")]
     joined = "/".join(parts)
-    if original_v.startswith("/"):
-        return "/" + joined if parts else "/"
+
+    # Absolute paths are rejected — no allowlist for safe directories.
+    # An attacker-controlled input like "/etc/passwd" would otherwise pass
+    # through to the filesystem. Callers with a known root should resolve
+    # against it themselves.
+    if v.startswith("/"):
+        original_hash = hashlib.sha256(original_v.encode()).hexdigest()[:12]
+        return f"_blocked_{original_hash}"
+
     return joined or v or None

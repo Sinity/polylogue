@@ -18,13 +18,29 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import tempfile
 from collections.abc import Callable, Iterator
+from contextlib import suppress
 from pathlib import Path
 from typing import IO, BinaryIO
 
 _CHUNK_SIZE = 128 * 1024  # 128 KB
+
+# Valid blob hash: lowercase hex only
+_VALID_HEX = re.compile(r"^[0-9a-f]+$")
+
 Heartbeat = Callable[[], None]
+
+
+def _write_all(fd: int, data: bytes) -> None:
+    """Write all *data* to *fd*, retrying on partial writes."""
+    offset = 0
+    while offset < len(data):
+        written = os.write(fd, data[offset:])
+        if written == 0:
+            raise OSError("write() returned 0 — possible disk full or closed fd")
+        offset += written
 
 
 class BlobStore:
@@ -35,6 +51,8 @@ class BlobStore:
 
     def blob_path(self, hash_hex: str) -> Path:
         """Return the filesystem path for a blob by its hex digest."""
+        if not _VALID_HEX.match(hash_hex):
+            raise ValueError(f"invalid blob hash: {hash_hex!r} — expected lowercase hex string")
         return self.root / hash_hex[:2] / hash_hex[2:]
 
     def exists(self, hash_hex: str) -> bool:
@@ -79,10 +97,11 @@ class BlobStore:
                     if not chunk:
                         break
                     hasher.update(chunk)
-                    os.write(fd, chunk)
+                    _write_all(fd, chunk)
                     size += len(chunk)
                     if heartbeat is not None:
-                        heartbeat()
+                        with suppress(Exception):
+                            heartbeat()
             os.close(fd)
             fd = None
 
@@ -130,9 +149,10 @@ class BlobStore:
                     break
                 hasher.update(chunk)
                 size += len(chunk)
-                os.write(fd, chunk)
+                _write_all(fd, chunk)
                 if heartbeat is not None:
-                    heartbeat()
+                    with suppress(Exception):
+                        heartbeat()
 
             hash_hex = hasher.hexdigest()
             dest = self.blob_path(hash_hex)
@@ -173,7 +193,7 @@ class BlobStore:
         tmp_path: str | None = None
         try:
             fd, tmp_path = tempfile.mkstemp(dir=dest.parent, prefix=".blob.")
-            os.write(fd, data)
+            _write_all(fd, data)
             os.close(fd)
             fd = None
             os.chmod(tmp_path, 0o600)
@@ -232,7 +252,7 @@ class BlobStore:
             if not prefix_dir.is_dir() or len(prefix_dir.name) != 2:
                 continue
             for blob_file in sorted(prefix_dir.iterdir()):
-                if blob_file.is_file():
+                if blob_file.is_file() and not blob_file.name.startswith(".blob."):
                     yield prefix_dir.name + blob_file.name
 
     def remove(self, hash_hex: str) -> bool:
