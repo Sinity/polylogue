@@ -2,13 +2,10 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from pathlib import Path
-from typing import TypeVar
 
 from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.config import Config, Source
 from polylogue.lib.json import JSONDocument, dumps
-
-T = TypeVar("T")
 
 RUN_STAGE_CHOICES: tuple[str, ...] = (
     "acquire",
