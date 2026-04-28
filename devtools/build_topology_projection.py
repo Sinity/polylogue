@@ -307,6 +307,10 @@ def _resolve_target(name: str, sub: str, prefix: str) -> str:
     stem = stem.lstrip("_")
     if not stem or stem == ".py":
         return f"polylogue/{sub}{name}"
+    # Guard against creating a target that would double the __init__.py
+    # suffix when the stem itself is __init__.py.
+    if stem == "__init__.py" and sub.endswith("/"):
+        return f"polylogue/{sub}{name}"
     return f"polylogue/{sub}{stem}"
 
 
@@ -428,10 +432,13 @@ def classify(path: Path) -> dict[str, Any]:
         if suffix.startswith("drive") and "/" not in suffix:
             target = f"polylogue/sources/drive/{suffix.replace('drive_', '').replace('drive.py', '__init__.py') or '__init__.py'}"
             issue = "#403"
-        elif suffix.startswith("parsers/claude") and "/" not in suffix[len("parsers/") :]:
+        elif suffix.startswith("parsers/claude_") and "/" not in suffix[len("parsers/") :]:
             # parsers/claude_*
             stem = suffix[len("parsers/claude_") :] or "__init__.py"
             target = f"polylogue/sources/parsers/claude/{stem}"
+            issue = "#403"
+        elif suffix == "parsers/claude.py":
+            target = "polylogue/sources/parsers/claude/__init__.py"
             issue = "#403"
         else:
             target = rel
