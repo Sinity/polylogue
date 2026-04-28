@@ -164,12 +164,20 @@ def _message_index_check(conn: sqlite3.Connection, *, exact_counts: bool) -> Rea
 
     indexed_rows = int(index_readiness["indexed_rows"])
     total_rows = int(index_readiness["total_rows"])
+    triggers_present = bool(index_readiness.get("triggers_present", True))
     if bool(index_readiness["ready"]):
         return ReadinessCheck(
             "index",
             VerifyStatus.OK,
             count=indexed_rows if exact_counts else 0,
             summary=(f"messages indexed: {indexed_rows}" if exact_counts else "messages FTS present"),
+        )
+
+    if not triggers_present:
+        return ReadinessCheck(
+            "index",
+            VerifyStatus.WARNING,
+            summary="messages FTS triggers missing — index is stale; run repair dangling_fts",
         )
     return ReadinessCheck(
         "index",

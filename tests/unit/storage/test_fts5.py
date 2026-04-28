@@ -1138,7 +1138,7 @@ def test_search_invalid_query_reports_error(
             if "action_events_fts" in sql and "sqlite_master" in sql:
                 return StubCursor(row=None)
             if "sqlite_master" in sql:
-                return StubCursor(row={"name": "messages_fts"})
+                return StubCursor(row={"name": "messages_fts"} if "type='table'" in sql else (3,))
             if "messages_fts_docsize" in sql:
                 return StubCursor(row=(1,))
             if "COUNT(*) FROM messages" in sql:
