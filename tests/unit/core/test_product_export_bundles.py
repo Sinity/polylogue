@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.api import Polylogue
-from polylogue.product_export_bundles import ProductExportBundleError, ProductExportBundleRequest
+from polylogue.products.export_bundles import ProductExportBundleError, ProductExportBundleRequest
 from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.products.session.rebuild import rebuild_session_products_sync
 from tests.infra.storage_records import ConversationBuilder

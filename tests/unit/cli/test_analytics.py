@@ -6,8 +6,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import TypeAlias
 
-from polylogue.archive_products import ProviderAnalyticsProduct
 from polylogue.operations.archive import list_provider_analytics_products
+from polylogue.products.archive import ProviderAnalyticsProduct
 from polylogue.storage.repository import ConversationRepository
 from tests.infra.storage_records import make_conversation, make_message
 

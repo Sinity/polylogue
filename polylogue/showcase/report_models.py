@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from polylogue.authored_payloads import PayloadDict, payload_records
+from polylogue.products.authored_payloads import PayloadDict, payload_records
 from polylogue.scenarios import ScenarioMetadata
 from polylogue.showcase.invariants import InvariantResult
 from polylogue.showcase.qa_runner_models import QAResult

@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from polylogue.authored_payloads import require_payload_mapping
 from polylogue.lib.outcomes import OutcomeStatus
+from polylogue.products.authored_payloads import require_payload_mapping
 from polylogue.showcase.exercises import GROUPS
 from polylogue.showcase.qa_runner_models import QAResult
 from polylogue.showcase.report_common import status_label

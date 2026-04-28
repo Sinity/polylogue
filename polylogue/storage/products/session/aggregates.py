@@ -8,9 +8,9 @@ from dataclasses import dataclass
 
 import aiosqlite
 
-from polylogue.archive_product_rollups import build_session_tag_rollup_records
-from polylogue.archive_product_summaries import build_day_session_summary_records
-from polylogue.archive_products import date_from_iso
+from polylogue.products.archive import date_from_iso
+from polylogue.products.archive_rollups import build_session_tag_rollup_records
+from polylogue.products.archive_summaries import build_day_session_summary_records
 from polylogue.storage.backends.queries.mappers import _row_to_session_profile_record
 from polylogue.storage.backends.queries.session_product_summary_queries import (
     replace_day_session_summaries as replace_day_session_summaries_async,

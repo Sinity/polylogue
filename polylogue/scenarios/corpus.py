@@ -7,7 +7,7 @@ from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import TYPE_CHECKING
 
-from polylogue.authored_payloads import (
+from polylogue.products.authored_payloads import (
     PayloadDict,
     PayloadMap,
     merge_unique_string_tuples,

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, field_validator
 
-from polylogue.archive_product_models import (
+from polylogue.products.archive_models import (
     SessionEnrichmentPayload,
     SessionEvidencePayload,
     SessionInferencePayload,

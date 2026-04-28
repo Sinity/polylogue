@@ -3,8 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from unittest.mock import patch
 
-from polylogue.cli import products_rendering, products_workflow
-from polylogue.products import registry as product_registry
+from polylogue.cli import products_rendering
 
 
 @dataclass(frozen=True)
@@ -56,7 +55,3 @@ def test_summarize_archive_debt_counts_actionable_items_and_issue_rows() -> None
         "actionable_items": 2,
         "issue_rows": 7,
     }
-
-
-def test_products_workflow_reexports_registry_fetch_products() -> None:
-    assert products_workflow.fetch_products is product_registry.fetch_products

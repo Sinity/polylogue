@@ -9,12 +9,14 @@ from typing import TYPE_CHECKING, TypeVar, cast
 
 import structlog
 
-from polylogue.archive_product_rollups import aggregate_session_tag_rollup_products
-from polylogue.archive_product_summaries import (
-    aggregate_day_session_summary_products,
-    aggregate_week_session_summary_products,
-)
-from polylogue.archive_products import (
+from polylogue.config import ConfigError
+from polylogue.lib.conversation.models import ConversationSummary
+from polylogue.lib.pricing import CostUsagePayload, _normalize_model, estimate_conversation_cost, generated_at
+from polylogue.lib.query.spec import ConversationQuerySpec
+from polylogue.lib.semantic.content_projection import ContentProjectionSpec
+from polylogue.maintenance.targets import build_maintenance_target_catalog
+from polylogue.paths.sanitize import conversation_render_root
+from polylogue.products.archive import (
     ArchiveDebtProduct,
     ArchiveDebtProductQuery,
     ArchiveProductProvenance,
@@ -42,25 +44,23 @@ from polylogue.archive_products import (
     WorkThreadProduct,
     WorkThreadProductQuery,
 )
-from polylogue.archive_resume import ResumeBrief, ResumeOperations, build_resume_brief
-from polylogue.config import ConfigError
-from polylogue.lib.conversation.models import ConversationSummary
-from polylogue.lib.pricing import CostUsagePayload, _normalize_model, estimate_conversation_cost, generated_at
-from polylogue.lib.query.spec import ConversationQuerySpec
-from polylogue.lib.semantic.content_projection import ContentProjectionSpec
-from polylogue.maintenance.targets import build_maintenance_target_catalog
-from polylogue.paths.sanitize import conversation_render_root
-from polylogue.product_export_bundles import (
+from polylogue.products.archive_rollups import aggregate_session_tag_rollup_products
+from polylogue.products.archive_summaries import (
+    aggregate_day_session_summary_products,
+    aggregate_week_session_summary_products,
+)
+from polylogue.products.export_bundles import (
     ProductExportBundleRequest,
     ProductExportBundleResult,
     ProductExportOperations,
     export_product_bundle,
 )
-from polylogue.product_readiness import (
+from polylogue.products.readiness import (
     ProductReadinessQuery,
     ProductReadinessReport,
     build_product_readiness_report,
 )
+from polylogue.products.resume import ResumeBrief, ResumeOperations, build_resume_brief
 from polylogue.services import RuntimeServices, build_runtime_services
 from polylogue.storage.backends.connection import connection_context
 from polylogue.storage.backends.queries.stats import ProviderMetricsRow
