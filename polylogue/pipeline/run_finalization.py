@@ -111,6 +111,7 @@ async def persist_run_result(
         index_outcome=index_outcome,
         duration_ms=duration_ms,
     )
+    run_path = write_run_json(config.archive_root, _run_payload_document(run_payload))
     await repository.record_run(
         RunRecord(
             run_id=str(run_payload["run_id"]),
@@ -122,7 +123,6 @@ async def persist_run_result(
             duration_ms=duration_ms,
         ),
     )
-    run_path = write_run_json(config.archive_root, _run_payload_document(run_payload))
     return RunResult(
         run_id=str(run_payload["run_id"]),
         counts=state.counts.model_copy(deep=True),

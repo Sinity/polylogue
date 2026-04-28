@@ -33,8 +33,8 @@ def test_full_sequence_satisfies_all_inputs() -> None:
 
 
 def test_reprocess_sequence_satisfies_inputs() -> None:
-    """``reprocess`` (parse, materialize, render, index) satisfies the contract."""
-    sequence = stage_specs_for_sequence(("parse", "materialize", "render", "index"))
+    """``reprocess`` (parse, materialize, render, site, index) satisfies the contract."""
+    sequence = stage_specs_for_sequence(("parse", "materialize", "render", "site", "index"))
     executed: list[PipelineStageSpec] = []
     for spec in sequence:
         validate_stage_contract(spec, executed_specs=executed)
