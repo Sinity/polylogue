@@ -495,6 +495,81 @@
     }
   },
   {
+    "name": "get_messages",
+    "parameters": {
+      "properties": {
+        "conversation_id": {
+          "title": "Conversation Id",
+          "type": "string"
+        },
+        "limit": {
+          "default": 50,
+          "title": "Limit",
+          "type": "integer"
+        },
+        "message_role": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Message Role"
+        },
+        "message_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Message Type"
+        },
+        "no_code_blocks": {
+          "default": false,
+          "title": "No Code Blocks",
+          "type": "boolean"
+        },
+        "no_file_reads": {
+          "default": false,
+          "title": "No File Reads",
+          "type": "boolean"
+        },
+        "no_tool_calls": {
+          "default": false,
+          "title": "No Tool Calls",
+          "type": "boolean"
+        },
+        "no_tool_outputs": {
+          "default": false,
+          "title": "No Tool Outputs",
+          "type": "boolean"
+        },
+        "offset": {
+          "default": 0,
+          "title": "Offset",
+          "type": "integer"
+        },
+        "prose_only": {
+          "default": false,
+          "title": "Prose Only",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "conversation_id"
+      ],
+      "title": "get_messagesArguments",
+      "type": "object"
+    }
+  },
+  {
     "name": "get_metadata",
     "parameters": {
       "properties": {
@@ -636,6 +711,18 @@
           "title": "Limit",
           "type": "integer"
         },
+        "message_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Message Type"
+        },
         "min_messages": {
           "anyOf": [
             {
@@ -659,6 +746,11 @@
           ],
           "default": null,
           "title": "Min Words"
+        },
+        "offset": {
+          "default": 0,
+          "title": "Offset",
+          "type": "integer"
         },
         "provider": {
           "anyOf": [
@@ -707,6 +799,18 @@
           ],
           "default": null,
           "title": "Since"
+        },
+        "since_session": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Since Session"
         },
         "sort": {
           "anyOf": [
@@ -850,6 +954,32 @@
         "kw"
       ],
       "title": "provider_analyticsArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "raw_records",
+    "parameters": {
+      "properties": {
+        "conversation_id": {
+          "title": "Conversation Id",
+          "type": "string"
+        },
+        "limit": {
+          "default": 50,
+          "title": "Limit",
+          "type": "integer"
+        },
+        "offset": {
+          "default": 0,
+          "title": "Offset",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "conversation_id"
+      ],
+      "title": "raw_recordsArguments",
       "type": "object"
     }
   },
@@ -1005,6 +1135,18 @@
           "title": "Limit",
           "type": "integer"
         },
+        "message_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Message Type"
+        },
         "min_messages": {
           "anyOf": [
             {
@@ -1028,6 +1170,11 @@
           ],
           "default": null,
           "title": "Min Words"
+        },
+        "offset": {
+          "default": 0,
+          "title": "Offset",
+          "type": "integer"
         },
         "provider": {
           "anyOf": [
@@ -1080,6 +1227,18 @@
           ],
           "default": null,
           "title": "Since"
+        },
+        "since_session": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Since Session"
         },
         "tool": {
           "anyOf": [

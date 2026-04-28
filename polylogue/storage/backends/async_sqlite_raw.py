@@ -232,5 +232,21 @@ class SQLiteRawMixin:
         async with self._get_connection() as conn:
             return await raw_queries.get_raw_conversation_count(conn, provider)
 
+    async def get_raw_records_for_conversation(
+        self,
+        conversation_id: str,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> tuple[list[RawConversationRecord], int]:
+        """Look up raw conversation records for a given conversation ID."""
+        async with self._get_connection() as conn:
+            return await raw_queries.get_raw_records_for_conversation(
+                conn,
+                conversation_id,
+                limit=limit,
+                offset=offset,
+            )
+
 
 __all__ = ["SQLiteRawMixin"]

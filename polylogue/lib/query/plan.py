@@ -111,6 +111,9 @@ class ConversationQueryPlan:
     min_messages: int | None = None
     max_messages: int | None = None
     min_words: int | None = None
+    since_session_id: str | None = None
+    message_type: str | None = None
+    offset: int = 0
     vector_provider: VectorProvider | None = None
 
     # -- Description / record-query methods (was QueryPlanDescriptionMixin) --

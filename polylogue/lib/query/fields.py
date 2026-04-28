@@ -567,6 +567,34 @@ QUERY_FIELD_DESCRIPTORS: tuple[QueryFieldDescriptor, ...] = (
         selection_filter=False,
         blocks_simple_message_hit=True,
     ),
+    QueryFieldDescriptor(
+        name="offset",
+        plan_attr="offset",
+        plan_active=lambda v: int(v) > 0,
+        record_attr="offset",
+        storage_value=lambda v: int(v) if v else 0,
+        selection_filter=False,
+    ),
+    QueryFieldDescriptor(
+        name="since_session_id",
+        plan_attr="since_session_id",
+        plan_active=_not_none,
+        record_attr="since_session_id",
+        storage_value=lambda v: str(v) if v else None,
+        selection_filter=True,
+        requires_post_filter=True,
+        blocks_sql_count=True,
+    ),
+    QueryFieldDescriptor(
+        name="message_type",
+        plan_attr="message_type",
+        plan_active=_not_none,
+        record_attr="message_type",
+        storage_value=lambda v: str(v) if v else None,
+        selection_filter=True,
+        requires_post_filter=True,
+        blocks_sql_count=True,
+    ),
 )
 
 

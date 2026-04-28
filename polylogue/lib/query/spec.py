@@ -196,6 +196,9 @@ def build_query_spec_from_params(
         max_messages=optional_int(params.get("max_messages")),
         min_words=optional_int(params.get("min_words")),
         similar_text=optional_text(params.get("similar_text")),
+        since_session_id=optional_text(params.get("since_session_id") or params.get("since_session")),
+        message_type=optional_text(params.get("message_type")),
+        offset=optional_int(params.get("offset")) or 0,
     )
 
 
@@ -236,6 +239,9 @@ def query_spec_to_plan(
         max_messages=spec.max_messages,
         min_words=spec.min_words,
         similar_text=spec.similar_text,
+        since_session_id=spec.since_session_id,
+        message_type=spec.message_type,
+        offset=spec.offset,
         vector_provider=vector_provider,
     )
     if spec.latest:
@@ -285,6 +291,9 @@ class ConversationQuerySpec:
     max_messages: int | None = None
     min_words: int | None = None
     similar_text: str | None = None
+    since_session_id: str | None = None
+    message_type: str | None = None
+    offset: int = 0
 
     @classmethod
     def from_params(cls, params: Mapping[str, object]) -> ConversationQuerySpec:
