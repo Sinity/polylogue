@@ -193,14 +193,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
-        "verify-showcase",
-        "verification",
-        "Verify committed showcase/demo surfaces.",
-        "devtools.verify_showcase",
-        use_when="Check the committed showcase and demo surfaces after changing rendering or publication behavior.",
-        examples=("devtools verify-showcase",),
-    ),
-    CommandSpec(
         "verify-topology",
         "verification",
         "Verify the realized polylogue tree against the topology projection.",
