@@ -825,8 +825,6 @@ def _process_ingest_batch_sync(
     t_start = time.perf_counter()
     setup_started = time.perf_counter()
     conn = _open_sync_connection(db_path)
-    suspend_fts_triggers_sync(conn)
-    conn.execute("BEGIN IMMEDIATE")
     summary.setup_elapsed_s = time.perf_counter() - setup_started
 
     materialized_ids: set[str] = set()
@@ -835,6 +833,8 @@ def _process_ingest_batch_sync(
 
     changed_ids: set[str] = set()
     try:
+        suspend_fts_triggers_sync(conn)
+        conn.execute("BEGIN IMMEDIATE")
         _consume_ingest_results(
             conn,
             raw_records,
