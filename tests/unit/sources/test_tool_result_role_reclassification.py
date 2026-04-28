@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from polylogue.lib.roles import Role
 from polylogue.sources.parsers.base import ParsedContentBlock
-from polylogue.sources.parsers.claude_common import (
+from polylogue.sources.parsers.claude.common import (
     extract_messages_from_chat_messages,
     reclassify_tool_result_envelope,
 )

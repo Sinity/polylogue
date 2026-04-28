@@ -7,7 +7,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from polylogue.sources.drive_gateway import (
+from polylogue.sources.drive.gateway import (
     DEFAULT_DRIVE_RETRIES,
     DEFAULT_DRIVE_RETRY_BASE,
     DriveServiceGateway,
@@ -17,7 +17,7 @@ from polylogue.sources.drive_gateway import (
     _resolve_retry_base,
     resolve_drive_retry_policy,
 )
-from polylogue.sources.drive_types import DriveAuthError, DriveNotFoundError, DriveRetryPolicy
+from polylogue.sources.drive.types import DriveAuthError, DriveNotFoundError, DriveRetryPolicy
 from tests.infra.drive_mocks import MockDriveService, MockMediaIoBaseDownload
 
 
@@ -57,7 +57,7 @@ def _gateway(*, retries: int = 0, retry_base: float = 0.0) -> DriveServiceGatewa
 
 def test_import_module_wraps_missing_drive_dependency(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        "polylogue.sources.drive_gateway.importlib.import_module",
+        "polylogue.sources.drive.gateway.importlib.import_module",
         lambda name: (_ for _ in ()).throw(ModuleNotFoundError(name)),
     )
     with pytest.raises(DriveAuthError, match="Drive dependencies are not available"):
@@ -193,7 +193,7 @@ def test_service_handle_rebuilds_on_expired_credentials(monkeypatch: pytest.Monk
             return _fake_module(build=build)
         raise AssertionError(name)
 
-    monkeypatch.setattr("polylogue.sources.drive_gateway._import_module", fake_import)
+    monkeypatch.setattr("polylogue.sources.drive.gateway._import_module", fake_import)
     assert gw._service_handle() is rebuilt_service
     load_credentials.assert_called_once_with()
     build.assert_called_once_with("drive", "v3", credentials=creds, cache_discovery=False)
@@ -212,7 +212,7 @@ def test_service_handle_builds_and_caches_service(monkeypatch: pytest.MonkeyPatc
             return _fake_module(build=build)
         raise AssertionError(name)
 
-    monkeypatch.setattr("polylogue.sources.drive_gateway._import_module", fake_import)
+    monkeypatch.setattr("polylogue.sources.drive.gateway._import_module", fake_import)
 
     first = gw._service_handle()
     second = gw._service_handle()
@@ -235,7 +235,7 @@ def test_download_file_writes_content(monkeypatch: pytest.MonkeyPatch) -> None:
     gw._service = _as_drive_service(MockDriveService(file_content={"file-1": b"hello-bytes"}))
 
     monkeypatch.setattr(
-        "polylogue.sources.drive_gateway._import_module",
+        "polylogue.sources.drive.gateway._import_module",
         lambda name: (
             MagicMock(MediaIoBaseDownload=MockMediaIoBaseDownload)
             if name == "googleapiclient.http"

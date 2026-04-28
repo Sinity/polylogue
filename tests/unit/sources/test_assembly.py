@@ -13,7 +13,7 @@ from polylogue.sources.assembly_claude_code import ClaudeCodeAssemblySpec
 from polylogue.sources.assembly_codex import CodexAssemblySpec, _parse_codex_session_index
 from polylogue.sources.assembly_gemini import GeminiAssemblySpec
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedConversation, ParsedMessage
-from polylogue.sources.parsers.claude_index import (
+from polylogue.sources.parsers.claude.index import (
     SessionIndexEntry,
     _looks_like_git_branch,
 )
@@ -536,7 +536,7 @@ class TestLooksLikeGitBranch:
 
     def test_git_branch_summary_skipped_in_enrichment(self) -> None:
         """enrich_conversation_from_index skips summary that looks like a git branch."""
-        from polylogue.sources.parsers.claude_index import enrich_conversation_from_index
+        from polylogue.sources.parsers.claude.index import enrich_conversation_from_index
 
         conv = _parsed_conversation(
             Provider.CLAUDE_CODE,
@@ -565,7 +565,7 @@ class TestLooksLikeGitBranch:
 
     def test_git_branch_exact_match_skipped(self) -> None:
         """Exact branch names like 'main' are rejected as summaries."""
-        from polylogue.sources.parsers.claude_index import enrich_conversation_from_index
+        from polylogue.sources.parsers.claude.index import enrich_conversation_from_index
 
         conv = _parsed_conversation(
             Provider.CLAUDE_CODE,

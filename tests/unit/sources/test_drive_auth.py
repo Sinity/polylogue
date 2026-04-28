@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from polylogue.sources.drive_auth import (
+from polylogue.sources.drive.auth import (
     DriveAuthManager,
     DriveAuthPrompter,
     UIAuthPrompter,
@@ -21,7 +21,7 @@ from polylogue.sources.drive_auth import (
     default_credentials_path,
     default_token_path,
 )
-from polylogue.sources.drive_types import DriveAuthError, DriveCredentialLike
+from polylogue.sources.drive.types import DriveAuthError, DriveCredentialLike
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -102,9 +102,9 @@ def test_default_path_helpers_contract(
 ) -> None:
     sentinel = Path(f"/tmp/sentinel-{attr_name}.json")
     patch_target = (
-        "polylogue.sources.drive_auth.drive_credentials_path"
+        "polylogue.sources.drive.auth.drive_credentials_path"
         if attr_name == "credentials_path"
-        else "polylogue.sources.drive_auth.drive_token_path"
+        else "polylogue.sources.drive.auth.drive_token_path"
     )
     monkeypatch.setattr(patch_target, lambda: sentinel)
     config = None if configured is None else MagicMock(**{attr_name: configured})
@@ -141,7 +141,7 @@ def test_resolve_credentials_path_contract(
     user_path.parent.mkdir(parents=True, exist_ok=True)
     user_path.write_text('{"user": true}', encoding="utf-8")
 
-    monkeypatch.setattr("polylogue.sources.drive_auth.default_credentials_path", lambda config: default_path)
+    monkeypatch.setattr("polylogue.sources.drive.auth.default_credentials_path", lambda config: default_path)
     if env_path is None:
         monkeypatch.delenv("POLYLOGUE_CREDENTIAL_PATH", raising=False)
     else:
@@ -188,7 +188,7 @@ def test_resolve_token_path_contract(
     expected: Path,
 ) -> None:
     monkeypatch.setattr(
-        "polylogue.sources.drive_auth.default_token_path", lambda config: Path("/tmp/default-token.json")
+        "polylogue.sources.drive.auth.default_token_path", lambda config: Path("/tmp/default-token.json")
     )
     if env_path is None:
         monkeypatch.delenv("POLYLOGUE_TOKEN_PATH", raising=False)
@@ -381,7 +381,7 @@ def test_load_credentials_state_machine(case: AuthLoadCase, monkeypatch: pytest.
     mgr = DriveAuthManager(ui=None, token_path=token_path)
     mgr._token_store = MagicMock()
     mgr._token_store.load.return_value = case.token_store_value
-    monkeypatch.setattr("polylogue.sources.drive_auth._import_auth_module", fake_import)
+    monkeypatch.setattr("polylogue.sources.drive.auth._import_auth_module", fake_import)
 
     if case.refreshes and creds is not None:
 
@@ -434,7 +434,7 @@ def test_refresh_credentials_if_needed_contract(tmp_path: Path, monkeypatch: pyt
 
     creds.refresh.side_effect = refresh
     monkeypatch.setattr(
-        "polylogue.sources.drive_auth._import_auth_module",
+        "polylogue.sources.drive.auth._import_auth_module",
         lambda name: (
             SimpleNamespace(Request=lambda: request)
             if name == "google.auth.transport.requests"
@@ -472,7 +472,7 @@ def test_load_credentials_uses_manual_flow_when_local_server_fails(
     mgr._prompter = FakeAuthPrompter("manual-code")
     mgr._token_store = MagicMock()
     mgr._token_store.load.return_value = None
-    monkeypatch.setattr("polylogue.sources.drive_auth._import_auth_module", fake_import)
+    monkeypatch.setattr("polylogue.sources.drive.auth._import_auth_module", fake_import)
     with patch.object(mgr, "_run_manual_auth_flow", return_value=manual_creds) as manual_auth_flow:
         result = mgr.load_credentials()
 
@@ -502,7 +502,7 @@ def test_load_credentials_returns_local_server_result(monkeypatch: pytest.Monkey
     mgr._prompter = FakeAuthPrompter("should-not-be-used")
     mgr._token_store = MagicMock()
     mgr._token_store.load.return_value = None
-    monkeypatch.setattr("polylogue.sources.drive_auth._import_auth_module", fake_import)
+    monkeypatch.setattr("polylogue.sources.drive.auth._import_auth_module", fake_import)
     with patch.object(
         mgr,
         "_run_manual_auth_flow",

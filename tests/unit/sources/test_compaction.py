@@ -11,7 +11,7 @@ Covers:
 from __future__ import annotations
 
 from polylogue.pipeline.semantic_capture import detect_context_compaction
-from polylogue.sources.parsers.claude_code_parser import parse_code
+from polylogue.sources.parsers.claude.code_parser import parse_code
 from polylogue.sources.parsers.codex import parse as parse_codex
 from polylogue.sources.providers.claude_code import ClaudeCodeRecord
 from polylogue.sources.providers.codex import CodexRecord

@@ -457,7 +457,7 @@ def run_runtime_readiness(config: Config) -> ReadinessReport:
 
     drive_sources = [source for source in config.sources if source.is_drive]
     if drive_sources and config.drive_config:
-        from polylogue.sources.drive_auth import default_credentials_path, default_token_path
+        from polylogue.sources.drive.auth import default_credentials_path, default_token_path
 
         cred = default_credentials_path(config.drive_config)
         token = default_token_path(config.drive_config)
@@ -510,7 +510,7 @@ def run_runtime_readiness(config: Config) -> ReadinessReport:
 
 
 def _build_source_readiness_checks(config: Config) -> list[ReadinessCheck]:
-    from polylogue.sources.drive_auth import default_credentials_path, default_token_path
+    from polylogue.sources.drive.auth import default_credentials_path, default_token_path
 
     checks: list[ReadinessCheck] = []
     for source in config.sources:
