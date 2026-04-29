@@ -25,8 +25,12 @@ def _load_rules(rules_path: Path) -> list[dict[str, object]]:
     import yaml
 
     with open(rules_path, encoding="utf-8") as f:
-        data = yaml.safe_load(f)
-    return data.get("rules", [])
+        data: object = yaml.safe_load(f)
+    if isinstance(data, dict):
+        rules: object = data.get("rules", [])
+        if isinstance(rules, list):
+            return rules
+    return []
 
 
 def _collect_imports(package_dir: Path) -> dict[str, set[str]]:
@@ -72,8 +76,18 @@ def main(argv: list[str] | None = None) -> int:
         if not target_dir.exists():
             continue
 
-        allow_from = rule.get("allow", {}).get("from", []) or []
-        disallow_from = rule.get("disallow", {}).get("from", []) or []
+        allow_block = rule.get("allow") or {}
+        disallow_block = rule.get("disallow") or {}
+        allow_from: list[str] = []
+        disallow_from: list[str] = []
+        if isinstance(allow_block, dict):
+            af = allow_block.get("from")
+            if isinstance(af, list):
+                allow_from = [str(x) for x in af]
+        if isinstance(disallow_block, dict):
+            df = disallow_block.get("from")
+            if isinstance(df, list):
+                disallow_from = [str(x) for x in df]
 
         imports = _collect_imports(target_dir)
         for file_rel, file_imports in imports.items():

@@ -41,7 +41,7 @@ def main(argv: list[str] | None = None) -> int:
         rendered = render_affected_obligations(report)
         print(rendered)
 
-    return 0 if report.affected_count >= 0 else 1
+    return 0
 
 
 if __name__ == "__main__":
