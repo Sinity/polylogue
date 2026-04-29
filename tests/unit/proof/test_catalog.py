@@ -58,6 +58,7 @@ def test_default_catalog_compiles_first_vertical_slice() -> None:
         "operation.effect.sampling_bounded",
         "operation.effect.snapshot_consistent",
         "operation.effect.timeout_bounded",
+        "product.surface.registered",
     }
     assert catalog.subjects_by_kind()["cli.command"] >= 1
     assert catalog.subjects_by_kind()["cli.json_command"] >= 1

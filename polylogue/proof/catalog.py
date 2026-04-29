@@ -496,6 +496,7 @@ def default_claims() -> tuple[Claim, ...]:
             ),
         ),
         *_effect_implication_claims(),
+        *_product_surface_claims(),
     )
 
 
@@ -585,6 +586,25 @@ def _effect_implication_claims() -> tuple[Claim, ...]:
         )
 
     return tuple(claims)
+
+
+def _product_surface_claims() -> tuple[Claim, ...]:
+    """Mint claims for registered product surfaces."""
+    return (
+        Claim(
+            id="product.surface.registered",
+            description="Every registered product type has a corresponding proof subject.",
+            subject_query=Kind("product.surface"),
+            evidence_schema=_evidence_schema("name", "display_name", "json_key"),
+            oracle="construction_sanity",
+            assurance_domain="surface_parity",
+            bug_classes=("product.registry.omission",),
+            runner_classes=("product_surface_static",),
+            observed_facts=("name", "display_name", "json_key"),
+            staleness_conditions=("Product registry entries are added or removed.",),
+            severity="info",
+        ),
+    )
 
 
 def default_runner_bindings(claims: Iterable[Claim]) -> tuple[RunnerBinding, ...]:
@@ -694,6 +714,10 @@ def default_runner_bindings(claims: Iterable[Claim]) -> tuple[RunnerBinding, ...
         elif claim.id.startswith("operation.effect."):
             bindings.append(
                 _runner_binding(claim, runner="effect-implication-static-contract", evidence_class="structural")
+            )
+        elif claim.id.startswith("product.surface."):
+            bindings.append(
+                _runner_binding(claim, runner="product-surface-static-contract", evidence_class="structural")
             )
     return tuple(bindings)
 
