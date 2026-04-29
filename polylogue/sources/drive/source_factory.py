@@ -2,13 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .drive_auth import DriveAuthManager
-from .drive_gateway import (
+from .auth import DriveAuthManager
+from .gateway import (
     DriveServiceGateway,
     resolve_drive_retry_policy,
 )
-from .drive_source_client import DriveSourceClient
-from .drive_types import DriveConfigLike, DriveUILike
+from .source_client import DriveSourceClient
+from .types import DriveConfigLike, DriveUILike
 
 
 def build_drive_source_client(

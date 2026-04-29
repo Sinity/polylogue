@@ -6,7 +6,7 @@ from pathlib import Path
 
 from .assembly import ClaudeCodeSessionIndex, SidecarData
 from .parsers.base import ParsedConversation
-from .parsers.claude_index import (
+from .parsers.claude.index import (
     SessionIndexEntry,
     enrich_conversation_from_index,
     parse_sessions_index,

@@ -7,7 +7,7 @@ import json
 from polylogue.lib.roles import Role
 from polylogue.types import ContentBlockType
 
-from .base import (
+from ..base import (
     ParsedAttachment,
     ParsedContentBlock,
     ParsedMessage,

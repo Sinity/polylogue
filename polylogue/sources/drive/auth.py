@@ -6,8 +6,9 @@ from pathlib import Path
 
 from polylogue.logging import get_logger
 
-from ..paths import drive_credentials_path, drive_token_path
-from .drive_auth_support import (
+from ...paths import drive_credentials_path, drive_token_path
+from ..token_store import create_token_store
+from .auth_support import (
     DriveAuthPrompter,
     UIAuthPrompter,
     _PromptBridge,
@@ -17,7 +18,7 @@ from .drive_auth_support import (
     refresh_credentials_if_needed,
     run_manual_auth_flow,
 )
-from .drive_types import (
+from .types import (
     SCOPES,
     CachedCredentialState,
     DriveAuthError,
@@ -30,7 +31,6 @@ from .drive_types import (
     DriveTokenStoreLike,
     DriveUILike,
 )
-from .token_store import create_token_store
 
 logger = get_logger(__name__)
 _import_auth_module = import_auth_module

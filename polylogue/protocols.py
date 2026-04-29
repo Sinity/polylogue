@@ -14,13 +14,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from polylogue.lib.json import JSONDocument, JSONValue
-from polylogue.storage.runtime import (
-    ArtifactObservationRecord,
-    AttachmentRecord,
-    ConversationRecord,
-    MessageRecord,
-    RawConversationRecord,
-)
 from polylogue.types import Provider, ValidationMode, ValidationStatus
 
 if TYPE_CHECKING:
@@ -38,7 +31,13 @@ if TYPE_CHECKING:
     from polylogue.storage.backends.queries.messages import MessageTypeName
     from polylogue.storage.backends.queries.stats import AggregateMessageStats
     from polylogue.storage.query_models import ConversationRecordQuery
-    from polylogue.storage.runtime import ConversationRecord
+    from polylogue.storage.runtime import (
+        ArtifactObservationRecord,
+        AttachmentRecord,
+        ConversationRecord,
+        MessageRecord,
+        RawConversationRecord,
+    )
     from polylogue.types import ConversationId
 
 

@@ -11,8 +11,8 @@ from __future__ import annotations
 
 # Drive integration
 from .drive import download_drive_files, iter_drive_conversations
-from .drive_source import DriveSourceAPI, DriveSourceClient, build_drive_source_client
-from .drive_types import (
+from .drive.source import DriveSourceAPI, DriveSourceClient, build_drive_source_client
+from .drive.types import (
     DriveAuthError,
     DriveError,
     DriveFile,
