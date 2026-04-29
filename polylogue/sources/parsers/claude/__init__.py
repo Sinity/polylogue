@@ -9,26 +9,26 @@ from __future__ import annotations
 from collections.abc import Mapping
 from pathlib import Path
 
-from .base import ParsedAttachment, ParsedConversation, ParsedMessage
-from .claude_ai_parser import looks_like_ai as _looks_like_ai
-from .claude_ai_parser import parse_ai as _parse_ai
-from .claude_code_detection import looks_like_code
-from .claude_code_parser import parse_code, parse_code_stream
-from .claude_common import (
+from ..base import ParsedAttachment, ParsedConversation, ParsedMessage
+from .ai_parser import looks_like_ai as _looks_like_ai
+from .ai_parser import parse_ai as _parse_ai
+from .code_detection import looks_like_code
+from .code_parser import parse_code, parse_code_stream
+from .common import (
     extract_messages_from_chat_messages as _extract_messages_from_chat_messages,
 )
-from .claude_common import extract_text_from_segments as _extract_text_from_segments
-from .claude_common import normalize_timestamp as _normalize_timestamp
-from .claude_index import (
+from .common import extract_text_from_segments as _extract_text_from_segments
+from .common import normalize_timestamp as _normalize_timestamp
+from .index import (
     SessionIndexEntry,
 )
-from .claude_index import (
+from .index import (
     enrich_conversation_from_index as _enrich_conversation_from_index,
 )
-from .claude_index import (
+from .index import (
     find_sessions_index as _find_sessions_index,
 )
-from .claude_index import (
+from .index import (
     parse_sessions_index as _parse_sessions_index,
 )
 

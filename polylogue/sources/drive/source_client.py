@@ -11,8 +11,8 @@ from typing import ParamSpec, Protocol, TypeVar
 from polylogue.lib.json import JSONDocument, JSONValue
 from polylogue.logging import get_logger
 
-from .drive_gateway import DriveListFilesResponse, DrivePayloadRecord
-from .drive_source_support import (
+from .gateway import DriveListFilesResponse, DrivePayloadRecord
+from .source_support import (
     _build_drive_file,
     _build_folder_lookup_query,
     _is_supported_drive_payload,
@@ -24,7 +24,7 @@ from .drive_source_support import (
     _response_files,
     _response_page_token,
 )
-from .drive_types import (
+from .types import (
     FOLDER_MIME_TYPE,
     DriveFile,
     DriveNotFoundError,
@@ -86,7 +86,7 @@ class DriveSourceClient:
         return file_id or folder_ref
 
     def resolve_folder_id(self, folder_ref: str) -> str:
-        from .drive_gateway import _import_module as _gw_import
+        from .gateway import _import_module as _gw_import
 
         http_error_cls = _gw_import("googleapiclient.errors").HttpError
 

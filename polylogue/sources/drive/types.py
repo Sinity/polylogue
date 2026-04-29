@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from os import PathLike
 from typing import Protocol, runtime_checkable
 
-from ..errors import PolylogueError
+from ...errors import PolylogueError
 
 SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
 FOLDER_MIME_TYPE = "application/vnd.google-apps.folder"

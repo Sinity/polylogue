@@ -16,14 +16,14 @@ from typing_extensions import TypedDict
 from polylogue.lib.json import JSONDocument, JSONDocumentList
 from polylogue.logging import get_logger
 
-from .drive_types import (
+from .types import (
     DriveAuthError,
     DriveConfigLike,
     DriveCredentialLike,
     DriveNotFoundError,
     DriveRetryPolicy,
 )
-from .drive_types import DriveError as DriveServiceError
+from .types import DriveError as DriveServiceError
 
 logger = get_logger(__name__)
 

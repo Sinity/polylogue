@@ -7,8 +7,8 @@ from typing import TypeAlias
 from polylogue.lib.json import JSONValue, loads
 from polylogue.logging import get_logger
 
-from .drive_gateway import DriveListFilesResponse, DrivePayloadRecord
-from .drive_types import (
+from .gateway import DriveListFilesResponse, DrivePayloadRecord
+from .types import (
     FOLDER_MIME_TYPE,
     GEMINI_PROMPT_MIME_TYPE,
     DriveFile,

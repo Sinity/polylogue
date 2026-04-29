@@ -17,7 +17,7 @@ from polylogue.types import Provider
 from .parsers.base import ParsedConversation
 
 if TYPE_CHECKING:
-    from .parsers.claude_index import SessionIndexEntry
+    from .parsers.claude.index import SessionIndexEntry
 
 ClaudeCodeSessionIndex: TypeAlias = dict[str, "SessionIndexEntry"]
 CodexThreadNames: TypeAlias = dict[str, str]

@@ -9,14 +9,14 @@ from pydantic import ValidationError
 from polylogue.sources.providers.claude_ai import ClaudeAIConversation
 from polylogue.types import ContentBlockType, Provider
 
-from .base import (
+from ..base import (
     ParsedContentBlock,
     ParsedConversation,
     ParsedMessage,
     attachment_from_meta,
     content_blocks_from_segments,
 )
-from .claude_common import extract_messages_from_chat_messages, normalize_timestamp
+from .common import extract_messages_from_chat_messages, normalize_timestamp
 
 
 def looks_like_ai(payload: object) -> bool:

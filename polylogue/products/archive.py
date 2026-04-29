@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from datetime import date, datetime, timedelta, timezone
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from polylogue.lib.pricing import CostEstimatePayload, CostUsagePayload
 from polylogue.lib.session.session_profile import SessionProfile
@@ -26,13 +26,15 @@ from polylogue.products.archive_models import (
     WorkThreadPayload,
 )
 from polylogue.storage.repair import ArchiveDebtStatus
-from polylogue.storage.runtime import (
-    SESSION_PRODUCT_MATERIALIZER_VERSION,
-    SessionPhaseRecord,
-    SessionProfileRecord,
-    SessionWorkEventRecord,
-    WorkThreadRecord,
-)
+from polylogue.storage.runtime.store_constants import SESSION_PRODUCT_MATERIALIZER_VERSION
+
+if TYPE_CHECKING:
+    from polylogue.storage.runtime import (
+        SessionPhaseRecord,
+        SessionProfileRecord,
+        SessionWorkEventRecord,
+        WorkThreadRecord,
+    )
 
 
 class ArchiveProductUnavailableError(RuntimeError):

@@ -15,14 +15,14 @@ from polylogue.pipeline.semantic_capture import detect_context_compaction
 from polylogue.sources.providers.claude_code import ClaudeCodeRecord
 from polylogue.types import ContentBlockType, Provider
 
-from .base import (
+from ..base import (
     ParsedContentBlock,
     ParsedConversation,
     ParsedMessage,
     ParsedProviderEvent,
     content_blocks_from_segments,
 )
-from .claude_common import extract_message_text, normalize_timestamp, reclassify_tool_result_envelope
+from .common import extract_message_text, normalize_timestamp, reclassify_tool_result_envelope
 
 _TAG_RE = re.compile(r"<[^>]+>")
 _WHITESPACE_RE = re.compile(r"\s+")

@@ -10,7 +10,7 @@ from typing import TypeAlias
 
 from polylogue.logging import get_logger
 
-from .base import ParsedConversation
+from ..base import ParsedConversation
 
 logger = get_logger(__name__)
 

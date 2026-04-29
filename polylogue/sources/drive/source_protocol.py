@@ -6,7 +6,7 @@ from typing import Protocol
 
 from polylogue.lib.json import JSONValue
 
-from .drive_types import DriveFile
+from .types import DriveFile
 
 
 class DriveSourceAPI(Protocol):
