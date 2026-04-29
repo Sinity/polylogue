@@ -6,8 +6,8 @@ import argparse
 import sys
 from pathlib import Path
 
-from polylogue.cli.schema_command_support import build_schema_privacy_config
-from polylogue.cli.schema_rendering import render_schema_generate_result
+from polylogue.cli.shared.schema_command_support import build_schema_privacy_config
+from polylogue.cli.shared.schema_rendering import render_schema_generate_result
 from polylogue.config import get_config
 from polylogue.schemas.operator.models import SchemaInferRequest
 from polylogue.schemas.operator.workflow import infer_schema

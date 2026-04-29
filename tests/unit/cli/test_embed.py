@@ -12,8 +12,8 @@ import pytest
 from click.testing import CliRunner
 
 from polylogue.cli.click_app import cli
-from polylogue.cli.embed_runtime import embed_batch, embed_single
-from polylogue.cli.embed_stats import show_embedding_stats
+from polylogue.cli.shared.embed_runtime import embed_batch, embed_single
+from polylogue.cli.shared.embed_stats import show_embedding_stats
 from polylogue.storage.embeddings.models import EmbeddingStatsSnapshot
 
 MessageRow: TypeAlias = dict[str, str]

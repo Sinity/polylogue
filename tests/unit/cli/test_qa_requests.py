@@ -5,14 +5,14 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from polylogue.cli.qa_requests import (
+from polylogue.cli.shared.qa_requests import (
     QACaptureMode,
     QASnapshotPlan,
     build_qa_finalization_plan,
     build_qa_invocation_plan,
     build_qa_snapshot_plan,
 )
-from polylogue.cli.qa_snapshot import execute_snapshot_plan
+from polylogue.cli.shared.qa_snapshot import execute_snapshot_plan
 
 
 def test_build_qa_snapshot_plan_defaults_label_for_snapshot_from(tmp_path: Path) -> None:
@@ -134,7 +134,7 @@ def test_execute_snapshot_plan_uses_fallback_report_dir(
             env=env,
         )
 
-    monkeypatch.setattr("polylogue.cli.qa_snapshot.snapshot_results", _fake_snapshot_results)
+    monkeypatch.setattr("polylogue.cli.shared.qa_snapshot.snapshot_results", _fake_snapshot_results)
 
     result = execute_snapshot_plan(
         QASnapshotPlan(label="release-v3"),

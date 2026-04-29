@@ -6,7 +6,7 @@ Provides three primitives that surfaces compose into their own UI:
 * :func:`embed_conversation_sync` — embed messages for one conversation.
 * :class:`EmbedConversationOutcome` — typed outcome record.
 
-CLI (:mod:`polylogue.cli.embed_runtime`) and pipeline
+CLI (:mod:`polylogue.cli.shared.embed_runtime`) and pipeline
 (:mod:`polylogue.pipeline.run_stages`) layer their progress and message
 formatting on top.
 """

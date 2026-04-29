@@ -13,7 +13,7 @@ import pytest
 from hypothesis import example, given
 from hypothesis import strategies as st
 
-from polylogue.cli.machine_errors import (
+from polylogue.cli.shared.machine_errors import (
     DEPENDENCY_MISSING,
     INVALID_ARGUMENTS,
     INVALID_PATH,

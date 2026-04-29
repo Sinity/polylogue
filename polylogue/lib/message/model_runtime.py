@@ -15,7 +15,7 @@ from polylogue.logging import get_logger
 from polylogue.types import Provider
 
 if TYPE_CHECKING:
-    from polylogue.schemas.unified.unified.models import HarmonizedMessage
+    from polylogue.schemas.unified.models import HarmonizedMessage
 
 
 def _coerce_optional_float(value: object) -> float | None:

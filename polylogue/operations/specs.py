@@ -164,8 +164,8 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         produces=("embedding_metadata_rows", "embedding_status_rows", "message_embedding_vectors"),
         path_targets=("embedding-materialization-loop",),
         code_refs=(
-            "polylogue.cli.embed_runtime.embed_batch",
-            "polylogue.cli.embed_runtime.embed_single",
+            "polylogue.cli.shared.embed_runtime.embed_batch",
+            "polylogue.cli.shared.embed_runtime.embed_single",
             "polylogue.storage.search_providers.sqlite_vec_queries.SqliteVecQueryMixin.upsert",
         ),
         surfaces=("run.embed", "embed", "retrieval"),
@@ -309,8 +309,8 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         produces=("embedding_status_results",),
         path_targets=("embedding-status-query-loop",),
         code_refs=(
-            "polylogue.cli.embed_stats.embedding_status_payload",
-            "polylogue.cli.embed_stats.render_embedding_stats",
+            "polylogue.cli.shared.embed_stats.embedding_status_payload",
+            "polylogue.cli.shared.embed_stats.render_embedding_stats",
         ),
         surfaces=("run.embed", "embed", "doctor", "retrieval"),
         previewable=True,
@@ -466,7 +466,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         code_refs=(
             "polylogue.operations.archive.ArchiveProductMixin.list_provider_analytics_products",
             "polylogue.cli.commands.products",
-            "polylogue.cli.helper_summary",
+            "polylogue.cli.shared.helper_summary",
         ),
         surfaces=("products", "facade", "mcp", "helpers"),
         previewable=True,

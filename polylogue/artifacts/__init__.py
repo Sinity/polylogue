@@ -481,8 +481,8 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
             "retrieval_band_readiness",
         ),
         code_refs=(
-            "polylogue.cli.embed_stats.embedding_status_payload",
-            "polylogue.cli.embed_stats.show_embedding_stats",
+            "polylogue.cli.shared.embed_stats.embedding_status_payload",
+            "polylogue.cli.shared.embed_stats.show_embedding_stats",
         ),
         readiness_surfaces=("embed", "doctor", "retrieval", "cli"),
     ),
@@ -593,7 +593,7 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
         code_refs=(
             "polylogue.operations.archive.ArchiveProductMixin.list_provider_analytics_products",
             "polylogue.cli.commands.products",
-            "polylogue.cli.helper_summary",
+            "polylogue.cli.shared.helper_summary",
         ),
         readiness_surfaces=("products", "facade", "mcp", "helpers"),
     ),

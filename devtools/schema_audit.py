@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 
-from polylogue.cli.schema_rendering import render_schema_audit_result
+from polylogue.cli.shared.schema_rendering import render_schema_audit_result
 from polylogue.schemas.operator.models import SchemaAuditRequest
 from polylogue.schemas.operator.workflow import audit_schemas
 

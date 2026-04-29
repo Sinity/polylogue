@@ -201,7 +201,7 @@ def _invoke_run_direct(
         stack.enter_context(patch("polylogue.config.get_config", return_value=mock_config))
         mock_plan = _as_mock(stack.enter_context(patch("polylogue.cli.commands.run.plan_sources")))
         mock_run = _as_patch_mock(
-            stack.enter_context(patch("polylogue.cli.run_workflow.run_sources", new_callable=AsyncMock))
+            stack.enter_context(patch("polylogue.cli.shared.run_workflow.run_sources", new_callable=AsyncMock))
         )
         mock_resolve = _as_mock(
             stack.enter_context(patch("polylogue.cli.commands.run.resolve_sources", return_value=selected_sources))
@@ -213,17 +213,21 @@ def _invoke_run_direct(
             stack.enter_context(patch("polylogue.cli.commands.run.maybe_prompt_sources", return_value=selected_sources))
         )
         stack.enter_context(
-            patch("polylogue.cli.run_workflow.format_plan_counts", return_value="5 conversations, 50 messages")
+            patch("polylogue.cli.shared.run_workflow.format_plan_counts", return_value="5 conversations, 50 messages")
         )
-        stack.enter_context(patch("polylogue.cli.run_workflow.format_plan_details", return_value="new=2, existing=3"))
-        stack.enter_context(patch("polylogue.cli.run_workflow.format_cursors", return_value="cursor snapshot"))
         stack.enter_context(
-            patch("polylogue.cli.run_workflow.format_counts", return_value="3 conversations, 30 messages")
+            patch("polylogue.cli.shared.run_workflow.format_plan_details", return_value="new=2, existing=3")
         )
-        stack.enter_context(patch("polylogue.cli.run_workflow.format_run_details", return_value=["Indexed: yes"]))
+        stack.enter_context(patch("polylogue.cli.shared.run_workflow.format_cursors", return_value="cursor snapshot"))
+        stack.enter_context(
+            patch("polylogue.cli.shared.run_workflow.format_counts", return_value="3 conversations, 30 messages")
+        )
+        stack.enter_context(
+            patch("polylogue.cli.shared.run_workflow.format_run_details", return_value=["Indexed: yes"])
+        )
         mock_format_index = _as_mock(
             stack.enter_context(
-                patch("polylogue.cli.run_workflow.format_index_status", return_value="Index status: indexed")
+                patch("polylogue.cli.shared.run_workflow.format_index_status", return_value="Index status: indexed")
             ),
         )
         mock_latest = _as_mock(
@@ -490,15 +494,17 @@ class TestRunCommand:
 
         with (
             patch("polylogue.cli.commands.run.run_coroutine_sync", side_effect=_run_async) as mock_reset_run,
-            patch("polylogue.cli.run_workflow.run_coroutine_sync", side_effect=_run_async) as mock_pipeline_run,
+            patch("polylogue.cli.shared.run_workflow.run_coroutine_sync", side_effect=_run_async) as mock_pipeline_run,
             patch("polylogue.config.get_config", return_value=MagicMock(sources=[], render_root=Path("/render"))),
             patch("polylogue.cli.commands.run.resolve_sources", return_value=None),
             patch("polylogue.cli.commands.run.maybe_prompt_run_stage", return_value="all"),
             patch("polylogue.cli.commands.run.maybe_prompt_sources", return_value=None),
-            patch("polylogue.cli.run_workflow.format_counts", return_value="3 conversations, 30 messages"),
-            patch("polylogue.cli.run_workflow.format_run_details", return_value=["Indexed: yes"]),
-            patch("polylogue.cli.run_workflow.format_index_status", return_value="Index status: indexed"),
-            patch("polylogue.cli.run_workflow.run_sources", new_callable=AsyncMock, return_value=mock_run_result),
+            patch("polylogue.cli.shared.run_workflow.format_counts", return_value="3 conversations, 30 messages"),
+            patch("polylogue.cli.shared.run_workflow.format_run_details", return_value=["Indexed: yes"]),
+            patch("polylogue.cli.shared.run_workflow.format_index_status", return_value="Index status: indexed"),
+            patch(
+                "polylogue.cli.shared.run_workflow.run_sources", new_callable=AsyncMock, return_value=mock_run_result
+            ),
         ):
             mock_reset_run = _as_mock(mock_reset_run)
             mock_pipeline_run = _as_mock(mock_pipeline_run)
@@ -521,11 +527,13 @@ class TestRunCommand:
             patch("polylogue.config.get_config", return_value=MagicMock(sources=[], render_root=Path("/render"))),
             patch("polylogue.cli.commands.run.resolve_sources", return_value=["test-inbox"]),
             patch("polylogue.cli.commands.run.maybe_prompt_sources", return_value=["test-inbox"]),
-            patch("polylogue.cli.run_workflow.format_plan_counts", return_value="5 conversations, 50 messages"),
-            patch("polylogue.cli.run_workflow.format_plan_details", return_value="new=2, existing=3"),
-            patch("polylogue.cli.run_workflow.format_cursors", return_value="cursor snapshot"),
+            patch("polylogue.cli.shared.run_workflow.format_plan_counts", return_value="5 conversations, 50 messages"),
+            patch("polylogue.cli.shared.run_workflow.format_plan_details", return_value="new=2, existing=3"),
+            patch("polylogue.cli.shared.run_workflow.format_cursors", return_value="cursor snapshot"),
             patch("polylogue.cli.commands.run.plan_sources", return_value=mock_plan_result) as mock_plan_sources,
-            patch("polylogue.cli.run_workflow.run_sources", new_callable=AsyncMock, return_value=mock_run_result),
+            patch(
+                "polylogue.cli.shared.run_workflow.run_sources", new_callable=AsyncMock, return_value=mock_run_result
+            ),
         ):
             mock_run_coroutine_sync = _as_mock(mock_run_coroutine_sync)
             mock_plan_sources = _as_mock(mock_plan_sources)
@@ -639,7 +647,7 @@ class TestEmbedCommand:
     ) -> None:
         del cli_workspace
         with (
-            patch("polylogue.cli.embed_stats.embedding_status_payload") as mock_payload,
+            patch("polylogue.cli.shared.embed_stats.embedding_status_payload") as mock_payload,
             patch.dict(
                 "os.environ",
                 {"VOYAGE_API_KEY": ""},
@@ -678,7 +686,7 @@ class TestEmbedCommand:
     def test_embed_stats_json_contract(self, runner: CliRunner, cli_workspace: dict[str, Path]) -> None:
         del cli_workspace
         with (
-            patch("polylogue.cli.embed_stats.embedding_status_payload") as mock_payload,
+            patch("polylogue.cli.shared.embed_stats.embedding_status_payload") as mock_payload,
             patch.dict(
                 "os.environ",
                 {"VOYAGE_API_KEY": ""},
@@ -711,7 +719,7 @@ class TestEmbedCommand:
 
     def test_embed_single_not_found_contract(self, runner: CliRunner, cli_workspace: dict[str, Path]) -> None:
         del cli_workspace
-        with patch("polylogue.cli.embed_runtime.embed_single") as mock_single:
+        with patch("polylogue.cli.shared.embed_runtime.embed_single") as mock_single:
             import click as _click
 
             mock_single.side_effect = _click.Abort()

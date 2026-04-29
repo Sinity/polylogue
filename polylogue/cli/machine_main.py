@@ -19,7 +19,7 @@ def run_machine_entry(
     argv: list[str],
 ) -> None:
     """Run the CLI, emitting JSON machine errors when requested."""
-    from polylogue.cli.machine_errors import (
+    from polylogue.cli.shared.machine_errors import (
         error_invalid_arguments,
         error_runtime,
         extract_command,

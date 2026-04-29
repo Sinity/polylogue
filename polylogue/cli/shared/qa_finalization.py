@@ -8,9 +8,9 @@ from typing import TYPE_CHECKING
 
 import click
 
-from polylogue.cli.qa_capture import run_vhs_capture
-from polylogue.cli.qa_requests import QACaptureMode, QAFinalizationPlan
-from polylogue.cli.qa_snapshot import execute_snapshot_plan
+from polylogue.cli.shared.qa_capture import run_vhs_capture
+from polylogue.cli.shared.qa_requests import QACaptureMode, QAFinalizationPlan
+from polylogue.cli.shared.qa_snapshot import execute_snapshot_plan
 
 if TYPE_CHECKING:
     from polylogue.cli.shared.types import AppEnv

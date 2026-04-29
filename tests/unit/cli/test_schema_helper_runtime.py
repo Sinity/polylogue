@@ -3,13 +3,13 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import patch
 
-from polylogue.cli.schema_command_support import (
+from polylogue.cli.shared.schema_command_support import (
     _privacy_config_payload,
     _privacy_level,
     build_schema_privacy_config,
 )
-from polylogue.cli.schema_rendering_explain import render_explain_verbose, render_schema_explain_result
-from polylogue.cli.schema_rendering_results import (
+from polylogue.cli.shared.schema_rendering_explain import render_explain_verbose, render_schema_explain_result
+from polylogue.cli.shared.schema_rendering_results import (
     render_schema_audit_result,
     render_schema_compare_result,
     render_schema_generate_result,
@@ -242,14 +242,14 @@ def test_schema_command_support_builds_payloads_from_privacy_inputs(tmp_path: Pa
 def test_render_schema_explain_result_json_and_verbose_text_paths() -> None:
     result = _explain_result()
 
-    with patch("polylogue.cli.schema_rendering_explain.emit_success") as emit_success:
+    with patch("polylogue.cli.shared.schema_rendering_explain.emit_success") as emit_success:
         render_schema_explain_result(result=result, json_output=True, verbose=False)
 
     emit_success.assert_called_once_with(result.to_dict())
 
     with (
         patch("click.echo") as echo,
-        patch("polylogue.cli.schema_rendering_explain.render_explain_verbose") as render_verbose,
+        patch("polylogue.cli.shared.schema_rendering_explain.render_explain_verbose") as render_verbose,
     ):
         render_schema_explain_result(result=result, json_output=False, verbose=True)
 
@@ -341,7 +341,7 @@ def test_render_schema_generate_result_covers_plain_and_json_paths(tmp_path: Pat
         corpus_scenarios=corpus_scenarios,
     )
 
-    with patch("polylogue.cli.schema_rendering_results.emit_success") as emit_success:
+    with patch("polylogue.cli.shared.schema_rendering_results.emit_success") as emit_success:
         render_schema_generate_result(provider="chatgpt", result=result, json_output=True, report=False)
 
     emit_payload = emit_success.call_args.args[0]
@@ -402,7 +402,7 @@ def test_render_schema_list_result_covers_selected_global_json_and_empty_paths()
     assert any("Suggested synthetic corpus specs:" in line for line in echoed)
     assert any("Suggested synthetic scenarios:" in line for line in echoed)
 
-    with patch("polylogue.cli.schema_rendering_results.emit_success") as emit_success:
+    with patch("polylogue.cli.shared.schema_rendering_results.emit_success") as emit_success:
         render_schema_list_result(
             provider=None,
             result=SchemaListResult(provider=None, providers=[snapshot]),
@@ -458,7 +458,7 @@ def test_render_schema_compare_promote_and_audit_result_variants() -> None:
         checks=[AuditCheck(name="schema_bundle", status=OutcomeStatus.OK, summary="bundle OK", provider="chatgpt")],
     )
 
-    with patch("polylogue.cli.schema_rendering_results.emit_success") as emit_success:
+    with patch("polylogue.cli.shared.schema_rendering_results.emit_success") as emit_success:
         render_schema_compare_result(result=compare_result, json_output=True, md_output=False)
         render_schema_promote_result(result=promote_result, json_output=True)
         render_schema_audit_result(report=audit_report, json_output=True)

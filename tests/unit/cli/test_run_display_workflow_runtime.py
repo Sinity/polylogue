@@ -5,13 +5,13 @@ from types import SimpleNamespace
 from typing import cast
 from unittest.mock import MagicMock, patch
 
-from polylogue.cli.run_display_workflow import (
+from polylogue.cli.shared.run_display_workflow import (
     display_result,
     handle_drive_error,
     render_preview_summary,
     render_sources,
 )
-from polylogue.cli.run_watch_workflow import WatchDisplayObserver, WatchStatusObserver
+from polylogue.cli.shared.run_watch_workflow import WatchDisplayObserver, WatchStatusObserver
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
 from polylogue.sources import DriveError
@@ -66,9 +66,9 @@ def test_display_result_renders_summary_latest_render_and_failure_hints() -> Non
     )
 
     with (
-        patch("polylogue.cli.run_display_workflow.format_counts", return_value="3 conversations"),
-        patch("polylogue.cli.run_display_workflow.format_run_details", return_value=["new=1", "changed=1"]),
-        patch("polylogue.cli.run_display_workflow.format_index_status", return_value="Index status: failed"),
+        patch("polylogue.cli.shared.run_display_workflow.format_counts", return_value="3 conversations"),
+        patch("polylogue.cli.shared.run_display_workflow.format_run_details", return_value=["new=1", "changed=1"]),
+        patch("polylogue.cli.shared.run_display_workflow.format_index_status", return_value="Index status: failed"),
         patch("polylogue.cli.shared.helpers.latest_render_path", return_value=Path("/tmp/render/latest.html")),
         patch("click.echo") as echo,
     ):
@@ -102,7 +102,7 @@ def test_display_result_uses_index_only_status_for_index_stage() -> None:
     cfg = _cfg()
 
     with (
-        patch("polylogue.cli.run_display_workflow.format_index_status", return_value="Index status: indexed"),
+        patch("polylogue.cli.shared.run_display_workflow.format_index_status", return_value="Index status: indexed"),
         patch("click.echo"),
     ):
         display_result(
@@ -136,7 +136,7 @@ def test_render_sources_emits_json_payload_or_plain_summary() -> None:
     )
     env = cast(AppEnv, SimpleNamespace(config=cfg, ui=MagicMock()))
 
-    with patch("polylogue.cli.machine_errors.emit_success") as emit_success:
+    with patch("polylogue.cli.shared.machine_errors.emit_success") as emit_success:
         render_sources(env, json_output=True)
 
     emit_success.assert_called_once_with(
@@ -162,7 +162,7 @@ def test_render_sources_emits_json_payload_or_plain_summary() -> None:
 
 
 def test_handle_drive_error_routes_to_run_failure_surface() -> None:
-    with patch("polylogue.cli.run_display_workflow.fail") as fail:
+    with patch("polylogue.cli.shared.run_display_workflow.fail") as fail:
         handle_drive_error(DriveError("bad credentials"))
 
     fail.assert_called_once_with("run", "bad credentials")
@@ -179,10 +179,10 @@ def test_render_preview_summary_formats_plan_snapshot() -> None:
     )
 
     with (
-        patch("polylogue.cli.run_display_workflow.format_plan_counts", return_value="scan=5"),
-        patch("polylogue.cli.run_display_workflow.format_plan_details", return_value="new=2, existing=3"),
-        patch("polylogue.cli.run_display_workflow.format_cursors", return_value="latest=/tmp/inbox"),
-        patch("polylogue.cli.run_display_workflow.format_timestamp", return_value="2026-04-23 12:00:00"),
+        patch("polylogue.cli.shared.run_display_workflow.format_plan_counts", return_value="scan=5"),
+        patch("polylogue.cli.shared.run_display_workflow.format_plan_details", return_value="new=2, existing=3"),
+        patch("polylogue.cli.shared.run_display_workflow.format_cursors", return_value="latest=/tmp/inbox"),
+        patch("polylogue.cli.shared.run_display_workflow.format_timestamp", return_value="2026-04-23 12:00:00"),
     ):
         render_preview_summary(env, selected_sources=["drive"], plan_snapshot=plan_result)
 
@@ -207,8 +207,8 @@ def test_watch_display_observer_only_renders_when_activity_is_present() -> None:
     observer = WatchDisplayObserver(env, cfg, "all", ["drive"], display_stage="render", stage_sequence=("render",))
 
     with (
-        patch("polylogue.cli.run_watch_workflow.conversation_activity_counts", return_value=(2, 0, 0)),
-        patch("polylogue.cli.run_watch_workflow.display_result") as display,
+        patch("polylogue.cli.shared.run_watch_workflow.conversation_activity_counts", return_value=(2, 0, 0)),
+        patch("polylogue.cli.shared.run_watch_workflow.display_result") as display,
     ):
         observer.on_completed(result)
 
@@ -223,8 +223,8 @@ def test_watch_display_observer_only_renders_when_activity_is_present() -> None:
     )
 
     with (
-        patch("polylogue.cli.run_watch_workflow.conversation_activity_counts", return_value=(0, 0, 0)),
-        patch("polylogue.cli.run_watch_workflow.display_result") as display,
+        patch("polylogue.cli.shared.run_watch_workflow.conversation_activity_counts", return_value=(0, 0, 0)),
+        patch("polylogue.cli.shared.run_watch_workflow.display_result") as display,
     ):
         observer.on_completed(result)
 

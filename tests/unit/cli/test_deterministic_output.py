@@ -429,7 +429,7 @@ def test_should_use_plain_contract(
     expected: bool,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from polylogue.cli.formatting import should_use_plain
+    from polylogue.cli.shared.formatting import should_use_plain
 
     if env_value is None:
         monkeypatch.delenv("POLYLOGUE_FORCE_PLAIN", raising=False)
@@ -445,7 +445,7 @@ def test_should_use_plain_falsey_env_values_do_not_force_plain(
     falsey: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from polylogue.cli.formatting import should_use_plain
+    from polylogue.cli.shared.formatting import should_use_plain
 
     monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", falsey)
     with patch("sys.stdout.isatty", return_value=True), patch("sys.stderr.isatty", return_value=True):
@@ -453,7 +453,7 @@ def test_should_use_plain_falsey_env_values_do_not_force_plain(
 
 
 def test_announce_plain_mode_writes_to_stderr() -> None:
-    from polylogue.cli.formatting import announce_plain_mode
+    from polylogue.cli.shared.formatting import announce_plain_mode
 
     captured = StringIO()
     with patch.object(sys, "stderr", captured):
@@ -476,7 +476,7 @@ def test_announce_plain_mode_writes_to_stderr() -> None:
     ],
 )
 def test_format_cursors_contract(cursors: dict[str, object], expected_parts: tuple[str, ...] | None) -> None:
-    from polylogue.cli.formatting import format_cursors
+    from polylogue.cli.shared.formatting import format_cursors
 
     result = format_cursors(cursors)
     if expected_parts is None:
@@ -507,7 +507,7 @@ def test_format_cursors_contract(cursors: dict[str, object], expected_parts: tup
     ],
 )
 def test_format_counts_contract(counts: dict[str, object], expected_parts: tuple[str, ...]) -> None:
-    from polylogue.cli.formatting import format_counts
+    from polylogue.cli.shared.formatting import format_counts
 
     result = format_counts(counts)
     for part in expected_parts:
@@ -526,7 +526,7 @@ def test_format_counts_contract(counts: dict[str, object], expected_parts: tuple
     ],
 )
 def test_format_index_status_contract(stage: str, indexed: bool, error: str | None, expected: str) -> None:
-    from polylogue.cli.formatting import format_index_status
+    from polylogue.cli.shared.formatting import format_index_status
 
     assert format_index_status(stage, indexed, error) == expected
 
@@ -540,13 +540,13 @@ def test_format_index_status_contract(stage: str, indexed: bool, error: str | No
     ],
 )
 def test_format_source_label_contract(source_name: str | None, provider_name: str, expected: str) -> None:
-    from polylogue.cli.formatting import format_source_label
+    from polylogue.cli.shared.formatting import format_source_label
 
     assert format_source_label(source_name, provider_name) == expected
 
 
 def test_format_sources_summary_contract() -> None:
-    from polylogue.cli.formatting import format_sources_summary
+    from polylogue.cli.shared.formatting import format_sources_summary
     from polylogue.config import Source
 
     sources = [
@@ -559,7 +559,7 @@ def test_format_sources_summary_contract() -> None:
 
 
 def test_format_sources_summary_marks_missing() -> None:
-    from polylogue.cli.formatting import format_sources_summary
+    from polylogue.cli.shared.formatting import format_sources_summary
 
     source = MagicMock()
     source.name = "broken"
@@ -569,7 +569,7 @@ def test_format_sources_summary_marks_missing() -> None:
 
 
 def test_format_sources_summary_truncates_long_lists() -> None:
-    from polylogue.cli.formatting import format_sources_summary
+    from polylogue.cli.shared.formatting import format_sources_summary
     from polylogue.config import Source
 
     sources = [Source(name=f"source{i}", path=Path(f"/src{i}")) for i in range(12)]

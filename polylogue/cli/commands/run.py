@@ -8,30 +8,30 @@ from pathlib import Path
 import click
 
 from polylogue.api.sync.bridge import run_coroutine_sync
-from polylogue.cli.run_workflow import (
-    WatchDisplayObserver as _WatchDisplayObserver,
-)
-from polylogue.cli.run_workflow import (
-    WatchStatusObserver as _WatchStatusObserver,
-)
-from polylogue.cli.run_workflow import (
-    display_result as _display_result,
-)
-from polylogue.cli.run_workflow import (
-    handle_drive_error,
-    render_preview_summary,
-)
-from polylogue.cli.run_workflow import (
-    run_sync_once as _run_sync_once,
-)
-from polylogue.cli.run_workflow import (
-    run_with_progress as _run_with_progress,
-)
 from polylogue.cli.shared.helpers import (
     complete_run_source_names,
     fail,
     maybe_prompt_sources,
     resolve_sources,
+)
+from polylogue.cli.shared.run_workflow import (
+    WatchDisplayObserver as _WatchDisplayObserver,
+)
+from polylogue.cli.shared.run_workflow import (
+    WatchStatusObserver as _WatchStatusObserver,
+)
+from polylogue.cli.shared.run_workflow import (
+    display_result as _display_result,
+)
+from polylogue.cli.shared.run_workflow import (
+    handle_drive_error,
+    render_preview_summary,
+)
+from polylogue.cli.shared.run_workflow import (
+    run_sync_once as _run_sync_once,
+)
+from polylogue.cli.shared.run_workflow import (
+    run_with_progress as _run_with_progress,
 )
 from polylogue.cli.shared.types import AppEnv
 from polylogue.pipeline.observers import (
@@ -249,7 +249,7 @@ def _run_result_callback(
     plan_snapshot = None
     if preview:
         try:
-            from polylogue.cli.run_observers import progress_observer
+            from polylogue.cli.shared.run_observers import progress_observer
 
             with progress_observer(
                 env,
@@ -472,8 +472,8 @@ def _run_embed_standalone(env: AppEnv, opts: EmbedOptions) -> None:
     """Execute the embed stage directly, outside the normal pipeline flow."""
     import os
 
-    from polylogue.cli.embed_runtime import embed_batch, embed_single
-    from polylogue.cli.embed_stats import show_embedding_stats
+    from polylogue.cli.shared.embed_runtime import embed_batch, embed_single
+    from polylogue.cli.shared.embed_stats import show_embedding_stats
 
     if opts.json_output and not opts.stats:
         click.echo("Error: --json requires --stats", err=True)

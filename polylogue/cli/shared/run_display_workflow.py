@@ -6,7 +6,7 @@ from collections.abc import Sequence
 
 import click
 
-from polylogue.cli.formatting import (
+from polylogue.cli.shared.formatting import (
     format_counts,
     format_cursors,
     format_index_status,
@@ -88,7 +88,7 @@ def display_result(
 
 
 def render_sources(env: AppEnv, *, json_output: bool) -> None:
-    from polylogue.cli.machine_errors import emit_success
+    from polylogue.cli.shared.machine_errors import emit_success
 
     cfg = env.config
     if json_output:

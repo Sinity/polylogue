@@ -17,7 +17,7 @@ import pytest
 from click.testing import CliRunner
 
 from polylogue.cli.click_app import cli
-from polylogue.cli.machine_errors import (
+from polylogue.cli.shared.machine_errors import (
     MachineError,
     emit_success,
     success,

@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from polylogue.cli.run_workflow import display_result
+from polylogue.cli.shared.run_workflow import display_result
 from polylogue.config import Source, get_config
 from polylogue.pipeline.observers import ExecObserver, NotificationObserver, WebhookObserver
 from polylogue.pipeline.runner import latest_run, plan_sources, run_sources

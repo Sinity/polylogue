@@ -122,7 +122,7 @@ def render_product_items(
     """Render product items using the product type descriptor."""
 
     if json_mode:
-        from polylogue.cli.machine_errors import emit_success
+        from polylogue.cli.shared.machine_errors import emit_success
 
         emit_success(product_items_payload(items, product_type))
         return

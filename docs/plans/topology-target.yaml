@@ -118,38 +118,38 @@ files:
     loc: 63
     target: polylogue/cli/bulk_export.py
     owner: stable
-  - path: polylogue/cli/check_maintenance.py
+  - path: polylogue/cli/shared/check_maintenance.py
     loc: 52
-    target: polylogue/cli/check_maintenance.py
+    target: polylogue/cli/shared/check_maintenance.py
     owner: stable
-  - path: polylogue/cli/check_models.py
+  - path: polylogue/cli/shared/check_models.py
     loc: 45
-    target: polylogue/cli/check_models.py
+    target: polylogue/cli/shared/check_models.py
     owner: stable
     cross_cut: { lifecycle: model }
-  - path: polylogue/cli/check_options.py
+  - path: polylogue/cli/shared/check_options.py
     loc: 113
-    target: polylogue/cli/check_options.py
+    target: polylogue/cli/shared/check_options.py
     owner: stable
-  - path: polylogue/cli/check_rendering_json.py
+  - path: polylogue/cli/shared/check_rendering_json.py
     loc: 47
-    target: polylogue/cli/check_rendering_json.py
+    target: polylogue/cli/shared/check_rendering_json.py
     owner: stable
-  - path: polylogue/cli/check_rendering_plain.py
+  - path: polylogue/cli/shared/check_rendering_plain.py
     loc: 263
-    target: polylogue/cli/check_rendering_plain.py
+    target: polylogue/cli/shared/check_rendering_plain.py
     owner: stable
-  - path: polylogue/cli/check_support.py
+  - path: polylogue/cli/shared/check_support.py
     loc: 89
-    target: polylogue/cli/check_support.py
+    target: polylogue/cli/shared/check_support.py
     owner: stable
-  - path: polylogue/cli/check_validation.py
+  - path: polylogue/cli/shared/check_validation.py
     loc: 68
-    target: polylogue/cli/check_validation.py
+    target: polylogue/cli/shared/check_validation.py
     owner: stable
-  - path: polylogue/cli/check_workflow.py
+  - path: polylogue/cli/shared/check_workflow.py
     loc: 273
-    target: polylogue/cli/check_workflow.py
+    target: polylogue/cli/shared/check_workflow.py
     owner: stable
   - path: polylogue/cli/click_app.py
     loc: 186
@@ -235,34 +235,34 @@ files:
     loc: 61
     target: polylogue/cli/commands/watch.py
     owner: stable
-  - path: polylogue/cli/embed_runtime.py
+  - path: polylogue/cli/shared/embed_runtime.py
     loc: 115
-    target: polylogue/cli/embed_runtime.py
+    target: polylogue/cli/shared/embed_runtime.py
     owner: stable
     cross_cut: { lifecycle: runtime }
-  - path: polylogue/cli/embed_stats.py
+  - path: polylogue/cli/shared/embed_stats.py
     loc: 91
-    target: polylogue/cli/embed_stats.py
+    target: polylogue/cli/shared/embed_stats.py
     owner: stable
   - path: polylogue/cli/filter_picker.py
     loc: 57
     target: polylogue/cli/filter_picker.py
     owner: stable
-  - path: polylogue/cli/formatting.py
+  - path: polylogue/cli/shared/formatting.py
     loc: 235
-    target: polylogue/cli/formatting.py
+    target: polylogue/cli/shared/formatting.py
     owner: stable
-  - path: polylogue/cli/helper_source_selection.py
+  - path: polylogue/cli/shared/helper_source_selection.py
     loc: 103
-    target: polylogue/cli/helper_source_selection.py
+    target: polylogue/cli/shared/helper_source_selection.py
     owner: stable
-  - path: polylogue/cli/helper_source_state.py
+  - path: polylogue/cli/shared/helper_source_state.py
     loc: 36
-    target: polylogue/cli/helper_source_state.py
+    target: polylogue/cli/shared/helper_source_state.py
     owner: stable
-  - path: polylogue/cli/helper_summary.py
+  - path: polylogue/cli/shared/helper_summary.py
     loc: 190
-    target: polylogue/cli/helper_summary.py
+    target: polylogue/cli/shared/helper_summary.py
     owner: stable
   - path: polylogue/cli/shared/helper_support.py
     loc: 23
@@ -272,37 +272,37 @@ files:
     loc: 71
     target: polylogue/cli/helpers.py
     owner: stable
-  - path: polylogue/cli/machine_errors.py
+  - path: polylogue/cli/shared/machine_errors.py
     loc: 315
-    target: polylogue/cli/machine_errors.py
+    target: polylogue/cli/shared/machine_errors.py
     owner: stable
   - path: polylogue/cli/machine_main.py
     loc: 81
     target: polylogue/cli/machine_main.py
     owner: stable
-  - path: polylogue/cli/product_command_contracts.py
+  - path: polylogue/cli/shared/product_command_contracts.py
     loc: 84
-    target: polylogue/cli/product_command_contracts.py
+    target: polylogue/cli/shared/product_command_contracts.py
     owner: stable
   - path: polylogue/cli/products_rendering.py
     loc: 49
     target: polylogue/cli/products_rendering.py
     owner: stable
-  - path: polylogue/cli/qa_capture.py
+  - path: polylogue/cli/shared/qa_capture.py
     loc: 49
-    target: polylogue/cli/qa_capture.py
+    target: polylogue/cli/shared/qa_capture.py
     owner: stable
-  - path: polylogue/cli/qa_finalization.py
+  - path: polylogue/cli/shared/qa_finalization.py
     loc: 62
-    target: polylogue/cli/qa_finalization.py
+    target: polylogue/cli/shared/qa_finalization.py
     owner: stable
-  - path: polylogue/cli/qa_requests.py
+  - path: polylogue/cli/shared/qa_requests.py
     loc: 142
-    target: polylogue/cli/qa_requests.py
+    target: polylogue/cli/shared/qa_requests.py
     owner: stable
-  - path: polylogue/cli/qa_snapshot.py
+  - path: polylogue/cli/shared/qa_snapshot.py
     loc: 133
-    target: polylogue/cli/qa_snapshot.py
+    target: polylogue/cli/shared/qa_snapshot.py
     owner: stable
   - path: polylogue/cli/query.py
     loc: 673
@@ -348,45 +348,45 @@ files:
     loc: 135
     target: polylogue/cli/messages.py
     owner: stable
-  - path: polylogue/cli/resume_rendering.py
+  - path: polylogue/cli/shared/resume_rendering.py
     loc: 83
-    target: polylogue/cli/resume_rendering.py
+    target: polylogue/cli/shared/resume_rendering.py
     owner: stable
   - path: polylogue/cli/root_request.py
     loc: 87
     target: polylogue/cli/root_request.py
     owner: stable
-  - path: polylogue/cli/run_display_workflow.py
+  - path: polylogue/cli/shared/run_display_workflow.py
     loc: 142
-    target: polylogue/cli/run_display_workflow.py
+    target: polylogue/cli/shared/run_display_workflow.py
     owner: stable
-  - path: polylogue/cli/run_observers.py
+  - path: polylogue/cli/shared/run_observers.py
     loc: 170
-    target: polylogue/cli/run_observers.py
+    target: polylogue/cli/shared/run_observers.py
     owner: stable
-  - path: polylogue/cli/run_watch_workflow.py
+  - path: polylogue/cli/shared/run_watch_workflow.py
     loc: 67
-    target: polylogue/cli/run_watch_workflow.py
+    target: polylogue/cli/shared/run_watch_workflow.py
     owner: stable
-  - path: polylogue/cli/run_workflow.py
+  - path: polylogue/cli/shared/run_workflow.py
     loc: 234
-    target: polylogue/cli/run_workflow.py
+    target: polylogue/cli/shared/run_workflow.py
     owner: stable
-  - path: polylogue/cli/schema_command_support.py
+  - path: polylogue/cli/shared/schema_command_support.py
     loc: 61
-    target: polylogue/cli/schema_command_support.py
+    target: polylogue/cli/shared/schema_command_support.py
     owner: stable
-  - path: polylogue/cli/schema_rendering.py
+  - path: polylogue/cli/shared/schema_rendering.py
     loc: 21
-    target: polylogue/cli/schema_rendering.py
+    target: polylogue/cli/shared/schema_rendering.py
     owner: stable
-  - path: polylogue/cli/schema_rendering_explain.py
+  - path: polylogue/cli/shared/schema_rendering_explain.py
     loc: 172
-    target: polylogue/cli/schema_rendering_explain.py
+    target: polylogue/cli/shared/schema_rendering_explain.py
     owner: stable
-  - path: polylogue/cli/schema_rendering_results.py
+  - path: polylogue/cli/shared/schema_rendering_results.py
     loc: 246
-    target: polylogue/cli/schema_rendering_results.py
+    target: polylogue/cli/shared/schema_rendering_results.py
     owner: stable
   - path: polylogue/cli/shell_completion_values.py
     loc: 222

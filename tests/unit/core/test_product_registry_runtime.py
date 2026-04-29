@@ -108,7 +108,7 @@ def test_product_items_payload_and_rendering_cover_json_plain_and_empty_paths() 
     assert payload["count"] == 1
     assert payload["items"][0]["provider_name"] == "claude-code"
 
-    with patch("polylogue.cli.machine_errors.emit_success") as mock_emit:
+    with patch("polylogue.cli.shared.machine_errors.emit_success") as mock_emit:
         render_product_items([product], product_type, json_mode=True)
     mock_emit.assert_called_once_with(product_items_payload([product], product_type))
 

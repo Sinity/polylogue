@@ -4,15 +4,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from polylogue.cli.formatting import format_sources_summary
-from polylogue.cli.helper_source_selection import (
+from polylogue.cli.shared.formatting import format_sources_summary
+from polylogue.cli.shared.helper_source_selection import (
     complete_configured_source_names,
     complete_run_source_names,
     maybe_prompt_sources,
     resolve_sources,
 )
-from polylogue.cli.helper_source_state import load_last_source, save_last_source, source_state_path
-from polylogue.cli.helper_summary import print_summary_impl
+from polylogue.cli.shared.helper_source_state import load_last_source, save_last_source, source_state_path
+from polylogue.cli.shared.helper_summary import print_summary_impl
 from polylogue.cli.shared.helper_support import fail, load_effective_config
 from polylogue.cli.shared.types import AppEnv
 from polylogue.operations import get_provider_counts, list_provider_analytics_products

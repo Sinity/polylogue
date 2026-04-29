@@ -17,11 +17,11 @@ from polylogue.cli.click_command_registration import (
     register_root_commands,
 )
 from polylogue.cli.click_option_groups import apply_query_mode_options
-from polylogue.cli.formatting import should_use_plain
 from polylogue.cli.machine_main import extract_option as _extract_option
 from polylogue.cli.machine_main import run_machine_entry
 from polylogue.cli.query import QueryFirstGroupBase, handle_query_mode
 from polylogue.cli.query_verbs import QUERY_VERBS
+from polylogue.cli.shared.formatting import should_use_plain
 from polylogue.cli.shared.types import AppEnv
 from polylogue.logging import configure_logging
 from polylogue.ui import create_ui

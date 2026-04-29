@@ -5,14 +5,14 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from polylogue.cli.check_models import CheckCommandResult
-from polylogue.cli.check_rendering_plain import (
+from polylogue.cli.shared.check_models import CheckCommandResult
+from polylogue.cli.shared.check_rendering_plain import (
     build_report_lines,
     emit_maintenance_output,
     render_plain_output,
     status_icon,
 )
-from polylogue.cli.check_workflow import CheckCommandOptions
+from polylogue.cli.shared.check_workflow import CheckCommandOptions
 from polylogue.lib.outcomes import OutcomeCheck, OutcomeStatus
 from polylogue.readiness import ReadinessReport
 
@@ -210,7 +210,7 @@ def test_emit_maintenance_output_handles_preview_empty_selection_and_vacuum_mode
         ],
         maintenance_targets=("session_products",),
     )
-    with patch("polylogue.cli.check_rendering_plain.run_vacuum") as run_vacuum:
+    with patch("polylogue.cli.shared.check_rendering_plain.run_vacuum") as run_vacuum:
         emit_maintenance_output(env, result, _options(repair=True, preview=True, vacuum=True))
         run_vacuum.assert_not_called()
 
@@ -220,7 +220,7 @@ def test_emit_maintenance_output_handles_preview_empty_selection_and_vacuum_mode
     assert "Preview mode: VACUUM skipped." in printed
 
     env_no_selection = _env(plain=False)
-    with patch("polylogue.cli.check_rendering_plain.run_vacuum") as run_vacuum:
+    with patch("polylogue.cli.shared.check_rendering_plain.run_vacuum") as run_vacuum:
         emit_maintenance_output(
             env_no_selection,
             CheckCommandResult(report=ReadinessReport(), maintenance_results=None),
@@ -239,8 +239,8 @@ def test_render_plain_output_delegates_to_summary_and_maintenance() -> None:
     result = CheckCommandResult(report=ReadinessReport())
     options = _options()
 
-    with patch("polylogue.cli.check_rendering_plain.build_report_lines", return_value=["alpha"]) as build_lines:
-        with patch("polylogue.cli.check_rendering_plain.emit_maintenance_output") as emit_maintenance:
+    with patch("polylogue.cli.shared.check_rendering_plain.build_report_lines", return_value=["alpha"]) as build_lines:
+        with patch("polylogue.cli.shared.check_rendering_plain.emit_maintenance_output") as emit_maintenance:
             render_plain_output(env, result, options)
 
     build_lines.assert_called_once_with(env, result, options)

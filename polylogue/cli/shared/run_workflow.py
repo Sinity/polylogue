@@ -7,7 +7,7 @@ from collections.abc import Sequence
 import click
 
 from polylogue.api.sync.bridge import run_coroutine_sync
-from polylogue.cli.formatting import (
+from polylogue.cli.shared.formatting import (
     format_counts,
     format_cursors,
     format_index_status,
@@ -15,10 +15,10 @@ from polylogue.cli.formatting import (
     format_plan_details,
     format_run_details,
 )
-from polylogue.cli.run_display_workflow import render_sources
-from polylogue.cli.run_observers import progress_observer
-from polylogue.cli.run_watch_workflow import WatchDisplayObserver, WatchStatusObserver
 from polylogue.cli.shared.helpers import fail
+from polylogue.cli.shared.run_display_workflow import render_sources
+from polylogue.cli.shared.run_observers import progress_observer
+from polylogue.cli.shared.run_watch_workflow import WatchDisplayObserver, WatchStatusObserver
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
 from polylogue.lib.timestamps import format_timestamp

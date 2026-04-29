@@ -7,7 +7,7 @@ from collections.abc import Mapping
 
 import click
 
-from polylogue.cli.machine_errors import emit_success
+from polylogue.cli.shared.machine_errors import emit_success
 from polylogue.schemas.operator.models import SchemaExplainResult
 
 

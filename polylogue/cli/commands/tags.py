@@ -5,7 +5,7 @@ from __future__ import annotations
 import click
 
 from polylogue.api.sync.bridge import run_coroutine_sync
-from polylogue.cli.machine_errors import emit_success
+from polylogue.cli.shared.machine_errors import emit_success
 from polylogue.cli.shared.types import AppEnv
 
 
