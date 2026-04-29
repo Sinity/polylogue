@@ -435,6 +435,17 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "devtools.inject_semantic_annotations",
     ),
     CommandSpec(
+        "verify-layering",
+        "verification",
+        "Check inter-package imports against declared layering rules from docs/plans/layering.yaml.",
+        "devtools.verify_layering",
+        use_when=(
+            "Diagnose architecture drift: which files import across declared "
+            "package boundaries. Not yet wired into verify --quick."
+        ),
+        examples=("devtools verify-layering", "devtools verify-layering --json"),
+    ),
+    CommandSpec(
         "witness-discover",
         "maintenance",
         "Save a failure-triggering input as a local witness in .local/witnesses/new/.",

@@ -120,11 +120,34 @@ The `all` pipeline stage runs: acquire → parse → materialize → render → 
 
 ## Placement Rules
 
-- If it changes archive meaning, it belongs in `lib/`, `storage/`, `sources/`,
-  `pipeline/`, or `products/`.
-- If it only presents existing archive meaning, it belongs in `cli/`, `mcp/`,
-  `site/`, `rendering/`, or `ui/`.
-- If it exists to prove, refresh, benchmark, or audit the repo, it belongs in
-  `devtools/`, `showcase/`, or `tests/`.
-- If a surface needs a new concept, define the concept in the substrate or
-  product layer first.
+### Substrate (archive meaning)
+- `lib/` — domain types, invariants, shared primitives (no I/O, no storage)
+- `storage/` — SQLite backends, repositories, FTS, search providers
+- `sources/` — provider detection, parsing, acquisition
+- `pipeline/` — stage execution, ingestion, validation, rendering pipeline
+- `products/` — derived read models, session products, analytics
+- `operations/` — operation specs, artifact graph, declared runtime contracts
+
+### Surfaces (presentation only)
+- `cli/` — Click commands, shared helpers, output formatting
+- `mcp/` — MCP server tools
+- `api/` — async library API
+- `site/` — static site generation
+- `rendering/` — markdown/HTML renderers
+- `ui/` — TUI, dashboard
+
+### Verification (repo health)
+- `proof/` — proof obligations, subject discovery, claim catalog, witnesses
+- `devtools/` — operator tooling, lints, campaigns, rendering
+- `showcase/` — QA exercises, deterministic acceptance tests
+- `tests/` — pytest suite, property tests, integration tests
+
+### Cross-cutting
+- `schemas/` — provider schemas, schema inference, validation
+- `scenarios/` — synthetic corpus, scenario families
+
+### Key rules
+- Surfaces may not import substrate internals directly (see layering.yaml).
+- New semantics go into substrate or products first, then surfaces adapt.
+- Proof subjects and claims live in `proof/`; devtools commands that exercise
+  them live in `devtools/`.
