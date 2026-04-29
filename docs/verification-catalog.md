@@ -8,10 +8,10 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 
 ## Snapshot
 
-- subjects: `250`
-- claims: `18`
-- runner bindings: `18`
-- proof obligations: `318`
+- subjects: `358`
+- claims: `34`
+- runner bindings: `34`
+- proof obligations: `426`
 
 ## Quality Checks
 
@@ -38,6 +38,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `generated.scenario_family` | 9 |
 | `maintenance.target` | 8 |
 | `operation.spec` | 43 |
+| `operation.spec.effect` | 108 |
 | `provider.capability` | 3 |
 | `schema.annotation` | 95 |
 | `trace.operation` | 1 |
@@ -157,6 +158,22 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `generated.scenario.family_registered` | `serious` | `scenario-family.omission`<br>`live-checks.overused` | A missing generated-world family leaves live/archive checks carrying routine confidence. |
 | `generated.scenario.local_deterministic` | `serious` | `scenario-family.live-dependency`<br>`scenario-family.nondeterministic-local-fixture` | An implemented generated scenario with live archive dependency is not a routine proof subject. |
 | `generated.scenario.semantic_claim_mapping` | `serious` | `scenario-family.vacuous-process-check`<br>`semantic-proof.unmapped-generated-world` | A generated scenario without semantic claim mapping can go green without proving meaning. |
+| `operation.effect.deterministic` | `info` | `operation.effect.implication_violation` | tracked: None |
+| `operation.effect.no_side_effect` | `info` | `operation.effect.implication_violation` | tracked: None |
+| `operation.effect.snapshot_consistent` | `info` | `operation.effect.implication_violation` | tracked: None |
+| `operation.effect.preview` | `serious` | `operation.effect.implication_violation` | tracked: #516 |
+| `operation.effect.idempotent` | `serious` | `operation.effect.implication_violation` | tracked: #516 |
+| `operation.effect.rollback_safe` | `serious` | `operation.effect.implication_violation` | tracked: #516 |
+| `operation.effect.atomic` | `serious` | `operation.effect.implication_violation` | tracked: #516 |
+| `operation.effect.path_sanitized` | `serious` | `operation.effect.implication_violation` | tracked: #516 |
+| `operation.effect.atomic_rename` | `serious` | `operation.effect.implication_violation` | tracked: #516 |
+| `operation.effect.parent_exists` | `serious` | `operation.effect.implication_violation` | tracked: #516 |
+| `operation.effect.timeout_bounded` | `info` | `operation.effect.implication_violation` | tracked: None |
+| `operation.effect.retry_bounded` | `info` | `operation.effect.implication_violation` | tracked: None |
+| `operation.effect.sampling_bounded` | `info` | `operation.effect.implication_violation` | tracked: None |
+| `operation.effect.privacy_safe_evidence` | `serious` | `operation.effect.implication_violation` | tracked: #516 |
+| `operation.effect.explicit_dry_run_evidence` | `serious` | `operation.effect.implication_violation` | tracked: #516 |
+| `operation.effect.confirmed_before_execute` | `serious` | `operation.effect.implication_violation` | tracked: #516 |
 
 ## Runner Bindings
 
@@ -180,6 +197,22 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `generated-scenario-static-contract:generated.scenario.family_registered` | `generated.scenario.family_registered` | `structural` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
 | `generated-scenario-static-contract:generated.scenario.local_deterministic` | `generated.scenario.local_deterministic` | `structural` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
 | `generated-scenario-static-contract:generated.scenario.semantic_claim_mapping` | `generated.scenario.semantic_claim_mapping` | `semantic` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
+| `effect-implication-static-contract:operation.effect.deterministic` | `operation.effect.deterministic` | `structural` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
+| `effect-implication-static-contract:operation.effect.no_side_effect` | `operation.effect.no_side_effect` | `structural` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
+| `effect-implication-static-contract:operation.effect.snapshot_consistent` | `operation.effect.snapshot_consistent` | `structural` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
+| `effect-implication-static-contract:operation.effect.preview` | `operation.effect.preview` | `structural` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
+| `effect-implication-static-contract:operation.effect.idempotent` | `operation.effect.idempotent` | `structural` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
+| `effect-implication-static-contract:operation.effect.rollback_safe` | `operation.effect.rollback_safe` | `structural` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
+| `effect-implication-static-contract:operation.effect.atomic` | `operation.effect.atomic` | `structural` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
+| `effect-implication-static-contract:operation.effect.path_sanitized` | `operation.effect.path_sanitized` | `structural` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
+| `effect-implication-static-contract:operation.effect.atomic_rename` | `operation.effect.atomic_rename` | `structural` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
+| `effect-implication-static-contract:operation.effect.parent_exists` | `operation.effect.parent_exists` | `structural` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
+| `effect-implication-static-contract:operation.effect.timeout_bounded` | `operation.effect.timeout_bounded` | `structural` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
+| `effect-implication-static-contract:operation.effect.retry_bounded` | `operation.effect.retry_bounded` | `structural` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
+| `effect-implication-static-contract:operation.effect.sampling_bounded` | `operation.effect.sampling_bounded` | `structural` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
+| `effect-implication-static-contract:operation.effect.privacy_safe_evidence` | `operation.effect.privacy_safe_evidence` | `structural` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
+| `effect-implication-static-contract:operation.effect.explicit_dry_run_evidence` | `operation.effect.explicit_dry_run_evidence` | `structural` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
+| `effect-implication-static-contract:operation.effect.confirmed_before_execute` | `operation.effect.confirmed_before_execute` | `structural` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
 
 ## Proof Obligations
 
@@ -197,6 +230,20 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `generated.scenario.local_deterministic` | 4 |
 | `generated.scenario.semantic_claim_mapping` | 9 |
 | `maintenance.repair.crash_consistency` | 8 |
+| `operation.effect.atomic` | 12 |
+| `operation.effect.atomic_rename` | 2 |
+| `operation.effect.deterministic` | 8 |
+| `operation.effect.idempotent` | 12 |
+| `operation.effect.no_side_effect` | 8 |
+| `operation.effect.parent_exists` | 2 |
+| `operation.effect.path_sanitized` | 2 |
+| `operation.effect.preview` | 12 |
+| `operation.effect.privacy_safe_evidence` | 1 |
+| `operation.effect.retry_bounded` | 1 |
+| `operation.effect.rollback_safe` | 12 |
+| `operation.effect.sampling_bounded` | 1 |
+| `operation.effect.snapshot_consistent` | 34 |
+| `operation.effect.timeout_bounded` | 1 |
 | `parser.quarantine.context_redaction` | 1 |
 | `provider.capability.identity_bridge` | 3 |
 | `provider.capability.partial_coverage_declared` | 3 |

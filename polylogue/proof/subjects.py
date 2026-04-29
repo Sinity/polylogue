@@ -16,6 +16,7 @@ from polylogue.maintenance.targets import MaintenanceTargetCatalog, build_mainte
 from polylogue.operations import build_declared_operation_catalog
 from polylogue.proof.generated_scenarios import generated_scenario_subjects
 from polylogue.proof.models import SourceSpan, SubjectRef
+from polylogue.proof.sources.effect_compiler import effect_implication_subjects
 from polylogue.schemas.packages import SchemaVersionPackage
 from polylogue.schemas.runtime_registry import SCHEMA_DIR, SchemaRegistry
 
@@ -404,6 +405,7 @@ def build_catalog_subjects() -> tuple[SubjectRef, ...]:
         *query_law_subjects(),
         *provider_capability_subjects(),
         *operation_spec_subjects(),
+        *effect_implication_subjects(),
         *artifact_path_subjects(),
         *maintenance_target_subjects(),
         *error_surface_subjects(),

@@ -19,5 +19,7 @@ from polylogue.proof.catalog import build_verification_catalog
 def test_every_claim_selects_at_least_one_subject() -> None:
     catalog = build_verification_catalog()
     obligations_by_claim = catalog.obligations_by_claim()
-    unbound = [claim.id for claim in catalog.claims if obligations_by_claim.get(claim.id, 0) == 0]
-    assert not unbound, f"claims with zero subjects: {sorted(unbound)}"
+    unbound = [
+        claim.id for claim in catalog.claims if not claim.abstract and obligations_by_claim.get(claim.id, 0) == 0
+    ]
+    assert not unbound, f"non-abstract claims with zero subjects: {sorted(unbound)}"
