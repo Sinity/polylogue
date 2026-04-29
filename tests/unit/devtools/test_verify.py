@@ -19,6 +19,7 @@ def test_quick_verify_omits_pytest() -> None:
         "verify-cross-cuts",
         "verify-suppressions",
         "verify-manifests",
+        "verify-witness-lifecycle",
     ]
 
 
