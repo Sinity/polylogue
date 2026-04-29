@@ -14,6 +14,7 @@ from polylogue.lib.json import JSONDocument, json_document, json_document_list, 
 from polylogue.lib.provider.capabilities import iter_provider_capabilities
 from polylogue.maintenance.targets import MaintenanceTargetCatalog, build_maintenance_target_catalog
 from polylogue.operations import build_declared_operation_catalog
+from polylogue.products.registry import PRODUCT_REGISTRY
 from polylogue.proof.generated_scenarios import generated_scenario_subjects
 from polylogue.proof.models import SourceSpan, SubjectRef
 from polylogue.proof.sources.effect_compiler import effect_implication_subjects
@@ -161,6 +162,25 @@ def operation_spec_subjects() -> tuple[SubjectRef, ...]:
         for operation in build_declared_operation_catalog().specs
     ]
     return tuple(sorted(subjects, key=lambda subject: subject.id))
+
+
+def product_surface_subjects() -> tuple[SubjectRef, ...]:
+    """Compile registered product types into proof subjects."""
+    subjects = [
+        SubjectRef(
+            kind="product.surface",
+            id=f"product.surface.{name}",
+            attrs={
+                "name": name,
+                "display_name": pt.display_name,
+                "json_key": pt.json_key,
+                "cli_command_name": pt.resolved_cli_command_name,
+            },
+            source_span=SourceSpan(path="polylogue/products/registry.py", symbol=name),
+        )
+        for name, pt in sorted(PRODUCT_REGISTRY.items())
+    ]
+    return tuple(subjects)
 
 
 def artifact_path_subjects(graph: ArtifactGraph | None = None) -> tuple[SubjectRef, ...]:
@@ -406,6 +426,7 @@ def build_catalog_subjects() -> tuple[SubjectRef, ...]:
         *provider_capability_subjects(),
         *operation_spec_subjects(),
         *effect_implication_subjects(),
+        *product_surface_subjects(),
         *artifact_path_subjects(),
         *maintenance_target_subjects(),
         *error_surface_subjects(),
