@@ -435,6 +435,20 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "devtools.inject_semantic_annotations",
     ),
     CommandSpec(
+        "obligation-diff",
+        "verification",
+        "Diff proof obligations between two git refs to surface affected assurance domains.",
+        "devtools.obligation_diff",
+        use_when=(
+            "Before opening a PR, check which assurance domains are affected by "
+            "the changes to guide reviewer attention and verification effort."
+        ),
+        examples=(
+            "devtools obligation-diff --base origin/master --head HEAD",
+            "devtools obligation-diff --base origin/master --head HEAD --json",
+        ),
+    ),
+    CommandSpec(
         "verify-layering",
         "verification",
         "Check inter-package imports against declared layering rules from docs/plans/layering.yaml.",

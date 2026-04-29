@@ -99,6 +99,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools coverage-gate` | Run pytest with the repository coverage floor from pyproject.toml. |
 | `devtools lab-corpus` | Generate verification-lab synthetic corpus fixtures and demo archives. |
 | `devtools lab-scenario` | Run verification-lab showcase scenario sets and baseline checks. |
+| `devtools obligation-diff` | Diff proof obligations between two git refs to surface affected assurance domains. |
 | `devtools pipeline-probe` | Run typed pipeline probes against synthetic, staged, or archive-subset inputs. |
 | `devtools proof-pack` | Domain-grouped affected coverage report for vibecode confidence. |
 | `devtools query-memory-budget` | Measure query-memory envelopes on generated fixtures. |
@@ -113,6 +114,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools verify-cluster-cohesion` | Validate proposed clusters from the topology projection using the import graph. |
 | `devtools verify-cross-cuts` | Verify cross-cut tags in the topology projection match module-name conventions. |
 | `devtools verify-file-budgets` | Enforce per-file LOC budgets declared in docs/plans/file-size-budgets.yaml. |
+| `devtools verify-layering` | Check inter-package imports against declared layering rules from docs/plans/layering.yaml. |
 | `devtools verify-manifests` | Verify internal consistency across all docs/plans/*.yaml manifest files. |
 | `devtools verify-migrations` | Verify migration-completeness against docs/plans/migrations.yaml. |
 | `devtools verify-suppressions` | Enforce suppression registry expiry dates from docs/plans/suppressions.yaml. |
