@@ -5,17 +5,17 @@ from __future__ import annotations
 import sys
 from dataclasses import dataclass
 
-from polylogue.cli.check_maintenance import (
+from polylogue.cli.shared.check_maintenance import (
     build_preview_counts as _build_preview_counts,
 )
-from polylogue.cli.check_maintenance import (
+from polylogue.cli.shared.check_maintenance import (
     persist_maintenance_run,
 )
-from polylogue.cli.check_maintenance import (
+from polylogue.cli.shared.check_maintenance import (
     resolve_selected_maintenance_targets as _resolve_selected_maintenance_targets,
 )
-from polylogue.cli.check_models import CheckCommandResult, VacuumResult
-from polylogue.cli.check_validation import validate_check_options as _validate_check_options
+from polylogue.cli.shared.check_models import CheckCommandResult, VacuumResult
+from polylogue.cli.shared.check_validation import validate_check_options as _validate_check_options
 from polylogue.cli.shared.helpers import load_effective_config
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
@@ -126,7 +126,7 @@ def _run_blob_store_check(env: AppEnv, config: Config, json_output: bool = False
     orphaned = sorted(disk_hashes - db_raw_ids)
 
     if json_output:
-        from polylogue.cli.machine_errors import emit_success
+        from polylogue.cli.shared.machine_errors import emit_success
 
         emit_success(
             {

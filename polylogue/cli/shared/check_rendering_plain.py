@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import click
 
-from polylogue.cli.check_models import CheckCommandResult
-from polylogue.cli.check_support import format_count_mapping, run_vacuum
-from polylogue.cli.check_workflow import CheckCommandOptions
+from polylogue.cli.shared.check_models import CheckCommandResult
+from polylogue.cli.shared.check_support import format_count_mapping, run_vacuum
+from polylogue.cli.shared.check_workflow import CheckCommandOptions
 from polylogue.cli.shared.types import AppEnv
 from polylogue.readiness import VerifyStatus
 

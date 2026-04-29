@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from polylogue.cli.machine_errors import emit_success
+from polylogue.cli.shared.machine_errors import emit_success
 from polylogue.lib.json import json_document
 
 from .check_models import CheckCommandResult

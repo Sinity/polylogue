@@ -7,7 +7,7 @@ import sys
 from types import ModuleType, SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from polylogue.cli.qa_capture import run_vhs_capture
+from polylogue.cli.shared.qa_capture import run_vhs_capture
 from polylogue.lib.outcomes import OutcomeStatus
 from polylogue.showcase.invariants import InvariantResult
 from polylogue.showcase.qa_runner_models import QAResult

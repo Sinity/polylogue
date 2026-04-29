@@ -321,7 +321,7 @@ def test_run_embed_standalone_covers_error_stats_single_and_batch_paths() -> Non
         with pytest.raises(click.Abort):
             run_command_module._run_embed_standalone(env, run_command_module.EmbedOptions())
 
-    with patch("polylogue.cli.embed_stats.show_embedding_stats") as show_stats:
+    with patch("polylogue.cli.shared.embed_stats.show_embedding_stats") as show_stats:
         run_command_module._run_embed_standalone(env, run_command_module.EmbedOptions(stats=True, json_output=True))
     show_stats.assert_called_once_with(env, json_output=True)
 
@@ -333,7 +333,7 @@ def test_run_embed_standalone_covers_error_stats_single_and_batch_paths() -> Non
     provider = SimpleNamespace(model="voyage-4")
     with patch.dict("os.environ", {"VOYAGE_API_KEY": "key"}, clear=True):
         with patch("polylogue.storage.search_providers.create_vector_provider", return_value=provider):
-            with patch("polylogue.cli.embed_runtime.embed_single") as embed_single:
+            with patch("polylogue.cli.shared.embed_runtime.embed_single") as embed_single:
                 run_command_module._run_embed_standalone(
                     env,
                     run_command_module.EmbedOptions(conversation="conv-1", model="voyage-4-large"),
@@ -344,7 +344,7 @@ def test_run_embed_standalone_covers_error_stats_single_and_batch_paths() -> Non
     provider = SimpleNamespace(model="voyage-4")
     with patch.dict("os.environ", {"VOYAGE_API_KEY": "key"}, clear=True):
         with patch("polylogue.storage.search_providers.create_vector_provider", return_value=provider):
-            with patch("polylogue.cli.embed_runtime.embed_batch") as embed_batch:
+            with patch("polylogue.cli.shared.embed_runtime.embed_batch") as embed_batch:
                 run_command_module._run_embed_standalone(
                     env,
                     run_command_module.EmbedOptions(rebuild=True, limit=9),

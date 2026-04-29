@@ -8,8 +8,8 @@ import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
-from polylogue.cli.machine_errors import emit_success
-from polylogue.cli.qa_requests import QASnapshotPlan
+from polylogue.cli.shared.machine_errors import emit_success
+from polylogue.cli.shared.qa_requests import QASnapshotPlan
 from polylogue.cli.shared.types import AppEnv
 from polylogue.paths.sanitize import safe_path_component
 

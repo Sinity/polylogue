@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Protocol, runtime_checkable
 
-from polylogue.cli.machine_errors import emit_success
+from polylogue.cli.shared.machine_errors import emit_success
 from polylogue.products.registry import render_product_items
 
 

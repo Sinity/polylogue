@@ -4,22 +4,22 @@ from __future__ import annotations
 
 import click
 
-from polylogue.cli.check_models import VacuumResult
-from polylogue.cli.check_options import apply_check_command_options
-from polylogue.cli.check_rendering_json import emit_json_output
-from polylogue.cli.check_rendering_plain import render_plain_output
-from polylogue.cli.check_support import (
+from polylogue.cli.shared.check_models import VacuumResult
+from polylogue.cli.shared.check_options import apply_check_command_options
+from polylogue.cli.shared.check_rendering_json import emit_json_output
+from polylogue.cli.shared.check_rendering_plain import render_plain_output
+from polylogue.cli.shared.check_support import (
     format_count_mapping as _format_count_mapping_impl,
 )
-from polylogue.cli.check_support import (
+from polylogue.cli.shared.check_support import (
     make_schema_progress_callback as _make_schema_progress_callback_impl,
 )
-from polylogue.cli.check_support import (
+from polylogue.cli.shared.check_support import (
     parse_schema_samples as _parse_schema_samples_impl,
 )
-from polylogue.cli.check_support import run_vacuum as _run_vacuum_impl
-from polylogue.cli.check_support import vacuum_database as _vacuum_database_impl
-from polylogue.cli.check_workflow import CheckCommandOptions, run_check_workflow, validate_check_options
+from polylogue.cli.shared.check_support import run_vacuum as _run_vacuum_impl
+from polylogue.cli.shared.check_support import vacuum_database as _vacuum_database_impl
+from polylogue.cli.shared.check_workflow import CheckCommandOptions, run_check_workflow, validate_check_options
 from polylogue.cli.shared.types import AppEnv
 from polylogue.protocols import ProgressCallback
 

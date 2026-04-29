@@ -19,17 +19,17 @@ from rich.console import Console
 from rich.progress import TaskID
 
 from polylogue.cli.commands.run import run_command
-from polylogue.cli.run_observers import (
+from polylogue.cli.shared.run_observers import (
     PlainProgressObserver as _PlainProgressObserver,
 )
-from polylogue.cli.run_observers import (
+from polylogue.cli.shared.run_observers import (
     RichProgressObserver as _RichProgressObserver,
 )
-from polylogue.cli.run_observers import (
+from polylogue.cli.shared.run_observers import (
     _format_elapsed,
 )
-from polylogue.cli.run_workflow import display_result as _display_result
-from polylogue.cli.run_workflow import run_sync_once as _run_sync_once
+from polylogue.cli.shared.run_workflow import display_result as _display_result
+from polylogue.cli.shared.run_workflow import run_sync_once as _run_sync_once
 from polylogue.config import Config, get_config
 from polylogue.storage.run_state import (
     PlanCounts,
@@ -116,7 +116,7 @@ def test_run_sync_once_forwards_arguments_contract(
     result = _run_result()
 
     with (
-        patch("polylogue.cli.run_workflow.run_sources", new_callable=AsyncMock) as mock_run,
+        patch("polylogue.cli.shared.run_workflow.run_sources", new_callable=AsyncMock) as mock_run,
         patch("builtins.print") as mock_print,
     ):
         mock_run.return_value = result
@@ -141,7 +141,7 @@ def test_run_sync_once_forwards_plan_snapshot_contract() -> None:
     result = _run_result()
 
     with (
-        patch("polylogue.cli.run_workflow.run_sources", new_callable=AsyncMock) as mock_run,
+        patch("polylogue.cli.shared.run_workflow.run_sources", new_callable=AsyncMock) as mock_run,
         patch("builtins.print"),
     ):
         mock_run.return_value = result
@@ -311,7 +311,7 @@ def test_plain_progress_observer_stage_switch_contract() -> None:
     with (
         patch("builtins.print") as mock_print,
         patch(
-            "polylogue.cli.run_observers.time.time",
+            "polylogue.cli.shared.run_observers.time.time",
             side_effect=[100.0, 101.2, 101.2, 102.8, 102.8],
         ),
     ):
@@ -335,7 +335,7 @@ def test_plain_progress_observer_completion_contract() -> None:
     with (
         patch("builtins.print") as mock_print,
         patch(
-            "polylogue.cli.run_observers.time.time",
+            "polylogue.cli.shared.run_observers.time.time",
             side_effect=[200.0, 205.0],
         ),
     ):

@@ -9,9 +9,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from polylogue.cli import check_workflow, formatting
-from polylogue.cli.check_models import CheckCommandResult, VacuumResult
-from polylogue.cli.check_workflow import CheckCommandOptions
+from polylogue.cli.shared import check_workflow, formatting
+from polylogue.cli.shared.check_models import CheckCommandResult, VacuumResult
+from polylogue.cli.shared.check_workflow import CheckCommandOptions
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
 from polylogue.maintenance.targets import MaintenanceTargetMode
@@ -105,7 +105,7 @@ def test_validate_check_options_rejects_target_mode_mismatches() -> None:
     repair_spec = SimpleNamespace(mode=MaintenanceTargetMode.REPAIR)
     catalog = SimpleNamespace(resolve=lambda names: [cleanup_spec] if names == ("cleanup_only",) else [repair_spec])
 
-    with patch("polylogue.cli.check_validation.build_maintenance_target_catalog", return_value=catalog):
+    with patch("polylogue.cli.shared.check_validation.build_maintenance_target_catalog", return_value=catalog):
         with pytest.raises(SystemExit, match="only selected cleanup targets"):
             check_workflow.validate_check_options(_options(repair=True, maintenance_targets=("cleanup_only",)))
 
@@ -172,7 +172,7 @@ def test_run_blob_store_check_reports_missing_orphaned_and_verified_states() -> 
     blob_store = SimpleNamespace(iter_all=lambda: ["raw-a", "orphan-c"])
 
     with (
-        patch("polylogue.cli.check_workflow.connection_context", return_value=connection()),
+        patch("polylogue.cli.shared.check_workflow.connection_context", return_value=connection()),
         patch("polylogue.storage.blob_store.get_blob_store", return_value=blob_store),
     ):
         check_workflow._run_blob_store_check(env, config)
@@ -186,7 +186,7 @@ def test_run_blob_store_check_reports_missing_orphaned_and_verified_states() -> 
     env = _env()
     verified_store = SimpleNamespace(iter_all=lambda: ["raw-a", "raw-b"])
     with (
-        patch("polylogue.cli.check_workflow.connection_context", return_value=connection()),
+        patch("polylogue.cli.shared.check_workflow.connection_context", return_value=connection()),
         patch("polylogue.storage.blob_store.get_blob_store", return_value=verified_store),
     ):
         check_workflow._run_blob_store_check(env, config)
@@ -211,9 +211,11 @@ def test_schema_verification_and_maintenance_helpers_cover_runtime_paths() -> No
     schema_report = cast(SchemaVerificationReport, SimpleNamespace())
     session_progress_callback = cast(Any, lambda: None)
     with (
-        patch("polylogue.cli.check_workflow.run_schema_verification", return_value=schema_report) as run_verify,
-        patch("polylogue.cli.check_workflow.parse_schema_samples", return_value=25) as parse_samples,
-        patch("polylogue.cli.check_workflow.make_schema_progress_callback", return_value=session_progress_callback),
+        patch("polylogue.cli.shared.check_workflow.run_schema_verification", return_value=schema_report) as run_verify,
+        patch("polylogue.cli.shared.check_workflow.parse_schema_samples", return_value=25) as parse_samples,
+        patch(
+            "polylogue.cli.shared.check_workflow.make_schema_progress_callback", return_value=session_progress_callback
+        ),
         patch("builtins.print") as builtins_print,
     ):
         assert check_workflow._run_schema_verification(options, config) is schema_report
@@ -230,7 +232,7 @@ def test_schema_verification_and_maintenance_helpers_cover_runtime_paths() -> No
     builtins_print.assert_called_once()
 
     with patch(
-        "polylogue.cli.check_workflow.make_session_product_progress_callback",
+        "polylogue.cli.shared.check_workflow.make_session_product_progress_callback",
         return_value=session_progress_callback,
     ):
         assert (
@@ -241,8 +243,11 @@ def test_schema_verification_and_maintenance_helpers_cover_runtime_paths() -> No
     assert check_workflow._session_product_progress_callback(_options(repair=True, json_output=True), ()) is None
 
     with (
-        patch("polylogue.cli.check_workflow._resolve_selected_maintenance_targets", return_value=("session_products",)),
-        patch("polylogue.cli.check_workflow._build_preview_counts", return_value={"session_products": 2}),
+        patch(
+            "polylogue.cli.shared.check_workflow._resolve_selected_maintenance_targets",
+            return_value=("session_products",),
+        ),
+        patch("polylogue.cli.shared.check_workflow._build_preview_counts", return_value={"session_products": 2}),
     ):
         preview_inputs = check_workflow._maintenance_run_inputs(_options(repair=True, preview=True), report)
         assert preview_inputs.selected_targets == ("session_products",)
@@ -251,7 +256,9 @@ def test_schema_verification_and_maintenance_helpers_cover_runtime_paths() -> No
     result = CheckCommandResult(report=report)
     inputs = check_workflow._MaintenanceRunInputs(selected_targets=("session_products",), preview_counts={"x": 1})
     repair_result = cast(RepairResult, SimpleNamespace())
-    with patch("polylogue.cli.check_workflow.run_selected_maintenance", return_value=[repair_result]) as run_selected:
+    with patch(
+        "polylogue.cli.shared.check_workflow.run_selected_maintenance", return_value=[repair_result]
+    ) as run_selected:
         check_workflow._run_maintenance(config, result, _options(repair=True), inputs)
     assert result.maintenance_targets == ("session_products",)
     assert result.maintenance_results == [repair_result]
@@ -259,7 +266,7 @@ def test_schema_verification_and_maintenance_helpers_cover_runtime_paths() -> No
 
     env = _env()
     result.vacuum_result = VacuumResult(ok=True, detail="done")
-    with patch("polylogue.cli.check_workflow.persist_maintenance_run") as persist_run:
+    with patch("polylogue.cli.shared.check_workflow.persist_maintenance_run") as persist_run:
         check_workflow._persist_maintenance_run(
             env,
             report=report,
@@ -286,20 +293,22 @@ def test_run_check_workflow_covers_runtime_blob_vacuum_and_persist_paths() -> No
 
     repair_result = cast(RepairResult, SimpleNamespace())
     with (
-        patch("polylogue.cli.check_workflow.load_effective_config", return_value=config),
-        patch("polylogue.cli.check_workflow.get_readiness", return_value=report),
-        patch("polylogue.cli.check_workflow.run_runtime_readiness", return_value=runtime_report),
-        patch("polylogue.cli.check_workflow._run_blob_store_check") as run_blob_check,
+        patch("polylogue.cli.shared.check_workflow.load_effective_config", return_value=config),
+        patch("polylogue.cli.shared.check_workflow.get_readiness", return_value=report),
+        patch("polylogue.cli.shared.check_workflow.run_runtime_readiness", return_value=runtime_report),
+        patch("polylogue.cli.shared.check_workflow._run_blob_store_check") as run_blob_check,
         patch(
-            "polylogue.cli.check_workflow._maintenance_run_inputs",
+            "polylogue.cli.shared.check_workflow._maintenance_run_inputs",
             return_value=check_workflow._MaintenanceRunInputs(
                 selected_targets=("session_products",), preview_counts=None
             ),
         ),
-        patch("polylogue.cli.check_workflow.run_selected_maintenance", return_value=[repair_result]),
-        patch("polylogue.cli.check_workflow.make_session_product_progress_callback", return_value="progress"),
-        patch("polylogue.cli.check_workflow.vacuum_database", return_value=VacuumResult(ok=True, detail="vacuumed")),
-        patch("polylogue.cli.check_workflow.persist_maintenance_run") as persist_run,
+        patch("polylogue.cli.shared.check_workflow.run_selected_maintenance", return_value=[repair_result]),
+        patch("polylogue.cli.shared.check_workflow.make_session_product_progress_callback", return_value="progress"),
+        patch(
+            "polylogue.cli.shared.check_workflow.vacuum_database", return_value=VacuumResult(ok=True, detail="vacuumed")
+        ),
+        patch("polylogue.cli.shared.check_workflow.persist_maintenance_run") as persist_run,
     ):
         result = check_workflow.run_check_workflow(env, options)
 

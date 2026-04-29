@@ -10,7 +10,7 @@ import pytest
 from click.testing import CliRunner
 
 from polylogue.cli import cli
-from polylogue.cli.check_workflow import CheckCommandOptions, run_check_workflow
+from polylogue.cli.shared.check_workflow import CheckCommandOptions, run_check_workflow
 from polylogue.cli.shared.types import AppEnv
 from polylogue.lib.json import JSONDocument
 from polylogue.readiness import ReadinessCheck, ReadinessReport, VerifyStatus
@@ -398,10 +398,10 @@ class TestCheckCommand:
         )
 
         monkeypatch.setattr(
-            "polylogue.cli.check_workflow.get_readiness",
+            "polylogue.cli.shared.check_workflow.get_readiness",
             lambda config, *, deep=False: (_ for _ in ()).throw(AssertionError("archive readiness should be skipped")),
         )
-        monkeypatch.setattr("polylogue.cli.check_workflow.run_runtime_readiness", lambda config: runtime_report)
+        monkeypatch.setattr("polylogue.cli.shared.check_workflow.run_runtime_readiness", lambda config: runtime_report)
 
         result = run_check_workflow(env, options)
 
@@ -748,7 +748,7 @@ class TestCheckCommandSupplementary:
         )
 
         with patch(
-            "polylogue.cli.check_workflow.run_schema_verification",
+            "polylogue.cli.shared.check_workflow.run_schema_verification",
             return_value=fake_report,
         ):
             runner = CliRunner()
@@ -778,7 +778,7 @@ class TestCheckCommandSupplementary:
         )
 
         with patch(
-            "polylogue.cli.check_workflow.run_schema_verification",
+            "polylogue.cli.shared.check_workflow.run_schema_verification",
             return_value=fake_report,
         ) as mock_verify:
             runner = CliRunner()
@@ -823,7 +823,7 @@ class TestCheckCommandSupplementary:
         )
 
         with patch(
-            "polylogue.cli.check_workflow.run_schema_verification",
+            "polylogue.cli.shared.check_workflow.run_schema_verification",
             return_value=fake_report,
         ) as mock_verify:
             runner = CliRunner()
@@ -920,7 +920,7 @@ class TestCheckCommandSupplementary:
         )
 
         with patch(
-            "polylogue.cli.check_workflow.run_artifact_proof",
+            "polylogue.cli.shared.check_workflow.run_artifact_proof",
             return_value=ArtifactProofResult(report=fake_report),
         ):
             runner = CliRunner()
@@ -957,7 +957,7 @@ class TestCheckCommandSupplementary:
         )
 
         with patch(
-            "polylogue.cli.check_workflow.run_artifact_proof",
+            "polylogue.cli.shared.check_workflow.run_artifact_proof",
             return_value=ArtifactProofResult(report=fake_report),
         ):
             runner = CliRunner()
@@ -980,7 +980,7 @@ class TestCheckCommandSupplementary:
         fake_report = ArtifactProofReport(providers={}, total_records=0)
 
         with patch(
-            "polylogue.cli.check_workflow.run_artifact_proof",
+            "polylogue.cli.shared.check_workflow.run_artifact_proof",
             return_value=ArtifactProofResult(report=fake_report),
         ) as mock_prove:
             runner = CliRunner()
@@ -1043,7 +1043,7 @@ class TestCheckCommandSupplementary:
         ]
 
         with patch(
-            "polylogue.cli.check_workflow.list_artifact_observations",
+            "polylogue.cli.shared.check_workflow.list_artifact_observations",
             return_value=ArtifactObservationListResult(rows=fake_rows),
         ):
             runner = CliRunner()
@@ -1104,7 +1104,7 @@ class TestCheckCommandSupplementary:
         ]
 
         with patch(
-            "polylogue.cli.check_workflow.list_artifact_cohorts",
+            "polylogue.cli.shared.check_workflow.list_artifact_cohorts",
             return_value=ArtifactCohortListResult(rows=fake_rows),
         ):
             runner = CliRunner()

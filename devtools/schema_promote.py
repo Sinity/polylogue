@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from polylogue.cli.schema_rendering import render_schema_promote_result
+from polylogue.cli.shared.schema_rendering import render_schema_promote_result
 from polylogue.config import get_config
 from polylogue.schemas.operator.models import SchemaPromoteRequest
 from polylogue.schemas.operator.workflow import promote_schema_cluster

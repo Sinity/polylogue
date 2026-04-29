@@ -4,14 +4,14 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from polylogue.cli.check_models import VacuumResult
+from polylogue.cli.shared.check_models import VacuumResult
 from polylogue.cli.shared.types import AppEnv
 from polylogue.maintenance.targets import MaintenanceTargetMode, build_maintenance_target_catalog
 from polylogue.readiness import ReadinessReport
 from polylogue.storage.repair import RepairResult, preview_counts_from_archive_debt
 
 if TYPE_CHECKING:
-    from polylogue.cli.check_workflow import CheckCommandOptions
+    from polylogue.cli.shared.check_workflow import CheckCommandOptions
 
 
 def build_preview_counts(report: ReadinessReport) -> dict[str, int]:

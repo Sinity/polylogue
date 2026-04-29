@@ -8,7 +8,7 @@ from polylogue.cli.shared.helpers import fail
 from polylogue.maintenance.targets import MaintenanceTargetMode, build_maintenance_target_catalog
 
 if TYPE_CHECKING:
-    from polylogue.cli.check_workflow import CheckCommandOptions
+    from polylogue.cli.shared.check_workflow import CheckCommandOptions
 
 
 def validate_check_options(options: CheckCommandOptions) -> None:

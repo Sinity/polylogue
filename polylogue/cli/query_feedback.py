@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from polylogue.cli.machine_errors import error_no_results
+from polylogue.cli.shared.machine_errors import error_no_results
 
 if TYPE_CHECKING:
     from polylogue.cli.shared.types import AppEnv

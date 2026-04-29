@@ -5,7 +5,7 @@ from __future__ import annotations
 import sys
 import time
 
-from polylogue.cli.check_models import VacuumResult
+from polylogue.cli.shared.check_models import VacuumResult
 from polylogue.cli.shared.helpers import fail
 from polylogue.cli.shared.types import AppEnv
 from polylogue.protocols import ProgressCallback
