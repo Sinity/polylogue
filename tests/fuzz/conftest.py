@@ -13,6 +13,7 @@ or session seed.
 
 from __future__ import annotations
 
+import hashlib
 import random
 
 import pytest
@@ -26,5 +27,5 @@ _BASE_SEED = 0xF0_22_F0_22
 @pytest.fixture(autouse=True)
 def _seed_fuzz_random(request: pytest.FixtureRequest) -> None:
     """Seed ``random`` with a stable, per-test-deterministic value."""
-    test_seed = _BASE_SEED ^ (hash(request.node.nodeid) & 0xFFFFFFFF)
+    test_seed = _BASE_SEED ^ (int.from_bytes(hashlib.sha256(request.node.nodeid.encode()).digest()[:4]) & 0xFFFFFFFF)
     random.seed(test_seed)
