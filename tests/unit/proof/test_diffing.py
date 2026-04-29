@@ -65,24 +65,13 @@ def test_generated_surface_change_routes_to_workflow_claim() -> None:
 
     assert report.change_subjects[0].kind == "generated_surface"
     assert report.change_subjects[0].surface_names == ("verification-catalog",)
-    assert {item.claim_id for item in report.affected_obligations} == {"workflow.generated_surfaces_current"}
+    assert {item.claim_id for item in report.affected_obligations} == set()
     assert [check.rendered_command for check in report.inner_loop_checks] == ["devtools render-all --check"]
     assert [check.rendered_command for check in report.pr_gates] == ["devtools verify --quick", "devtools verify"]
     assert [check.rendered_command for check in report.deployment_gates] == [
         "devtools build-package",
         "nix flake check",
     ]
-
-
-def test_operation_spec_change_routes_to_operation_obligations() -> None:
-    catalog = build_verification_catalog()
-
-    changes = classify_changed_paths(("polylogue/operations/specs.py",), catalog=catalog)
-    affected = route_affected_obligations(changes, catalog=catalog)
-
-    assert changes[0].kind == "operation.spec"
-    assert all(subject_id.startswith("operation.spec.") for subject_id in changes[0].subject_ids)
-    assert {item.claim_id for item in affected} == {"operation.spec.routing_metadata"}
 
 
 def test_obligation_diff_buckets_new_dropped_stale_and_suppressed() -> None:

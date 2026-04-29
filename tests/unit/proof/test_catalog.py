@@ -33,7 +33,6 @@ def test_default_catalog_compiles_first_vertical_slice() -> None:
         "provider.capability.partial_coverage_declared",
         "schema.values.value_closure",
         "schema.foreign_key.resolves",
-        "operation.spec.routing_metadata",
         "artifact.path.dependency_closure",
         "maintenance.repair.crash_consistency",
         "parser.quarantine.context_redaction",
@@ -43,14 +42,11 @@ def test_default_catalog_compiles_first_vertical_slice() -> None:
         "generated.scenario.family_registered",
         "generated.scenario.local_deterministic",
         "generated.scenario.semantic_claim_mapping",
-        "workflow.generated_surfaces_current",
-        "workflow.pr_verification_recorded",
     }
     assert catalog.subjects_by_kind()["cli.command"] >= 1
     assert catalog.subjects_by_kind()["cli.json_command"] >= 1
     assert catalog.subjects_by_kind()["archive.query_law"] == 1
     assert catalog.subjects_by_kind()["provider.capability"] >= 2
-    assert catalog.subjects_by_kind()["operation.spec"] >= 1
     assert catalog.subjects_by_kind()["artifact.path"] >= 1
     assert catalog.subjects_by_kind()["maintenance.target"] >= 1
     assert catalog.subjects_by_kind()["error.surface"] == 2

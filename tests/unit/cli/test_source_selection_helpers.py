@@ -13,7 +13,7 @@ import click
 import pytest
 from typing_extensions import TypedDict
 
-from polylogue.cli import helpers
+from polylogue.cli.shared import helpers
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config, Source
 from polylogue.services import build_runtime_services
