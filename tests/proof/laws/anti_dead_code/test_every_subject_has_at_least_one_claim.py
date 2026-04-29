@@ -23,10 +23,8 @@ _FULLY_BOUND_KINDS = (
     "cli.command",
     "cli.json_command",
     "provider.capability",
-    "operation.spec",
     "trace.operation",
     "diagnostic.observable",
-    "workflow.claim",
 )
 
 

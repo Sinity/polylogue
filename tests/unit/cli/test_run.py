@@ -125,7 +125,7 @@ RUN_CASES = [
         False,
         ["drive"],
         "reprocess",
-        ("parse", "materialize", "render", "index"),
+        ("parse", "materialize", "render", "site", "index"),
         "html",
         False,
     ),

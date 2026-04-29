@@ -1,0 +1,171 @@
+# Security-and-privacy coverage manifest — Track B, #513.
+#
+# Documents the current security and privacy verification surface
+# across path sanitization, attachment security, MCP safety, exec
+# command validation, SSRF prevention, HTML sanitization, schema
+# privacy, and token-store security.
+#
+# Updated 2026-04-29 from realized codebase state.
+
+description: >
+  Security and privacy verification surface for polylogue.
+  Documents implemented controls, test coverage, and gaps.
+
+areas:
+  xss_prevention:
+    description: Cross-site scripting defense in HTML rendering
+    implemented: true
+    controls:
+      - jinja2_autoescape: Jinja2 template autoescaping is active
+      - html_sanitizer: >
+          sanitize_html() filter in polylogue/rendering/renderers/
+          html_sanitizer.py strips <script> tags, event-handler
+          attributes (onclick, onload, etc.), and javascript: URLs
+      - regex_defense_in_depth: >
+          _SCRIPT_RE tolerates whitespace and junk-attributes in
+          closing tags (browser-compatible bypass defense)
+    test_coverage:
+      location: tests/unit/security/ (indirect, via snapshot rendering)
+      hypothesis: false
+    notes: >
+      Regex sanitization is defense-in-depth atop Jinja2 autoescape.
+      No dedicated XSS test file. No bleach/HTML-parser dependency.
+
+  file_permissions:
+    description: File permission controls on token store and data files
+    implemented: true
+    controls:
+      - token_store_0600: >
+          FileTokenStore.save() creates files with mode 0o600
+          (owner-read-write only). Verified in
+          test_path_sanitization.py::TestFileTokenStoreSecurity.
+    test_coverage:
+      location: tests/unit/security/test_path_sanitization.py
+      hypothesis: false
+    notes: >
+      Token store permissions were hardened in commit 3796914
+      (0644 -> 0600). Crawl-source file permissions not under
+      automated verification.
+
+  redaction:
+    description: PII/private-content redaction in schema inference
+    implemented: true
+    controls:
+      - cross_conv_threshold: >
+          FieldStats.value_conversation_ids tracks per-value
+          conversation IDs; values seen in fewer than 3
+          conversations are suppressed
+      - key_denylist: >
+          _CONTENT_FIELD_NAMES blocks body, message, input,
+          output, text, prompt, summary, query fields
+      - private_tld_denylist: >
+          _is_safe_enum_value rejects .local, .lan, .corp,
+          .internal, .home TLDs
+      - enum_length_guard: >
+          _SAFE_ENUM_MAX_LEN = 50 rejects tokens that look
+          like user content rather than structural enums
+      - entropy_detection: >
+          _HIGH_ENTROPY_TOKEN_RE identifies random-looking
+          tokens for suppression
+      - timestamp_detection: >
+          _TIMESTAMP_RE matches ISO dates to prevent
+          date-leakage through enums
+    test_coverage:
+      location: tests/unit/core/test_schema_privacy.py
+      hypothesis: false
+    notes: >
+      Privacy guards live in polylogue/schemas/privacy.py and
+      privacy_config.py. test_schema_privacy.py covers all
+      _is_safe_enum_value heuristics and the 3 privacy guards.
+
+  path_traversal:
+    description: Path traversal prevention in file operations
+    implemented: true
+    controls:
+      - sanitize_path: >
+          polylogue/lib/security.py::sanitize_path() strips null
+          bytes, control characters, blocks .. traversal, symlink
+          attacks, and absolute paths. Returns _blocked_<hash>
+          for unsafe inputs.
+      - attachment_sanitization: >
+          ParsedAttachment applies sanitize_path to attachment
+          paths. Hypothesis property tests for traversal, symlink,
+          and control-char inputs.
+      - token_store_key_sanitization: >
+          FileTokenStore._path_for_key prevents traversal via
+          key name (slashes, backslashes, double-dots sanitized).
+    test_coverage:
+      location: tests/unit/security/test_path_sanitization.py
+      hypothesis: true
+    notes: >
+      Hypothesis strategies in tests/infra/strategies/adversarial.py
+      generate path-traversal, symlink-path, and control-char
+      inputs. TestSanitizePathTraversal covers traversal, control
+      chars, absolute paths, symlink OSError handling.
+
+  command_injection:
+    description: Shell command injection prevention in pipeline observers
+    implemented: true
+    controls:
+      - validate_exec_command: >
+          polylogue/pipeline/observers.py::_validate_exec_command()
+          rejects shell metacharacters (;, &&, |, backtick, $(),
+          >, <, &, !, \n). Returns argv list on success.
+    test_coverage:
+      location: tests/unit/security/test_observers_security.py
+      hypothesis: false
+    notes: >
+      10 parametrized shell metacharacter attack vectors tested.
+      Empty and whitespace-only commands also rejected.
+
+  ssrf_prevention:
+    description: Server-side request forgery prevention in webhooks
+    implemented: true
+    controls:
+      - validate_webhook_url: >
+          polylogue/pipeline/observers.py::_validate_webhook_url()
+          rejects non-HTTP(S) schemes, empty hostnames, loopback
+          addresses, private IP ranges, and cloud metadata
+          endpoints (169.254.169.254).
+    test_coverage:
+      location: tests/unit/security/test_observers_security.py
+      hypothesis: false
+    notes: >
+      SSRF tests cover FTP, file:// schemes, loopback (IPv4/IPv6),
+      private RFC1918 ranges, and GCP/AWS metadata endpoint.
+
+  mcp_traceback_exposure:
+    description: Traceback and internal path exposure in MCP error responses
+    implemented: true
+    controls:
+      - safe_call_wrapper: >
+          polylogue/mcp/server_support.py::_safe_call() catches
+          exceptions and returns JSON error responses without
+          exposing tracebacks or internal file paths.
+    test_coverage:
+      location: tests/unit/security/test_mcp_security.py
+      hypothesis: false
+    notes: >
+      Tests verify no traceback, no "File ", no /realm/ or
+      polylogue/ paths in error responses.
+
+  dependency_audit:
+    description: Dependency vulnerability auditing
+    implemented: false
+    controls: []
+    test_coverage:
+      location: null
+      hypothesis: false
+    notes: >
+      No automated dependency vulnerability scanning (Dependabot,
+      pip-audit, etc.) configured in CI.
+
+coverage_gaps:
+   - area: xss_prevention
+     gap: No dedicated XSS test file; relies on snapshot rendering
+   - area: dependency_audit
+     gap: No dependency vulnerability scanning in CI
+   - area: file_permissions
+     gap: Crawl-source file permissions not verified
+   - area: secrets_detection
+     gap: No automated secrets scanning in CI

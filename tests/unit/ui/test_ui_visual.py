@@ -539,7 +539,7 @@ ATTACHMENT_CASES = [
         ["File1.png", "File2.jpg", "File3.txt"],
         "multiple attachments",
     ),
-    ("path", {"name": "Doc.pdf"}, "/custom/path/to/file.pdf", "uses explicit path"),
+    ("path", {"name": "Doc.pdf"}, "custom/path/to/file.pdf", "uses explicit path"),
 ]
 
 

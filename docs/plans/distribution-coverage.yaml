@@ -1,0 +1,106 @@
+# Distribution-coverage manifest — Track B, #514.
+#
+# Documents the current state of install-artifact parity across
+# wheel, sdist, and Nix package. Seed state: each artifact builds
+# independently but there is no automated cross-artifact
+# equivalence verification.
+#
+# Updated 2026-04-29 from realized codebase state.
+
+description: >
+  Wheel/sdist/Nix install parity for polylogue. Documents build
+  configuration, verification gates, and known gaps for each
+  artifact type.
+
+artifacts:
+  wheel:
+    description: Python wheel distribution (bdist_wheel)
+    build_system: hatchling
+    config_location: pyproject.toml
+    build_command: pip wheel --no-deps .
+    install_command: pip install polylogue-*.whl
+    ci_build: false
+    ci_test: false
+    freshness_days: null
+    notes: >
+      pyproject.toml uses [build-system] with hatchling.
+      Wheel is buildable but not built in CI. No automated
+      smoke test after wheel install.
+
+  sdist:
+    description: Python source distribution (sdist)
+    build_system: hatchling
+    config_location: pyproject.toml
+    build_command: pip wheel --no-binary polylogue .
+    install_command: pip install polylogue-*.tar.gz
+    ci_build: false
+    ci_test: false
+    freshness_days: null
+    notes: >
+      Source distribution buildable via hatchling but not
+      built in CI. No automated sdist-install verification.
+
+  nix_package:
+    description: Nix flake package derivation
+    build_system: nix flake
+    config_location: flake.nix
+    build_command: nix build
+    install_command: nix profile install
+    ci_build: true
+    ci_test: true
+    freshness_days: 1
+    notes: >
+      Nix flake check runs in CI (nix-build gate). nix flake
+      check validates the derivation can build. Nix is the
+      primary distribution mechanism for the project author.
+      Python version is managed by Nix, not pip.
+
+  dev_install:
+    description: Editable development install
+    build_system: hatchling (pip install -e .)
+    config_location: pyproject.toml
+    build_command: pip install -e .
+    install_command: pip install -e .
+    ci_build: false
+    ci_test: false
+    notes: >
+      Development install via pip install -e . (hatchling).
+      Used locally but not verified in CI. The devshell
+      (nix develop) is the canonical dev environment.
+
+  devshell:
+    description: Nix development shell
+    build_system: nix flake (devShells.default)
+    config_location: flake.nix
+    build_command: nix develop
+    ci_present: true
+    notes: >
+      Primary development environment. Enters automatically
+      via direnv. Installs all dependencies and git hooks.
+      Verified by nix flake check in CI.
+
+  pip_dependencies:
+    count: null
+    resolved_by: flake.nix (overrides pyproject.toml)
+
+  platform_coverage:
+    linux: ci_test
+    macos: false
+    windows: false
+    notes: >
+      CI tests on Linux only (3 Python versions: 3.11, 3.12,
+      3.13). No macOS or Windows runners.
+
+coverage_gaps:
+  - artifact: wheel
+    gap: Not built or tested in CI
+  - artifact: sdist
+    gap: Not built or tested in CI
+  - artifact: dev_install
+    gap: Not verified in CI; devshell is canonical environment
+  - platform: macos
+    gap: No macOS CI runner
+  - platform: windows
+    gap: No Windows CI runner
+  - concern: install_parity
+    gap: No cross-artifact equivalence verification (wheel vs sdist vs Nix)

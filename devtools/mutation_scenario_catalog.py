@@ -73,9 +73,9 @@ MUTATION_CAMPAIGNS: dict[str, MutationCampaign] = {
         name="schema-core",
         description="Schema generation, privacy, verification, and safety contracts",
         paths_to_mutate=(
-            "polylogue/schemas/schema_inference.py",
+            "polylogue/schemas/operator/schema_inference.py",
             "polylogue/schemas/validator.py",
-            "polylogue/schemas/operator_verification.py",
+            "polylogue/schemas/operator/verification.py",
         ),
         tests=(
             "tests/unit/core/test_schema_validation.py",
@@ -91,7 +91,7 @@ MUTATION_CAMPAIGNS: dict[str, MutationCampaign] = {
     "schema-inference": MutationCampaign(
         name="schema-inference",
         description="Schema inference and privacy heuristics",
-        paths_to_mutate=("polylogue/schemas/schema_inference.py",),
+        paths_to_mutate=("polylogue/schemas/operator/schema_inference.py",),
         tests=(
             "tests/unit/core/test_schema_generation.py",
             "tests/unit/core/test_schema_laws.py",
@@ -103,7 +103,7 @@ MUTATION_CAMPAIGNS: dict[str, MutationCampaign] = {
         description="Schema validator and verification contracts",
         paths_to_mutate=(
             "polylogue/schemas/validator.py",
-            "polylogue/schemas/operator_verification.py",
+            "polylogue/schemas/operator/verification.py",
         ),
         tests=(
             "tests/unit/core/test_schema_validation.py",
@@ -191,10 +191,10 @@ MUTATION_CAMPAIGNS: dict[str, MutationCampaign] = {
         name="drive-client",
         description="Drive auth, transport, JSON payload parsing, and ingest attachment contracts",
         paths_to_mutate=(
-            "polylogue/sources/drive_source.py",
-            "polylogue/sources/drive_gateway.py",
-            "polylogue/sources/drive_auth.py",
-            "polylogue/sources/drive.py",
+            "polylogue/sources/drive/source.py",
+            "polylogue/sources/drive/gateway.py",
+            "polylogue/sources/drive/auth.py",
+            "polylogue/sources/drive/__init__.py",
         ),
         tests=(
             "tests/unit/sources/test_drive_source_client.py",
@@ -237,9 +237,9 @@ MUTATION_CAMPAIGNS: dict[str, MutationCampaign] = {
         description="Provider parser semantic correctness — where message extraction and compaction detection live",
         paths_to_mutate=(
             "polylogue/sources/parsers/chatgpt.py",
-            "polylogue/sources/parsers/claude_code_parser.py",
+            "polylogue/sources/parsers/claude/code_parser.py",
             "polylogue/sources/parsers/codex.py",
-            "polylogue/sources/parsers/claude_index.py",
+            "polylogue/sources/parsers/claude/index.py",
             "polylogue/pipeline/semantic_capture.py",
         ),
         tests=(
@@ -257,7 +257,7 @@ MUTATION_CAMPAIGNS: dict[str, MutationCampaign] = {
         description="Provider semantic extraction, harmonization, and viewport contracts",
         paths_to_mutate=(
             "polylogue/sources/providers",
-            "polylogue/schemas/unified.py",
+            "polylogue/schemas/registry.py",
         ),
         tests=(
             "tests/unit/sources/test_unified_semantic_laws.py",
@@ -273,7 +273,7 @@ MUTATION_CAMPAIGNS: dict[str, MutationCampaign] = {
         description="Provider detection, parsing, harmonization, and parser laws",
         paths_to_mutate=(
             "polylogue/sources",
-            "polylogue/schemas/unified.py",
+            "polylogue/schemas/registry.py",
         ),
         tests=(
             "tests/unit/sources/test_parsers_props.py",

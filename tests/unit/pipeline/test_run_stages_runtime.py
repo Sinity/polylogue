@@ -71,7 +71,7 @@ def test_site_option_helpers_cover_default_and_conversion_paths(tmp_path: Path) 
 
 @pytest.mark.asyncio
 async def test_execute_schema_generation_stage_counts_successes_and_failures() -> None:
-    with patch("po lylogue.schemas.operator.schema_inference.generate_all_schemas") as generate_all_schemas:
+    with patch("polylogue.schemas.operator.schema_inference.generate_all_schemas") as generate_all_schemas:
         generate_all_schemas.return_value = [SimpleNamespace(success=True), SimpleNamespace(success=False)]
 
         outcome = await run_stages.execute_schema_generation_stage()

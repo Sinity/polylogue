@@ -1,0 +1,140 @@
+# Test-quality coverage manifest — Track B, #515.
+#
+# Documents the dimensions of test quality tracked for the
+# polylogue test suite: direct coverage, flakiness, fuzz, and
+# mock depth. Seed state documents the realized baseline.
+#
+# Updated 2026-04-29 from realized codebase state.
+
+description: >
+  Test quality dimensions for the polylogue test suite. Covers
+  direct coverage, flakiness tracking, fuzz testing, and mock
+  depth. All values are baseline observations, not targets.
+
+dimensions:
+  direct_coverage:
+    description: Code coverage measured by pytest-cov
+    measured: true
+    value_percent: 90
+    fail_under_percent: 90
+    tool: pytest-cov
+    config_location: pyproject.toml ([tool.coverage.report] fail_under)
+    ci_gate: true
+    last_verified: "2026-04-26"
+    notes: >
+      Coverage floor at 90% in pyproject.toml. Ratcheted up
+      from 87/88/89 via #385/#386/#387/#389. Enforced by
+      devtools coverage-gate and CI. test-ownership.yaml
+      (#437) tracks per-module test import coverage.
+
+  flakiness:
+    description: Flaky test identification and tracking
+    measured: false
+    known_flaky:
+      - name: test_concurrent_reads_during_writes
+        location: tests/unit/storage/
+        intermittent_on: python3.11
+        behavior: "assert 9 == 10 (race condition, not logic bug)"
+        workaround: re-run fixes it; documented in project memory
+    ci_retry: false
+    flakiness_dashboard: false
+    notes: >
+      No systematic flakiness tracking. One known flaky test
+      on Python 3.11 (concurrent read/write race). No CI
+      auto-retry or flakiness dashboard. No quarantine
+      mechanism.
+
+  fuzz:
+    description: Fuzz testing with Atheris and Hypothesis
+    measured: true
+    tools:
+      - name: hypothesis
+        locations:
+          - tests/property/
+          - tests/infra/strategies/
+          - tests/unit/sources/test_parsers_props.py
+          - tests/unit/sources/test_null_guard_properties.py
+          - tests/unit/core/test_properties.py
+          - tests/unit/core/test_schema_privacy.py
+          - tests/unit/security/test_attachment_security.py
+        strategies_location: tests/infra/strategies/
+        schema_driven_strategies: true
+        notes: >
+          Hypothesis property tests for parser crashlessness
+          (schema-conformant fuzz), null-guard properties,
+          domain model invariants, attachment security
+          (traversal, symlink, control chars). Schema-driven
+          strategies use strip_schema_extensions() +
+          schema_conformant_payload(provider).
+
+      - name: atheris
+        locations:
+          - tests/fuzz/
+        notes: >
+          Atheris fuzz targets exist under tests/fuzz/.
+          Not run in CI or standard devtools verify.
+
+  mock_depth:
+    description: Depth of mocking in tests
+    measured: false
+    policy: minimal
+    notes: >
+      Tests prefer real database (SQLite in-memory via
+      workspace_env fixture) over mocking. Some observer
+      and MCP tests use MagicMock for boundary objects.
+      No systematic mock-depth tracking or policy
+      enforcement.
+
+  test_count:
+    total: 3963
+    unit: 3900+ (estimated)
+    property: 150+ (estimated)
+    integration: marked slow
+    snapshot: 4 (syrupy)
+    last_measured: "2026-03-17"
+
+  test_locations:
+    unit_core:
+      - tests/unit/core/test_field_stats.py
+      - tests/unit/core/test_privacy_config.py
+      - tests/unit/core/test_redaction_report.py
+      - tests/unit/core/test_code_detection.py
+      - tests/unit/core/test_audit.py
+      - tests/unit/core/test_sampling.py
+      - tests/unit/core/test_verification.py
+      - tests/unit/core/test_properties.py
+      - tests/unit/core/test_models.py
+    unit_sources:
+      - tests/unit/sources/test_parsers_props.py
+      - tests/unit/sources/test_null_guard_properties.py
+      - tests/unit/sources/test_parsers_codex.py
+    unit_storage:
+      - tests/unit/storage/test_crud.py
+      - tests/unit/storage/test_corruption_recovery.py
+    unit_pipeline:
+      - tests/unit/pipeline/test_stage_independence.py
+    unit_cli:
+      - tests/unit/cli/test_cli_error_boundaries.py
+    unit_mcp:
+      - tests/unit/mcp/test_mcp_edge_cases.py
+    unit_security:
+      - tests/unit/security/test_path_sanitization.py
+      - tests/unit/security/test_attachment_security.py
+      - tests/unit/security/test_mcp_security.py
+      - tests/unit/security/test_observers_security.py
+    unit_rendering:
+      - tests/unit/rendering/test_output_snapshots.py
+    integration:
+      - tests/integration/test_os_boundaries.py
+    fuzz:
+      - tests/fuzz/
+
+coverage_gaps:
+  - dimension: flakiness
+    gap: No systematic flakiness tracking, CI retry, or quarantine
+  - dimension: mock_depth
+    gap: Mock depth not measured or enforced
+  - dimension: fuzz
+    gap: Atheris fuzz targets not run in CI
+  - dimension: direct_coverage
+    gap: Coverage per-module not tracked (only aggregate fail_under)

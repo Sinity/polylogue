@@ -926,7 +926,7 @@ def test_upsert_optional_and_attachment_contracts(test_conn: sqlite3.Connection)
         "msg-attachment-2",
         mime_type="image/jpeg",
         size_bytes=2048,
-        path="/new/path.jpg",
+        path="new/path.jpg",
     )
     assert upsert_attachment(test_conn, first) is True
     assert upsert_attachment(test_conn, first) is False
@@ -935,7 +935,7 @@ def test_upsert_optional_and_attachment_contracts(test_conn: sqlite3.Connection)
     assert att_row is not None
     assert att_row["mime_type"] == "image/jpeg"
     assert att_row["size_bytes"] == 2048
-    assert att_row["path"] == "/new/path.jpg"
+    assert att_row["path"] == "new/path.jpg"
     assert att_row["ref_count"] == 2
 
 

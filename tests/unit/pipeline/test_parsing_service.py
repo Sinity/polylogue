@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from datetime import datetime, timezone
@@ -581,10 +582,11 @@ class TestPlanningService:
         source_dir = tmp_path / "inbox-a"
         source_dir.mkdir()
 
+        backlog_ids = [hashlib.sha256(f"backlog-{index}".encode()).hexdigest() for index in range(5)]
         for index in range(5):
             await backend.save_raw_conversation(
                 RawConversationRecord(
-                    raw_id=f"raw-backlog-{index}",
+                    raw_id=backlog_ids[index],
                     provider_name="chatgpt",
                     source_name="inbox-a",
                     source_path=f"/tmp/backlog-{index}.json",
@@ -610,7 +612,7 @@ class TestPlanningService:
         monkeypatch.setattr(ConversationRepository, "get_raw_conversations_batch", spy_batch)
         plan = await planner.build_plan(sources=[Source(name="inbox-a", path=source_dir)], stage="all", preview=False)
 
-        assert set(plan.validate_raw_ids) == {f"raw-backlog-{index}" for index in range(5)}
+        assert set(plan.validate_raw_ids) == set(backlog_ids)
         assert call_count[0] == 0
 
     async def test_build_plan_preview_validates_backlog_in_batches(
@@ -626,7 +628,7 @@ class TestPlanningService:
         for index in range(total_backlog):
             await backend.save_raw_conversation(
                 RawConversationRecord(
-                    raw_id=f"raw-preview-{index}",
+                    raw_id=hashlib.sha256(f"raw-preview-{index}".encode()).hexdigest(),
                     provider_name="chatgpt",
                     source_name="inbox-a",
                     source_path=f"/tmp/p-{index}.json",
@@ -825,7 +827,7 @@ class TestPlanningService:
 
         records = [
             RawConversationRecord(
-                raw_id="raw-existing-passed",
+                raw_id=hashlib.sha256(b"existing-passed").hexdigest(),
                 provider_name="chatgpt",
                 source_name="inbox-a",
                 source_path="/tmp/existing-passed.json",
@@ -833,7 +835,7 @@ class TestPlanningService:
                 acquired_at=datetime.now(tz=timezone.utc).isoformat(),
             ),
             RawConversationRecord(
-                raw_id="raw-existing-unvalidated",
+                raw_id=hashlib.sha256(b"existing-unvalidated").hexdigest(),
                 provider_name="chatgpt",
                 source_name="inbox-a",
                 source_path="/tmp/existing-unvalidated.json",
@@ -841,7 +843,7 @@ class TestPlanningService:
                 acquired_at=datetime.now(tz=timezone.utc).isoformat(),
             ),
             RawConversationRecord(
-                raw_id="raw-existing-failed",
+                raw_id=hashlib.sha256(b"existing-failed").hexdigest(),
                 provider_name="chatgpt",
                 source_name="inbox-a",
                 source_path="/tmp/existing-failed.json",
@@ -852,11 +854,14 @@ class TestPlanningService:
         for record in records:
             await backend.save_raw_conversation(record)
 
-        await backend.mark_raw_validated("raw-existing-passed", status="passed", provider="chatgpt", mode="strict")
-        await backend.mark_raw_parsed("raw-existing-passed", payload_provider="chatgpt")
-        await backend.mark_raw_parsed("raw-existing-unvalidated", payload_provider="chatgpt")
+        passed_id = records[0].raw_id
+        unvalidated_id = records[1].raw_id
+        failed_id = records[2].raw_id
+        await backend.mark_raw_validated(passed_id, status="passed", provider="chatgpt", mode="strict")
+        await backend.mark_raw_parsed(passed_id, payload_provider="chatgpt")
+        await backend.mark_raw_parsed(unvalidated_id, payload_provider="chatgpt")
         await backend.mark_raw_validated(
-            "raw-existing-failed",
+            failed_id,
             status="failed",
             error="Malformed JSONL lines: 1",
             provider="chatgpt",
@@ -889,11 +894,11 @@ class TestPlanningService:
         assert forced.summary.counts["validate"] == 1
         assert forced.summary.counts["parse"] == 3
         assert forced.summary.details["existing_raw"] == 3
-        assert set(forced.validate_raw_ids) == {"raw-existing-unvalidated"}
+        assert set(forced.validate_raw_ids) == {unvalidated_id}
         assert set(forced.parse_ready_raw_ids) == {
-            "raw-existing-passed",
-            "raw-existing-unvalidated",
-            "raw-existing-failed",
+            passed_id,
+            unvalidated_id,
+            failed_id,
         }
 
     @pytest.mark.parametrize(("stage", "count_key"), [("render", "render"), ("index", "index")])

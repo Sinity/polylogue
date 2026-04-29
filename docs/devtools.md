@@ -100,6 +100,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools lab-corpus` | Generate verification-lab synthetic corpus fixtures and demo archives. |
 | `devtools lab-scenario` | Run verification-lab showcase scenario sets and baseline checks. |
 | `devtools pipeline-probe` | Run typed pipeline probes against synthetic, staged, or archive-subset inputs. |
+| `devtools proof-pack` | Domain-grouped affected coverage report for vibecode confidence. |
 | `devtools query-memory-budget` | Measure query-memory envelopes on generated fixtures. |
 | `devtools regression-capture` | Capture pipeline-probe summaries as durable local regression cases. |
 | `devtools run-validation-lanes` | Run named validation lanes. |
@@ -112,7 +113,9 @@ These are the commands worth remembering during normal repo work:
 | `devtools verify-cluster-cohesion` | Validate proposed clusters from the topology projection using the import graph. |
 | `devtools verify-cross-cuts` | Verify cross-cut tags in the topology projection match module-name conventions. |
 | `devtools verify-file-budgets` | Enforce per-file LOC budgets declared in docs/plans/file-size-budgets.yaml. |
+| `devtools verify-manifests` | Verify internal consistency across all docs/plans/*.yaml manifest files. |
 | `devtools verify-migrations` | Verify migration-completeness against docs/plans/migrations.yaml. |
+| `devtools verify-suppressions` | Enforce suppression registry expiry dates from docs/plans/suppressions.yaml. |
 | `devtools verify-test-ownership` | Verify each production module is imported by at least one unit test. |
 | `devtools verify-topology` | Verify the realized polylogue tree against the topology projection. |
 

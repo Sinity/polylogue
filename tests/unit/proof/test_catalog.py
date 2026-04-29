@@ -56,7 +56,7 @@ def test_default_catalog_compiles_first_vertical_slice() -> None:
     assert catalog.subjects_by_kind()["schema.annotation"] >= 1
     assert catalog.subjects_by_kind()["workflow.claim"] == 2
     assert {runner.claim_id for runner in catalog.runner_bindings} == {claim.id for claim in catalog.claims}
-    assert {"smoke", "semantic", "structural", "workflow"}.issubset(
+    assert {"smoke", "semantic", "structural", "trace"}.issubset(
         {runner.evidence_class for runner in catalog.runner_bindings}
     )
     assert all(runner.environment.controlled_dimensions for runner in catalog.runner_bindings)

@@ -1,0 +1,105 @@
+# Scenario-coverage manifest — Track B, #512.
+#
+# Declares verification scenario families and their subject coverage.
+# Each family groups scenarios that exercise a common surface or
+# concern. Seed state: families are documented but not yet linked
+# to assurance-domain maturity levels.
+#
+# Updated 2026-04-29 from realized codebase state.
+
+description: >
+  Scenario families and their subject coverage across the polylogue
+  verification-lab surface. Documents which surfaces have executable
+  scenario specifications and which lack them.
+
+families:
+  - name: cli_surfaces
+    description: CLI command surface exercises
+    subject: cli_surface
+    scenario_count: dynamic
+    location: polylogue/scenarios/cli_surfaces.py
+    notes: >
+      Generates CLI-surface exercises and variants (live, memory
+      budget) from CliSurfaceFamily definitions. Covers all CLI
+      commands via help-output and exit-code assertions.
+
+  - name: product_surfaces
+    description: Product command surface exercises
+    subject: cli_surface
+    scenario_count: dynamic
+    location: polylogue/scenarios/product_surfaces.py
+    notes: >
+      Covers product commands (resume, products) and their
+      rendering contracts. Includes live and contract variants.
+
+  - name: operational_surfaces
+    description: Operational surface exercises
+    subject: operational_resilience
+    scenario_count: dynamic
+    location: polylogue/scenarios/operational_surfaces.py
+    notes: >
+      Covers maintenance operations, repair, check commands.
+      Includes live and memory budget lanes.
+
+  - name: corpus_scenarios
+    description: Synthetic corpus scenario specs
+    subject: provider_coverage
+    scenario_count: dynamic
+    location: polylogue/scenarios/corpus.py
+    notes: >
+      CorpusScenario subclass generates synthetic archives for
+      all 5 providers. Configurable profiles, source kinds, and
+      counts. Used by showcase exercises and pipeline probes.
+
+  - name: executable_scenarios
+    description: Named executable scenario wrappers
+    subject: unclassified
+    scenario_count: dynamic
+    location: polylogue/scenarios/executable.py
+    notes: >
+      Minimal ExecutableScenario wraps a NamedScenarioSource
+      into an executable form. Used as adapter for scenario
+      dispatch.
+
+  - name: assertion_scenarios
+    description: Assertion specs for scenario verification
+    subject: spec_accuracy
+    scenario_count: dynamic
+    location: polylogue/scenarios/assertions.py
+    notes: >
+      AssertionSpec types (exit-code, stdout-contains, etc.)
+      for composing scenario verification predicates.
+
+  - name: projection_scenarios
+    description: Scenario-to-evidence projection specs
+    subject: spec_completeness
+    scenario_count: dynamic
+    location: polylogue/scenarios/projections.py
+    notes: >
+      ScenarioProjectionSource maps scenarios to verification
+      projections. Supports scenario-aware proof catalog
+      rendering.
+
+  - name: runtime_scenarios
+    description: Scenario execution runtime
+    subject: pipeline_correctness
+    scenario_count: dynamic
+    location: polylogue/scenarios/runtime.py
+    notes: >
+      Execution dispatch, runner invocation, and result handling
+      for scenario execution. Supports pytest, CLI, devtools,
+      and pipeline-probe execution kinds.
+
+coverage_gaps:
+  - subject: storage_correctness
+    note: No dedicated scenario family for storage-layer verification
+  - subject: performance
+    note: No scenario family exercising memory or throughput budgets
+  - subject: security_privacy
+    note: Security verification uses unit tests, not scenario specs
+  - subject: distribution
+    note: No scenario for install/package verification
+  - subject: migration_safety
+    note: No scenario for migration safety verification
+  - subject: docs_media
+    note: No scenario for documentation freshness verification
