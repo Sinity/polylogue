@@ -98,30 +98,31 @@ def test_ensure_schema_contract(tmp_path: Path) -> None:
     conn.close()
 
 
-def test_ensure_schema_rejects_unsupported_version(tmp_path: Path) -> None:
-    """Unsupported schema versions must surface a database error."""
+def test_ensure_schema_upgrades_version_with_metadata_preservation(tmp_path: Path) -> None:
+    """Version mismatch preserves user metadata and upgrades the schema."""
     db_path = tmp_path / "test.db"
     conn = sqlite3.connect(db_path)
     conn.execute("PRAGMA user_version = 999")
     conn.commit()
 
-    with pytest.raises(Exception) as exc_info:
-        _ensure_schema(conn)
+    _ensure_schema(conn)
 
-    assert exc_info.type.__name__ == "DatabaseError"
-    assert "schema version" in str(exc_info.value).lower() or "incompatible" in str(exc_info.value).lower()
+    version = conn.execute("PRAGMA user_version").fetchone()[0]
+    assert version == SCHEMA_VERSION
+    assert (
+        conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='conversations'").fetchone() is not None
+    )
     conn.close()
 
 
-def test_schema_bootstrap_decision_rejects_unsupported_version() -> None:
-    """Sync and async schema runtimes should share version decision semantics."""
+def test_schema_bootstrap_decision_returns_version_mismatch_action() -> None:
+    """Version mismatch returns version_mismatch action instead of raising."""
     snapshot = SchemaSnapshot(current_version=999, table_columns={}, index_sql={})
 
-    with pytest.raises(Exception) as exc_info:
-        decide_schema_bootstrap(snapshot)
+    decision = decide_schema_bootstrap(snapshot)
 
-    assert exc_info.type.__name__ == "DatabaseError"
-    assert "schema version" in str(exc_info.value).lower()
+    assert decision.action == "version_mismatch"
+    assert decision.current_version == 999
 
 
 def test_schema_extension_descriptors_detect_missing_columns_and_indexes() -> None:

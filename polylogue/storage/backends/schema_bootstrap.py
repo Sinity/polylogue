@@ -61,8 +61,9 @@ class SchemaExtensionPlan:
 class SchemaBootstrapDecision:
     """Shared schema bootstrap branch chosen from a schema snapshot."""
 
-    action: Literal["create_fresh", "apply_current_extensions"]
+    action: Literal["create_fresh", "apply_current_extensions", "version_mismatch"]
     extension_plan: SchemaExtensionPlan | None = None
+    current_version: int | None = None
 
 
 @dataclass(frozen=True)
@@ -576,7 +577,10 @@ def decide_schema_bootstrap(snapshot: SchemaSnapshot) -> SchemaBootstrapDecision
     assert_supported_archive_layout_snapshot(snapshot)
 
     if snapshot.current_version != SCHEMA_VERSION:
-        raise DatabaseError(schema_version_mismatch_message(snapshot.current_version))
+        return SchemaBootstrapDecision(
+            action="version_mismatch",
+            current_version=snapshot.current_version,
+        )
 
     return SchemaBootstrapDecision(
         action="apply_current_extensions",
@@ -678,6 +682,89 @@ async def ensure_vec0_table_async(conn: aiosqlite.Connection) -> None:
         )
 
 
+def export_user_metadata(conn: sqlite3.Connection) -> dict[str, object]:
+    """Export user-authored metadata from an old-schema database.
+
+    Returns a dict safe for JSON serialization containing tags,
+    summaries, and other user-editable fields that should survive
+    a schema version bump. Excludes derived/auto-generated content.
+    """
+    metadata: dict[str, object] = {"tags": [], "summaries": []}
+
+    try:
+        if _table_exists(conn, "conversation_tags"):
+            rows = conn.execute(
+                "SELECT conversation_id, tag FROM conversation_tags ORDER BY conversation_id, tag"
+            ).fetchall()
+            metadata["tags"] = [{"conversation_id": r[0], "tag": r[1]} for r in rows]
+    except Exception:
+        logger.warning("Failed to export tags", exc_info=True)
+
+    try:
+        if _table_exists(conn, "conversations"):
+            rows = conn.execute(
+                "SELECT conversation_id, summary FROM conversations WHERE summary IS NOT NULL AND summary != ''"
+            ).fetchall()
+            metadata["summaries"] = [{"conversation_id": r[0], "summary": r[1]} for r in rows]
+    except Exception:
+        logger.warning("Failed to export summaries", exc_info=True)
+
+    return metadata
+
+
+def import_user_metadata(conn: sqlite3.Connection, metadata: dict[str, object]) -> int:
+    """Restore user metadata into a freshly-created database.
+
+    Returns the number of rows restored. Safe to call when the
+    metadata dict is empty or tables are missing — silently skips.
+    """
+    restored = 0
+
+    tags = metadata.get("tags")
+    if isinstance(tags, list):
+        for tag_entry in tags:
+            if not isinstance(tag_entry, dict):
+                continue
+            cid = tag_entry.get("conversation_id")
+            tag = tag_entry.get("tag")
+            if cid and tag:
+                try:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO conversation_tags (conversation_id, tag) VALUES (?, ?)",
+                        (cid, tag),
+                    )
+                    restored += 1
+                except Exception:
+                    pass
+
+    summaries = metadata.get("summaries")
+    if isinstance(summaries, list):
+        for summary_entry in summaries:
+            if not isinstance(summary_entry, dict):
+                continue
+            cid = summary_entry.get("conversation_id")
+            summary = summary_entry.get("summary")
+            if cid and summary:
+                try:
+                    conn.execute(
+                        "UPDATE conversations SET summary = ? WHERE conversation_id = ?",
+                        (summary, cid),
+                    )
+                    restored += 1
+                except Exception:
+                    pass
+
+    return restored
+
+
+def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+        (table_name,),
+    ).fetchone()
+    return row is not None
+
+
 __all__ = [
     "SCHEMA_DDL",
     "SCHEMA_VERSION",
@@ -695,6 +782,8 @@ __all__ = [
     "capture_schema_snapshot",
     "capture_schema_snapshot_async",
     "decide_schema_bootstrap",
+    "export_user_metadata",
+    "import_user_metadata",
     "ensure_vec0_table",
     "ensure_vec0_table_async",
     "schema_extension_snapshot_indexes",
