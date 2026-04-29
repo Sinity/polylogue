@@ -326,6 +326,17 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools verify-cross-cuts", "devtools verify-cross-cuts --json"),
     ),
     CommandSpec(
+        "verify-witness-lifecycle",
+        "verification",
+        "Verify committed witness lifecycle health — staleness, unexercised, stale xfails.",
+        "devtools.verify_witness_lifecycle",
+        use_when=(
+            "Catch witnesses that haven't been exercised, stale xfail markers "
+            "whose linked issues are closed, and validation errors."
+        ),
+        examples=("devtools verify-witness-lifecycle", "devtools verify-witness-lifecycle --json"),
+    ),
+    CommandSpec(
         "pipeline-probe",
         "verification",
         "Run typed pipeline probes against synthetic, staged, or archive-subset inputs.",
@@ -422,6 +433,39 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "maintenance",
         "Annotate baseline provider schemas with semantic-role metadata.",
         "devtools.inject_semantic_annotations",
+    ),
+    CommandSpec(
+        "witness-discover",
+        "maintenance",
+        "Save a failure-triggering input as a local witness in .local/witnesses/new/.",
+        "devtools.witness_discover",
+        use_when="Capture an input that triggered a bug so it can be minimized and promoted.",
+        examples=(
+            "devtools witness-discover --input crash.json --witness-id fts-oom --origin regression",
+            "devtools witness-discover --stdin --witness-id stdin-capture --semantic-facts fact1 fact2",
+        ),
+    ),
+    CommandSpec(
+        "witness-minimize",
+        "maintenance",
+        "Apply minimization heuristics to a local witness — shrink, redact, set privacy classification.",
+        "devtools.witness_minimize",
+        use_when="Reduce a discovered witness to its smallest failing form before committing.",
+        examples=(
+            "devtools witness-minimize fts-oom",
+            "devtools witness-minimize fts-oom --privacy-classification synthetic",
+        ),
+    ),
+    CommandSpec(
+        "witness-promote",
+        "maintenance",
+        "Promote a minimized local witness to tests/witnesses/ for durable commit.",
+        "devtools.witness_promote",
+        use_when="Move a minimized witness into the committed witness directory with tracking linkage.",
+        examples=(
+            "devtools witness-promote fts-oom",
+            "devtools witness-promote fts-oom --linked-issue '#519' --known-failing",
+        ),
     ),
     CommandSpec(
         "build-package",

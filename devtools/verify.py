@@ -52,6 +52,7 @@ def build_verify_steps(*, quick: bool, lab: bool) -> list[tuple[str, list[str]]]
         ("verify-cross-cuts", ["devtools", "verify-cross-cuts"]),
         ("verify-suppressions", ["devtools", "verify-suppressions"]),
         ("verify-manifests", ["devtools", "verify-manifests"]),
+        ("verify-witness-lifecycle", ["devtools", "verify-witness-lifecycle"]),
     ]
 
     if not quick:
