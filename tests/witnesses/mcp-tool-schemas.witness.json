@@ -32,5 +32,15 @@
   "rejection_reason": null,
   "notes": [
     "regenerate via tests/unit/mcp/test_tool_schema_witness.py with --update-witness or by running the snapshot helper"
-  ]
+  ],
+  "privacy_classification": "synthetic",
+  "lifecycle": {
+    "state": "committed",
+    "discovered_at": "2026-04-15T00:00:00+00:00",
+    "minimized_at": "2026-04-15T00:00:00+00:00",
+    "committed_at": "2026-04-15T00:00:00+00:00",
+    "last_exercised_at": "2026-04-15T00:00:00+00:00",
+    "retired_at": null,
+    "retirement_reason": null
+  }
 }

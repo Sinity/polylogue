@@ -32,5 +32,15 @@
   "rejection_reason": null,
   "notes": [
     "regenerate via `devtools build-topology-projection`; verified by `devtools verify-topology` and `devtools verify-cluster-cohesion`"
-  ]
+  ],
+  "privacy_classification": "synthetic",
+  "lifecycle": {
+    "state": "committed",
+    "discovered_at": "2026-04-15T00:00:00+00:00",
+    "minimized_at": "2026-04-15T00:00:00+00:00",
+    "committed_at": "2026-04-15T00:00:00+00:00",
+    "last_exercised_at": "2026-04-15T00:00:00+00:00",
+    "retired_at": null,
+    "retirement_reason": null
+  }
 }

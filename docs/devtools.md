@@ -118,6 +118,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools verify-suppressions` | Enforce suppression registry expiry dates from docs/plans/suppressions.yaml. |
 | `devtools verify-test-ownership` | Verify each production module is imported by at least one unit test. |
 | `devtools verify-topology` | Verify the realized polylogue tree against the topology projection. |
+| `devtools verify-witness-lifecycle` | Verify committed witness lifecycle health — staleness, unexercised, stale xfails. |
 
 ### Campaigns
 
@@ -133,6 +134,9 @@ These are the commands worth remembering during normal repo work:
 | --- | --- |
 | `devtools build-package` | Build the default Nix package with the out-link under .local/result. |
 | `devtools inject-semantic-annotations` | Annotate baseline provider schemas with semantic-role metadata. |
+| `devtools witness-discover` | Save a failure-triggering input as a local witness in .local/witnesses/new/. |
+| `devtools witness-minimize` | Apply minimization heuristics to a local witness — shrink, redact, set privacy classification. |
+| `devtools witness-promote` | Promote a minimized local witness to tests/witnesses/ for durable commit. |
 
 <!-- END GENERATED: devtools-command-catalog -->
 
