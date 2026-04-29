@@ -47,7 +47,6 @@ def root_files() -> set[str]:
 # -------- #414: product modules live under polylogue/products/ --------
 
 
-@pytest.mark.xfail(strict=True, reason="topology refactor: product modules at root, see #414")
 def test_no_archive_product_modules_at_root() -> None:
     files = root_files()
     legacy = {f for f in files if f.startswith("archive_product") or f.startswith("product_")}
@@ -64,7 +63,6 @@ def test_no_facade_or_sync_modules_at_root() -> None:
     assert not legacy, f"facade/sync modules still at root: {sorted(legacy)}"
 
 
-@pytest.mark.xfail(strict=True, reason="topology refactor: kernel rule, see #426")
 def test_polylogue_root_matches_kernel_rule() -> None:
     files = root_files()
     extra = files - KERNEL_ROOT_FILES
@@ -100,7 +98,6 @@ def test_no_session_product_at_storage_root() -> None:
 # -------- #413: showcase dismantled --------
 
 
-@pytest.mark.xfail(strict=True, reason="topology refactor: showcase legacy, see #413")
 def test_no_verify_showcase_shim() -> None:
     assert not (ROOT / "devtools" / "verify_showcase.py").exists()
 

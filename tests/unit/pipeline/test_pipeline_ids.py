@@ -56,7 +56,7 @@ def test_attachment_content_id_returns_target_path_without_moving(tmp_path: Path
     source_file = uploads / "note.txt"
     source_file.write_text("hello world", encoding="utf-8")
 
-    attachment = ParsedAttachment(
+    attachment = ParsedAttachment.model_construct(
         provider_attachment_id="file-1",
         message_provider_id="msg-1",
         name="note.txt",

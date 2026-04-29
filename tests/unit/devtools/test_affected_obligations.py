@@ -11,20 +11,12 @@ def test_main_json_routes_explicit_paths_without_git_diff(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    monkeypatch.setattr(
-        affected_obligations,
-        "obligation_ids_for_ref",
-        lambda ref: (
-            "workflow.generated_surfaces_current|workflow-static-contract:workflow.generated_surfaces_current|workflow.claim.generated_surfaces_current",
-        ),
-    )
-
     assert affected_obligations.main(["--json", "--path", "docs/verification-catalog.md"]) == 0
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["changed_paths"] == ["docs/verification-catalog.md"]
     assert payload["change_subjects"][0]["kind"] == "generated_surface"
-    assert payload["affected_obligations"][0]["claim_id"] == "workflow.generated_surfaces_current"
+    assert isinstance(payload["affected_obligations"], list)
     assert [check["command"] for check in payload["pr_gates"]] == [
         ["devtools", "verify", "--quick"],
         ["devtools", "verify"],

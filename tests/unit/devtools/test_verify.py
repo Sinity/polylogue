@@ -17,6 +17,8 @@ def test_quick_verify_omits_pytest() -> None:
         "verify-test-ownership",
         "verify-migrations",
         "verify-cross-cuts",
+        "verify-suppressions",
+        "verify-manifests",
     ]
 
 

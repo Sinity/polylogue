@@ -1,0 +1,277 @@
+# Assurance-domains coverage matrix — Track B, #508.
+#
+# Declares all 26 assurance domains and their current maturity as seed
+# manifests. Each domain documents its verification maturity, whether an
+# oracle is present (`oracle_present`), and the primary evidence type
+# (`oracle`). Maturity levels: seed, nascent, growing, established,
+# mature.
+#
+# Updated 2026-04-29 from realized codebase state.
+
+description: >
+  Complete coverage matrix for the 26 polylogue assurance domains.
+  Seed maturity reflects the absence of automated verification gates;
+  nascent maturity indicates partial coverage with gaps.
+
+domains:
+  operational_resilience:
+    description: Runtime stability, crash recovery, repair
+    maturity: seed
+    oracle_present: false
+    oracle: null
+    notes: >
+      test_corruption_recovery.py covers SQLite corruption (marked slow).
+      No automated crash-recovery or restart-fuzz gates.
+
+  surface_parity:
+    description: CLI/MCP/facade sync/async equivalence
+    maturity: nascent
+    oracle_present: true
+    oracle: construction_sanity
+    notes: >
+      scenario-surface families exercise CLI and MCP surfaces.
+      No systematic sync/async equivalence oracle.
+
+  docs_media:
+    description: README, screenshots, VHS tapes, documentation freshness
+    maturity: seed
+    oracle_present: false
+    oracle: null
+    notes: >
+      render-docs-surface is generated; cli-reference is generated.
+      No screenshots committed. One VHS tape at .local/readme-demo/example.tape.
+
+  security_privacy:
+    description: XSS, path traversal, PII, SSRF, command injection
+    maturity: nascent
+    oracle_present: true
+    oracle: proof
+    notes: >
+      Dedicated security test module (tests/unit/security/).
+      Covers path sanitization, token-store perms, exec command
+      validation, webhook URL validation, MCP traceback suppression,
+      HTML sanitization, schema privacy guards. Hypothesis property
+      tests for attachment and null-guard security.
+
+  distribution:
+    description: Wheel/sdist/Nix install parity
+    maturity: seed
+    oracle_present: false
+    oracle: null
+    notes: >
+      pyproject.toml defines the Python package. flake.nix defines the
+      Nix derivation. No automated install-parity verification between
+      wheel, sdist, and Nix.
+
+  test_quality:
+    description: Direct coverage, flakiness, fuzz, mock depth
+    maturity: growing
+    oracle_present: true
+    oracle: proof
+    notes: >
+      Coverage floor at 90% (fail_under). 3963 unit tests pass.
+      Hypothesis property tests for parsers, null guards, domain
+      models. Mutmut mutation testing with 955 mutants.
+      Fuzz targets under tests/fuzz/ (Atheris).
+
+  schema_correctness:
+    description: Provider schema inference, observation, validation
+    maturity: growing
+    oracle_present: true
+    oracle: proof
+    notes: >
+      Schema audit (polylogue/schemas/audit/), validation pipeline
+      (validation.py, validation_flow.py), verification.py keyset
+      pagination. Hypothesis schema-conformant fuzz. Schema privacy
+      guards with cross-conv threshold and key denylist.
+
+  parser_correctness:
+    description: Provider parser crashlessness and fidelity
+    maturity: growing
+    oracle_present: true
+    oracle: proof
+    notes: >
+      Hypothesis property tests ensure parsers never crash on
+      schema-conformant input (test_parser_crashlessness.py). Null
+      guard property tests. Per-provider parser unit tests.
+
+  pipeline_correctness:
+    description: Stage independence, idempotency, run integrity
+    maturity: growing
+    oracle_present: true
+    oracle: proof
+    notes: >
+      test_stage_independence.py covers stage isolation and
+      idempotency. Pipeline probes via devtools pipeline-probe.
+      Stage-specs model the DAG.
+
+  storage_correctness:
+    description: CRUD, FTS5, hybrid search, blob store
+    maturity: established
+    oracle_present: true
+    oracle: proof
+    notes: >
+      test_crud.py is a protected core contract test. test_fts5.py
+      covers FTS5 escaping and ranking. test_hybrid_laws.py covers
+      RRF fusion. Blob store tested in test_blob_store.py.
+      Corruption recovery tested.
+
+  search_correctness:
+    description: FTS5, hybrid (RRF), vector search integration
+    maturity: growing
+    oracle_present: true
+    oracle: proof
+    notes: >
+      Hybrid search fixes documented (limit=0 edge case, RRF
+      dedup, providers=[] semantics). FTS5 unicode61 tokenizer.
+      SQLite vec extension integration.
+
+  site_publication:
+    description: Static site generation and publication flow
+    maturity: seed
+    oracle_present: false
+    oracle: null
+    notes: >
+      Site builder, conversation pages, index pages, search page exist
+      in polylogue/site/. No automated verification of generated site
+      correctness.
+
+  mcp_surface:
+    description: MCP tool contracts, server, and tool bindings
+    maturity: growing
+    oracle_present: true
+    oracle: proof
+    notes: >
+      MCP server tools (server_tools.py, server_maintenance_tools.py,
+      server_product_tools.py, server_mutation_tools.py, server_prompts.py,
+      server_resources.py). test_mcp_edge_cases.py covers edge cases.
+      test_tool_contracts.py covers tool contracts.
+
+  cli_surface:
+    description: CLI commands, query, output, error handling
+    maturity: established
+    oracle_present: true
+    oracle: proof
+    notes: >
+      14 CLI commands. Query-first dispatch. Terminal snapshot tests
+      (syrupy). CLI error-boundary tests (test_cli_error_boundaries.py).
+      Generated cli-reference.md from live help.
+
+  api_surface:
+    description: Async library API and sync bridge
+    maturity: growing
+    oracle_present: true
+    oracle: proof
+    notes: >
+      Async API (polylogue/api/) with sync bridge
+      (polylogue/api/sync/). API surface covers archive, ingest,
+      products. Facade wraps storage + search + pipeline.
+
+  spec_completeness:
+    description: Verification-lab specification coverage completeness
+    maturity: seed
+    oracle_present: false
+    oracle: null
+    notes: >
+      Proof catalog exists (polylogue/proof/) with subjects, claims,
+      runners, witnesses, traces. No completeness oracle for what
+      subjects are unclaimed.
+
+  spec_accuracy:
+    description: Specifications match observed behavior
+    maturity: seed
+    oracle_present: false
+    oracle: null
+    notes: >
+      Scenario specs exist (scenarios/) for CLI surfaces, product
+      surfaces, operational surfaces, corpus scenarios. No oracle
+      verifying spec-to-behavior correspondence.
+
+  migration_safety:
+    description: Schema migration, retirement tracking
+    maturity: nascent
+    oracle_present: true
+    oracle: drift_check
+    notes: >
+      Schema is fresh-only (no migration chain). Wipe-on-mismatch.
+      verify-migrations lint checks retirement completeness per
+      docs/plans/migrations.yaml. No automated migration testing.
+
+  provider_coverage:
+    description: Known provider support breadth and depth
+    maturity: growing
+    oracle_present: true
+    oracle: proof
+    notes: >
+      5 known providers (ChatGPT, Claude AI, Claude Code, Codex,
+      Gemini) + UNKNOWN. Provider detection by shape, not filename.
+      Provider semantics and capabilities typed in lib/provider/.
+
+  archive_integrity:
+    description: Archive consistency, repair, idempotency
+    maturity: growing
+    oracle_present: true
+    oracle: proof
+    notes: >
+      Content-hash idempotency (SHA-256 over NFC payload). Repair
+      module (storage/repair.py, 1080 LOC). conversation_stats
+      table tracks aggregates. check command surfaces archive
+      health.
+
+  performance:
+    description: Query memory budgets, pipeline throughput
+    maturity: nascent
+    oracle_present: true
+    oracle: drift_check
+    notes: >
+      query-memory-budget devtools command. Semantic-axis evidence
+      generation. No benchmark baselines committed. Blob store
+      archived 2M messages in 53 min.
+
+  dependency_closure:
+    description: Dependency correctness and completeness
+    maturity: seed
+    oracle_present: false
+    oracle: null
+    notes: >
+      pyproject.toml dependencies, flake.nix build inputs.
+      No automated dependency-closure verification beyond Nix
+      build.
+
+  scenario_coverage:
+    description: Verification scenario breadth across subjects
+    maturity: nascent
+    oracle_present: true
+    oracle: construction_sanity
+    notes: >
+      Scenario surface families: CLI, product, operational, corpus.
+      ScenarioSpec base class with assertions, projections,
+      metadata. No systematic coverage audit of which subjects
+      have scenarios.
+
+  mutation_coverage:
+    description: Mutation testing scope and kill rate
+    maturity: growing
+    oracle_present: true
+    oracle: proof
+    notes: >
+      8 modules under mutation (models, filters, roles, timestamps,
+      hashing, json, fts5, hybrid). 955 mutants, ~71% kill rate.
+      mutmut-campaign devtools commands for focused campaigns.
+
+  benchmark_coverage:
+    description: Performance benchmark breadth and baselines
+    maturity: seed
+    oracle_present: true
+    oracle: drift_check
+    notes: >
+      benchmark-campaign devtools commands exist. pytest-benchmark
+      suite in tests/benchmarks/. No committed baselines or
+      regression gates.
+
+  unclassified:
+    description: Uncategorized or cross-cutting concerns
+    maturity: seed
+    oracle_present: false
+    oracle: null
+    notes: Placeholder domain for concerns not yet assigned.

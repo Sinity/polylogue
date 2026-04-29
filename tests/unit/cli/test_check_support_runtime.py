@@ -316,5 +316,5 @@ def test_run_check_workflow_covers_runtime_blob_vacuum_and_persist_paths() -> No
     assert result.runtime_report is runtime_report
     assert result.maintenance_results == [repair_result]
     assert result.vacuum_result == VacuumResult(ok=True, detail="vacuumed")
-    run_blob_check.assert_called_once_with(env, config)
+    run_blob_check.assert_called_once_with(env, config, json_output=True)
     persist_run.assert_called_once()

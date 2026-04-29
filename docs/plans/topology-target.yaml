@@ -1135,6 +1135,10 @@ files:
     loc: 617
     target: polylogue/proof/subjects.py
     owner: stable
+  - path: polylogue/proof/suppressions.py
+    loc: 168
+    target: polylogue/proof/suppressions.py
+    owner: stable
   - path: polylogue/proof/traces.py
     loc: 229
     target: polylogue/proof/traces.py

@@ -511,7 +511,7 @@ def test_extract_code_block_returns_original_or_empty_for_non_code(text: str) ->
 
 def test_canonical_runtime_provider_aliases() -> None:
     assert canonical_runtime_provider("gpt") == "unknown"
-    assert canonical_runtime_provider("openai") == "unknown"
+    assert canonical_runtime_provider("openai") == "chatgpt"
     assert canonical_runtime_provider("claude-ai") == "claude-ai"
     assert canonical_runtime_provider("CLAUDE_CODE") == "claude-code"
 
@@ -522,13 +522,13 @@ def test_canonical_runtime_provider_normalizes_unknowns_to_unknown() -> None:
 
 def test_canonical_schema_provider_mapping() -> None:
     assert canonical_schema_provider("claude-ai") == "claude-ai"
-    assert canonical_schema_provider("openai") == "unknown"
+    assert canonical_schema_provider("openai") == "chatgpt"
 
 
 def test_provider_enum_from_string_uses_shared_runtime_identity() -> None:
     assert Provider.from_string("claude-ai") is Provider.CLAUDE_AI
-    assert Provider.from_string("claude") is Provider.UNKNOWN
-    assert Provider.from_string("openai") is Provider.UNKNOWN
+    assert Provider.from_string("claude") is Provider.CLAUDE_AI
+    assert Provider.from_string("openai") is Provider.CHATGPT
     assert Provider.from_string("nonexistent-provider") is Provider.UNKNOWN
 
 

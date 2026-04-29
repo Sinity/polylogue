@@ -1,0 +1,73 @@
+# Mutation and benchmark campaign coverage manifest.
+# Part of #495.
+#
+# Documents active mutation and benchmark campaigns, their paths,
+# and their coverage targets. Consumed by devtools mutmut-campaign
+# and devtools benchmark-campaign.
+
+description: Mutation and benchmark campaign registry with covered paths and test targets.
+
+mutation_campaigns:
+  - name: filters
+    description: Filter chain mutation testing
+    paths_to_mutate:
+      - polylogue/lib/filters.py
+    tests:
+      - tests/unit/core/test_filters_props.py
+    status: active
+
+  - name: models
+    description: Domain model mutation testing
+    paths_to_mutate:
+      - polylogue/types.py
+      - polylogue/lib/roles.py
+      - polylogue/lib/timestamps.py
+      - polylogue/lib/hashing.py
+      - polylogue/lib/json.py
+    tests:
+      - tests/unit/core/test_models.py
+      - tests/unit/core/test_properties.py
+    status: active
+
+  - name: search
+    description: FTS5 and hybrid search mutation testing
+    paths_to_mutate:
+      - polylogue/storage/search_providers/fts5.py
+      - polylogue/storage/search_providers/hybrid.py
+    tests:
+      - tests/unit/storage/test_fts5_laws.py
+      - tests/unit/storage/test_hybrid_laws.py
+    status: active
+
+  - name: drive-client
+    description: Drive auth, transport, and parsing mutation testing
+    paths_to_mutate:
+      - polylogue/sources/drive/source.py
+      - polylogue/sources/drive/gateway.py
+      - polylogue/sources/drive/auth.py
+      - polylogue/sources/drive/__init__.py
+    tests:
+      - tests/unit/sources/test_drive_auth.py
+      - tests/unit/sources/test_drive_gateway.py
+      - tests/unit/sources/test_drive_ops.py
+      - tests/unit/sources/test_drive_source_client.py
+    status: active
+
+benchmark_campaigns:
+  - name: search-filters
+    description: Filter chain query performance benchmarks
+    tests:
+      - tests/benchmarks/test_search_bench.py
+    status: active
+
+  - name: pipeline
+    description: Pipeline throughput benchmarks
+    tests:
+      - tests/benchmarks/test_pipeline_bench.py
+    status: active
+
+  - name: storage-scale
+    description: Storage scale benchmarks
+    tests:
+      - tests/benchmarks/test_storage_scale.py
+    status: active

@@ -1,0 +1,39 @@
+# Evidence freshness SLA — per-claim evidence staleness policy.
+# Part of #494.
+#
+# Each claim declares its expected evidence refresh cadence.
+# Freshness applies to oracles: proof, smoke, manual_review.
+# Construction_sanity checks are excluded (they validate structure not behavior).
+
+description: Evidence freshness SLA — how often each claim's evidence must be refreshed.
+
+freshness_policies:
+  per_push:
+    description: "Evidence regenerated on every push (pre-push hook)"
+    max_age_days: 0
+    applies_to: [cli.command.help, cli.command.no_traceback, cli.command.plain_mode, cli.command.json_envelope]
+
+  per_pr:
+    description: "Evidence regenerated before creating a PR (devtools verify)"
+    max_age_days: 7
+    applies_to: [archive.query.provider_filter_consistency, provider.capability.identity_bridge, provider.capability.partial_coverage_declared]
+
+  weekly:
+    description: "Evidence regenerated weekly via scheduled CI or manual trigger"
+    max_age_days: 14
+    applies_to: [schema.values.value_closure, schema.foreign_key.resolves, artifact.path.dependency_closure]
+
+  monthly:
+    description: "Evidence regenerated monthly"
+    max_age_days: 31
+    applies_to: [maintenance.repair.crash_consistency, parser.quarantine.context_redaction]
+
+  manual:
+    description: "Evidence requires human review (manual_review oracle)"
+    max_age_days: 90
+    applies_to: [error.machine_user_context, trace.operation.surface_equivalence, diagnostic.observable_trace_mapping]
+
+stale_threshold:
+  proof_evidence_days: 14
+  smoke_evidence_days: 30
+  manual_review_evidence_days: 90

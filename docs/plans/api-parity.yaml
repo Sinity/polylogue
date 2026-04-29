@@ -1,0 +1,89 @@
+# API parity manifest — documents the presence of each operation across
+# CLI, MCP, Python API, and sync/async surfaces.
+# Part of #493.
+
+description: Cross-surface API parity coverage across CLI, MCP, facade, and sync/async paths.
+
+surfaces:
+  cli:
+    description: Click-based query-first CLI
+    coverage: established
+    path: polylogue/cli/
+  mcp:
+    description: Model Context Protocol server
+    coverage: nascent
+    path: polylogue/mcp/
+    gaps:
+      - "MCP filtering parity with CLI (#444)"
+      - "MCP authorization (#444)"
+      - "MCP error sanitization (#444)"
+  python_api:
+    description: Async library API (Polylogue facade)
+    coverage: established
+    path: polylogue/api/
+  sync_api:
+    description: Synchronous SQLite access for CLI and tooling
+    coverage: established
+    path: polylogue/storage/backends/connection.py
+
+operations:
+  - name: list_conversations
+    cli: true
+    mcp: true
+    api: true
+    sync: true
+  - name: search_conversations
+    cli: true
+    mcp: true
+    api: true
+    sync: true
+    notes: "FTS5 + hybrid (RRF fusion)"
+  - name: get_conversation
+    cli: false
+    mcp: true
+    api: true
+    sync: true
+  - name: run_pipeline
+    cli: true
+    mcp: false
+    api: true
+    sync: false
+  - name: get_stats
+    cli: true
+    mcp: true
+    api: true
+    sync: true
+  - name: manage_tags
+    cli: true
+    mcp: false
+    api: true
+    sync: true
+  - name: schema_audit
+    cli: true
+    mcp: false
+    api: false
+    sync: false
+  - name: generate_site
+    cli: true
+    mcp: false
+    api: true
+    sync: false
+  - name: embed
+    cli: true
+    mcp: false
+    api: true
+    sync: false
+
+parity_checks:
+  filter_consistency:
+    description: "All surfaces apply the same filter chain (ConversationFilter)"
+    status: established
+    path: polylogue/lib/filters.py
+  error_normalization:
+    description: "All surfaces normalize errors through shared error types"
+    status: established
+    path: polylogue/errors.py
+  output_format:
+    description: "--format profile unification across commands"
+    status: nascent
+    issue: 445

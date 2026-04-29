@@ -1,0 +1,85 @@
+# Oracle-quality taxonomy — Track B, #509.
+#
+# Evidence-quality taxonomy mapping each oracle classification to its
+# quality attributes. Adapted from the assurance-ontology reset in
+# project_assurance_ontology_2026_04_27.md.
+#
+# Six oracles: proof, drift_check, construction_sanity, smoke,
+# manual_review, ceremonial.
+#
+# Updated 2026-04-29 from realized codebase state.
+
+description: >
+  Evidence-quality taxonomy for the six oracle classifications used
+  across polylogue assurance domains. Each oracle entry documents
+  what the oracle counts as, its independence level, an example,
+  and its typical use in the verification pipeline.
+
+oracles:
+  proof:
+    counts_as: regression-catching
+    independence: independent_observation
+    example: pytest assert on real behavior
+    typical_use: >
+      Deterministic tests that assert on actual system behavior.
+      The test framework is independent of the code under test.
+      Used for parser correctness, storage CRUD, search ranking,
+      domain model invariants. Primary oracle for the 3963-test
+      unit suite.
+
+  drift_check:
+    counts_as: change_detection
+    independence: compares_current_to_baseline
+    example: snapshot diff against committed baseline
+    typical_use: >
+      Compares current output or behavior against a committed
+      reference. Used for terminal snapshot tests (syrupy),
+      benchmark regression detection, generated-surface freshness
+      (render-all --check), migration completeness verification.
+      Does not assert correctness, only absence of unplanned
+      change.
+
+  construction_sanity:
+    counts_as: structural_validation
+    independence: dependent_on_declared_structure
+    example: YAML manifest lint against realized tree
+    typical_use: >
+      Validates that the codebase matches declared structural
+      expectations: topology projection, file-size budgets,
+      test-ownership manifests, assurance-domain maturity
+      self-declarations, migration retirement completeness.
+      Consumes YAML manifests under docs/plans/. Cannot detect
+      semantic errors but acts as a structured-coherence gate.
+
+  smoke:
+    counts_as: basic_operability
+    independence: runtime_observation
+    example: polylogue --help exits 0
+    typical_use: >
+      Lightweight checks that the system starts, responds, and
+      exits cleanly under normal conditions. Used in CLI-surface
+      exercises (tier 0), pipeline probes, and post-install
+      verification. Fast feedback for build and packaging
+      correctness.
+
+  manual_review:
+    counts_as: human_judgment
+    independence: human_observation
+    example: reviewer reads diff for logic errors
+    typical_use: >
+      Code review, architecture review, security review.
+      Cannot be automated. Required for all PRs per contributing
+      policy. Documented here for completeness of the ontology
+      and to track which domains currently rely on manual review
+      as their only oracle.
+
+  ceremonial:
+    counts_as: documentation_intent
+    independence: no_observation
+    example: CLAUDE.md declares working rules
+    typical_use: >
+      Declarations of intent, policy, or aspiration that are not
+      independently verifiable. Includes CLAUDE.md working rules,
+      CONTRIBUTING.md workflow guidance, ARCHITECTURE.md ring
+      boundaries. These are authoritative for human readers but
+      have no automated enforcement.

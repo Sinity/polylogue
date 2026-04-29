@@ -281,6 +281,40 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "verify-suppressions",
+        "verification",
+        "Enforce suppression registry expiry dates from docs/plans/suppressions.yaml.",
+        "devtools.verify_suppressions",
+        use_when=(
+            "Catch expired suppressions — every suppression must have an active expiry date, "
+            "and past-due suppressions fail the check to force review."
+        ),
+        examples=("devtools verify-suppressions", "devtools verify-suppressions --json"),
+    ),
+    CommandSpec(
+        "verify-manifests",
+        "verification",
+        "Verify internal consistency across all docs/plans/*.yaml manifest files.",
+        "devtools.verify_manifests",
+        use_when=(
+            "Catch malformed manifests, duplicate rule IDs, missing required fields, "
+            "and cross-manifest reference inconsistencies."
+        ),
+        examples=("devtools verify-manifests",),
+    ),
+    CommandSpec(
+        "proof-pack",
+        "verification",
+        "Domain-grouped affected coverage report for vibecode confidence.",
+        "devtools.proof_pack",
+        use_when=(
+            "Get a domain-aware confidence answer about what a change affects, "
+            "instead of an undifferentiated obligation count. Maps changed paths "
+            "to impacted assurance domains with oracle-classified claim counts."
+        ),
+        examples=("devtools proof-pack", "devtools proof-pack --json --path polylogue/site/"),
+    ),
+    CommandSpec(
         "verify-cross-cuts",
         "verification",
         "Verify cross-cut tags in the topology projection match module-name conventions.",

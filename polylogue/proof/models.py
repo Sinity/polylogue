@@ -23,6 +23,44 @@ EvidenceClass = Literal["smoke", "semantic", "structural", "trace", "performance
 NetworkPolicy = Literal["none", "optional", "required"]
 TrustLevel = Literal["authored", "generated", "external"]
 
+Oracle = Literal[
+    "proof",
+    "drift_check",
+    "construction_sanity",
+    "smoke",
+    "manual_review",
+    "ceremonial",
+]
+
+AssuranceDomain = Literal[
+    "operational_resilience",
+    "surface_parity",
+    "docs_media",
+    "security_privacy",
+    "distribution",
+    "test_quality",
+    "schema_correctness",
+    "parser_correctness",
+    "pipeline_correctness",
+    "storage_correctness",
+    "search_correctness",
+    "site_publication",
+    "mcp_surface",
+    "cli_surface",
+    "api_surface",
+    "spec_completeness",
+    "spec_accuracy",
+    "migration_safety",
+    "provider_coverage",
+    "archive_integrity",
+    "performance",
+    "dependency_closure",
+    "scenario_coverage",
+    "mutation_coverage",
+    "benchmark_coverage",
+    "unclassified",
+]
+
 
 def _json_mapping(items: dict[str, object]) -> JSONDocument:
     return {key: require_json_value(value, context=key) for key, value in items.items()}
@@ -246,12 +284,20 @@ class BreakerMetadata:
 
 @dataclass(frozen=True, slots=True)
 class Claim:
-    """Semantic property over one or more subject queries."""
+    """Semantic property over one or more subject queries.
+
+    Every claim declares an Oracle classification (how evidence is produced)
+    and an AssuranceDomain (which confidence area the claim supports). Together
+    they let the proof-pack surface answer \"what confidence does this change
+    affect?\" with oracle-aware quality rather than an undifferentiated count.
+    """
 
     id: str
     description: str
     subject_query: SubjectQuery
     evidence_schema: JSONDocument
+    oracle: Oracle = "construction_sanity"
+    assurance_domain: AssuranceDomain = "unclassified"
     bug_classes: tuple[str, ...] = ()
     breaker: BreakerMetadata | None = None
     tracked_exception: str | None = None
@@ -271,6 +317,8 @@ class Claim:
                 "description": self.description,
                 "subject_query": self.subject_query.to_payload(),
                 "evidence_schema": dict(self.evidence_schema),
+                "oracle": self.oracle,
+                "assurance_domain": self.assurance_domain,
                 "bug_classes": list(self.bug_classes),
                 "breaker": self.breaker.to_payload() if self.breaker is not None else None,
                 "tracked_exception": self.tracked_exception,
@@ -488,6 +536,7 @@ def _fingerprint(payload: JSONDocument) -> str:
 
 __all__ = [
     "And",
+    "AssuranceDomain",
     "AttrContains",
     "AttrEq",
     "AttrIn",
@@ -502,6 +551,7 @@ __all__ = [
     "NetworkPolicy",
     "Not",
     "Or",
+    "Oracle",
     "ProofObligation",
     "RunnerBinding",
     "SourceSpan",

@@ -131,4 +131,4 @@ def test_main_returns_1_when_no_baselines_and_no_update(tmp_path: Path, monkeypa
     import devtools.lab_scenario as mod
 
     monkeypatch.setattr(mod, "BASELINE_DIR", tmp_path / "nonexistent")
-    assert mod.main([]) == 1
+    assert mod.main(["verify-baselines"]) == 1
