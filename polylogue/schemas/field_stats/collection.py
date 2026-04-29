@@ -6,12 +6,12 @@ import math
 from collections.abc import Mapping, Sequence
 from typing import TypeAlias
 
-from polylogue.schemas.field_stats_detection import (
+from polylogue.schemas.field_stats.detection import (
     _detect_numeric_format,
     _detect_string_format,
     is_dynamic_key,
 )
-from polylogue.schemas.field_stats_models import (
+from polylogue.schemas.field_stats.models import (
     ENUM_MAX_CARDINALITY,
     ENUM_VALUE_CAP,
     REF_MATCH_THRESHOLD,

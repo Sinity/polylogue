@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Callable, Sequence
-from typing import TypeAlias
+from collections.abc import Callable, Mapping, Sequence
+from typing import TypeAlias, cast
 
 import aiosqlite
 
@@ -339,6 +339,7 @@ def message_fts_readiness_sync(
     conn: sqlite3.Connection,
     *,
     verify_total_rows: bool = True,
+    exact_counts: bool = True,
 ) -> dict[str, int | bool]:
     """Return whether the message FTS index is present and fully populated."""
     if verify_total_rows:
@@ -369,6 +370,7 @@ async def message_fts_readiness_async(
     conn: aiosqlite.Connection,
     *,
     verify_total_rows: bool = True,
+    exact_counts: bool = True,
 ) -> dict[str, int | bool]:
     """Return whether the message FTS index is present and fully populated."""
     if verify_total_rows:
@@ -401,7 +403,7 @@ async def message_fts_readiness_async(
 FTS_GAP_THRESHOLD = 0.01
 
 
-def check_fts_readiness(readiness: dict[str, object], repair_hint: str = "") -> None:
+def check_fts_readiness(readiness: Mapping[str, object], repair_hint: str = "") -> None:
     """Raise DatabaseError if the FTS index doesn't exist.
 
     Degrade gracefully on small gaps: if the gap is ≤ FTS_GAP_THRESHOLD
@@ -413,8 +415,8 @@ def check_fts_readiness(readiness: dict[str, object], repair_hint: str = "") -> 
         raise DatabaseError(f"Search index not built. {repair_hint}")
     if bool(readiness["ready"]):
         return
-    indexed = int(readiness.get("indexed_rows", 0))
-    total = int(readiness.get("total_rows", 0))
+    indexed = int(cast(int, readiness.get("indexed_rows", 0)))
+    total = int(cast(int, readiness.get("total_rows", 0)))
     if total > 0 and indexed > 0:
         gap_ratio = (total - indexed) / total
         if gap_ratio <= FTS_GAP_THRESHOLD:

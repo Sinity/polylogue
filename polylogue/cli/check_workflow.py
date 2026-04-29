@@ -21,14 +21,14 @@ from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
 from polylogue.protocols import ProgressCallback
 from polylogue.readiness import ReadinessReport, get_readiness, run_runtime_readiness
-from polylogue.schemas.operator_workflow import (
+from polylogue.schemas.operator.workflow import (
     list_artifact_cohorts,
     list_artifact_observations,
     run_artifact_proof,
     run_schema_verification,
 )
-from polylogue.schemas.verification_models import SchemaVerificationReport
-from polylogue.schemas.verification_requests import (
+from polylogue.schemas.validation.models import SchemaVerificationReport
+from polylogue.schemas.validation.requests import (
     ArtifactObservationQuery,
     ArtifactProofRequest,
     SchemaVerificationRequest,

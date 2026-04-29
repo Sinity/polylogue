@@ -109,7 +109,7 @@ def test_generate_synthetic_fixtures_supports_inferred_corpus_specs(tmp_path: Pa
     )
 
     with patch(
-        "polylogue.schemas.operator_inference.list_inferred_corpus_specs",
+        "polylogue.schemas.operator.inference.list_inferred_corpus_specs",
         return_value=inferred,
     ):
         generate_synthetic_fixtures(
@@ -136,7 +136,7 @@ def test_build_synthetic_corpus_specs_supports_inferred_source() -> None:
     )
 
     with patch(
-        "polylogue.schemas.operator_inference.list_inferred_corpus_specs",
+        "polylogue.schemas.operator.inference.list_inferred_corpus_specs",
         return_value=inferred,
     ):
         specs = build_synthetic_corpus_specs(
@@ -163,7 +163,7 @@ def test_build_synthetic_corpus_scenarios_supports_inferred_source() -> None:
     )
 
     with patch(
-        "polylogue.schemas.operator_inference.list_inferred_corpus_specs",
+        "polylogue.schemas.operator.inference.list_inferred_corpus_specs",
         return_value=inferred,
     ):
         scenarios = build_synthetic_corpus_scenarios(

@@ -8,8 +8,8 @@ import click
 
 from polylogue.cli.machine_errors import emit_success
 from polylogue.scenarios import CorpusScenario, CorpusSpec
-from polylogue.schemas.audit_models import AuditReport
-from polylogue.schemas.operator_models import (
+from polylogue.schemas.audit.models import AuditReport
+from polylogue.schemas.operator.models import (
     SchemaCompareResult,
     SchemaInferResult,
     SchemaListResult,

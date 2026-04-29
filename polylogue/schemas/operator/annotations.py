@@ -6,13 +6,13 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from polylogue.lib.json import JSONDocument, JSONValue, json_document
-from polylogue.schemas.operator_models import (
+from polylogue.schemas.operator.models import (
     JSONDocument as OperatorJSONDocument,
 )
-from polylogue.schemas.operator_models import (
+from polylogue.schemas.operator.models import (
     JSONDocumentList as OperatorJSONDocumentList,
 )
-from polylogue.schemas.operator_models import (
+from polylogue.schemas.operator.models import (
     SchemaAnnotationSummary,
     SchemaCoverageSummary,
     SchemaReviewProof,
@@ -147,8 +147,8 @@ def build_review_proof(schema: Mapping[str, object]) -> SchemaReviewProof:
     Re-runs inference from the schema's own samples metadata to produce
     full candidate lists, competing paths, and abstention details.
     """
-    from polylogue.schemas.semantic_inference_models import SEMANTIC_ROLES
-    from polylogue.schemas.semantic_inference_runtime import (
+    from polylogue.schemas.inference.semantic.models import SEMANTIC_ROLES
+    from polylogue.schemas.inference.semantic.runtime import (
         RECORD_STREAM_ELIGIBLE_ROLES,
         RECORD_STREAM_KINDS,
     )

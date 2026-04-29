@@ -91,7 +91,8 @@ async def get_messages_paginated(
 
     # Get total count before pagination
     count_cursor = await conn.execute(count_query, tuple(params))
-    total = (await count_cursor.fetchone())[0]
+    count_row = await count_cursor.fetchone()
+    total = count_row[0] if count_row else 0
 
     query += " ORDER BY (sort_key IS NULL), sort_key, message_id"
     query += " LIMIT ? OFFSET ?"

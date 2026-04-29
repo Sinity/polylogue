@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from polylogue.schemas.field_stats import FieldStats
-from polylogue.schemas.relational_inference_models import StringLengthProfile
+from polylogue.schemas.field_stats.stats import FieldStats
+from polylogue.schemas.inference.relational.models import StringLengthProfile
 
 
 def detect_string_lengths(stats: dict[str, FieldStats]) -> list[StringLengthProfile]:

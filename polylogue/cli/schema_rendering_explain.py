@@ -8,7 +8,7 @@ from collections.abc import Mapping
 import click
 
 from polylogue.cli.machine_errors import emit_success
-from polylogue.schemas.operator_models import SchemaExplainResult
+from polylogue.schemas.operator.models import SchemaExplainResult
 
 
 def _schema_properties(schema: Mapping[str, object]) -> dict[str, Mapping[str, object]]:

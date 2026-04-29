@@ -570,9 +570,9 @@ QUERY_FIELD_DESCRIPTORS: tuple[QueryFieldDescriptor, ...] = (
     QueryFieldDescriptor(
         name="offset",
         plan_attr="offset",
-        plan_active=lambda v: int(v) > 0,
+        plan_active=lambda v: int(cast(int, v)) > 0,
         record_attr="offset",
-        storage_value=lambda v: int(v) if v else 0,
+        storage_value=lambda v: int(cast(int, v)) if v else 0,
         selection_filter=False,
     ),
     QueryFieldDescriptor(

@@ -12,9 +12,9 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Mapping
 
-from polylogue.schemas.field_stats import FieldStats
-from polylogue.schemas.semantic_inference_models import SemanticCandidate
-from polylogue.schemas.semantic_inference_runtime import infer_semantic_roles, select_best_roles
+from polylogue.schemas.field_stats.stats import FieldStats
+from polylogue.schemas.inference.semantic.models import SemanticCandidate
+from polylogue.schemas.inference.semantic.runtime import infer_semantic_roles, select_best_roles
 
 
 def _candidate_for_role(candidates: list[SemanticCandidate], role: str) -> SemanticCandidate | None:

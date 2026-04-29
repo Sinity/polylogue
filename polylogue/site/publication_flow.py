@@ -101,8 +101,8 @@ def build_latest_run_summary(record: RunRecord | None) -> PublicationRunSummary 
 
 def load_artifact_proof_summary(*, db_path: Path) -> ArtifactProofSummary:
     """Load the durable artifact-proof summary for publication embedding."""
-    from polylogue.schemas.verification_artifacts import prove_raw_artifact_coverage
-    from polylogue.schemas.verification_requests import ArtifactProofRequest
+    from polylogue.schemas.validation.artifacts import prove_raw_artifact_coverage
+    from polylogue.schemas.validation.requests import ArtifactProofRequest
 
     report = prove_raw_artifact_coverage(db_path=db_path, request=ArtifactProofRequest())
     return ArtifactProofSummary(

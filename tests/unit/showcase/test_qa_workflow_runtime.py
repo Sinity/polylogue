@@ -190,7 +190,7 @@ def test_run_audit_stage_records_exception_and_returns_early_result(tmp_path: Pa
     request = QASessionRequest()
 
     with (
-        patch("polylogue.schemas.audit_workflow.audit_all_providers", side_effect=RuntimeError("boom")),
+        patch("polylogue.schemas.audit.workflow.audit_all_providers", side_effect=RuntimeError("boom")),
         patch("polylogue.showcase.qa_runner_workflow.populate_proof") as mock_proof,
         patch("polylogue.showcase.qa_runner_workflow.save_qa_reports") as mock_save,
     ):
@@ -215,7 +215,7 @@ def test_run_audit_stage_returns_none_when_audit_passes() -> None:
     request = QASessionRequest(provider="chatgpt")
 
     with patch(
-        "polylogue.schemas.audit_workflow.audit_provider", return_value=_make_audit_report(all_passed=True)
+        "polylogue.schemas.audit.workflow.audit_provider", return_value=_make_audit_report(all_passed=True)
     ) as mock_audit:
         returned = _run_audit_stage(
             result,
@@ -235,7 +235,7 @@ def test_run_audit_stage_persists_failed_audit_and_prints_verbose_output(capsys:
 
     with (
         patch(
-            "polylogue.schemas.audit_workflow.audit_all_providers", return_value=_make_audit_report(all_passed=False)
+            "polylogue.schemas.audit.workflow.audit_all_providers", return_value=_make_audit_report(all_passed=False)
         ),
         patch("polylogue.showcase.qa_runner_workflow.populate_proof") as mock_proof,
     ):

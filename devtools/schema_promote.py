@@ -7,8 +7,8 @@ import sys
 
 from polylogue.cli.schema_rendering import render_schema_promote_result
 from polylogue.config import get_config
-from polylogue.schemas.operator_models import SchemaPromoteRequest
-from polylogue.schemas.operator_workflow import promote_schema_cluster
+from polylogue.schemas.operator.models import SchemaPromoteRequest
+from polylogue.schemas.operator.workflow import promote_schema_cluster
 
 
 def _build_parser() -> argparse.ArgumentParser:

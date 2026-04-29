@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
+from polylogue.config import Config
 from polylogue.lib.message.roles import MessageRoleFilter, normalize_message_roles
 from polylogue.lib.semantic.content_projection import ContentProjectionSpec
+from polylogue.storage.backends.queries.message_query_reads import MessageTypeName
 
 
 def run_messages(
@@ -29,7 +33,7 @@ def run_messages(
     from polylogue.api import Polylogue
 
     async def _run() -> None:
-        async with Polylogue.open(config=request.params.get("_config")) as api:
+        async with Polylogue.open(config=cast(Config, request.params.get("_config"))) as api:
             roles: MessageRoleFilter = normalize_message_roles(message_role) if message_role else ()
             projection = ContentProjectionSpec.from_params(
                 {
@@ -44,7 +48,7 @@ def run_messages(
             result = await api.get_messages_paginated(
                 conversation_id,
                 message_role=roles,
-                message_type=message_type,
+                message_type=cast(MessageTypeName, message_type),
                 limit=limit,
                 offset=offset,
                 content_projection=projection,
@@ -72,8 +76,8 @@ def run_messages(
                 env.ui.print(_json.dumps(payload, indent=2))
             else:
                 for msg in messages:
-                    role = msg.get("role", "unknown")
-                    text = msg.get("text", "")
+                    role = str(msg.get("role", "unknown"))
+                    text = str(msg.get("text", ""))
                     if text:
                         env.ui.print(f"[{role}] {text[:500]}{'...' if len(text) > 500 else ''}")
                         env.ui.print("---")
@@ -94,7 +98,7 @@ def run_raw(
     from polylogue.api import Polylogue
 
     async def _run() -> None:
-        async with Polylogue.open(config=request.params.get("_config")) as api:
+        async with Polylogue.open(config=cast(Config, request.params.get("_config"))) as api:
             records, total = await api.get_raw_records_for_conversation(
                 conversation_id,
                 limit=limit,

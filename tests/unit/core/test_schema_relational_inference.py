@@ -14,8 +14,8 @@ from collections import Counter
 
 import pytest
 
-from polylogue.schemas.field_stats import FieldStats
-from polylogue.schemas.relational_inference import (
+from polylogue.schemas.field_stats.stats import FieldStats
+from polylogue.schemas.inference.relational.inference import (
     RelationalAnnotations,
     infer_relations,
 )

@@ -27,7 +27,7 @@ from polylogue.lib.viewport.viewports import (
     TokenUsage,
     ToolCall,
 )
-from polylogue.schemas.unified import (
+from polylogue.schemas.unified.unified import (
     HarmonizedMessage,
     _coerce_content_blocks,
     _coerce_reasoning_traces,

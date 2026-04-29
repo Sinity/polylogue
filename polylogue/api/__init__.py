@@ -40,6 +40,12 @@ class Polylogue(PolylogueArchiveMixin, PolylogueProductsMixin, PolylogueIngestMi
         self._services = build_runtime_services(config=self._config, db_path=db_path)
         self._operations = ArchiveOperations.from_services(self._services)
 
+    @classmethod
+    def open(cls, *, config: Config | None = None, **kwargs: object) -> Polylogue:
+        archive_root: str | Path | None = config.archive_root if config else kwargs.get("archive_root")  # type: ignore[assignment]
+        db_path: str | Path | None = kwargs.get("db_path")  # type: ignore[assignment]
+        return cls(archive_root=archive_root, db_path=db_path)
+
     async def __aenter__(self) -> Polylogue:
         return self
 

@@ -4,19 +4,19 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from polylogue.schemas.operator_models import (
+from polylogue.schemas.operator.models import (
     ArtifactCohortListResult,
     ArtifactObservationListResult,
     ArtifactProofResult,
 )
-from polylogue.schemas.verification_artifacts import (
+from polylogue.schemas.validation.artifacts import (
     list_artifact_cohort_rows,
     list_artifact_observation_rows,
     prove_raw_artifact_coverage,
 )
-from polylogue.schemas.verification_corpus import verify_raw_corpus
-from polylogue.schemas.verification_models import SchemaVerificationReport
-from polylogue.schemas.verification_requests import (
+from polylogue.schemas.validation.corpus import verify_raw_corpus
+from polylogue.schemas.validation.models import SchemaVerificationReport
+from polylogue.schemas.validation.requests import (
     ArtifactObservationQuery,
     ArtifactProofRequest,
     SchemaVerificationRequest,

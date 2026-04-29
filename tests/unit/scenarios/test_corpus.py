@@ -18,7 +18,7 @@ from polylogue.scenarios import (
     resolve_corpus_scenarios,
     resolve_corpus_specs,
 )
-from polylogue.schemas.operator_registry import SchemaRegistryLike
+from polylogue.schemas.operator.registry import SchemaRegistryLike
 from polylogue.schemas.packages import (
     SchemaElementManifest,
     SchemaPackageCatalog,
@@ -308,7 +308,7 @@ def test_resolve_corpus_specs_applies_generation_overrides_to_inferred_specs() -
 
     with pytest.MonkeyPatch.context() as monkeypatch:
         monkeypatch.setattr(
-            "polylogue.schemas.operator_inference.list_inferred_corpus_specs",
+            "polylogue.schemas.operator.inference.list_inferred_corpus_specs",
             lambda registry=None: inferred,
         )
         specs = resolve_corpus_specs(
@@ -365,7 +365,7 @@ def test_resolve_corpus_scenarios_supports_inferred_source() -> None:
 
     with pytest.MonkeyPatch.context() as monkeypatch:
         monkeypatch.setattr(
-            "polylogue.schemas.operator_inference.list_inferred_corpus_specs",
+            "polylogue.schemas.operator.inference.list_inferred_corpus_specs",
             lambda registry=None: inferred,
         )
         scenarios = resolve_corpus_scenarios(
@@ -422,7 +422,7 @@ def test_corpus_request_resolves_inferred_source_without_provider_inventory() ->
 
     with pytest.MonkeyPatch.context() as monkeypatch:
         monkeypatch.setattr(
-            "polylogue.schemas.operator_inference.list_inferred_corpus_specs",
+            "polylogue.schemas.operator.inference.list_inferred_corpus_specs",
             lambda registry=None: inferred,
         )
         specs = CorpusRequest(
@@ -461,7 +461,7 @@ def test_corpus_request_passes_registry_through_inferred_resolution() -> None:
 
     with pytest.MonkeyPatch.context() as monkeypatch:
         monkeypatch.setattr(
-            "polylogue.schemas.operator_inference.list_inferred_corpus_specs",
+            "polylogue.schemas.operator.inference.list_inferred_corpus_specs",
             _list_inferred,
         )
         specs = CorpusRequest(

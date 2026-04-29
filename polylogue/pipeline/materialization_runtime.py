@@ -21,7 +21,7 @@ from polylogue.pipeline.ids import conversation_id as make_conversation_id
 from polylogue.pipeline.ids import message_id as make_message_id
 from polylogue.pipeline.prepare_transform_content import canonicalize_conversation_content
 from polylogue.pipeline.semantic_metadata import ToolInputPayload, extract_tool_metadata
-from polylogue.schemas.code_detection import detect_language
+from polylogue.schemas.code_detection.detection import detect_language
 from polylogue.sources.parsers.base import ParsedConversation
 from polylogue.types import (
     AttachmentId,

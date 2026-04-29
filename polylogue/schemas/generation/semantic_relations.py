@@ -6,10 +6,10 @@ from collections.abc import Mapping, Sequence
 from typing import overload
 
 from polylogue.lib.json import JSONDocument, JSONDocumentList, JSONValue, json_document, require_json_value
-from polylogue.schemas.field_stats import FieldStats
-from polylogue.schemas.relational_inference import infer_relations
-from polylogue.schemas.relational_inference_models import RelationalAnnotations
-from polylogue.schemas.semantic_inference import infer_semantic_roles, select_best_roles
+from polylogue.schemas.field_stats.stats import FieldStats
+from polylogue.schemas.inference.relational.inference import infer_relations
+from polylogue.schemas.inference.relational.models import RelationalAnnotations
+from polylogue.schemas.inference.semantic.inference import infer_semantic_roles, select_best_roles
 
 
 def _schema_node(value: JSONValue | object) -> JSONDocument | None:

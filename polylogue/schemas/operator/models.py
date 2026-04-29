@@ -8,10 +8,10 @@ from pathlib import Path
 from typing import TypeAlias, TypeGuard
 
 from polylogue.scenarios import CorpusScenario, CorpusSpec
-from polylogue.schemas.generation_models import GenerationResult
+from polylogue.schemas.generation.models import GenerationResult
 from polylogue.schemas.packages import SchemaPackageCatalog, SchemaResolution, SchemaVersionPackage
 from polylogue.schemas.tooling_registry import ClusterManifest, SchemaDiff
-from polylogue.schemas.verification_models import ArtifactProofReport
+from polylogue.schemas.validation.models import ArtifactProofReport
 from polylogue.storage.artifacts.views import ArtifactCohortSummary
 from polylogue.storage.runtime import ArtifactObservationRecord
 

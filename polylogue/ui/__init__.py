@@ -119,6 +119,12 @@ class UI:
         self._warn_plain(topic)
         raise SystemExit(1)
 
+    def print(self, *objects: object, **kwargs: object) -> None:
+        self._facade.console.print(*objects, **kwargs)
+
+    def error(self, message: str) -> None:
+        self._facade.error(message)
+
     def _print_notice(self, text: str) -> None:
         if self.plain:
             self.console.print(text)

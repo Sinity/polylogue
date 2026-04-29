@@ -6,8 +6,8 @@ from collections.abc import Mapping
 
 from polylogue.lib.json import JSONDocument
 from polylogue.scenarios import CorpusScenario, CorpusSpec, build_corpus_scenarios, build_inferred_corpus_specs
-from polylogue.schemas.audit_models import AuditReport
-from polylogue.schemas.operator_models import (
+from polylogue.schemas.audit.models import AuditReport
+from polylogue.schemas.operator.models import (
     SchemaAuditRequest,
     SchemaCompareRequest,
     SchemaCompareResult,
@@ -20,7 +20,7 @@ from polylogue.schemas.operator_models import (
     SchemaProviderSnapshot,
     operator_json_document,
 )
-from polylogue.schemas.operator_registry import SchemaRegistryLike, schema_registry
+from polylogue.schemas.operator.registry import SchemaRegistryLike, schema_registry
 from polylogue.schemas.packages import SchemaPackageCatalog
 from polylogue.schemas.privacy_config import PrivacyConfig, PrivacyLevel
 from polylogue.schemas.tooling_models import ClusterManifest
@@ -101,7 +101,7 @@ def _privacy_config(payload: Mapping[str, object] | None) -> PrivacyConfig | Non
 
 
 def infer_schema(request: SchemaInferRequest) -> SchemaInferResult:
-    from polylogue.schemas.generation_workflow import generate_provider_schema
+    from polylogue.schemas.generation.workflow import generate_provider_schema
     from polylogue.schemas.observation import PROVIDERS
     from polylogue.schemas.sampling import load_samples_from_db
 
@@ -319,7 +319,7 @@ def promote_schema_cluster(request: SchemaPromoteRequest) -> SchemaPromoteResult
 
 
 def audit_schemas(request: SchemaAuditRequest) -> AuditReport:
-    from polylogue.schemas.audit_workflow import audit_all_providers, audit_provider
+    from polylogue.schemas.audit.workflow import audit_all_providers, audit_provider
 
     return audit_provider(request.provider) if request.provider else audit_all_providers()
 

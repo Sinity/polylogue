@@ -22,14 +22,14 @@ from collections.abc import Mapping
 import pytest
 
 from polylogue.lib.json import JSONDocument
-from polylogue.schemas.field_stats import FieldStats, _collect_field_stats
-from polylogue.schemas.generation_support import (
+from polylogue.schemas.field_stats.stats import FieldStats, _collect_field_stats
+from polylogue.schemas.generation.support import (
     _annotate_semantic_and_relational,
 )
-from polylogue.schemas.generation_workflow import (
+from polylogue.schemas.generation.workflow import (
     generate_schema_from_samples,
 )
-from polylogue.schemas.semantic_inference_runtime import (
+from polylogue.schemas.inference.semantic.runtime import (
     infer_semantic_roles,
 )
 from tests.infra.schema_access import (

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from polylogue.schemas.field_stats import FieldStats
-from polylogue.schemas.semantic_inference_models import (
+from polylogue.schemas.field_stats.stats import FieldStats
+from polylogue.schemas.inference.semantic.models import (
     ANTI_TITLE_NAME_TOKENS,
     SemanticCandidate,
 )

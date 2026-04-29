@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from polylogue.schemas.generation_cluster_support import (
+from polylogue.schemas.generation.cluster_support import (
     _artifact_priority,
     _cluster_profile_tokens,
     _cluster_similarity,
@@ -19,7 +19,7 @@ from polylogue.schemas.generation_cluster_support import (
     _update_cluster_reservoir,
     _update_observed_window,
 )
-from polylogue.schemas.generation_models import (
+from polylogue.schemas.generation.models import (
     ClusterCollectionResult,
     _ClusterAccumulator,
     _ProfileSummary,

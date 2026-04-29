@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from polylogue.lib.viewport.models import ContentBlock
-from polylogue.schemas.unified import harmonize_parsed_message
+from polylogue.schemas.unified.unified import harmonize_parsed_message
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedConversation, ParsedMessage
 from polylogue.types import ContentBlockType
 

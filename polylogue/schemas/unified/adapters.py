@@ -7,7 +7,7 @@ from typing import Protocol, TypeAlias
 
 from polylogue.lib.json import JSONDocument
 from polylogue.lib.viewport.viewports import ContentBlock, MessageMeta, ReasoningTrace, ToolCall
-from polylogue.schemas.unified_models import HarmonizedMessage, _missing_role
+from polylogue.schemas.unified.models import HarmonizedMessage, _missing_role
 from polylogue.types import Provider
 
 

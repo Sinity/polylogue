@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from polylogue.schemas.unified_provider_meta_coercion import (
+from polylogue.schemas.unified.provider_meta_coercion import (
     _coerce_content_blocks,
     _coerce_reasoning_traces,
     _coerce_tool_calls,
@@ -10,11 +10,11 @@ from polylogue.schemas.unified_provider_meta_coercion import (
     _extract_generic_tokens,
     _has_extracted_viewports,
 )
-from polylogue.schemas.unified_provider_meta_harmonize import (
+from polylogue.schemas.unified.provider_meta_harmonize import (
     _harmonize_extracted_provider_meta,
     _overlay_message_context,
 )
-from polylogue.schemas.unified_provider_meta_runtime import (
+from polylogue.schemas.unified.provider_meta_runtime import (
     bulk_harmonize,
     extract_from_provider_meta,
     harmonize_parsed_message,

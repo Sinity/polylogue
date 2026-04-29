@@ -15,7 +15,7 @@ from polylogue.lib.provider.semantics import (
 from polylogue.lib.roles import Role
 from polylogue.lib.timestamps import parse_timestamp
 from polylogue.lib.viewport.viewports import CostInfo, ReasoningTrace, TokenUsage
-from polylogue.schemas.unified_models import HarmonizedMessage, _missing_role, extract_token_usage
+from polylogue.schemas.unified.models import HarmonizedMessage, _missing_role, extract_token_usage
 from polylogue.types import Provider
 
 

@@ -683,8 +683,8 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
         description="Versioned provider schema packages stored in the schema registry.",
         code_refs=(
             "polylogue.schemas.registry.SchemaRegistry",
-            "polylogue.schemas.operator_inference.list_schemas",
-            "polylogue.schemas.operator_resolution.explain_schema",
+            "polylogue.schemas.operator.inference.list_schemas",
+            "polylogue.schemas.operator.resolution.explain_schema",
         ),
         readiness_surfaces=("schema", "qa"),
     ),
@@ -694,7 +694,7 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
         description="Persisted schema-cluster manifests describing observed structural families per provider.",
         code_refs=(
             "polylogue.schemas.registry.SchemaRegistry",
-            "polylogue.schemas.operator_inference.list_schemas",
+            "polylogue.schemas.operator.inference.list_schemas",
         ),
         readiness_surfaces=("schema", "qa"),
     ),
@@ -705,7 +705,7 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
         depends_on=("schema_packages", "schema_cluster_manifests"),
         code_refs=(
             "polylogue.scenarios.corpus.build_inferred_corpus_specs",
-            "polylogue.schemas.operator_inference.list_inferred_corpus_specs",
+            "polylogue.schemas.operator.inference.list_inferred_corpus_specs",
         ),
         readiness_surfaces=("schema", "qa", "synthetic"),
     ),
@@ -716,7 +716,7 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
         depends_on=("inferred_corpus_specs",),
         code_refs=(
             "polylogue.scenarios.corpus.build_corpus_scenarios",
-            "polylogue.schemas.operator_inference.list_inferred_corpus_scenarios",
+            "polylogue.schemas.operator.inference.list_inferred_corpus_scenarios",
         ),
         readiness_surfaces=("schema", "qa", "synthetic"),
     ),
@@ -731,7 +731,7 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
             "inferred_corpus_scenarios",
         ),
         code_refs=(
-            "polylogue.schemas.operator_inference.list_schemas",
+            "polylogue.schemas.operator.inference.list_schemas",
             "polylogue.cli.commands.schema.schema_list",
         ),
         readiness_surfaces=("schema", "cli"),
@@ -742,7 +742,7 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
         description="Schema explain/read results for provider package elements and annotations.",
         depends_on=("schema_packages",),
         code_refs=(
-            "polylogue.schemas.operator_resolution.explain_schema",
+            "polylogue.schemas.operator.resolution.explain_schema",
             "polylogue.cli.commands.schema.schema_explain",
         ),
         readiness_surfaces=("schema", "cli"),

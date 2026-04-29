@@ -8,8 +8,8 @@ from polylogue.lib.json import JSONDocument, json_document_list
 from polylogue.lib.provider.semantics import extract_display_text_from_content_blocks
 from polylogue.lib.roles import Role
 from polylogue.lib.viewport.viewports import ContentType, ReasoningTrace
-from polylogue.schemas.unified_models import HarmonizedMessage, _missing_role
-from polylogue.schemas.unified_provider_meta_coercion import (
+from polylogue.schemas.unified.models import HarmonizedMessage, _missing_role
+from polylogue.schemas.unified.provider_meta_coercion import (
     _coerce_content_blocks,
     _coerce_reasoning_traces,
     _coerce_timestamp,

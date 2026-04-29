@@ -1,7 +1,7 @@
 """Tests for unified schema extraction and validator modules.
 
 Migrated from test_filters.py during test consolidation — these tests
-cover polylogue.schemas.unified and polylogue.schemas.validator, not
+cover polylogue.schemas.unified.unified and polylogue.schemas.validator, not
 filter logic.
 """
 
@@ -14,7 +14,7 @@ from unittest.mock import patch
 import pytest
 
 from polylogue.lib.json import JSONDocument
-from polylogue.schemas.unified import (
+from polylogue.schemas.unified.unified import (
     HarmonizedMessage,
     bulk_harmonize,
     extract_chatgpt_text,
@@ -128,7 +128,7 @@ TOKEN_USAGE_CASES: list[TokenUsageCase] = [
 
 class TestUnifiedMissingRole:
     def test_missing_role_raises_error(self) -> None:
-        from polylogue.schemas.unified import _missing_role
+        from polylogue.schemas.unified.unified import _missing_role
 
         with pytest.raises(ValueError, match="Message has no role"):
             _missing_role()

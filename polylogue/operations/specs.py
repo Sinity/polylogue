@@ -494,7 +494,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         path_targets=("inferred-corpus-compilation-loop",),
         code_refs=(
             "polylogue.scenarios.corpus.build_inferred_corpus_specs",
-            "polylogue.schemas.operator_inference.list_inferred_corpus_specs",
+            "polylogue.schemas.operator.inference.list_inferred_corpus_specs",
         ),
         surfaces=("schema", "qa", "synthetic"),
         previewable=True,
@@ -508,7 +508,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         path_targets=("inferred-corpus-compilation-loop",),
         code_refs=(
             "polylogue.scenarios.corpus.build_corpus_scenarios",
-            "polylogue.schemas.operator_inference.list_inferred_corpus_scenarios",
+            "polylogue.schemas.operator.inference.list_inferred_corpus_scenarios",
         ),
         surfaces=("schema", "qa", "synthetic"),
         previewable=True,
@@ -521,7 +521,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         produces=("schema_list_results",),
         path_targets=("schema-list-query-loop",),
         code_refs=(
-            "polylogue.schemas.operator_inference.list_schemas",
+            "polylogue.schemas.operator.inference.list_schemas",
             "polylogue.cli.commands.schema.schema_list",
         ),
         surfaces=("schema", "cli"),
@@ -535,7 +535,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         produces=("schema_explanation_results",),
         path_targets=("schema-explain-query-loop",),
         code_refs=(
-            "polylogue.schemas.operator_resolution.explain_schema",
+            "polylogue.schemas.operator.resolution.explain_schema",
             "polylogue.cli.commands.schema.schema_explain",
         ),
         surfaces=("schema", "cli"),

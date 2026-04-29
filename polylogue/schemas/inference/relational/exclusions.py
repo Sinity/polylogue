@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from polylogue.schemas.field_stats import FieldStats
-from polylogue.schemas.relational_inference_models import MutualExclusion
+from polylogue.schemas.field_stats.stats import FieldStats
+from polylogue.schemas.inference.relational.models import MutualExclusion
 
 
 def detect_mutual_exclusions(stats: dict[str, FieldStats]) -> list[MutualExclusion]:

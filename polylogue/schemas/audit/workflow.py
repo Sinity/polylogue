@@ -4,14 +4,14 @@ from __future__ import annotations
 
 from polylogue.lib.outcomes import OutcomeCheck as CheckResult
 from polylogue.lib.outcomes import OutcomeStatus
-from polylogue.schemas.audit_checks import (
+from polylogue.schemas.audit.checks import (
     check_annotation_coverage,
     check_cross_provider_consistency,
     check_privacy_guards,
     check_semantic_roles,
 )
-from polylogue.schemas.audit_models import AuditCheck, AuditReport
-from polylogue.schemas.audit_walkers import _load_committed_schema
+from polylogue.schemas.audit.models import AuditCheck, AuditReport
+from polylogue.schemas.audit.walkers import _load_committed_schema
 
 
 def _scoped(provider: str, check: CheckResult) -> AuditCheck:

@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
-from polylogue.schemas.operator_annotations import build_review_proof, collect_annotation_summary
-from polylogue.schemas.operator_models import (
+from polylogue.schemas.operator.annotations import build_review_proof, collect_annotation_summary
+from polylogue.schemas.operator.models import (
     SchemaExplainRequest,
     SchemaExplainResult,
     SchemaPayloadResolveRequest,
     SchemaPayloadResolveResult,
     operator_json_document,
 )
-from polylogue.schemas.operator_registry import runtime_schema_registry, schema_registry
+from polylogue.schemas.operator.registry import runtime_schema_registry, schema_registry
 
 
 def explain_schema(request: SchemaExplainRequest) -> SchemaExplainResult:

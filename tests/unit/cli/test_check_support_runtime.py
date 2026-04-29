@@ -16,7 +16,7 @@ from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
 from polylogue.maintenance.targets import MaintenanceTargetMode
 from polylogue.readiness import ReadinessCheck, ReadinessReport, VerifyStatus
-from polylogue.schemas.verification_models import SchemaVerificationReport
+from polylogue.schemas.validation.models import SchemaVerificationReport
 from polylogue.storage.repair import RepairResult
 
 

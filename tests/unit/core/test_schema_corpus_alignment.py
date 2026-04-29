@@ -18,22 +18,22 @@ from polylogue.lib.raw_payload.sampling_extract import (
     extract_payload_samples,
     extract_record_samples_from_raw_content,
 )
-from polylogue.schemas.field_stats import FieldStats
-from polylogue.schemas.generation_schema_builder import (
+from polylogue.schemas.field_stats.stats import FieldStats
+from polylogue.schemas.generation.schema_builder import (
     _STRUCTURE_EXEMPLARS_PER_FINGERPRINT,
     _generate_cluster_schema,
 )
-from polylogue.schemas.generation_semantic_relations import (
+from polylogue.schemas.generation.semantic_relations import (
     annotate_semantic_and_relational,
 )
-from polylogue.schemas.observation_models import ProviderConfig
-from polylogue.schemas.operator_annotations import build_review_proof
-from polylogue.schemas.semantic_inference_models import SEMANTIC_ROLES
-from polylogue.schemas.semantic_inference_runtime import (
+from polylogue.schemas.inference.semantic.models import SEMANTIC_ROLES
+from polylogue.schemas.inference.semantic.runtime import (
     RECORD_STREAM_ELIGIBLE_ROLES,
     RECORD_STREAM_KINDS,
     infer_semantic_roles,
 )
+from polylogue.schemas.observation_models import ProviderConfig
+from polylogue.schemas.operator.annotations import build_review_proof
 from polylogue.types import Provider
 
 
@@ -379,7 +379,7 @@ class TestConfidenceToScoreRename:
 
     def test_no_confidence_key_in_generated_schema(self) -> None:
         """Full schema generation uses score, not confidence."""
-        from polylogue.schemas.generation_schema_builder import generate_schema_from_samples
+        from polylogue.schemas.generation.schema_builder import generate_schema_from_samples
 
         samples = [
             {

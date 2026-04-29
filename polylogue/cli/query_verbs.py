@@ -6,6 +6,8 @@ a specific action on the matched conversations.
 
 from __future__ import annotations
 
+from typing import cast
+
 import click
 
 from polylogue.cli.root_request import RootModeRequest
@@ -215,7 +217,7 @@ def messages_verb(
     if conversation_id is None:
         request = _parent_request(ctx)
         params = dict(request.params)
-        conversation_id = params.get("conv_id")
+        conversation_id = cast("str | None", params.get("conv_id"))
         if not conversation_id:
             raise click.UsageError("messages requires a conversation ID (use --id or pass as argument)")
     else:
@@ -260,7 +262,7 @@ def raw_verb(
     if conversation_id is None:
         request = _parent_request(ctx)
         params = dict(request.params)
-        conversation_id = params.get("conv_id")
+        conversation_id = cast("str | None", params.get("conv_id"))
         if not conversation_id:
             raise click.UsageError("raw requires a conversation ID (use --id or pass as argument)")
     else:

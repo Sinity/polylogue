@@ -5,8 +5,8 @@ from __future__ import annotations
 import argparse
 
 from polylogue.cli.schema_rendering import render_schema_audit_result
-from polylogue.schemas.operator_models import SchemaAuditRequest
-from polylogue.schemas.operator_workflow import audit_schemas
+from polylogue.schemas.operator.models import SchemaAuditRequest
+from polylogue.schemas.operator.workflow import audit_schemas
 
 
 def _build_parser() -> argparse.ArgumentParser:

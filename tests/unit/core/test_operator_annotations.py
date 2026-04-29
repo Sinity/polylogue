@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from polylogue.schemas.operator_annotations import collect_annotation_summary
+from polylogue.schemas.operator.annotations import collect_annotation_summary
 
 
 def test_collect_annotation_summary_deduplicates_same_role_on_union_path() -> None:

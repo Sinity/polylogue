@@ -14,12 +14,12 @@ from polylogue.cli.schema_rendering import (
 )
 from polylogue.cli.shared.helpers import fail
 from polylogue.cli.shared.types import AppEnv
-from polylogue.schemas.operator_models import (
+from polylogue.schemas.operator.models import (
     SchemaCompareRequest,
     SchemaExplainRequest,
     SchemaListRequest,
 )
-from polylogue.schemas.operator_workflow import (
+from polylogue.schemas.operator.workflow import (
     compare_schema_versions,
     explain_schema,
     list_schemas,

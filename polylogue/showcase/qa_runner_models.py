@@ -11,8 +11,8 @@ from polylogue.showcase.invariants import InvariantResult
 from polylogue.showcase.runner import ShowcaseResult
 
 if TYPE_CHECKING:
-    from polylogue.schemas.audit_models import AuditReport
-    from polylogue.schemas.verification_models import ArtifactProofReport
+    from polylogue.schemas.audit.models import AuditReport
+    from polylogue.schemas.validation.models import ArtifactProofReport
 
 
 @dataclass

@@ -175,7 +175,7 @@ async def execute_ingest_stage(
 async def execute_schema_generation_stage() -> SchemaGenerationOutcome:
     from polylogue.paths import data_home as _data_home
     from polylogue.paths import db_path as _db_path
-    from polylogue.schemas.schema_inference import generate_all_schemas
+    from polylogue.schemas.operator.schema_inference import generate_all_schemas
 
     results = await asyncio.to_thread(
         generate_all_schemas,

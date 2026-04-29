@@ -17,7 +17,7 @@ from polylogue.lib.roles import Role
 from polylogue.lib.timestamps import parse_timestamp
 from polylogue.lib.viewport.viewports import CostInfo
 from polylogue.schemas.pinning import load_pins, resolve_pinned_paths
-from polylogue.schemas.unified_models import HarmonizedMessage, extract_token_usage
+from polylogue.schemas.unified.unified.models import HarmonizedMessage, extract_token_usage
 from polylogue.types import Provider
 
 logger = logging.getLogger(__name__)

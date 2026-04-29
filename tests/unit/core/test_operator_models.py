@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from polylogue.schemas.operator_models import (
+from polylogue.schemas.operator.models import (
     SchemaAnnotationSummary,
     SchemaCompareResult,
     SchemaCoverageSummary,

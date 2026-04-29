@@ -30,10 +30,10 @@ from polylogue.lib.provider.semantics import (
     extract_reasoning_traces,
     extract_tool_calls,
 )
-from polylogue.schemas.unified_adapters import extract_with_adapter
-from polylogue.schemas.unified_fallbacks import extract_fallback_message
-from polylogue.schemas.unified_models import HarmonizedMessage, _missing_role, extract_token_usage
-from polylogue.schemas.unified_provider_meta import (
+from polylogue.schemas.unified.adapters import extract_with_adapter
+from polylogue.schemas.unified.fallbacks import extract_fallback_message
+from polylogue.schemas.unified.models import HarmonizedMessage, _missing_role, extract_token_usage
+from polylogue.schemas.unified.provider_meta import (
     _coerce_content_blocks,
     _coerce_reasoning_traces,
     _coerce_tool_calls,
@@ -79,7 +79,8 @@ def try_schema_extraction(provider: Provider | str, raw: JSONDocument) -> Harmon
         from polylogue.schemas.extraction import extract_message_from_schema
 
         _, schema, _ = resolve_payload_schema(p, raw)
-        return extract_message_from_schema(raw, schema=schema, provider=p)
+        result: HarmonizedMessage | None = extract_message_from_schema(raw, schema=schema, provider=p)
+        return result
     except FileNotFoundError:
         return None
     except Exception:

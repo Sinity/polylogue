@@ -18,9 +18,9 @@ from polylogue.cli.schema_rendering_results import (
 )
 from polylogue.lib.outcomes import OutcomeStatus
 from polylogue.scenarios import CorpusProfile, CorpusSpec, build_corpus_scenarios
-from polylogue.schemas.audit_models import AuditCheck, AuditReport
-from polylogue.schemas.generation_models import GenerationResult
-from polylogue.schemas.operator_models import (
+from polylogue.schemas.audit.models import AuditCheck, AuditReport
+from polylogue.schemas.generation.models import GenerationResult
+from polylogue.schemas.operator.models import (
     JSONDocument,
     SchemaAnnotationSummary,
     SchemaCompareResult,

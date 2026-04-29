@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from polylogue.schemas.field_stats_collection import _collect_field_stats
-from polylogue.schemas.field_stats_detection import (
+from polylogue.schemas.field_stats.collection import _collect_field_stats
+from polylogue.schemas.field_stats.detection import (
     UUID_PATTERN,
     _detect_numeric_format,
     _detect_string_format,
     is_dynamic_key,
 )
-from polylogue.schemas.field_stats_models import (
+from polylogue.schemas.field_stats.models import (
     ENUM_MAX_CARDINALITY,
     ENUM_VALUE_CAP,
     REF_MATCH_THRESHOLD,
