@@ -55,6 +55,7 @@ def test_live_derived_witnesses_require_privacy_metadata_before_commit() -> None
         provenance={"source": "live archive probe"},
         preserved_semantic_facts=("provider remains parseable after minimization",),
         minimization_status="minimized",
+        privacy_classification="redacted",
         privacy=PrivacyRecord(
             private_material="observed",
             transformed=True,
@@ -90,6 +91,7 @@ def test_known_failing_witnesses_require_strict_xfail_or_rejection() -> None:
         provenance={"source": "live archive probe"},
         preserved_semantic_facts=("parser keeps error boundary stable",),
         minimization_status="minimized",
+        privacy_classification="redacted",
         privacy=PrivacyRecord(private_material="not_observed"),
         known_failing=True,
         xfail_strict=True,
