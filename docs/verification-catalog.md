@@ -9,9 +9,9 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 ## Snapshot
 
 - subjects: `250`
-- claims: `21`
-- runner bindings: `21`
-- proof obligations: `363`
+- claims: `18`
+- runner bindings: `18`
+- proof obligations: `318`
 
 ## Quality Checks
 
@@ -148,7 +148,6 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `provider.capability.partial_coverage_declared` | `serious` | `provider.capability.implicit-gap`<br>`provider-semantics.untracked-partial-support` | A provider with absent or partial facets but no explicit gap record hides verification scope. |
 | `schema.values.value_closure` | `serious` | `schema.value-domain.drift`<br>`schema.privacy.enum-leak` | A generated payload outside the annotated value set is a counterexample. |
 | `schema.foreign_key.resolves` | `serious` | `schema.relationship.drift`<br>`synthetic-corpus.integrity` | A source path pointing at a missing target path breaks the relation claim. |
-| `operation.spec.routing_metadata` | `serious` | `operation.routing.metadata-missing`<br>`agent-verification.unroutable-operation` | An operation without stable routing metadata cannot be mapped to focused proof checks. |
 | `artifact.path.dependency_closure` | `serious` | `artifact-graph.unresolved-dependency`<br>`structural-proof.missing-derived-layer` | A runtime path with unresolved dependencies or no derived/index/projection layer breaks routing. |
 | `maintenance.repair.crash_consistency` | `serious` | `maintenance.failure-state.ambiguous`<br>`destructive-repair.preview-mismatch` | A repair failure without an explicit unchanged/changed/rolled-back/partial state is ambiguous. |
 | `parser.quarantine.context_redaction` | `serious` | `parser-quarantine.context-loss`<br>`parser-quarantine.payload-leak` | A quarantine error without source context, or one that echoes private payload text, breaks the claim. |
@@ -158,8 +157,6 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `generated.scenario.family_registered` | `serious` | `scenario-family.omission`<br>`live-checks.overused` | A missing generated-world family leaves live/archive checks carrying routine confidence. |
 | `generated.scenario.local_deterministic` | `serious` | `scenario-family.live-dependency`<br>`scenario-family.nondeterministic-local-fixture` | An implemented generated scenario with live archive dependency is not a routine proof subject. |
 | `generated.scenario.semantic_claim_mapping` | `serious` | `scenario-family.vacuous-process-check`<br>`semantic-proof.unmapped-generated-world` | A generated scenario without semantic claim mapping can go green without proving meaning. |
-| `workflow.generated_surfaces_current` | `serious` | `generated-surface.drift`<br>`agent-context.stale-generated-doc` | Generated docs or AGENTS surfaces drift when render-all is not refreshed. |
-| `workflow.pr_verification_recorded` | `serious` | `workflow.verification-record.omitted`<br>`workflow.issue-link.omitted` | A non-trivial PR without a verification record or issue reference loses proof provenance. |
 
 ## Runner Bindings
 
@@ -174,7 +171,6 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `provider-capability-static-contract:provider.capability.partial_coverage_declared` | `provider.capability.partial_coverage_declared` | `structural` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
 | `schema-annotation-static-contract:schema.values.value_closure` | `schema.values.value_closure` | `structural` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
 | `schema-annotation-static-contract:schema.foreign_key.resolves` | `schema.foreign_key.resolves` | `structural` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
-| `operation-spec-static-contract:operation.spec.routing_metadata` | `operation.spec.routing_metadata` | `structural` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
 | `artifact-path-static-contract:artifact.path.dependency_closure` | `artifact.path.dependency_closure` | `structural` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
 | `maintenance-repair-state-contract:maintenance.repair.crash_consistency` | `maintenance.repair.crash_consistency` | `structural` | `unit` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
 | `parser-quarantine-error-contract:parser.quarantine.context_redaction` | `parser.quarantine.context_redaction` | `structural` | `unit` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
@@ -184,8 +180,6 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `generated-scenario-static-contract:generated.scenario.family_registered` | `generated.scenario.family_registered` | `structural` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
 | `generated-scenario-static-contract:generated.scenario.local_deterministic` | `generated.scenario.local_deterministic` | `structural` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
 | `generated-scenario-static-contract:generated.scenario.semantic_claim_mapping` | `generated.scenario.semantic_claim_mapping` | `semantic` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
-| `workflow-static-contract:workflow.generated_surfaces_current` | `workflow.generated_surfaces_current` | `workflow` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
-| `workflow-static-contract:workflow.pr_verification_recorded` | `workflow.pr_verification_recorded` | `workflow` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
 
 ## Proof Obligations
 
@@ -203,12 +197,9 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `generated.scenario.local_deterministic` | 4 |
 | `generated.scenario.semantic_claim_mapping` | 9 |
 | `maintenance.repair.crash_consistency` | 8 |
-| `operation.spec.routing_metadata` | 43 |
 | `parser.quarantine.context_redaction` | 1 |
 | `provider.capability.identity_bridge` | 3 |
 | `provider.capability.partial_coverage_declared` | 3 |
 | `schema.foreign_key.resolves` | 7 |
 | `schema.values.value_closure` | 88 |
 | `trace.operation.surface_equivalence` | 1 |
-| `workflow.generated_surfaces_current` | 1 |
-| `workflow.pr_verification_recorded` | 1 |

@@ -146,7 +146,6 @@ def default_claims() -> tuple[Claim, ...]:
     values_query = _schema_annotation_query("x-polylogue-values")
     foreign_key_query = _schema_annotation_query("x-polylogue-foreign-keys")
     provider_capability_query = Kind("provider.capability")
-    operation_query = Kind("operation.spec")
     artifact_path_query = And(
         (
             Kind("artifact.path"),
@@ -329,21 +328,6 @@ def default_claims() -> tuple[Claim, ...]:
             ),
         ),
         Claim(
-            id="operation.spec.routing_metadata",
-            description="Declared operation specs expose stable metadata for affected-obligation routing.",
-            subject_query=operation_query,
-            evidence_schema=_evidence_schema("name", "kind", "surfaces"),
-            bug_classes=("operation.routing.metadata-missing", "agent-verification.unroutable-operation"),
-            runner_classes=("operation_static",),
-            observed_facts=("operation_name", "operation_kind", "surfaces", "path_targets", "code_refs"),
-            staleness_conditions=("Operation specs, scenario projections, or artifact graph routing changes.",),
-            breaker=BreakerMetadata(
-                description="An operation without stable routing metadata cannot be mapped to focused proof checks.",
-                issue="#334",
-                command=("devtools", "affected-obligations", "--path", "polylogue/operations/specs.py"),
-            ),
-        ),
-        Claim(
             id="artifact.path.dependency_closure",
             description=(
                 "Runtime artifact paths resolve declared dependencies and span durable, derived, index, or projection "
@@ -511,36 +495,6 @@ def default_claims() -> tuple[Claim, ...]:
                 command=("pytest", "tests/unit/proof/test_generated_scenario_obligations.py"),
             ),
         ),
-        Claim(
-            id="workflow.generated_surfaces_current",
-            description="Generated documentation and agent surfaces are current after their sources change.",
-            subject_query=AttrEq("claim_family", "generated-surfaces"),
-            evidence_schema=_evidence_schema("required_command", "source_changes"),
-            bug_classes=("generated-surface.drift", "agent-context.stale-generated-doc"),
-            runner_classes=("workflow_static",),
-            observed_facts=("required_command", "source_changes"),
-            staleness_conditions=("Generated-surface sources or renderers change.",),
-            breaker=BreakerMetadata(
-                description="Generated docs or AGENTS surfaces drift when render-all is not refreshed.",
-                issue="#334",
-                command=("devtools", "render-all", "--check"),
-            ),
-        ),
-        Claim(
-            id="workflow.pr_verification_recorded",
-            description="Durable PR bodies record actual verification commands and issue linkage.",
-            subject_query=AttrEq("claim_family", "pr-body"),
-            evidence_schema=_evidence_schema("required_sections", "required_linking"),
-            bug_classes=("workflow.verification-record.omitted", "workflow.issue-link.omitted"),
-            runner_classes=("workflow_static",),
-            observed_facts=("required_sections", "required_linking"),
-            staleness_conditions=("PR template, contributing workflow, or issue-first policy changes.",),
-            breaker=BreakerMetadata(
-                description="A non-trivial PR without a verification record or issue reference loses proof provenance.",
-                issue="#334",
-                command=("devtools", "affected-obligations", "--path", "CONTRIBUTING.md"),
-            ),
-        ),
     )
 
 
@@ -592,10 +546,6 @@ def default_runner_bindings(claims: Iterable[Claim]) -> tuple[RunnerBinding, ...
         elif claim.id.startswith("schema."):
             bindings.append(
                 _runner_binding(claim, runner="schema-annotation-static-contract", evidence_class="structural")
-            )
-        elif claim.id.startswith("operation.spec."):
-            bindings.append(
-                _runner_binding(claim, runner="operation-spec-static-contract", evidence_class="structural")
             )
         elif claim.id.startswith("artifact.path."):
             bindings.append(_runner_binding(claim, runner="artifact-path-static-contract", evidence_class="structural"))
@@ -652,8 +602,6 @@ def default_runner_bindings(claims: Iterable[Claim]) -> tuple[RunnerBinding, ...
                     evidence_class="structural",
                 )
             )
-        elif claim.id.startswith("workflow."):
-            bindings.append(_runner_binding(claim, runner="workflow-static-contract", evidence_class="workflow"))
     return tuple(bindings)
 
 
