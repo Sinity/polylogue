@@ -42,6 +42,22 @@ def test_default_catalog_compiles_first_vertical_slice() -> None:
         "generated.scenario.family_registered",
         "generated.scenario.local_deterministic",
         "generated.scenario.semantic_claim_mapping",
+        "operation.effect.atomic",
+        "operation.effect.atomic_rename",
+        "operation.effect.confirmed_before_execute",
+        "operation.effect.deterministic",
+        "operation.effect.explicit_dry_run_evidence",
+        "operation.effect.idempotent",
+        "operation.effect.no_side_effect",
+        "operation.effect.parent_exists",
+        "operation.effect.path_sanitized",
+        "operation.effect.preview",
+        "operation.effect.privacy_safe_evidence",
+        "operation.effect.retry_bounded",
+        "operation.effect.rollback_safe",
+        "operation.effect.sampling_bounded",
+        "operation.effect.snapshot_consistent",
+        "operation.effect.timeout_bounded",
     }
     assert catalog.subjects_by_kind()["cli.command"] >= 1
     assert catalog.subjects_by_kind()["cli.json_command"] >= 1

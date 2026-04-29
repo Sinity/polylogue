@@ -495,7 +495,96 @@ def default_claims() -> tuple[Claim, ...]:
                 command=("pytest", "tests/unit/proof/test_generated_scenario_obligations.py"),
             ),
         ),
+        *_effect_implication_claims(),
     )
+
+
+def _effect_implication_claims() -> tuple[Claim, ...]:
+    """Mint one claim per effect implication.
+
+    Each claim matches operation.spec.effect subjects that carry the
+    corresponding implication attr. The oracle and severity derive from
+    the implication, not the operation — a single claim covers every
+    operation that declares the same effect.
+    """
+    from polylogue.proof.sources.effect_compiler import (
+        IMPLICATION_ORACLE,
+        EffectClaimCompiler,
+        EffectImplication,
+    )
+
+    _implication_descriptions: dict[EffectImplication, str] = {
+        "deterministic": "Operation produces the same result for the same input every time.",
+        "no_side_effect": "Operation does not mutate any external state.",
+        "snapshot_consistent": "Operation reads from a consistent snapshot, not partial writes.",
+        "preview": "Operation supports dry-run preview before committing changes.",
+        "idempotent": "Running the operation twice produces the same result as once.",
+        "rollback_safe": "Failed operations leave no partial state behind.",
+        "atomic": "Operation completes entirely or not at all.",
+        "path_sanitized": "File paths are validated and do not escape expected directories.",
+        "atomic_rename": "Files are written via atomic rename, never partial writes.",
+        "parent_exists": "All parent directories exist before file writes.",
+        "timeout_bounded": "Network operations have explicit timeout bounds.",
+        "retry_bounded": "Network retries are bounded in count and backoff.",
+        "sampling_bounded": "Live archive sampling has an explicit row or time budget.",
+        "privacy_safe_evidence": "Evidence from live archives is privacy-redacted.",
+        "explicit_dry_run_evidence": "Destructive operations produce dry-run evidence before execution.",
+        "confirmed_before_execute": "Destructive operations require explicit confirmation.",
+    }
+
+    _severe_implications: frozenset[EffectImplication] = frozenset(
+        {
+            "preview",
+            "idempotent",
+            "rollback_safe",
+            "atomic",
+            "path_sanitized",
+            "atomic_rename",
+            "parent_exists",
+            "privacy_safe_evidence",
+            "explicit_dry_run_evidence",
+            "confirmed_before_execute",
+        }
+    )
+
+    # Implications whose parent effect (Destructive) is not yet declared
+    # by any operation. These claims stay abstract until an operation
+    # opts into Destructive.
+    _abstract_implications: frozenset[EffectImplication] = frozenset(
+        {
+            "explicit_dry_run_evidence",
+            "confirmed_before_execute",
+        }
+    )
+
+    effect_query = Kind("operation.spec.effect")
+    claims: list[Claim] = []
+
+    for implication in EffectClaimCompiler.implication_names():
+        oracle = IMPLICATION_ORACLE.get(implication, "construction_sanity")
+        is_severe = implication in _severe_implications
+        claims.append(
+            Claim(
+                id=f"operation.effect.{implication}",
+                description=_implication_descriptions.get(
+                    implication,
+                    f"Effect implication {implication} holds for every operation that declares the parent effect.",
+                ),
+                subject_query=And((effect_query, AttrEq("implication", implication))),
+                evidence_schema=_evidence_schema("operation_name", "effect", "implication"),
+                oracle=oracle,
+                assurance_domain="operational_resilience",
+                bug_classes=("operation.effect.implication_violation",),
+                runner_classes=("effect_implication_static",),
+                observed_facts=("operation_name", "effect", "implication"),
+                staleness_conditions=("Operation effect declarations or implication vocabulary changes.",),
+                severity="serious" if is_severe else "info",
+                tracked_exception="#516" if is_severe else None,
+                abstract=(implication in _abstract_implications),
+            )
+        )
+
+    return tuple(claims)
 
 
 def default_runner_bindings(claims: Iterable[Claim]) -> tuple[RunnerBinding, ...]:
@@ -601,6 +690,10 @@ def default_runner_bindings(claims: Iterable[Claim]) -> tuple[RunnerBinding, ...
                     runner="generated-scenario-static-contract",
                     evidence_class="structural",
                 )
+            )
+        elif claim.id.startswith("operation.effect."):
+            bindings.append(
+                _runner_binding(claim, runner="effect-implication-static-contract", evidence_class="structural")
             )
     return tuple(bindings)
 

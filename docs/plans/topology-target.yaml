@@ -1147,6 +1147,14 @@ files:
     loc: 215
     target: polylogue/proof/witnesses.py
     owner: stable
+  - path: polylogue/proof/sources/__init__.py
+    loc: 3
+    target: polylogue/proof/sources/__init__.py
+    owner: stable
+  - path: polylogue/proof/sources/effect_compiler.py
+    loc: 83
+    target: polylogue/proof/sources/effect_compiler.py
+    owner: stable
   - path: polylogue/protocols.py
     loc: 450
     target: polylogue/protocols.py

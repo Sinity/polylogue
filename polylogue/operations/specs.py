@@ -5,8 +5,24 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 from functools import lru_cache
+from typing import Literal
 
 from polylogue.lib.json import JSONDocument, JSONDocumentList, json_document
+
+Effect = Literal["Pure", "DbRead", "DbWrite", "FileWrite", "Network", "LiveArchive", "Destructive"]
+"""Declared runtime effect of an operation.
+
+Each effect implies specific guarantees that the verification catalog
+must check:
+
+  Pure        → deterministic, no_side_effect
+  DbRead      → snapshot_consistent
+  DbWrite     → preview, idempotent, rollback_safe, atomic
+  FileWrite   → path_sanitized, atomic_rename, parent_exists
+  Network     → timeout_bounded, retry_bounded
+  LiveArchive → sampling_bounded, privacy_safe_evidence
+  Destructive → explicit_dry_run_evidence, confirmed_before_execute
+"""
 
 
 class OperationKind(str, Enum):
@@ -37,6 +53,7 @@ class OperationSpec:
     mutates_state: bool = False
     previewable: bool = False
     idempotent: bool = True
+    effects: tuple[Effect, ...] = ()
 
     def to_dict(self) -> JSONDocument:
         return json_document(
@@ -52,6 +69,7 @@ class OperationSpec:
                 "mutates_state": self.mutates_state,
                 "previewable": self.previewable,
                 "idempotent": self.idempotent,
+                "effects": list(self.effects),
             }
         )
 
@@ -92,6 +110,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         ),
         surfaces=("run.acquire", "run.parse", "sources"),
         mutates_state=True,
+        effects=("Network", "DbWrite", "LiveArchive"),
     ),
     OperationSpec(
         name="plan-validation-backlog",
@@ -106,6 +125,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         ),
         surfaces=("run.parse", "reparse"),
         previewable=True,
+        effects=("DbRead",),
     ),
     OperationSpec(
         name="plan-parse-backlog",
@@ -120,6 +140,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         ),
         surfaces=("run.parse", "reparse"),
         previewable=True,
+        effects=("DbRead",),
     ),
     OperationSpec(
         name="ingest-archive-runtime",
@@ -140,6 +161,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         ),
         surfaces=("run.parse", "reprocess", "ingest"),
         mutates_state=True,
+        effects=("DbRead", "DbWrite"),
     ),
     OperationSpec(
         name="index-message-fts",
@@ -155,6 +177,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         ),
         surfaces=("run.index", "doctor", "repair", "query"),
         mutates_state=True,
+        effects=("DbRead", "DbWrite"),
     ),
     OperationSpec(
         name="materialize-transcript-embeddings",
@@ -170,6 +193,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         ),
         surfaces=("run.embed", "embed", "retrieval"),
         mutates_state=True,
+        effects=("DbRead", "DbWrite"),
     ),
     OperationSpec(
         name="materialize-action-events",
@@ -184,6 +208,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         ),
         surfaces=("index", "doctor", "repair", "retrieval_evidence"),
         mutates_state=True,
+        effects=("DbRead", "DbWrite"),
     ),
     OperationSpec(
         name="query-conversations",
@@ -199,6 +224,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         ),
         surfaces=("query", "facade", "mcp"),
         previewable=True,
+        effects=("DbRead",),
     ),
     OperationSpec(
         name="render-conversations",
@@ -214,6 +240,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         ),
         surfaces=("run.render", "render"),
         mutates_state=True,
+        effects=("DbRead", "FileWrite"),
     ),
     OperationSpec(
         name="publish-site",
@@ -230,6 +257,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         ),
         surfaces=("run.site", "site", "maintenance"),
         mutates_state=True,
+        effects=("DbRead", "DbWrite", "FileWrite"),
     ),
     OperationSpec(
         name="project-action-event-readiness",
@@ -245,6 +273,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         ),
         surfaces=("doctor", "archive_debt", "repair"),
         previewable=True,
+        effects=("DbRead",),
     ),
     OperationSpec(
         name="materialize-session-products",
@@ -274,6 +303,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         ),
         surfaces=("products", "doctor", "repair", "run.materialize"),
         mutates_state=True,
+        effects=("DbRead", "DbWrite"),
     ),
     OperationSpec(
         name="project-retrieval-band-readiness",
@@ -295,6 +325,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         ),
         surfaces=("embed", "doctor", "retrieval"),
         previewable=True,
+        effects=("DbRead",),
     ),
     OperationSpec(
         name="query-embedding-status",
@@ -314,6 +345,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         ),
         surfaces=("run.embed", "embed", "doctor", "retrieval"),
         previewable=True,
+        effects=("DbRead",),
     ),
     OperationSpec(
         name="project-session-product-readiness",
@@ -329,6 +361,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         ),
         surfaces=("products", "doctor", "archive_debt", "repair"),
         previewable=True,
+        effects=("DbRead",),
     ),
     OperationSpec(
         name="query-session-profiles",
@@ -343,6 +376,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         ),
         surfaces=("products", "facade", "mcp"),
         previewable=True,
+        effects=("DbRead",),
     ),
     OperationSpec(
         name="query-session-enrichments",
@@ -357,6 +391,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         ),
         surfaces=("products", "facade", "mcp"),
         previewable=True,
+        effects=("DbRead",),
     ),
     OperationSpec(
         name="query-session-work-events",
@@ -371,6 +406,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         ),
         surfaces=("products", "facade", "mcp"),
         previewable=True,
+        effects=("DbRead",),
     ),
     OperationSpec(
         name="query-session-phases",
@@ -385,6 +421,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         ),
         surfaces=("products", "facade", "mcp"),
         previewable=True,
+        effects=("DbRead",),
     ),
     OperationSpec(
         name="query-work-threads",
@@ -399,6 +436,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         ),
         surfaces=("products", "facade", "mcp"),
         previewable=True,
+        effects=("DbRead",),
     ),
     OperationSpec(
         name="query-session-tag-rollups",
@@ -413,6 +451,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         ),
         surfaces=("products", "facade", "mcp"),
         previewable=True,
+        effects=("DbRead",),
     ),
     OperationSpec(
         name="query-day-session-summaries",
@@ -427,6 +466,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         ),
         surfaces=("products", "facade", "mcp"),
         previewable=True,
+        effects=("DbRead",),
     ),
     OperationSpec(
         name="query-week-session-summaries",
@@ -441,6 +481,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         ),
         surfaces=("products", "facade", "mcp"),
         previewable=True,
+        effects=("DbRead",),
     ),
     OperationSpec(
         name="query-session-product-status",
@@ -455,6 +496,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         ),
         surfaces=("products", "facade", "mcp"),
         previewable=True,
+        effects=("DbRead",),
     ),
     OperationSpec(
         name="query-provider-analytics",
@@ -470,6 +512,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         ),
         surfaces=("products", "facade", "mcp", "helpers"),
         previewable=True,
+        effects=("DbRead",),
     ),
     OperationSpec(
         name="query-archive-debt",
@@ -484,6 +527,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         ),
         surfaces=("products", "facade", "mcp", "maintenance"),
         previewable=True,
+        effects=("DbRead",),
     ),
     OperationSpec(
         name="compile-inferred-corpus-specs",
@@ -498,6 +542,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         ),
         surfaces=("schema", "qa", "synthetic"),
         previewable=True,
+        effects=("Pure",),
     ),
     OperationSpec(
         name="compile-inferred-corpus-scenarios",
@@ -512,6 +557,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         ),
         surfaces=("schema", "qa", "synthetic"),
         previewable=True,
+        effects=("Pure",),
     ),
     OperationSpec(
         name="query-schema-catalog",
@@ -526,6 +572,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         ),
         surfaces=("schema", "cli"),
         previewable=True,
+        effects=("Pure",),
     ),
     OperationSpec(
         name="query-schema-explanations",
@@ -540,6 +587,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         ),
         surfaces=("schema", "cli"),
         previewable=True,
+        effects=("Pure",),
     ),
     OperationSpec(
         name="project-archive-readiness",
@@ -555,6 +603,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         ),
         surfaces=("doctor", "archive_debt", "maintenance"),
         previewable=True,
+        effects=("DbRead",),
     ),
 )
 
@@ -565,6 +614,7 @@ DECLARED_CONTROL_PLANE_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         description="Render Click help for one command path without mutating archive state.",
         surfaces=("help", "showcase"),
         previewable=True,
+        effects=("Pure",),
     ),
     OperationSpec(
         name="cli.json-contract",
@@ -572,6 +622,7 @@ DECLARED_CONTROL_PLANE_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         description="Exercise a machine-readable CLI JSON surface and verify its contract envelope.",
         surfaces=("doctor", "audit", "schema", "tags", "showcase"),
         previewable=True,
+        effects=("Pure",),
     ),
     OperationSpec(
         name="seed-archive-scenarios",
@@ -579,6 +630,7 @@ DECLARED_CONTROL_PLANE_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         description="Seed authored archive-scenario fixtures through typed storage-record helpers for verification lanes.",
         surfaces=("tests", "validation-lane"),
         previewable=True,
+        effects=("Pure",),
     ),
     OperationSpec(
         name="build-storage-record-fixtures",
@@ -586,6 +638,7 @@ DECLARED_CONTROL_PLANE_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         description="Build typed storage-record fixtures from JSON-validated helper inputs for verification lanes.",
         surfaces=("tests", "validation-lane"),
         previewable=True,
+        effects=("Pure",),
     ),
     OperationSpec(
         name="benchmark.query.search-filters",
@@ -593,6 +646,7 @@ DECLARED_CONTROL_PLANE_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         description="Measure the canonical FTS and ConversationFilter query benchmark domain.",
         surfaces=("benchmark-campaign",),
         previewable=True,
+        effects=("DbRead",),
     ),
     OperationSpec(
         name="benchmark.storage.crud",
@@ -600,6 +654,7 @@ DECLARED_CONTROL_PLANE_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         description="Measure repository and backend CRUD latency for the storage benchmark domain.",
         surfaces=("benchmark-campaign",),
         previewable=True,
+        effects=("DbRead", "DbWrite"),
     ),
     OperationSpec(
         name="benchmark.pipeline.index-and-helpers",
@@ -607,6 +662,7 @@ DECLARED_CONTROL_PLANE_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         description="Measure indexing and hot pipeline-helper throughput in the benchmark campaign domain.",
         surfaces=("benchmark-campaign",),
         previewable=True,
+        effects=("DbRead", "DbWrite"),
     ),
     OperationSpec(
         name="benchmark.repair.action-events",
@@ -614,6 +670,7 @@ DECLARED_CONTROL_PLANE_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         description="Measure action-event repair throughput in focused benchmark scenarios.",
         surfaces=("benchmark-campaign",),
         previewable=True,
+        effects=("DbRead", "DbWrite"),
     ),
     OperationSpec(
         name="index.message-fts-rebuild",
@@ -621,6 +678,7 @@ DECLARED_CONTROL_PLANE_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         description="Benchmark full message FTS rebuild over a synthetic archive.",
         surfaces=("synthetic-benchmark",),
         previewable=True,
+        effects=("DbRead", "DbWrite"),
     ),
     OperationSpec(
         name="index.message-fts-incremental",
@@ -628,6 +686,7 @@ DECLARED_CONTROL_PLANE_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         description="Benchmark incremental message FTS updates over a synthetic archive.",
         surfaces=("synthetic-benchmark",),
         previewable=True,
+        effects=("DbRead", "DbWrite"),
     ),
     OperationSpec(
         name="query.filters.synthetic-scan",
@@ -635,6 +694,7 @@ DECLARED_CONTROL_PLANE_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         description="Benchmark common synthetic filter-query scans over generated archives.",
         surfaces=("synthetic-benchmark",),
         previewable=True,
+        effects=("DbRead",),
     ),
     OperationSpec(
         name="readiness.startup.synthetic",
@@ -642,6 +702,7 @@ DECLARED_CONTROL_PLANE_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         description="Benchmark startup readiness checks over a synthetic archive.",
         surfaces=("synthetic-benchmark",),
         previewable=True,
+        effects=("DbRead",),
     ),
 )
 
@@ -668,6 +729,7 @@ def build_declared_operation_catalog() -> OperationCatalog:
 __all__ = [
     "DECLARED_CONTROL_PLANE_OPERATION_SPECS",
     "DECLARED_OPERATION_SPECS",
+    "Effect",
     "build_declared_operation_catalog",
     "build_runtime_operation_catalog",
     "OperationCatalog",
