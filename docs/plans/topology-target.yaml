@@ -1273,117 +1273,117 @@ files:
     loc: 11
     target: polylogue/schemas/__init__.py
     owner: stable
-  - path: polylogue/schemas/audit_checks.py
+  - path: polylogue/schemas/audit/checks.py
     loc: 196
-    target: polylogue/schemas/audit_checks.py
+    target: polylogue/schemas/audit/checks.py
     owner: stable
-  - path: polylogue/schemas/audit_models.py
+  - path: polylogue/schemas/audit/models.py
     loc: 118
-    target: polylogue/schemas/audit_models.py
+    target: polylogue/schemas/audit/models.py
     owner: stable
     cross_cut: { lifecycle: model }
-  - path: polylogue/schemas/audit_walkers.py
+  - path: polylogue/schemas/audit/walkers.py
     loc: 90
-    target: polylogue/schemas/audit_walkers.py
+    target: polylogue/schemas/audit/walkers.py
     owner: stable
-  - path: polylogue/schemas/audit_workflow.py
+  - path: polylogue/schemas/audit/workflow.py
     loc: 81
-    target: polylogue/schemas/audit_workflow.py
+    target: polylogue/schemas/audit/workflow.py
     owner: stable
-  - path: polylogue/schemas/code_detection.py
+  - path: polylogue/schemas/code_detection/detection.py
     loc: 17
-    target: polylogue/schemas/code_detection.py
+    target: polylogue/schemas/code_detection/detection.py
     owner: stable
-  - path: polylogue/schemas/code_detection_extractors.py
+  - path: polylogue/schemas/code_detection/extractors.py
     loc: 87
-    target: polylogue/schemas/code_detection_extractors.py
+    target: polylogue/schemas/code_detection/extractors.py
     owner: stable
-  - path: polylogue/schemas/code_detection_regex.py
+  - path: polylogue/schemas/code_detection/regex.py
     loc: 163
-    target: polylogue/schemas/code_detection_regex.py
+    target: polylogue/schemas/code_detection/regex.py
     owner: stable
-  - path: polylogue/schemas/code_detection_runtime.py
+  - path: polylogue/schemas/code_detection/runtime.py
     loc: 30
-    target: polylogue/schemas/code_detection_runtime.py
+    target: polylogue/schemas/code_detection/runtime.py
     owner: stable
     cross_cut: { lifecycle: runtime }
-  - path: polylogue/schemas/code_detection_tree_sitter.py
+  - path: polylogue/schemas/code_detection/tree_sitter.py
     loc: 132
-    target: polylogue/schemas/code_detection_tree_sitter.py
+    target: polylogue/schemas/code_detection/tree_sitter.py
     owner: stable
   - path: polylogue/schemas/extraction.py
     loc: 360
     target: polylogue/schemas/extraction.py
     owner: stable
-  - path: polylogue/schemas/field_stats.py
+  - path: polylogue/schemas/field_stats/stats.py
     loc: 29
-    target: polylogue/schemas/field_stats.py
+    target: polylogue/schemas/field_stats/stats.py
     owner: stable
-  - path: polylogue/schemas/field_stats_collection.py
+  - path: polylogue/schemas/field_stats/collection.py
     loc: 172
-    target: polylogue/schemas/field_stats_collection.py
+    target: polylogue/schemas/field_stats/collection.py
     owner: stable
-  - path: polylogue/schemas/field_stats_detection.py
+  - path: polylogue/schemas/field_stats/detection.py
     loc: 63
-    target: polylogue/schemas/field_stats_detection.py
+    target: polylogue/schemas/field_stats/detection.py
     owner: stable
-  - path: polylogue/schemas/field_stats_models.py
+  - path: polylogue/schemas/field_stats/models.py
     loc: 120
-    target: polylogue/schemas/field_stats_models.py
+    target: polylogue/schemas/field_stats/models.py
     owner: stable
     cross_cut: { lifecycle: model }
-  - path: polylogue/schemas/generation_cluster_collection.py
+  - path: polylogue/schemas/generation/cluster_collection.py
     loc: 203
-    target: polylogue/schemas/generation_cluster_collection.py
+    target: polylogue/schemas/generation/cluster_collection.py
     owner: stable
-  - path: polylogue/schemas/generation_cluster_support.py
+  - path: polylogue/schemas/generation/cluster_support.py
     loc: 231
-    target: polylogue/schemas/generation_cluster_support.py
+    target: polylogue/schemas/generation/cluster_support.py
     owner: stable
-  - path: polylogue/schemas/generation_dynamic_keys.py
+  - path: polylogue/schemas/generation/dynamic_keys.py
     loc: 98
-    target: polylogue/schemas/generation_dynamic_keys.py
+    target: polylogue/schemas/generation/dynamic_keys.py
     owner: stable
-  - path: polylogue/schemas/generation_field_annotations.py
+  - path: polylogue/schemas/generation/field_annotations.py
     loc: 224
-    target: polylogue/schemas/generation_field_annotations.py
+    target: polylogue/schemas/generation/field_annotations.py
     owner: stable
-  - path: polylogue/schemas/generation_models.py
+  - path: polylogue/schemas/generation/models.py
     loc: 118
-    target: polylogue/schemas/generation_models.py
+    target: polylogue/schemas/generation/models.py
     owner: stable
     cross_cut: { lifecycle: model }
-  - path: polylogue/schemas/generation_packages.py
+  - path: polylogue/schemas/generation/packages.py
     loc: 216
-    target: polylogue/schemas/generation_packages.py
+    target: polylogue/schemas/generation/packages.py
     owner: stable
-  - path: polylogue/schemas/generation_provider_bundle.py
+  - path: polylogue/schemas/generation/provider_bundle.py
     loc: 152
-    target: polylogue/schemas/generation_provider_bundle.py
+    target: polylogue/schemas/generation/provider_bundle.py
     owner: stable
-  - path: polylogue/schemas/generation_provider_bundle_packages.py
+  - path: polylogue/schemas/generation/provider_bundle_packages.py
     loc: 266
-    target: polylogue/schemas/generation_provider_bundle_packages.py
+    target: polylogue/schemas/generation/provider_bundle_packages.py
     owner: stable
-  - path: polylogue/schemas/generation_redaction.py
+  - path: polylogue/schemas/generation/redaction.py
     loc: 83
-    target: polylogue/schemas/generation_redaction.py
+    target: polylogue/schemas/generation/redaction.py
     owner: stable
-  - path: polylogue/schemas/generation_schema_builder.py
+  - path: polylogue/schemas/generation/schema_builder.py
     loc: 151
-    target: polylogue/schemas/generation_schema_builder.py
+    target: polylogue/schemas/generation/schema_builder.py
     owner: stable
-  - path: polylogue/schemas/generation_semantic_relations.py
+  - path: polylogue/schemas/generation/semantic_relations.py
     loc: 156
-    target: polylogue/schemas/generation_semantic_relations.py
+    target: polylogue/schemas/generation/semantic_relations.py
     owner: stable
-  - path: polylogue/schemas/generation_support.py
+  - path: polylogue/schemas/generation/support.py
     loc: 84
-    target: polylogue/schemas/generation_support.py
+    target: polylogue/schemas/generation/support.py
     owner: stable
-  - path: polylogue/schemas/generation_workflow.py
+  - path: polylogue/schemas/generation/workflow.py
     loc: 93
-    target: polylogue/schemas/generation_workflow.py
+    target: polylogue/schemas/generation/workflow.py
     owner: stable
   - path: polylogue/schemas/observation.py
     loc: 27
@@ -1403,34 +1403,34 @@ files:
     target: polylogue/schemas/observation_runtime.py
     owner: stable
     cross_cut: { lifecycle: runtime }
-  - path: polylogue/schemas/operator_annotations.py
+  - path: polylogue/schemas/operator/annotations.py
     loc: 265
-    target: polylogue/schemas/operator_annotations.py
+    target: polylogue/schemas/operator/annotations.py
     owner: stable
-  - path: polylogue/schemas/operator_inference.py
+  - path: polylogue/schemas/operator/inference.py
     loc: 335
-    target: polylogue/schemas/operator_inference.py
+    target: polylogue/schemas/operator/inference.py
     owner: stable
-  - path: polylogue/schemas/operator_models.py
+  - path: polylogue/schemas/operator/models.py
     loc: 344
-    target: polylogue/schemas/operator_models.py
+    target: polylogue/schemas/operator/models.py
     owner: stable
     cross_cut: { lifecycle: model }
-  - path: polylogue/schemas/operator_registry.py
+  - path: polylogue/schemas/operator/registry.py
     loc: 84
-    target: polylogue/schemas/operator_registry.py
+    target: polylogue/schemas/operator/registry.py
     owner: stable
-  - path: polylogue/schemas/operator_resolution.py
+  - path: polylogue/schemas/operator/resolution.py
     loc: 57
-    target: polylogue/schemas/operator_resolution.py
+    target: polylogue/schemas/operator/resolution.py
     owner: stable
-  - path: polylogue/schemas/operator_verification.py
+  - path: polylogue/schemas/operator/verification.py
     loc: 59
-    target: polylogue/schemas/operator_verification.py
+    target: polylogue/schemas/operator/verification.py
     owner: stable
-  - path: polylogue/schemas/operator_workflow.py
+  - path: polylogue/schemas/operator/workflow.py
     loc: 55
-    target: polylogue/schemas/operator_workflow.py
+    target: polylogue/schemas/operator/workflow.py
     owner: stable
   - path: polylogue/schemas/packages.py
     loc: 215
@@ -1456,30 +1456,30 @@ files:
     loc: 30
     target: polylogue/schemas/registry.py
     owner: stable
-  - path: polylogue/schemas/relational_inference.py
+  - path: polylogue/schemas/inference/relational/inference.py
     loc: 36
-    target: polylogue/schemas/relational_inference.py
+    target: polylogue/schemas/inference/relational/inference.py
     owner: stable
-  - path: polylogue/schemas/relational_inference_exclusions.py
+  - path: polylogue/schemas/inference/relational/exclusions.py
     loc: 61
-    target: polylogue/schemas/relational_inference_exclusions.py
+    target: polylogue/schemas/inference/relational/exclusions.py
     owner: stable
-  - path: polylogue/schemas/relational_inference_foreign_keys.py
+  - path: polylogue/schemas/inference/relational/foreign_keys.py
     loc: 77
-    target: polylogue/schemas/relational_inference_foreign_keys.py
+    target: polylogue/schemas/inference/relational/foreign_keys.py
     owner: stable
-  - path: polylogue/schemas/relational_inference_models.py
+  - path: polylogue/schemas/inference/relational/models.py
     loc: 73
-    target: polylogue/schemas/relational_inference_models.py
+    target: polylogue/schemas/inference/relational/models.py
     owner: stable
     cross_cut: { lifecycle: model }
-  - path: polylogue/schemas/relational_inference_strings.py
+  - path: polylogue/schemas/inference/relational/strings.py
     loc: 42
-    target: polylogue/schemas/relational_inference_strings.py
+    target: polylogue/schemas/inference/relational/strings.py
     owner: stable
-  - path: polylogue/schemas/relational_inference_time.py
+  - path: polylogue/schemas/inference/relational/time.py
     loc: 57
-    target: polylogue/schemas/relational_inference_time.py
+    target: polylogue/schemas/inference/relational/time.py
     owner: stable
   - path: polylogue/schemas/runtime_registry.py
     loc: 712
@@ -1497,30 +1497,30 @@ files:
     loc: 84
     target: polylogue/schemas/sampling_sessions.py
     owner: stable
-  - path: polylogue/schemas/schema_inference.py
+  - path: polylogue/schemas/operator/schema_inference.py
     loc: 201
-    target: polylogue/schemas/schema_inference.py
+    target: polylogue/schemas/operator/schema_inference.py
     owner: stable
-  - path: polylogue/schemas/semantic_inference.py
+  - path: polylogue/schemas/inference/semantic/inference.py
     loc: 6
-    target: polylogue/schemas/semantic_inference.py
+    target: polylogue/schemas/inference/semantic/inference.py
     owner: stable
-  - path: polylogue/schemas/semantic_inference_conversation_scoring.py
+  - path: polylogue/schemas/inference/semantic/conversation_scoring.py
     loc: 87
-    target: polylogue/schemas/semantic_inference_conversation_scoring.py
+    target: polylogue/schemas/inference/semantic/conversation_scoring.py
     owner: stable
-  - path: polylogue/schemas/semantic_inference_message_scoring.py
+  - path: polylogue/schemas/inference/semantic/message_scoring.py
     loc: 214
-    target: polylogue/schemas/semantic_inference_message_scoring.py
+    target: polylogue/schemas/inference/semantic/message_scoring.py
     owner: stable
-  - path: polylogue/schemas/semantic_inference_models.py
+  - path: polylogue/schemas/inference/semantic/models.py
     loc: 62
-    target: polylogue/schemas/semantic_inference_models.py
+    target: polylogue/schemas/inference/semantic/models.py
     owner: stable
     cross_cut: { lifecycle: model }
-  - path: polylogue/schemas/semantic_inference_runtime.py
+  - path: polylogue/schemas/inference/semantic/runtime.py
     loc: 93
-    target: polylogue/schemas/semantic_inference_runtime.py
+    target: polylogue/schemas/inference/semantic/runtime.py
     owner: stable
     cross_cut: { lifecycle: runtime }
   - path: polylogue/schemas/shape_fingerprint.py
@@ -1597,38 +1597,38 @@ files:
     loc: 258
     target: polylogue/schemas/tooling_registry.py
     owner: stable
-  - path: polylogue/schemas/unified.py
+  - path: polylogue/schemas/unified/unified.py
     loc: 112
-    target: polylogue/schemas/unified.py
+    target: polylogue/schemas/unified/unified.py
     owner: stable
-  - path: polylogue/schemas/unified_adapters.py
+  - path: polylogue/schemas/unified/adapters.py
     loc: 120
-    target: polylogue/schemas/unified_adapters.py
+    target: polylogue/schemas/unified/adapters.py
     owner: stable
-  - path: polylogue/schemas/unified_fallbacks.py
+  - path: polylogue/schemas/unified/fallbacks.py
     loc: 208
-    target: polylogue/schemas/unified_fallbacks.py
+    target: polylogue/schemas/unified/fallbacks.py
     owner: stable
-  - path: polylogue/schemas/unified_models.py
+  - path: polylogue/schemas/unified/models.py
     loc: 92
-    target: polylogue/schemas/unified_models.py
+    target: polylogue/schemas/unified/models.py
     owner: stable
     cross_cut: { lifecycle: model }
-  - path: polylogue/schemas/unified_provider_meta.py
+  - path: polylogue/schemas/unified/provider_meta.py
     loc: 37
-    target: polylogue/schemas/unified_provider_meta.py
+    target: polylogue/schemas/unified/provider_meta.py
     owner: stable
-  - path: polylogue/schemas/unified_provider_meta_coercion.py
+  - path: polylogue/schemas/unified/provider_meta_coercion.py
     loc: 146
-    target: polylogue/schemas/unified_provider_meta_coercion.py
+    target: polylogue/schemas/unified/provider_meta_coercion.py
     owner: stable
-  - path: polylogue/schemas/unified_provider_meta_harmonize.py
+  - path: polylogue/schemas/unified/provider_meta_harmonize.py
     loc: 152
-    target: polylogue/schemas/unified_provider_meta_harmonize.py
+    target: polylogue/schemas/unified/provider_meta_harmonize.py
     owner: stable
-  - path: polylogue/schemas/unified_provider_meta_runtime.py
+  - path: polylogue/schemas/unified/provider_meta_runtime.py
     loc: 152
-    target: polylogue/schemas/unified_provider_meta_runtime.py
+    target: polylogue/schemas/unified/provider_meta_runtime.py
     owner: stable
     cross_cut: { lifecycle: runtime }
   - path: polylogue/schemas/validator.py
@@ -1639,23 +1639,63 @@ files:
     loc: 144
     target: polylogue/schemas/validator_resolution.py
     owner: stable
-  - path: polylogue/schemas/verification_artifacts.py
+  - path: polylogue/schemas/validation/artifacts.py
     loc: 162
-    target: polylogue/schemas/verification_artifacts.py
+    target: polylogue/schemas/validation/artifacts.py
     owner: stable
-  - path: polylogue/schemas/verification_corpus.py
+  - path: polylogue/schemas/validation/corpus.py
     loc: 371
-    target: polylogue/schemas/verification_corpus.py
+    target: polylogue/schemas/validation/corpus.py
     owner: stable
-  - path: polylogue/schemas/verification_models.py
+  - path: polylogue/schemas/validation/models.py
     loc: 294
-    target: polylogue/schemas/verification_models.py
+    target: polylogue/schemas/validation/models.py
     owner: stable
     cross_cut: { lifecycle: model }
-  - path: polylogue/schemas/verification_requests.py
+  - path: polylogue/schemas/validation/requests.py
     loc: 50
-    target: polylogue/schemas/verification_requests.py
+    target: polylogue/schemas/validation/requests.py
     owner: stable
+  - path: polylogue/schemas/audit/__init__.py
+    loc: 1
+    target: polylogue/schemas/audit/__init__.py
+    owner: "#420"
+  - path: polylogue/schemas/generation/__init__.py
+    loc: 1
+    target: polylogue/schemas/generation/__init__.py
+    owner: "#420"
+  - path: polylogue/schemas/inference/__init__.py
+    loc: 1
+    target: polylogue/schemas/inference/__init__.py
+    owner: "#420"
+  - path: polylogue/schemas/inference/semantic/__init__.py
+    loc: 1
+    target: polylogue/schemas/inference/semantic/__init__.py
+    owner: "#420"
+  - path: polylogue/schemas/inference/relational/__init__.py
+    loc: 1
+    target: polylogue/schemas/inference/relational/__init__.py
+    owner: "#420"
+  - path: polylogue/schemas/operator/__init__.py
+    loc: 1
+    target: polylogue/schemas/operator/__init__.py
+    owner: "#420"
+  - path: polylogue/schemas/validation/__init__.py
+    loc: 1
+    target: polylogue/schemas/validation/__init__.py
+    owner: "#420"
+  - path: polylogue/schemas/code_detection/__init__.py
+    loc: 1
+    target: polylogue/schemas/code_detection/__init__.py
+    owner: "#420"
+  - path: polylogue/schemas/field_stats/__init__.py
+    loc: 1
+    target: polylogue/schemas/field_stats/__init__.py
+    owner: "#420"
+  - path: polylogue/schemas/unified/__init__.py
+    loc: 1
+    target: polylogue/schemas/unified/__init__.py
+    owner: "#420"
   - path: polylogue/services.py
     loc: 75
     target: polylogue/services.py
@@ -1897,7 +1937,7 @@ files:
     loc: 209
     target: polylogue/sources/drive/auth.py
     owner: #403
-  - path: polylogue/sources/drive_auth_support.py
+  - path: polylogue/sources/drive/auth_support.py
     loc: 175
     target: polylogue/sources/drive/auth_support.py
     owner: #403
@@ -1917,7 +1957,7 @@ files:
     loc: 39
     target: polylogue/sources/drive/source_factory.py
     owner: #403
-  - path: polylogue/sources/drive_source_protocol.py
+  - path: polylogue/sources/drive/source_protocol.py
     loc: 19
     target: polylogue/sources/drive/source_protocol.py
     owner: #403
@@ -1968,7 +2008,7 @@ files:
     owner: stable
   - path: polylogue/sources/parsers/claude/__init__.py
     loc: 93
-    target: polylogue/sources/parsers/claude/py
+    target: polylogue/sources/parsers/claude/__init__.py
     owner: #403
   - path: polylogue/sources/parsers/claude/ai_parser.py
     loc: 80

@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from polylogue.lib.json import json_document, json_document_list
 from polylogue.lib.outcomes import OutcomeCheck as CheckResult
 from polylogue.lib.outcomes import OutcomeStatus
-from polylogue.schemas.audit_walkers import _HEX_RE, _UUID_RE, SchemaNode, _walk_semantic_roles, _walk_values
+from polylogue.schemas.audit.walkers import _HEX_RE, _UUID_RE, SchemaNode, _walk_semantic_roles, _walk_values
 from polylogue.schemas.privacy import _is_safe_enum_value, _looks_high_entropy_token
 
 

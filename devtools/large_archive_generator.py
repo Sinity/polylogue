@@ -21,7 +21,7 @@ from polylogue.scenarios import (
     build_corpus_scenarios,
     flatten_corpus_specs,
 )
-from polylogue.schemas.operator_inference import list_inferred_corpus_scenarios
+from polylogue.schemas.operator.inference import list_inferred_corpus_scenarios
 
 if TYPE_CHECKING:
     pass

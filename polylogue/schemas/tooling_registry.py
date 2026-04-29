@@ -221,7 +221,7 @@ class SchemaRegistryToolingMixin:
             raise ValueError(f"Cluster {cluster_id} already promoted as {target_cluster.promoted_package_version}")
 
         if samples:
-            from polylogue.schemas.generation_workflow import generate_schema_from_samples
+            from polylogue.schemas.generation.workflow import generate_schema_from_samples
 
             schema = json_document(generate_schema_from_samples(samples))
         else:

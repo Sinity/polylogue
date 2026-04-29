@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from polylogue.schemas.code_detection_regex import normalize_declared_language, regex_scores
-from polylogue.schemas.code_detection_tree_sitter import detect_with_tree_sitter
+from polylogue.schemas.code_detection.regex import normalize_declared_language, regex_scores
+from polylogue.schemas.code_detection.tree_sitter import detect_with_tree_sitter
 
 
 def detect_language(code: str, declared_lang: str | None = None) -> str | None:

@@ -16,7 +16,7 @@ from polylogue.products.authored_payloads import (
     payload_optional_string,
     payload_string_tuple,
 )
-from polylogue.schemas.operator_registry import SchemaRegistryLike
+from polylogue.schemas.operator.registry import SchemaRegistryLike
 
 from .metadata import ScenarioMetadata
 from .projections import ScenarioProjectionSource, ScenarioProjectionSourceKind
@@ -540,7 +540,7 @@ def resolve_corpus_specs(
             tags=tags or ("synthetic", "generated"),
         )
 
-    from polylogue.schemas.operator_inference import list_inferred_corpus_specs
+    from polylogue.schemas.operator.inference import list_inferred_corpus_specs
 
     inferred_specs = list_inferred_corpus_specs(registry=registry)
     if provider_names is not None:

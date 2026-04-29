@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from datetime import datetime, timezone
 
-from polylogue.schemas.generation_models import _ClusterAccumulator, _ProfileSummary
+from polylogue.schemas.generation.models import _ClusterAccumulator, _ProfileSummary
 from polylogue.schemas.observation import ProviderConfig, profile_similarity
 
 _PROFILE_CORE_MIN_RATIO = 0.5

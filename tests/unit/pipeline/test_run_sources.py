@@ -930,8 +930,8 @@ class TestAcquisitionServiceIntegration:
 
     async def test_acquire_claude_code_sidecars_into_artifact_ledger(self, tmp_path: Path) -> None:
         from polylogue.pipeline.services.acquisition import AcquisitionService
-        from polylogue.schemas.verification_artifacts import list_artifact_observation_rows
-        from polylogue.schemas.verification_requests import ArtifactObservationQuery
+        from polylogue.schemas.validation.artifacts import list_artifact_observation_rows
+        from polylogue.schemas.validation.requests import ArtifactObservationQuery
 
         session_dir = tmp_path / "claude-code" / "project-a" / "session-1"
         subagents_dir = session_dir / "subagents"

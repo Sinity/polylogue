@@ -254,6 +254,7 @@ Commands:
   index        Build retrieval and search indexes.
   materialize  Refresh derived read models.
   parse        Parse persisted raw backlog into normalized conversations.
+  publish      Render and build the static site.
   render       Render human-facing publication artifacts.
   reprocess    Skip acquisition and rerun downstream stages.
   schema       Infer schemas from acquired raw payloads.

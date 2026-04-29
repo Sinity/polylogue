@@ -5,9 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 
 from polylogue.paths import db_path as archive_db_path
-from polylogue.schemas.generation_models import GenerationResult, _ProviderBundle
-from polylogue.schemas.generation_provider_bundle import _build_provider_bundle
-from polylogue.schemas.generation_schema_builder import generate_schema_from_samples
+from polylogue.schemas.generation.models import GenerationResult, _ProviderBundle
+from polylogue.schemas.generation.provider_bundle import _build_provider_bundle
+from polylogue.schemas.generation.schema_builder import generate_schema_from_samples
 from polylogue.schemas.observation import PROVIDERS
 from polylogue.schemas.privacy_config import SchemaPrivacyConfig
 from polylogue.schemas.registry import SchemaRegistry

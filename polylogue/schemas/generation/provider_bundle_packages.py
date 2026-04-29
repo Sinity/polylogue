@@ -7,24 +7,24 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from polylogue.lib.json import JSONDocument, JSONValue
-from polylogue.schemas.generation_cluster_support import (
+from polylogue.schemas.generation.cluster_support import (
     _artifact_priority,
     _cluster_profile_tokens,
     _cluster_sort_key,
 )
-from polylogue.schemas.generation_models import (
+from polylogue.schemas.generation.models import (
     GenerationResult,
     _ClusterAccumulator,
     _PackageAccumulator,
     _ProviderBundle,
     _UnitMembership,
 )
-from polylogue.schemas.generation_packages import (
+from polylogue.schemas.generation.packages import (
     _element_profile_tokens,
     _membership_observed_window,
     _merge_representative_paths,
 )
-from polylogue.schemas.generation_schema_builder import (
+from polylogue.schemas.generation.schema_builder import (
     _apply_schema_metadata,
     _generate_cluster_schema,
 )

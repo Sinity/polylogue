@@ -17,8 +17,8 @@ def generate_extra_exercises() -> list[Exercise]:
 def populate_proof(result: QAResult, *, workspace_env: dict[str, str] | None) -> None:
     """Populate the artifact proof stage against the active archive."""
     from polylogue.paths import db_path
-    from polylogue.schemas.verification_artifacts import prove_raw_artifact_coverage
-    from polylogue.schemas.verification_requests import ArtifactProofRequest
+    from polylogue.schemas.validation.artifacts import prove_raw_artifact_coverage
+    from polylogue.schemas.validation.requests import ArtifactProofRequest
 
     request = ArtifactProofRequest()
     try:

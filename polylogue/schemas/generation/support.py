@@ -6,11 +6,11 @@ from collections.abc import Mapping, Sequence
 from typing import TypeAlias, overload
 
 from polylogue.lib.json import JSONDocument, json_document
-from polylogue.schemas import generation_dynamic_keys as _dynamic_keys
-from polylogue.schemas.field_stats import FieldStats
-from polylogue.schemas.generation_field_annotations import annotate_schema, remove_nested_required
-from polylogue.schemas.generation_redaction import _build_redaction_report
-from polylogue.schemas.generation_semantic_relations import annotate_semantic_and_relational
+from polylogue.schemas.field_stats.stats import FieldStats
+from polylogue.schemas.generation import dynamic_keys as _dynamic_keys
+from polylogue.schemas.generation.field_annotations import annotate_schema, remove_nested_required
+from polylogue.schemas.generation.redaction import _build_redaction_report
+from polylogue.schemas.generation.semantic_relations import annotate_semantic_and_relational
 from polylogue.schemas.privacy_config import SchemaPrivacyConfig
 
 SchemaPayload: TypeAlias = JSONDocument

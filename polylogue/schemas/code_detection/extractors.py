@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 
 from polylogue.lib.json import JSONDocument, json_document
-from polylogue.schemas.code_detection_runtime import detect_language
+from polylogue.schemas.code_detection.runtime import detect_language
 
 
 def extract_code_block_from_dict(content_block: JSONDocument) -> JSONDocument | None:

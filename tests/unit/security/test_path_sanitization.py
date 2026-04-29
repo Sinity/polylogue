@@ -206,7 +206,7 @@ class TestRegexReDoSSafety:
         """UUID_PATTERN must reject near-miss inputs quickly."""
         import time
 
-        from polylogue.schemas.schema_inference import UUID_PATTERN
+        from polylogue.schemas.operator.schema_inference import UUID_PATTERN
 
         # Almost-UUIDs that require scanning to reject
         near_misses = [

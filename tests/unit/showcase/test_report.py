@@ -18,8 +18,8 @@ from hypothesis import strategies as st
 from polylogue.lib.outcomes import OutcomeCheck, OutcomeStatus
 from polylogue.products.authored_payloads import require_payload_mapping
 from polylogue.scenarios import CorpusSpec, polylogue_execution
-from polylogue.schemas.audit_models import AuditReport
-from polylogue.schemas.verification_models import ArtifactProofReport, ProviderArtifactProof
+from polylogue.schemas.audit.models import AuditReport
+from polylogue.schemas.validation.models import ArtifactProofReport, ProviderArtifactProof
 from polylogue.showcase.exercise_models import Exercise
 from polylogue.showcase.invariants import InvariantResult
 from polylogue.showcase.qa_report import (

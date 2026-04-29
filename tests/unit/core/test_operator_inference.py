@@ -9,8 +9,8 @@ from unittest.mock import patch
 import pytest
 
 from polylogue.lib.json import JSONDocument
-from polylogue.schemas.generation_models import GenerationResult
-from polylogue.schemas.operator_inference import (
+from polylogue.schemas.generation.models import GenerationResult
+from polylogue.schemas.operator.inference import (
     audit_schemas,
     compare_schema_versions,
     infer_schema,
@@ -19,14 +19,14 @@ from polylogue.schemas.operator_inference import (
     list_schemas,
     promote_schema_cluster,
 )
-from polylogue.schemas.operator_models import (
+from polylogue.schemas.operator.models import (
     SchemaAuditRequest,
     SchemaCompareRequest,
     SchemaInferRequest,
     SchemaListRequest,
     SchemaPromoteRequest,
 )
-from polylogue.schemas.operator_registry import SchemaRegistryLike
+from polylogue.schemas.operator.registry import SchemaRegistryLike
 from polylogue.schemas.packages import (
     SchemaElementManifest,
     SchemaPackageCatalog,
@@ -147,7 +147,7 @@ def test_infer_schema_emits_default_corpus_specs_without_clustering(tmp_path: Pa
         default_version="v3",
     )
 
-    with patch("polylogue.schemas.generation_workflow.generate_provider_schema", return_value=generation):
+    with patch("polylogue.schemas.generation.workflow.generate_provider_schema", return_value=generation):
         result = infer_schema(
             SchemaInferRequest(
                 provider="chatgpt",
@@ -197,10 +197,10 @@ def test_infer_schema_emits_cluster_backed_corpus_specs_when_manifest_exists(tmp
     fake_provider = _ProviderConfig(db_provider_name="chatgpt")
 
     with (
-        patch("polylogue.schemas.generation_workflow.generate_provider_schema", return_value=generation),
+        patch("polylogue.schemas.generation.workflow.generate_provider_schema", return_value=generation),
         patch.dict("polylogue.schemas.observation.PROVIDERS", {"chatgpt": fake_provider}, clear=False),
         patch("polylogue.schemas.sampling.load_samples_from_db", return_value=[{"id": "1"}]),
-        patch("polylogue.schemas.operator_inference.schema_registry", return_value=fake_registry),
+        patch("polylogue.schemas.operator.inference.schema_registry", return_value=fake_registry),
     ):
         result = infer_schema(
             SchemaInferRequest(
@@ -269,7 +269,7 @@ def test_list_inferred_corpus_specs_reads_registry_catalog_and_manifest() -> Non
         manifests={"chatgpt": manifest},
     )
 
-    with patch("polylogue.schemas.operator_inference.schema_registry", return_value=fake_registry):
+    with patch("polylogue.schemas.operator.inference.schema_registry", return_value=fake_registry):
         specs = list_inferred_corpus_specs()
 
     assert len(specs) == 1
@@ -329,7 +329,7 @@ def test_list_inferred_corpus_scenarios_groups_specs_by_provider_and_version() -
         manifests={"chatgpt": manifest},
     )
 
-    with patch("polylogue.schemas.operator_inference.schema_registry", return_value=fake_registry):
+    with patch("polylogue.schemas.operator.inference.schema_registry", return_value=fake_registry):
         scenarios = list_inferred_corpus_scenarios()
 
     assert len(scenarios) == 1
@@ -376,7 +376,7 @@ def test_list_inferred_corpus_specs_can_scope_to_one_provider() -> None:
         manifests={"chatgpt": None, "codex": None},
     )
 
-    with patch("polylogue.schemas.operator_inference.schema_registry", return_value=fake_registry):
+    with patch("polylogue.schemas.operator.inference.schema_registry", return_value=fake_registry):
         specs = list_inferred_corpus_specs(provider="chatgpt")
 
     assert tuple(spec.provider for spec in specs) == ("chatgpt",)
@@ -398,7 +398,7 @@ def test_infer_schema_coerces_privacy_config_and_falls_back_without_db_provider(
         return generation
 
     with (
-        patch("polylogue.schemas.generation_workflow.generate_provider_schema", side_effect=_generate_provider_schema),
+        patch("polylogue.schemas.generation.workflow.generate_provider_schema", side_effect=_generate_provider_schema),
         patch.dict("polylogue.schemas.observation.PROVIDERS", {"chatgpt": fake_provider}, clear=False),
     ):
         result = infer_schema(
@@ -473,7 +473,7 @@ def test_list_schemas_returns_selected_and_all_provider_snapshots() -> None:
         schema_age_days={"chatgpt": 3, "codex": None},
     )
 
-    with patch("polylogue.schemas.operator_inference.schema_registry", return_value=fake_registry):
+    with patch("polylogue.schemas.operator.inference.schema_registry", return_value=fake_registry):
         selected = list_schemas(SchemaListRequest(provider="chatgpt"))
         listing = list_schemas(SchemaListRequest())
 
@@ -493,7 +493,7 @@ def test_compare_schema_versions_wraps_registry_diff() -> None:
     )
     fake_registry = _FakeSchemaRegistry(diff=diff)
 
-    with patch("polylogue.schemas.operator_inference.schema_registry", return_value=fake_registry):
+    with patch("polylogue.schemas.operator.inference.schema_registry", return_value=fake_registry):
         result = compare_schema_versions(SchemaCompareRequest(provider="chatgpt", from_version="v1", to_version="v2"))
 
     assert result.diff is diff
@@ -519,7 +519,7 @@ def test_promote_schema_cluster_with_samples_filters_matching_cluster(tmp_path: 
     fake_provider = _ProviderConfig(db_provider_name="chatgpt")
 
     with (
-        patch("polylogue.schemas.operator_inference.schema_registry", return_value=fake_registry),
+        patch("polylogue.schemas.operator.inference.schema_registry", return_value=fake_registry),
         patch.dict("polylogue.schemas.observation.PROVIDERS", {"chatgpt": fake_provider}, clear=False),
         patch("polylogue.schemas.sampling.load_samples_from_db", return_value=[{"id": "one"}, {"id": "two"}]),
         patch("polylogue.schemas.shape_fingerprint._structure_fingerprint", lambda sample: sample["id"]),
@@ -547,7 +547,7 @@ def test_promote_schema_cluster_rejects_unknown_provider_and_missing_cluster_sam
     fake_registry = _FakeSchemaRegistry()
 
     with (
-        patch("polylogue.schemas.operator_inference.schema_registry", return_value=fake_registry),
+        patch("polylogue.schemas.operator.inference.schema_registry", return_value=fake_registry),
         patch.dict("polylogue.schemas.observation.PROVIDERS", {}, clear=True),
     ):
         with pytest.raises(ValueError, match="Unknown provider"):
@@ -562,7 +562,7 @@ def test_promote_schema_cluster_rejects_unknown_provider_and_missing_cluster_sam
 
     fake_provider = _ProviderConfig(db_provider_name="chatgpt")
     with (
-        patch("polylogue.schemas.operator_inference.schema_registry", return_value=fake_registry),
+        patch("polylogue.schemas.operator.inference.schema_registry", return_value=fake_registry),
         patch.dict("polylogue.schemas.observation.PROVIDERS", {"chatgpt": fake_provider}, clear=False),
         patch("polylogue.schemas.sampling.load_samples_from_db", return_value=[{"id": "two"}]),
         patch("polylogue.schemas.shape_fingerprint._structure_fingerprint", lambda sample: sample["id"]),
@@ -584,8 +584,8 @@ def test_audit_schemas_selects_provider_or_global_workflow() -> None:
     all_report = object()
 
     with (
-        patch("polylogue.schemas.audit_workflow.audit_provider", return_value=provider_report),
-        patch("polylogue.schemas.audit_workflow.audit_all_providers", return_value=all_report),
+        patch("polylogue.schemas.audit.workflow.audit_provider", return_value=provider_report),
+        patch("polylogue.schemas.audit.workflow.audit_all_providers", return_value=all_report),
     ):
         assert audit_schemas(SchemaAuditRequest(provider="chatgpt")) is provider_report
         assert audit_schemas(SchemaAuditRequest()) is all_report

@@ -28,7 +28,7 @@ def test_chatgpt_schema_payload_parses_without_crash(payload: object) -> None:
     """
     from pydantic import ValidationError
 
-    from polylogue.schemas.unified import extract_harmonized_message
+    from polylogue.schemas.unified.unified import extract_harmonized_message
 
     if not isinstance(payload, dict):
         return
@@ -46,7 +46,7 @@ def test_claude_code_schema_payload_parses_without_crash(payload: object) -> Non
     """Schema-conformant Claude Code payloads must not crash with unhandled exceptions."""
     from pydantic import ValidationError
 
-    from polylogue.schemas.unified import extract_harmonized_message
+    from polylogue.schemas.unified.unified import extract_harmonized_message
 
     if not isinstance(payload, dict):
         return
@@ -64,7 +64,7 @@ def test_chatgpt_successful_extraction_produces_valid_role(payload: object) -> N
     """When extraction succeeds, the role must be valid and non-empty."""
     from pydantic import ValidationError
 
-    from polylogue.schemas.unified import extract_harmonized_message
+    from polylogue.schemas.unified.unified import extract_harmonized_message
 
     if not isinstance(payload, dict):
         return
@@ -82,7 +82,7 @@ def test_claude_code_json_roundtrip_preserves_message_count(payload: object) -> 
     """parse → json_export → re-parse preserves message count for Claude Code."""
     from pydantic import ValidationError
 
-    from polylogue.schemas.unified import extract_harmonized_message
+    from polylogue.schemas.unified.unified import extract_harmonized_message
 
     if not isinstance(payload, dict):
         return

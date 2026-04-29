@@ -15,10 +15,10 @@ Current registry snapshot:
 - mutation campaigns: `19`
 - benchmark campaigns: `3`
 - synthetic benchmark campaigns: `6`
-- scenario projections: `254`
+- scenario projections: `255`
 - inferred corpus scenarios: `5`
   - benchmark-campaign: `3`
-  - exercise: `148`
+  - exercise: `149`
   - inferred-corpus-scenario: `5`
   - mutation-campaign: `19`
   - synthetic-benchmark: `6`
@@ -365,6 +365,7 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `exercise` | `help-run-index` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | run index help |
 | `exercise` | `help-run-materialize` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | run materialize help |
 | `exercise` | `help-run-parse` | `source-acquisition-loop`<br>`raw-reparse-loop`<br>`raw-archive-ingest-loop` | `configured_sources`<br>`source_payload_stream`<br>`raw_validation_state`<br>`artifact_observation_rows`<br>`validation_backlog`<br>`parse_backlog`<br>`parse_quarantine`<br>`archive_conversation_rows` | `cli.help`<br>`acquire-raw-conversations`<br>`plan-validation-backlog`<br>`plan-parse-backlog`<br>`ingest-archive-runtime` | — | `generated`<br>`help`<br>`structural` | run parse help |
+| `exercise` | `help-run-publish` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | run publish help |
 | `exercise` | `help-run-render` | `conversation-render-loop` | `conversation_render_projection`<br>`rendered_conversation_artifacts` | `cli.help`<br>`render-conversations` | — | `generated`<br>`help`<br>`structural` | run render help |
 | `exercise` | `help-run-reprocess` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | run reprocess help |
 | `exercise` | `help-run-schema` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | run schema help |

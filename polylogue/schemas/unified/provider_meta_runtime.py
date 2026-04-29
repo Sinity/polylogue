@@ -8,11 +8,11 @@ from datetime import datetime
 from pydantic import ValidationError
 
 from polylogue.lib.json import JSONDocument, json_document
-from polylogue.schemas.unified_adapters import extract_with_adapter
-from polylogue.schemas.unified_fallbacks import extract_fallback_message
-from polylogue.schemas.unified_models import HarmonizedMessage
-from polylogue.schemas.unified_provider_meta_coercion import _has_extracted_viewports
-from polylogue.schemas.unified_provider_meta_harmonize import (
+from polylogue.schemas.unified.adapters import extract_with_adapter
+from polylogue.schemas.unified.fallbacks import extract_fallback_message
+from polylogue.schemas.unified.models import HarmonizedMessage
+from polylogue.schemas.unified.provider_meta_coercion import _has_extracted_viewports
+from polylogue.schemas.unified.provider_meta_harmonize import (
     _harmonize_extracted_provider_meta,
     _overlay_message_context,
 )

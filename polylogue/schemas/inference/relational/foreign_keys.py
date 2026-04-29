@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from polylogue.schemas.field_stats import FieldStats
-from polylogue.schemas.relational_inference_models import ForeignKeyRelation
+from polylogue.schemas.field_stats.stats import FieldStats
+from polylogue.schemas.inference.relational.models import ForeignKeyRelation
 
 _FK_MATCH_THRESHOLD = 0.6
 

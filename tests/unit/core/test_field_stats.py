@@ -1,4 +1,4 @@
-"""Direct tests for polylogue.schemas.field_stats module.
+"""Direct tests for polylogue.schemas.field_stats.stats module.
 
 Covers is_dynamic_key(), _detect_string_format(), FieldStats computed
 properties, and _collect_field_stats() sample collection.
@@ -13,7 +13,7 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from polylogue.lib.json import JSONDocument
-from polylogue.schemas.field_stats import (
+from polylogue.schemas.field_stats.stats import (
     FieldStats,
     _collect_field_stats,
     _detect_string_format,

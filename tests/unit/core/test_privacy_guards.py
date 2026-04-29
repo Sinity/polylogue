@@ -12,7 +12,7 @@ from typing import Literal
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from polylogue.schemas.schema_inference import (
+from polylogue.schemas.operator.schema_inference import (
     _annotate_schema,
     _collect_field_stats,
     _is_content_field,

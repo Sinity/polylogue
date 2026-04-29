@@ -20,7 +20,7 @@ from polylogue.scenarios import (
     ScenarioProjectionSource,
     compile_projection_entries,
 )
-from polylogue.schemas.operator_inference import list_inferred_corpus_scenarios
+from polylogue.schemas.operator.inference import list_inferred_corpus_scenarios
 from polylogue.showcase.exercise_models import Exercise
 from polylogue.showcase.exercises import EXERCISE_SCENARIOS, QA_EXTRA_SCENARIOS
 

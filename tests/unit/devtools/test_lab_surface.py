@@ -50,7 +50,7 @@ def test_lab_corpus_inferred_generation_uses_unique_prefixes_per_same_provider_s
     )
 
     with patch(
-        "polylogue.schemas.operator_inference.list_inferred_corpus_specs",
+        "polylogue.schemas.operator.inference.list_inferred_corpus_specs",
         return_value=inferred_specs,
     ):
         result = lab_corpus.main(
@@ -68,7 +68,7 @@ def test_lab_corpus_inferred_generation_fails_when_no_specs_match(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     with patch(
-        "polylogue.schemas.operator_inference.list_inferred_corpus_specs",
+        "polylogue.schemas.operator.inference.list_inferred_corpus_specs",
         return_value=(),
     ):
         result = lab_corpus.main(["generate", "--corpus-source", "inferred", "-o", str(tmp_path), "-p", "chatgpt"])

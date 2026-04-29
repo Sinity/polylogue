@@ -28,8 +28,8 @@ from polylogue.proof.catalog import build_verification_catalog
 from polylogue.proof.models import ProofObligation
 from polylogue.proof.runners import run_cli_visual_evidence
 from polylogue.scenarios import polylogue_execution
-from polylogue.schemas.audit_models import AuditReport
-from polylogue.schemas.verification_models import ArtifactProofReport, ProviderArtifactProof
+from polylogue.schemas.audit.models import AuditReport
+from polylogue.schemas.validation.models import ArtifactProofReport, ProviderArtifactProof
 from polylogue.showcase.exercises import Exercise
 from polylogue.showcase.invariants import InvariantResult
 from polylogue.showcase.qa_report import generate_qa_session

@@ -102,7 +102,7 @@ def _run_audit_stage(
         return None
 
     try:
-        from polylogue.schemas.audit_workflow import audit_all_providers, audit_provider
+        from polylogue.schemas.audit.workflow import audit_all_providers, audit_provider
 
         result.audit_report = audit_provider(request.provider) if request.provider else audit_all_providers()
     except Exception as exc:

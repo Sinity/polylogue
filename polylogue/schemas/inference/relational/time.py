@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from polylogue.schemas.field_stats import FieldStats
-from polylogue.schemas.relational_inference_models import TimeDeltaRelation
+from polylogue.schemas.field_stats.stats import FieldStats
+from polylogue.schemas.inference.relational.models import TimeDeltaRelation
 
 
 def detect_time_deltas(stats: dict[str, FieldStats]) -> list[TimeDeltaRelation]:

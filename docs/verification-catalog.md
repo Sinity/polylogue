@@ -8,10 +8,10 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 
 ## Snapshot
 
-- subjects: `249`
+- subjects: `250`
 - claims: `21`
 - runner bindings: `21`
-- proof obligations: `360`
+- proof obligations: `363`
 
 ## Quality Checks
 
@@ -31,7 +31,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | --- | ---: |
 | `archive.query_law` | 1 |
 | `artifact.path` | 27 |
-| `cli.command` | 55 |
+| `cli.command` | 56 |
 | `cli.json_command` | 2 |
 | `diagnostic.observable` | 1 |
 | `error.surface` | 2 |
@@ -53,18 +53,18 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `polylogue browser-capture` | `polylogue/cli/commands/browser_capture.py:14` `polylogue.cli.commands.browser_capture.browser_capture_command` |
 | `polylogue browser-capture serve` | `polylogue/cli/commands/browser_capture.py:38` `polylogue.cli.commands.browser_capture.serve_command` |
 | `polylogue browser-capture status` | `polylogue/cli/commands/browser_capture.py:19` `polylogue.cli.commands.browser_capture.status_command` |
-| `polylogue bulk-export` | `polylogue/cli/query_verbs.py:107` `polylogue.cli.query_verbs.bulk_export_verb` |
+| `polylogue bulk-export` | `polylogue/cli/query_verbs.py:109` `polylogue.cli.query_verbs.bulk_export_verb` |
 | `polylogue completions` | `polylogue/cli/commands/completions.py:9` `polylogue.cli.commands.completions.completions_command` |
-| `polylogue count` | `polylogue/cli/query_verbs.py:43` `polylogue.cli.query_verbs.count_verb` |
+| `polylogue count` | `polylogue/cli/query_verbs.py:45` `polylogue.cli.query_verbs.count_verb` |
 | `polylogue dashboard` | `polylogue/cli/commands/dashboard.py:10` `polylogue.cli.commands.dashboard.dashboard_command` |
-| `polylogue delete` | `polylogue/cli/query_verbs.py:135` `polylogue.cli.query_verbs.delete_verb` |
+| `polylogue delete` | `polylogue/cli/query_verbs.py:137` `polylogue.cli.query_verbs.delete_verb` |
 | `polylogue doctor` | `polylogue/cli/commands/check.py:31` `polylogue.cli.commands.check.check_command` |
 | `polylogue export` | `polylogue/cli/commands/export.py:29` `polylogue.cli.commands.export.export_command` |
-| `polylogue list` | `polylogue/cli/query_verbs.py:20` `polylogue.cli.query_verbs.list_verb` |
+| `polylogue list` | `polylogue/cli/query_verbs.py:22` `polylogue.cli.query_verbs.list_verb` |
 | `polylogue mcp` | `polylogue/cli/commands/mcp.py:10` `polylogue.cli.commands.mcp.mcp_command` |
-| `polylogue messages` | `polylogue/cli/query_verbs.py:177` `polylogue.cli.query_verbs.messages_verb` |
+| `polylogue messages` | `polylogue/cli/query_verbs.py:179` `polylogue.cli.query_verbs.messages_verb` |
 | `polylogue neighbors` | `polylogue/cli/commands/neighbors.py:42` `polylogue.cli.commands.neighbors.neighbors_command` |
-| `polylogue open` | `polylogue/cli/query_verbs.py:92` `polylogue.cli.query_verbs.open_verb` |
+| `polylogue open` | `polylogue/cli/query_verbs.py:94` `polylogue.cli.query_verbs.open_verb` |
 | `polylogue products` | `polylogue/cli/commands/products.py:139` `polylogue.cli.commands.products.products_command` |
 | `polylogue products analytics` | `polylogue/cli/commands/products.py:102` `polylogue.cli.commands.products._make_callback.<locals>.callback` |
 | `polylogue products cost-rollups` | `polylogue/cli/commands/products.py:102` `polylogue.cli.commands.products._make_callback.<locals>.callback` |
@@ -80,26 +80,27 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `polylogue products threads` | `polylogue/cli/commands/products.py:102` `polylogue.cli.commands.products._make_callback.<locals>.callback` |
 | `polylogue products week-summaries` | `polylogue/cli/commands/products.py:102` `polylogue.cli.commands.products._make_callback.<locals>.callback` |
 | `polylogue products work-events` | `polylogue/cli/commands/products.py:102` `polylogue.cli.commands.products._make_callback.<locals>.callback` |
-| `polylogue raw` | `polylogue/cli/query_verbs.py:241` `polylogue.cli.query_verbs.raw_verb` |
+| `polylogue raw` | `polylogue/cli/query_verbs.py:243` `polylogue.cli.query_verbs.raw_verb` |
 | `polylogue reset` | `polylogue/cli/commands/reset.py:23` `polylogue.cli.commands.reset.reset_command` |
 | `polylogue resume` | `polylogue/cli/commands/resume.py:22` `polylogue.cli.commands.resume.resume_command` |
-| `polylogue run` | `polylogue/cli/commands/run.py:164` `polylogue.cli.commands.run.run_command` |
-| `polylogue run acquire` | `polylogue/cli/commands/run.py:357` `polylogue.cli.commands.run.run_acquire_stage` |
-| `polylogue run all` | `polylogue/cli/commands/run.py:407` `polylogue.cli.commands.run.run_all_stage` |
-| `polylogue run embed` | `polylogue/cli/commands/run.py:505` `polylogue.cli.commands.run.run_embed_stage` |
-| `polylogue run index` | `polylogue/cli/commands/run.py:395` `polylogue.cli.commands.run.run_index_stage` |
-| `polylogue run materialize` | `polylogue/cli/commands/run.py:375` `polylogue.cli.commands.run.run_materialize_stage` |
-| `polylogue run parse` | `polylogue/cli/commands/run.py:369` `polylogue.cli.commands.run.run_parse_stage` |
-| `polylogue run render` | `polylogue/cli/commands/run.py:381` `polylogue.cli.commands.run.run_render_stage` |
-| `polylogue run reprocess` | `polylogue/cli/commands/run.py:401` `polylogue.cli.commands.run.run_reprocess_stage` |
-| `polylogue run schema` | `polylogue/cli/commands/run.py:363` `polylogue.cli.commands.run.run_schema_stage` |
-| `polylogue run site` | `polylogue/cli/commands/run.py:413` `polylogue.cli.commands.run.run_site_stage` |
+| `polylogue run` | `polylogue/cli/commands/run.py:165` `polylogue.cli.commands.run.run_command` |
+| `polylogue run acquire` | `polylogue/cli/commands/run.py:358` `polylogue.cli.commands.run.run_acquire_stage` |
+| `polylogue run all` | `polylogue/cli/commands/run.py:408` `polylogue.cli.commands.run.run_all_stage` |
+| `polylogue run embed` | `polylogue/cli/commands/run.py:512` `polylogue.cli.commands.run.run_embed_stage` |
+| `polylogue run index` | `polylogue/cli/commands/run.py:396` `polylogue.cli.commands.run.run_index_stage` |
+| `polylogue run materialize` | `polylogue/cli/commands/run.py:376` `polylogue.cli.commands.run.run_materialize_stage` |
+| `polylogue run parse` | `polylogue/cli/commands/run.py:370` `polylogue.cli.commands.run.run_parse_stage` |
+| `polylogue run publish` | `polylogue/cli/commands/run.py:414` `polylogue.cli.commands.run.run_publish_stage` |
+| `polylogue run render` | `polylogue/cli/commands/run.py:382` `polylogue.cli.commands.run.run_render_stage` |
+| `polylogue run reprocess` | `polylogue/cli/commands/run.py:402` `polylogue.cli.commands.run.run_reprocess_stage` |
+| `polylogue run schema` | `polylogue/cli/commands/run.py:364` `polylogue.cli.commands.run.run_schema_stage` |
+| `polylogue run site` | `polylogue/cli/commands/run.py:420` `polylogue.cli.commands.run.run_site_stage` |
 | `polylogue schema` | `polylogue/cli/commands/schema.py:38` `polylogue.cli.commands.schema.schema_command` |
 | `polylogue schema compare` | `polylogue/cli/commands/schema.py:56` `polylogue.cli.commands.schema.schema_compare` |
 | `polylogue schema explain` | `polylogue/cli/commands/schema.py:90` `polylogue.cli.commands.schema.schema_explain` |
 | `polylogue schema list` | `polylogue/cli/commands/schema.py:45` `polylogue.cli.commands.schema.schema_list` |
-| `polylogue show` | `polylogue/cli/query_verbs.py:78` `polylogue.cli.query_verbs.show_verb` |
-| `polylogue stats` | `polylogue/cli/query_verbs.py:50` `polylogue.cli.query_verbs.stats_verb` |
+| `polylogue show` | `polylogue/cli/query_verbs.py:80` `polylogue.cli.query_verbs.show_verb` |
+| `polylogue stats` | `polylogue/cli/query_verbs.py:52` `polylogue.cli.query_verbs.stats_verb` |
 | `polylogue tags` | `polylogue/cli/commands/tags.py:12` `polylogue.cli.commands.tags.tags_command` |
 | `polylogue watch` | `polylogue/cli/commands/watch.py:35` `polylogue.cli.commands.watch.watch_command` |
 
@@ -192,10 +193,10 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | --- | ---: |
 | `archive.query.provider_filter_consistency` | 1 |
 | `artifact.path.dependency_closure` | 11 |
-| `cli.command.help` | 55 |
+| `cli.command.help` | 56 |
 | `cli.command.json_envelope` | 2 |
-| `cli.command.no_traceback` | 55 |
-| `cli.command.plain_mode` | 55 |
+| `cli.command.no_traceback` | 56 |
+| `cli.command.plain_mode` | 56 |
 | `diagnostic.observable_trace_mapping` | 1 |
 | `error.machine_user_context` | 2 |
 | `generated.scenario.family_registered` | 9 |

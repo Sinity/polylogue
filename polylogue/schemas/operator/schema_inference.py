@@ -6,7 +6,7 @@ This module infers JSON schemas from real data samples, which can be used for:
 3. Property-based test generation via hypothesis-jsonschema
 
 Can be used as:
-- Module: `from polylogue.schemas.schema_inference import generate_provider_schema`
+- Module: `from polylogue.schemas.operator.schema_inference import generate_provider_schema`
 - Devtools: `devtools schema-generate --provider chatgpt`
 
 Implementation is split across:
@@ -23,24 +23,38 @@ from __future__ import annotations
 from pathlib import Path
 
 # Re-export the full public API so callers don't need to know the split.
-from polylogue.schemas.field_stats import (
+from polylogue.schemas.field_stats.stats import (
     UUID_PATTERN,
     FieldStats,
     _collect_field_stats,
     is_dynamic_key,
 )
-from polylogue.schemas.generation_models import GenerationResult
-from polylogue.schemas.generation_support import (
+from polylogue.schemas.generation.models import GenerationResult
+from polylogue.schemas.generation.support import (
     _annotate_schema,
     _annotate_semantic_and_relational,
     _merge_schemas,
     _remove_nested_required,
     collapse_dynamic_keys,
 )
-from polylogue.schemas.generation_workflow import (
+from polylogue.schemas.generation.workflow import (
     generate_all_schemas,
     generate_provider_schema,
     generate_schema_from_samples,
+)
+from polylogue.schemas.inference.relational.inference import (
+    ForeignKeyRelation,
+    MutualExclusion,
+    RelationalAnnotations,
+    StringLengthProfile,
+    TimeDeltaRelation,
+    infer_relations,
+)
+from polylogue.schemas.inference.semantic.inference import (
+    SEMANTIC_ROLES,
+    SemanticCandidate,
+    infer_semantic_roles,
+    select_best_roles,
 )
 from polylogue.schemas.observation import (
     PROVIDERS,
@@ -55,14 +69,6 @@ from polylogue.schemas.privacy_config import (
     PrivacyConfig,
     load_privacy_config,
 )
-from polylogue.schemas.relational_inference import (
-    ForeignKeyRelation,
-    MutualExclusion,
-    RelationalAnnotations,
-    StringLengthProfile,
-    TimeDeltaRelation,
-    infer_relations,
-)
 from polylogue.schemas.sampling import (
     _iter_samples_from_db,
     _iter_samples_from_sessions,
@@ -70,12 +76,6 @@ from polylogue.schemas.sampling import (
     get_sample_count_from_db,
     load_samples_from_db,
     load_samples_from_sessions,
-)
-from polylogue.schemas.semantic_inference import (
-    SEMANTIC_ROLES,
-    SemanticCandidate,
-    infer_semantic_roles,
-    select_best_roles,
 )
 from polylogue.schemas.shape_fingerprint import _structure_fingerprint
 

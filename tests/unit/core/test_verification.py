@@ -9,19 +9,19 @@ import orjson
 import pytest
 
 from polylogue.schemas.packages import SchemaElementManifest, SchemaResolution, SchemaVersionPackage
-from polylogue.schemas.verification_artifacts import (
+from polylogue.schemas.validation.artifacts import (
     list_artifact_cohort_rows,
     list_artifact_observation_rows,
     prove_raw_artifact_coverage,
 )
-from polylogue.schemas.verification_corpus import verify_raw_corpus
-from polylogue.schemas.verification_models import (
+from polylogue.schemas.validation.corpus import verify_raw_corpus
+from polylogue.schemas.validation.models import (
     ArtifactProofReport,
     ProviderArtifactProof,
     ProviderSchemaVerification,
     SchemaVerificationReport,
 )
-from polylogue.schemas.verification_requests import (
+from polylogue.schemas.validation.requests import (
     ArtifactObservationQuery,
     ArtifactProofRequest,
     SchemaVerificationRequest,

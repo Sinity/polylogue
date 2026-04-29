@@ -5,23 +5,23 @@ from __future__ import annotations
 from pathlib import Path
 
 from polylogue.paths import db_path as archive_db_path
-from polylogue.schemas.generation_cluster_collection import (
+from polylogue.schemas.generation.cluster_collection import (
     _collect_cluster_accumulators,
 )
-from polylogue.schemas.generation_cluster_support import (
+from polylogue.schemas.generation.cluster_support import (
     _cluster_profile_tokens,
     _cluster_reservoir_size,
     _cluster_sort_key,
 )
-from polylogue.schemas.generation_models import GenerationResult, _ProviderBundle
-from polylogue.schemas.generation_packages import (
+from polylogue.schemas.generation.models import GenerationResult, _ProviderBundle
+from polylogue.schemas.generation.packages import (
     _build_package_candidates,
 )
-from polylogue.schemas.generation_provider_bundle_packages import (
+from polylogue.schemas.generation.provider_bundle_packages import (
     build_provider_catalog_artifacts,
     build_success_provider_bundle,
 )
-from polylogue.schemas.generation_support import GENSON_AVAILABLE
+from polylogue.schemas.generation.support import GENSON_AVAILABLE
 from polylogue.schemas.observation import PROVIDERS, ProviderConfig, resolve_provider_config
 from polylogue.schemas.privacy_config import SchemaPrivacyConfig
 from polylogue.schemas.registry import ClusterManifest, SchemaCluster

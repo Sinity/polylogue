@@ -179,7 +179,7 @@ def extract_file_changes(tool_invocations: Sequence[Mapping[str, object]]) -> li
             changes.append(entry)
         elif tool_name == "NotebookEdit":
             new_source = optional_string(input_data.get("new_source"))
-            entry: FileChangeSummary = {"path": path, "operation": "edit"}
+            entry = {"path": path, "operation": "edit"}
             if new_source is not None:
                 entry["new_content"] = new_source[:500]
             changes.append(entry)

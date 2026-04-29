@@ -26,7 +26,7 @@ def test_populate_proof_sets_report_without_workspace_override(tmp_path: Path) -
     with (
         patch("polylogue.paths.db_path", return_value=tmp_path / "polylogue.db") as mock_db_path,
         patch(
-            "polylogue.schemas.verification_artifacts.prove_raw_artifact_coverage", return_value=proof_report
+            "polylogue.schemas.validation.artifacts.prove_raw_artifact_coverage", return_value=proof_report
         ) as mock_prove,
     ):
         populate_proof(result, workspace_env=None)
@@ -48,7 +48,7 @@ def test_populate_proof_uses_workspace_override_context(tmp_path: Path) -> None:
             "polylogue.showcase.qa_runner_stages.override_workspace_env", return_value=nullcontext()
         ) as mock_override,
         patch(
-            "polylogue.schemas.verification_artifacts.prove_raw_artifact_coverage", return_value=proof_report
+            "polylogue.schemas.validation.artifacts.prove_raw_artifact_coverage", return_value=proof_report
         ) as mock_prove,
     ):
         populate_proof(result, workspace_env={"XDG_CONFIG_HOME": str(tmp_path / "config")})
@@ -62,7 +62,7 @@ def test_populate_proof_captures_exceptions() -> None:
     result = QAResult()
 
     with patch(
-        "polylogue.schemas.verification_artifacts.prove_raw_artifact_coverage", side_effect=RuntimeError("broken")
+        "polylogue.schemas.validation.artifacts.prove_raw_artifact_coverage", side_effect=RuntimeError("broken")
     ):
         populate_proof(result, workspace_env=None)
 

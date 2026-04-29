@@ -20,7 +20,7 @@ from hypothesis import strategies as st
 
 from polylogue.lib.dates import parse_date
 from polylogue.lib.timestamps import format_timestamp, parse_timestamp
-from polylogue.schemas.schema_inference import _is_safe_enum_value
+from polylogue.schemas.operator.schema_inference import _is_safe_enum_value
 from tests.infra.tables import FORMAT_TIMESTAMP_TABLE, PARSE_TIMESTAMP_FORMAT_TABLE
 
 TimestampInput = str | int | float | None

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from polylogue.schemas.operator_models import JSONDocument
+from polylogue.schemas.operator.models import JSONDocument
 from polylogue.schemas.privacy_config import PrivacyConfig, PrivacyConfigSection, PrivacyLevel
 
 

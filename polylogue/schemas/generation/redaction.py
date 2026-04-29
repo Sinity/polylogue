@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from polylogue.schemas.audit_walkers import SchemaNode, _walk_values
-from polylogue.schemas.field_stats import FieldStats
+from polylogue.schemas.audit.walkers import SchemaNode, _walk_values
+from polylogue.schemas.field_stats.stats import FieldStats
 from polylogue.schemas.privacy import (
     _is_content_field,
     _is_safe_enum_value,

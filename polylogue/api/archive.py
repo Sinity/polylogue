@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from contextlib import suppress
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from polylogue.lib.message.roles import MessageRoleFilter
 from polylogue.lib.semantic.content_projection import ContentProjectionSpec
@@ -258,8 +258,8 @@ class PolylogueArchiveMixin:
 
         from polylogue.lib.message.roles import normalize_message_roles
 
-        messages = conv.messages if hasattr(conv, "messages") else []
-        roles: tuple = normalize_message_roles(message_role) if message_role else ()
+        messages: list[Any] = cast("list[Any]", conv.messages if hasattr(conv, "messages") else [])
+        roles: tuple[str, ...] = normalize_message_roles(message_role) if message_role else ()
 
         if roles:
             messages = [m for m in messages if str(getattr(m, "role", "")) in roles]

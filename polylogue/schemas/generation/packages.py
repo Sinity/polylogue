@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import Counter
 from datetime import datetime, timezone
 
-from polylogue.schemas.generation_models import (
+from polylogue.schemas.generation.models import (
     PackageAssemblyResult,
     _ClusterAccumulator,
     _PackageAccumulator,

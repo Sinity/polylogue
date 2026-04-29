@@ -113,7 +113,6 @@ These are the commands worth remembering during normal repo work:
 | `devtools verify-cross-cuts` | Verify cross-cut tags in the topology projection match module-name conventions. |
 | `devtools verify-file-budgets` | Enforce per-file LOC budgets declared in docs/plans/file-size-budgets.yaml. |
 | `devtools verify-migrations` | Verify migration-completeness against docs/plans/migrations.yaml. |
-| `devtools verify-showcase` | Verify committed showcase/demo surfaces. |
 | `devtools verify-test-ownership` | Verify each production module is imported by at least one unit test. |
 | `devtools verify-topology` | Verify the realized polylogue tree against the topology projection. |
 

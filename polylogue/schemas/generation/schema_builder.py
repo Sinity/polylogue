@@ -7,8 +7,8 @@ from datetime import datetime, timezone
 from typing import TypeAlias
 
 from polylogue.lib.json import JSONDocument, json_document
-from polylogue.schemas.field_stats import _collect_field_stats
-from polylogue.schemas.generation_support import (
+from polylogue.schemas.field_stats.stats import _collect_field_stats
+from polylogue.schemas.generation.support import (
     GENSON_AVAILABLE,
     SchemaBuilder,
     _annotate_schema,
@@ -95,7 +95,7 @@ def _apply_schema_metadata(
     schema["description"] = config.description
     schema["x-polylogue-generated-at"] = datetime.now(tz=timezone.utc).isoformat()
     schema["x-polylogue-sample-count"] = schema_sample_count
-    schema["x-polylogue-generator"] = "polylogue.schemas.schema_inference"
+    schema["x-polylogue-generator"] = "po lylogue.schemas.operator.schema_inference"
     schema["x-polylogue-sample-granularity"] = config.sample_granularity
     schema["x-polylogue-anchor-profile-family-id"] = anchor_profile_family_id
     schema["x-polylogue-observed-artifact-count"] = observed_artifact_count

@@ -16,9 +16,9 @@ from polylogue.scenarios import CorpusSpec
 from polylogue.schemas import ValidationResult
 from polylogue.schemas.registry import SchemaRegistry
 from polylogue.schemas.synthetic import SyntheticCorpus
+from polylogue.schemas.validation.corpus import verify_raw_corpus
+from polylogue.schemas.validation.requests import SchemaVerificationRequest
 from polylogue.schemas.validator import SchemaValidator, validate_provider_export
-from polylogue.schemas.verification_corpus import verify_raw_corpus
-from polylogue.schemas.verification_requests import SchemaVerificationRequest
 from polylogue.storage.backends.connection import open_connection
 from polylogue.types import Provider
 
@@ -599,7 +599,7 @@ def test_verify_raw_corpus_reports_valid_synthetic_chatgpt(
             return ValidationResult(is_valid=True)
 
     monkeypatch.setattr(
-        "polylogue.schemas.verification_corpus.SchemaValidator.for_payload",
+        "polylogue.schemas.validation.corpus.SchemaValidator.for_payload",
         lambda *args, **kwargs: _AlwaysValidValidator(),
     )
 
@@ -672,7 +672,7 @@ def test_verify_raw_corpus_uses_persisted_payload_provider_for_filters(
             return ValidationResult(is_valid=True)
 
     monkeypatch.setattr(
-        "polylogue.schemas.verification_corpus.SchemaValidator.for_payload",
+        "polylogue.schemas.validation.corpus.SchemaValidator.for_payload",
         lambda *args, **kwargs: _AlwaysValidValidator(),
     )
 
@@ -840,7 +840,7 @@ def test_verify_raw_corpus_honors_record_limit_and_offset(
             return ValidationResult(is_valid=True)
 
     monkeypatch.setattr(
-        "polylogue.schemas.verification_corpus.SchemaValidator.for_payload",
+        "polylogue.schemas.validation.corpus.SchemaValidator.for_payload",
         lambda *args, **kwargs: _AlwaysValidValidator(),
     )
 

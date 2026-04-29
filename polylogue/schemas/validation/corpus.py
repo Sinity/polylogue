@@ -13,8 +13,8 @@ from polylogue.lib.raw_payload import build_raw_payload_envelope
 from polylogue.schemas.validator import SchemaValidator
 from polylogue.storage.blob_store import get_blob_store
 
-from .verification_models import ProviderSchemaVerification, SchemaVerificationReport
-from .verification_requests import SchemaVerificationRequest, bounded_window
+from .models import ProviderSchemaVerification, SchemaVerificationReport
+from .requests import SchemaVerificationRequest, bounded_window
 
 
 def _format_malformed_jsonl_error(*, malformed_lines: int, malformed_detail: str | None) -> str:
