@@ -1,0 +1,60 @@
+# Inter-package layering rules.
+# See #433.
+#
+# Each rule declares which packages a given package may import from.
+# The verify-layering lint enforces these rules by checking actual
+# import statements against the declared allowlist.
+#
+# Semantics:
+#   - "disallow" means the import is always forbidden
+#   - "allow" with an empty or absent from list means all sources are allowed
+#   - "allow" with a from list restricts imports to those packages only
+
+rules:
+  - target: polylogue/cli
+    description: "CLI surface — may import from api, lib, operations, proof (catalog only), products, rendering"
+    allow:
+      from: [polylogue/api, polylogue/lib, polylogue/operations, polylogue/proof, polylogue/products, polylogue/rendering, polylogue/site]
+    disallow:
+      from: [polylogue/storage, polylogue/pipeline, polylogue/sources, polylogue/schemas]
+
+  - target: polylogue/mcp
+    description: "MCP surface — may import from api, lib, operations, products"
+    allow:
+      from: [polylogue/api, polylogue/lib, polylogue/operations, polylogue/products, polylogue/rendering]
+    disallow:
+      from: [polylogue/storage, polylogue/pipeline, polylogue/sources, polylogue/schemas]
+
+  - target: polylogue/api
+    description: "Async API — may import from lib, operations, storage, products"
+    allow:
+      from: [polylogue/lib, polylogue/operations, polylogue/storage, polylogue/products]
+
+  - target: polylogue/storage
+    description: "Storage substrate — may import from lib, operations"
+    allow:
+      from: [polylogue/lib, polylogue/operations]
+    disallow:
+      from: [polylogue/cli, polylogue/mcp, polylogue/site, polylogue/ui, polylogue/rendering]
+
+  - target: polylogue/pipeline
+    description: "Pipeline substrate — may import from lib, operations, sources, storage"
+    allow:
+      from: [polylogue/lib, polylogue/operations, polylogue/sources, polylogue/storage, polylogue/schemas]
+    disallow:
+      from: [polylogue/cli, polylogue/mcp, polylogue/site, polylogue/ui]
+
+  - target: polylogue/sources
+    description: "Source acquisition/parsing — may import from lib"
+    allow:
+      from: [polylogue/lib, polylogue/schemas]
+
+  - target: polylogue/products
+    description: "Derived products — may import from lib, operations, storage"
+    allow:
+      from: [polylogue/lib, polylogue/operations, polylogue/storage]
+
+  - target: polylogue/site
+    description: "Site generation — may import from api, lib, products, rendering"
+    allow:
+      from: [polylogue/api, polylogue/lib, polylogue/products, polylogue/rendering]
