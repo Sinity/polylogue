@@ -1,0 +1,11 @@
+{
+  "provider": "claude-ai",
+  "schema_version": "v1",
+  "generator_command": "devtools lab-corpus representative-generate -p claude-ai -n 2 --seed 42",
+  "generator_version": "0.1.0+6576727b-dirty",
+  "seed": 42,
+  "source_mode": "schema-only",
+  "sample_count": 2,
+  "privacy_status": "auto-generated-safe",
+  "generated_at": "2026-04-30T14:33:58.058436+00:00"
+}

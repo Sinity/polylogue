@@ -1,0 +1,395 @@
+{
+  "blocked_urls": [],
+  "content": "synthetic-54040",
+  "conversation_id": "synthetic-3248 synthetic-3248 synthe",
+  "create_time": 1730024006.9571989,
+  "current_node": "32a447b2-ef04-457d-8dcc-c33aa9434aa0",
+  "disabled_tool_ids": [],
+  "id": "cae9b4a7-2a79-4a68-8f44-704f1247ea4e",
+  "is_archived": false,
+  "is_study_mode": false,
+  "memory_scope": "synthetic-2915",
+  "moderation_results": [],
+  "rating": "synthetic-29831",
+  "safe_urls": [
+    "https://example.com/1387 https://example.com/1387 https://example.com/1387 https://example.com/1387 https://example.com/1387 https://e"
+  ],
+  "sugar_item_visible": true,
+  "update_time": "1699543575.6077936",
+  "user_id": "synthetic-9099",
+  "voice": "synthetic-46025",
+  "mapping": {
+    "dc8aee30-be60-43f7-a8be-9288e5af6e39": {
+      "children": [
+        "5e6fea07-c453-4f1d-8199-2fdfb31022f0"
+      ],
+      "id": "dc8aee30-be60-43f7-a8be-9288e5af6e39",
+      "message": {
+        "author": {
+          "metadata": {
+            "real_author": "synthetic-50488"
+          },
+          "name": "synthetic-92901",
+          "role": "user"
+        },
+        "channel": "synthetic-221",
+        "content": {
+          "computer_id": "synthetic-70575",
+          "content_type": "synthetic-96605",
+          "domain": "synthetic-87900",
+          "language": "synthetic-25825",
+          "parts": [
+            "I need to implement a function that processes this data."
+          ],
+          "pub_timestamp": 623.1554099464091,
+          "ref_id": "synthetic-86951",
+          "screenshot": {
+            "asset_pointer": "synthetic-94339",
+            "content_type": "synthetic-39363",
+            "fovea": 507,
+            "height": 666,
+            "size_bytes": 326,
+            "width": 697
+          },
+          "snippet": "synthetic-72667",
+          "source_analysis_msg_id": "aa38d0a1-6ba2-4efe-b11c-6eb62095eef6",
+          "state": {
+            "id": "synthetic-49695",
+            "installed_software": [
+              "synthetic-98059",
+              "synthetic-22810",
+              "synthetic-80676"
+            ],
+            "os_name": "synthetic-74593",
+            "os_type": "synthetic-39446",
+            "os_version": "synthetic-53225",
+            "target_type": "synthetic-71819",
+            "title": "synthetic-53",
+            "type": "synthetic-39829",
+            "url": "synthetic-37606"
+          },
+          "tether_id": 675,
+          "text": "The module structure looks good. A few suggestions:",
+          "thoughts": [
+            {
+              "chunks": [
+                "synthetic-86356"
+              ],
+              "content": "synthetic-11114",
+              "finished": false,
+              "summary": "synthetic-67561"
+            },
+            {
+              "chunks": [
+                "synthetic-82960",
+                "synthetic-81167",
+                "synthetic-43933",
+                "synthetic-12240",
+                "synthetic-98453"
+              ],
+              "content": "synthetic-30784",
+              "finished": false,
+              "summary": "synthetic-29444"
+            },
+            {
+              "chunks": [
+                "synthetic-19313"
+              ],
+              "content": "synthetic-3201",
+              "finished": true,
+              "summary": "synthetic-32092"
+            },
+            {
+              "chunks": [
+                "synthetic-80120",
+                "synthetic-9545",
+                "synthetic-59692"
+              ],
+              "content": "synthetic-54321",
+              "finished": true,
+              "summary": "synthetic-94155"
+            },
+            {
+              "chunks": [
+                "synthetic-50328",
+                "synthetic-64799",
+                "synthetic-52383",
+                "synthetic-31979",
+                "synthetic-19342"
+              ],
+              "content": "synthetic-85990",
+              "finished": true,
+              "summary": "synthetic-98430"
+            }
+          ],
+          "title": "synthetic-13970",
+          "url": "synthetic-55724"
+        },
+        "create_time": 1675434635.2896256,
+        "end_turn": true,
+        "id": "76f2dbfe-cd29-436f-a222-82e174daaebf",
+        "metadata": {},
+        "recipient": "synthetic-87500",
+        "status": "synthetic-69616",
+        "update_time": 1757219527.2384632,
+        "weight": 0.891425925810437
+      },
+      "parent": null
+    },
+    "5e6fea07-c453-4f1d-8199-2fdfb31022f0": {
+      "children": [
+        "6cedd15d-5800-4c02-87ea-7ff58db06746",
+        "32a447b2-ef04-457d-8dcc-c33aa9434aa0"
+      ],
+      "id": "5e6fea07-c453-4f1d-8199-2fdfb31022f0",
+      "message": {
+        "author": {
+          "metadata": {
+            "real_author": "synthetic-92591"
+          },
+          "name": "synthetic-71121",
+          "role": "assistant"
+        },
+        "channel": "synthetic-54496",
+        "content": {
+          "computer_id": "synthetic-76556",
+          "content_type": "synthetic-2560",
+          "domain": "synthetic-75456",
+          "language": "synthetic-49857",
+          "parts": [
+            "After reviewing, I found several areas for improvement.",
+            "The module structure looks good. A few suggestions:"
+          ],
+          "pub_timestamp": 538.2205676102316,
+          "ref_id": "synthetic-96289",
+          "screenshot": {
+            "asset_pointer": "synthetic-79069",
+            "content_type": "synthetic-28906",
+            "fovea": 488,
+            "height": 272,
+            "size_bytes": 485,
+            "width": 388
+          },
+          "snippet": "synthetic-87670",
+          "source_analysis_msg_id": "b963f37f-6781-4c1f-8c53-0e36addc3e13",
+          "state": {
+            "id": "synthetic-21632",
+            "installed_software": [
+              "synthetic-16728",
+              "synthetic-81560"
+            ],
+            "os_name": "synthetic-70008",
+            "os_type": "synthetic-3534",
+            "os_version": "synthetic-51645",
+            "target_type": "synthetic-77580",
+            "title": "synthetic-73975",
+            "type": "synthetic-86900",
+            "url": "synthetic-3552"
+          },
+          "summary": "synthetic-60515",
+          "tether_id": 50,
+          "text": "The module structure looks good. A few suggestions:",
+          "thoughts": [
+            {
+              "chunks": [
+                "synthetic-59598"
+              ],
+              "content": "synthetic-42840",
+              "finished": false,
+              "summary": "synthetic-99775"
+            },
+            {
+              "chunks": [
+                "synthetic-36471",
+                "synthetic-98567",
+                "synthetic-55255"
+              ],
+              "content": "synthetic-33065",
+              "finished": true,
+              "summary": "synthetic-61644"
+            }
+          ],
+          "title": "synthetic-2540",
+          "url": "synthetic-98176"
+        },
+        "create_time": 1691073397.6367295,
+        "end_turn": true,
+        "id": "3f4df561-f319-4125-87f1-94f9c1156d6d",
+        "metadata": {},
+        "recipient": "synthetic-26130",
+        "status": "synthetic-2671",
+        "update_time": 1706269095.4741926,
+        "weight": 0.47356106094612804
+      },
+      "parent": "dc8aee30-be60-43f7-a8be-9288e5af6e39"
+    },
+    "6cedd15d-5800-4c02-87ea-7ff58db06746": {
+      "children": [],
+      "id": "6cedd15d-5800-4c02-87ea-7ff58db06746",
+      "message": {
+        "author": {
+          "metadata": {
+            "real_author": "synthetic-93718"
+          },
+          "name": "synthetic-13356",
+          "role": "user"
+        },
+        "channel": "synthetic-89687",
+        "content": {
+          "computer_id": "synthetic-15866",
+          "content_type": "synthetic-74177",
+          "domain": "synthetic-5383",
+          "language": "synthetic-45508",
+          "parts": [
+            "What's the best approach for handling errors here?",
+            "Can you help me debug this issue?",
+            "What's the best approach for handling errors here?",
+            "Can you help me debug this issue?",
+            "Could you review this code for potential issues?"
+          ],
+          "pub_timestamp": 105.53887064399858,
+          "ref_id": "synthetic-47472",
+          "screenshot": {
+            "asset_pointer": "synthetic-60258",
+            "content_type": "synthetic-92708",
+            "fovea": 152,
+            "height": 176,
+            "size_bytes": 521,
+            "width": 650
+          },
+          "snippet": "synthetic-80728",
+          "source_analysis_msg_id": "c64ee6e3-89c5-431a-ab6c-1016cee624d0",
+          "state": {
+            "id": "synthetic-63372",
+            "installed_software": [
+              "synthetic-57091",
+              "synthetic-95817"
+            ],
+            "os_name": "synthetic-77656",
+            "os_type": "synthetic-35179",
+            "os_version": "synthetic-42245",
+            "target_type": "synthetic-32177",
+            "title": "synthetic-11359",
+            "type": "synthetic-36559",
+            "url": "synthetic-59087"
+          },
+          "tether_id": 336,
+          "text": "The module structure looks good. A few suggestions:",
+          "thoughts": [
+            {
+              "chunks": [
+                "synthetic-63904"
+              ],
+              "content": "synthetic-27802",
+              "finished": false,
+              "summary": "synthetic-33862"
+            },
+            {
+              "chunks": [
+                "synthetic-36655",
+                "synthetic-78139"
+              ],
+              "content": "synthetic-91905",
+              "finished": false,
+              "summary": "synthetic-72848"
+            }
+          ],
+          "title": "synthetic-1330",
+          "url": "synthetic-67715"
+        },
+        "create_time": 1720818220.7309444,
+        "end_turn": false,
+        "id": "72bb912d-7da6-4785-b63b-4dc3a559e463",
+        "metadata": {},
+        "recipient": "synthetic-2260",
+        "status": "synthetic-12196",
+        "update_time": 1705055403.308205,
+        "weight": 0.6917871552952018
+      },
+      "parent": "5e6fea07-c453-4f1d-8199-2fdfb31022f0"
+    },
+    "32a447b2-ef04-457d-8dcc-c33aa9434aa0": {
+      "children": [],
+      "id": "32a447b2-ef04-457d-8dcc-c33aa9434aa0",
+      "message": {
+        "author": {
+          "metadata": {
+            "real_author": "synthetic-38829"
+          },
+          "name": "synthetic-92801",
+          "role": "assistant"
+        },
+        "channel": "synthetic-35954",
+        "content": {
+          "computer_id": "synthetic-91411",
+          "content_type": "synthetic-83606",
+          "domain": "synthetic-98669",
+          "language": "synthetic-64340",
+          "parts": [
+            "Here's an implementation:\n\n```python\ndef process(data):\n    return [x for x in data if x]\n```"
+          ],
+          "pub_timestamp": 469.3969449305102,
+          "ref_id": "synthetic-57733",
+          "screenshot": {
+            "asset_pointer": "synthetic-33092",
+            "content_type": "synthetic-62616",
+            "fovea": 114,
+            "height": 65,
+            "size_bytes": 491,
+            "width": 577
+          },
+          "snippet": "synthetic-89974",
+          "source_analysis_msg_id": "cfa701cd-2631-400b-a6d7-94d30db95301",
+          "state": {
+            "id": "synthetic-73772",
+            "installed_software": [
+              "synthetic-11164",
+              "synthetic-32530"
+            ],
+            "os_name": "synthetic-15525",
+            "os_type": "synthetic-73147",
+            "os_version": "synthetic-54548",
+            "target_type": "synthetic-79471",
+            "title": "synthetic-78135",
+            "type": "synthetic-81057",
+            "url": "synthetic-29581"
+          },
+          "tether_id": 450,
+          "text": "The module structure looks good. A few suggestions:",
+          "thoughts": [
+            {
+              "chunks": [
+                "synthetic-56207",
+                "synthetic-40026",
+                "synthetic-74531",
+                "synthetic-81399"
+              ],
+              "content": "synthetic-7894",
+              "finished": true,
+              "summary": "synthetic-99973"
+            },
+            {
+              "chunks": [
+                "synthetic-81987"
+              ],
+              "content": "synthetic-27659",
+              "finished": false,
+              "summary": "synthetic-86563"
+            }
+          ],
+          "title": "synthetic-10641",
+          "url": "synthetic-20585"
+        },
+        "create_time": 1671161691.3437986,
+        "end_turn": false,
+        "id": "49c13de7-3b42-46c5-885b-15fb4a8ff810",
+        "metadata": {},
+        "recipient": "synthetic-92662",
+        "status": "synthetic-37056",
+        "update_time": 1694284004.5486019,
+        "weight": 0.23342380616002556
+      },
+      "parent": "5e6fea07-c453-4f1d-8199-2fdfb31022f0"
+    }
+  }
+}

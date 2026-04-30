@@ -1,0 +1,2586 @@
+{
+  "account": {
+    "uuid": "23b8c1e9-3924-46de-beb1-3b9046685257"
+  },
+  "created_at": "2022-12-28T18:09:27.970040+00:00",
+  "name": "Improving search index performance",
+  "summary": "synthetic-11395",
+  "updated_at": "2024-08-08T19:12:06.120414",
+  "uuid": "37f8a88b-17fc-495a-87a0-ca6e0822e8f3",
+  "chat_messages": [
+    {
+      "attachments": [
+        {
+          "extracted_content": "Here's an implementation:\n\n```python\ndef process(data):\n    return [x for x in data if x]\n```",
+          "file_name": "synthetic-93850",
+          "file_size": 481307,
+          "file_type": "synthetic-71426"
+        },
+        {
+          "extracted_content": "The module structure looks good. A few suggestions:",
+          "file_name": "synthetic-28893",
+          "file_size": 332686,
+          "file_type": "synthetic-36463"
+        },
+        {
+          "extracted_content": "I'll analyze the issue. Looking at the code structure...",
+          "file_name": "synthetic-99458",
+          "file_size": 596793,
+          "file_type": "synthetic-91506"
+        },
+        {
+          "extracted_content": "The module structure looks good. A few suggestions:",
+          "file_name": "synthetic-44597",
+          "file_size": 205792,
+          "file_type": "synthetic-28221"
+        }
+      ],
+      "content": [
+        {
+          "citations": [],
+          "content": [
+            {
+              "doc_uuid": "synthetic-49797",
+              "end": 68,
+              "extras": {
+                "created_time": "2025-05-03T12:14:52.971271+00:00",
+                "last_modified_time": "2024-08-22T14:02:22.823020+00:00",
+                "mime_type": "text/plain",
+                "modified_time": "2024-12-31T20:11:00.802444+00:00",
+                "owner": "synthetic-70284",
+                "title": "synthetic-16361",
+                "uri": "synthetic-49615"
+              },
+              "ingestion_date": "synthetic-10328",
+              "is_citable": false,
+              "is_missing": false,
+              "metadata": {
+                "favicon_url": "https://example.com/4150",
+                "site_domain": "synthetic-92349",
+                "site_name": "synthetic-9116",
+                "type": "synthetic-6006"
+              },
+              "prompt_context_metadata": {
+                "age": "synthetic-86673",
+                "content_type": "synthetic-29871",
+                "url": "https://example.com/5741"
+              },
+              "start": 0,
+              "text": "Here's an implementation:\n\n```python\ndef process(data):\n    return [x for x in data if x]\n```",
+              "title": "synthetic-13238",
+              "type": "synthetic-49823",
+              "uri": "synthetic-36434",
+              "url": "https://example.com/8428",
+              "uuid": "29a3b2e9-5d65-4441-9588-42dea2bc372f"
+            }
+          ],
+          "context": {
+            "tools": [
+              {
+                "server_uuid": "b3aa7efe-4458-4885-ab90-99a435a240ae",
+                "tool_name": "synthetic-89593"
+              },
+              {
+                "server_uuid": "a28defe3-9bf0-4273-9247-6f57a5e5a5ab",
+                "tool_name": "synthetic-22431"
+              },
+              {
+                "server_uuid": "29d4beef-3eab-4dcb-baa8-0dd488bd6407",
+                "tool_name": "synthetic-60589"
+              },
+              {
+                "server_uuid": "ece66fa2-fd51-46e6-851b-4cf36123fdf7",
+                "tool_name": "synthetic-83886"
+              },
+              {
+                "server_uuid": "af42e12f-3838-4326-8e94-4239b02b61c4",
+                "tool_name": "synthetic-42504"
+              }
+            ]
+          },
+          "cut_off": true,
+          "display_content": {
+            "content": [
+              {
+                "icon_url": "https://example.com/7572",
+                "resource_type": "synthetic-8675",
+                "source": "synthetic-74341",
+                "subtitles": [],
+                "title": "synthetic-85909",
+                "url": "https://example.com/7482"
+              }
+            ],
+            "is_trusted": false,
+            "link": {
+              "icon_url": "https://example.com/3340",
+              "source": "synthetic-34718",
+              "title": "synthetic-18301",
+              "url": "https://example.com/5040"
+            },
+            "table": [
+              [
+                "synthetic-97912",
+                "synthetic-76622"
+              ],
+              [
+                "synthetic-76484",
+                "synthetic-52350"
+              ],
+              [
+                "synthetic-28746",
+                "synthetic-18131"
+              ]
+            ],
+            "type": "synthetic-66784"
+          },
+          "input": {
+            "api_query": "synthetic-64686",
+            "calendar_id": "synthetic-11915",
+            "calendar_ids": [
+              "synthetic-14371"
+            ],
+            "code": "Here's an implementation:\n\n```python\ndef process(data):\n    return [x for x in data if x]\n```",
+            "command": "synthetic-82240",
+            "content": "Here's an implementation:\n\n```python\ndef process(data):\n    return [x for x in data if x]\n```",
+            "context": "synthetic-89192",
+            "id": "synthetic-55333",
+            "language": "synthetic-50432",
+            "max_text_results": 10,
+            "md_citations": [
+              {
+                "end_index": 14257,
+                "metadata": {},
+                "origin_tool_name": "synthetic-89166",
+                "sources": [],
+                "start_index": 20486,
+                "title": "synthetic-44587",
+                "url": "https://example.com/2827",
+                "uuid": "74273ca3-287d-46ca-af4c-c69a4b22d308"
+              },
+              {
+                "end_index": 224,
+                "metadata": {},
+                "origin_tool_name": "synthetic-65612",
+                "sources": [],
+                "start_index": 23195,
+                "title": "synthetic-39117",
+                "url": "https://example.com/9317",
+                "uuid": "5fb8d16c-2720-497d-b2eb-d6899be578c7"
+              },
+              {
+                "end_index": 20485,
+                "metadata": {},
+                "origin_tool_name": "synthetic-78504",
+                "sources": [],
+                "start_index": 571,
+                "title": "synthetic-47576",
+                "url": "https://example.com/6038",
+                "uuid": "e0c53cb8-3da9-42a9-8ed4-2f1a3d4cbf37"
+              },
+              {
+                "end_index": 15277,
+                "metadata": {},
+                "origin_tool_name": "synthetic-11226",
+                "sources": [],
+                "start_index": 26052,
+                "title": "synthetic-69822",
+                "url": "https://example.com/3060",
+                "uuid": "f264accc-79ac-4b1e-a8e5-6e0c20de435d"
+              },
+              {
+                "end_index": 14809,
+                "metadata": {},
+                "origin_tool_name": "synthetic-69163",
+                "sources": [],
+                "start_index": 24748,
+                "title": "synthetic-98994",
+                "url": "https://example.com/4295",
+                "uuid": "fec21bbe-6624-4bfa-8fcc-a39ab683d2e6"
+              }
+            ],
+            "n": 671,
+            "new_str": "After reviewing, I found several areas for improvement.",
+            "old_str": "The module structure looks good. A few suggestions:",
+            "page_size": 10,
+            "page_token": "synthetic-59177",
+            "q": "synthetic-15860",
+            "query": "synthetic-32493",
+            "rag_query": "synthetic-29451",
+            "semantic_query": "synthetic-8392",
+            "source": "synthetic-44313",
+            "time_max": "synthetic-2757",
+            "time_min": "synthetic-77110",
+            "time_zone": "synthetic-72603",
+            "title": "synthetic-30161",
+            "type": "text/html",
+            "url": "https://example.com/4608",
+            "version_uuid": "a18ff6b6-b535-406e-922c-9a5601d74256"
+          },
+          "integration_icon_url": "https://example.com/4750",
+          "integration_name": "synthetic-4117",
+          "is_error": false,
+          "message": "synthetic-67391",
+          "name": "synthetic-31195",
+          "start_timestamp": "2024-10-29T13:20:00.046665+00:00",
+          "stop_timestamp": "2024-06-16T09:44:13.825528+00:00",
+          "summaries": [
+            {
+              "summary": "synthetic-74847"
+            },
+            {
+              "summary": "synthetic-75525"
+            },
+            {
+              "summary": "synthetic-61953"
+            },
+            {
+              "summary": "synthetic-31850"
+            },
+            {
+              "summary": "synthetic-61993"
+            }
+          ],
+          "text": "The module structure looks good. A few suggestions:",
+          "thinking": "Here's an implementation:\n\n```python\ndef process(data):\n    return [x for x in data if x]\n```",
+          "type": "synthetic-12363"
+        },
+        {
+          "citations": [],
+          "content": [
+            {
+              "doc_uuid": "synthetic-46438",
+              "end": 68,
+              "extras": {
+                "created_time": "2024-04-02T04:30:20.123301+00:00",
+                "last_modified_time": "2024-12-31T03:47:06.451386+00:00",
+                "mime_type": "text/html",
+                "modified_time": "2024-10-13T09:16:33.943921+00:00",
+                "owner": "synthetic-84696",
+                "title": "synthetic-12899",
+                "uri": "synthetic-7944"
+              },
+              "ingestion_date": "synthetic-52772",
+              "is_citable": false,
+              "is_missing": true,
+              "metadata": {
+                "favicon_url": "https://example.com/5073",
+                "site_domain": "synthetic-25112",
+                "site_name": "synthetic-24931",
+                "type": "synthetic-70292"
+              },
+              "prompt_context_metadata": {
+                "age": "synthetic-58800",
+                "content_type": "synthetic-18373",
+                "url": "https://example.com/7912"
+              },
+              "start": 0,
+              "text": "The module structure looks good. A few suggestions:",
+              "title": "synthetic-32742",
+              "type": "synthetic-9880",
+              "uri": "synthetic-58082",
+              "url": "https://example.com/2604",
+              "uuid": "8a63f881-ffd0-49d5-a6f2-f7b80cf35b58"
+            },
+            {
+              "doc_uuid": "synthetic-1934",
+              "end": 68,
+              "extras": {
+                "created_time": "2025-07-24T16:03:48.470731+00:00",
+                "last_modified_time": "2025-05-04T18:16:56.097287+00:00",
+                "mime_type": "text/plain",
+                "modified_time": "2024-01-30T01:14:25.215723+00:00",
+                "owner": "synthetic-63092",
+                "title": "synthetic-28016",
+                "uri": "synthetic-52565"
+              },
+              "ingestion_date": "synthetic-7685",
+              "is_citable": true,
+              "is_missing": false,
+              "metadata": {
+                "favicon_url": "https://example.com/1035",
+                "site_domain": "synthetic-51173",
+                "site_name": "synthetic-34760",
+                "type": "synthetic-59638"
+              },
+              "prompt_context_metadata": {
+                "age": "synthetic-37388",
+                "content_type": "synthetic-55444",
+                "url": "https://example.com/8973"
+              },
+              "start": 0,
+              "text": "After reviewing, I found several areas for improvement.",
+              "title": "synthetic-28534",
+              "type": "synthetic-7665",
+              "uri": "synthetic-75914",
+              "url": "https://example.com/9883",
+              "uuid": "0ea2622b-5048-47ba-bf7b-539b0f9aea4b"
+            },
+            {
+              "doc_uuid": "synthetic-6572",
+              "end": 68,
+              "extras": {
+                "created_time": "2024-05-09T12:08:54.462756+00:00",
+                "last_modified_time": "2025-05-08T22:53:10.284346+00:00",
+                "mime_type": "text/plain",
+                "modified_time": "2023-01-30T22:52:42.175582+00:00",
+                "owner": "synthetic-66562",
+                "title": "synthetic-10500",
+                "uri": "synthetic-24356"
+              },
+              "ingestion_date": "synthetic-8981",
+              "is_citable": true,
+              "is_missing": true,
+              "metadata": {
+                "favicon_url": "https://example.com/7615",
+                "site_domain": "synthetic-15713",
+                "site_name": "synthetic-74668",
+                "type": "synthetic-32271"
+              },
+              "prompt_context_metadata": {
+                "age": "synthetic-75880",
+                "content_type": "synthetic-77924",
+                "url": "https://example.com/1651"
+              },
+              "start": 0,
+              "text": "The module structure looks good. A few suggestions:",
+              "title": "synthetic-86163",
+              "type": "synthetic-76503",
+              "uri": "synthetic-74085",
+              "url": "https://example.com/9565",
+              "uuid": "344a54b8-42c1-4a62-af48-e8d550fd9d3f"
+            },
+            {
+              "doc_uuid": "synthetic-87782",
+              "end": 68,
+              "extras": {
+                "created_time": "2023-08-08T08:02:15.735426+00:00",
+                "last_modified_time": "2024-01-18T23:32:06.211213+00:00",
+                "mime_type": "text/html",
+                "modified_time": "2024-10-05T02:24:30.995389+00:00",
+                "owner": "synthetic-59929",
+                "title": "synthetic-41441",
+                "uri": "synthetic-98548"
+              },
+              "ingestion_date": "synthetic-9508",
+              "is_citable": true,
+              "is_missing": false,
+              "metadata": {
+                "favicon_url": "https://example.com/2638",
+                "site_domain": "synthetic-9602",
+                "site_name": "synthetic-70468",
+                "type": "synthetic-27938"
+              },
+              "prompt_context_metadata": {
+                "age": "synthetic-66307",
+                "content_type": "synthetic-34760",
+                "url": "https://example.com/3170"
+              },
+              "start": 0,
+              "text": "I'll analyze the issue. Looking at the code structure...",
+              "title": "synthetic-32018",
+              "type": "synthetic-48434",
+              "uri": "synthetic-37353",
+              "url": "https://example.com/3584",
+              "uuid": "b41b3143-8b10-450c-9570-4f32702cdd20"
+            }
+          ],
+          "context": {
+            "tools": [
+              {
+                "server_uuid": "4ca415ea-8dfa-4a56-912d-bc9aaaf91531",
+                "tool_name": "synthetic-86951"
+              },
+              {
+                "server_uuid": "2260e70f-e0cc-4dc5-b05d-b76e1a84a51a",
+                "tool_name": "synthetic-34664"
+              },
+              {
+                "server_uuid": "be0f051b-1b66-45a9-a3c4-36571d8cbbac",
+                "tool_name": "synthetic-72512"
+              },
+              {
+                "server_uuid": "9ad620ab-4821-4ddb-85b8-9cd927cb6f2a",
+                "tool_name": "synthetic-27607"
+              },
+              {
+                "server_uuid": "afffcfd2-341e-440b-97c7-00aab7b56ea7",
+                "tool_name": "synthetic-83130"
+              }
+            ]
+          },
+          "cut_off": false,
+          "display_content": {
+            "content": [
+              {
+                "icon_url": "https://example.com/2512",
+                "resource_type": "synthetic-36265",
+                "source": "synthetic-464",
+                "subtitles": [],
+                "title": "synthetic-83507",
+                "url": "https://example.com/3647"
+              },
+              {
+                "icon_url": "https://example.com/8007",
+                "resource_type": "synthetic-14663",
+                "source": "synthetic-90573",
+                "subtitles": [],
+                "title": "synthetic-48393",
+                "url": "https://example.com/8041"
+              },
+              {
+                "icon_url": "https://example.com/1685",
+                "resource_type": "synthetic-47795",
+                "source": "synthetic-46898",
+                "subtitles": [],
+                "title": "synthetic-87416",
+                "url": "https://example.com/6794"
+              }
+            ],
+            "is_trusted": false,
+            "link": {
+              "icon_url": "https://example.com/3532",
+              "source": "synthetic-31029",
+              "title": "synthetic-21299",
+              "url": "https://example.com/3900"
+            },
+            "table": [
+              [
+                "synthetic-23509",
+                "synthetic-96542"
+              ],
+              [
+                "synthetic-53964",
+                "synthetic-87806"
+              ]
+            ],
+            "type": "synthetic-96345"
+          },
+          "input": {
+            "api_query": "synthetic-32527",
+            "calendar_id": "synthetic-34970",
+            "calendar_ids": [
+              "synthetic-91917"
+            ],
+            "code": "I'll analyze the issue. Looking at the code structure...",
+            "command": "synthetic-50140",
+            "content": "I'll analyze the issue. Looking at the code structure...",
+            "context": "synthetic-61694",
+            "id": "synthetic-29154",
+            "language": "synthetic-60332",
+            "max_text_results": 10,
+            "md_citations": [
+              {
+                "end_index": 6086,
+                "metadata": {},
+                "origin_tool_name": "synthetic-52227",
+                "sources": [],
+                "start_index": 23031,
+                "title": "synthetic-36585",
+                "url": "https://example.com/6753",
+                "uuid": "adf4e62d-6651-429e-8268-690ba43825b5"
+              },
+              {
+                "end_index": 26319,
+                "metadata": {},
+                "origin_tool_name": "synthetic-3617",
+                "sources": [],
+                "start_index": 4801,
+                "title": "synthetic-34795",
+                "url": "https://example.com/1626",
+                "uuid": "587ef344-6f3f-420c-98b8-e4cc1bc044fc"
+              },
+              {
+                "end_index": 19579,
+                "metadata": {},
+                "origin_tool_name": "synthetic-57199",
+                "sources": [],
+                "start_index": 23966,
+                "title": "synthetic-24914",
+                "url": "https://example.com/5173",
+                "uuid": "006ed6e3-6fa1-4735-b572-f3d00b5cea6a"
+              },
+              {
+                "end_index": 14012,
+                "metadata": {},
+                "origin_tool_name": "synthetic-47739",
+                "sources": [],
+                "start_index": 25278,
+                "title": "synthetic-43279",
+                "url": "https://example.com/6143",
+                "uuid": "b841d0a0-1fe7-41d6-9917-8793a9d3c2e6"
+              },
+              {
+                "end_index": 24155,
+                "metadata": {},
+                "origin_tool_name": "synthetic-87410",
+                "sources": [],
+                "start_index": 10751,
+                "title": "synthetic-38752",
+                "url": "https://example.com/3085",
+                "uuid": "f0bbac67-aa38-40a1-aba2-5efe311c6eb6"
+              }
+            ],
+            "n": 379,
+            "new_str": "Here's an implementation:\n\n```python\ndef process(data):\n    return [x for x in data if x]\n```",
+            "old_str": "After reviewing, I found several areas for improvement.",
+            "page_size": 10,
+            "page_token": "synthetic-53",
+            "q": "synthetic-39829",
+            "query": "synthetic-37606",
+            "rag_query": "synthetic-27549",
+            "semantic_query": "synthetic-56346",
+            "source": "synthetic-76019",
+            "time_max": "synthetic-79516",
+            "time_min": "synthetic-85813",
+            "time_zone": "synthetic-42237",
+            "title": "synthetic-60946",
+            "type": "application/json",
+            "url": "https://example.com/8244",
+            "version_uuid": "7922bac2-82dc-4c8e-b6b5-229aacf5e81e"
+          },
+          "integration_icon_url": "https://example.com/2389",
+          "integration_name": "synthetic-67561",
+          "is_error": false,
+          "message": "synthetic-98453",
+          "name": "synthetic-30784",
+          "start_timestamp": "2023-07-24T16:54:19.939756+00:00",
+          "stop_timestamp": "2023-05-05T04:44:16.602119+00:00",
+          "summaries": [],
+          "text": "Here's an implementation:\n\n```python\ndef process(data):\n    return [x for x in data if x]\n```",
+          "thinking": "The module structure looks good. A few suggestions:",
+          "type": "synthetic-80120"
+        },
+        {
+          "citations": [],
+          "content": [
+            {
+              "doc_uuid": "synthetic-54321",
+              "end": 68,
+              "extras": {
+                "created_time": "2024-07-24T08:39:40.946839+00:00",
+                "last_modified_time": "2024-12-19T23:32:12.394909+00:00",
+                "mime_type": "application/json",
+                "modified_time": "2024-04-30T16:19:05.210939+00:00",
+                "owner": "synthetic-31979",
+                "title": "synthetic-19342",
+                "uri": "synthetic-85990"
+              },
+              "ingestion_date": "synthetic-90128",
+              "is_citable": true,
+              "is_missing": true,
+              "metadata": {
+                "favicon_url": "https://example.com/7965",
+                "site_domain": "synthetic-28683",
+                "site_name": "synthetic-23053",
+                "type": "synthetic-91214"
+              },
+              "prompt_context_metadata": {
+                "age": "synthetic-67889",
+                "content_type": "synthetic-60889",
+                "url": "https://example.com/1822"
+              },
+              "start": 0,
+              "text": "I'll analyze the issue. Looking at the code structure...",
+              "title": "synthetic-59829",
+              "type": "synthetic-17477",
+              "uri": "synthetic-60901",
+              "url": "https://example.com/9702",
+              "uuid": "513a7052-986f-4025-8f15-ba58fce68504"
+            },
+            {
+              "doc_uuid": "synthetic-98992",
+              "end": 68,
+              "extras": {
+                "created_time": "2024-08-31T21:11:49.048559+00:00",
+                "last_modified_time": "2024-12-20T22:44:16.514837+00:00",
+                "mime_type": "text/html",
+                "modified_time": "2024-02-20T05:24:28.117279+00:00",
+                "owner": "synthetic-71810",
+                "title": "synthetic-58446",
+                "uri": "synthetic-20861"
+              },
+              "ingestion_date": "synthetic-97472",
+              "is_citable": false,
+              "is_missing": false,
+              "metadata": {
+                "favicon_url": "https://example.com/5246",
+                "site_domain": "synthetic-98536",
+                "site_name": "synthetic-32406",
+                "type": "synthetic-83579"
+              },
+              "prompt_context_metadata": {
+                "age": "synthetic-36347",
+                "content_type": "synthetic-68327",
+                "url": "https://example.com/8939"
+              },
+              "start": 0,
+              "text": "After reviewing, I found several areas for improvement.",
+              "title": "synthetic-57654",
+              "type": "synthetic-10155",
+              "uri": "synthetic-93525",
+              "url": "https://example.com/5681",
+              "uuid": "51d87c64-55fa-4ab8-858f-1f193c07c574"
+            },
+            {
+              "doc_uuid": "synthetic-70798",
+              "end": 68,
+              "extras": {
+                "created_time": "2023-05-08T19:39:19.221178+00:00",
+                "last_modified_time": "2024-01-05T16:46:16.318820+00:00",
+                "mime_type": "text/plain",
+                "modified_time": "2024-12-07T13:22:02.752510+00:00",
+                "owner": "synthetic-8418",
+                "title": "synthetic-54377",
+                "uri": "synthetic-53424"
+              },
+              "ingestion_date": "synthetic-43369",
+              "is_citable": false,
+              "is_missing": false,
+              "metadata": {
+                "favicon_url": "https://example.com/2020",
+                "site_domain": "synthetic-27110",
+                "site_name": "synthetic-55069",
+                "type": "synthetic-51049"
+              },
+              "prompt_context_metadata": {
+                "age": "synthetic-76556",
+                "content_type": "synthetic-91163",
+                "url": "https://example.com/1320"
+              },
+              "start": 0,
+              "text": "The module structure looks good. A few suggestions:",
+              "title": "synthetic-62518",
+              "type": "synthetic-772",
+              "uri": "synthetic-46105",
+              "url": "https://example.com/5892",
+              "uuid": "e4429ebb-da7b-4095-a3d6-2a39c0e3befd"
+            },
+            {
+              "doc_uuid": "synthetic-54921",
+              "end": 68,
+              "extras": {
+                "created_time": "2025-01-05T22:44:25.468072+00:00",
+                "last_modified_time": "2025-03-14T21:35:35.384714+00:00",
+                "mime_type": "text/plain",
+                "modified_time": "2024-04-24T06:37:32.979522+00:00",
+                "owner": "synthetic-35774",
+                "title": "synthetic-57125",
+                "uri": "synthetic-63654"
+              },
+              "ingestion_date": "synthetic-3804",
+              "is_citable": false,
+              "is_missing": false,
+              "metadata": {
+                "favicon_url": "https://example.com/7624",
+                "site_domain": "synthetic-94919",
+                "site_name": "synthetic-21632",
+                "type": "synthetic-61261"
+              },
+              "prompt_context_metadata": {
+                "age": "synthetic-16728",
+                "content_type": "synthetic-81560",
+                "url": "https://example.com/9751"
+              },
+              "start": 0,
+              "text": "The module structure looks good. A few suggestions:",
+              "title": "synthetic-77580",
+              "type": "synthetic-73975",
+              "uri": "synthetic-86900",
+              "url": "https://example.com/1444",
+              "uuid": "22bd3388-6db9-4102-a48b-3dbe157d94a1"
+            }
+          ],
+          "context": {
+            "tools": [
+              {
+                "server_uuid": "53cd6268-610c-4373-8299-9aa40cdf742b",
+                "tool_name": "synthetic-27742"
+              },
+              {
+                "server_uuid": "c2dff335-5666-4f9f-93ac-2ab974672cd9",
+                "tool_name": "synthetic-49692"
+              },
+              {
+                "server_uuid": "d4f8fd72-f382-4cfd-8083-b73a473bd358",
+                "tool_name": "synthetic-55255"
+              },
+              {
+                "server_uuid": "78660765-14f7-4e8d-95bc-b8d04094dded",
+                "tool_name": "synthetic-2540"
+              },
+              {
+                "server_uuid": "fff9f585-0d55-4b61-8a17-5dfebfc00dc8",
+                "tool_name": "synthetic-45870"
+              }
+            ]
+          },
+          "cut_off": true,
+          "display_content": {
+            "content": [
+              {
+                "icon_url": "https://example.com/5051",
+                "resource_type": "synthetic-2671",
+                "source": "synthetic-31266",
+                "subtitles": [],
+                "title": "synthetic-87747",
+                "url": "https://example.com/4571"
+              }
+            ],
+            "is_trusted": false,
+            "link": {
+              "icon_url": "https://example.com/5198",
+              "source": "synthetic-48351",
+              "title": "synthetic-21992",
+              "url": "https://example.com/2876"
+            },
+            "table": [
+              [
+                "synthetic-14168",
+                "synthetic-75849"
+              ]
+            ],
+            "type": "synthetic-3365"
+          },
+          "input": {
+            "api_query": "synthetic-40888",
+            "calendar_id": "synthetic-75470",
+            "calendar_ids": [
+              "synthetic-49192",
+              "synthetic-51990",
+              "synthetic-93718"
+            ],
+            "code": "Here's an implementation:\n\n```python\ndef process(data):\n    return [x for x in data if x]\n```",
+            "command": "synthetic-9961",
+            "content": "Here's an implementation:\n\n```python\ndef process(data):\n    return [x for x in data if x]\n```",
+            "context": "synthetic-13356",
+            "id": "synthetic-91382",
+            "language": "synthetic-89687",
+            "max_text_results": 11,
+            "md_citations": [
+              {
+                "end_index": 21385,
+                "metadata": {},
+                "origin_tool_name": "synthetic-45508",
+                "sources": [],
+                "start_index": 1887,
+                "title": "synthetic-84874",
+                "url": "https://example.com/6590",
+                "uuid": "d284476c-6b88-483d-997d-c9cd033d2bce"
+              },
+              {
+                "end_index": 13219,
+                "metadata": {},
+                "origin_tool_name": "synthetic-47472",
+                "sources": [],
+                "start_index": 11630,
+                "title": "synthetic-96180",
+                "url": "https://example.com/9548",
+                "uuid": "9dac6e83-4524-4ea6-a684-6099f7294951"
+              },
+              {
+                "end_index": 21704,
+                "metadata": {},
+                "origin_tool_name": "synthetic-60931",
+                "sources": [],
+                "start_index": 8622,
+                "title": "synthetic-32177",
+                "url": "https://example.com/2419",
+                "uuid": "3e6dd58b-7367-428d-a1b2-94de4767d76c"
+              },
+              {
+                "end_index": 20164,
+                "metadata": {},
+                "origin_tool_name": "synthetic-44092",
+                "sources": [],
+                "start_index": 22675,
+                "title": "synthetic-23834",
+                "url": "https://example.com/8988",
+                "uuid": "4223623b-cc3e-4dde-9ad5-cf06364d7c87"
+              },
+              {
+                "end_index": 9219,
+                "metadata": {},
+                "origin_tool_name": "synthetic-72848",
+                "sources": [],
+                "start_index": 2329,
+                "title": "synthetic-94381",
+                "url": "https://example.com/7658",
+                "uuid": "3d85de89-c217-4429-8e20-07247d137018"
+              }
+            ],
+            "n": 690,
+            "new_str": "The module structure looks good. A few suggestions:",
+            "old_str": "The module structure looks good. A few suggestions:",
+            "page_size": 10,
+            "page_token": "synthetic-12196",
+            "q": "synthetic-38566",
+            "query": "synthetic-29045",
+            "rag_query": "synthetic-53005",
+            "semantic_query": "synthetic-90673",
+            "source": "synthetic-31890",
+            "time_max": "synthetic-40135",
+            "time_min": "synthetic-87026",
+            "time_zone": "synthetic-76225",
+            "title": "synthetic-48368",
+            "type": "application/json",
+            "url": "https://example.com/9698",
+            "version_uuid": "bef59fe6-ff23-4d5f-aced-d15d58007c02"
+          },
+          "integration_icon_url": "https://example.com/6764",
+          "integration_name": "synthetic-35509",
+          "is_error": false,
+          "message": "synthetic-30217",
+          "name": "synthetic-15814",
+          "start_timestamp": "2023-10-27T09:35:14.960539+00:00",
+          "stop_timestamp": "2023-06-20T05:24:47.570949+00:00",
+          "summaries": [
+            {
+              "summary": "synthetic-63464"
+            },
+            {
+              "summary": "synthetic-36241"
+            },
+            {
+              "summary": "synthetic-94972"
+            },
+            {
+              "summary": "synthetic-77278"
+            },
+            {
+              "summary": "synthetic-99641"
+            }
+          ],
+          "text": "After reviewing, I found several areas for improvement.",
+          "thinking": "I'll analyze the issue. Looking at the code structure...",
+          "type": "synthetic-25443"
+        }
+      ],
+      "created_at": "2023-10-07T07:03:01.693863+",
+      "files": [
+        {
+          "file_name": "synthetic-23519"
+        },
+        {
+          "file_name": "synthetic-39618"
+        }
+      ],
+      "sender": "human",
+      "text": "Can you explain how this works?",
+      "updated_at": "2024-12-09T05:21:03.713993+",
+      "uuid": "b289f224-4ac9-478d-8da8-eee40df56ac6"
+    },
+    {
+      "attachments": [
+        {
+          "extracted_content": "I'll analyze the issue. Looking at the code structure...",
+          "file_name": "synthetic-1607",
+          "file_size": 425154,
+          "file_type": "synthetic-61524"
+        },
+        {
+          "extracted_content": "The module structure looks good. A few suggestions:",
+          "file_name": "synthetic-57733",
+          "file_size": 252328,
+          "file_type": "synthetic-6734"
+        },
+        {
+          "extracted_content": "After reviewing, I found several areas for improvement.",
+          "file_name": "synthetic-62616",
+          "file_size": 84493,
+          "file_type": "synthetic-8564"
+        }
+      ],
+      "content": [
+        {
+          "citations": [
+            {
+              "details": {
+                "type": "synthetic-9710",
+                "url": "https://example.com/1878"
+              },
+              "end_index": 770,
+              "start_index": 3611,
+              "uuid": "fe716b14-15ce-4a66-8dc8-2a1ef2f9e5fa"
+            },
+            {
+              "details": {
+                "type": "synthetic-32530",
+                "url": "https://example.com/2940"
+              },
+              "end_index": 2592,
+              "start_index": 1887,
+              "uuid": "39c6a1ca-9e50-4a42-8a6d-fda1989bc4da"
+            },
+            {
+              "details": {
+                "type": "synthetic-68494",
+                "url": "https://example.com/7232"
+              },
+              "end_index": 2110,
+              "start_index": 2003,
+              "uuid": "6dc7cac7-fd72-4050-96a9-954fdc33e1f9"
+            }
+          ],
+          "content": [
+            {
+              "doc_uuid": "synthetic-74531",
+              "end": 68,
+              "extras": {
+                "created_time": "2024-08-28T17:39:42.102062+00:00",
+                "last_modified_time": "2025-01-11T15:07:17.493609+00:00",
+                "mime_type": "text/plain",
+                "modified_time": "2024-09-14T06:45:52.736594+00:00",
+                "owner": "synthetic-34687",
+                "title": "synthetic-86563",
+                "uri": "synthetic-10641"
+              },
+              "ingestion_date": "synthetic-20585",
+              "is_citable": true,
+              "is_missing": true,
+              "metadata": {
+                "favicon_url": "https://example.com/2229",
+                "site_domain": "synthetic-20517",
+                "site_name": "synthetic-350",
+                "type": "synthetic-53545"
+              },
+              "prompt_context_metadata": {
+                "age": "synthetic-59048",
+                "content_type": "synthetic-90357",
+                "url": "https://example.com/8699"
+              },
+              "start": 0,
+              "text": "Here's an implementation:\n\n```python\ndef process(data):\n    return [x for x in data if x]\n```",
+              "title": "synthetic-37762",
+              "type": "synthetic-92662",
+              "uri": "synthetic-37056",
+              "url": "https://example.com/8438",
+              "uuid": "ec856f37-3bc1-4987-aff8-754d1238d630"
+            },
+            {
+              "doc_uuid": "synthetic-34675",
+              "end": 68,
+              "extras": {
+                "created_time": "2024-09-13T19:20:20.644780+00:00",
+                "last_modified_time": "2024-10-21T10:27:53.856803+00:00",
+                "mime_type": "text/plain",
+                "modified_time": "2024-02-18T13:21:46.949379+00:00",
+                "owner": "synthetic-71376",
+                "title": "synthetic-29466",
+                "uri": "synthetic-84886"
+              },
+              "ingestion_date": "synthetic-19528",
+              "is_citable": false,
+              "is_missing": true,
+              "metadata": {
+                "favicon_url": "https://example.com/2169",
+                "site_domain": "synthetic-7816",
+                "site_name": "synthetic-21747",
+                "type": "synthetic-40319"
+              },
+              "prompt_context_metadata": {
+                "age": "synthetic-77993",
+                "content_type": "synthetic-98167",
+                "url": "https://example.com/5728"
+              },
+              "start": 0,
+              "text": "The module structure looks good. A few suggestions:",
+              "title": "synthetic-90266",
+              "type": "synthetic-39857",
+              "uri": "synthetic-91715",
+              "url": "https://example.com/7594",
+              "uuid": "8a3c3b5e-801e-41da-85b1-ed25f1533ae8"
+            },
+            {
+              "doc_uuid": "synthetic-64722",
+              "end": 68,
+              "extras": {
+                "created_time": "2024-08-16T15:48:19.583699+00:00",
+                "last_modified_time": "2025-06-16T04:27:40.036321+00:00",
+                "mime_type": "text/html",
+                "modified_time": "2023-11-03T10:55:42.502247+00:00",
+                "owner": "synthetic-32816",
+                "title": "synthetic-3390",
+                "uri": "synthetic-11970"
+              },
+              "ingestion_date": "synthetic-30005",
+              "is_citable": true,
+              "is_missing": false,
+              "metadata": {
+                "favicon_url": "https://example.com/1659",
+                "site_domain": "synthetic-99125",
+                "site_name": "synthetic-22962",
+                "type": "synthetic-61669"
+              },
+              "prompt_context_metadata": {
+                "age": "synthetic-68021",
+                "content_type": "synthetic-85394",
+                "url": "https://example.com/8245"
+              },
+              "start": 0,
+              "text": "Here's an implementation:\n\n```python\ndef process(data):\n    return [x for x in data if x]\n```",
+              "title": "synthetic-76720",
+              "type": "synthetic-57132",
+              "uri": "synthetic-83202",
+              "url": "https://example.com/9056",
+              "uuid": "5913f9d3-7852-49f4-975b-a98df8140102"
+            }
+          ],
+          "context": {
+            "tools": [
+              {
+                "server_uuid": "db946570-1ac7-4ec0-ab8d-deb45230dfbd",
+                "tool_name": "synthetic-21079"
+              },
+              {
+                "server_uuid": "7ed70ed7-b194-490b-a961-929e546e035a",
+                "tool_name": "synthetic-37777"
+              },
+              {
+                "server_uuid": "d045dd1c-6684-49e3-b1f8-343ea99f1318",
+                "tool_name": "synthetic-99680"
+              },
+              {
+                "server_uuid": "168b1625-746f-4891-8964-fbbf8cd321b0",
+                "tool_name": "synthetic-41224"
+              },
+              {
+                "server_uuid": "f85e06a1-1dad-49b2-92c2-1221409d3602",
+                "tool_name": "synthetic-52976"
+              }
+            ]
+          },
+          "cut_off": true,
+          "display_content": {
+            "content": [
+              {
+                "icon_url": "https://example.com/4073",
+                "resource_type": "synthetic-81609",
+                "source": "synthetic-81973",
+                "subtitles": [],
+                "title": "synthetic-26680",
+                "url": "https://example.com/9998"
+              },
+              {
+                "icon_url": "https://example.com/5719",
+                "resource_type": "synthetic-91521",
+                "source": "synthetic-15915",
+                "subtitles": [],
+                "title": "synthetic-93032",
+                "url": "https://example.com/6091"
+              },
+              {
+                "icon_url": "https://example.com/7684",
+                "resource_type": "synthetic-29451",
+                "source": "synthetic-60482",
+                "subtitles": [],
+                "title": "synthetic-65323",
+                "url": "https://example.com/9337"
+              },
+              {
+                "icon_url": "https://example.com/7807",
+                "resource_type": "synthetic-61894",
+                "source": "synthetic-59871",
+                "subtitles": [],
+                "title": "synthetic-24983",
+                "url": "https://example.com/2143"
+              }
+            ],
+            "is_trusted": false,
+            "link": {
+              "icon_url": "https://example.com/7798",
+              "source": "synthetic-44548",
+              "title": "synthetic-66550",
+              "url": "https://example.com/5377"
+            },
+            "table": [
+              [
+                "synthetic-95164",
+                "synthetic-39132"
+              ]
+            ],
+            "type": "synthetic-76931"
+          },
+          "input": {
+            "api_query": "synthetic-76011",
+            "calendar_id": "synthetic-86499",
+            "calendar_ids": [
+              "synthetic-19476",
+              "synthetic-58529"
+            ],
+            "code": "The module structure looks good. A few suggestions:",
+            "command": "synthetic-45236",
+            "content": "After reviewing, I found several areas for improvement.",
+            "context": "synthetic-72340",
+            "id": "synthetic-99991",
+            "language": "synthetic-59682",
+            "max_text_results": 11,
+            "md_citations": [
+              {
+                "end_index": 26309,
+                "metadata": {},
+                "origin_tool_name": "synthetic-74946",
+                "sources": [],
+                "start_index": 22810,
+                "title": "synthetic-53841",
+                "url": "https://example.com/1715",
+                "uuid": "b489d070-7914-48a8-bea4-ff31517400f8"
+              },
+              {
+                "end_index": 24512,
+                "metadata": {},
+                "origin_tool_name": "synthetic-50604",
+                "sources": [],
+                "start_index": 25702,
+                "title": "synthetic-16547",
+                "url": "https://example.com/9229",
+                "uuid": "dea4ae17-54fd-4ad3-9716-108ef72169bb"
+              },
+              {
+                "end_index": 2816,
+                "metadata": {},
+                "origin_tool_name": "synthetic-13069",
+                "sources": [],
+                "start_index": 19259,
+                "title": "synthetic-53736",
+                "url": "https://example.com/3529",
+                "uuid": "f81dbaa1-c812-4a8e-b830-89301327f1bc"
+              },
+              {
+                "end_index": 7210,
+                "metadata": {},
+                "origin_tool_name": "synthetic-85175",
+                "sources": [],
+                "start_index": 22712,
+                "title": "synthetic-69942",
+                "url": "https://example.com/7226",
+                "uuid": "b7fddd71-a075-4927-9110-b492f4427e0b"
+              },
+              {
+                "end_index": 23819,
+                "metadata": {},
+                "origin_tool_name": "synthetic-70912",
+                "sources": [],
+                "start_index": 6295,
+                "title": "synthetic-89705",
+                "url": "https://example.com/5708",
+                "uuid": "1723199d-bf2c-44a0-ba3c-8a71ff574e2b"
+              }
+            ],
+            "n": 433,
+            "new_str": "I'll analyze the issue. Looking at the code structure...",
+            "old_str": "I'll analyze the issue. Looking at the code structure...",
+            "page_size": 10,
+            "page_token": "synthetic-90964",
+            "q": "synthetic-39251",
+            "query": "synthetic-3794",
+            "rag_query": "synthetic-6028",
+            "semantic_query": "synthetic-42516",
+            "source": "synthetic-7355",
+            "time_max": "synthetic-38452",
+            "time_min": "synthetic-46984",
+            "time_zone": "synthetic-49131",
+            "title": "synthetic-56450",
+            "type": "text/plain",
+            "url": "https://example.com/5000",
+            "version_uuid": "ae8a7813-90e0-495b-a97c-392387fa841a"
+          },
+          "integration_icon_url": "https://example.com/3785",
+          "integration_name": "synthetic-10350",
+          "is_error": false,
+          "message": "synthetic-65230",
+          "name": "synthetic-76435",
+          "start_timestamp": "2023-08-01T13:35:59.986564+00:00",
+          "stop_timestamp": "2024-03-25T10:09:04.925906+00:00",
+          "summaries": [
+            {
+              "summary": "synthetic-1231"
+            },
+            {
+              "summary": "synthetic-60981"
+            },
+            {
+              "summary": "synthetic-37700"
+            },
+            {
+              "summary": "synthetic-88815"
+            },
+            {
+              "summary": "synthetic-71643"
+            }
+          ],
+          "text": "Here's an implementation:\n\n```python\ndef process(data):\n    return [x for x in data if x]\n```",
+          "thinking": "I'll analyze the issue. Looking at the code structure...",
+          "type": "synthetic-57898"
+        },
+        {
+          "citations": [
+            {
+              "details": {
+                "type": "synthetic-77014",
+                "url": "https://example.com/5901"
+              },
+              "end_index": 2955,
+              "start_index": 1923,
+              "uuid": "4d57d880-d865-469a-b4f3-310340066ff2"
+            },
+            {
+              "details": {
+                "type": "synthetic-26111",
+                "url": "https://example.com/7302"
+              },
+              "end_index": 3917,
+              "start_index": 536,
+              "uuid": "9326dffd-5be4-4f51-9269-869861a11729"
+            }
+          ],
+          "content": [
+            {
+              "doc_uuid": "synthetic-91655",
+              "end": 68,
+              "extras": {
+                "created_time": "2025-09-16T09:30:03.611918+00:00",
+                "last_modified_time": "2024-10-18T08:38:03.433581+00:00",
+                "mime_type": "application/json",
+                "modified_time": "2022-12-11T03:20:16.918534+00:00",
+                "owner": "synthetic-89889",
+                "title": "synthetic-97605",
+                "uri": "synthetic-6428"
+              },
+              "ingestion_date": "synthetic-79482",
+              "is_citable": false,
+              "is_missing": false,
+              "metadata": {
+                "favicon_url": "https://example.com/4770",
+                "site_domain": "synthetic-79569",
+                "site_name": "synthetic-46179",
+                "type": "synthetic-28705"
+              },
+              "prompt_context_metadata": {
+                "age": "synthetic-83442",
+                "content_type": "synthetic-24920",
+                "url": "https://example.com/5106"
+              },
+              "start": 0,
+              "text": "Here's an implementation:\n\n```python\ndef process(data):\n    return [x for x in data if x]\n```",
+              "title": "synthetic-82345",
+              "type": "synthetic-12735",
+              "uri": "synthetic-82242",
+              "url": "https://example.com/1645",
+              "uuid": "088a93ec-70d9-49f8-89e2-60744f1639a0"
+            },
+            {
+              "doc_uuid": "synthetic-75965",
+              "end": 68,
+              "extras": {
+                "created_time": "2023-04-18T14:11:02.577844+00:00",
+                "last_modified_time": "2025-07-07T05:35:03.108739+00:00",
+                "mime_type": "application/json",
+                "modified_time": "2025-01-19T07:54:37.844453+00:00",
+                "owner": "synthetic-23021",
+                "title": "synthetic-26318",
+                "uri": "synthetic-17322"
+              },
+              "ingestion_date": "synthetic-70701",
+              "is_citable": false,
+              "is_missing": false,
+              "metadata": {
+                "favicon_url": "https://example.com/3695",
+                "site_domain": "synthetic-33681",
+                "site_name": "synthetic-63156",
+                "type": "synthetic-38684"
+              },
+              "prompt_context_metadata": {
+                "age": "synthetic-97853",
+                "content_type": "synthetic-44396",
+                "url": "https://example.com/2886"
+              },
+              "start": 0,
+              "text": "I'll analyze the issue. Looking at the code structure...",
+              "title": "synthetic-18449",
+              "type": "synthetic-98848",
+              "uri": "synthetic-29571",
+              "url": "https://example.com/7511",
+              "uuid": "8eac0a33-cdf9-44a7-9882-b5c1f79efd70"
+            },
+            {
+              "doc_uuid": "synthetic-47942",
+              "end": 68,
+              "extras": {
+                "created_time": "2024-01-17T17:15:10.429584+00:00",
+                "last_modified_time": "2023-09-04T04:21:12.051718+00:00",
+                "mime_type": "text/plain",
+                "modified_time": "2024-03-20T10:32:22.496049+00:00",
+                "owner": "synthetic-88188",
+                "title": "synthetic-98174",
+                "uri": "synthetic-88125"
+              },
+              "ingestion_date": "synthetic-34362",
+              "is_citable": false,
+              "is_missing": false,
+              "metadata": {
+                "favicon_url": "https://example.com/2775",
+                "site_domain": "synthetic-88452",
+                "site_name": "synthetic-30647",
+                "type": "synthetic-61797"
+              },
+              "prompt_context_metadata": {
+                "age": "synthetic-3280",
+                "content_type": "synthetic-81205",
+                "url": "https://example.com/6374"
+              },
+              "start": 0,
+              "text": "Here's an implementation:\n\n```python\ndef process(data):\n    return [x for x in data if x]\n```",
+              "title": "synthetic-84889",
+              "type": "synthetic-8285",
+              "uri": "synthetic-83283",
+              "url": "https://example.com/8606",
+              "uuid": "a6348e78-4d5c-45c7-b379-cb1ee8cda0cc"
+            }
+          ],
+          "context": {
+            "tools": [
+              {
+                "server_uuid": "0986bbeb-f23e-423d-8b9b-d93423c86d30",
+                "tool_name": "synthetic-39893"
+              },
+              {
+                "server_uuid": "18e19331-1dba-4267-be1c-a5a1fef518a6",
+                "tool_name": "synthetic-30775"
+              },
+              {
+                "server_uuid": "637e4b01-22ba-410e-899c-a782e3236d1a",
+                "tool_name": "synthetic-59459"
+              },
+              {
+                "server_uuid": "be3e6e57-f30a-4e32-aba4-fc035efa9c5b",
+                "tool_name": "synthetic-91289"
+              },
+              {
+                "server_uuid": "965befdf-6b4b-4411-8a4a-0e2df22b5b98",
+                "tool_name": "synthetic-97290"
+              }
+            ]
+          },
+          "cut_off": true,
+          "display_content": {
+            "content": [
+              {
+                "icon_url": "https://example.com/7686",
+                "resource_type": "synthetic-4288",
+                "source": "synthetic-28477",
+                "subtitles": [],
+                "title": "synthetic-30947",
+                "url": "https://example.com/2627"
+              }
+            ],
+            "is_trusted": false,
+            "link": {
+              "icon_url": "https://example.com/9920",
+              "source": "synthetic-84518",
+              "title": "synthetic-47012",
+              "url": "https://example.com/1992"
+            },
+            "table": [
+              [
+                "synthetic-24878",
+                "synthetic-16011"
+              ],
+              [
+                "synthetic-12015",
+                "synthetic-86870"
+              ]
+            ],
+            "type": "synthetic-27801"
+          },
+          "input": {
+            "api_query": "synthetic-84109",
+            "calendar_id": "synthetic-83819",
+            "calendar_ids": [
+              "synthetic-2799",
+              "synthetic-6629",
+              "synthetic-43713"
+            ],
+            "code": "Here's an implementation:\n\n```python\ndef process(data):\n    return [x for x in data if x]\n```",
+            "command": "synthetic-16505",
+            "content": "Here's an implementation:\n\n```python\ndef process(data):\n    return [x for x in data if x]\n```",
+            "context": "synthetic-8992",
+            "id": "synthetic-72641",
+            "language": "synthetic-76858",
+            "max_text_results": 10,
+            "md_citations": [
+              {
+                "end_index": 8905,
+                "metadata": {},
+                "origin_tool_name": "synthetic-78116",
+                "sources": [],
+                "start_index": 22873,
+                "title": "synthetic-18964",
+                "url": "https://example.com/3129",
+                "uuid": "2cabd7e7-cc6b-46e5-802a-df9c8a4b8f7c"
+              },
+              {
+                "end_index": 3071,
+                "metadata": {},
+                "origin_tool_name": "synthetic-17275",
+                "sources": [],
+                "start_index": 21054,
+                "title": "synthetic-31186",
+                "url": "https://example.com/6304",
+                "uuid": "0d6a05b3-43ef-4016-ac9b-662e040a3aae"
+              },
+              {
+                "end_index": 3520,
+                "metadata": {},
+                "origin_tool_name": "synthetic-68955",
+                "sources": [],
+                "start_index": 12714,
+                "title": "synthetic-47453",
+                "url": "https://example.com/9408",
+                "uuid": "80fb9296-73b6-409b-9bea-f6ac97fa7f04"
+              },
+              {
+                "end_index": 6050,
+                "metadata": {},
+                "origin_tool_name": "synthetic-95321",
+                "sources": [],
+                "start_index": 17156,
+                "title": "synthetic-4082",
+                "url": "https://example.com/1996",
+                "uuid": "66d06371-d8e8-4ebb-ba9e-8eefffa361be"
+              },
+              {
+                "end_index": 11513,
+                "metadata": {},
+                "origin_tool_name": "synthetic-64260",
+                "sources": [],
+                "start_index": 23960,
+                "title": "synthetic-42219",
+                "url": "https://example.com/3430",
+                "uuid": "9fd34579-4667-42ce-a04e-178c10d08d11"
+              }
+            ],
+            "n": 633,
+            "new_str": "After reviewing, I found several areas for improvement.",
+            "old_str": "The module structure looks good. A few suggestions:",
+            "page_size": 10,
+            "page_token": "synthetic-69541",
+            "q": "synthetic-38652",
+            "query": "synthetic-59469",
+            "rag_query": "synthetic-66263",
+            "semantic_query": "synthetic-79354",
+            "source": "synthetic-56387",
+            "time_max": "synthetic-12999",
+            "time_min": "synthetic-91983",
+            "time_zone": "synthetic-14996",
+            "title": "synthetic-85814",
+            "type": "text/html",
+            "url": "https://example.com/4522",
+            "version_uuid": "3a7e8e14-e359-4ee1-b399-1a476e191042"
+          },
+          "integration_icon_url": "https://example.com/6553",
+          "integration_name": "synthetic-52262",
+          "is_error": false,
+          "message": "synthetic-40966",
+          "name": "synthetic-55936",
+          "start_timestamp": "2024-10-25T12:35:07.675428+00:00",
+          "stop_timestamp": "2025-08-22T00:42:06.585721+00:00",
+          "summaries": [
+            {
+              "summary": "synthetic-62163"
+            },
+            {
+              "summary": "synthetic-8799"
+            },
+            {
+              "summary": "synthetic-11957"
+            },
+            {
+              "summary": "synthetic-11188"
+            },
+            {
+              "summary": "synthetic-12219"
+            }
+          ],
+          "text": "The module structure looks good. A few suggestions:",
+          "thinking": "I'll analyze the issue. Looking at the code structure...",
+          "type": "synthetic-97594"
+        },
+        {
+          "citations": [
+            {
+              "details": {
+                "type": "synthetic-48843",
+                "url": "https://example.com/3131"
+              },
+              "end_index": 2585,
+              "start_index": 2630,
+              "uuid": "ab85fd59-5463-4dc7-8fca-7b6a8fc42092"
+            },
+            {
+              "details": {
+                "type": "synthetic-16021",
+                "url": "https://example.com/7730"
+              },
+              "end_index": 1675,
+              "start_index": 2975,
+              "uuid": "ea74bb18-de3b-496f-ac45-96f6c012a0ff"
+            },
+            {
+              "details": {
+                "type": "synthetic-94510",
+                "url": "https://example.com/1842"
+              },
+              "end_index": 4433,
+              "start_index": 2691,
+              "uuid": "81e5c9f6-93f2-47cc-9a85-910d5a057c11"
+            },
+            {
+              "details": {
+                "type": "synthetic-27884",
+                "url": "https://example.com/3535"
+              },
+              "end_index": 3035,
+              "start_index": 1049,
+              "uuid": "8e676a01-d86a-4460-99a1-120e1bb43332"
+            },
+            {
+              "details": {
+                "type": "synthetic-48176",
+                "url": "https://example.com/2882"
+              },
+              "end_index": 3510,
+              "start_index": 2576,
+              "uuid": "8f9b72ae-d85c-46bd-adda-4f8dcea60f4c"
+            }
+          ],
+          "content": [
+            {
+              "doc_uuid": "synthetic-80422",
+              "end": 68,
+              "extras": {
+                "created_time": "2024-07-04T15:22:57.965340+00:00",
+                "last_modified_time": "2024-08-28T01:45:42.399776+00:00",
+                "mime_type": "text/html",
+                "modified_time": "2025-04-14T17:24:31.096370+00:00",
+                "owner": "synthetic-35054",
+                "title": "synthetic-3794",
+                "uri": "synthetic-23647"
+              },
+              "ingestion_date": "synthetic-35818",
+              "is_citable": false,
+              "is_missing": false,
+              "metadata": {
+                "favicon_url": "https://example.com/6751",
+                "site_domain": "synthetic-800",
+                "site_name": "synthetic-23777",
+                "type": "synthetic-18776"
+              },
+              "prompt_context_metadata": {
+                "age": "synthetic-74228",
+                "content_type": "synthetic-86159",
+                "url": "https://example.com/7566"
+              },
+              "start": 0,
+              "text": "I'll analyze the issue. Looking at the code structure...",
+              "title": "synthetic-12026",
+              "type": "synthetic-97794",
+              "uri": "synthetic-69531",
+              "url": "https://example.com/4524",
+              "uuid": "5744f596-7422-4167-ab7a-2460604e46cb"
+            },
+            {
+              "doc_uuid": "synthetic-20631",
+              "end": 68,
+              "extras": {
+                "created_time": "2024-12-23T08:47:17.096841+00:00",
+                "last_modified_time": "2025-02-18T21:46:45.797007+00:00",
+                "mime_type": "text/html",
+                "modified_time": "2024-08-14T18:28:59.498458+00:00",
+                "owner": "synthetic-6895",
+                "title": "synthetic-20392",
+                "uri": "synthetic-20632"
+              },
+              "ingestion_date": "synthetic-98885",
+              "is_citable": true,
+              "is_missing": true,
+              "metadata": {
+                "favicon_url": "https://example.com/5458",
+                "site_domain": "synthetic-58079",
+                "site_name": "synthetic-86761",
+                "type": "synthetic-55576"
+              },
+              "prompt_context_metadata": {
+                "age": "synthetic-63656",
+                "content_type": "synthetic-79570",
+                "url": "https://example.com/8242"
+              },
+              "start": 0,
+              "text": "Here's an implementation:\n\n```python\ndef process(data):\n    return [x for x in data if x]\n```",
+              "title": "synthetic-98951",
+              "type": "synthetic-67154",
+              "uri": "synthetic-14918",
+              "url": "https://example.com/6655",
+              "uuid": "ad9fb00d-4882-473c-9c63-45ab6e0ed1e8"
+            },
+            {
+              "doc_uuid": "synthetic-88930",
+              "end": 68,
+              "extras": {
+                "created_time": "2024-06-03T14:14:29.643333+00:00",
+                "last_modified_time": "2023-10-19T23:22:25.266613+00:00",
+                "mime_type": "text/plain",
+                "modified_time": "2024-01-18T10:28:25.647887+00:00",
+                "owner": "synthetic-78554",
+                "title": "synthetic-7180",
+                "uri": "synthetic-1007"
+              },
+              "ingestion_date": "synthetic-26794",
+              "is_citable": false,
+              "is_missing": true,
+              "metadata": {
+                "favicon_url": "https://example.com/3248",
+                "site_domain": "synthetic-33491",
+                "site_name": "synthetic-37938",
+                "type": "synthetic-43007"
+              },
+              "prompt_context_metadata": {
+                "age": "synthetic-15726",
+                "content_type": "synthetic-1013",
+                "url": "https://example.com/9149"
+              },
+              "start": 0,
+              "text": "Here's an implementation:\n\n```python\ndef process(data):\n    return [x for x in data if x]\n```",
+              "title": "synthetic-16932",
+              "type": "synthetic-49834",
+              "uri": "synthetic-69806",
+              "url": "https://example.com/4770",
+              "uuid": "ab05347f-d556-437d-8f08-81ee8011316b"
+            },
+            {
+              "doc_uuid": "synthetic-46421",
+              "end": 68,
+              "extras": {
+                "created_time": "2025-05-18T08:59:52.582033+00:00",
+                "last_modified_time": "2023-01-15T18:26:43.540651+00:00",
+                "mime_type": "text/plain",
+                "modified_time": "2024-03-25T14:44:42.532065+00:00",
+                "owner": "synthetic-10205",
+                "title": "synthetic-41033",
+                "uri": "synthetic-75465"
+              },
+              "ingestion_date": "synthetic-56267",
+              "is_citable": false,
+              "is_missing": false,
+              "metadata": {
+                "favicon_url": "https://example.com/5743",
+                "site_domain": "synthetic-15096",
+                "site_name": "synthetic-53088",
+                "type": "synthetic-2733"
+              },
+              "prompt_context_metadata": {
+                "age": "synthetic-42568",
+                "content_type": "synthetic-22527",
+                "url": "https://example.com/8538"
+              },
+              "start": 0,
+              "text": "After reviewing, I found several areas for improvement.",
+              "title": "synthetic-11551",
+              "type": "synthetic-57240",
+              "uri": "synthetic-13875",
+              "url": "https://example.com/4986",
+              "uuid": "862268d1-6683-4107-96c0-44d06f887f28"
+            },
+            {
+              "doc_uuid": "synthetic-10308",
+              "end": 68,
+              "extras": {
+                "created_time": "2023-10-21T21:45:10.565228+00:00",
+                "last_modified_time": "2023-11-21T08:43:15.303362+00:00",
+                "mime_type": "application/json",
+                "modified_time": "2025-02-21T06:50:08.174294+00:00",
+                "owner": "synthetic-10011",
+                "title": "synthetic-66910",
+                "uri": "synthetic-82998"
+              },
+              "ingestion_date": "synthetic-14945",
+              "is_citable": true,
+              "is_missing": false,
+              "metadata": {
+                "favicon_url": "https://example.com/6752",
+                "site_domain": "synthetic-95339",
+                "site_name": "synthetic-84599",
+                "type": "synthetic-19358"
+              },
+              "prompt_context_metadata": {
+                "age": "synthetic-30968",
+                "content_type": "synthetic-13474",
+                "url": "https://example.com/3399"
+              },
+              "start": 0,
+              "text": "Here's an implementation:\n\n```python\ndef process(data):\n    return [x for x in data if x]\n```",
+              "title": "synthetic-78957",
+              "type": "synthetic-20036",
+              "uri": "synthetic-99642",
+              "url": "https://example.com/2234",
+              "uuid": "a0c14035-c5d9-4f51-b387-e1bd2d5972c6"
+            }
+          ],
+          "context": {
+            "tools": [
+              {
+                "server_uuid": "9458054e-c287-4f06-9050-f7efc1235c91",
+                "tool_name": "synthetic-58838"
+              },
+              {
+                "server_uuid": "9082889b-e1cd-487f-ac95-5f87ae5ec365",
+                "tool_name": "synthetic-84278"
+              },
+              {
+                "server_uuid": "52bdc661-9fe0-48c7-bc8d-5b93a2a2e91f",
+                "tool_name": "synthetic-82210"
+              },
+              {
+                "server_uuid": "117b355b-7094-4bdb-a6a5-24e350ee7a92",
+                "tool_name": "synthetic-61462"
+              },
+              {
+                "server_uuid": "cbdc4318-4d85-43d2-a1a2-748571348c2a",
+                "tool_name": "synthetic-36002"
+              }
+            ]
+          },
+          "cut_off": true,
+          "display_content": {
+            "content": [
+              {
+                "icon_url": "https://example.com/6085",
+                "resource_type": "synthetic-59233",
+                "source": "synthetic-7456",
+                "subtitles": [],
+                "title": "synthetic-10057",
+                "url": "https://example.com/9307"
+              },
+              {
+                "icon_url": "https://example.com/8581",
+                "resource_type": "synthetic-58947",
+                "source": "synthetic-42143",
+                "subtitles": [],
+                "title": "synthetic-8109",
+                "url": "https://example.com/2695"
+              },
+              {
+                "icon_url": "https://example.com/2381",
+                "resource_type": "synthetic-5130",
+                "source": "synthetic-92749",
+                "subtitles": [],
+                "title": "synthetic-68690",
+                "url": "https://example.com/6962"
+              },
+              {
+                "icon_url": "https://example.com/5634",
+                "resource_type": "synthetic-53578",
+                "source": "synthetic-88984",
+                "subtitles": [],
+                "title": "synthetic-8639",
+                "url": "https://example.com/2548"
+              },
+              {
+                "icon_url": "https://example.com/5655",
+                "resource_type": "synthetic-94861",
+                "source": "synthetic-43694",
+                "subtitles": [],
+                "title": "synthetic-45851",
+                "url": "https://example.com/7421"
+              }
+            ],
+            "is_trusted": true,
+            "link": {
+              "icon_url": "https://example.com/2388",
+              "source": "synthetic-40577",
+              "title": "synthetic-73259",
+              "url": "https://example.com/7171"
+            },
+            "table": [
+              [
+                "synthetic-16750",
+                "synthetic-87833"
+              ],
+              [
+                "synthetic-84675",
+                "synthetic-87878"
+              ],
+              [
+                "synthetic-66648",
+                "synthetic-47425"
+              ]
+            ],
+            "type": "synthetic-2389"
+          },
+          "input": {
+            "api_query": "synthetic-47526",
+            "calendar_id": "synthetic-40483",
+            "calendar_ids": [
+              "synthetic-28074"
+            ],
+            "code": "After reviewing, I found several areas for improvement.",
+            "command": "synthetic-63736",
+            "content": "Here's an implementation:\n\n```python\ndef process(data):\n    return [x for x in data if x]\n```",
+            "context": "synthetic-29693",
+            "id": "synthetic-18030",
+            "language": "synthetic-10114",
+            "max_text_results": 10,
+            "md_citations": [
+              {
+                "end_index": 13685,
+                "metadata": {},
+                "origin_tool_name": "synthetic-86760",
+                "sources": [],
+                "start_index": 15931,
+                "title": "synthetic-20218",
+                "url": "https://example.com/3658",
+                "uuid": "c566aa81-b15e-44f6-94d3-07952e4bebc4"
+              },
+              {
+                "end_index": 16809,
+                "metadata": {},
+                "origin_tool_name": "synthetic-94526",
+                "sources": [],
+                "start_index": 10976,
+                "title": "synthetic-88652",
+                "url": "https://example.com/4891",
+                "uuid": "48f1096d-9c4f-4b46-b1b7-01aaf836f571"
+              },
+              {
+                "end_index": 20215,
+                "metadata": {},
+                "origin_tool_name": "synthetic-30671",
+                "sources": [],
+                "start_index": 25723,
+                "title": "synthetic-61474",
+                "url": "https://example.com/4178",
+                "uuid": "92070158-f277-4f63-ada5-84175e2ad32d"
+              },
+              {
+                "end_index": 26407,
+                "metadata": {},
+                "origin_tool_name": "synthetic-36932",
+                "sources": [],
+                "start_index": 25741,
+                "title": "synthetic-26174",
+                "url": "https://example.com/3267",
+                "uuid": "a4244f23-0d5b-47cd-8000-35f0df7d0dd7"
+              },
+              {
+                "end_index": 12962,
+                "metadata": {},
+                "origin_tool_name": "synthetic-72684",
+                "sources": [],
+                "start_index": 7632,
+                "title": "synthetic-21012",
+                "url": "https://example.com/5469",
+                "uuid": "25b8a42f-836b-45c7-a7c2-25da73069588"
+              }
+            ],
+            "n": 831,
+            "new_str": "I'll analyze the issue. Looking at the code structure...",
+            "old_str": "Here's an implementation:\n\n```python\ndef process(data):\n    return [x for x in data if x]\n```",
+            "page_size": 10,
+            "page_token": "synthetic-45820",
+            "q": "synthetic-3495",
+            "query": "synthetic-54381",
+            "rag_query": "synthetic-6980",
+            "semantic_query": "synthetic-51964",
+            "source": "synthetic-65799",
+            "time_max": "synthetic-49015",
+            "time_min": "synthetic-30903",
+            "time_zone": "synthetic-50615",
+            "title": "synthetic-10696",
+            "type": "application/json",
+            "url": "https://example.com/4678",
+            "version_uuid": "195d82f8-ee4a-4b5d-9195-54e307374c86"
+          },
+          "integration_icon_url": "https://example.com/3392",
+          "integration_name": "synthetic-5020",
+          "is_error": false,
+          "message": "synthetic-91235",
+          "name": "synthetic-18191",
+          "start_timestamp": "2024-03-13T23:55:32.658402+00:00",
+          "stop_timestamp": "2025-07-03T07:19:34.019294+00:00",
+          "summaries": [],
+          "text": "After reviewing, I found several areas for improvement.",
+          "thinking": "Here's an implementation:\n\n```python\ndef process(data):\n    return [x for x in data if x]\n```",
+          "type": "synthetic-19597"
+        },
+        {
+          "citations": [
+            {
+              "details": {
+                "type": "synthetic-95320",
+                "url": "https://example.com/9647"
+              },
+              "end_index": 1988,
+              "start_index": 3458,
+              "uuid": "0c394ec7-1f31-4405-8d18-3eba3cd5fd7f"
+            },
+            {
+              "details": {
+                "type": "synthetic-31252",
+                "url": "https://example.com/7878"
+              },
+              "end_index": 2955,
+              "start_index": 2789,
+              "uuid": "e7b7b4c6-d631-4a80-9c61-2ec210142131"
+            },
+            {
+              "details": {
+                "type": "synthetic-65513",
+                "url": "https://example.com/9782"
+              },
+              "end_index": 163,
+              "start_index": 2320,
+              "uuid": "4a90cd0c-24c1-43b9-b7f2-85723defa849"
+            },
+            {
+              "details": {
+                "type": "synthetic-56261",
+                "url": "https://example.com/1025"
+              },
+              "end_index": 2847,
+              "start_index": 1121,
+              "uuid": "ab1021ce-aa14-4cd8-aff3-cde46aa42c9f"
+            }
+          ],
+          "content": [
+            {
+              "doc_uuid": "synthetic-68614",
+              "end": 68,
+              "extras": {
+                "created_time": "2023-02-11T04:52:19.061796+00:00",
+                "last_modified_time": "2024-06-02T16:22:30.078995+00:00",
+                "mime_type": "text/html",
+                "modified_time": "2025-02-28T21:11:50.226079+00:00",
+                "owner": "synthetic-66535",
+                "title": "synthetic-72633",
+                "uri": "synthetic-2665"
+              },
+              "ingestion_date": "synthetic-51177",
+              "is_citable": false,
+              "is_missing": true,
+              "metadata": {
+                "favicon_url": "https://example.com/7338",
+                "site_domain": "synthetic-48929",
+                "site_name": "synthetic-33246",
+                "type": "synthetic-97952"
+              },
+              "prompt_context_metadata": {
+                "age": "synthetic-2128",
+                "content_type": "synthetic-46805",
+                "url": "https://example.com/2106"
+              },
+              "start": 0,
+              "text": "I'll analyze the issue. Looking at the code structure...",
+              "title": "synthetic-76271",
+              "type": "synthetic-96362",
+              "uri": "synthetic-99179",
+              "url": "https://example.com/6447",
+              "uuid": "8bc78e81-5a30-4528-8b59-95622227219f"
+            }
+          ],
+          "context": {
+            "tools": [
+              {
+                "server_uuid": "76f186ab-af47-4b49-8775-e395d49405f0",
+                "tool_name": "synthetic-91146"
+              },
+              {
+                "server_uuid": "cfbe4fe9-2ea9-4542-a1b9-70d07a8104de",
+                "tool_name": "synthetic-17675"
+              },
+              {
+                "server_uuid": "f1901b7e-c6b4-49ef-b74e-ba9310275b53",
+                "tool_name": "synthetic-59988"
+              },
+              {
+                "server_uuid": "0b36e356-339b-47a8-8b1f-0d7b0977c513",
+                "tool_name": "synthetic-26144"
+              },
+              {
+                "server_uuid": "eef16694-50ca-432d-8aba-590ee2c328aa",
+                "tool_name": "synthetic-40642"
+              }
+            ]
+          },
+          "cut_off": false,
+          "display_content": {
+            "content": [
+              {
+                "icon_url": "https://example.com/4131",
+                "resource_type": "synthetic-46789",
+                "source": "synthetic-85948",
+                "subtitles": [],
+                "title": "synthetic-16315",
+                "url": "https://example.com/8159"
+              },
+              {
+                "icon_url": "https://example.com/8204",
+                "resource_type": "synthetic-44438",
+                "source": "synthetic-65038",
+                "subtitles": [],
+                "title": "synthetic-68062",
+                "url": "https://example.com/2353"
+              },
+              {
+                "icon_url": "https://example.com/2293",
+                "resource_type": "synthetic-78964",
+                "source": "synthetic-71496",
+                "subtitles": [],
+                "title": "synthetic-13447",
+                "url": "https://example.com/6372"
+              }
+            ],
+            "is_trusted": false,
+            "link": {
+              "icon_url": "https://example.com/6021",
+              "source": "synthetic-58447",
+              "title": "synthetic-78986",
+              "url": "https://example.com/7981"
+            },
+            "table": [
+              [
+                "synthetic-46077",
+                "synthetic-58606"
+              ]
+            ],
+            "type": "synthetic-5551"
+          },
+          "input": {
+            "api_query": "synthetic-95265",
+            "calendar_id": "synthetic-46210",
+            "calendar_ids": [
+              "synthetic-57008",
+              "synthetic-35986",
+              "synthetic-83816"
+            ],
+            "code": "I'll analyze the issue. Looking at the code structure...",
+            "command": "synthetic-9835",
+            "content": "The module structure looks good. A few suggestions:",
+            "context": "synthetic-47619",
+            "id": "synthetic-67251",
+            "language": "synthetic-4081",
+            "max_text_results": 10,
+            "md_citations": [
+              {
+                "end_index": 1066,
+                "metadata": {},
+                "origin_tool_name": "synthetic-30932",
+                "sources": [],
+                "start_index": 10231,
+                "title": "synthetic-74349",
+                "url": "https://example.com/1530",
+                "uuid": "732e2016-add7-42c9-a747-b93c9ae77eab"
+              },
+              {
+                "end_index": 25457,
+                "metadata": {},
+                "origin_tool_name": "synthetic-58188",
+                "sources": [],
+                "start_index": 14129,
+                "title": "synthetic-52171",
+                "url": "https://example.com/6150",
+                "uuid": "f5e4a471-3fe6-4c9c-8758-367ba6499cdc"
+              },
+              {
+                "end_index": 3165,
+                "metadata": {},
+                "origin_tool_name": "synthetic-65410",
+                "sources": [],
+                "start_index": 7013,
+                "title": "synthetic-34116",
+                "url": "https://example.com/8311",
+                "uuid": "491b90e9-9ca3-4bb3-bf11-c8ba36ee1640"
+              },
+              {
+                "end_index": 18656,
+                "metadata": {},
+                "origin_tool_name": "synthetic-26237",
+                "sources": [],
+                "start_index": 22725,
+                "title": "synthetic-59250",
+                "url": "https://example.com/3828",
+                "uuid": "ff4c96d6-71f2-4e8f-b69f-68c3e60fd420"
+              },
+              {
+                "end_index": 2480,
+                "metadata": {},
+                "origin_tool_name": "synthetic-87535",
+                "sources": [],
+                "start_index": 14675,
+                "title": "synthetic-38058",
+                "url": "https://example.com/5914",
+                "uuid": "b5a5f8e6-b639-4f04-a852-4385d9f2dd0d"
+              }
+            ],
+            "n": 927,
+            "new_str": "Here's an implementation:\n\n```python\ndef process(data):\n    return [x for x in data if x]\n```",
+            "old_str": "After reviewing, I found several areas for improvement.",
+            "page_size": 10,
+            "page_token": "synthetic-15907",
+            "q": "synthetic-26342",
+            "query": "synthetic-18202",
+            "rag_query": "synthetic-31029",
+            "semantic_query": "synthetic-64752",
+            "source": "synthetic-3445",
+            "time_max": "synthetic-47303",
+            "time_min": "synthetic-72616",
+            "time_zone": "synthetic-75009",
+            "title": "synthetic-48353",
+            "type": "application/json",
+            "url": "https://example.com/3126",
+            "version_uuid": "10d4de39-1612-47c9-a25d-f9a89ca8a5c4"
+          },
+          "integration_icon_url": "https://example.com/7523",
+          "integration_name": "synthetic-68903",
+          "is_error": false,
+          "message": "synthetic-75353",
+          "name": "synthetic-9666",
+          "start_timestamp": "2025-09-10T14:22:55.836239+00:00",
+          "stop_timestamp": "2024-03-15T10:15:04.609670+00:00",
+          "summaries": [
+            {
+              "summary": "synthetic-67811"
+            },
+            {
+              "summary": "synthetic-45156"
+            },
+            {
+              "summary": "synthetic-16821"
+            },
+            {
+              "summary": "synthetic-72260"
+            },
+            {
+              "summary": "synthetic-83859"
+            }
+          ],
+          "text": "Here's an implementation:\n\n```python\ndef process(data):\n    return [x for x in data if x]\n```",
+          "thinking": "Here's an implementation:\n\n```python\ndef process(data):\n    return [x for x in data if x]\n```",
+          "type": "synthetic-56704"
+        }
+      ],
+      "created_at": "2024-05-09T12:29:00.780444+",
+      "files": [
+        {
+          "file_name": "synthetic-20056"
+        },
+        {
+          "file_name": "synthetic-39862"
+        },
+        {
+          "file_name": "synthetic-21581"
+        },
+        {
+          "file_name": "synthetic-21229"
+        }
+      ],
+      "sender": "assistant",
+      "text": "After reviewing, I found several areas for improvement.",
+      "updated_at": "2025-08-02T09:20:05.297517",
+      "uuid": "f0df1684-f28e-4122-9894-f7f139b86bb2"
+    },
+    {
+      "attachments": [
+        {
+          "extracted_content": "After reviewing, I found several areas for improvement.",
+          "file_name": "synthetic-16406",
+          "file_size": 462894,
+          "file_type": "synthetic-80534"
+        },
+        {
+          "extracted_content": "I'll analyze the issue. Looking at the code structure...",
+          "file_name": "synthetic-65873",
+          "file_size": 474718,
+          "file_type": "synthetic-77569"
+        },
+        {
+          "extracted_content": "Here's an implementation:\n\n```python\ndef process(data):\n    return [x for x in data if x]\n```",
+          "file_name": "synthetic-22439",
+          "file_size": 487860,
+          "file_type": "synthetic-94454"
+        },
+        {
+          "extracted_content": "After reviewing, I found several areas for improvement.",
+          "file_name": "synthetic-73874",
+          "file_size": 30508,
+          "file_type": "synthetic-3718"
+        }
+      ],
+      "content": [
+        {
+          "citations": [],
+          "content": [
+            {
+              "doc_uuid": "synthetic-34688",
+              "end": 68,
+              "extras": {
+                "created_time": "2025-02-08T14:51:50.082468+00:00",
+                "last_modified_time": "2024-02-09T15:33:30.529692+00:00",
+                "mime_type": "text/html",
+                "modified_time": "2023-01-03T06:02:10.872329+00:00",
+                "owner": "synthetic-82203",
+                "title": "synthetic-71509",
+                "uri": "synthetic-37967"
+              },
+              "ingestion_date": "synthetic-84136",
+              "is_citable": false,
+              "is_missing": false,
+              "metadata": {
+                "favicon_url": "https://example.com/5012",
+                "site_domain": "synthetic-89783",
+                "site_name": "synthetic-53227",
+                "type": "synthetic-38985"
+              },
+              "prompt_context_metadata": {
+                "age": "synthetic-59446",
+                "content_type": "synthetic-9564",
+                "url": "https://example.com/1981"
+              },
+              "start": 0,
+              "text": "The module structure looks good. A few suggestions:",
+              "title": "synthetic-63471",
+              "type": "synthetic-60875",
+              "uri": "synthetic-26741",
+              "url": "https://example.com/6573",
+              "uuid": "dc8a4922-5005-480f-a4c7-78a59b4e164b"
+            },
+            {
+              "doc_uuid": "synthetic-94157",
+              "end": 68,
+              "extras": {
+                "created_time": "2025-09-26T21:28:23.252038+00:00",
+                "last_modified_time": "2023-11-27T11:09:10.463090+00:00",
+                "mime_type": "application/json",
+                "modified_time": "2023-04-17T22:02:33.639715+00:00",
+                "owner": "synthetic-48567",
+                "title": "synthetic-67499",
+                "uri": "synthetic-73616"
+              },
+              "ingestion_date": "synthetic-13917",
+              "is_citable": false,
+              "is_missing": true,
+              "metadata": {
+                "favicon_url": "https://example.com/8642",
+                "site_domain": "synthetic-16059",
+                "site_name": "synthetic-35058",
+                "type": "synthetic-58929"
+              },
+              "prompt_context_metadata": {
+                "age": "synthetic-32495",
+                "content_type": "synthetic-18465",
+                "url": "https://example.com/2586"
+              },
+              "start": 0,
+              "text": "The module structure looks good. A few suggestions:",
+              "title": "synthetic-80658",
+              "type": "synthetic-54805",
+              "uri": "synthetic-32541",
+              "url": "https://example.com/3616",
+              "uuid": "93e34c35-ef0a-473d-93d2-d56dd0401587"
+            },
+            {
+              "doc_uuid": "synthetic-94519",
+              "end": 68,
+              "extras": {
+                "created_time": "2025-02-04T14:55:23.762476+00:00",
+                "last_modified_time": "2024-05-04T17:31:38.785392+00:00",
+                "mime_type": "text/html",
+                "modified_time": "2024-04-01T23:16:00.596362+00:00",
+                "owner": "synthetic-40441",
+                "title": "synthetic-65191",
+                "uri": "synthetic-3037"
+              },
+              "ingestion_date": "synthetic-11802",
+              "is_citable": false,
+              "is_missing": false,
+              "metadata": {
+                "favicon_url": "https://example.com/4944",
+                "site_domain": "synthetic-28199",
+                "site_name": "synthetic-76460",
+                "type": "synthetic-46254"
+              },
+              "prompt_context_metadata": {
+                "age": "synthetic-6377",
+                "content_type": "synthetic-6624",
+                "url": "https://example.com/5609"
+              },
+              "start": 0,
+              "text": "The module structure looks good. A few suggestions:",
+              "title": "synthetic-37453",
+              "type": "synthetic-70345",
+              "uri": "synthetic-1071",
+              "url": "https://example.com/2761",
+              "uuid": "43b47ee5-e1e8-4e7e-a249-8f666e51484d"
+            },
+            {
+              "doc_uuid": "synthetic-95355",
+              "end": 68,
+              "extras": {
+                "created_time": "2024-01-26T18:14:26.490292+00:00",
+                "last_modified_time": "2023-01-18T19:56:55.506014+00:00",
+                "mime_type": "text/plain",
+                "modified_time": "2024-07-18T17:55:47.949293+00:00",
+                "owner": "synthetic-25513",
+                "title": "synthetic-47516",
+                "uri": "synthetic-72512"
+              },
+              "ingestion_date": "synthetic-37827",
+              "is_citable": true,
+              "is_missing": false,
+              "metadata": {
+                "favicon_url": "https://example.com/9261",
+                "site_domain": "synthetic-59028",
+                "site_name": "synthetic-72070",
+                "type": "synthetic-36663"
+              },
+              "prompt_context_metadata": {
+                "age": "synthetic-81689",
+                "content_type": "synthetic-89181",
+                "url": "https://example.com/2946"
+              },
+              "start": 0,
+              "text": "I'll analyze the issue. Looking at the code structure...",
+              "title": "synthetic-51629",
+              "type": "synthetic-48915",
+              "uri": "synthetic-44444",
+              "url": "https://example.com/6990",
+              "uuid": "9a3b0319-32f5-4510-a4ee-b4a6c14565c7"
+            },
+            {
+              "doc_uuid": "synthetic-66731",
+              "end": 68,
+              "extras": {
+                "created_time": "2023-01-13T15:15:41.554169+00:00",
+                "last_modified_time": "2023-01-12T05:44:16.962160+00:00",
+                "mime_type": "text/html",
+                "modified_time": "2023-11-14T14:54:23.481749+00:00",
+                "owner": "synthetic-62094",
+                "title": "synthetic-68069",
+                "uri": "synthetic-59898"
+              },
+              "ingestion_date": "synthetic-19521",
+              "is_citable": true,
+              "is_missing": false,
+              "metadata": {
+                "favicon_url": "https://example.com/6218",
+                "site_domain": "synthetic-21299",
+                "site_name": "synthetic-51505",
+                "type": "synthetic-80805"
+              },
+              "prompt_context_metadata": {
+                "age": "synthetic-96904",
+                "content_type": "synthetic-39221",
+                "url": "https://example.com/6511"
+              },
+              "start": 0,
+              "text": "The module structure looks good. A few suggestions:",
+              "title": "synthetic-92895",
+              "type": "synthetic-73783",
+              "uri": "synthetic-39294",
+              "url": "https://example.com/8780",
+              "uuid": "54cc1e2a-5e4c-4287-8442-51dbd0d4ea67"
+            }
+          ],
+          "context": {
+            "tools": [
+              {
+                "server_uuid": "e61599c8-cbf8-4f86-8ec3-f970956d80e4",
+                "tool_name": "synthetic-95069"
+              },
+              {
+                "server_uuid": "06d25913-a117-4719-b023-a0eadf41e335",
+                "tool_name": "synthetic-78238"
+              },
+              {
+                "server_uuid": "a7d4cf50-f791-41e5-83f9-cd6b797ebe87",
+                "tool_name": "synthetic-75821"
+              },
+              {
+                "server_uuid": "0d259caa-b8ad-4d87-ba40-45dd93dfd907",
+                "tool_name": "synthetic-76483"
+              },
+              {
+                "server_uuid": "a107cc46-8634-4718-aba6-adb37afeb114",
+                "tool_name": "synthetic-94526"
+              }
+            ]
+          },
+          "cut_off": false,
+          "display_content": {
+            "content": [
+              {
+                "icon_url": "https://example.com/2800",
+                "resource_type": "synthetic-2482",
+                "source": "synthetic-41116",
+                "subtitles": [],
+                "title": "synthetic-54127",
+                "url": "https://example.com/7723"
+              },
+              {
+                "icon_url": "https://example.com/2020",
+                "resource_type": "synthetic-67984",
+                "source": "synthetic-73516",
+                "subtitles": [],
+                "title": "synthetic-68875",
+                "url": "https://example.com/6140"
+              }
+            ],
+            "is_trusted": true,
+            "link": {
+              "icon_url": "https://example.com/8531",
+              "source": "synthetic-69878",
+              "title": "synthetic-44869",
+              "url": "https://example.com/9950"
+            },
+            "table": [
+              [
+                "synthetic-79963",
+                "synthetic-63462"
+              ],
+              [
+                "synthetic-32311",
+                "synthetic-36569"
+              ]
+            ],
+            "type": "synthetic-73149"
+          },
+          "input": {
+            "api_query": "synthetic-39124",
+            "calendar_id": "synthetic-29473",
+            "calendar_ids": [
+              "synthetic-37880",
+              "synthetic-92392"
+            ],
+            "code": "Here's an implementation:\n\n```python\ndef process(data):\n    return [x for x in data if x]\n```",
+            "command": "synthetic-90471",
+            "content": "The module structure looks good. A few suggestions:",
+            "context": "synthetic-41555",
+            "id": "synthetic-62888",
+            "language": "synthetic-73464",
+            "max_text_results": 11,
+            "md_citations": [
+              {
+                "end_index": 7817,
+                "metadata": {},
+                "origin_tool_name": "synthetic-51712",
+                "sources": [],
+                "start_index": 7775,
+                "title": "synthetic-37700",
+                "url": "https://example.com/2294",
+                "uuid": "a7edc8d8-713f-4f8c-ac8b-e53758ab4778"
+              },
+              {
+                "end_index": 6981,
+                "metadata": {},
+                "origin_tool_name": "synthetic-28047",
+                "sources": [],
+                "start_index": 24857,
+                "title": "synthetic-91248",
+                "url": "https://example.com/5450",
+                "uuid": "bdab07e7-9d9d-428e-9bf6-45f623245211"
+              },
+              {
+                "end_index": 15797,
+                "metadata": {},
+                "origin_tool_name": "synthetic-6653",
+                "sources": [],
+                "start_index": 1449,
+                "title": "synthetic-54172",
+                "url": "https://example.com/6411",
+                "uuid": "ae62990c-19bd-4f93-b8ef-7666b7a4c719"
+              },
+              {
+                "end_index": 20705,
+                "metadata": {},
+                "origin_tool_name": "synthetic-72135",
+                "sources": [],
+                "start_index": 17410,
+                "title": "synthetic-62350",
+                "url": "https://example.com/8822",
+                "uuid": "f6c31218-c183-4315-b30f-8be1a689b424"
+              },
+              {
+                "end_index": 7803,
+                "metadata": {},
+                "origin_tool_name": "synthetic-84659",
+                "sources": [],
+                "start_index": 17394,
+                "title": "synthetic-30437",
+                "url": "https://example.com/9767",
+                "uuid": "efc9909e-d9af-4e09-b91e-3d6ebd1a8f4b"
+              }
+            ],
+            "n": 37,
+            "new_str": "Here's an implementation:\n\n```python\ndef process(data):\n    return [x for x in data if x]\n```",
+            "old_str": "The module structure looks good. A few suggestions:",
+            "page_size": 10,
+            "page_token": "synthetic-23040",
+            "q": "synthetic-4763",
+            "query": "synthetic-52034",
+            "rag_query": "synthetic-64930",
+            "semantic_query": "synthetic-24420",
+            "source": "synthetic-98173",
+            "time_max": "synthetic-37941",
+            "time_min": "synthetic-4910",
+            "time_zone": "synthetic-1214",
+            "title": "synthetic-39110",
+            "type": "text/html",
+            "url": "https://example.com/2758",
+            "version_uuid": "48d90846-55c5-41fc-bba5-7cc8edaf3766"
+          },
+          "integration_icon_url": "https://example.com/9901",
+          "integration_name": "synthetic-17589",
+          "is_error": false,
+          "message": "synthetic-25272",
+          "name": "synthetic-14764",
+          "start_timestamp": "2023-05-20T23:14:43.628577+00:00",
+          "stop_timestamp": "2024-10-08T00:01:20.483832+00:00",
+          "summaries": [
+            {
+              "summary": "synthetic-24405"
+            },
+            {
+              "summary": "synthetic-1846"
+            },
+            {
+              "summary": "synthetic-96549"
+            },
+            {
+              "summary": "synthetic-44185"
+            },
+            {
+              "summary": "synthetic-38669"
+            }
+          ],
+          "text": "Here's an implementation:\n\n```python\ndef process(data):\n    return [x for x in data if x]\n```",
+          "thinking": "Here's an implementation:\n\n```python\ndef process(data):\n    return [x for x in data if x]\n```",
+          "type": "synthetic-80079"
+        }
+      ],
+      "created_at": "2025-05-12T12:33:05.384611+",
+      "files": [
+        {
+          "file_name": "synthetic-56059"
+        },
+        {
+          "file_name": "synthetic-67538"
+        },
+        {
+          "file_name": "synthetic-42982"
+        }
+      ],
+      "sender": "human",
+      "text": "Can you explain how this works?",
+      "updated_at": "2024-01-24T05:43:12.196508+",
+      "uuid": "3f800385-ef92-40b6-92d7-8f107a3a6e96"
+    }
+  ]
+}
