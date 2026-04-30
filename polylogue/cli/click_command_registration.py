@@ -9,6 +9,7 @@ from polylogue.cli.commands.browser_capture import browser_capture_command
 from polylogue.cli.commands.check import check_command
 from polylogue.cli.commands.completions import completions_command
 from polylogue.cli.commands.dashboard import dashboard_command
+from polylogue.cli.commands.diagnostics import diagnostics_group
 from polylogue.cli.commands.export import export_command
 from polylogue.cli.commands.mcp import mcp_command
 from polylogue.cli.commands.neighbors import neighbors_command
@@ -38,6 +39,7 @@ ROOT_COMMANDS: tuple[click.Command, ...] = (
     qa_command,
     schema_command,
     watch_command,
+    diagnostics_group,
 )
 
 

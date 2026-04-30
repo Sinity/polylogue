@@ -460,6 +460,7 @@ class TestCliMetadata:
             "schema",
             "tags",
             "watch",
+            "diagnostics",
             # Query verbs
             "list",
             "count",
