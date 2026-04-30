@@ -115,6 +115,7 @@ class MessageRecord(BaseModel):
     word_count: int = 0
     has_tool_use: int = 0
     has_thinking: int = 0
+    has_paste: int = 0
 
     @field_validator("role", mode="before")
     @classmethod

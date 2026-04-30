@@ -26,6 +26,8 @@ class ConversationListQueryKwargs(TypedDict):
     offset: int
     has_tool_use: bool
     has_thinking: bool
+    has_paste: bool
+    typed_only: bool
     min_messages: int | None
     max_messages: int | None
     min_words: int | None
@@ -47,6 +49,8 @@ class ConversationCountQueryKwargs(TypedDict):
     repo_names: list[str] | None
     has_tool_use: bool
     has_thinking: bool
+    has_paste: bool
+    typed_only: bool
     min_messages: int | None
     max_messages: int | None
     min_words: int | None
@@ -74,6 +78,8 @@ class ConversationRecordQuery:
     offset: int = 0
     has_tool_use: bool = False
     has_thinking: bool = False
+    has_paste: bool = False
+    typed_only: bool = False
     min_messages: int | None = None
     max_messages: int | None = None
     min_words: int | None = None
@@ -124,6 +130,8 @@ class ConversationRecordQuery:
             "offset": self.offset,
             "has_tool_use": self.has_tool_use,
             "has_thinking": self.has_thinking,
+            "has_paste": self.has_paste,
+            "typed_only": self.typed_only,
             "min_messages": self.min_messages,
             "max_messages": self.max_messages,
             "min_words": self.min_words,
@@ -146,6 +154,8 @@ class ConversationRecordQuery:
             "repo_names": list(self.repo_names) or None,
             "has_tool_use": self.has_tool_use,
             "has_thinking": self.has_thinking,
+            "has_paste": self.has_paste,
+            "typed_only": self.typed_only,
             "min_messages": self.min_messages,
             "max_messages": self.max_messages,
             "min_words": self.min_words,

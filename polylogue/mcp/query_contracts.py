@@ -50,6 +50,8 @@ class MCPConversationQueryRequest:
     sort: str | None = None
     has_tool_use: bool = False
     has_thinking: bool = False
+    has_paste: bool = False
+    typed_only: bool = False
     min_messages: int | None = None
     min_words: int | None = None
     since_session: str | None = None
@@ -79,6 +81,8 @@ class MCPConversationQueryRequest:
             limit=clamp_limit(self.limit),
             has_tool_use=self.has_tool_use,
             has_thinking=self.has_thinking,
+            has_paste=self.has_paste,
+            typed_only=self.typed_only,
             min_messages=self.min_messages,
             min_words=self.min_words,
             since_session=self.since_session,

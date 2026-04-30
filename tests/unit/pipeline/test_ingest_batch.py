@@ -160,6 +160,7 @@ def _message_tuple(
         len(text.split()),
         0,
         0,
+        0,
     )
 
 
@@ -315,7 +316,7 @@ def test_write_conversation_replaces_runtime_rows_on_content_change(tmp_path: Pa
                     text="beta",
                 ),
             ],
-            stats_tuple=(ConversationId("codex:replace"), "codex", 2, 2, 0, 0),
+            stats_tuple=(ConversationId("codex:replace"), "codex", 2, 2, 0, 0, 0),
             attachment_tuples=[
                 _attachment_tuple("att-1"),
                 _attachment_tuple("att-2", mime_type="image/jpeg"),
@@ -351,7 +352,7 @@ def test_write_conversation_replaces_runtime_rows_on_content_change(tmp_path: Pa
                     text="alpha updated",
                 )
             ],
-            stats_tuple=(ConversationId("codex:replace"), "codex", 1, 2, 0, 0),
+            stats_tuple=(ConversationId("codex:replace"), "codex", 1, 2, 0, 0, 0),
             attachment_tuples=[_attachment_tuple("att-1")],
             attachment_ref_tuples=[_attachment_ref_tuple("att-1", "codex:replace", "msg-1")],
         )

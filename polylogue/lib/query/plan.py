@@ -109,6 +109,8 @@ class ConversationQueryPlan:
     has_branches: bool | None = None
     filter_has_tool_use: bool = False
     filter_has_thinking: bool = False
+    filter_has_paste: bool = False
+    typed_only: bool = False
     min_messages: int | None = None
     max_messages: int | None = None
     min_words: int | None = None

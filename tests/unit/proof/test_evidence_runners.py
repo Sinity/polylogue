@@ -41,7 +41,7 @@ def test_cli_help_runner_emits_ok_evidence() -> None:
     assert envelope.evidence["help_exit_code"] == 0
     assert envelope.trust.runner_version == "proof-runners.v1"
     assert envelope.trust.origin == "proof-runner"
-    assert envelope.trust.schema_version == 1
+    assert envelope.trust.schema_version == 2
     assert envelope.trust.input_fingerprint is not None
     assert len(envelope.trust.input_fingerprint) == 64
     assert envelope.trust.environment_fingerprint is not None

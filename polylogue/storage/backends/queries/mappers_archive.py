@@ -76,6 +76,7 @@ def _row_to_message(row: sqlite3.Row) -> MessageRecord:
         word_count=_row_int(row, "word_count", 0) or 0,
         has_tool_use=_row_int(row, "has_tool_use", 0) or 0,
         has_thinking=_row_int(row, "has_thinking", 0) or 0,
+        has_paste=_row_int(row, "has_paste", 0) or 0,
     )
 
 

@@ -248,18 +248,19 @@ def test_ensure_schema_adds_blob_size_to_legacy_v1_raw_table(tmp_path: Path) -> 
             source_name TEXT,
             source_path TEXT NOT NULL,
             source_index INTEGER,
+            blob_size INTEGER NOT NULL DEFAULT 0,
             acquired_at TEXT NOT NULL,
             file_mtime TEXT,
             parsed_at TEXT,
             parse_error TEXT,
             validated_at TEXT,
-            validation_status TEXT,
+            validation_status TEXT CHECK (validation_status IN ('passed', 'failed', 'skipped') OR validation_status IS NULL),
             validation_error TEXT,
             validation_drift_count INTEGER DEFAULT 0,
             validation_provider TEXT,
             validation_mode TEXT
         );
-        PRAGMA user_version = 1;
+        PRAGMA user_version = 2;
         """
     )
     conn.commit()
@@ -527,18 +528,19 @@ async def test_async_backend_extends_legacy_v1_raw_table(tmp_path: Path) -> None
             source_name TEXT,
             source_path TEXT NOT NULL,
             source_index INTEGER,
+            blob_size INTEGER NOT NULL DEFAULT 0,
             acquired_at TEXT NOT NULL,
             file_mtime TEXT,
             parsed_at TEXT,
             parse_error TEXT,
             validated_at TEXT,
-            validation_status TEXT,
+            validation_status TEXT CHECK (validation_status IN ('passed', 'failed', 'skipped') OR validation_status IS NULL),
             validation_error TEXT,
             validation_drift_count INTEGER DEFAULT 0,
             validation_provider TEXT,
             validation_mode TEXT
         );
-        PRAGMA user_version = 1;
+        PRAGMA user_version = 2;
         """
     )
     conn.commit()

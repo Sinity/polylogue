@@ -100,6 +100,7 @@ MessageTuple = tuple[
     int,
     int,
     int,
+    int,
 ]
 ContentBlockTuple = tuple[
     str,
@@ -138,7 +139,7 @@ ActionEventTuple = tuple[
     str | None,
     str,
 ]
-StatsTuple = tuple[ConversationId, str, int, int, int, int]
+StatsTuple = tuple[ConversationId, str, int, int, int, int, int]
 AttachmentTuple = tuple[AttachmentId, str | None, int | None, str | None, int, str | None]
 AttachmentRefTuple = tuple[str, AttachmentId, ConversationId, MessageId | None, str | None]
 
@@ -729,6 +730,7 @@ def _message_tuple(conversation: MaterializedConversation, message: Materialized
         message.word_count,
         message.has_tool_use,
         message.has_thinking,
+        message.has_paste,
     )
 
 
@@ -778,6 +780,7 @@ def _stats_tuple(conversation: MaterializedConversation) -> StatsTuple:
         conversation.stats.word_count,
         conversation.stats.tool_use_count,
         conversation.stats.thinking_count,
+        conversation.stats.paste_count,
     )
 
 
@@ -884,6 +887,7 @@ def _message_record_for_action_events(
         word_count=message.word_count,
         has_tool_use=message.has_tool_use,
         has_thinking=message.has_thinking,
+        has_paste=message.has_paste,
         content_blocks=[
             _content_block_record_for_action_event(
                 conversation_id=conversation.conversation_id,

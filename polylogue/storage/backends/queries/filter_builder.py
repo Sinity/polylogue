@@ -40,6 +40,8 @@ def _build_conversation_filters(
     repo_names: list[str] | tuple[str, ...] | None = None,
     has_tool_use: bool = False,
     has_thinking: bool = False,
+    has_paste: bool = False,
+    typed_only: bool = False,
     min_messages: int | None = None,
     max_messages: int | None = None,
     min_words: int | None = None,
@@ -87,6 +89,10 @@ def _build_conversation_filters(
         where_clauses.append("cs.tool_use_count > 0")
     if has_thinking:
         where_clauses.append("cs.thinking_count > 0")
+    if has_paste:
+        where_clauses.append("cs.paste_count > 0")
+    if typed_only:
+        where_clauses.append("cs.paste_count = 0")
     if min_messages is not None:
         where_clauses.append("cs.message_count >= ?")
         params.append(min_messages)
@@ -188,6 +194,8 @@ def _needs_stats_join(
     *,
     has_tool_use: bool = False,
     has_thinking: bool = False,
+    has_paste: bool = False,
+    typed_only: bool = False,
     min_messages: int | None = None,
     max_messages: int | None = None,
     min_words: int | None = None,

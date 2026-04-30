@@ -107,6 +107,8 @@ def test_query_field_catalog_marks_storage_stats_join_fields() -> None:
     assert {descriptor.name for descriptor in QUERY_FIELD_DESCRIPTORS if descriptor.requires_stats_join} == {
         "filter_has_tool_use",
         "filter_has_thinking",
+        "filter_has_paste",
+        "typed_only",
         "min_messages",
         "max_messages",
         "min_words",
