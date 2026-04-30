@@ -187,8 +187,8 @@ _MESSAGE_UPSERT_SQL = """
 INSERT INTO messages (
     message_id, conversation_id, provider_message_id, role, text,
     sort_key, content_hash, version, parent_message_id, branch_index,
-    provider_name, word_count, has_tool_use, has_thinking
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    provider_name, word_count, has_tool_use, has_thinking, has_paste
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(message_id) DO UPDATE SET
     role = excluded.role,
     text = excluded.text,
@@ -199,7 +199,8 @@ ON CONFLICT(message_id) DO UPDATE SET
     provider_name = excluded.provider_name,
     word_count = excluded.word_count,
     has_tool_use = excluded.has_tool_use,
-    has_thinking = excluded.has_thinking
+    has_thinking = excluded.has_thinking,
+    has_paste = excluded.has_paste
 WHERE
     content_hash != excluded.content_hash
     OR IFNULL(role, '') != IFNULL(excluded.role, '')
@@ -227,14 +228,15 @@ ON CONFLICT(message_id, block_index) DO UPDATE SET
 
 _STATS_UPSERT_SQL = """
 INSERT INTO conversation_stats
-    (conversation_id, provider_name, message_count, word_count, tool_use_count, thinking_count)
-VALUES (?, ?, ?, ?, ?, ?)
+    (conversation_id, provider_name, message_count, word_count, tool_use_count, thinking_count, paste_count)
+VALUES (?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(conversation_id) DO UPDATE SET
     provider_name  = excluded.provider_name,
     message_count  = excluded.message_count,
     word_count     = excluded.word_count,
     tool_use_count = excluded.tool_use_count,
-    thinking_count = excluded.thinking_count
+    thinking_count = excluded.thinking_count,
+    paste_count    = excluded.paste_count
 """
 
 _ACTION_EVENT_INSERT_SQL = """

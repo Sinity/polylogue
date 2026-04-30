@@ -90,6 +90,7 @@ ARCHIVE_STORAGE_DDL = """
             word_count INTEGER NOT NULL DEFAULT 0,
             has_tool_use INTEGER NOT NULL DEFAULT 0,
             has_thinking INTEGER NOT NULL DEFAULT 0,
+            has_paste INTEGER NOT NULL DEFAULT 0,
             FOREIGN KEY (conversation_id)
                 REFERENCES conversations(conversation_id) ON DELETE CASCADE
         );
@@ -154,7 +155,8 @@ ARCHIVE_STORAGE_DDL = """
             message_count   INTEGER NOT NULL DEFAULT 0,
             word_count      INTEGER NOT NULL DEFAULT 0,
             tool_use_count  INTEGER NOT NULL DEFAULT 0,
-            thinking_count  INTEGER NOT NULL DEFAULT 0
+            thinking_count  INTEGER NOT NULL DEFAULT 0,
+            paste_count     INTEGER NOT NULL DEFAULT 0
         );
 
         CREATE INDEX IF NOT EXISTS idx_conv_stats_provider

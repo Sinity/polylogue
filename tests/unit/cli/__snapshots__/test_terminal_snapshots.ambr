@@ -168,6 +168,10 @@
                                     pushdown)
     --has-thinking                  Only conversations with thinking blocks (SQL
                                     pushdown)
+    --has-paste                     Only conversations with pasted content (SQL
+                                    pushdown)
+    --typed-only                    Only conversations without pasted content
+                                    (typed prose only)
     --min-messages INTEGER          Minimum message count
     --max-messages INTEGER          Maximum message count
     --min-words INTEGER             Minimum total word count
@@ -340,6 +344,12 @@
     --has-thinking                  Only conversations with th
   inking blocks (SQL
                                     pushdown)
+    --has-paste                     Only conversations with pa
+  sted content (SQL
+                                    pushdown)
+    --typed-only                    Only conversations without
+   pasted content
+                                    (typed prose only)
     --min-messages INTEGER          Minimum message count
     --max-messages INTEGER          Maximum message count
     --min-words INTEGER             Minimum total word count
@@ -527,6 +537,10 @@
                                     pushdown)
     --has-thinking                  Only conversations with thinking blocks (SQL
                                     pushdown)
+    --has-paste                     Only conversations with pasted content (SQL
+                                    pushdown)
+    --typed-only                    Only conversations without pasted content
+                                    (typed prose only)
     --min-messages INTEGER          Minimum message count
     --max-messages INTEGER          Maximum message count
     --min-words INTEGER             Minimum total word count

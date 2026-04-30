@@ -84,6 +84,10 @@ Options:
                                   pushdown)
   --has-thinking                  Only conversations with thinking blocks (SQL
                                   pushdown)
+  --has-paste                     Only conversations with pasted content (SQL
+                                  pushdown)
+  --typed-only                    Only conversations without pasted content
+                                  (typed prose only)
   --min-messages INTEGER          Minimum message count
   --max-messages INTEGER          Maximum message count
   --min-words INTEGER             Minimum total word count

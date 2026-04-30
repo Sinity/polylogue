@@ -81,6 +81,8 @@ def cli(
     has_type: tuple[str, ...],
     filter_has_tool_use: bool,
     filter_has_thinking: bool,
+    filter_has_paste: bool,
+    typed_only: bool,
     min_messages: int | None,
     max_messages: int | None,
     min_words: int | None,

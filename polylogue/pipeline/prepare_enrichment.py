@@ -89,6 +89,7 @@ def enrich_bundle_from_db(
                 word_count=msg_rec.word_count,
                 has_tool_use=msg_rec.has_tool_use,
                 has_thinking=msg_rec.has_thinking,
+                has_paste=msg_rec.has_paste,
             )
         )
 

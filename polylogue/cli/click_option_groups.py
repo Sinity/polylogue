@@ -163,6 +163,18 @@ FILTER_OPTION_DECORATORS: tuple[Callable[[ClickCallable], ClickCallable], ...] =
         is_flag=True,
         help="Only conversations with thinking blocks (SQL pushdown)",
     ),
+    click.option(
+        "--has-paste",
+        "filter_has_paste",
+        is_flag=True,
+        help="Only conversations with pasted content (SQL pushdown)",
+    ),
+    click.option(
+        "--typed-only",
+        "typed_only",
+        is_flag=True,
+        help="Only conversations without pasted content (typed prose only)",
+    ),
     click.option("--min-messages", type=int, help="Minimum message count"),
     click.option("--max-messages", type=int, help="Maximum message count"),
     click.option("--min-words", type=int, help="Minimum total word count"),

@@ -185,6 +185,12 @@ class ConversationFilterBuilderMixin:
     def has_thinking(self) -> Self:
         return _replace_plan(self, filter_has_thinking=True)
 
+    def has_paste(self) -> Self:
+        return _replace_plan(self, filter_has_paste=True)
+
+    def typed_only(self) -> Self:
+        return _replace_plan(self, typed_only=True)
+
     def min_messages(self, n: int) -> Self:
         return _replace_plan(self, min_messages=n)
 

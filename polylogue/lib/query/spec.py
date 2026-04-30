@@ -193,6 +193,8 @@ def build_query_spec_from_params(
         sample=optional_int(params.get("sample")),
         filter_has_tool_use=bool(params.get("filter_has_tool_use")),
         filter_has_thinking=bool(params.get("filter_has_thinking")),
+        filter_has_paste=bool(params.get("filter_has_paste")),
+        typed_only=bool(params.get("typed_only")),
         min_messages=optional_int(params.get("min_messages")),
         max_messages=optional_int(params.get("max_messages")),
         min_words=optional_int(params.get("min_words")),
@@ -237,6 +239,8 @@ def query_spec_to_plan(
         sample=spec.sample,
         filter_has_tool_use=spec.filter_has_tool_use,
         filter_has_thinking=spec.filter_has_thinking,
+        filter_has_paste=spec.filter_has_paste,
+        typed_only=spec.typed_only,
         min_messages=spec.min_messages,
         max_messages=spec.max_messages,
         min_words=spec.min_words,
@@ -290,6 +294,8 @@ class ConversationQuerySpec:
     # Stats-based SQL pushdown filters
     filter_has_tool_use: bool = False
     filter_has_thinking: bool = False
+    filter_has_paste: bool = False
+    typed_only: bool = False
     min_messages: int | None = None
     max_messages: int | None = None
     min_words: int | None = None

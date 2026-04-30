@@ -201,19 +201,21 @@ async def upsert_conversation_stats(
     word_count = sum(m.word_count for m in messages)
     tool_use_count = sum(1 for m in messages if m.has_tool_use)
     thinking_count = sum(1 for m in messages if m.has_thinking)
+    paste_count = sum(1 for m in messages if m.has_paste)
     await conn.execute(
         """
         INSERT INTO conversation_stats
-            (conversation_id, provider_name, message_count, word_count, tool_use_count, thinking_count)
-        VALUES (?, ?, ?, ?, ?, ?)
+            (conversation_id, provider_name, message_count, word_count, tool_use_count, thinking_count, paste_count)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(conversation_id) DO UPDATE SET
             provider_name  = excluded.provider_name,
             message_count  = excluded.message_count,
             word_count     = excluded.word_count,
             tool_use_count = excluded.tool_use_count,
-            thinking_count = excluded.thinking_count
+            thinking_count = excluded.thinking_count,
+            paste_count    = excluded.paste_count
         """,
-        (conversation_id, provider_name, message_count, word_count, tool_use_count, thinking_count),
+        (conversation_id, provider_name, message_count, word_count, tool_use_count, thinking_count, paste_count),
     )
     if transaction_depth == 0:
         await conn.commit()
