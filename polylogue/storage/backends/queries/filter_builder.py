@@ -37,6 +37,7 @@ def _build_conversation_filters(
     excluded_action_terms: list[str] | tuple[str, ...] | None = None,
     tool_terms: list[str] | tuple[str, ...] | None = None,
     excluded_tool_terms: list[str] | tuple[str, ...] | None = None,
+    repo_names: list[str] | tuple[str, ...] | None = None,
     has_tool_use: bool = False,
     has_thinking: bool = False,
     min_messages: int | None = None,
@@ -171,6 +172,14 @@ def _build_conversation_filters(
                     " AND ae.normalized_tool_name = ?)"
                 )
                 params.append(str(term).lower())
+    if repo_names:
+        placeholders = ",".join("?" for _ in repo_names)
+        where_clauses.append(
+            f"EXISTS (SELECT 1 FROM session_profiles sp "
+            f"JOIN json_each(COALESCE(sp.repo_names_json, '[]')) "
+            f"WHERE sp.conversation_id = {conv_id_col} AND value IN ({placeholders}))"
+        )
+        params.extend(repo_names)
     where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
     return where_sql, params
 

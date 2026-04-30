@@ -70,6 +70,12 @@ class ConversationFilterBuilderMixin:
             excluded_providers=_extend_tuple(self._plan.excluded_providers, providers),
         )
 
+    def repo(self, *names: str) -> Self:
+        return _replace_plan(
+            self,
+            repo_names=_extend_tuple(self._plan.repo_names, tuple(names)),
+        )
+
     def tag(self, *tags: str) -> Self:
         return _replace_plan(
             self,

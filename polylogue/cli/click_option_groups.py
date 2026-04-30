@@ -89,6 +89,12 @@ FILTER_OPTION_DECORATORS: tuple[Callable[[ClickCallable], ClickCallable], ...] =
         shell_complete=_complete_providers,
     ),
     click.option(
+        "--repo",
+        "-r",
+        help="Filter by repository name (comma = OR)",
+        shell_complete=complete_tag_values,
+    ),
+    click.option(
         "--tag", "-t", help="Include tags (comma = OR, supports key:value)", shell_complete=complete_tag_values
     ),
     click.option("--exclude-tag", help="Exclude tags", shell_complete=complete_tag_values),
