@@ -8,10 +8,10 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 
 ## Snapshot
 
-- subjects: `370`
+- subjects: `374`
 - claims: `35`
 - runner bindings: `35`
-- proof obligations: `438`
+- proof obligations: `450`
 
 ## Quality Checks
 
@@ -31,7 +31,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | --- | ---: |
 | `archive.query_law` | 1 |
 | `artifact.path` | 27 |
-| `cli.command` | 56 |
+| `cli.command` | 60 |
 | `cli.json_command` | 2 |
 | `diagnostic.observable` | 1 |
 | `error.surface` | 2 |
@@ -60,6 +60,10 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `polylogue count` | `polylogue/cli/query_verbs.py:45` `polylogue.cli.query_verbs.count_verb` |
 | `polylogue dashboard` | `polylogue/cli/commands/dashboard.py:10` `polylogue.cli.commands.dashboard.dashboard_command` |
 | `polylogue delete` | `polylogue/cli/query_verbs.py:137` `polylogue.cli.query_verbs.delete_verb` |
+| `polylogue diagnostics` | `polylogue/cli/commands/diagnostics.py:15` `polylogue.cli.commands.diagnostics.diagnostics_group` |
+| `polylogue diagnostics pace` | `polylogue/cli/commands/diagnostics.py:20` `polylogue.cli.commands.diagnostics.pace_command` |
+| `polylogue diagnostics tools` | `polylogue/cli/commands/diagnostics.py:141` `polylogue.cli.commands.diagnostics.tools_command` |
+| `polylogue diagnostics turns` | `polylogue/cli/commands/diagnostics.py:94` `polylogue.cli.commands.diagnostics.turns_command` |
 | `polylogue doctor` | `polylogue/cli/commands/check.py:31` `polylogue.cli.commands.check.check_command` |
 | `polylogue export` | `polylogue/cli/commands/export.py:29` `polylogue.cli.commands.export.export_command` |
 | `polylogue list` | `polylogue/cli/query_verbs.py:22` `polylogue.cli.query_verbs.list_verb` |
@@ -223,10 +227,10 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | --- | ---: |
 | `archive.query.provider_filter_consistency` | 1 |
 | `artifact.path.dependency_closure` | 11 |
-| `cli.command.help` | 56 |
+| `cli.command.help` | 60 |
 | `cli.command.json_envelope` | 2 |
-| `cli.command.no_traceback` | 56 |
-| `cli.command.plain_mode` | 56 |
+| `cli.command.no_traceback` | 60 |
+| `cli.command.plain_mode` | 60 |
 | `diagnostic.observable_trace_mapping` | 1 |
 | `error.machine_user_context` | 2 |
 | `generated.scenario.family_registered` | 9 |

@@ -145,6 +145,7 @@ Commands:
   count            Print count of matched conversations.
   dashboard        Launch the dashboard TUI.
   delete           Delete matched conversations.
+  diagnostics      Temporal session diagnostics
   doctor           Health check with optional maintenance and cleanup...
   export           Export one known conversation by ID.
   list             List matched conversations.
