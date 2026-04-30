@@ -162,7 +162,7 @@ files:
     target: polylogue/cli/commands/resume.py
     owner: stable
   - path: polylogue/cli/commands/run.py
-    loc: 574
+    loc: 602
     target: polylogue/cli/commands/run.py
     owner: stable
   - path: polylogue/cli/commands/schema.py
@@ -372,7 +372,7 @@ files:
     target: polylogue/cli/shell_completion_values.py
     owner: stable
   - path: polylogue/config.py
-    loc: 155
+    loc: 164
     target: polylogue/config.py
     owner: kernel
     reason: "kernel rule per #426"
@@ -1114,6 +1114,10 @@ files:
   - path: polylogue/proof/catalog.py
     loc: 953
     target: polylogue/proof/catalog.py
+    owner: stable
+  - path: polylogue/proof/corpus.py
+    loc: 56
+    target: polylogue/proof/corpus.py
     owner: stable
   - path: polylogue/proof/diffing.py
     loc: 692

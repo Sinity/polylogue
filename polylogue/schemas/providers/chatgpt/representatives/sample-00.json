@@ -1,0 +1,296 @@
+{
+  "blocked_urls": [],
+  "content": "synthetic-30495",
+  "conversation_id": "synthetic-66237 synthetic-66237 synt",
+  "current_node": "6e068097-25e9-4977-8d72-48e2951f58d0",
+  "disabled_tool_ids": [],
+  "id": "35c7936c-5b99-42c6-a61f-ecc00a368ce7",
+  "is_archived": false,
+  "is_do_not_remember": false,
+  "is_study_mode": false,
+  "memory_scope": "synthetic-5695",
+  "rating": "synthetic-70284",
+  "safe_urls": [],
+  "sugar_item_visible": false,
+  "user_id": "synthetic-10328",
+  "voice": "synthetic-82397",
+  "mapping": {
+    "885f6e66-c2b6-42c5-ba5d-310011b7e948": {
+      "children": [
+        "82010c62-f5f5-4b22-8e8f-a8e0284d82e5",
+        "6e068097-25e9-4977-8d72-48e2951f58d0"
+      ],
+      "id": "885f6e66-c2b6-42c5-ba5d-310011b7e948",
+      "message": {
+        "author": {
+          "metadata": {
+            "real_author": "synthetic-48520"
+          },
+          "name": "synthetic-79840",
+          "role": "user"
+        },
+        "channel": "synthetic-70010",
+        "content": {
+          "computer_id": "synthetic-21417",
+          "content": "synthetic-83886",
+          "content_type": "synthetic-90198",
+          "domain": "synthetic-73000",
+          "language": "synthetic-28785",
+          "parts": [
+            "Could you review this code for potential issues?"
+          ],
+          "pub_timestamp": 821.8025940068084,
+          "ref_id": "synthetic-41347",
+          "result": "After reviewing, I found several areas for improvement.",
+          "screenshot": {
+            "asset_pointer": "synthetic-27869",
+            "content_type": "synthetic-85909",
+            "fovea": 499,
+            "height": 884,
+            "size_bytes": 642,
+            "width": 142
+          },
+          "snippet": "synthetic-18301",
+          "source_analysis_msg_id": "89fa6a68-8fb5-427b-beb7-99193f22faf8",
+          "state": {
+            "id": "synthetic-34438",
+            "installed_software": [
+              "synthetic-76622",
+              "synthetic-56155",
+              "synthetic-76484"
+            ],
+            "os_name": "synthetic-52350",
+            "os_type": "synthetic-47447",
+            "os_version": "synthetic-28746",
+            "target_type": "synthetic-18131",
+            "title": "synthetic-66784",
+            "type": "synthetic-64686",
+            "url": "synthetic-11915"
+          },
+          "tether_id": 152,
+          "text": "Here's an implementation:\n\n```python\ndef process(data):\n    return [x for x in data if x]\n```",
+          "thoughts": [
+            {
+              "chunks": [
+                "synthetic-78172",
+                "synthetic-8326",
+                "synthetic-50432"
+              ],
+              "content": "synthetic-50019",
+              "finished": false,
+              "summary": "synthetic-69352"
+            },
+            {
+              "chunks": [
+                "synthetic-72512",
+                "synthetic-1504"
+              ],
+              "content": "synthetic-89166",
+              "finished": true,
+              "summary": "synthetic-89353"
+            },
+            {
+              "chunks": [
+                "synthetic-98419",
+                "synthetic-34973",
+                "synthetic-84012",
+                "synthetic-44587"
+              ],
+              "content": "synthetic-14621",
+              "finished": false,
+              "summary": "synthetic-56985"
+            },
+            {
+              "chunks": [
+                "synthetic-59470"
+              ],
+              "content": "synthetic-425",
+              "finished": false,
+              "summary": "synthetic-65612"
+            },
+            {
+              "chunks": [
+                "synthetic-66542"
+              ],
+              "content": "synthetic-13947",
+              "finished": false,
+              "summary": "synthetic-83748"
+            }
+          ],
+          "title": "synthetic-66540",
+          "url": "synthetic-79818"
+        },
+        "create_time": 1724751946.6504972,
+        "end_turn": true,
+        "id": "e0f3eab0-5cec-4eb5-add9-68311ca35cfb",
+        "metadata": {},
+        "recipient": "synthetic-40306",
+        "status": "synthetic-31385",
+        "update_time": 1706435707.8974247,
+        "weight": 0.56735694368891
+      },
+      "parent": null
+    },
+    "82010c62-f5f5-4b22-8e8f-a8e0284d82e5": {
+      "children": [],
+      "id": "82010c62-f5f5-4b22-8e8f-a8e0284d82e5",
+      "message": {
+        "author": {
+          "metadata": {
+            "real_author": "synthetic-15860"
+          },
+          "name": "synthetic-77110",
+          "role": "assistant"
+        },
+        "channel": "synthetic-77128",
+        "content": {
+          "computer_id": "synthetic-9305",
+          "content": "synthetic-8834",
+          "content_type": "synthetic-4117",
+          "domain": "synthetic-43309",
+          "language": "synthetic-9287",
+          "parts": [
+            "The module structure looks good. A few suggestions:",
+            "Here's an implementation:\n\n```python\ndef process(data):\n    return [x for x in data if x]\n```"
+          ],
+          "pub_timestamp": 723.3525658809708,
+          "ref_id": "synthetic-74847",
+          "screenshot": {
+            "asset_pointer": "synthetic-31850",
+            "content_type": "synthetic-61993",
+            "fovea": 807,
+            "height": 190,
+            "size_bytes": 96,
+            "width": 431
+          },
+          "snippet": "synthetic-55519",
+          "source_analysis_msg_id": "baa4b71a-dd24-47ac-b78e-edb3693dffbc",
+          "state": {
+            "id": "synthetic-7100",
+            "installed_software": [
+              "synthetic-85649",
+              "synthetic-84696",
+              "synthetic-12899"
+            ],
+            "os_name": "synthetic-7944",
+            "os_type": "synthetic-52772",
+            "os_version": "synthetic-95448",
+            "target_type": "synthetic-44473",
+            "title": "synthetic-14322",
+            "type": "synthetic-32591",
+            "url": "synthetic-25112"
+          },
+          "summary": "synthetic-24050",
+          "tether_id": 462,
+          "text": "I'll analyze the issue. Looking at the code structure...",
+          "thoughts": [
+            {
+              "chunks": [
+                "synthetic-12833",
+                "synthetic-6630",
+                "synthetic-85477",
+                "synthetic-70855"
+              ],
+              "content": "synthetic-1934",
+              "finished": true,
+              "summary": "synthetic-98771"
+            },
+            {
+              "chunks": [
+                "synthetic-21798"
+              ],
+              "content": "synthetic-53269",
+              "finished": false,
+              "summary": "synthetic-63092"
+            },
+            {
+              "chunks": [
+                "synthetic-52565"
+              ],
+              "content": "synthetic-7685",
+              "finished": true,
+              "summary": "synthetic-49672"
+            }
+          ],
+          "title": "synthetic-282",
+          "url": "synthetic-51173"
+        },
+        "create_time": 1696558265.4676187,
+        "end_turn": true,
+        "id": "f7fd5646-37bb-4eec-8bf5-0b52309d258c",
+        "metadata": {},
+        "recipient": "synthetic-7665",
+        "status": "synthetic-75914",
+        "update_time": 1742749635.928158,
+        "weight": 0.05716527290748308
+      },
+      "parent": "885f6e66-c2b6-42c5-ba5d-310011b7e948"
+    },
+    "6e068097-25e9-4977-8d72-48e2951f58d0": {
+      "children": [],
+      "id": "6e068097-25e9-4977-8d72-48e2951f58d0",
+      "message": {
+        "author": {
+          "metadata": {
+            "real_author": "synthetic-31285"
+          },
+          "name": "synthetic-59929",
+          "role": "user"
+        },
+        "channel": "synthetic-98548",
+        "content": {
+          "computer_id": "synthetic-1220",
+          "content_type": "synthetic-13104",
+          "domain": "synthetic-9602",
+          "language": "synthetic-70468",
+          "parts": [
+            "I need to implement a function that processes this data.",
+            "What's the best approach for handling errors here?"
+          ],
+          "pub_timestamp": 879.2702424845428,
+          "ref_id": "synthetic-48434",
+          "result": "After reviewing, I found several areas for improvement.",
+          "screenshot": {
+            "asset_pointer": "synthetic-80173",
+            "content_type": "synthetic-85717",
+            "fovea": 528,
+            "height": 667,
+            "size_bytes": 554,
+            "width": 931
+          },
+          "snippet": "synthetic-13577",
+          "source_analysis_msg_id": "43b409ef-2260-470f-a0cc-edc5f05db76e",
+          "state": {
+            "id": "synthetic-15129",
+            "installed_software": [
+              "synthetic-97310"
+            ],
+            "os_name": "synthetic-72512",
+            "os_type": "synthetic-20374",
+            "os_version": "synthetic-35697",
+            "target_type": "synthetic-36930",
+            "title": "synthetic-79276",
+            "type": "synthetic-27607",
+            "url": "synthetic-94058"
+          },
+          "tether_id": 505,
+          "text": "After reviewing, I found several areas for improvement.",
+          "thoughts": [],
+          "title": "synthetic-12097",
+          "url": "synthetic-83136"
+        },
+        "create_time": 1700899932.8317285,
+        "end_turn": false,
+        "id": "8d3aed99-711c-41c9-bdc1-4f1f295d6fbf",
+        "metadata": {},
+        "recipient": "synthetic-92493",
+        "status": "synthetic-56057",
+        "update_time": 1697198127.5967975,
+        "weight": 0.9450509390466391
+      },
+      "parent": "885f6e66-c2b6-42c5-ba5d-310011b7e948"
+    }
+  },
+  "create_time": 1672250967.97004,
+  "update_time": 1672251087.97004
+}
