@@ -34,6 +34,7 @@ from polylogue.cli.shared.run_workflow import (
     run_with_progress as _run_with_progress,
 )
 from polylogue.cli.shared.types import AppEnv
+from polylogue.config import Source
 from polylogue.pipeline.observers import (
     CompositeObserver,
     ExecObserver,
@@ -162,6 +163,18 @@ def _resolve_site_options(stage_requests: list[RunStageRequest]) -> SiteBuildOpt
     return options[0]
 
 
+def _build_transient_sources(paths: tuple[Path, ...]) -> list[Source]:
+    if not paths:
+        return []
+    seen: dict[str, Path] = {}
+    for path in paths:
+        name = f"input:{path.name}"
+        if name in seen:
+            continue
+        seen[name] = path
+    return [Source(name=name, path=path) for name, path in seen.items()]
+
+
 @click.group("run", chain=True, invoke_without_command=True)
 @click.option("--preview", is_flag=True, help="Preview work without writing")
 @click.option(
@@ -170,6 +183,13 @@ def _resolve_site_options(stage_requests: list[RunStageRequest]) -> SiteBuildOpt
     multiple=True,
     shell_complete=complete_run_source_names,
     help="Configured source name (repeatable). Accepts 'last' for the previously synced source.",
+)
+@click.option(
+    "--input",
+    "input_paths",
+    multiple=True,
+    type=click.Path(exists=True, resolve_path=True, path_type=Path),
+    help="Transient file, directory, or archive path (repeatable). Accepts .json, .jsonl, .ndjson, .zip.",
 )
 @click.option("--watch", is_flag=True, help="Watch sources for changes and run continuously")
 @click.option("--notify", is_flag=True, help="Desktop notification on conversation changes (requires --watch)")
@@ -181,13 +201,14 @@ def run_command(
     ctx: click.Context,
     preview: bool,
     sources: tuple[str, ...],
+    input_paths: tuple[Path, ...],
     watch: bool,
     notify: bool,
     exec_cmd: str | None,
     webhook: str | None,
     reparse: bool,
 ) -> None:
-    """Run pipeline stages on configured sources."""
+    """Run pipeline stages on configured sources and/or transient input paths."""
 
 
 @run_command.result_callback()
@@ -197,6 +218,7 @@ def _run_result_callback(
     stage_requests: list[RunStageRequest],
     preview: bool,
     sources: tuple[str, ...],
+    input_paths: tuple[Path, ...],
     watch: bool,
     notify: bool,
     exec_cmd: str | None,
@@ -242,6 +264,12 @@ def _run_result_callback(
     cfg = env.config
     selected_sources = resolve_sources(cfg, sources, "run")
     selected_sources = maybe_prompt_sources(env, cfg, selected_sources, "run")
+
+    transient_sources = _build_transient_sources(input_paths)
+    if transient_sources:
+        transient_names = [s.name for s in transient_sources]
+        selected_sources = transient_names if selected_sources is None else selected_sources + transient_names
+        cfg = cfg.with_sources(cfg.sources + transient_sources)
 
     if reparse:
         click.echo("Reparse requested.", err=False)

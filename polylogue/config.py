@@ -15,7 +15,6 @@ from .paths import (
     drive_cache_path,
     drive_credentials_path,
     drive_token_path,
-    inbox_root,
     render_root,
 )
 from .paths import (
@@ -97,10 +96,20 @@ class Config:
             if not value.is_absolute():
                 raise ConfigError(f"Config.{attr} must be an absolute path, got {value!r}")
 
+    def with_sources(self, sources: list[Source]) -> Config:
+        return Config(
+            archive_root=self.archive_root,
+            render_root=self.render_root,
+            sources=sources,
+            db_path=self.db_path,
+            drive_config=self.drive_config,
+            index_config=self.index_config,
+        )
+
 
 def get_sources() -> list[Source]:
     """Return the configured conversation sources."""
-    sources = [Source(name="inbox", path=inbox_root())]
+    sources: list[Source] = []
 
     if claude_code_path().exists():
         sources.append(Source(name="claude-code", path=claude_code_path()))

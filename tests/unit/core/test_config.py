@@ -245,7 +245,7 @@ class TestConfiguredSources:
         from polylogue.config import get_sources
 
         sources = get_sources()
-        assert [source.name for source in sources] == ["inbox"]
+        assert [source.name for source in sources] == []
 
     def test_get_sources_includes_drive_source_when_credentials_exist(
         self,
@@ -267,7 +267,7 @@ class TestConfiguredSources:
         from polylogue.config import get_sources
 
         sources = get_sources()
-        assert [source.name for source in sources] == ["inbox", "gemini"]
+        assert [source.name for source in sources] == ["gemini"]
 
 
 class TestConfigPublicBoundary:

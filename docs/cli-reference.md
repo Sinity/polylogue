@@ -156,7 +156,7 @@ Commands:
   raw              Show raw provider records for a conversation.
   reset            Reset database, blob store, assets, rendered outputs,...
   resume           Reconstruct work-state context for a fresh agent session.
-  run              Run pipeline stages on configured sources.
+  run              Run pipeline stages on configured sources and/or...
   schema           Inspect schema packages, versions, and evidence.
   show             Show matched conversations with default full-content...
   stats            Show statistics for matched conversations.
@@ -237,12 +237,14 @@ Options:
 ```text
 Usage: polylogue run [OPTIONS] COMMAND1 [ARGS]... [COMMAND2 [ARGS]...]...
 
-  Run pipeline stages on configured sources.
+  Run pipeline stages on configured sources and/or transient input paths.
 
 Options:
   --preview       Preview work without writing
   --source TEXT   Configured source name (repeatable). Accepts 'last' for the
                   previously synced source.
+  --input PATH    Transient file, directory, or archive path (repeatable).
+                  Accepts .json, .jsonl, .ndjson, .zip.
   --watch         Watch sources for changes and run continuously
   --notify        Desktop notification on conversation changes (requires
                   --watch)
