@@ -776,6 +776,18 @@
           "default": null,
           "title": "Referenced Path"
         },
+        "repo": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Repo"
+        },
         "retrieval_lane": {
           "anyOf": [
             {
@@ -1204,6 +1216,18 @@
           "default": null,
           "title": "Referenced Path"
         },
+        "repo": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Repo"
+        },
         "retrieval_lane": {
           "anyOf": [
             {
@@ -1239,6 +1263,18 @@
           ],
           "default": null,
           "title": "Since Session"
+        },
+        "tag": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tag"
         },
         "tool": {
           "anyOf": [

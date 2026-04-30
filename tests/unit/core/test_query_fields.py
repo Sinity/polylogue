@@ -20,6 +20,7 @@ def test_query_field_catalog_drives_spec_presence_and_descriptions() -> None:
         query_terms=("sqlite", "locks"),
         path_terms=("polylogue/storage",),
         providers=(Provider.CODEX,),
+        repo_names=("thoughtspace",),
         filter_has_tool_use=True,
         min_messages=3,
         since="2024-01-01",
@@ -30,6 +31,7 @@ def test_query_field_catalog_drives_spec_presence_and_descriptions() -> None:
         "search: sqlite locks",
         "referenced-path: polylogue/storage",
         "provider: codex",
+        "repo: thoughtspace",
         "has: tool_use (sql)",
         "min_messages: 3",
         "since: 2024-01-01",
@@ -43,6 +45,7 @@ def test_query_field_catalog_drives_plan_presence_descriptions_and_pushdown() ->
         path_terms=("polylogue/storage",),
         tool_terms=("bash",),
         providers=(Provider.CODEX,),
+        repo_names=("thoughtspace",),
         title="locks",
         since=since,
         filter_has_tool_use=True,
@@ -54,6 +57,7 @@ def test_query_field_catalog_drives_plan_presence_descriptions_and_pushdown() ->
         "referenced_path",
         "tool_terms",
         "providers",
+        "repo_names",
         "title",
         "filter_has_tool_use",
         "min_messages",
@@ -65,6 +69,7 @@ def test_query_field_catalog_drives_plan_presence_descriptions_and_pushdown() ->
         "referenced-path: polylogue/storage",
         "tool: bash",
         "provider: codex",
+        "repo: thoughtspace",
         "title: locks",
         "has_tool_use",
         "min_messages: 3",
@@ -75,6 +80,7 @@ def test_query_field_catalog_drives_plan_presence_descriptions_and_pushdown() ->
         "provider": "codex",
         "path_terms": ["polylogue/storage"],
         "tool_terms": ["bash"],
+        "repo_names": ["thoughtspace"],
         "title_contains": "locks",
         "has_tool_use": True,
         "min_messages": 3,
@@ -90,6 +96,7 @@ def test_query_field_catalog_drives_plan_presence_descriptions_and_pushdown() ->
     assert record_query.provider == "codex"
     assert record_query.path_terms == ("polylogue/storage",)
     assert record_query.tool_terms == ("bash",)
+    assert record_query.repo_names == ("thoughtspace",)
     assert record_query.title_contains == "locks"
     assert record_query.has_tool_use is True
     assert record_query.min_messages == 3

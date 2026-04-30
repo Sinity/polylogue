@@ -180,6 +180,7 @@ def build_query_spec_from_params(
         excluded_providers=tuple(Provider.from_string(p) for p in split_csv(params.get("exclude_provider"))),
         tags=split_csv(params.get("tag")),
         excluded_tags=split_csv(params.get("exclude_tag")),
+        repo_names=split_csv(params.get("repo")),
         has_types=as_tuple(params.get("has_type")),
         title=optional_text(params.get("title")),
         conversation_id=optional_text(params.get("conv_id")),
@@ -224,6 +225,7 @@ def query_spec_to_plan(
         excluded_providers=spec.excluded_providers,
         tags=spec.tags,
         excluded_tags=spec.excluded_tags,
+        repo_names=spec.repo_names,
         has_types=spec.has_types,
         title=spec.title,
         conversation_id=spec.conversation_id,
@@ -272,6 +274,7 @@ class ConversationQuerySpec:
     excluded_tool_terms: tuple[str, ...] = ()
     providers: tuple[Provider, ...] = ()
     excluded_providers: tuple[Provider, ...] = ()
+    repo_names: tuple[str, ...] = ()
     tags: tuple[str, ...] = ()
     excluded_tags: tuple[str, ...] = ()
     has_types: tuple[str, ...] = ()

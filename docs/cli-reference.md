@@ -53,6 +53,7 @@ Options:
                                   hybrid
   -p, --provider TEXT             Include providers (comma = OR)
   --exclude-provider TEXT         Exclude providers
+  -r, --repo TEXT                 Filter by repository name (comma = OR)
   -t, --tag TEXT                  Include tags (comma = OR, supports
                                   key:value)
   --exclude-tag TEXT              Exclude tags

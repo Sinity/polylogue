@@ -37,6 +37,7 @@ class MCPConversationQueryRequest:
     provider: str | None = None
     since: str | None = None
     tag: str | None = None
+    repo: str | None = None
     title: str | None = None
     referenced_path: str | None = None
     cwd_prefix: str | None = None
@@ -64,6 +65,7 @@ class MCPConversationQueryRequest:
             provider=self.provider,
             since=self.since,
             tag=self.tag,
+            repo=self.repo,
             title=self.title,
             referenced_path=self.referenced_path,
             cwd_prefix=self.cwd_prefix,

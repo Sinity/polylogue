@@ -65,6 +65,7 @@ def cli(
     retrieval_lane: str | None,
     provider: str | None,
     exclude_provider: str | None,
+    repo: str | None,
     tag: str | None,
     exclude_tag: str | None,
     title: str | None,

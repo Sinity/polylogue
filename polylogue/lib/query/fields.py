@@ -342,6 +342,16 @@ QUERY_FIELD_DESCRIPTORS: tuple[QueryFieldDescriptor, ...] = (
         blocks_simple_message_hit=True,
     ),
     QueryFieldDescriptor(
+        name="repo_names",
+        spec_attr="repo_names",
+        plan_attr="repo_names",
+        spec_description=_label("repo", _join_comma),
+        plan_description=_label("repo", _join_comma),
+        record_attr="repo_names",
+        sql_param="repo_names",
+        sql_value=_list_value,
+    ),
+    QueryFieldDescriptor(
         name="tags",
         spec_attr="tags",
         plan_attr="tags",

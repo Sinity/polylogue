@@ -88,6 +88,7 @@ class ConversationQueryPlan:
     excluded_tool_terms: tuple[str, ...] = ()
     providers: tuple[Provider | str, ...] = ()
     excluded_providers: tuple[Provider | str, ...] = ()
+    repo_names: tuple[str, ...] = ()
     tags: tuple[str, ...] = ()
     excluded_tags: tuple[str, ...] = ()
     has_types: tuple[str, ...] = ()
