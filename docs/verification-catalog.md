@@ -62,8 +62,8 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `polylogue delete` | `polylogue/cli/query_verbs.py:137` `polylogue.cli.query_verbs.delete_verb` |
 | `polylogue diagnostics` | `polylogue/cli/commands/diagnostics.py:15` `polylogue.cli.commands.diagnostics.diagnostics_group` |
 | `polylogue diagnostics pace` | `polylogue/cli/commands/diagnostics.py:20` `polylogue.cli.commands.diagnostics.pace_command` |
-| `polylogue diagnostics tools` | `polylogue/cli/commands/diagnostics.py:141` `polylogue.cli.commands.diagnostics.tools_command` |
-| `polylogue diagnostics turns` | `polylogue/cli/commands/diagnostics.py:94` `polylogue.cli.commands.diagnostics.turns_command` |
+| `polylogue diagnostics tools` | `polylogue/cli/commands/diagnostics.py:139` `polylogue.cli.commands.diagnostics.tools_command` |
+| `polylogue diagnostics turns` | `polylogue/cli/commands/diagnostics.py:92` `polylogue.cli.commands.diagnostics.turns_command` |
 | `polylogue doctor` | `polylogue/cli/commands/check.py:31` `polylogue.cli.commands.check.check_command` |
 | `polylogue export` | `polylogue/cli/commands/export.py:29` `polylogue.cli.commands.export.export_command` |
 | `polylogue list` | `polylogue/cli/query_verbs.py:22` `polylogue.cli.query_verbs.list_verb` |

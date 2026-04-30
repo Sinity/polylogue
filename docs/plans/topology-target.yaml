@@ -98,7 +98,7 @@ files:
     target: polylogue/cli/click_app.py
     owner: stable
   - path: polylogue/cli/click_command_registration.py
-    loc: 58
+    loc: 60
     target: polylogue/cli/click_command_registration.py
     owner: stable
   - path: polylogue/cli/click_option_groups.py
@@ -132,6 +132,10 @@ files:
   - path: polylogue/cli/commands/dashboard.py
     loc: 20
     target: polylogue/cli/commands/dashboard.py
+    owner: stable
+  - path: polylogue/cli/commands/diagnostics.py
+    loc: 179
+    target: polylogue/cli/commands/diagnostics.py
     owner: stable
   - path: polylogue/cli/commands/export.py
     loc: 54
@@ -1880,7 +1884,7 @@ files:
     target: polylogue/site/templates.py
     owner: stable
   - path: polylogue/site/templates_conversation.py
-    loc: 231
+    loc: 285
     target: polylogue/site/templates_conversation.py
     owner: stable
   - path: polylogue/site/templates_dashboard.py
@@ -2544,7 +2548,7 @@ files:
     target: polylogue/storage/products/session/rebuild.py
     owner: stable
   - path: polylogue/storage/products/session/records.py
-    loc: 108
+    loc: 109
     target: polylogue/storage/products/session/records.py
     owner: stable
   - path: polylogue/storage/products/session/refresh.py
