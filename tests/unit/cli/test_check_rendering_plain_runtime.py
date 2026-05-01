@@ -13,7 +13,7 @@ from polylogue.cli.shared.check_rendering_plain import (
     status_icon,
 )
 from polylogue.cli.shared.check_workflow import CheckCommandOptions
-from polylogue.lib.outcomes import OutcomeCheck, OutcomeStatus
+from polylogue.core.outcomes import OutcomeCheck, OutcomeStatus
 from polylogue.readiness import ReadinessReport
 
 

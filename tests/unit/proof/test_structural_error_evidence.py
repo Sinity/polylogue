@@ -6,7 +6,7 @@ from pathlib import Path
 
 from polylogue.config import get_config
 from polylogue.core.json import JSONDocument, require_json_document
-from polylogue.lib.outcomes import OutcomeStatus
+from polylogue.core.outcomes import OutcomeStatus
 from polylogue.pipeline.services.ingest_worker import ingest_record
 from polylogue.proof.catalog import build_verification_catalog
 from polylogue.proof.models import ProofObligation

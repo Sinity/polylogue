@@ -5,8 +5,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from polylogue.core.json import json_document, json_document_list
-from polylogue.lib.outcomes import OutcomeCheck as CheckResult
-from polylogue.lib.outcomes import OutcomeStatus
+from polylogue.core.outcomes import OutcomeCheck as CheckResult
+from polylogue.core.outcomes import OutcomeStatus
 from polylogue.schemas.audit.walkers import _HEX_RE, _UUID_RE, SchemaNode, _walk_semantic_roles, _walk_values
 from polylogue.schemas.privacy import _is_safe_enum_value, _looks_high_entropy_token
 

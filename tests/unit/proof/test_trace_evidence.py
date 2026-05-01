@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.lib.outcomes import OutcomeStatus
+from polylogue.core.outcomes import OutcomeStatus
 from polylogue.proof.catalog import build_verification_catalog
 from polylogue.proof.models import EvidenceEnvelope, ProofObligation
 from polylogue.proof.runners import (
