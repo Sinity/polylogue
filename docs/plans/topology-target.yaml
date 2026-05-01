@@ -791,6 +791,11 @@ files:
     target: polylogue/core/json.py
     owner: core-primitive
     reason: core primitive
+  - path: polylogue/core/security.py
+    loc: 63
+    target: polylogue/core/security.py
+    owner: core-primitive
+    reason: core primitive
   - path: polylogue/core/timestamps.py
     loc: 81
     target: polylogue/core/timestamps.py
@@ -859,11 +864,6 @@ files:
   - path: polylogue/lib/search_hits.py
     loc: 132
     target: polylogue/lib/search_hits.py
-    owner: lib-root
-    reason: lib-root primitive
-  - path: polylogue/lib/security.py
-    loc: 63
-    target: polylogue/lib/security.py
     owner: lib-root
     reason: lib-root primitive
   - path: polylogue/lib/stats.py
