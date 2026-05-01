@@ -20,7 +20,7 @@ def _root_message_roles(ctx: click.Context) -> tuple[object, ...]:
     if raw_roles:
         return tuple(normalize_message_roles(raw_roles))
     if parent.params.get("dialogue_only"):
-        from polylogue.lib.roles import Role
+        from polylogue.archive.message.roles import Role
 
         return (Role.USER, Role.ASSISTANT)
     return ()

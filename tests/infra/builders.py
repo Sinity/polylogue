@@ -20,8 +20,8 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from polylogue.archive.message.messages import MessageCollection
+from polylogue.archive.message.roles import Role
 from polylogue.lib.models import Conversation, Message
-from polylogue.lib.roles import Role
 from polylogue.types import ConversationId, Provider
 
 

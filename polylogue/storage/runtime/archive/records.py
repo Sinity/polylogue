@@ -5,11 +5,11 @@ from __future__ import annotations
 from pydantic import BaseModel, Field, field_validator
 
 from polylogue.archive.conversation.branch_type import BranchType
+from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
 from polylogue.core.hashing import hash_text
 from polylogue.core.json import json_document
 from polylogue.core.security import sanitize_path as _sanitize_path_helper
-from polylogue.lib.roles import Role
 from polylogue.storage.run_state import RunCounts, RunCountsPayload
 from polylogue.types import (
     AttachmentId,

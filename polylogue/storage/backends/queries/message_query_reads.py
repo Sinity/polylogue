@@ -7,9 +7,8 @@ from typing import Literal
 
 import aiosqlite
 
-from polylogue.archive.message.roles import MessageRoleFilter, message_role_sql_values
+from polylogue.archive.message.roles import MessageRoleFilter, Role, message_role_sql_values
 from polylogue.archive.message.types import MessageType
-from polylogue.lib.roles import Role
 from polylogue.storage.backends.queries.mappers import _row_to_message
 from polylogue.storage.runtime import MessageRecord
 

@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TypeAlias
 
+from polylogue.archive.message.roles import Role
 from polylogue.archive.provider.semantics import (
     extract_content_blocks,
     extract_reasoning_traces,
@@ -15,7 +16,6 @@ from polylogue.archive.provider.semantics import (
 from polylogue.archive.viewport.viewports import CostInfo
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.core.timestamps import parse_timestamp
-from polylogue.lib.roles import Role
 from polylogue.schemas.pinning import load_pins, resolve_pinned_paths
 from polylogue.schemas.unified.models import HarmonizedMessage, extract_token_usage
 from polylogue.types import Provider

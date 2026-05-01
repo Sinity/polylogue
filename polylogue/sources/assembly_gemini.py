@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from polylogue.lib.roles import Role
+from polylogue.archive.message.roles import Role
 
 from .assembly import SidecarData
 from .parsers.base import ParsedAttachment, ParsedConversation, ParsedMessage

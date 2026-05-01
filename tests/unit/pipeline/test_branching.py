@@ -9,9 +9,9 @@ from pathlib import Path
 import pytest
 
 from polylogue.archive.conversation.branch_type import BranchType
+from polylogue.archive.message.roles import Role
 from polylogue.config import Source
 from polylogue.lib.models import Conversation
-from polylogue.lib.roles import Role
 from polylogue.pipeline.prepare import prepare_records
 from polylogue.pipeline.prepare_models import PersistedConversationResult
 from polylogue.sources import iter_source_conversations

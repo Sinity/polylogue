@@ -1013,7 +1013,7 @@ class TestClaudeAIConversationIntegration:
 
 
 class TestNormalizeRole:
-    """Tests for polylogue.lib.roles.normalize_role — single parametrized class.
+    """Tests for polylogue.archive.message.roles.normalize_role — single parametrized class.
 
     Uses NORMALIZE_ROLE_CANONICAL from tests/infra/tables.py as the source of
     truth. Replaces the former TestRoleNormalization, TestParserRoleMappings,
@@ -1023,24 +1023,24 @@ class TestNormalizeRole:
 
     @pytest.mark.parametrize("input_role,expected,description", NORMALIZE_ROLE_CANONICAL)
     def test_canonical_mapping(self, input_role: str, expected: str, description: str) -> None:
-        from polylogue.lib.roles import normalize_role
+        from polylogue.archive.message.roles import normalize_role
 
         assert normalize_role(input_role) == expected
 
     def test_empty_raises(self) -> None:
-        from polylogue.lib.roles import normalize_role
+        from polylogue.archive.message.roles import normalize_role
 
         with pytest.raises(ValueError, match="cannot be empty"):
             normalize_role("")
 
     def test_whitespace_raises(self) -> None:
-        from polylogue.lib.roles import normalize_role
+        from polylogue.archive.message.roles import normalize_role
 
         with pytest.raises(ValueError, match="cannot be empty"):
             normalize_role("   ")
 
     def test_role_enum_normalize_unknown(self) -> None:
-        from polylogue.lib.roles import Role
+        from polylogue.archive.message.roles import Role
 
         result = Role.normalize("unrecognized")
         assert result == Role.UNKNOWN
@@ -1048,7 +1048,7 @@ class TestNormalizeRole:
 
     def test_parsed_message_uses_normalized_role(self) -> None:
         """ParsedMessage from parsers should have normalized roles."""
-        from polylogue.lib.roles import Role
+        from polylogue.archive.message.roles import Role
         from polylogue.sources.parsers.base import ParsedMessage
 
         msg = ParsedMessage(

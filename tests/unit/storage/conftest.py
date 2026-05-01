@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.lib.roles import Role
+from polylogue.archive.message.roles import Role
 from polylogue.sources.parsers.base import ParsedConversation, ParsedMessage
 from polylogue.types import Provider
 

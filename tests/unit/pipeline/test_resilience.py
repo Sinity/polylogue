@@ -19,9 +19,9 @@ import pytest
 from hypothesis import HealthCheck, given, settings
 from typing_extensions import TypedDict
 
+from polylogue.archive.message.roles import Role
 from polylogue.archive.raw_payload.decode import JSONValue
 from polylogue.config import Source
-from polylogue.lib.roles import Role
 from polylogue.pipeline.services.acquisition import AcquisitionService
 from polylogue.pipeline.services.parsing import ParseResult, ParsingService
 from polylogue.pipeline.services.validation import ValidationService
