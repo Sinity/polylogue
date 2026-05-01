@@ -12,7 +12,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from polylogue.lib.hashing import hash_file, hash_payload, hash_text, hash_text_short
+from polylogue.core.hashing import hash_file, hash_payload, hash_text, hash_text_short
 
 HASH_TEXT_CASES = [
     ("hello world", 64, "length is 64 chars"),

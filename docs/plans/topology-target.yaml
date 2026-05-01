@@ -776,6 +776,11 @@ files:
     target: polylogue/core/__init__.py
     owner: core-primitive
     reason: core primitive
+  - path: polylogue/core/hashing.py
+    loc: 60
+    target: polylogue/core/hashing.py
+    owner: core-primitive
+    reason: core primitive
   - path: polylogue/core/json.py
     loc: 140
     target: polylogue/core/json.py
@@ -799,11 +804,6 @@ files:
   - path: polylogue/lib/dates.py
     loc: 56
     target: polylogue/lib/dates.py
-    owner: lib-root
-    reason: lib-root primitive
-  - path: polylogue/lib/hashing.py
-    loc: 60
-    target: polylogue/lib/hashing.py
     owner: lib-root
     reason: lib-root primitive
   - path: polylogue/lib/metrics.py

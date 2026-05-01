@@ -21,7 +21,7 @@ mutation_campaigns:
       - polylogue/types.py
       - polylogue/lib/roles.py
       - polylogue/lib/timestamps.py
-      - polylogue/lib/hashing.py
+      - polylogue/core/hashing.py
       - polylogue/core/json.py
     tests:
       - tests/unit/core/test_models.py

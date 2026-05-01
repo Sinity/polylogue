@@ -8,7 +8,7 @@ from polylogue.archive.conversation.extraction import WorkEvent
 from polylogue.archive.phase.extraction import SessionPhase
 from polylogue.archive.session.documents import WorkEventDocument
 from polylogue.archive.session.session_profile import SessionProfile
-from polylogue.lib.hashing import hash_text
+from polylogue.core.hashing import hash_text
 from polylogue.products.archive_models import (
     SessionPhaseEvidencePayload,
     SessionPhaseInferencePayload,

@@ -6,8 +6,8 @@ import base64
 import binascii
 from typing import TypeAlias
 
+from polylogue.core.hashing import hash_payload, hash_text_short
 from polylogue.core.json import JSONDocument, JSONValue, is_json_document
-from polylogue.lib.hashing import hash_payload, hash_text_short
 
 from .base import ParsedAttachment
 

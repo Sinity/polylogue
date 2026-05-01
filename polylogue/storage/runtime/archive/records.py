@@ -6,8 +6,8 @@ from pydantic import BaseModel, Field, field_validator
 
 from polylogue.archive.conversation.branch_type import BranchType
 from polylogue.archive.message.types import MessageType
+from polylogue.core.hashing import hash_text
 from polylogue.core.json import json_document
-from polylogue.lib.hashing import hash_text
 from polylogue.lib.roles import Role
 from polylogue.lib.security import sanitize_path as _sanitize_path_helper
 from polylogue.storage.run_state import RunCounts, RunCountsPayload
