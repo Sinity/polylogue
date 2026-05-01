@@ -11,8 +11,8 @@ import ssl
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
-from polylogue.lib.run_activity import conversation_activity_counts
 from polylogue.logging import get_logger
+from polylogue.pipeline.run_activity import conversation_activity_counts
 
 if TYPE_CHECKING:
     from polylogue.storage.run_state import RunResult
