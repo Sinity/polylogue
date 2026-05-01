@@ -7,7 +7,11 @@ shows up at the next CI run that exercises the JSON path.
 
 from __future__ import annotations
 
+import pytest
+
 from polylogue.proof.catalog import build_verification_catalog
+
+pytestmark = pytest.mark.proof_law
 
 
 def test_every_json_command_is_selected_by_envelope_claim() -> None:

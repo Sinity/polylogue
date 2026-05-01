@@ -64,24 +64,6 @@
       "tier": 0
     },
     {
-      "name": "help-audit",
-      "group": "structural",
-      "description": "Audit subcommand help",
-      "execution": {
-        "kind": "polylogue",
-        "argv": [
-          "audit",
-          "--help"
-        ]
-      },
-      "assertion": {
-        "stdout_contains": [
-          "--live"
-        ]
-      },
-      "tier": 0
-    },
-    {
       "name": "help-tags",
       "group": "structural",
       "description": "Tags subcommand help",

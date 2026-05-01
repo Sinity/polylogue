@@ -289,17 +289,6 @@ JSON_CONTRACT_SCENARIOS: tuple[Exercise, ...] = (
     *_operational_json_contract_scenarios(),
     _json_contract_scenario("json-tags", "tags JSON contract", "tags", "--json", needs_data=False, tier=0, env="any"),
     _json_contract_scenario(
-        "json-audit",
-        "audit JSON contract",
-        "audit",
-        "--only",
-        "audit",
-        "--json",
-        needs_data=False,
-        tier=0,
-        env="any",
-    ),
-    _json_contract_scenario(
         "json-schema-list", "schema list JSON contract", "schema", "list", "--json", needs_data=False, tier=0, env="any"
     ),
     *_product_json_contract_scenarios(),

@@ -91,7 +91,6 @@ class TestExercisesByGroup:
             for exercise in EXERCISES
             if exercise.group == "subcommands" and exercise.name.startswith("json-")
         }
-        assert observed["json-audit"].args == ["audit", "--only", "audit", "--json"]
         assert observed["json-doctor-action-event-preview"].args == [
             "doctor",
             "--json",

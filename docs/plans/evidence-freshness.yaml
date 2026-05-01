@@ -1,5 +1,4 @@
-# Evidence freshness SLA — per-claim evidence staleness policy.
-# Part of #494.
+# Evidence-freshness manifest.
 #
 # Each claim declares its expected evidence refresh cadence.
 # Freshness applies to oracles: proof, smoke, manual_review.

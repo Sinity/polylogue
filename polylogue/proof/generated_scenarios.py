@@ -19,7 +19,7 @@ class SemanticClaimMapping:
     family: str
     state: SemanticClaimState
     claim_id: str | None = None
-    issue: str | None = None
+    mapping_note: str | None = None
 
     def to_payload(self) -> JSONDocument:
         return _json_document(
@@ -27,7 +27,7 @@ class SemanticClaimMapping:
                 "family": self.family,
                 "state": self.state,
                 "claim_id": self.claim_id,
-                "issue": self.issue,
+                "mapping_note": self.mapping_note,
             }
         )
 
@@ -48,7 +48,6 @@ class GeneratedScenarioFamily:
     tags: tuple[str, ...]
     operation_targets: tuple[str, ...] = ()
     artifact_targets: tuple[str, ...] = ()
-    issue: str = "#196"
     source_span: SourceSpan = SourceSpan(path="polylogue/proof/generated_scenarios.py")
 
     def to_subject(self) -> SubjectRef:
@@ -69,7 +68,6 @@ class GeneratedScenarioFamily:
                     "tags": list(self.tags),
                     "operation_targets": list(self.operation_targets),
                     "artifact_targets": list(self.artifact_targets),
-                    "issue": self.issue,
                 }
             ),
             source_span=self.source_span,
@@ -81,9 +79,9 @@ def _claim(
     state: SemanticClaimState,
     *,
     claim_id: str | None = None,
-    issue: str | None = None,
+    mapping_note: str | None = None,
 ) -> SemanticClaimMapping:
-    return SemanticClaimMapping(family=family, state=state, claim_id=claim_id, issue=issue)
+    return SemanticClaimMapping(family=family, state=state, claim_id=claim_id, mapping_note=mapping_note)
 
 
 GENERATED_SCENARIO_FAMILIES: tuple[GeneratedScenarioFamily, ...] = (
@@ -97,8 +95,12 @@ GENERATED_SCENARIO_FAMILIES: tuple[GeneratedScenarioFamily, ...] = (
         live_archive_dependency=False,
         reproducer=("devtools", "pipeline-probe", "--stage", "all", "--provider", "chatgpt", "--count", "1"),
         semantic_claims=(
-            _claim("archive absence/degraded readiness", "mapped", issue="#217"),
-            _claim("cold readiness diagnostics", "mapped", issue="#329"),
+            _claim(
+                "archive absence/degraded readiness",
+                "mapped",
+                mapping_note="mapped to cold readiness generated archive behavior",
+            ),
+            _claim("cold readiness diagnostics", "mapped", mapping_note="mapped to doctor/check startup diagnostics"),
         ),
         operation_targets=("project-archive-readiness",),
         artifact_targets=("archive_readiness", "raw_validation_state"),
@@ -119,7 +121,7 @@ GENERATED_SCENARIO_FAMILIES: tuple[GeneratedScenarioFamily, ...] = (
                 "implemented",
                 claim_id="archive.query.provider_filter_consistency",
             ),
-            _claim("slow-query diagnostics", "mapped", issue="#219"),
+            _claim("slow-query diagnostics", "mapped", mapping_note="mapped to query latency diagnostic workload"),
         ),
         operation_targets=("query-conversations",),
         artifact_targets=("conversation_query_results", "message_fts"),
@@ -135,8 +137,12 @@ GENERATED_SCENARIO_FAMILIES: tuple[GeneratedScenarioFamily, ...] = (
         live_archive_dependency=False,
         reproducer=("devtools", "benchmark-campaign", "run", "filter-scan"),
         semantic_claims=(
-            _claim("comparative/growth-shape performance evidence", "mapped", issue="#195"),
-            _claim("retrieval evidence provenance", "mapped", issue="#216"),
+            _claim(
+                "comparative/growth-shape performance evidence",
+                "mapped",
+                mapping_note="mapped to semantic-axis benchmark evidence",
+            ),
+            _claim("retrieval evidence provenance", "mapped", mapping_note="mapped to retrieval benchmark provenance"),
         ),
         operation_targets=("query-conversations", "query.filters.synthetic-scan"),
         artifact_targets=("conversation_query_results", "message_fts"),
@@ -161,7 +167,11 @@ GENERATED_SCENARIO_FAMILIES: tuple[GeneratedScenarioFamily, ...] = (
                 "implemented",
                 claim_id="parser.quarantine.context_redaction",
             ),
-            _claim("wrong-provider rejection without silent adoption", "mapped", issue="#333"),
+            _claim(
+                "wrong-provider rejection without silent adoption",
+                "mapped",
+                mapping_note="mapped to malformed raw provider-dispatch fixtures",
+            ),
         ),
         operation_targets=("acquire-raw-conversations",),
         artifact_targets=("raw_validation_state", "source_payload_stream"),
@@ -180,8 +190,14 @@ GENERATED_SCENARIO_FAMILIES: tuple[GeneratedScenarioFamily, ...] = (
         live_archive_dependency=False,
         reproducer=("devtools", "pipeline-probe", "--stage", "all", "--provider", "codex", "--raw-batch-size", "10"),
         semantic_claims=(
-            _claim("parser crashlessness and explicit quarantine semantics", "mapped", issue="#333"),
-            _claim("pipeline batch fanout accounting", "mapped", issue="#323"),
+            _claim(
+                "parser crashlessness and explicit quarantine semantics",
+                "mapped",
+                mapping_note="mapped to malformed raw quarantine fixtures",
+            ),
+            _claim(
+                "pipeline batch fanout accounting", "mapped", mapping_note="mapped to grouped JSONL fanout workload"
+            ),
         ),
         operation_targets=("acquire-raw-conversations",),
         artifact_targets=("raw_rows", "conversation_rows", "message_rows"),
@@ -222,8 +238,16 @@ GENERATED_SCENARIO_FAMILIES: tuple[GeneratedScenarioFamily, ...] = (
         live_archive_dependency=False,
         reproducer=("devtools", "benchmark-campaign", "run", "action-event-materialization"),
         semantic_claims=(
-            _claim("action-event rebuild convergence", "mapped", issue="#196"),
-            _claim("session product rebuild convergence", "mapped", issue="#322"),
+            _claim(
+                "action-event rebuild convergence",
+                "mapped",
+                mapping_note="mapped to synthetic tool-use materialization workload",
+            ),
+            _claim(
+                "session product rebuild convergence",
+                "mapped",
+                mapping_note="mapped to session product materialization workload",
+            ),
         ),
         operation_targets=("materialize-action-events",),
         artifact_targets=("tool_use_source_blocks", "action_event_rows", "action_event_fts"),
@@ -260,8 +284,10 @@ GENERATED_SCENARIO_FAMILIES: tuple[GeneratedScenarioFamily, ...] = (
         live_archive_dependency=False,
         reproducer=("pytest", "tests/unit/core/test_properties.py", "tests/unit/storage/test_crud.py"),
         semantic_claims=(
-            _claim("content hash stability", "implemented", issue="#196"),
-            _claim("idempotent upsert and NFC normalization", "implemented", issue="#196"),
+            _claim("content hash stability", "implemented", claim_id="archive.content_hash.stability"),
+            _claim(
+                "idempotent upsert and NFC normalization", "implemented", claim_id="archive.storage.idempotent_upsert"
+            ),
         ),
         operation_targets=("store-conversation",),
         artifact_targets=("archive_conversation_rows", "archive_message_rows"),

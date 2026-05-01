@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -530,7 +529,6 @@ class TestCliMetadata:
             "export",
             "resume",
             "products",
-            "audit",
             "schema",
             "tags",
             "watch",
@@ -547,116 +545,6 @@ class TestCliMetadata:
             "raw",
         }
         assert set(cli.commands.keys()) == expected
-
-
-# ---------------------------------------------------------------------------
-# QA command tests
-# ---------------------------------------------------------------------------
-
-
-class TestQaCommand:
-    """``polylogue qa`` flag validation and wiring."""
-
-    def test_only_and_skip_mutually_exclusive(self, cli_runner: CliRunner) -> None:
-        result = cli_runner.invoke(
-            click_cli,
-            ["audit", "--only", "audit", "--skip", "audit"],
-        )
-        assert result.exit_code != 0
-
-    def test_snapshot_from_skips_qa(self, cli_runner: CliRunner, tmp_path: Path) -> None:
-        """--snapshot-from archives a directory without running QA."""
-        source = tmp_path / "source"
-        source.mkdir()
-        (source / "report.json").write_text("{}")
-
-        output_root = tmp_path / "snapshots"
-
-        result = cli_runner.invoke(
-            click_cli,
-            ["audit", "--snapshot-from", str(source), "--report-dir", str(output_root)],
-        )
-        assert result.exit_code == 0
-        # A snapshot directory should have been created
-        assert any(output_root.iterdir())
-
-    def test_qa_help_shows_key_flags(self, cli_runner: CliRunner) -> None:
-        result = cli_runner.invoke(click_cli, ["audit", "--help"])
-        assert result.exit_code == 0
-        assert "--live" in result.output
-        assert "--only" in result.output
-        assert "--skip" in result.output
-        assert "--snapshot" in result.output
-        assert "  --tier" not in result.output
-        assert "audit generate" not in result.output
-        assert "devtools lab-scenario" in result.output
-
-    def test_json_output_uses_composed_qa_session_payload(self, cli_runner: CliRunner) -> None:
-        from polylogue.lib.outcomes import OutcomeCheck, OutcomeStatus
-        from polylogue.schemas.audit.models import AuditReport
-        from polylogue.schemas.validation.models import ArtifactProofReport, ProviderArtifactProof
-        from polylogue.showcase.qa_runner import QAResult
-
-        qa_result = QAResult(
-            audit_report=AuditReport(
-                checks=[
-                    OutcomeCheck(name="privacy", status=OutcomeStatus.OK, summary="ok"),
-                ]
-            ),
-            proof_report=ArtifactProofReport(
-                providers={
-                    "chatgpt": ProviderArtifactProof(
-                        provider="chatgpt",
-                        total_records=1,
-                        contract_backed_records=1,
-                    )
-                },
-                total_records=1,
-            ),
-            exercises_skipped=True,
-            invariants_skipped=True,
-        )
-
-        with patch("polylogue.showcase.qa_runner.run_qa_session", return_value=qa_result):
-            result = cli_runner.invoke(click_cli, ["audit", "--json"])
-
-        assert result.exit_code == 0
-        payload = json.loads(result.output)
-        assert payload["audit"]["status"] == "ok"
-        assert payload["showcase"]["status"] == "skip"
-        assert payload["overall_status"] == "ok"
-
-    def test_audit_only_skips_artifact_proof(self, cli_runner: CliRunner) -> None:
-        from polylogue.lib.outcomes import OutcomeCheck, OutcomeStatus
-        from polylogue.schemas.audit.models import AuditReport
-        from polylogue.showcase.qa_runner import QAResult
-
-        qa_result = QAResult(
-            audit_report=AuditReport(
-                checks=[
-                    OutcomeCheck(name="privacy", status=OutcomeStatus.OK, summary="ok"),
-                ]
-            ),
-            proof_skipped=True,
-            exercises_skipped=True,
-            invariants_skipped=True,
-        )
-
-        with patch("polylogue.showcase.qa_runner.run_qa_session", return_value=qa_result) as mock_run:
-            result = cli_runner.invoke(click_cli, ["audit", "--only", "audit", "--json"])
-
-        assert result.exit_code == 0
-        assert mock_run.call_args.args[0].skip_proof is True
-        payload = json.loads(result.output)
-        assert payload["proof"]["status"] == "skip"
-        assert payload["proof"]["skipped"] is True
-        assert payload["overall_status"] == "ok"
-
-    def test_exercises_only_is_no_longer_product_cli_stage(self, cli_runner: CliRunner) -> None:
-        result = cli_runner.invoke(click_cli, ["audit", "--only", "exercises", "--json"])
-
-        assert result.exit_code != 0
-        assert "invalid value" in result.output.lower()
 
 
 # ---------------------------------------------------------------------------

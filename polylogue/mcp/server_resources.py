@@ -106,7 +106,10 @@ def register_resources(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 exclude_none=True,
             )
         except Exception as exc:
-            return hooks.json_payload(MCPErrorPayload(error=str(exc)), exclude_none=True)
+            return hooks.json_payload(
+                MCPErrorPayload(error="internal MCP resource error", code="internal_error", detail=type(exc).__name__),
+                exclude_none=True,
+            )
 
 
 __all__ = ["register_resources"]

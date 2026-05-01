@@ -58,9 +58,9 @@ def db_path() -> Path:
     return data_home() / "polylogue.db"
 
 
-def inbox_root() -> Path:
-    """Default inbox directory."""
-    return data_home() / "inbox"
+def browser_capture_spool_root() -> Path:
+    """Default browser-capture source artifact spool."""
+    return data_home() / "browser-capture"
 
 
 def archive_root() -> Path:

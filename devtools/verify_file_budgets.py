@@ -1,11 +1,8 @@
 """Enforce per-file LOC budgets declared in docs/plans/file-size-budgets.yaml.
 
-Reports overages with the relevant file and its budget. Exceptions name a
-sunset issue; the lint flags stale exceptions when their issue closes
-(stale-issue detection requires the GitHub CLI; falls back to a warning
-when ``gh`` is unavailable).
-
-See `#435 <https://github.com/Sinity/polylogue/issues/435>`_.
+Reports overages with the relevant file and its budget. Exceptions are explicit
+per-file ceilings for known large files; they still block further growth, and
+stale exceptions are reported when the file disappears.
 """
 
 from __future__ import annotations
@@ -96,7 +93,7 @@ def budget_for(rel: str, budgets: dict[str, Any]) -> tuple[int, str]:
     # Exceptions win.
     for exc in budgets["exceptions"]:
         if exc.get("path") == rel:
-            return int(exc["ceiling"]), f"exception (until {exc.get('until', '?')})"
+            return int(exc["ceiling"]), "exception"
     # Per-package ceilings (longest prefix wins).
     pkg_ceiling: tuple[int, str] | None = None
     for pkg_prefix, settings in sorted(budgets["per_package"].items(), key=lambda x: -len(x[0])):

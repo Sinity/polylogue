@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "witness_id": "site.publication-contract",
+  "path": "tests/data/witnesses/site-publication-contract.json",
+  "origin": "synthetic",
+  "committed": true,
+  "provenance": {
+    "fixture_kind": "site-publication-contract",
+    "source_test": "tests/unit/proof/test_witnesses.py",
+    "raw_material": "synthetic",
+    "generator": "polylogue.site"
+  },
+  "preserved_semantic_facts": [
+    "static site publication has required page classes",
+    "generated pages must be nonblank and locally linked",
+    "message content remains escaped in HTML publication"
+  ],
+  "minimization_status": "not_applicable",
+  "privacy": {
+    "private_material": "not_observed",
+    "transformed": false,
+    "redacted": false,
+    "discarded": false,
+    "retained": false,
+    "notes": [
+      "witness contains only synthetic page-shape expectations"
+    ]
+  },
+  "known_failing": false,
+  "xfail_strict": false,
+  "rejection_reason": null,
+  "notes": [
+    "expands the witness corpus beyond lifecycle metadata into publication semantics"
+  ],
+  "privacy_classification": "synthetic",
+  "lifecycle": {
+    "state": "committed",
+    "discovered_at": "2026-04-15T00:00:00+00:00",
+    "minimized_at": "2026-04-15T00:00:00+00:00",
+    "committed_at": "2026-04-15T00:00:00+00:00",
+    "last_exercised_at": "2026-04-15T00:00:00+00:00",
+    "retired_at": null,
+    "retirement_reason": null
+  }
+}

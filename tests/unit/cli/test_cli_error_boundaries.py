@@ -229,25 +229,6 @@ def test_random_query_no_traceback(query: str) -> None:
 
 
 # =============================================================================
-# QA subcommand variants
-# =============================================================================
-
-
-class TestQAErrorBoundaries:
-    def test_qa_invalid_tier(self, runner: CliRunner) -> None:
-        """Non-numeric --tier should not produce traceback."""
-        result = runner.invoke(cli, ["audit", "--tier", "not-a-tier"])
-        assert TRACEBACK_SENTINEL not in result.output
-
-    def test_qa_nonexistent_source(self, runner: CliRunner) -> None:
-        """Unknown configured source name should fail fast without a traceback."""
-        result = runner.invoke(cli, ["audit", "--source", "/does/not/exist"])
-        assert result.exit_code != 0
-        assert TRACEBACK_SENTINEL not in result.output
-        assert "audit: Unknown source(s): /does/not/exist." in result.output
-
-
-# =============================================================================
 # Completions subcommand
 # =============================================================================
 
@@ -274,23 +255,6 @@ class TestMCPErrorBoundaries:
     def test_mcp_invalid_transport(self, runner: CliRunner) -> None:
         """Unknown --transport should not produce traceback."""
         result = runner.invoke(cli, ["mcp", "--transport", "invalid-transport"])
-        assert TRACEBACK_SENTINEL not in result.output
-
-
-# =============================================================================
-# Generate subcommand
-# =============================================================================
-
-
-class TestGenerateErrorBoundaries:
-    def test_generate_invalid_count(self, runner: CliRunner) -> None:
-        """Non-numeric -n/--count should not produce traceback."""
-        result = runner.invoke(cli, ["audit", "generate", "-n", "not-a-number"])
-        assert TRACEBACK_SENTINEL not in result.output
-
-    def test_generate_invalid_seed(self, runner: CliRunner) -> None:
-        """Non-numeric --seed should not produce traceback."""
-        result = runner.invoke(cli, ["audit", "generate", "--seed", "not-a-seed"])
         assert TRACEBACK_SENTINEL not in result.output
 
 

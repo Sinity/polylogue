@@ -15,6 +15,7 @@ from polylogue.lib.provider.capabilities import iter_provider_capabilities
 from polylogue.maintenance.targets import MaintenanceTargetCatalog, build_maintenance_target_catalog
 from polylogue.operations import build_declared_operation_catalog
 from polylogue.products.registry import PRODUCT_REGISTRY
+from polylogue.proof.coverage_manifests import coverage_manifest_subjects
 from polylogue.proof.generated_scenarios import generated_scenario_subjects
 from polylogue.proof.models import SourceSpan, SubjectRef
 from polylogue.proof.sources.effect_compiler import effect_implication_subjects
@@ -25,7 +26,16 @@ SELECTED_SCHEMA_ANNOTATIONS: tuple[str, ...] = (
     "x-polylogue-values",
     "x-polylogue-foreign-keys",
 )
-SELECTED_JSON_COMMANDS: tuple[tuple[str, ...], ...] = (("doctor",), ("tags",))
+SELECTED_JSON_COMMANDS: tuple[tuple[str, ...], ...] = (
+    ("doctor",),
+    ("tags",),
+    ("neighbors",),
+    ("products", "status"),
+    ("schema", "list"),
+)
+SELECTED_JSON_COMMAND_ARGS: Mapping[tuple[str, ...], tuple[str, ...]] = {
+    ("neighbors",): ("--query", "__polylogue_json_contract_probe__"),
+}
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SCHEMA_COMPOSITE_KEYWORDS = ("anyOf", "oneOf", "allOf")
@@ -94,11 +104,12 @@ def json_command_subjects(
         if command_path.path not in selected:
             continue
         command_id = f"polylogue {' '.join(command_path.path)} --json"
+        extra_args = SELECTED_JSON_COMMAND_ARGS.get(command_path.path, ())
         attrs = _json_document(
             {
                 "command_path": list(command_path.path),
                 "display_name": f"{command_path.display_name} --json",
-                "json_args": ["--plain", *command_path.path, "--json"],
+                "json_args": ["--plain", *command_path.path, *extra_args, "--json"],
             }
         )
         subjects.append(
@@ -181,6 +192,79 @@ def product_surface_subjects() -> tuple[SubjectRef, ...]:
         for name, pt in sorted(PRODUCT_REGISTRY.items())
     ]
     return tuple(subjects)
+
+
+def architecture_control_subjects() -> tuple[SubjectRef, ...]:
+    """Compile structural repo controls into proof subjects."""
+    controls = (
+        (
+            "architecture.topology.projection",
+            "architecture.topology",
+            "docs/plans/topology-target.yaml",
+            "devtools.verify_topology",
+            "devtools verify-topology",
+        ),
+        (
+            "architecture.layering.import_rules",
+            "architecture.layering",
+            "docs/plans/layering.yaml",
+            "devtools.verify_layering",
+            "devtools verify-layering",
+        ),
+        (
+            "architecture.file_budget.loc",
+            "architecture.file_budget",
+            "docs/plans/file-size-budgets.yaml",
+            "devtools.verify_file_budgets",
+            "devtools verify-file-budgets",
+        ),
+        (
+            "architecture.manifest.consistency",
+            "architecture.manifest",
+            "docs/plans",
+            "devtools.verify_manifests",
+            "devtools verify-manifests",
+        ),
+        (
+            "architecture.witness.lifecycle",
+            "architecture.witness",
+            "tests/witnesses",
+            "devtools.verify_witness_lifecycle",
+            "devtools verify-witness-lifecycle",
+        ),
+    )
+    return tuple(
+        SubjectRef(
+            kind=kind,
+            id=subject_id,
+            attrs=_json_document(
+                {
+                    "control_path": control_path,
+                    "runner": runner,
+                    "command": command,
+                }
+            ),
+            source_span=SourceSpan(path=control_path, symbol=runner),
+        )
+        for subject_id, kind, control_path, runner, command in controls
+    )
+
+
+def schema_roundtrip_subjects() -> tuple[SubjectRef, ...]:
+    """Compile schema inference-validation roundtrip controls."""
+    return (
+        SubjectRef(
+            kind="schema.roundtrip",
+            id="schema.roundtrip.provider_packages",
+            attrs=_json_document(
+                {
+                    "command": "devtools verify-schema-roundtrip --all --json",
+                    "schema_root": "polylogue/schemas/providers",
+                }
+            ),
+            source_span=SourceSpan(path="polylogue/schemas/providers", symbol="schema_roundtrip_subjects"),
+        ),
+    )
 
 
 def artifact_path_subjects(graph: ArtifactGraph | None = None) -> tuple[SubjectRef, ...]:
@@ -427,12 +511,15 @@ def build_catalog_subjects() -> tuple[SubjectRef, ...]:
         *operation_spec_subjects(),
         *effect_implication_subjects(),
         *product_surface_subjects(),
+        *architecture_control_subjects(),
+        *schema_roundtrip_subjects(),
         *artifact_path_subjects(),
         *maintenance_target_subjects(),
         *error_surface_subjects(),
         *trace_operation_subjects(),
         *observable_diagnostic_subjects(),
         *generated_scenario_subjects(),
+        *coverage_manifest_subjects(),
         *schema_annotation_subjects(),
         *workflow_claim_subjects(),
     )
@@ -626,6 +713,7 @@ __all__ = [
     "artifact_path_subjects",
     "build_catalog_subjects",
     "command_subjects",
+    "coverage_manifest_subjects",
     "error_surface_subjects",
     "generated_scenario_subjects",
     "json_command_subjects",

@@ -29,7 +29,7 @@ per_package:
 exceptions:
   - path: tests/unit/sources/test_source_laws.py
     ceiling: 2500
-    until: "#403"
+    reason: split source/parser/provider contracts
 """,
     )
     parsed = verify_file_budgets.parse_yaml(yaml.read_text())
@@ -37,7 +37,7 @@ exceptions:
     assert parsed["per_package"] == {"devtools/": {"source_loc_ceiling": 1500}}
     assert parsed["exceptions"][0]["path"] == "tests/unit/sources/test_source_laws.py"
     assert parsed["exceptions"][0]["ceiling"] == 2500
-    assert parsed["exceptions"][0]["until"] == "#403"
+    assert parsed["exceptions"][0]["reason"] == "split source/parser/provider contracts"
 
 
 def test_budget_for_resolution_order() -> None:
@@ -45,7 +45,11 @@ def test_budget_for_resolution_order() -> None:
         "defaults": {"source_loc_ceiling": 800, "test_loc_ceiling": 1200},
         "per_package": {"devtools/": {"source_loc_ceiling": 1500}},
         "exceptions": [
-            {"path": "tests/unit/sources/test_source_laws.py", "ceiling": 2500, "until": "#403"},
+            {
+                "path": "tests/unit/sources/test_source_laws.py",
+                "ceiling": 2500,
+                "reason": "split source/parser/provider contracts",
+            },
         ],
     }
     # Exception wins.

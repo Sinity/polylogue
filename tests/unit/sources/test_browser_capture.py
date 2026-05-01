@@ -93,7 +93,7 @@ async def test_browser_capture_receiver_artifact_lands_in_archive(
     tmp_path: Path,
 ) -> None:
     envelope = BrowserCaptureEnvelope.model_validate(_capture_payload())
-    artifact = write_capture_envelope(envelope, inbox_path=tmp_path / "browser-capture").path
+    artifact = write_capture_envelope(envelope, spool_path=tmp_path / "browser-capture").path
     config = get_config()
     config.sources = [Source(name="inbox", path=artifact)]
 

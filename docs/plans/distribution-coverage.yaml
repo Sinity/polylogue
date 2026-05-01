@@ -1,4 +1,4 @@
-# Distribution-coverage manifest — Track B, #514.
+# Distribution-coverage manifest.
 #
 # Documents the current state of install-artifact parity across
 # wheel, sdist, and Nix package. Seed state: each artifact builds
@@ -94,13 +94,25 @@ artifacts:
 coverage_gaps:
   - artifact: wheel
     gap: Not built or tested in CI
+    owner: distribution
+    next_evidence: Add package/build or cross-artifact CI gate
   - artifact: sdist
     gap: Not built or tested in CI
+    owner: distribution
+    next_evidence: Add package/build or cross-artifact CI gate
   - artifact: dev_install
     gap: Not verified in CI; devshell is canonical environment
+    owner: distribution
+    next_evidence: Add package/build or cross-artifact CI gate
   - platform: macos
     gap: No macOS CI runner
+    owner: distribution
+    next_evidence: Add package/build or cross-artifact CI gate
   - platform: windows
     gap: No Windows CI runner
+    owner: distribution
+    next_evidence: Add package/build or cross-artifact CI gate
   - concern: install_parity
     gap: No cross-artifact equivalence verification (wheel vs sdist vs Nix)
+    owner: distribution
+    next_evidence: Add package/build or cross-artifact CI gate

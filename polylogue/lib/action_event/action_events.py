@@ -27,6 +27,25 @@ from polylogue.lib.action_event.parsing import build_tool_calls_from_content_blo
 from polylogue.lib.viewport.viewports import ToolCall, ToolCategory
 from polylogue.types import Provider
 
+_CANONICAL_TOOL_NAMES = {
+    "bash": "bash",
+    "shell": "bash",
+    "terminal": "bash",
+    "run": "bash",
+    "exec_command": "bash",
+    "shell_command": "bash",
+    "spawn_agent": "task",
+    "subagent": "task",
+    "agent": "task",
+    "update_plan": "todo",
+}
+
+
+def canonical_tool_name(name: str) -> str:
+    """Return the cross-provider canonical tool name used for statistics."""
+    normalized = (name or "unknown").strip().lower()
+    return _CANONICAL_TOOL_NAMES.get(normalized, normalized)
+
 
 @dataclass(frozen=True, slots=True)
 class ActionEvent:
@@ -52,7 +71,7 @@ class ActionEvent:
 
     @property
     def normalized_tool_name(self) -> str:
-        return (self.tool_name or "unknown").strip().lower()
+        return canonical_tool_name(self.tool_name)
 
 
 class ActionEventMessageLike(Protocol):
@@ -119,4 +138,5 @@ __all__ = [
     "build_action_event",
     "build_action_events",
     "build_tool_calls_from_content_blocks",
+    "canonical_tool_name",
 ]

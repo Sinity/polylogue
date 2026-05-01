@@ -1,4 +1,4 @@
-# Assurance-domains coverage matrix — Track B, #508.
+# Assurance-domains coverage matrix.
 #
 # Declares all 26 assurance domains and their current maturity as seed
 # manifests. Each domain documents its verification maturity, whether an
@@ -188,14 +188,14 @@ domains:
       verifying spec-to-behavior correspondence.
 
   migration_safety:
-    description: Schema migration, retirement tracking
+    description: Schema rebuild and transition safety
     maturity: nascent
-    oracle_present: true
-    oracle: drift_check
+    oracle_present: false
+    oracle: null
     notes: >
       Schema is fresh-only (no migration chain). Wipe-on-mismatch.
-      verify-migrations lint checks retirement completeness per
-      docs/plans/migrations.yaml. No automated migration testing.
+      Active transition checks can use docs/plans/migrations.yaml while
+      work is in flight, but completed retirements are not durable proof.
 
   provider_coverage:
     description: Known provider support breadth and depth
@@ -268,6 +268,16 @@ domains:
       benchmark-campaign devtools commands exist. pytest-benchmark
       suite in tests/benchmarks/. No committed baselines or
       regression gates.
+
+  architecture_discipline:
+    description: Topology, layering, file-budget, and structural manifest enforcement
+    maturity: growing
+    oracle_present: true
+    oracle: drift_check
+    notes: >
+      verify-topology, verify-layering, verify-file-budgets,
+      verify-manifests, schema-roundtrip, and witness lifecycle gates
+      are routed through proof obligations and devtools verify --quick.
 
   unclassified:
     description: Uncategorized or cross-cutting concerns

@@ -8,10 +8,10 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 
 ## Snapshot
 
-- subjects: `374`
-- claims: `35`
-- runner bindings: `35`
-- proof obligations: `450`
+- subjects: `505`
+- claims: `44`
+- runner bindings: `44`
+- proof obligations: `579`
 
 ## Quality Checks
 
@@ -23,16 +23,25 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `catalog.serious_claim_bug_classes` | `ok` | serious claims expose bug classes |
 | `catalog.serious_claim_breakers` | `ok` | serious claims expose breakers or tracked exceptions |
 | `catalog.serious_claim_adequacy` | `ok` | serious claims declare runner classes, observed facts, and staleness conditions |
+| `catalog.serious_claim_oracle_independence` | `ok` | serious claims avoid ceremonial or self-attesting evidence |
 | `catalog.non_abstract_claim_subjects` | `ok` | non-abstract claims bind at least one subject |
 
 ## Subject Summary
 
 | Kind | Count |
 | --- | ---: |
+| `architecture.file_budget` | 1 |
+| `architecture.layering` | 1 |
+| `architecture.manifest` | 1 |
+| `architecture.topology` | 1 |
+| `architecture.witness` | 1 |
 | `archive.query_law` | 1 |
 | `artifact.path` | 27 |
-| `cli.command` | 60 |
-| `cli.json_command` | 2 |
+| `assurance.coverage_gap` | 23 |
+| `assurance.coverage_item` | 91 |
+| `assurance.coverage_manifest` | 9 |
+| `cli.command` | 59 |
+| `cli.json_command` | 5 |
 | `diagnostic.observable` | 1 |
 | `error.surface` | 2 |
 | `generated.scenario_family` | 9 |
@@ -42,6 +51,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `product.surface` | 12 |
 | `provider.capability` | 3 |
 | `schema.annotation` | 95 |
+| `schema.roundtrip` | 1 |
 | `trace.operation` | 1 |
 | `workflow.claim` | 2 |
 
@@ -50,7 +60,6 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | Command | Source |
 | --- | --- |
 | `polylogue` | `polylogue/cli/click_app.py:51` `polylogue.cli.click_app.cli` |
-| `polylogue audit` | `polylogue/cli/commands/qa.py:21` `polylogue.cli.commands.qa.qa_command` |
 | `polylogue auth` | `polylogue/cli/commands/auth.py:16` `polylogue.cli.commands.auth.auth_command` |
 | `polylogue browser-capture` | `polylogue/cli/commands/browser_capture.py:14` `polylogue.cli.commands.browser_capture.browser_capture_command` |
 | `polylogue browser-capture serve` | `polylogue/cli/commands/browser_capture.py:38` `polylogue.cli.commands.browser_capture.serve_command` |
@@ -67,7 +76,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `polylogue doctor` | `polylogue/cli/commands/check.py:31` `polylogue.cli.commands.check.check_command` |
 | `polylogue export` | `polylogue/cli/commands/export.py:29` `polylogue.cli.commands.export.export_command` |
 | `polylogue list` | `polylogue/cli/query_verbs.py:22` `polylogue.cli.query_verbs.list_verb` |
-| `polylogue mcp` | `polylogue/cli/commands/mcp.py:10` `polylogue.cli.commands.mcp.mcp_command` |
+| `polylogue mcp` | `polylogue/cli/commands/mcp.py:13` `polylogue.cli.commands.mcp.mcp_command` |
 | `polylogue messages` | `polylogue/cli/query_verbs.py:179` `polylogue.cli.query_verbs.messages_verb` |
 | `polylogue neighbors` | `polylogue/cli/commands/neighbors.py:42` `polylogue.cli.commands.neighbors.neighbors_command` |
 | `polylogue open` | `polylogue/cli/query_verbs.py:94` `polylogue.cli.query_verbs.open_verb` |
@@ -102,8 +111,8 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `polylogue run schema` | `polylogue/cli/commands/run.py:392` `polylogue.cli.commands.run.run_schema_stage` |
 | `polylogue run site` | `polylogue/cli/commands/run.py:448` `polylogue.cli.commands.run.run_site_stage` |
 | `polylogue schema` | `polylogue/cli/commands/schema.py:38` `polylogue.cli.commands.schema.schema_command` |
-| `polylogue schema compare` | `polylogue/cli/commands/schema.py:56` `polylogue.cli.commands.schema.schema_compare` |
-| `polylogue schema explain` | `polylogue/cli/commands/schema.py:90` `polylogue.cli.commands.schema.schema_explain` |
+| `polylogue schema compare` | `polylogue/cli/commands/schema.py:57` `polylogue.cli.commands.schema.schema_compare` |
+| `polylogue schema explain` | `polylogue/cli/commands/schema.py:97` `polylogue.cli.commands.schema.schema_explain` |
 | `polylogue schema list` | `polylogue/cli/commands/schema.py:45` `polylogue.cli.commands.schema.schema_list` |
 | `polylogue show` | `polylogue/cli/query_verbs.py:80` `polylogue.cli.query_verbs.show_verb` |
 | `polylogue stats` | `polylogue/cli/query_verbs.py:52` `polylogue.cli.query_verbs.stats_verb` |
@@ -141,6 +150,40 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `generated.scenario_family.destructive-preview-safety` | `implemented` | seeded archive with previewable orphan cleanup | dry-run versus destructive repair | `destructive-preview safety`<br>`error machine/user context` |
 | `generated.scenario_family.archive-substrate-laws` | `implemented` | unit-generated conversation and text fixtures | archive substrate laws | `content hash stability`<br>`idempotent upsert and NFC normalization` |
 
+## Assurance Coverage Subjects
+
+| Domain | Subject Kind | Count |
+| --- | --- | ---: |
+| `benchmark_coverage` | `assurance.coverage_item` | 3 |
+| `cli_surface` | `assurance.coverage_item` | 2 |
+| `distribution` | `assurance.coverage_gap` | 7 |
+| `distribution` | `assurance.coverage_item` | 7 |
+| `distribution` | `assurance.coverage_manifest` | 1 |
+| `docs_media` | `assurance.coverage_gap` | 3 |
+| `docs_media` | `assurance.coverage_item` | 17 |
+| `docs_media` | `assurance.coverage_manifest` | 1 |
+| `migration_safety` | `assurance.coverage_gap` | 1 |
+| `mutation_coverage` | `assurance.coverage_item` | 4 |
+| `mutation_coverage` | `assurance.coverage_manifest` | 1 |
+| `operational_resilience` | `assurance.coverage_item` | 1 |
+| `performance` | `assurance.coverage_gap` | 1 |
+| `pipeline_correctness` | `assurance.coverage_item` | 1 |
+| `provider_coverage` | `assurance.coverage_item` | 1 |
+| `scenario_coverage` | `assurance.coverage_manifest` | 1 |
+| `security_privacy` | `assurance.coverage_gap` | 5 |
+| `security_privacy` | `assurance.coverage_item` | 8 |
+| `security_privacy` | `assurance.coverage_manifest` | 1 |
+| `site_publication` | `assurance.coverage_gap` | 1 |
+| `spec_accuracy` | `assurance.coverage_item` | 12 |
+| `spec_accuracy` | `assurance.coverage_manifest` | 2 |
+| `spec_completeness` | `assurance.coverage_item` | 28 |
+| `spec_completeness` | `assurance.coverage_manifest` | 1 |
+| `storage_correctness` | `assurance.coverage_gap` | 1 |
+| `test_quality` | `assurance.coverage_gap` | 4 |
+| `test_quality` | `assurance.coverage_item` | 6 |
+| `test_quality` | `assurance.coverage_manifest` | 1 |
+| `unclassified` | `assurance.coverage_item` | 1 |
+
 ## Claims
 
 | Claim | Severity | Bug Classes | Breaker / Exception |
@@ -163,22 +206,31 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `generated.scenario.family_registered` | `serious` | `scenario-family.omission`<br>`live-checks.overused` | A missing generated-world family leaves live/archive checks carrying routine confidence. |
 | `generated.scenario.local_deterministic` | `serious` | `scenario-family.live-dependency`<br>`scenario-family.nondeterministic-local-fixture` | An implemented generated scenario with live archive dependency is not a routine proof subject. |
 | `generated.scenario.semantic_claim_mapping` | `serious` | `scenario-family.vacuous-process-check`<br>`semantic-proof.unmapped-generated-world` | A generated scenario without semantic claim mapping can go green without proving meaning. |
+| `assurance.coverage.manifest_structured` | `serious` | `assurance.manifest.omission`<br>`coverage-map.unroutable` | A coverage manifest that is not represented in the proof catalog stops proof-pack routing. |
+| `assurance.coverage.item_declared` | `serious` | `coverage-item.missing-domain`<br>`coverage-item.unroutable-path` | An item without routable coverage metadata cannot contribute to affected proof packs. |
+| `assurance.coverage.gap_has_closure_path` | `serious` | `coverage-gap.owner-missing`<br>`proof-pack.known-gap-omission` | A known coverage gap without an owner and next evidence path cannot drive closure. |
+| `architecture.topology.projection_enforced` | `serious` | `topology.pending-cell`<br>`architecture.placement-drift` | A missing, orphan, conflict, or pending topology cell breaks structural confidence. |
+| `architecture.layering.import_rules_enforced` | `serious` | `layering.import-violation`<br>`architecture.boundary-drift` | A cross-layer import violation breaks the architecture discipline gate. |
+| `architecture.file_budget.loc_enforced` | `serious` | `file-budget.exception-stale`<br>`test-owner.mixed-responsibility` | A stale exemption or over-budget file breaks the file-budget control. |
+| `architecture.manifest.consistency_enforced` | `serious` | `manifest.schema-drift`<br>`verification-map.inconsistent` | A malformed or inconsistent manifest breaks structural proof routing. |
+| `architecture.witness.lifecycle_enforced` | `serious` | `witness.stale`<br>`witness.unexercised` | A stale, unclassified, or unexercised witness breaks the lifecycle control. |
+| `schema.roundtrip.inference_validation` | `serious` | `schema-roundtrip.validation-gap`<br>`schema-package.unreadable` | A committed schema package that cannot be reloaded and validated breaks the roundtrip gate. |
 | `operation.effect.deterministic` | `info` | `operation.effect.implication_violation` | tracked: None |
 | `operation.effect.no_side_effect` | `info` | `operation.effect.implication_violation` | tracked: None |
 | `operation.effect.snapshot_consistent` | `info` | `operation.effect.implication_violation` | tracked: None |
-| `operation.effect.preview` | `serious` | `operation.effect.implication_violation` | tracked: #516 |
-| `operation.effect.idempotent` | `serious` | `operation.effect.implication_violation` | tracked: #516 |
-| `operation.effect.rollback_safe` | `serious` | `operation.effect.implication_violation` | tracked: #516 |
-| `operation.effect.atomic` | `serious` | `operation.effect.implication_violation` | tracked: #516 |
-| `operation.effect.path_sanitized` | `serious` | `operation.effect.implication_violation` | tracked: #516 |
-| `operation.effect.atomic_rename` | `serious` | `operation.effect.implication_violation` | tracked: #516 |
-| `operation.effect.parent_exists` | `serious` | `operation.effect.implication_violation` | tracked: #516 |
+| `operation.effect.preview` | `serious` | `operation.effect.implication_violation` | tracked: abstract effect implication requires a concrete runner |
+| `operation.effect.idempotent` | `serious` | `operation.effect.implication_violation` | tracked: abstract effect implication requires a concrete runner |
+| `operation.effect.rollback_safe` | `serious` | `operation.effect.implication_violation` | tracked: abstract effect implication requires a concrete runner |
+| `operation.effect.atomic` | `serious` | `operation.effect.implication_violation` | tracked: abstract effect implication requires a concrete runner |
+| `operation.effect.path_sanitized` | `serious` | `operation.effect.implication_violation` | tracked: abstract effect implication requires a concrete runner |
+| `operation.effect.atomic_rename` | `serious` | `operation.effect.implication_violation` | tracked: abstract effect implication requires a concrete runner |
+| `operation.effect.parent_exists` | `serious` | `operation.effect.implication_violation` | tracked: abstract effect implication requires a concrete runner |
 | `operation.effect.timeout_bounded` | `info` | `operation.effect.implication_violation` | tracked: None |
 | `operation.effect.retry_bounded` | `info` | `operation.effect.implication_violation` | tracked: None |
 | `operation.effect.sampling_bounded` | `info` | `operation.effect.implication_violation` | tracked: None |
-| `operation.effect.privacy_safe_evidence` | `serious` | `operation.effect.implication_violation` | tracked: #516 |
-| `operation.effect.explicit_dry_run_evidence` | `serious` | `operation.effect.implication_violation` | tracked: #516 |
-| `operation.effect.confirmed_before_execute` | `serious` | `operation.effect.implication_violation` | tracked: #516 |
+| `operation.effect.privacy_safe_evidence` | `serious` | `operation.effect.implication_violation` | tracked: abstract effect implication requires a concrete runner |
+| `operation.effect.explicit_dry_run_evidence` | `serious` | `operation.effect.implication_violation` | tracked: abstract effect implication requires a concrete runner |
+| `operation.effect.confirmed_before_execute` | `serious` | `operation.effect.implication_violation` | tracked: abstract effect implication requires a concrete runner |
 | `product.surface.registered` | `info` | `product.registry.omission` | tracked: None |
 
 ## Runner Bindings
@@ -203,6 +255,15 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `generated-scenario-static-contract:generated.scenario.family_registered` | `generated.scenario.family_registered` | `structural` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
 | `generated-scenario-static-contract:generated.scenario.local_deterministic` | `generated.scenario.local_deterministic` | `structural` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
 | `generated-scenario-static-contract:generated.scenario.semantic_claim_mapping` | `generated.scenario.semantic_claim_mapping` | `semantic` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
+| `coverage-manifest-static-contract:assurance.coverage.manifest_structured` | `assurance.coverage.manifest_structured` | `structural` | `static` | commands=`devtools`; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
+| `coverage-manifest-static-contract:assurance.coverage.item_declared` | `assurance.coverage.item_declared` | `structural` | `static` | commands=`devtools`; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
+| `coverage-manifest-static-contract:assurance.coverage.gap_has_closure_path` | `assurance.coverage.gap_has_closure_path` | `structural` | `static` | commands=`devtools`; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
+| `architecture-static-contract:architecture.topology.projection_enforced` | `architecture.topology.projection_enforced` | `structural` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
+| `architecture-static-contract:architecture.layering.import_rules_enforced` | `architecture.layering.import_rules_enforced` | `structural` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
+| `architecture-static-contract:architecture.file_budget.loc_enforced` | `architecture.file_budget.loc_enforced` | `structural` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
+| `architecture-static-contract:architecture.manifest.consistency_enforced` | `architecture.manifest.consistency_enforced` | `structural` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
+| `architecture-static-contract:architecture.witness.lifecycle_enforced` | `architecture.witness.lifecycle_enforced` | `structural` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
+| `schema-roundtrip-static-contract:schema.roundtrip.inference_validation` | `schema.roundtrip.inference_validation` | `structural` | `static` | commands=`devtools`; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
 | `effect-implication-static-contract:operation.effect.deterministic` | `operation.effect.deterministic` | `structural` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
 | `effect-implication-static-contract:operation.effect.no_side_effect` | `operation.effect.no_side_effect` | `structural` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
 | `effect-implication-static-contract:operation.effect.snapshot_consistent` | `operation.effect.snapshot_consistent` | `structural` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
@@ -225,12 +286,20 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 
 | Claim | Obligations |
 | --- | ---: |
+| `architecture.file_budget.loc_enforced` | 1 |
+| `architecture.layering.import_rules_enforced` | 1 |
+| `architecture.manifest.consistency_enforced` | 1 |
+| `architecture.topology.projection_enforced` | 1 |
+| `architecture.witness.lifecycle_enforced` | 1 |
 | `archive.query.provider_filter_consistency` | 1 |
 | `artifact.path.dependency_closure` | 11 |
-| `cli.command.help` | 60 |
-| `cli.command.json_envelope` | 2 |
-| `cli.command.no_traceback` | 60 |
-| `cli.command.plain_mode` | 60 |
+| `assurance.coverage.gap_has_closure_path` | 23 |
+| `assurance.coverage.item_declared` | 91 |
+| `assurance.coverage.manifest_structured` | 9 |
+| `cli.command.help` | 59 |
+| `cli.command.json_envelope` | 5 |
+| `cli.command.no_traceback` | 59 |
+| `cli.command.plain_mode` | 59 |
 | `diagnostic.observable_trace_mapping` | 1 |
 | `error.machine_user_context` | 2 |
 | `generated.scenario.family_registered` | 9 |
@@ -256,5 +325,6 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `provider.capability.identity_bridge` | 3 |
 | `provider.capability.partial_coverage_declared` | 3 |
 | `schema.foreign_key.resolves` | 7 |
+| `schema.roundtrip.inference_validation` | 1 |
 | `schema.values.value_closure` | 88 |
 | `trace.operation.surface_equivalence` | 1 |

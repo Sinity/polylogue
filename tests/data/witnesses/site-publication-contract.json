@@ -1,0 +1,21 @@
+{
+  "surface": "static-site",
+  "required_pages": [
+    "index.html",
+    "conversations/{conversation_id}.html",
+    "search.html",
+    "assets/site.css"
+  ],
+  "required_page_facts": [
+    "conversation pages preserve provider, title, timestamps, and message count",
+    "index pages link to generated conversation pages",
+    "search page has a nonblank query input and result container",
+    "site CSS is generated as a committed/publication artifact, not inline-only prose"
+  ],
+  "publication_checks": [
+    "nonblank generated HTML",
+    "local hyperlink integrity",
+    "HTML escaping for message content",
+    "artifact path containment under output root"
+  ]
+}

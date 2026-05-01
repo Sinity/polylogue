@@ -1,6 +1,5 @@
-# API parity manifest — documents the presence of each operation across
+# API-parity manifest.
 # CLI, MCP, Python API, and sync/async surfaces.
-# Part of #493.
 
 description: Cross-surface API parity coverage across CLI, MCP, facade, and sync/async paths.
 
@@ -14,9 +13,9 @@ surfaces:
     coverage: nascent
     path: polylogue/mcp/
     gaps:
-      - "MCP filtering parity with CLI (#444)"
-      - "MCP authorization (#444)"
-      - "MCP error sanitization (#444)"
+      - MCP filtering parity with CLI
+      - MCP authorization
+      - MCP error sanitization
   python_api:
     description: Async library API (Polylogue facade)
     coverage: established
@@ -86,4 +85,4 @@ parity_checks:
   output_format:
     description: "--format profile unification across commands"
     status: nascent
-    issue: 445
+    owner: cli-output-format

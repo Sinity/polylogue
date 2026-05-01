@@ -52,8 +52,8 @@ def test_capture_artifact_path_is_deterministic(tmp_path: Path) -> None:
 def test_write_capture_envelope_replaces_same_artifact(tmp_path: Path) -> None:
     envelope = BrowserCaptureEnvelope.model_validate(_payload())
 
-    first = write_capture_envelope(envelope, inbox_path=tmp_path)
-    second = write_capture_envelope(envelope, inbox_path=tmp_path)
+    first = write_capture_envelope(envelope, spool_path=tmp_path)
+    second = write_capture_envelope(envelope, spool_path=tmp_path)
 
     assert first.path == second.path
     assert first.replaced is False
@@ -63,9 +63,9 @@ def test_write_capture_envelope_replaces_same_artifact(tmp_path: Path) -> None:
 
 def test_existing_capture_state_reports_written_artifact(tmp_path: Path) -> None:
     envelope = BrowserCaptureEnvelope.model_validate(_payload())
-    write_capture_envelope(envelope, inbox_path=tmp_path)
+    write_capture_envelope(envelope, spool_path=tmp_path)
 
-    state = existing_capture_state("chatgpt", "conv-123", inbox_path=tmp_path)
+    state = existing_capture_state("chatgpt", "conv-123", spool_path=tmp_path)
 
     assert state["captured"] is True
     assert state["provider"] == "chatgpt"
@@ -83,7 +83,7 @@ def test_browser_capture_status_cli_json(cli_workspace: dict[str, Path]) -> None
 
 
 def test_receiver_http_accepts_capture_and_rejects_unknown_origin(tmp_path: Path) -> None:
-    server = make_server("127.0.0.1", 0, inbox_path=tmp_path)
+    server = make_server("127.0.0.1", 0, spool_path=tmp_path)
     thread = Thread(target=server.serve_forever, daemon=True)
     thread.start()
     host, port = cast(tuple[str, int], server.server_address[:2])

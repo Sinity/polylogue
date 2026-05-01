@@ -43,6 +43,20 @@ completed: []
     assert spec["forbidden_substrings"][0]["substring"] == "foo_legacy"
 
 
+def test_parse_yaml_empty_active_manifest(tmp_path: Path) -> None:
+    yaml = _write(
+        tmp_path,
+        """migrations: {}
+
+completed: []
+""",
+    )
+
+    parsed = verify_migrations.parse_yaml(yaml.read_text())
+
+    assert parsed["migrations"] == {}
+
+
 def test_check_migration_no_paths_complete(tmp_path: Path) -> None:
     spec = {
         "issue": "#1",
@@ -78,13 +92,6 @@ def test_committed_manifest_runs(capsys: pytest.CaptureFixture[str]) -> None:
     assert rc == 0
     captured = capsys.readouterr()
     assert "blocking=False" in captured.out
-
-
-def test_strict_mode_blocks_on_findings() -> None:
-    """When --strict <name> is passed and findings exist, exit nonzero."""
-    rc = verify_migrations.main(["--strict", "retire-audit-qa-showcase"])
-    # #413 has not landed yet — surviving entries should make this blocking.
-    assert rc == 1
 
 
 def test_json_unknown_strict_name_keeps_stdout_parseable(capsys: pytest.CaptureFixture[str]) -> None:

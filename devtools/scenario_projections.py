@@ -69,6 +69,10 @@ def render_scenario_projections(
         lines.append(f"  - artifact targets: {', '.join(entry.artifact_targets) if entry.artifact_targets else '—'}")
         lines.append(f"  - operation targets: {', '.join(entry.operation_targets) if entry.operation_targets else '—'}")
         lines.append(f"  - tags: {', '.join(entry.tags) if entry.tags else '—'}")
+        if entry.docs_role or entry.caption or entry.demonstrates:
+            lines.append(f"  - docs role: {entry.docs_role or '—'}")
+            lines.append(f"  - caption: {entry.caption or '—'}")
+            lines.append(f"  - demonstrates: {', '.join(entry.demonstrates) if entry.demonstrates else '—'}")
     return "\n".join(lines)
 
 

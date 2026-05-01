@@ -15,6 +15,8 @@ from polylogue.cli.click_app import cli
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
 from polylogue.lib.models import Conversation
+from polylogue.lib.query.spec import ConversationQuerySpec
+from polylogue.types import Provider
 from tests.infra.builders import make_conv, make_msg
 
 
@@ -22,6 +24,15 @@ def _stub_env(conversations: list[Conversation]) -> AppEnv:
     """Build an AppEnv-like stub whose query_conversations returns the given list."""
 
     async def _query_conversations(spec, **_):  # type: ignore[no-untyped-def]
+        return list(conversations)
+
+    operations = SimpleNamespace(query_conversations=_query_conversations)
+    return cast(AppEnv, SimpleNamespace(operations=operations))
+
+
+def _capturing_env(conversations: list[Conversation], captured: dict[str, object]) -> AppEnv:
+    async def _query_conversations(spec, **_):  # type: ignore[no-untyped-def]
+        captured["spec"] = spec
         return list(conversations)
 
     operations = SimpleNamespace(query_conversations=_query_conversations)
@@ -121,3 +132,36 @@ def test_bulk_export_verb_callback_passes_fields_through() -> None:
     args, kwargs = run_export.call_args
     assert isinstance(args[1], RootModeRequest)
     assert kwargs == {"output_format": "json", "fields": "id,title"}
+
+
+def test_authored_content_bulk_export_workflow_filters_user_messages() -> None:
+    captured: dict[str, object] = {}
+    convs = [
+        make_conv(
+            id="authored",
+            title="Authored workflow",
+            provider="claude-code",
+            messages=[
+                make_msg(id="u1", role="user", text="typed authored content"),
+                make_msg(id="a1", role="assistant", text="assistant content"),
+            ],
+        )
+    ]
+    request = _request(
+        provider="claude-code",
+        repo="__thoughtspace",
+        filter_has_paste=True,
+        typed_only=True,
+        message_role=("user",),
+    )
+
+    output = _capture_run(_capturing_env(convs, captured), request, "jsonl", None)
+
+    spec = cast(ConversationQuerySpec, captured["spec"])
+    assert spec.providers == (Provider.CLAUDE_CODE,)
+    assert spec.repo_names == ("__thoughtspace",)
+    assert spec.filter_has_paste is True
+    assert spec.typed_only is True
+    exported = json.loads(output)
+    assert [message["role"] for message in exported["messages"]] == ["user"]
+    assert exported["messages"][0]["text"] == "typed authored content"

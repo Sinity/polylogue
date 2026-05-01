@@ -721,7 +721,6 @@ def _run_generated_scenario_family_evidence(
         "status_valid": status in {"implemented", "migration_task"},
         "generated_world_present": bool(str(attrs.get("generated_world", "")).strip()),
         "workload_family_present": bool(str(attrs.get("workload_family", "")).strip()),
-        "issue_links_196": attrs.get("issue") == "#196",
         "reproducer_present": bool(family_reproducer),
     }
     observed_state = require_json_document(
@@ -735,7 +734,7 @@ def _run_generated_scenario_family_evidence(
         },
         context="generated scenario observed state",
     )
-    expected_law = "generated scenario families declare status, generated world, workload family, issue, and reproducer"
+    expected_law = "generated scenario families declare status, generated world, workload family, and reproducer"
     evidence = _evidence_payload(
         obligation,
         runner_class="generated_scenario_static",
@@ -814,26 +813,26 @@ def _run_generated_scenario_semantic_evidence(
         str(claim.get("family", "")) for claim in semantic_claims if claim.get("state") == "implemented"
     )
     mapped = tuple(str(claim.get("family", "")) for claim in semantic_claims if claim.get("state") == "mapped")
-    mapped_missing_issue = tuple(
+    mapped_missing_note = tuple(
         str(claim.get("family", ""))
         for claim in semantic_claims
-        if claim.get("state") == "mapped" and not str(claim.get("issue", "")).startswith("#")
+        if claim.get("state") == "mapped" and not str(claim.get("mapping_note", "")).strip()
     )
     invalid_states = tuple(state for state in claim_states if state not in {"implemented", "mapped"})
     checks: JSONDocument = {
         "semantic_claims_present": bool(semantic_claims),
         "claim_states_valid": not invalid_states,
-        "mapped_claims_link_issues": not mapped_missing_issue,
+        "mapped_claims_explain_mapping": not mapped_missing_note,
     }
     observed_state: JSONDocument = {
         "semantic_claims": [dict(claim) for claim in semantic_claims],
         "implemented_claim_families": list(implemented),
         "mapped_claim_families": list(mapped),
         "invalid_states": list(invalid_states),
-        "mapped_missing_issue": list(mapped_missing_issue),
+        "mapped_missing_note": list(mapped_missing_note),
         "checks": checks,
     }
-    expected_law = "generated scenario families declare implemented or issue-mapped semantic claim families"
+    expected_law = "generated scenario families declare implemented or explicitly mapped semantic claim families"
     evidence = _evidence_payload(
         obligation,
         runner_class="generated_scenario_static",

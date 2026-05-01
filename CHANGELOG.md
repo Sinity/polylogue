@@ -31,6 +31,14 @@ documentation polish do not require an entry.
   patch grouping.
 - `actionlint` workflow validating workflow YAML on PRs that touch
   `.github/`.
+- MCP serving now accepts `--role read|write|admin`; mutation tools require
+  `write` and maintenance tools require `admin`.
+- `devtools verify-schema-roundtrip`, diff-shaped `devtools proof-pack`,
+  Markdown `devtools obligation-diff`, and a PR proof-comment workflow expose
+  proof coverage, known gaps, and schema package round-trips as reusable gates.
+- Codex ingestion now materializes `turn_context.cwd`, token/function events,
+  and tool call/result messages so cwd filters and diagnostics work beyond
+  Claude Code.
 - Expression index `idx_raw_conv_effective_provider` so raw-conversation
   provider-filter queries no longer scan the full table.
 - Partial indexes scoped to the gating `WHERE` of each `session_profiles`
@@ -42,6 +50,12 @@ documentation polish do not require an entry.
 - Query/file-reference filters now use `referenced_path` / `--referenced-path`
   consistently, and MCP conversation reads return headers while message bodies
   live behind paginated `get_messages` / `messages` reads.
+- Browser capture now calls its local artifact directory a `spool`; the stale
+  inbox helper/export was removed from public paths.
+- `schema list`, `schema explain`, and `schema compare` use canonical
+  `--format json` output while retaining `--json` as a strict alias.
+- `polylogue audit` was removed from the product CLI; verification-lab audit
+  workflows live under `devtools`.
 - `Config` rejects relative `archive_root`, `render_root`, or `db_path`
   with `ConfigError` at construction.
 - `_privacy_level_value` raises `ValueError` on unknown level strings

@@ -53,6 +53,7 @@ repo proof obligations and evidence records, not end-user archive workflows.
 | `devtools schema-generate` | Refresh provider schema package artifacts from archive observations outside the product CLI. |
 | `devtools schema-promote` | Turn reviewed schema evidence clusters into committed provider schema packages. |
 | `devtools schema-audit` | Check committed schema package quality gates without presenting them as normal archive usage. |
+| `devtools verify-schema-roundtrip` | Close the schema inference-validation loop: package manifests must roundtrip through typed models, and every supported element schema must be reachable from the runtime registry. |
 
 ## Core Loop
 
@@ -117,6 +118,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools verify-layering` | Check inter-package imports against declared layering rules from docs/plans/layering.yaml. |
 | `devtools verify-manifests` | Verify internal consistency across all docs/plans/*.yaml manifest files. |
 | `devtools verify-migrations` | Verify migration-completeness against docs/plans/migrations.yaml. |
+| `devtools verify-schema-roundtrip` | Verify committed provider schema packages reload and roundtrip cleanly. |
 | `devtools verify-suppressions` | Enforce suppression registry expiry dates from docs/plans/suppressions.yaml. |
 | `devtools verify-test-ownership` | Verify each production module is imported by at least one unit test. |
 | `devtools verify-topology` | Verify the realized polylogue tree against the topology projection. |
