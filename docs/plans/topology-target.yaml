@@ -135,6 +135,21 @@ files:
     target: polylogue/archive/phase/extraction.py
     owner: archive-phase
     reason: archive-domain semantics
+  - path: polylogue/archive/provider/__init__.py
+    loc: 0
+    target: polylogue/archive/provider/__init__.py
+    owner: archive-provider
+    reason: archive-domain semantics
+  - path: polylogue/archive/provider/capabilities.py
+    loc: 264
+    target: polylogue/archive/provider/capabilities.py
+    owner: archive-provider
+    reason: archive-domain semantics
+  - path: polylogue/archive/provider/semantics.py
+    loc: 228
+    target: polylogue/archive/provider/semantics.py
+    owner: archive-provider
+    reason: archive-domain semantics
   - path: polylogue/archive/query/__init__.py
     loc: 0
     target: polylogue/archive/query/__init__.py
@@ -721,18 +736,6 @@ files:
   - path: polylogue/lib/projection/transform_mixin.py
     loc: 68
     target: polylogue/lib/projection/transform_mixin.py
-    owner: stable
-  - path: polylogue/lib/provider/__init__.py
-    loc: 0
-    target: polylogue/lib/provider/__init__.py
-    owner: stable
-  - path: polylogue/lib/provider/capabilities.py
-    loc: 264
-    target: polylogue/lib/provider/capabilities.py
-    owner: stable
-  - path: polylogue/lib/provider/semantics.py
-    loc: 228
-    target: polylogue/lib/provider/semantics.py
     owner: stable
   - path: polylogue/lib/provider_identity.py
     loc: 97
