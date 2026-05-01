@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pytest import MonkeyPatch
 
-from polylogue.lib import metrics
+from polylogue.core import metrics
 
 
 def test_read_peak_rss_self_mb_prefers_proc_vmhwm(monkeypatch: MonkeyPatch) -> None:

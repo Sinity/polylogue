@@ -6,7 +6,7 @@ from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
 from polylogue.core.json import JSONDocument
-from polylogue.lib.metrics import read_peak_rss_self_mb
+from polylogue.core.metrics import read_peak_rss_self_mb
 from polylogue.logging import get_logger
 from polylogue.pipeline.payload_types import AcquireSplitPayloadSummary
 from polylogue.pipeline.services.acquisition_persistence import persist_raw_record

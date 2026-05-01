@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
-from polylogue.lib.metrics import (
+from polylogue.core.metrics import (
     read_current_rss_mb,
     read_peak_rss_children_mb,
     read_peak_rss_self_mb,
