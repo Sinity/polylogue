@@ -17,11 +17,11 @@ from polylogue.archive.semantic.facts import (
     build_mcp_summary_semantic_facts,
     build_projection_semantic_facts,
 )
+from polylogue.archive.semantic.pricing import harmonize_session_cost
 from polylogue.archive.session import runtime as session_profile_runtime
 from polylogue.archive.session.session_profile import build_session_profile
 from polylogue.lib.models import Conversation as ConversationModel
 from polylogue.lib.models import ConversationSummary
-from polylogue.lib.pricing import harmonize_session_cost
 from polylogue.storage.archive_views import ConversationRenderProjection
 from polylogue.types import ConversationId, Provider
 from tests.infra.builders import make_conv, make_msg

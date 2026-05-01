@@ -16,8 +16,8 @@ import pytest
 from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.message.roles import Role
 from polylogue.archive.projection.projections import ConversationProjection
+from polylogue.archive.semantic.pricing import harmonize_session_cost
 from polylogue.lib.models import Attachment, Conversation, DialoguePair, Message
-from polylogue.lib.pricing import harmonize_session_cost
 from tests.infra.assertions import assert_contains_all, assert_not_contains_any
 from tests.infra.builders import make_conv, make_msg
 

@@ -136,7 +136,7 @@ files:
     owner: archive-conversation
     reason: archive-domain semantics
   - path: polylogue/archive/conversation/runtime.py
-    loc: 231
+    loc: 230
     target: polylogue/archive/conversation/runtime.py
     owner: archive-conversation
     reason: archive-domain semantics
@@ -207,7 +207,7 @@ files:
     owner: archive-message
     reason: archive-domain semantics
   - path: polylogue/archive/message/roles.py
-    loc: 123
+    loc: 124
     target: polylogue/archive/message/roles.py
     owner: archive-message
     reason: archive-domain semantics
@@ -387,13 +387,18 @@ files:
     owner: archive-semantic
     reason: archive-domain semantics
   - path: polylogue/archive/semantic/facts.py
-    loc: 442
+    loc: 441
     target: polylogue/archive/semantic/facts.py
     owner: archive-semantic
     reason: archive-domain semantics
   - path: polylogue/archive/semantic/models.py
     loc: 254
     target: polylogue/archive/semantic/models.py
+    owner: archive-semantic
+    reason: archive-domain semantics
+  - path: polylogue/archive/semantic/pricing.py
+    loc: 581
+    target: polylogue/archive/semantic/pricing.py
     owner: archive-semantic
     reason: archive-domain semantics
   - path: polylogue/archive/semantic/support.py
@@ -610,7 +615,7 @@ files:
     target: polylogue/cli/query_actions.py
     owner: stable
   - path: polylogue/cli/query_contracts.py
-    loc: 354
+    loc: 353
     target: polylogue/cli/query_contracts.py
     owner: stable
   - path: polylogue/cli/query_feedback.py
@@ -618,7 +623,7 @@ files:
     target: polylogue/cli/query_feedback.py
     owner: stable
   - path: polylogue/cli/query_output.py
-    loc: 885
+    loc: 884
     target: polylogue/cli/query_output.py
     owner: stable
   - path: polylogue/cli/query_output_contracts.py
@@ -842,11 +847,6 @@ files:
   - path: polylogue/lib/models.py
     loc: 7
     target: polylogue/lib/models.py
-    owner: lib-root
-    reason: lib-root primitive
-  - path: polylogue/lib/pricing.py
-    loc: 581
-    target: polylogue/lib/pricing.py
     owner: lib-root
     reason: lib-root primitive
   - path: polylogue/lib/provider_identity.py
@@ -2405,12 +2405,12 @@ files:
     target: polylogue/storage/backends/queries/mappers_support.py
     owner: stable
   - path: polylogue/storage/backends/queries/message_query_reads.py
-    loc: 156
+    loc: 155
     target: polylogue/storage/backends/queries/message_query_reads.py
     owner: stable
     cross_cut: { layer: read }
   - path: polylogue/storage/backends/queries/message_query_stats.py
-    loc: 67
+    loc: 66
     target: polylogue/storage/backends/queries/message_query_stats.py
     owner: stable
   - path: polylogue/storage/backends/queries/message_query_writes.py

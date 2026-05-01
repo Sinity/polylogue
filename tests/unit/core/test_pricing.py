@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from polylogue.archive.message.messages import MessageCollection
-from polylogue.lib.pricing import _normalize_model, estimate_conversation_cost, estimate_cost
+from polylogue.archive.semantic.pricing import _normalize_model, estimate_conversation_cost, estimate_cost
 from tests.infra.builders import make_conv, make_msg
 
 

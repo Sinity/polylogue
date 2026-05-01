@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from polylogue.lib.pricing import CostEstimatePayload
+from polylogue.archive.semantic.pricing import CostEstimatePayload
 from polylogue.operations.archive import (
     _build_search_snippet,
     _cost_model_matches,
