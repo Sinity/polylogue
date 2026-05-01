@@ -6,7 +6,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from polylogue.lib.attachment.models import Attachment
+from polylogue.archive.attachment.models import Attachment
 from polylogue.lib.message.model_runtime import MessageRuntimeMixin
 from polylogue.lib.message.types import MessageType
 from polylogue.lib.roles import Role

@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 
-from polylogue.lib.attachment.models import Attachment
+from polylogue.archive.attachment.models import Attachment
 from polylogue.lib.conversation.models import Conversation, ConversationSummary
 from polylogue.lib.json import loads
 from polylogue.lib.message.messages import MessageCollection
