@@ -7,10 +7,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from polylogue.api.products import PolylogueProductsMixin
+from polylogue.api.insights import PolylogueInsightsMixin
 from polylogue.api.sync import SyncPolylogue
 from polylogue.api.sync.conversations import SyncConversationQueriesMixin
-from polylogue.api.sync.products import SyncProductQueriesMixin
+from polylogue.api.sync.insights import SyncInsightQueriesMixin
 
 
 class _FilterStub:
@@ -38,7 +38,7 @@ class _FilterStub:
         return "summaries-coro"
 
 
-class _SyncHarness(SyncConversationQueriesMixin, SyncProductQueriesMixin):
+class _SyncHarness(SyncConversationQueriesMixin, SyncInsightQueriesMixin):
     pass
 
 
@@ -110,7 +110,7 @@ def test_sync_product_queries_forward_through_sync_bridge() -> None:
     archive = _SyncHarness()
     archive._facade = facade
 
-    with patch("polylogue.api.sync.products.run_coroutine_sync", side_effect=lambda coro: coro) as mock_run:
+    with patch("polylogue.api.sync.insights.run_coroutine_sync", side_effect=lambda coro: coro) as mock_run:
         assert archive.get_session_product_status() == "status-coro"
         assert archive.get_session_profile_product("conv-1", tier="evidence") == (
             "profile",
@@ -171,7 +171,7 @@ async def test_polylogue_products_mixin_forwards_all_product_calls() -> None:
         list_archive_debt_products=AsyncMock(return_value=["debt"]),
     )
 
-    class _Harness(PolylogueProductsMixin):
+    class _Harness(PolylogueInsightsMixin):
         def __init__(self, operations: object) -> None:
             self._operations = operations
 

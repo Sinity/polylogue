@@ -10,14 +10,14 @@ from polylogue.storage.backends.queries.mappers_archive import (
     _row_to_message,
     _row_to_raw_conversation,
 )
-from polylogue.storage.backends.queries.mappers_product_aggregates import (
+from polylogue.storage.backends.queries.mappers_insight_aggregates import (
     _row_to_day_session_summary_record,
     _row_to_session_tag_rollup_record,
 )
-from polylogue.storage.backends.queries.mappers_product_profiles import (
+from polylogue.storage.backends.queries.mappers_insight_profiles import (
     _row_to_session_profile_record,
 )
-from polylogue.storage.backends.queries.mappers_product_timelines import (
+from polylogue.storage.backends.queries.mappers_insight_timelines import (
     _row_to_session_phase_record,
     _row_to_session_work_event_record,
     _row_to_work_thread_record,

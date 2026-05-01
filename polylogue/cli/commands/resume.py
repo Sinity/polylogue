@@ -6,8 +6,8 @@ import click
 
 from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.cli.shared.helper_support import fail
+from polylogue.cli.shared.insight_command_contracts import find_root_params
 from polylogue.cli.shared.machine_errors import emit_success
-from polylogue.cli.shared.product_command_contracts import find_root_params
 from polylogue.cli.shared.resume_rendering import render_resume_brief
 from polylogue.cli.shared.types import AppEnv
 

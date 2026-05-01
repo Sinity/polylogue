@@ -72,10 +72,10 @@ def test_scenario_metadata_payload_omits_empty_collections() -> None:
         maintenance_targets=("session_products",),
         tags=("generated",),
         docs_role="reference",
-        caption="Session products are visible to docs projections.",
+        caption="Session insights are visible to docs projections.",
         narrative_order=20,
         audience=("maintainer",),
-        demonstrates=("session-products",),
+        demonstrates=("session-insights",),
         privacy_level="synthetic",
         media=("markdown",),
         visual_style="reference-table",
@@ -88,10 +88,10 @@ def test_scenario_metadata_payload_omits_empty_collections() -> None:
         "maintenance_targets": ["session_products"],
         "tags": ["generated"],
         "docs_role": "reference",
-        "caption": "Session products are visible to docs projections.",
+        "caption": "Session insights are visible to docs projections.",
         "narrative_order": 20,
         "audience": ["maintainer"],
-        "demonstrates": ["session-products"],
+        "demonstrates": ["session-insights"],
         "privacy_level": "synthetic",
         "media": ["markdown"],
         "visual_style": "reference-table",
@@ -159,7 +159,7 @@ def test_runtime_artifact_graph_exposes_resolved_specs() -> None:
     graph = runtime_artifact_graph()
 
     assert "action_event_rows" in graph.artifact_names()
-    assert "materialize-session-products" in graph.operation_names()
+    assert "materialize-session-insights" in graph.operation_names()
     assert "session_products" in graph.maintenance_target_names()
 
 

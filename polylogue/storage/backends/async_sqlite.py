@@ -31,13 +31,13 @@ from polylogue.storage.backends.connection_profile import (
 )
 from polylogue.storage.backends.queries import action_events as action_events_q
 from polylogue.storage.backends.queries import (
-    session_product_profile_writes as session_product_profiles_q,
+    session_insight_profile_writes as session_insight_profiles_q,
 )
 from polylogue.storage.backends.queries import (
-    session_product_thread_queries as session_product_threads_q,
+    session_insight_thread_queries as session_insight_threads_q,
 )
 from polylogue.storage.backends.queries import (
-    session_product_timeline_writes as session_product_timelines_q,
+    session_insight_timeline_writes as session_insight_timelines_q,
 )
 from polylogue.storage.backends.queries import stats as stats_q
 from polylogue.storage.backends.query_store import SQLiteQueryStore
@@ -503,7 +503,7 @@ class SQLiteBackend(
         """Get durable action-event rows for multiple conversations."""
         return await self.queries.get_action_events_batch(conversation_ids)
 
-    # -- Derived products (formerly SQLiteDerivedProductsMixin) --------------
+    # -- Derived insights (formerly SQLiteDerivedInsightsMixin) --------------
 
     async def replace_session_profile(
         self,
@@ -511,7 +511,7 @@ class SQLiteBackend(
     ) -> None:
         """Replace one durable session-profile row."""
         async with self._get_connection() as conn:
-            await session_product_profiles_q.replace_session_profile(
+            await session_insight_profiles_q.replace_session_profile(
                 conn,
                 record,
                 self._transaction_depth,
@@ -524,7 +524,7 @@ class SQLiteBackend(
     ) -> None:
         """Replace durable work-event rows for one conversation."""
         async with self._get_connection() as conn:
-            await session_product_timelines_q.replace_session_work_events(
+            await session_insight_timelines_q.replace_session_work_events(
                 conn,
                 conversation_id,
                 records,
@@ -538,7 +538,7 @@ class SQLiteBackend(
     ) -> None:
         """Replace durable phase rows for one conversation."""
         async with self._get_connection() as conn:
-            await session_product_timelines_q.replace_session_phases(
+            await session_insight_timelines_q.replace_session_phases(
                 conn,
                 conversation_id,
                 records,
@@ -552,7 +552,7 @@ class SQLiteBackend(
     ) -> None:
         """Replace one durable work-thread row."""
         async with self._get_connection() as conn:
-            await session_product_threads_q.replace_work_thread(
+            await session_insight_threads_q.replace_work_thread(
                 conn,
                 thread_id,
                 record,

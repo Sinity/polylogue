@@ -21,7 +21,7 @@ def test_build_operational_contract_surfaces_compiles_runtime_aligned_json_contr
         "action_event_read_model",
     )
     assert surfaces["json-doctor-action-event-preview"].tags == ("maintenance", "action-events")
-    assert surfaces["json-doctor-session-products-preview"].args == (
+    assert surfaces["json-doctor-session-insights-preview"].args == (
         "doctor",
         "--json",
         "--repair",
@@ -29,7 +29,7 @@ def test_build_operational_contract_surfaces_compiles_runtime_aligned_json_contr
         "--target",
         "session_products",
     )
-    assert surfaces["json-doctor-session-products-preview"].tags == ("maintenance", "session-products")
+    assert surfaces["json-doctor-session-insights-preview"].tags == ("maintenance", "session-insights")
 
 
 def test_build_live_operational_surface_lanes_compiles_live_variants() -> None:

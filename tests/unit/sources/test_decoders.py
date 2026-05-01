@@ -1,6 +1,6 @@
 """Tests for source decoding, JSON stream iteration, and ZIP processing.
 
-Production code under test: polylogue/sources/decoders.py
+Insightion code under test: polylogue/sources/decoders.py
 Functions: _decode_json_bytes, _iter_json_stream, _ZipEntryValidator, _process_zip
 """
 

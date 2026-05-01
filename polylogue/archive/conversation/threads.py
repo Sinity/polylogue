@@ -1,4 +1,4 @@
-"""Thread-level semantic products derived from session profiles."""
+"""Thread-level semantic insights derived from session profiles."""
 
 from __future__ import annotations
 

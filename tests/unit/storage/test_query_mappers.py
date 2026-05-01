@@ -1,6 +1,6 @@
 """Tests for storage record mapping functions.
 
-Production code under test: polylogue/storage/runtime/__init__.py
+Insightion code under test: polylogue/storage/runtime/__init__.py
 Functions: _parse_json, _row_get, _row_to_conversation, _row_to_message, _row_to_raw_conversation
 """
 

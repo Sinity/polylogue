@@ -1181,7 +1181,7 @@ async def refresh_session_products_bulk(
     thread_elapsed = 0.0
     aggregate_elapsed = 0.0
     try:
-        from polylogue.storage.products.session.refresh import (
+        from polylogue.storage.insights.session.refresh import (
             _apply_session_product_conversation_updates_async,
             _refresh_thread_roots_async,
             refresh_async_provider_day_aggregates,

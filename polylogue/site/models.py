@@ -5,9 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from polylogue.insights.authored_payloads import PayloadDict
 from polylogue.logging import get_logger
 from polylogue.paths.sanitize import safe_path_component
-from polylogue.products.authored_payloads import PayloadDict
 from polylogue.types import SearchProvider
 
 if TYPE_CHECKING:

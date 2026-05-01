@@ -6,7 +6,7 @@ from pathlib import Path
 
 from polylogue.api.archive import PolylogueArchiveMixin
 from polylogue.api.ingest import PolylogueIngestMixin
-from polylogue.api.products import PolylogueProductsMixin
+from polylogue.api.insights import PolylogueInsightsMixin
 from polylogue.config import Config
 from polylogue.operations import ArchiveOperations, ArchiveStats
 from polylogue.services import build_runtime_services
@@ -14,7 +14,7 @@ from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.repository import ConversationRepository
 
 
-class Polylogue(PolylogueArchiveMixin, PolylogueProductsMixin, PolylogueIngestMixin):
+class Polylogue(PolylogueArchiveMixin, PolylogueInsightsMixin, PolylogueIngestMixin):
     """High-level async facade for the Polylogue library."""
 
     def __init__(

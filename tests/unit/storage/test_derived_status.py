@@ -7,7 +7,7 @@ import sqlite3
 import pytest
 
 from polylogue.storage.embeddings.models import EmbeddingStatsSnapshot
-from polylogue.storage.products.session.runtime import SessionProductStatusSnapshot
+from polylogue.storage.insights.session.runtime import SessionInsightStatusSnapshot
 
 
 def test_collect_derived_statuses_skips_retrieval_band_recomputation(
@@ -51,9 +51,9 @@ def test_collect_derived_statuses_skips_retrieval_band_recomputation(
             _conn: sqlite3.Connection,
             *,
             verify_freshness: bool = True,
-        ) -> SessionProductStatusSnapshot:
+        ) -> SessionInsightStatusSnapshot:
             verify_calls.append(("session", verify_freshness))
-            return SessionProductStatusSnapshot(
+            return SessionInsightStatusSnapshot(
                 profile_rows_ready=True,
                 profile_merged_fts_ready=True,
                 profile_evidence_fts_ready=True,

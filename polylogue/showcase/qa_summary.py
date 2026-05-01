@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from polylogue.products.authored_payloads import payload_count_mapping, require_payload_mapping
+from polylogue.insights.authored_payloads import payload_count_mapping, require_payload_mapping
 from polylogue.showcase.qa_runner_models import QAResult
 from polylogue.showcase.report_common import (
     format_count_mapping,

@@ -12,7 +12,7 @@ from polylogue.storage.embeddings.embedding_stats import (
     read_embedding_stats_async,
     read_embedding_stats_sync,
 )
-from polylogue.storage.products.session.runtime import SessionProductStatusSnapshot
+from polylogue.storage.insights.session.runtime import SessionInsightStatusSnapshot
 
 
 def test_read_embedding_stats_sync_missing_tables_returns_zeroes() -> None:
@@ -107,7 +107,7 @@ def test_read_embedding_stats_sync_exposes_retrieval_bands_when_archive_tables_e
         monkeypatch.setattr(
             embedding_stats_mod,
             "session_product_status_sync",
-            lambda _conn: SessionProductStatusSnapshot(
+            lambda _conn: SessionInsightStatusSnapshot(
                 profile_row_count=2,
                 profile_evidence_fts_count=2,
                 profile_evidence_fts_ready=True,
@@ -221,8 +221,8 @@ async def test_read_embedding_stats_async_derives_pending_from_total_conversatio
             "stale_count": 0,
         }
 
-    async def fake_session_status(_conn: object) -> SessionProductStatusSnapshot:
-        return SessionProductStatusSnapshot(
+    async def fake_session_status(_conn: object) -> SessionInsightStatusSnapshot:
+        return SessionInsightStatusSnapshot(
             profile_row_count=0,
             profile_evidence_fts_count=0,
             profile_evidence_fts_ready=True,

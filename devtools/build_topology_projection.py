@@ -45,15 +45,15 @@ KERNEL_ROOT_FILES = frozenset(
 )
 
 # polylogue/ root product-domain modules.
-PRODUCT_ROOT_MOVES = {
-    "archive_products.py": "polylogue/products/archive.py",
-    "archive_product_models.py": "polylogue/products/archive_models.py",
-    "archive_product_summaries.py": "polylogue/products/archive_summaries.py",
-    "archive_product_rollups.py": "polylogue/products/archive_rollups.py",
-    "archive_resume.py": "polylogue/products/resume.py",
-    "product_export_bundles.py": "polylogue/products/export_bundles.py",
-    "product_readiness.py": "polylogue/products/readiness.py",
-    "authored_payloads.py": "polylogue/products/authored_payloads.py",
+INSIGHT_ROOT_MOVES = {
+    "archive_products.py": "polylogue/insights/archive.py",
+    "archive_product_models.py": "polylogue/insights/archive_models.py",
+    "archive_product_summaries.py": "polylogue/insights/archive_summaries.py",
+    "archive_product_rollups.py": "polylogue/insights/archive_rollups.py",
+    "archive_resume.py": "polylogue/insights/resume.py",
+    "product_export_bundles.py": "polylogue/insights/export_bundles.py",
+    "product_readiness.py": "polylogue/insights/readiness.py",
+    "authored_payloads.py": "polylogue/insights/authored_payloads.py",
 }
 
 # polylogue/ root facade/sync surfaces.
@@ -61,11 +61,11 @@ FACADE_ROOT_MOVES = {
     "facade.py": "polylogue/api/__init__.py",
     "facade_archive.py": "polylogue/api/archive.py",
     "facade_ingest.py": "polylogue/api/ingest.py",
-    "facade_products.py": "polylogue/api/products.py",
+    "facade_products.py": "polylogue/api/insights.py",
     "sync.py": "polylogue/api/sync/__init__.py",
     "sync_bridge.py": "polylogue/api/sync/bridge.py",
     "sync_conversation_queries.py": "polylogue/api/sync/conversations.py",
-    "sync_product_queries.py": "polylogue/api/sync/products.py",
+    "sync_product_queries.py": "polylogue/api/sync/insights.py",
 }
 
 # polylogue/ root cross-ring concepts.
@@ -90,13 +90,13 @@ STORAGE_PREFIX_TO_SUBPACKAGE = {
     "repository_writes": "storage/repository/archive/",
     "repository_contracts": "storage/repository/",
     "repository.py": "storage/repository/__init__.py",
-    "session_product_": "storage/products/session/",
+    "session_product_": "storage/insights/session/",
     "store_runtime_action_": "storage/runtime/action/",
     "store_runtime_archive_": "storage/runtime/archive/",
     "store_runtime_raw_": "storage/runtime/raw/",
-    "store_product_aggregate_": "storage/products/aggregate/",
-    "store_product_session_": "storage/products/session/",
-    "store_product_timeline_": "storage/products/timeline/",
+    "store_product_aggregate_": "storage/insights/aggregate/",
+    "store_product_session_": "storage/insights/session/",
+    "store_product_timeline_": "storage/insights/timeline/",
     "store_constants": "storage/runtime/",
     "store.py": "storage/runtime/__init__.py",
     "action_event_": "storage/action_events/",
@@ -109,8 +109,8 @@ STORAGE_PREFIX_TO_SUBPACKAGE = {
     "raw_ingest_": "storage/raw/",
     "raw_state_": "storage/raw/",
     "derived_status": "storage/derived/",
-    "product_read_support": "storage/products/",
-    "store_product": "storage/products/",  # catch
+    "insight_read_support": "storage/insights/",
+    "store_product": "storage/insights/",  # catch
     "store_runtime": "storage/runtime/",  # catch
 }
 
@@ -135,7 +135,7 @@ STORAGE_ROOT_KEEP = frozenset(
 
 # Placement owner per target prefix.
 TARGET_TO_OWNER = [
-    ("polylogue/products/", "product-domain"),
+    ("polylogue/insights/", "product-domain"),
     ("polylogue/api/", "api-surface"),
     ("polylogue/artifacts/", "artifact-domain"),
     ("polylogue/readiness/", "readiness-domain"),
@@ -158,7 +158,7 @@ TARGET_TO_OWNER = [
     ("polylogue/archive/provider/", "archive-provider"),
     ("polylogue/archive/attachment/", "archive-attachment"),
     ("polylogue/storage/repository/", "storage-repository"),
-    ("polylogue/storage/products/", "storage-products"),
+    ("polylogue/storage/insights/", "storage-insights"),
     ("polylogue/storage/runtime/", "storage-runtime"),
     ("polylogue/storage/action_events/", "storage-action-events"),
     ("polylogue/storage/embeddings/", "storage-embeddings"),
@@ -272,8 +272,8 @@ def classify(path: Path) -> dict[str, Any]:
             target = rel
             owner = "kernel"
             reason = "kernel root rule"
-        elif name in PRODUCT_ROOT_MOVES:
-            target = PRODUCT_ROOT_MOVES[name]
+        elif name in INSIGHT_ROOT_MOVES:
+            target = INSIGHT_ROOT_MOVES[name]
             owner = "product-domain"
         elif name in FACADE_ROOT_MOVES:
             target = FACADE_ROOT_MOVES[name]

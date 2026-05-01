@@ -50,7 +50,7 @@ def test_compile_validation_lane_families_indexes_entries_by_name() -> None:
                         name="domain-read-model-live",
                         description="Live lane.",
                         timeout_s=180,
-                        members=("live-products-small",),
+                        members=("live-insights-small",),
                     ),
                 ),
             ),

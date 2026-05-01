@@ -12,13 +12,13 @@
 
 rules:
   - target: polylogue/cli
-    description: "CLI surface adapter — imports substrate/products as needed; no inward dependency is permitted."
+    description: "CLI surface adapter — imports substrate/insights as needed; no inward dependency is permitted."
 
   - target: polylogue/mcp
-    description: "MCP surface adapter — imports substrate/products as needed; no inward dependency is permitted."
+    description: "MCP surface adapter — imports substrate/insights as needed; no inward dependency is permitted."
 
   - target: polylogue/api
-    description: "API surface — adapter boundary over substrate and products."
+    description: "API surface — adapter boundary over substrate and insights."
 
   - target: polylogue/storage
     description: "Storage substrate must not import surface adapters."
@@ -35,8 +35,8 @@ rules:
     disallow:
       from: [polylogue/cli, polylogue/mcp, polylogue/site, polylogue/ui]
 
-  - target: polylogue/products
-    description: "Derived products must not import MCP/site/UI adapters."
+  - target: polylogue/insights
+    description: "Derived insights must not import MCP/site/UI adapters."
     disallow:
       from: [polylogue/mcp, polylogue/site, polylogue/ui]
 

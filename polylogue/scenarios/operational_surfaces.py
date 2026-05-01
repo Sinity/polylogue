@@ -47,11 +47,11 @@ OPERATIONAL_SURFACE_FAMILIES: tuple[CliSurfaceFamily, ...] = (
         ),
     ),
     CliSurfaceFamily(
-        slug="doctor-session-products-preview",
+        slug="doctor-session-insights-preview",
         command_args=("doctor", "--json", "--repair", "--preview", "--target", "session_products"),
-        tags=("maintenance", "session-products"),
+        tags=("maintenance", "session-insights"),
         exercise=CliSurfaceVariant(
-            name="json-doctor-session-products-preview",
+            name="json-doctor-session-insights-preview",
             description="doctor JSON contract",
             suffix_args=(),
             needs_data=False,
@@ -60,9 +60,9 @@ OPERATIONAL_SURFACE_FAMILIES: tuple[CliSurfaceFamily, ...] = (
         ),
     ),
     CliSurfaceFamily(
-        slug="doctor-session-products-repair",
+        slug="doctor-session-insights-repair",
         command_args=("doctor", "--json", "--repair", "--target", "session_products"),
-        tags=("live", "repair", "session-products"),
+        tags=("live", "repair", "session-insights"),
         live_variants=(
             CliSurfaceVariant(
                 name="live-session-product-repair",
@@ -158,11 +158,11 @@ OPERATIONAL_SURFACE_FAMILIES: tuple[CliSurfaceFamily, ...] = (
             "--limit",
             "50",
         ),
-        tags=("live", "products", "project-stats"),
+        tags=("live", "insights", "project-stats"),
         live_variants=(
             CliSurfaceVariant(
                 name="live-project-stats",
-                description="Live archive project-grouped stats over session products",
+                description="Live archive project-grouped stats over session insights",
                 suffix_args=(),
                 env="any",
             ),

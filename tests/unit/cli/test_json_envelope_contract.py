@@ -114,7 +114,7 @@ class TestQueryShapedJsonMatrix:
         [
             (["tags", "--format", "json"], "tags"),
             (["neighbors", "--query", "__polylogue_json_contract_probe__", "--format", "json"], "neighbors"),
-            (["products", "status", "--format", "json"], "products"),
+            (["insights", "status", "--format", "json"], "insights"),
             (["schema", "list", "--format", "json"], "providers"),
         ],
     )
@@ -133,7 +133,7 @@ class TestQueryShapedJsonMatrix:
         "args",
         [
             ["neighbors", "--query", "__polylogue_json_contract_probe__", "--json"],
-            ["products", "status", "--json"],
+            ["insights", "status", "--json"],
             ["schema", "list", "--json"],
         ],
     )

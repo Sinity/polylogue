@@ -29,7 +29,7 @@ def root_files() -> set[str]:
     return {p.name for p in (ROOT / "polylogue").glob("*.py")}
 
 
-# Product modules live under polylogue/products/.
+# Insight modules live under polylogue/insights/.
 
 
 def test_no_archive_product_modules_at_root() -> None:
@@ -73,11 +73,11 @@ def test_no_query_runtime_at_lib_root() -> None:
     assert not legacy, f"query_* modules still at lib/ root: {sorted(legacy)}"
 
 
-# Product storage lives under the storage product package.
+# Insight storage lives under the storage product package.
 
 
 def test_storage_has_products_session_subpackage() -> None:
-    assert (ROOT / "polylogue" / "storage" / "products" / "session" / "__init__.py").exists()
+    assert (ROOT / "polylogue" / "storage" / "insights" / "session" / "__init__.py").exists()
 
 
 def test_no_session_product_at_storage_root() -> None:

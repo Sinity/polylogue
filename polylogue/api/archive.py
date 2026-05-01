@@ -8,26 +8,26 @@ from typing import TYPE_CHECKING, Protocol
 
 from polylogue.archive.message.roles import MessageRoleFilter
 from polylogue.archive.semantic.content_projection import ContentProjectionSpec
-from polylogue.products.archive import (
-    SessionEnrichmentProduct,
-    SessionEnrichmentProductQuery,
-    SessionProfileProduct,
-    SessionProfileProductQuery,
+from polylogue.insights.archive import (
+    SessionEnrichmentInsight,
+    SessionEnrichmentInsightQuery,
+    SessionProfileInsight,
+    SessionProfileInsightQuery,
 )
 from polylogue.storage.backends.queries.message_query_reads import MessageTypeName
-from polylogue.storage.products.session.runtime import SessionProductStatusSnapshot
+from polylogue.storage.insights.session.runtime import SessionInsightStatusSnapshot
 
 if TYPE_CHECKING:
     from polylogue.archive.conversation.models import Conversation, ConversationSummary
     from polylogue.archive.filter.filters import ConversationFilter
     from polylogue.archive.message.models import Message
     from polylogue.config import Config
+    from polylogue.insights.export_bundles import InsightExportBundleRequest, InsightExportBundleResult
+    from polylogue.insights.readiness import InsightReadinessQuery, InsightReadinessReport
+    from polylogue.insights.resume import ResumeBrief
     from polylogue.operations import ArchiveStats
-    from polylogue.products.export_bundles import ProductExportBundleRequest, ProductExportBundleResult
-    from polylogue.products.readiness import ProductReadinessQuery, ProductReadinessReport
-    from polylogue.products.resume import ResumeBrief
     from polylogue.readiness import ReadinessReport
-    from polylogue.storage.products.session.runtime import SessionProductCounts
+    from polylogue.storage.insights.session.runtime import SessionInsightCounts
     from polylogue.storage.repository import ConversationRepository
     from polylogue.storage.search.models import SearchResult
 
@@ -76,36 +76,36 @@ if TYPE_CHECKING:
             since: str | None = None,
         ) -> SearchResult: ...
 
-        async def get_session_product_status(self) -> SessionProductStatusSnapshot: ...
+        async def get_session_product_status(self) -> SessionInsightStatusSnapshot: ...
 
         async def get_session_profile_product(
             self,
             conversation_id: str,
             *,
             tier: str = "merged",
-        ) -> SessionProfileProduct | None: ...
+        ) -> SessionProfileInsight | None: ...
 
         async def list_session_profile_products(
             self,
-            query: SessionProfileProductQuery | None = None,
-        ) -> list[SessionProfileProduct]: ...
+            query: SessionProfileInsightQuery | None = None,
+        ) -> list[SessionProfileInsight]: ...
 
         async def get_session_enrichment_product(
             self,
             conversation_id: str,
-        ) -> SessionEnrichmentProduct | None: ...
+        ) -> SessionEnrichmentInsight | None: ...
 
         async def list_session_enrichment_products(
             self,
-            query: SessionEnrichmentProductQuery | None = None,
-        ) -> list[SessionEnrichmentProduct]: ...
+            query: SessionEnrichmentInsightQuery | None = None,
+        ) -> list[SessionEnrichmentInsight]: ...
 
         async def summary_stats(self) -> ArchiveStats: ...
 
         async def rebuild_session_products(
             self,
             conversation_ids: Sequence[str] | None = None,
-        ) -> SessionProductCounts: ...
+        ) -> SessionInsightCounts: ...
 
         async def build_resume_brief(
             self,
@@ -116,13 +116,13 @@ if TYPE_CHECKING:
 
         async def get_product_readiness_report(
             self,
-            query: ProductReadinessQuery | None = None,
-        ) -> ProductReadinessReport: ...
+            query: InsightReadinessQuery | None = None,
+        ) -> InsightReadinessReport: ...
 
         async def export_product_bundle(
             self,
-            request: ProductExportBundleRequest,
-        ) -> ProductExportBundleResult: ...
+            request: InsightExportBundleRequest,
+        ) -> InsightExportBundleResult: ...
 
 
 class PolylogueArchiveMixin:
@@ -180,7 +180,7 @@ class PolylogueArchiveMixin:
             since=since,
         )
 
-    async def get_session_product_status(self) -> SessionProductStatusSnapshot:
+    async def get_session_product_status(self) -> SessionInsightStatusSnapshot:
         return await self.operations.get_session_product_status()
 
     async def get_session_profile_product(
@@ -188,25 +188,25 @@ class PolylogueArchiveMixin:
         conversation_id: str,
         *,
         tier: str = "merged",
-    ) -> SessionProfileProduct | None:
+    ) -> SessionProfileInsight | None:
         return await self.operations.get_session_profile_product(conversation_id, tier=tier)
 
     async def list_session_profile_products(
         self,
-        query: SessionProfileProductQuery | None = None,
-    ) -> list[SessionProfileProduct]:
+        query: SessionProfileInsightQuery | None = None,
+    ) -> list[SessionProfileInsight]:
         return await self.operations.list_session_profile_products(query)
 
     async def get_session_enrichment_product(
         self,
         conversation_id: str,
-    ) -> SessionEnrichmentProduct | None:
+    ) -> SessionEnrichmentInsight | None:
         return await self.operations.get_session_enrichment_product(conversation_id)
 
     async def list_session_enrichment_products(
         self,
-        query: SessionEnrichmentProductQuery | None = None,
-    ) -> list[SessionEnrichmentProduct]:
+        query: SessionEnrichmentInsightQuery | None = None,
+    ) -> list[SessionEnrichmentInsight]:
         return await self.operations.list_session_enrichment_products(query)
 
     def filter(self) -> ConversationFilter:
@@ -235,7 +235,7 @@ class PolylogueArchiveMixin:
     async def rebuild_products(
         self,
         conversation_ids: Sequence[str] | None = None,
-    ) -> SessionProductCounts:
+    ) -> SessionInsightCounts:
         """Rebuild durable session-product read models."""
         return await self.operations.rebuild_session_products(conversation_ids=conversation_ids)
 
@@ -250,8 +250,8 @@ class PolylogueArchiveMixin:
 
     async def product_readiness_report(
         self,
-        query: ProductReadinessQuery | None = None,
-    ) -> ProductReadinessReport:
+        query: InsightReadinessQuery | None = None,
+    ) -> InsightReadinessReport:
         """Return product materialization readiness for downstream consumers."""
         return await self.operations.get_product_readiness_report(query)
 
@@ -331,7 +331,7 @@ class PolylogueArchiveMixin:
 
     async def export_product_bundle(
         self,
-        request: ProductExportBundleRequest,
-    ) -> ProductExportBundleResult:
+        request: InsightExportBundleRequest,
+    ) -> InsightExportBundleResult:
         """Write a versioned archive-product export bundle."""
         return await self.operations.export_product_bundle(request)

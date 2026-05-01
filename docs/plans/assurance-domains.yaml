@@ -143,7 +143,7 @@ domains:
     oracle: proof
     notes: >
       MCP server tools (server_tools.py, server_maintenance_tools.py,
-      server_product_tools.py, server_mutation_tools.py, server_prompts.py,
+      server_insight_tools.py, server_mutation_tools.py, server_prompts.py,
       server_resources.py). test_mcp_edge_cases.py covers edge cases.
       test_tool_contracts.py covers tool contracts.
 
@@ -165,7 +165,7 @@ domains:
     notes: >
       Async API (polylogue/api/) with sync bridge
       (polylogue/api/sync/). API surface covers archive, ingest,
-      products. Facade wraps storage + search + pipeline.
+      insights. Facade wraps storage + search + pipeline.
 
   spec_completeness:
     description: Verification-lab specification coverage completeness
