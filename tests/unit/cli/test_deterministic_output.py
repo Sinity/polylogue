@@ -1,11 +1,11 @@
 """Deterministic output tests for CLI commands.
 
 Verifies:
-1. `--json` output is always valid JSON (parseable by json.loads)
+1. `--format json` output is always valid JSON (parseable by json.loads)
 2. `POLYLOGUE_FORCE_PLAIN=1` produces no ANSI escape codes
-3. Frozen clock produces deterministic timestamps in `doctor --json`
+3. Frozen clock produces deterministic timestamps in `doctor --format json`
 4. QA report `generate_qa_session` produces deterministic timestamps
-5. Commands parametrized across `doctor`, `tags`, `sources` with `--json`
+5. Commands parametrized across `doctor`, `tags`, `sources` with `--format json`
 """
 
 from __future__ import annotations
@@ -71,12 +71,12 @@ def _plain_mode_obligation(args: list[str]) -> ProofObligation:
 
 
 # ---------------------------------------------------------------------------
-# F3: Frozen clock → deterministic doctor --json timestamp
+# F3: Frozen clock → deterministic doctor --format json timestamp
 # ---------------------------------------------------------------------------
 
 
 class TestFrozenClockCheckJson:
-    """doctor --json timestamp is deterministic when time.time() is frozen."""
+    """doctor --format json timestamp is deterministic when time.time() is frozen."""
 
     FROZEN_EPOCH = 1700000000  # 2023-11-14T22:13:20Z
 
@@ -90,7 +90,7 @@ class TestFrozenClockCheckJson:
             with patch("time.time", return_value=float(self.FROZEN_EPOCH)):
                 result = runner.invoke(
                     cli,
-                    ["--plain", "doctor", "--json"],
+                    ["--plain", "doctor", "--format", "json"],
                     catch_exceptions=False,
                 )
             assert result.exit_code == 0, result.output
@@ -113,9 +113,9 @@ class TestFrozenClockCheckJson:
         runner = CliRunner()
 
         with patch("time.time", return_value=1700000000.0):
-            result_a = runner.invoke(cli, ["--plain", "doctor", "--json"], catch_exceptions=False)
+            result_a = runner.invoke(cli, ["--plain", "doctor", "--format", "json"], catch_exceptions=False)
         with patch("time.time", return_value=1800000000.0):
-            result_b = runner.invoke(cli, ["--plain", "doctor", "--json"], catch_exceptions=False)
+            result_b = runner.invoke(cli, ["--plain", "doctor", "--format", "json"], catch_exceptions=False)
 
         ts_a = _result_payload(_extract_json(result_a.output))["timestamp"]
         ts_b = _result_payload(_extract_json(result_b.output))["timestamp"]
@@ -244,26 +244,26 @@ class TestPlainModeNoAnsi:
 
 
 # ---------------------------------------------------------------------------
-# F4: --json always produces valid JSON (parseable by json.loads)
+# F4: --format json always produces valid JSON (parseable by json.loads)
 # ---------------------------------------------------------------------------
 
 
 class TestJsonOutputValidity:
-    """--json commands must emit valid, parseable JSON."""
+    """--format json commands must emit valid, parseable JSON."""
 
     def test_check_json_is_valid(self: object, cli_workspace: dict[str, Path]) -> None:
-        """polylogue doctor --json produces parseable JSON."""
+        """polylogue doctor --format json produces parseable JSON."""
         runner = CliRunner()
-        result = runner.invoke(cli, ["--plain", "doctor", "--json"], catch_exceptions=False)
+        result = runner.invoke(cli, ["--plain", "doctor", "--format", "json"], catch_exceptions=False)
         assert result.exit_code == 0
         parsed = _extract_json(result.output)
         assert isinstance(parsed, dict)
         assert "status" in parsed
 
     def test_tags_json_is_valid(self: object, cli_workspace: dict[str, Path]) -> None:
-        """polylogue tags --json produces parseable JSON."""
+        """polylogue tags --format json produces parseable JSON."""
         runner = CliRunner()
-        result = runner.invoke(cli, ["--plain", "tags", "--json"], catch_exceptions=False)
+        result = runner.invoke(cli, ["--plain", "tags", "--format", "json"], catch_exceptions=False)
         assert result.exit_code == 0
         parsed = _extract_json(result.output)
         assert isinstance(parsed, dict)
@@ -272,18 +272,18 @@ class TestJsonOutputValidity:
 
 
 # ---------------------------------------------------------------------------
-# F4: parametrized --json envelope contract across commands
+# F4: parametrized --format json envelope contract across commands
 # ---------------------------------------------------------------------------
 
 
 class TestJsonEnvelopeParametrized:
-    """All --json commands must return the {"status": "ok", "result": {...}} envelope."""
+    """All --format json commands must return the {"status": "ok", "result": {...}} envelope."""
 
     @pytest.mark.parametrize(
         "cmd_args,result_key",
         [
-            (["doctor", "--json"], None),  # result has checks, summary, timestamp
-            (["tags", "--json"], "tags"),  # result has tags
+            (["doctor", "--format", "json"], None),  # result has checks, summary, timestamp
+            (["tags", "--format", "json"], "tags"),  # result has tags
         ],
         ids=["doctor", "tags"],
     )
@@ -293,7 +293,7 @@ class TestJsonEnvelopeParametrized:
         cmd_args: list[str],
         result_key: str | None,
     ) -> None:
-        """All --json commands wrap output in the standard envelope."""
+        """All --format json commands wrap output in the standard envelope."""
         runner = CliRunner()
         result = runner.invoke(cli, ["--plain", *cmd_args], catch_exceptions=False)
         assert result.exit_code == 0, f"exit={result.exit_code}\n{result.output}"
@@ -309,8 +309,8 @@ class TestJsonEnvelopeParametrized:
     @pytest.mark.parametrize(
         "cmd_args",
         [
-            ["doctor", "--json"],
-            ["tags", "--json"],
+            ["doctor", "--format", "json"],
+            ["tags", "--format", "json"],
         ],
         ids=["doctor", "tags"],
     )
@@ -319,17 +319,17 @@ class TestJsonEnvelopeParametrized:
         cli_workspace: dict[str, Path],
         cmd_args: list[str],
     ) -> None:
-        """--json output must not contain ANSI escape codes."""
+        """--format json output must not contain ANSI escape codes."""
         runner = CliRunner()
         result = runner.invoke(cli, ["--plain", *cmd_args], catch_exceptions=False)
         assert result.exit_code == 0
-        assert not _has_ansi(result.output), f"ANSI codes in --json output for {cmd_args!r}"
+        assert not _has_ansi(result.output), f"ANSI codes in --format json output for {cmd_args!r}"
 
     @pytest.mark.parametrize(
         "cmd_args",
         [
-            ["doctor", "--json"],
-            ["tags", "--json"],
+            ["doctor", "--format", "json"],
+            ["tags", "--format", "json"],
         ],
         ids=["doctor", "tags"],
     )
@@ -338,7 +338,7 @@ class TestJsonEnvelopeParametrized:
         cli_workspace: dict[str, Path],
         cmd_args: list[str],
     ) -> None:
-        """--json output can be serialized and deserialized without loss."""
+        """--format json output can be serialized and deserialized without loss."""
         runner = CliRunner()
         result = runner.invoke(cli, ["--plain", *cmd_args], catch_exceptions=False)
         assert result.exit_code == 0
@@ -350,12 +350,12 @@ class TestJsonEnvelopeParametrized:
 
 
 # ---------------------------------------------------------------------------
-# F4: --json determinism across runs (same input → same output)
+# F4: --format json determinism across runs (same input → same output)
 # ---------------------------------------------------------------------------
 
 
 class TestJsonDeterminism:
-    """Same inputs with frozen time must produce byte-identical --json output."""
+    """Same inputs with frozen time must produce byte-identical --format json output."""
 
     @staticmethod
     def _normalize_check_result(data: JSONDocument) -> JSONDocument:
@@ -375,7 +375,7 @@ class TestJsonDeterminism:
     def test_check_json_deterministic_with_frozen_time(
         self: TestJsonDeterminism, cli_workspace: dict[str, Path]
     ) -> None:
-        """Two doctor --json runs with same frozen time produce identical results."""
+        """Two doctor --format json runs with same frozen time produce identical results."""
         runner = CliRunner()
         parsed: list[JSONDocument] = []
 
@@ -383,7 +383,7 @@ class TestJsonDeterminism:
             with patch("time.time", return_value=1700000000.0):
                 result = runner.invoke(
                     cli,
-                    ["--plain", "doctor", "--json"],
+                    ["--plain", "doctor", "--format", "json"],
                     catch_exceptions=False,
                 )
             assert result.exit_code == 0
@@ -392,14 +392,14 @@ class TestJsonDeterminism:
         assert parsed[0] == parsed[1]
 
     def test_tags_json_deterministic(self: object, cli_workspace: dict[str, Path]) -> None:
-        """Two tags --json runs produce identical output."""
+        """Two tags --format json runs produce identical output."""
         runner = CliRunner()
         outputs: list[str] = []
 
         for _ in range(2):
             result = runner.invoke(
                 cli,
-                ["--plain", "tags", "--json"],
+                ["--plain", "tags", "--format", "json"],
                 catch_exceptions=False,
             )
             assert result.exit_code == 0

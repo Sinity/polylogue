@@ -13,7 +13,7 @@ _MAINTENANCE_TARGET_HELP = build_maintenance_target_catalog().help_text()
 CheckCommandDecorator = Callable[[Callable[..., object]], Callable[..., object]]
 
 CHECK_COMMAND_OPTION_DECORATORS: tuple[CheckCommandDecorator, ...] = (
-    click.option("--json", "json_output", is_flag=True, help="Output as JSON"),
+    click.option("--format", "output_format", type=click.Choice(["json"]), default=None, help="Output format"),
     click.option("--verbose", "-v", is_flag=True, help="Show breakdown by provider"),
     click.option("--repair", is_flag=True, help="Run safe derived-data and database maintenance repairs"),
     click.option(

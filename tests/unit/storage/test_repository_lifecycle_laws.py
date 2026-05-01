@@ -38,7 +38,7 @@ async def test_repository_metadata_tag_and_delete_lifecycle_laws(workspace_env: 
                 content_blocks=(
                     ScenarioContentBlock.tool_use(
                         tool_name="shell",
-                        tool_input={"command": "polylogue doctor --json"},
+                        tool_input={"command": "polylogue doctor --format json"},
                     ),
                 ),
                 attachments=(ScenarioAttachment(attachment_id="att-lifecycle", mime_type="application/json"),),

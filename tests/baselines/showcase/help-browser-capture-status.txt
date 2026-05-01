@@ -4,5 +4,5 @@ Usage: polylogue browser-capture status [OPTIONS]
 
 Options:
   --spool PATH
-  --json
-  -h, --help    Show this message and exit.
+  --format [json]  Output format.
+  -h, --help       Show this message and exit.

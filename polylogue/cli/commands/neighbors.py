@@ -51,7 +51,6 @@ def _render_plain(candidates: list[ConversationNeighborCandidate]) -> None:
     show_default=True,
     help="Neighboring time window around --id",
 )
-@click.option("--json", "json_mode", is_flag=True, help="Output as JSON")
 @click.option("--format", "-f", "output_format", type=click.Choice(["json"]), default=None, help="Output format")
 @click.pass_obj
 def neighbors_command(
@@ -61,7 +60,6 @@ def neighbors_command(
     provider: str | None,
     limit: int,
     window_hours: int,
-    json_mode: bool,
     output_format: str | None,
 ) -> None:
     """Show explainable neighboring or near-duplicate candidates."""
@@ -81,7 +79,7 @@ def neighbors_command(
     except NeighborDiscoveryError as exc:
         fail("neighbors", str(exc))
 
-    if json_mode or output_format == "json":
+    if output_format == "json":
         emit_success(
             {
                 "neighbors": [

@@ -446,14 +446,16 @@ class TestCommandConstruction:
         assert cmd[:1] == ["polylogue"]
         assert "insights" in cmd
         assert "tags" in cmd
-        assert "--json" in cmd
+        assert "--format" in cmd
+        assert "json" in cmd
 
     def test_live_products_day_summaries_lane_uses_products_entrypoint(self) -> None:
         cmd = build_lane_command(LANES["live-insights-day-summaries"])
         assert cmd[:1] == ["polylogue"]
         assert "insights" in cmd
         assert "day-summaries" in cmd
-        assert "--json" in cmd
+        assert "--format" in cmd
+        assert "json" in cmd
 
 
 class TestLaneAssertions:
@@ -467,7 +469,7 @@ class TestLaneAssertions:
             description="JSON contract lane",
             timeout_s=30,
             category="contract",
-            execution=polylogue_execution("doctor", "--json"),
+            execution=polylogue_execution("doctor", "--format", "json"),
             assertion=AssertionSpec(stdout_is_valid_json=True),
         )
 
@@ -490,14 +492,16 @@ class TestLaneAssertions:
         assert cmd[:1] == ["polylogue"]
         assert "insights" in cmd
         assert "analytics" in cmd
-        assert "--json" in cmd
+        assert "--format" in cmd
+        assert "json" in cmd
 
     def test_live_products_debt_lane_uses_products_entrypoint(self) -> None:
         cmd = build_lane_command(LANES["live-insights-debt"])
         assert cmd[:1] == ["polylogue"]
         assert "insights" in cmd
         assert "debt" in cmd
-        assert "--json" in cmd
+        assert "--format" in cmd
+        assert "json" in cmd
 
     def test_live_products_profiles_evidence_lane_uses_tiered_products_entrypoint(self) -> None:
         cmd = build_lane_command(LANES["live-insights-profiles-evidence"])
@@ -505,7 +509,8 @@ class TestLaneAssertions:
         assert "insights" in cmd
         assert "profiles" in cmd
         assert "evidence" in cmd
-        assert "--json" in cmd
+        assert "--format" in cmd
+        assert "json" in cmd
 
     def test_live_products_profiles_inference_lane_uses_tiered_products_entrypoint(self) -> None:
         cmd = build_lane_command(LANES["live-insights-profiles-inference"])
@@ -513,14 +518,16 @@ class TestLaneAssertions:
         assert "insights" in cmd
         assert "profiles" in cmd
         assert "inference" in cmd
-        assert "--json" in cmd
+        assert "--format" in cmd
+        assert "json" in cmd
 
     def test_live_products_enrichments_lane_uses_enrichment_entrypoint(self) -> None:
         cmd = build_lane_command(LANES["live-insights-enrichments"])
         assert cmd[:1] == ["polylogue"]
         assert "insights" in cmd
         assert "enrichments" in cmd
-        assert "--json" in cmd
+        assert "--format" in cmd
+        assert "json" in cmd
 
     def test_live_session_product_repair_lane_uses_doctor_repair_target(self) -> None:
         cmd = build_lane_command(LANES["live-session-product-repair"])

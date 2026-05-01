@@ -172,8 +172,8 @@ for _verb in QUERY_VERBS:
 def main() -> None:
     """CLI entrypoint with machine-error handling.
 
-    When ``--json`` is detected in argv, Click exceptions and unexpected
-    errors are caught and emitted as structured JSON on stdout instead of
+    When ``--format json`` is detected in argv, Click exceptions and
+    unexpected errors are emitted as structured JSON on stdout instead of
     Click's default plain-text stderr output.
     """
     import sys

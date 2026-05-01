@@ -18,14 +18,14 @@ def browser_capture_command() -> None:
 
 @browser_capture_command.command("status")
 @click.option("--spool", "spool_path", type=click.Path(path_type=Path), default=None)
-@click.option("--json", "as_json", is_flag=True)
-def status_command(spool_path: Path | None, as_json: bool) -> None:
+@click.option("--format", "output_format", type=click.Choice(["json"]), default=None, help="Output format.")
+def status_command(spool_path: Path | None, output_format: str | None) -> None:
     """Show receiver configuration and capture-spool target."""
     config = BrowserCaptureReceiverConfig.default()
     if spool_path is not None:
         config = BrowserCaptureReceiverConfig(spool_path=spool_path, allowed_origins=config.allowed_origins)
     payload = receiver_status_payload(config)
-    if as_json:
+    if output_format == "json":
         click.echo(dumps(payload))
         return
     click.echo("Browser capture receiver")
