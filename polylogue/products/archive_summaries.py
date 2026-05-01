@@ -7,8 +7,8 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 
-from polylogue.lib.session.session_profile import SessionProfile
-from polylogue.lib.session.session_summaries import DaySessionSummary, summarize_day, summarize_week
+from polylogue.archive.session.session_profile import SessionProfile
+from polylogue.archive.session.session_summaries import DaySessionSummary, summarize_day, summarize_week
 from polylogue.products.archive import (
     DaySessionSummaryProduct,
     WeekSessionSummaryProduct,

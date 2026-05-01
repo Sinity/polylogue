@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import TypeAlias, cast
 
+from polylogue.archive.session.documents import WorkThreadDocument, WorkThreadMemberEvidenceDocument
+from polylogue.archive.session.session_profile import SessionProfile
 from polylogue.lib.payload_coercion import (
     coerce_float,
     coerce_int,
@@ -18,8 +20,6 @@ from polylogue.lib.payload_coercion import (
     string_sequence,
 )
 from polylogue.lib.repo_identity import normalize_repo_names
-from polylogue.lib.session.documents import WorkThreadDocument, WorkThreadMemberEvidenceDocument
-from polylogue.lib.session.session_profile import SessionProfile
 
 WorkThreadPayload: TypeAlias = WorkThreadDocument
 
