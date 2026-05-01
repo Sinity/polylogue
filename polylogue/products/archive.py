@@ -6,8 +6,8 @@ from collections.abc import Iterable
 from datetime import date, datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Protocol
 
+from polylogue.archive.semantic.pricing import CostEstimatePayload, CostUsagePayload
 from polylogue.archive.session.session_profile import SessionProfile
-from polylogue.lib.pricing import CostEstimatePayload, CostUsagePayload
 from polylogue.products.archive_models import (
     ARCHIVE_PRODUCT_CONTRACT_VERSION,
     ArchiveEnrichmentProvenance,

@@ -12,9 +12,9 @@ from polylogue.archive.conversation.neighbor_candidates import ConversationNeigh
 from polylogue.archive.query.miss_diagnostics import QueryMissDiagnostics, QueryMissReason
 from polylogue.archive.query.search_hits import ConversationSearchHit
 from polylogue.archive.query.spec import ConversationQuerySpec
+from polylogue.archive.semantic.pricing import CostEstimatePayload, CostUsagePayload
 from polylogue.archive.stats import ArchiveStats
 from polylogue.lib.models import Conversation, ConversationSummary
-from polylogue.lib.pricing import CostEstimatePayload, CostUsagePayload
 from polylogue.products.archive import (
     ArchiveDebtProduct,
     ArchiveEnrichmentProvenance,
