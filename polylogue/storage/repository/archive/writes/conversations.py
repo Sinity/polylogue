@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import builtins
 
-from polylogue.lib.conversation.models import Conversation
+from polylogue.archive.conversation.models import Conversation
 from polylogue.lib.hashing import hash_payload
 from polylogue.lib.json import JSONValue, json_document
 from polylogue.storage.action_events.rows import attach_blocks_to_messages, build_action_event_records

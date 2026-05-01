@@ -10,7 +10,7 @@ from polylogue.protocols import ConversationArchiveReadStore
 from polylogue.rendering.core import format_conversation_markdown
 
 if TYPE_CHECKING:
-    from polylogue.lib.conversation.models import Conversation
+    from polylogue.archive.conversation.models import Conversation
 
 
 ConversationMarkdownFormatter = Callable[["Conversation"], str]

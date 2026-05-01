@@ -5,10 +5,10 @@ from __future__ import annotations
 import click
 
 from polylogue.api.sync.bridge import run_coroutine_sync
+from polylogue.archive.conversation.neighbor_candidates import ConversationNeighborCandidate, NeighborDiscoveryError
 from polylogue.cli.shared.helper_support import fail
 from polylogue.cli.shared.machine_errors import emit_success
 from polylogue.cli.shared.types import AppEnv
-from polylogue.lib.conversation.neighbor_candidates import ConversationNeighborCandidate, NeighborDiscoveryError
 from polylogue.surfaces.payloads import ConversationNeighborCandidatePayload, model_json_document
 
 

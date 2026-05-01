@@ -18,10 +18,10 @@ from polylogue.storage.backends.queries.message_query_reads import MessageTypeNa
 from polylogue.storage.products.session.runtime import SessionProductStatusSnapshot
 
 if TYPE_CHECKING:
+    from polylogue.archive.conversation.models import Conversation, ConversationSummary
     from polylogue.archive.filter.filters import ConversationFilter
     from polylogue.archive.message.models import Message
     from polylogue.config import Config
-    from polylogue.lib.conversation.models import Conversation, ConversationSummary
     from polylogue.operations import ArchiveStats
     from polylogue.products.export_bundles import ProductExportBundleRequest, ProductExportBundleResult
     from polylogue.products.readiness import ProductReadinessQuery, ProductReadinessReport

@@ -6,10 +6,10 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date, datetime
 
+from polylogue.archive.conversation.attribution import ConversationAttribution
+from polylogue.archive.conversation.extraction import WorkEvent
 from polylogue.archive.phase.extraction import SessionPhase
 from polylogue.archive.semantic.facts import ConversationSemanticFacts
-from polylogue.lib.conversation.attribution import ConversationAttribution
-from polylogue.lib.conversation.extraction import WorkEvent
 from polylogue.lib.payload_coercion import (
     coerce_float,
     coerce_int,

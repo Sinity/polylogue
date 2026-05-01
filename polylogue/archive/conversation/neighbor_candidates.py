@@ -13,7 +13,7 @@ from polylogue.storage.query_models import ConversationRecordQuery
 from polylogue.types import Provider
 
 if TYPE_CHECKING:
-    from polylogue.lib.conversation.models import Conversation, ConversationSummary
+    from polylogue.archive.conversation.models import Conversation, ConversationSummary
     from polylogue.lib.search_hits import ConversationSearchHit
     from polylogue.protocols import ConversationQueryRuntimeStore
 

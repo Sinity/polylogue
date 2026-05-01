@@ -8,8 +8,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 from click.testing import CliRunner
 
+from polylogue.archive.conversation.neighbor_candidates import ConversationNeighborCandidate, NeighborReason
 from polylogue.cli.commands.neighbors import neighbors_command
-from polylogue.lib.conversation.neighbor_candidates import ConversationNeighborCandidate, NeighborReason
 from polylogue.lib.models import ConversationSummary
 from polylogue.types import ConversationId, Provider
 

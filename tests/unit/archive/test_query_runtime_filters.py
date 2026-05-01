@@ -4,10 +4,10 @@ from datetime import datetime, timezone
 
 import pytest
 
+from polylogue.archive.conversation.branch_type import BranchType
+from polylogue.archive.conversation.models import ConversationSummary
 from polylogue.archive.query.plan import ConversationQueryPlan
 from polylogue.archive.query.runtime_filters import apply_common_filters, apply_full_filters
-from polylogue.lib.conversation.branch_type import BranchType
-from polylogue.lib.conversation.models import ConversationSummary
 from polylogue.lib.models import Attachment, Conversation, Message
 from polylogue.types import ConversationId, Provider
 from tests.infra.builders import make_conv, make_msg

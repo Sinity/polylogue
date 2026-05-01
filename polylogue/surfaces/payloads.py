@@ -18,7 +18,7 @@ from polylogue.lib.json import JSONDocument, JSONValue, require_json_document
 if TYPE_CHECKING:
     from collections.abc import Container
 
-    from polylogue.lib.conversation.neighbor_candidates import ConversationNeighborCandidate, NeighborReason
+    from polylogue.archive.conversation.neighbor_candidates import ConversationNeighborCandidate, NeighborReason
     from polylogue.lib.models import Conversation, ConversationSummary, Message
     from polylogue.lib.search_hits import ConversationSearchHit
     from polylogue.lib.tail_overlay import TailOverlayInfo

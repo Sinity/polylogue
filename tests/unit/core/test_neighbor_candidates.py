@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.lib.conversation.neighbor_candidates import NeighborDiscoveryRequest, discover_neighbor_candidates
+from polylogue.archive.conversation.neighbor_candidates import NeighborDiscoveryRequest, discover_neighbor_candidates
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.repository import ConversationRepository
 from tests.infra.storage_records import ConversationBuilder

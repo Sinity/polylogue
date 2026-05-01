@@ -19,16 +19,16 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from polylogue.api import ArchiveStats, Polylogue
     from polylogue.api.sync import SyncPolylogue
+    from polylogue.archive.conversation.models import Conversation
     from polylogue.archive.message.models import Message
     from polylogue.errors import PolylogueError
-    from polylogue.lib.conversation.models import Conversation
     from polylogue.storage.search import SearchResult
 
 
 def __getattr__(name: str) -> object:
     lazy_exports = {
         "ArchiveStats": ("polylogue.api", "ArchiveStats"),
-        "Conversation": ("polylogue.lib.conversation.models", "Conversation"),
+        "Conversation": ("polylogue.archive.conversation.models", "Conversation"),
         "Message": ("polylogue.archive.message.models", "Message"),
         "Polylogue": ("polylogue.api", "Polylogue"),
         "PolylogueError": ("polylogue.errors", "PolylogueError"),

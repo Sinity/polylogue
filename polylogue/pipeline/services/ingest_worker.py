@@ -19,8 +19,8 @@ from typing import TYPE_CHECKING, Literal
 from typing_extensions import TypedDict
 
 from polylogue.archive.artifact_taxonomy import ArtifactClassification, classify_artifact
+from polylogue.archive.conversation.branch_type import BranchType
 from polylogue.archive.raw_payload.decode import RawPayloadEnvelope
-from polylogue.lib.conversation.branch_type import BranchType
 from polylogue.lib.json import dumps as json_dumps
 from polylogue.lib.roles import Role
 from polylogue.logging import get_logger

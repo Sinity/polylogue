@@ -9,7 +9,7 @@ from polylogue.api.sync.bridge import run_coroutine_sync
 
 if TYPE_CHECKING:
     from polylogue.api import ArchiveStats, Polylogue
-    from polylogue.lib.conversation.models import Conversation, ConversationSummary
+    from polylogue.archive.conversation.models import Conversation, ConversationSummary
     from polylogue.storage.search import SearchResult
 
 

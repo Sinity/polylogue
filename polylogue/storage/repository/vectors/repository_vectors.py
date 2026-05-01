@@ -14,7 +14,7 @@ from polylogue.storage.repository.repository_contracts import RepositoryBackendP
 if TYPE_CHECKING:
     import aiosqlite
 
-    from polylogue.lib.conversation.models import Conversation
+    from polylogue.archive.conversation.models import Conversation
     from polylogue.lib.stats import ArchiveStats
     from polylogue.storage.backends.query_store import SQLiteQueryStore
 

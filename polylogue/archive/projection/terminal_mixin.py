@@ -7,8 +7,8 @@ from collections.abc import Callable, Iterator
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from polylogue.archive.conversation.models import Conversation
     from polylogue.archive.message.models import Message
-    from polylogue.lib.conversation.models import Conversation
 
 MessagePredicate = Callable[["Message"], bool]
 MessageTransform = Callable[["Message"], "Message"]

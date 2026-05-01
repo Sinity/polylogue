@@ -37,7 +37,7 @@ re-exported from package roots. Import them from their actual modules:
 
 ```python
 from polylogue.lib.session.session_profile import build_session_profile, infer_auto_tags
-from polylogue.lib.conversation.threads import build_session_threads
+from polylogue.archive.conversation.threads import build_session_threads
 ```
 
 Durable archive products are public too:

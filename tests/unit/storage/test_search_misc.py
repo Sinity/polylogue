@@ -17,8 +17,8 @@ from unittest.mock import patch
 
 import pytest
 
+from polylogue.archive.conversation.branch_type import BranchType
 from polylogue.assets import asset_path, write_asset
-from polylogue.lib.conversation.branch_type import BranchType
 from polylogue.sources.parsers.base_models import ParsedConversation
 from polylogue.sources.parsers.claude import (
     SessionIndexEntry,

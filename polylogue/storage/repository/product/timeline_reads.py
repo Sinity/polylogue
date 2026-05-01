@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from polylogue.archive.conversation.extraction import WorkEvent
 from polylogue.archive.phase.extraction import SessionPhase
-from polylogue.lib.conversation.extraction import WorkEvent
 from polylogue.storage.products.product_read_support import hydrate_sequence
 from polylogue.storage.products.session.timeline_rows import hydrate_session_phase, hydrate_work_event
 from polylogue.storage.query_models import SessionTimelineListQuery

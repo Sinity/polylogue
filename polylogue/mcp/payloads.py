@@ -33,8 +33,8 @@ from polylogue.surfaces.payloads import (
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from polylogue.archive.conversation.neighbor_candidates import ConversationNeighborCandidate
     from polylogue.archive.query.miss_diagnostics import QueryMissDiagnostics, QueryMissReason
-    from polylogue.lib.conversation.neighbor_candidates import ConversationNeighborCandidate
     from polylogue.lib.models import Conversation
     from polylogue.lib.search_hits import ConversationSearchHit
     from polylogue.lib.stats import ArchiveStats

@@ -5,8 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
+from polylogue.archive.conversation.extraction import WorkEvent, WorkEventPayload
 from polylogue.archive.phase.extraction import SessionPhase
-from polylogue.lib.conversation.extraction import WorkEvent, WorkEventPayload
 from polylogue.lib.payload_coercion import (
     coerce_float,
     coerce_int,

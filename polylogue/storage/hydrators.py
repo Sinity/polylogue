@@ -15,9 +15,9 @@ import json
 from datetime import datetime, timezone
 
 from polylogue.archive.attachment.models import Attachment
+from polylogue.archive.conversation.models import Conversation, ConversationSummary
 from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.message.models import Message
-from polylogue.lib.conversation.models import Conversation, ConversationSummary
 from polylogue.lib.json import loads
 from polylogue.lib.roles import Role
 from polylogue.lib.timestamps import parse_timestamp
