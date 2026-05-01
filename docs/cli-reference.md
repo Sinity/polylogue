@@ -149,7 +149,6 @@ Commands:
   export           Export one known conversation by ID.
   insights         Inspect durable archive insights.
   list             List matched conversations.
-  mcp              Start the MCP server for AI assistant integration.
   messages         Show paginated messages for a conversation.
   neighbors        Show explainable neighboring or near-duplicate...
   open             Open matched conversation in browser/editor.
@@ -491,18 +490,4 @@ Usage: polylogue dashboard [OPTIONS]
 
 Options:
   -h, --help  Show this message and exit.
-```
-
-## MCP
-
-```text
-Usage: polylogue mcp [OPTIONS]
-
-  Start the MCP server for AI assistant integration.
-
-Options:
-  --transport [stdio]        Transport protocol
-  --role [read|write|admin]  MCP capability role. Read omits mutation and
-                             maintenance tools.  [default: read]
-  -h, --help                 Show this message and exit.
 ```

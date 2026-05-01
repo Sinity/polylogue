@@ -6,13 +6,13 @@
     "watch",
     "browser-capture",
     "doctor",
-    "mcp",
     "schema",
     "messages",
     "raw",
     "bulk-export",
     "diagnostics"
   ],
+  "required_console_scripts": ["polylogue", "polylogue-mcp"],
   "required_query_verbs": ["list", "show", "search", "stats", "count", "export"],
   "machine_output_aliases": ["--format json"],
   "semantic_filters": ["--provider", "--repo", "--cwd-prefix", "--referenced-path", "--message-role", "--message-type"]

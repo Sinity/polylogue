@@ -29,7 +29,6 @@ SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Schema", ("schema",)),
     ("Completions", ("completions",)),
     ("Dashboard", ("dashboard",)),
-    ("MCP", ("mcp",)),
 )
 
 
