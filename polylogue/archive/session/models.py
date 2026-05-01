@@ -8,6 +8,7 @@ from datetime import date, datetime
 
 from polylogue.archive.conversation.attribution import ConversationAttribution
 from polylogue.archive.conversation.extraction import WorkEvent
+from polylogue.archive.conversation.repo_identity import normalize_repo_names, normalize_repo_paths
 from polylogue.archive.phase.extraction import SessionPhase
 from polylogue.archive.semantic.facts import ConversationSemanticFacts
 from polylogue.archive.session.documents import (
@@ -25,7 +26,6 @@ from polylogue.core.payload_coercion import (
     string_int_mapping,
     string_sequence,
 )
-from polylogue.lib.repo_identity import normalize_repo_names, normalize_repo_paths
 
 SessionPhasePayload = SessionPhaseDocument
 SessionProfilePayload = SessionProfileDocument

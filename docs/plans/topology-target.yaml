@@ -135,6 +135,11 @@ files:
     target: polylogue/archive/conversation/neighbor_candidates.py
     owner: archive-conversation
     reason: archive-domain semantics
+  - path: polylogue/archive/conversation/repo_identity.py
+    loc: 156
+    target: polylogue/archive/conversation/repo_identity.py
+    owner: archive-conversation
+    reason: archive-domain semantics
   - path: polylogue/archive/conversation/runtime.py
     loc: 230
     target: polylogue/archive/conversation/runtime.py
@@ -852,11 +857,6 @@ files:
   - path: polylogue/lib/models.py
     loc: 7
     target: polylogue/lib/models.py
-    owner: lib-root
-    reason: lib-root primitive
-  - path: polylogue/lib/repo_identity.py
-    loc: 156
-    target: polylogue/lib/repo_identity.py
     owner: lib-root
     reason: lib-root primitive
   - path: polylogue/logging.py
