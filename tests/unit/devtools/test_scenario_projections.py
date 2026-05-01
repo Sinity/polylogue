@@ -4,7 +4,39 @@ import json
 
 from devtools import scenario_projections
 from devtools.scenario_projection_catalog import build_scenario_projection_entries
-from polylogue.scenarios import declared_operation_target_names
+from polylogue.scenarios import (
+    ScenarioProjectionSource,
+    ScenarioProjectionSourceKind,
+    declared_operation_target_names,
+)
+
+
+class _PresentationScenario(ScenarioProjectionSource):
+    docs_role = "tour"
+    caption = "Query recall demo"
+    narrative_order = 1
+    audience = ("operator",)
+    demonstrates = ("recall", "json-output")
+    privacy_level = "synthetic"
+    media = ("terminal",)
+    visual_style = "plain"
+    origin = "test"
+    path_targets = ()
+    artifact_targets = ()
+    operation_targets = ()
+    tags = ()
+
+    @property
+    def projection_source_kind(self) -> ScenarioProjectionSourceKind:
+        return ScenarioProjectionSourceKind.EXERCISE
+
+    @property
+    def projection_name(self) -> str:
+        return "presentation"
+
+    @property
+    def projection_description(self) -> str:
+        return "Presentation metadata probe"
 
 
 def test_render_scenario_projections_text_lists_authored_sources() -> None:
@@ -78,3 +110,12 @@ def test_validation_lane_projection_entries_include_composite_metadata_unions() 
     assert "cli.json-contract" in frontier_local.operation_targets
     assert "cli.help" in frontier_local.operation_targets
     assert "contract" in frontier_local.tags
+
+
+def test_projection_entries_preserve_presentation_metadata() -> None:
+    entry = _PresentationScenario().to_projection_entry()
+
+    assert entry.to_payload()["docs_role"] == "tour"
+    assert entry.to_payload()["caption"] == "Query recall demo"
+    assert entry.to_payload()["demonstrates"] == ["recall", "json-output"]
+    assert entry.to_dict()["narrative_order"] == 1

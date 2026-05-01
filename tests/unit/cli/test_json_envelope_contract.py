@@ -108,6 +108,42 @@ class TestTagsJsonEnvelope:
         assert "tags" in envelope_result(parsed, context="tags envelope")
 
 
+class TestQueryShapedJsonMatrix:
+    @pytest.mark.parametrize(
+        ("args", "result_key"),
+        [
+            (["tags", "--format", "json"], "tags"),
+            (["neighbors", "--query", "__polylogue_json_contract_probe__", "--format", "json"], "neighbors"),
+            (["products", "status", "--format", "json"], "products"),
+            (["schema", "list", "--format", "json"], "providers"),
+        ],
+    )
+    def test_format_json_uses_success_envelope(
+        self,
+        args: list[str],
+        result_key: str,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        parsed = _invoke_json_command(args, monkeypatch)
+        assert parsed is not None
+        assert parsed["status"] == "ok"
+        assert result_key in envelope_result(parsed, context="format json envelope")
+
+    @pytest.mark.parametrize(
+        "args",
+        [
+            ["neighbors", "--query", "__polylogue_json_contract_probe__", "--json"],
+            ["products", "status", "--json"],
+            ["schema", "list", "--json"],
+        ],
+    )
+    def test_json_alias_uses_success_envelope(self, args: list[str], monkeypatch: pytest.MonkeyPatch) -> None:
+        parsed = _invoke_json_command(args, monkeypatch)
+        assert parsed is not None
+        assert parsed["status"] == "ok"
+        assert "result" in parsed
+
+
 # ---------------------------------------------------------------------------
 # Error envelope tests
 # ---------------------------------------------------------------------------

@@ -22,7 +22,6 @@ SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Run Embed", ("run", "embed")),
     ("Run Site", ("run", "site")),
     ("Products", ("products",)),
-    ("Audit", ("audit",)),
     ("Doctor", ("doctor",)),
     ("Tags", ("tags",)),
     ("Auth", ("auth",)),

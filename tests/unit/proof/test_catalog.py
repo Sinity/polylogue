@@ -42,6 +42,15 @@ def test_default_catalog_compiles_first_vertical_slice() -> None:
         "generated.scenario.family_registered",
         "generated.scenario.local_deterministic",
         "generated.scenario.semantic_claim_mapping",
+        "assurance.coverage.manifest_structured",
+        "assurance.coverage.item_declared",
+        "assurance.coverage.gap_has_closure_path",
+        "architecture.topology.projection_enforced",
+        "architecture.layering.import_rules_enforced",
+        "architecture.file_budget.loc_enforced",
+        "architecture.manifest.consistency_enforced",
+        "architecture.witness.lifecycle_enforced",
+        "schema.roundtrip.inference_validation",
         "operation.effect.atomic",
         "operation.effect.atomic_rename",
         "operation.effect.confirmed_before_execute",
@@ -70,8 +79,24 @@ def test_default_catalog_compiles_first_vertical_slice() -> None:
     assert catalog.subjects_by_kind()["trace.operation"] == 1
     assert catalog.subjects_by_kind()["diagnostic.observable"] == 1
     assert catalog.subjects_by_kind()["generated.scenario_family"] >= 5
+    assert catalog.subjects_by_kind()["assurance.coverage_manifest"] >= 8
+    assert catalog.subjects_by_kind()["assurance.coverage_item"] >= 20
+    assert catalog.subjects_by_kind()["assurance.coverage_gap"] >= 10
     assert catalog.subjects_by_kind()["schema.annotation"] >= 1
+    assert catalog.subjects_by_kind()["architecture.topology"] == 1
+    assert catalog.subjects_by_kind()["architecture.layering"] == 1
+    assert catalog.subjects_by_kind()["architecture.file_budget"] == 1
+    assert catalog.subjects_by_kind()["architecture.manifest"] == 1
+    assert catalog.subjects_by_kind()["schema.roundtrip"] == 1
     assert catalog.subjects_by_kind()["workflow.claim"] == 2
+    coverage_gap_domains = {
+        subject.attrs.get("assurance_domain")
+        for subject in catalog.subjects
+        if subject.kind == "assurance.coverage_gap"
+    }
+    assert {"distribution", "docs_media", "performance", "security_privacy", "test_quality"}.issubset(
+        coverage_gap_domains
+    )
     assert {runner.claim_id for runner in catalog.runner_bindings} == {claim.id for claim in catalog.claims}
     assert {"smoke", "semantic", "structural", "trace"}.issubset(
         {runner.evidence_class for runner in catalog.runner_bindings}
@@ -154,4 +179,5 @@ def test_catalog_self_quality_exposes_catalog_contract_failures() -> None:
     assert checks["catalog.serious_claim_bug_classes"].status is OutcomeStatus.ERROR
     assert checks["catalog.serious_claim_breakers"].status is OutcomeStatus.ERROR
     assert checks["catalog.serious_claim_adequacy"].status is OutcomeStatus.ERROR
+    assert checks["catalog.serious_claim_oracle_independence"].status is OutcomeStatus.OK
     assert checks["catalog.non_abstract_claim_subjects"].status is OutcomeStatus.ERROR

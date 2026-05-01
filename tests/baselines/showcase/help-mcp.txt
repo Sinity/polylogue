@@ -3,5 +3,7 @@ Usage: polylogue mcp [OPTIONS]
   Start the MCP server for AI assistant integration.
 
 Options:
-  --transport [stdio]  Transport protocol
-  -h, --help           Show this message and exit.
+  --transport [stdio]        Transport protocol
+  --role [read|write|admin]  MCP capability role. Read omits mutation and
+                             maintenance tools.  [default: read]
+  -h, --help                 Show this message and exit.

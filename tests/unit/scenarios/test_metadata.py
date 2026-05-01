@@ -22,6 +22,14 @@ def test_scenario_metadata_from_payload_normalizes_strings_and_targets() -> None
             "operation_targets": ("cli.doctor",),
             "maintenance_targets": ["dangling_fts"],
             "tags": ["generated", "json-contract"],
+            "docs_role": "quickstart",
+            "caption": "Doctor detects repairable action-event gaps.",
+            "narrative_order": 10,
+            "audience": ["operator"],
+            "demonstrates": ["repair-preview", "json-envelope"],
+            "privacy_level": "synthetic",
+            "media": ["terminal"],
+            "visual_style": "plain-terminal",
         }
     )
 
@@ -31,6 +39,14 @@ def test_scenario_metadata_from_payload_normalizes_strings_and_targets() -> None
     assert metadata.operation_targets == ("cli.doctor",)
     assert metadata.maintenance_targets == ("dangling_fts",)
     assert metadata.tags == ("generated", "json-contract")
+    assert metadata.docs_role == "quickstart"
+    assert metadata.caption == "Doctor detects repairable action-event gaps."
+    assert metadata.narrative_order == 10
+    assert metadata.audience == ("operator",)
+    assert metadata.demonstrates == ("repair-preview", "json-envelope")
+    assert metadata.privacy_level == "synthetic"
+    assert metadata.media == ("terminal",)
+    assert metadata.visual_style == "plain-terminal"
 
 
 def test_scenario_metadata_from_object_falls_back_for_mock_attributes() -> None:
@@ -43,6 +59,8 @@ def test_scenario_metadata_from_object_falls_back_for_mock_attributes() -> None:
     assert metadata.operation_targets == ()
     assert metadata.maintenance_targets == ()
     assert metadata.tags == ()
+    assert metadata.docs_role == ""
+    assert metadata.narrative_order is None
 
 
 def test_scenario_metadata_payload_omits_empty_collections() -> None:
@@ -53,6 +71,14 @@ def test_scenario_metadata_payload_omits_empty_collections() -> None:
         operation_targets=(),
         maintenance_targets=("session_products",),
         tags=("generated",),
+        docs_role="reference",
+        caption="Session products are visible to docs projections.",
+        narrative_order=20,
+        audience=("maintainer",),
+        demonstrates=("session-products",),
+        privacy_level="synthetic",
+        media=("markdown",),
+        visual_style="reference-table",
     )
 
     assert metadata.to_payload() == {
@@ -61,7 +87,48 @@ def test_scenario_metadata_payload_omits_empty_collections() -> None:
         "artifact_targets": ["doctor_runtime"],
         "maintenance_targets": ["session_products"],
         "tags": ["generated"],
+        "docs_role": "reference",
+        "caption": "Session products are visible to docs projections.",
+        "narrative_order": 20,
+        "audience": ["maintainer"],
+        "demonstrates": ["session-products"],
+        "privacy_level": "synthetic",
+        "media": ["markdown"],
+        "visual_style": "reference-table",
     }
+
+
+def test_scenario_metadata_merges_presentation_fields_generally() -> None:
+    default = ScenarioMetadata(
+        docs_role="tour",
+        caption="Default caption",
+        narrative_order=30,
+        audience=("operator",),
+        demonstrates=("query",),
+        privacy_level="synthetic",
+        media=("terminal",),
+        visual_style="plain",
+        tags=("default",),
+    )
+    explicit = ScenarioMetadata(
+        caption="Explicit caption",
+        audience=("maintainer",),
+        demonstrates=("repair",),
+        media=("screenshot",),
+        tags=("explicit",),
+    )
+
+    merged = explicit.with_default_targets(default)
+
+    assert merged.docs_role == "tour"
+    assert merged.caption == "Explicit caption"
+    assert merged.narrative_order == 30
+    assert merged.audience == ("maintainer",)
+    assert merged.demonstrates == ("repair",)
+    assert merged.privacy_level == "synthetic"
+    assert merged.media == ("screenshot",)
+    assert merged.visual_style == "plain"
+    assert merged.tags == ("explicit", "default")
 
 
 def test_runtime_target_names_include_declared_runtime_specs() -> None:

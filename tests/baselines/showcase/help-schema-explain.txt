@@ -7,6 +7,7 @@ Options:
   --version TEXT   Schema version (default: latest)
   --element TEXT   Element kind inside the package
   --json           Output as JSON
+  --format [json]  Output format
   -v, --verbose    Show semantic roles and coverage
   --proof          Show proof surface for role assignment decisions
   -h, --help       Show this message and exit.

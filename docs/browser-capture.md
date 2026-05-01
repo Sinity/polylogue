@@ -16,7 +16,7 @@ The receiver listens on `127.0.0.1:8765` by default and accepts:
 - `POST /v1/browser-captures`
 
 Accepted captures are typed browser-capture envelopes and are written
-atomically under the configured inbox at `browser-capture/<provider>/...json`.
+atomically under the configured capture spool at `<provider>/...json`.
 The filename is deterministic from provider and provider session id, so repeated
 observation of the same web session replaces the same source artifact.
 

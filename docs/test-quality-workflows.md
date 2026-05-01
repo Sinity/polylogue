@@ -15,10 +15,10 @@ Current registry snapshot:
 - mutation campaigns: `19`
 - benchmark campaigns: `3`
 - synthetic benchmark campaigns: `6`
-- scenario projections: `259`
+- scenario projections: `257`
 - inferred corpus scenarios: `5`
   - benchmark-campaign: `3`
-  - exercise: `153`
+  - exercise: `151`
   - inferred-corpus-scenario: `5`
   - mutation-campaign: `19`
   - synthetic-benchmark: `6`
@@ -322,7 +322,6 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `exercise` | `gen-schema-explain-codex` | `schema-explain-query-loop` | `schema_packages`<br>`schema_explanation_results` | `query-schema-explanations` | — | `generated`<br>`schema`<br>`codex` | Generated: schema explain --provider codex |
 | `exercise` | `gen-schema-explain-gemini` | `schema-explain-query-loop` | `schema_packages`<br>`schema_explanation_results` | `query-schema-explanations` | — | `generated`<br>`schema`<br>`gemini` | Generated: schema explain --provider gemini |
 | `exercise` | `gen-schema-list` | `schema-list-query-loop` | `schema_packages`<br>`schema_cluster_manifests`<br>`inferred_corpus_specs`<br>`inferred_corpus_scenarios`<br>`schema_list_results` | `query-schema-catalog` | — | `generated`<br>`schema`<br>`list` | Generated: schema list --json returns valid JSON |
-| `exercise` | `help-audit` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | audit help |
 | `exercise` | `help-auth` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | auth help |
 | `exercise` | `help-browser-capture` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | browser-capture help |
 | `exercise` | `help-browser-capture-serve` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | browser-capture serve help |
@@ -382,7 +381,6 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `exercise` | `help-stats` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | stats help |
 | `exercise` | `help-tags` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | tags help |
 | `exercise` | `help-watch` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | watch help |
-| `exercise` | `json-audit` | — | — | `cli.json-contract` | — | `generated`<br>`json-contract` | audit JSON contract |
 | `exercise` | `json-doctor` | `message-fts-readiness-loop`<br>`retrieval-band-readiness-loop` | `message_fts`<br>`action_event_readiness`<br>`session_product_readiness`<br>`retrieval_band_readiness`<br>`archive_readiness` | `cli.json-contract`<br>`project-archive-readiness` | — | `generated`<br>`json-contract`<br>`maintenance`<br>`readiness` | doctor JSON contract |
 | `exercise` | `json-doctor-action-event-preview` | `action-event-repair-loop` | `action_event_rows`<br>`action_event_fts`<br>`action_event_readiness` | `cli.json-contract`<br>`project-action-event-readiness` | — | `generated`<br>`json-contract`<br>`maintenance`<br>`action-events` | doctor JSON contract |
 | `exercise` | `json-doctor-session-products-preview` | `session-product-repair-loop` | `session_product_rows`<br>`session_product_fts`<br>`session_product_readiness` | `cli.json-contract`<br>`project-session-product-readiness` | — | `generated`<br>`json-contract`<br>`maintenance`<br>`session-products` | doctor JSON contract |

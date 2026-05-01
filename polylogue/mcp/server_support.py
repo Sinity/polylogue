@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol, TypeVar, overload
+from typing import TYPE_CHECKING, Literal, Protocol, TypeVar, overload
 
 from pydantic import BaseModel
 
@@ -22,6 +22,7 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 _runtime_services: RuntimeServices | None = None
 TResult = TypeVar("TResult")
+MCPRole = Literal["read", "write", "admin"]
 
 
 class JSONPayloadSerializer(Protocol):
@@ -49,6 +50,23 @@ class ServerCallbacks:
     get_config: Callable[[], Config]
     get_archive_ops: Callable[[], ArchiveOperations]
     extract_fenced_code: FencedCodeExtractor
+    role: MCPRole
+
+
+def role_allows(role: MCPRole, required: MCPRole) -> bool:
+    """Return whether an MCP server role allows the required capability."""
+    order: dict[MCPRole, int] = {"read": 0, "write": 1, "admin": 2}
+    return order[role] >= order[required]
+
+
+def _exception_error_payload(fn_name: str, exc: Exception) -> MCPErrorPayload:
+    """Return a sanitized error payload for unexpected MCP failures."""
+    return MCPErrorPayload(
+        error="internal MCP tool error",
+        code="internal_error",
+        detail=type(exc).__name__,
+        tool=fn_name,
+    )
 
 
 def _extract_fenced_code(text: str, language: str = "") -> list[MCPFencedCodeBlock]:
@@ -112,7 +130,7 @@ def _safe_call(fn_name: str, fn: Callable[[], TResult]) -> TResult | str:
         return fn()
     except Exception as exc:
         logger.exception("MCP tool %s failed", fn_name)
-        return _json_payload(MCPErrorPayload(error=str(exc), tool=fn_name), exclude_none=True)
+        return _json_payload(_exception_error_payload(fn_name, exc), exclude_none=True)
 
 
 @overload
@@ -133,12 +151,13 @@ async def _async_safe_call(fn_name: str, fn: Callable[[], Awaitable[TResult]]) -
         return await fn()
     except Exception as exc:
         logger.exception("MCP tool %s failed", fn_name)
-        return _json_payload(MCPErrorPayload(error=str(exc), tool=fn_name), exclude_none=True)
+        return _json_payload(_exception_error_payload(fn_name, exc), exclude_none=True)
 
 
 def _error_json(message: str, **extra: str) -> str:
     """Return a JSON-encoded error dict."""
-    return _json_payload(MCPErrorPayload(error=message, **extra), exclude_none=True)
+    code = extra.pop("code", None)
+    return _json_payload(MCPErrorPayload(error=message, code=code, **extra), exclude_none=True)
 
 
 def _set_runtime_services(services: RuntimeServices | None) -> None:
@@ -176,6 +195,7 @@ def _get_config() -> Config:
 
 
 __all__ = [
+    "MCPRole",
     "ServerCallbacks",
     "_async_safe_call",
     "_clamp_limit",
@@ -189,4 +209,5 @@ __all__ = [
     "_json_payload",
     "_safe_call",
     "_set_runtime_services",
+    "role_allows",
 ]

@@ -9,8 +9,6 @@ Reports:
   * tbd             — projection cells still marked TBD
 
 Exits 0 if everything passes, 1 if any blocking finding, 2 if only warnings.
-
-See `#429 <https://github.com/Sinity/polylogue/issues/429>`_.
 """
 
 from __future__ import annotations

@@ -31,6 +31,30 @@ Oracle = Literal[
     "manual_review",
     "ceremonial",
 ]
+OracleKind = Literal[
+    "proof",
+    "drift_check",
+    "construction_sanity",
+    "smoke",
+    "manual_review",
+    "ceremonial",
+]
+EvidenceSource = Literal[
+    "proof_catalog",
+    "repo_static_analysis",
+    "generated_fixture",
+    "unit_test",
+    "integration_test",
+    "manual_review",
+    "same_source_manifest",
+]
+IndependenceLevel = Literal[
+    "independent",
+    "cross_checked",
+    "same_source",
+    "self_attesting",
+    "ceremonial",
+]
 
 AssuranceDomain = Literal[
     "operational_resilience",
@@ -58,6 +82,7 @@ AssuranceDomain = Literal[
     "scenario_coverage",
     "mutation_coverage",
     "benchmark_coverage",
+    "architecture_discipline",
     "unclassified",
 ]
 
@@ -297,6 +322,10 @@ class Claim:
     subject_query: SubjectQuery
     evidence_schema: JSONDocument
     oracle: Oracle = "construction_sanity"
+    oracle_kind: OracleKind | None = None
+    assertion_source: EvidenceSource = "proof_catalog"
+    observation_source: EvidenceSource = "repo_static_analysis"
+    independence_level: IndependenceLevel = "independent"
     assurance_domain: AssuranceDomain = "unclassified"
     bug_classes: tuple[str, ...] = ()
     breaker: BreakerMetadata | None = None
@@ -318,6 +347,10 @@ class Claim:
                 "subject_query": self.subject_query.to_payload(),
                 "evidence_schema": dict(self.evidence_schema),
                 "oracle": self.oracle,
+                "oracle_kind": self.oracle_kind or self.oracle,
+                "assertion_source": self.assertion_source,
+                "observation_source": self.observation_source,
+                "independence_level": self.independence_level,
                 "assurance_domain": self.assurance_domain,
                 "bug_classes": list(self.bug_classes),
                 "breaker": self.breaker.to_payload() if self.breaker is not None else None,
@@ -547,11 +580,14 @@ __all__ = [
     "EnvironmentContract",
     "EvidenceEnvelope",
     "EvidenceClass",
+    "EvidenceSource",
+    "IndependenceLevel",
     "Kind",
     "NetworkPolicy",
     "Not",
     "Or",
     "Oracle",
+    "OracleKind",
     "ProofObligation",
     "RunnerBinding",
     "SourceSpan",

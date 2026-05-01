@@ -157,7 +157,6 @@ class WitnessMetadata:
     committed: bool = True
     known_failing: bool = False
     xfail_strict: bool = False
-    linked_issue: str | None = None
     rejection_reason: str | None = None
     notes: tuple[str, ...] = ()
     schema_version: int = WITNESS_SCHEMA_VERSION
@@ -199,7 +198,6 @@ class WitnessMetadata:
             committed=bool(payload.get("committed", True)),
             known_failing=bool(payload.get("known_failing", False)),
             xfail_strict=bool(payload.get("xfail_strict", False)),
-            linked_issue=str(payload["linked_issue"]) if payload.get("linked_issue") is not None else None,
             rejection_reason=(
                 str(payload["rejection_reason"]) if payload.get("rejection_reason") is not None else None
             ),
@@ -226,7 +224,6 @@ class WitnessMetadata:
             "lifecycle": self.lifecycle.to_payload() if self.lifecycle is not None else None,
             "known_failing": self.known_failing,
             "xfail_strict": self.xfail_strict,
-            "linked_issue": self.linked_issue,
             "rejection_reason": self.rejection_reason,
             "notes": list(self.notes),
         }
@@ -244,10 +241,8 @@ class WitnessMetadata:
             errors.append("witness must declare preserved semantic facts")
         if self.committed and self.minimization_status == "raw":
             errors.append("committed witnesses must be minimized, rejected, or explicitly not applicable")
-        if self.known_failing and not (
-            (self.xfail_strict and self.linked_issue is not None) or self.rejection_reason is not None
-        ):
-            errors.append("known failing witnesses require strict xfail with linked issue or rejection reason")
+        if self.known_failing and not self.rejection_reason:
+            errors.append("known failing witnesses require an explicit rejection_reason")
         return tuple(errors)
 
 

@@ -2,7 +2,7 @@
 
 Usage:
   devtools witness-promote <witness-id>
-  devtools witness-promote <witness-id> --linked-issue '#NNN'
+  devtools witness-promote <witness-id> --known-failing --rejection-reason '...'
 """
 
 from __future__ import annotations
@@ -25,8 +25,10 @@ from polylogue.proof.witnesses import (
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Promote a local witness to the committed directory.")
     parser.add_argument("witness_id", type=str, help="Witness identifier to promote.")
-    parser.add_argument("--linked-issue", type=str, help="Tracking issue for xfail linkage (e.g. '#519').")
     parser.add_argument("--known-failing", action="store_true", help="Mark the witness as known failing (xfail).")
+    parser.add_argument(
+        "--rejection-reason", type=str, help="Required rationale when promoting a known-failing witness."
+    )
     parser.add_argument("--json", action="store_true", help="Output machine-readable JSON.")
     return parser
 
@@ -61,6 +63,9 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     metadata = WitnessMetadata.from_payload(json.loads(metadata_path.read_text(encoding="utf-8")))
+    if args.known_failing and not (args.rejection_reason or metadata.rejection_reason):
+        print("error: --known-failing requires --rejection-reason", file=sys.stderr)
+        return 1
 
     if metadata.privacy_classification is None:
         print(
@@ -96,7 +101,7 @@ def main(argv: list[str] | None = None) -> int:
         committed=True,
         known_failing=args.known_failing or metadata.known_failing,
         xfail_strict=args.known_failing,
-        linked_issue=args.linked_issue or metadata.linked_issue,
+        rejection_reason=args.rejection_reason or metadata.rejection_reason,
         notes=metadata.notes,
         schema_version=WITNESS_SCHEMA_VERSION,
     )
@@ -116,7 +121,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  witness: {committed_witness}")
         print(f"  metadata: {committed_metadata}")
         if args.known_failing:
-            print(f"  xfail: strict (linked: {args.linked_issue})")
+            print(f"  xfail: strict ({args.rejection_reason})")
 
     return 0
 

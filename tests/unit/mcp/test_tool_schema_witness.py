@@ -10,7 +10,7 @@ To accept legitimate changes, regenerate the witness data:
     python -c "
     import json
     from polylogue.mcp.server import build_server
-    m = build_server()
+    m = build_server(role="admin")
     out = sorted(({'name': name, 'parameters': t.parameters} for name, t in m._tool_manager._tools.items()), key=lambda r: r['name'])
     with open('tests/data/witnesses/mcp-tool-schemas.json', 'w') as f:
         json.dump(out, f, indent=2, sort_keys=True); f.write('\\n')
@@ -32,7 +32,7 @@ DATA_PATH = Path(__file__).resolve().parents[3] / "tests" / "data" / "witnesses"
 
 
 def _current_tool_catalog() -> list[dict[str, object]]:
-    server = build_server()
+    server = build_server(role="admin")
     tools = server._tool_manager._tools
     return [{"name": name, "parameters": tools[name].parameters} for name in sorted(tools)]
 

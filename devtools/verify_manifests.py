@@ -1,7 +1,7 @@
 """Verify internal consistency across all docs/plans/*.yaml manifests.
 
-Part of #491 — ensures manifest files are valid YAML and their
-cross-references are consistent. Runs as part of devtools verify.
+Ensures manifest files are valid YAML and their cross-references are
+consistent. Runs as part of devtools verify.
 """
 
 from __future__ import annotations
@@ -127,6 +127,37 @@ def check_assurance_domains(plans_dir: Path) -> list[str]:
     return errors
 
 
+def check_coverage_gaps(plans_dir: Path) -> list[str]:
+    """Validate that passive coverage gaps are tracked as actionable records."""
+    errors: list[str] = []
+    for path in sorted(plans_dir.glob("*coverage*.yaml")):
+        try:
+            data = load_manifest(path)
+        except ValueError as exc:
+            errors.append(str(exc))
+            continue
+        gaps = data.get("coverage_gaps")
+        if gaps is None:
+            continue
+        if not isinstance(gaps, list):
+            errors.append(f"{path}: 'coverage_gaps' must be a list")
+            continue
+        for index, gap in enumerate(gaps):
+            if not isinstance(gap, dict):
+                errors.append(f"{path}: coverage_gaps[{index}] must be a mapping")
+                continue
+            axis_keys = ("domain", "subject", "area", "dimension", "artifact", "platform", "concern")
+            if not any(isinstance(gap.get(key), str) and gap.get(key, "").strip() for key in axis_keys):
+                errors.append(f"{path}: coverage_gaps[{index}] missing coverage axis")
+            if not isinstance(gap.get("gap"), str) or not gap.get("gap", "").strip():
+                errors.append(f"{path}: coverage_gaps[{index}] missing gap text")
+            if not isinstance(gap.get("owner"), str) or not gap.get("owner", "").strip():
+                errors.append(f"{path}: coverage_gaps[{index}] missing owner")
+            if not isinstance(gap.get("next_evidence"), str) or not gap.get("next_evidence", "").strip():
+                errors.append(f"{path}: coverage_gaps[{index}] missing next_evidence")
+    return errors
+
+
 def main(argv: list[str] | None = None) -> int:
     """Run all manifest consistency checks. Returns exit code."""
     project_root = Path(__file__).resolve().parents[1]
@@ -137,7 +168,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     all_errors: list[str] = []
-    for check in (check_lint_escalation, check_suppressions, check_assurance_domains):
+    for check in (check_lint_escalation, check_suppressions, check_assurance_domains, check_coverage_gaps):
         try:
             all_errors.extend(check(plans_dir))
         except Exception as exc:

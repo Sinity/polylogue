@@ -65,13 +65,64 @@ def test_generated_surface_change_routes_to_workflow_claim() -> None:
 
     assert report.change_subjects[0].kind == "generated_surface"
     assert report.change_subjects[0].surface_names == ("verification-catalog",)
-    assert {item.claim_id for item in report.affected_obligations} == set()
+    assert {item.claim_id for item in report.affected_obligations} == {"assurance.coverage.item_declared"}
     assert [check.rendered_command for check in report.inner_loop_checks] == ["devtools render-all --check"]
     assert [check.rendered_command for check in report.pr_gates] == ["devtools verify --quick", "devtools verify"]
     assert [check.rendered_command for check in report.deployment_gates] == [
         "devtools build-package",
         "nix flake check",
     ]
+
+
+def test_architecture_change_routes_to_structural_obligation() -> None:
+    catalog = build_verification_catalog()
+
+    changes = classify_changed_paths(("docs/plans/layering.yaml",), catalog=catalog)
+    affected = route_affected_obligations(changes, catalog=catalog)
+
+    assert changes[0].kind == "architecture"
+    assert "architecture.layering.import_rules" in changes[0].subject_ids
+    assert "architecture.manifest.consistency" in changes[0].subject_ids
+    assert "architecture.layering.import_rules_enforced" in {item.claim_id for item in affected}
+
+
+def test_coverage_manifest_change_routes_known_gap_obligations() -> None:
+    catalog = build_verification_catalog()
+
+    changes = classify_changed_paths(("docs/plans/docs-media-coverage.yaml",), catalog=catalog)
+    affected = route_affected_obligations(changes, catalog=catalog)
+
+    assert changes[0].kind == "coverage_manifest"
+    assert "architecture.manifest.consistency" in changes[0].subject_ids
+    assert any(
+        subject_id.startswith("assurance.coverage_manifest.docs-media-coverage")
+        for subject_id in changes[0].subject_ids
+    )
+    assert {"assurance.coverage.manifest_structured", "assurance.coverage.gap_has_closure_path"}.issubset(
+        {item.claim_id for item in affected}
+    )
+
+
+def test_docs_media_surface_change_routes_through_manifest_subject() -> None:
+    catalog = build_verification_catalog()
+
+    changes = classify_changed_paths(("README.md",), catalog=catalog)
+    affected = route_affected_obligations(changes, catalog=catalog)
+
+    assert "assurance.coverage_item.docs-media-coverage.surfaces.readme" in changes[0].subject_ids
+    assert "assurance.coverage.item_declared" in {item.claim_id for item in affected}
+
+
+def test_schema_change_routes_to_roundtrip_obligation() -> None:
+    catalog = build_verification_catalog()
+    schema_subject = next(subject for subject in catalog.subjects if subject.kind == "schema.annotation")
+    assert schema_subject.source_span is not None
+
+    changes = classify_changed_paths((schema_subject.source_span.path,), catalog=catalog)
+    affected = route_affected_obligations(changes, catalog=catalog)
+
+    assert "schema.roundtrip.provider_packages" in changes[0].subject_ids
+    assert "schema.roundtrip.inference_validation" in {item.claim_id for item in affected}
 
 
 def test_obligation_diff_buckets_new_dropped_stale_and_suppressed() -> None:

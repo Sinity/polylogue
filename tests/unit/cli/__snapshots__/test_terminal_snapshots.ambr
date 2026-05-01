@@ -222,9 +222,8 @@
     --version                       Show the version and exit.
     -h, --help                      Show this message and exit.
   Commands:
-    audit            Run archive QA: schema audit and artifact proof checks.
     auth             Authenticate with external services (Google Drive for...
-    browser-capture  Receive browser-extension captures into the normal inbox.
+    browser-capture  Receive browser-extension captures into the capture...
     bulk-export      Bulk export every matched conversation in one process.
     completions      Generate shell completion scripts.
     count            Print count of matched conversations.
@@ -427,12 +426,10 @@
     -h, --help                      Show this message and exit
   .
   Commands:
-    audit            Run archive QA: schema audit and artifact
-   proof checks.
     auth             Authenticate with external services (Goog
   le Drive for...
     browser-capture  Receive browser-extension captures into t
-  he normal inbox.
+  he capture...
     bulk-export      Bulk export every matched conversation in
    one process.
     completions      Generate shell completion scripts.
@@ -594,9 +591,8 @@
     --version                       Show the version and exit.
     -h, --help                      Show this message and exit.
   Commands:
-    audit            Run archive QA: schema audit and artifact proof checks.
     auth             Authenticate with external services (Google Drive for...
-    browser-capture  Receive browser-extension captures into the normal inbox.
+    browser-capture  Receive browser-extension captures into the capture...
     bulk-export      Bulk export every matched conversation in one process.
     completions      Generate shell completion scripts.
     count            Print count of matched conversations.

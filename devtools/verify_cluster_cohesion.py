@@ -11,8 +11,6 @@ the import graph using stdlib ``ast`` and report:
 The check uses TARGET paths, not current paths — it answers
 "would the proposed split actually be cohesive?" without anyone moving a
 file. This is what catches bad cuts before the refactor PR is opened.
-
-See `#429 <https://github.com/Sinity/polylogue/issues/429>`_.
 """
 
 from __future__ import annotations

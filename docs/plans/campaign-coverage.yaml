@@ -1,5 +1,4 @@
-# Mutation and benchmark campaign coverage manifest.
-# Part of #495.
+# Campaign-coverage manifest.
 #
 # Documents active mutation and benchmark campaigns, their paths,
 # and their coverage targets. Consumed by devtools mutmut-campaign

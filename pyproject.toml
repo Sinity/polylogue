@@ -129,6 +129,7 @@ markers = [
     "scale(level): parametric scale marker (small/medium/large/stretch)",
     "machine_contract: marks root CLI JSON success/failure contract tests",
     "query_routing: marks query-first CLI routing and read-surface tests",
+    "proof_law: marks proof-catalog completeness, anti-dead-code, and evidence-quality laws",
     "tui: marks Textual dashboard interaction tests",
     "chaos: marks ingestion hostility, interruption, and chronology tests",
     "live: marks operator-run live archive validation lanes",

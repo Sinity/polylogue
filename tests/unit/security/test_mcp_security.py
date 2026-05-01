@@ -20,9 +20,10 @@ class TestMcpSafeCall:
 
         result = _safe_call("test_tool", failing)
         parsed = json.loads(result)
-        assert "error" in parsed
+        assert parsed["error"] == "internal MCP tool error"
+        assert parsed["code"] == "internal_error"
+        assert parsed["detail"] == "ValueError"
         assert parsed["tool"] == "test_tool"
-        assert "test error message" in parsed["error"]
 
     def test_no_traceback_in_error_response(self: object) -> None:
         def failing() -> None:
@@ -39,6 +40,7 @@ class TestMcpSafeCall:
             raise ImportError("No module named 'secret_module'")
 
         result = _safe_call("test_tool", failing)
-        # Should not contain full tracebacks with file paths
+        parsed = json.loads(result)
+        assert parsed["error"] == "internal MCP tool error"
         assert "/realm/" not in result
-        assert "polylogue/" not in result or "polylogue/" in json.loads(result).get("error", "")
+        assert "polylogue/" not in result

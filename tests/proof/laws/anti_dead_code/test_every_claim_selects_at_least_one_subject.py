@@ -13,7 +13,11 @@ pytest failure with the offending claim id named.
 
 from __future__ import annotations
 
+import pytest
+
 from polylogue.proof.catalog import build_verification_catalog
+
+pytestmark = pytest.mark.proof_law
 
 
 def test_every_claim_selects_at_least_one_subject() -> None:

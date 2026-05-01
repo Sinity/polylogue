@@ -63,8 +63,9 @@ class TestSafeCall:
 
         result = _safe_call("test_tool", failing)
         data = json.loads(result)
-        assert "error" in data
-        assert "DB connection lost" in data["error"]
+        assert data["error"] == "internal MCP tool error"
+        assert data["code"] == "internal_error"
+        assert data["detail"] == "RuntimeError"
         assert data["tool"] == "test_tool"
 
     def test_traceback_not_in_output(self) -> None:

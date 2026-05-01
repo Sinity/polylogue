@@ -1,4 +1,4 @@
-# Test-ownership manifest — tracked by #437.
+# Test-ownership manifest.
 #
 # Each production module under polylogue/ is expected to be imported by at
 # least one unit test under tests/unit/. Modules that legitimately do not

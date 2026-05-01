@@ -13,6 +13,8 @@ import pytest
 
 from polylogue.proof.catalog import build_verification_catalog
 
+pytestmark = pytest.mark.proof_law
+
 _REQUIRED_COMMAND_CLAIMS = (
     "cli.command.help",
     "cli.command.no_traceback",

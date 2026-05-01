@@ -11,8 +11,6 @@ production module, looks for tests that import it (directly via
 Modules that legitimately do not require unit tests (entry points,
 re-export shims, generated code) are listed in ``untested:`` of the
 manifest with a justification.
-
-See `#437 <https://github.com/Sinity/polylogue/issues/437>`_.
 """
 
 from __future__ import annotations

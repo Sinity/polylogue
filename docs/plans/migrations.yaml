@@ -1,42 +1,9 @@
-# Migration completeness manifest — tracked by #434.
+# Active migration completeness manifest.
 #
-# Each named migration declares the symbols, files, and CLI/devtools
-# commands that must vanish for it to count as complete.
-# `devtools verify-migrations` asserts each entry is gone; remaining
-# entries are reported as "pending" (informational) until the owning
-# issue is in flight, then as "blocking" once the migration is started.
+# Keep only active transitions here. Once a transition lands, delete its
+# entry and replace any still-important behavior with a semantic boundary
+# check. This file is not a durable archive of closed issues.
 
-migrations:
-  retire-audit-qa-showcase:
-    issue: "#413"
-    description: "Retire public audit/qa/showcase vocabulary from the product surface."
-    must_vanish_paths:
-      - polylogue/cli/commands/qa.py
-      - polylogue/showcase/qa_runner_request.py
-      - polylogue/showcase/qa_runner_workflow.py
-      - tests/baselines/showcase/help-audit.txt
-    must_vanish_cli_commands:
-      - audit
-      - qa
-      - showcase
-    must_vanish_devtools_commands:
-    accepted_aliases:
-      - from: tests/baselines/showcase
-        to: tests/baselines/cli_help
-        reason: "directory rename — folk vocabulary out of test tree"
-
-  retire-inbox-source:
-    issue: "#409"
-    description: "Replace the `inbox` configured source with `run --input PATH...`."
-    must_vanish_paths: []  # implementation moves files; concrete list to be added when work starts
-    must_vanish_cli_commands: []
-    must_vanish_devtools_commands: []
-    forbidden_substrings:
-      # any reference to inbox as a configured source is forbidden
-      # post-migration; tracked here so the lint can fail the moment
-      # the work begins.
-      - location_glob: "polylogue/sources/**/*.py"
-        substring: "inbox"
-        reason: "inbox is no longer a configured source"
+migrations: {}
 
 completed: []

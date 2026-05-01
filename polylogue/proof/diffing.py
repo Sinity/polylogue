@@ -23,6 +23,9 @@ ChangeKind = Literal[
     "provider.capability",
     "command",
     "generated_surface",
+    "architecture",
+    "coverage_manifest",
+    "schema_roundtrip",
     "proof_catalog",
     "operation.spec",
     "workflow",
@@ -50,6 +53,18 @@ _GENERATED_SURFACE_PATHS: Mapping[str, tuple[str, ...]] = {
     "README.md": ("docs-surface",),
     "docs/test-quality-workflows.md": ("quality-reference",),
     "docs/verification-catalog.md": ("verification-catalog",),
+}
+_ARCHITECTURE_PATH_SUBJECTS: Mapping[str, tuple[str, ...]] = {
+    "docs/plans/topology-target.yaml": ("architecture.topology.projection",),
+    "docs/topology-status.md": ("architecture.topology.projection",),
+    "devtools/verify_topology.py": ("architecture.topology.projection",),
+    "devtools/build_topology_projection.py": ("architecture.topology.projection",),
+    "docs/plans/layering.yaml": ("architecture.layering.import_rules",),
+    "devtools/verify_layering.py": ("architecture.layering.import_rules",),
+    "docs/plans/file-size-budgets.yaml": ("architecture.file_budget.loc",),
+    "devtools/verify_file_budgets.py": ("architecture.file_budget.loc",),
+    "devtools/verify_manifests.py": ("architecture.manifest.consistency",),
+    "devtools/verify_witness_lifecycle.py": ("architecture.witness.lifecycle",),
 }
 _PROVIDER_BY_PARSER: Mapping[str, str] = {
     "chatgpt": "chatgpt",
@@ -432,6 +447,32 @@ def render_affected_obligations(report: AffectedObligationReport) -> str:
     return "\n".join(lines)
 
 
+def render_affected_obligations_markdown(report: AffectedObligationReport) -> str:
+    """Render a PR-comment-friendly affected-obligation report."""
+    lines = [
+        "## Proof Obligations",
+        "",
+        f"**Refs:** `{report.base_ref}..{report.head_ref}`",
+        "",
+        "### Changed Paths",
+    ]
+    lines.extend(f"- `{path}`" for path in report.changed_paths) if report.changed_paths else lines.append("- none")
+    lines.extend(["", "### Obligation Diff"])
+    for status in _DIFF_STATUSES:
+        values = report.obligation_diff.bucket(status)
+        lines.append(f"- `{status}`: {len(values)}")
+    lines.extend(["", "### Affected Obligations"])
+    if not report.affected_obligations:
+        lines.append("- none")
+    for obligation in report.affected_obligations[:20]:
+        lines.append(f"- `{obligation.obligation_id}` — {'; '.join(obligation.reasons)}")
+    if len(report.affected_obligations) > 20:
+        lines.append(f"- ... {len(report.affected_obligations) - 20} more")
+    lines.extend(["", "### Required Checks", *_render_checks(report.inner_loop_checks), "", "### PR Gates"])
+    lines.extend(_render_checks(report.pr_gates))
+    return "\n".join(lines)
+
+
 def _subjects_by_source_path(subjects: tuple[SubjectRef, ...]) -> dict[str, tuple[str, ...]]:
     by_path: dict[str, list[str]] = defaultdict(list)
     for subject in subjects:
@@ -486,6 +527,7 @@ def _subject_ids_for_path(
                 or (provider is not None and subject.attrs.get("provider") == provider)
             )
         )
+        direct.add("schema.roundtrip.provider_packages")
     elif kind == "provider.capability":
         direct.update(subject.id for subject in subjects if subject.kind == "provider.capability")
     elif kind == "command":
@@ -496,6 +538,21 @@ def _subject_ids_for_path(
             for subject in subjects
             if subject.kind == "workflow.claim" and subject.attrs.get("claim_family") == "generated-surfaces"
         )
+    elif kind == "architecture":
+        direct.update(_ARCHITECTURE_PATH_SUBJECTS.get(path, ()))
+        if path.startswith("docs/plans/"):
+            direct.add("architecture.manifest.consistency")
+    elif kind == "coverage_manifest":
+        direct.update(
+            subject.id
+            for subject in subjects
+            if subject.kind.startswith("assurance.coverage_")
+            and subject.source_span is not None
+            and _normalize_path(subject.source_span.path) == path
+        )
+        direct.add("architecture.manifest.consistency")
+    elif kind == "schema_roundtrip":
+        direct.add("schema.roundtrip.provider_packages")
     elif kind == "workflow":
         direct.update(subject.id for subject in subjects if subject.kind == "workflow.claim")
     elif kind == "operation.spec":
@@ -508,6 +565,17 @@ def _classify_path(path: str) -> ChangeKind:
         return "parser"
     if path.startswith("polylogue/schemas/providers/"):
         return "schema.annotation"
+    if path.startswith("docs/plans/") and (
+        path.endswith("-coverage.yaml")
+        or path.endswith("assurance-domains.yaml")
+        or path.endswith("oracle-quality.yaml")
+        or path.endswith("evidence-freshness.yaml")
+    ):
+        return "coverage_manifest"
+    if path in _ARCHITECTURE_PATH_SUBJECTS or path.startswith("docs/plans/"):
+        return "architecture"
+    if path == "devtools/verify_schema_roundtrip.py" or path.startswith("tests/property/"):
+        return "schema_roundtrip"
     if path == "polylogue/lib/provider/capabilities.py":
         return "provider.capability"
     if path.startswith("polylogue/cli/") or path == "polylogue/cli/command_inventory.py":
@@ -585,6 +653,32 @@ def _checks_for_change(kind: ChangeKind, *, path: str) -> tuple[RecommendedCheck
         )
     if kind == "generated_surface":
         return (_check(("devtools", "render-all", "--check"), "generated surface or renderer changed"),)
+    if kind == "architecture":
+        checks = [
+            _check(("devtools", "verify-manifests"), "structural manifest changed"),
+            _check(("devtools", "affected-obligations", "--path", path), "refresh structural obligation routing"),
+        ]
+        for subject_id in _ARCHITECTURE_PATH_SUBJECTS.get(path, ()):
+            if subject_id == "architecture.topology.projection":
+                checks.append(_check(("devtools", "verify-topology"), "topology projection changed"))
+            elif subject_id == "architecture.layering.import_rules":
+                checks.append(_check(("devtools", "verify-layering"), "layering rules changed"))
+            elif subject_id == "architecture.file_budget.loc":
+                checks.append(_check(("devtools", "verify-file-budgets"), "file budget rules changed"))
+            elif subject_id == "architecture.witness.lifecycle":
+                checks.append(_check(("devtools", "verify-witness-lifecycle"), "witness lifecycle changed"))
+        return tuple(checks)
+    if kind == "coverage_manifest":
+        return (
+            _check(("devtools", "verify-manifests"), "assurance coverage manifest changed"),
+            _check(("devtools", "render-verification-catalog", "--check"), "coverage manifests feed proof subjects"),
+            _check(("devtools", "proof-pack", "--path", path, "--markdown"), "coverage changes feed proof-pack gaps"),
+        )
+    if kind == "schema_roundtrip":
+        return (
+            _check(("devtools", "verify-schema-roundtrip", "--all"), "schema roundtrip control changed"),
+            _check(("pytest", "tests/property/test_schema_roundtrip.py"), "schema roundtrip properties changed"),
+        )
     if kind == "proof_catalog":
         return (
             _check(("pytest", "tests/unit/proof"), "proof kernel or catalog changed"),
@@ -652,6 +746,12 @@ def _reason_for_change(path: str, kind: ChangeKind) -> str:
         return "CLI command registration or callbacks feed command subjects"
     if kind == "generated_surface":
         return "generated surface source or output changed"
+    if kind == "architecture":
+        return "architecture topology, layering, budget, or manifest control changed"
+    if kind == "coverage_manifest":
+        return "assurance coverage manifest changed"
+    if kind == "schema_roundtrip":
+        return "schema inference-validation roundtrip control changed"
     if kind == "proof_catalog":
         return "proof catalog source changed"
     if kind == "operation.spec":
@@ -688,5 +788,6 @@ __all__ = [
     "diff_obligation_ids",
     "obligation_ids_for_ref",
     "render_affected_obligations",
+    "render_affected_obligations_markdown",
     "route_affected_obligations",
 ]

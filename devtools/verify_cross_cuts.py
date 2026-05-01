@@ -12,10 +12,8 @@ tags on each module match what the module's name suggests:
 
 The lint catches manual edits to the projection that break tag-naming
 consistency. It does NOT enforce architectural rules between tagged
-modules (e.g. "no sync module imports an async module") — that is
-deferred to a future Phase 2 once the cross-cut tag set is wider.
-
-Phase 1 of #432.
+modules (e.g. "no sync module imports an async module") — that belongs in
+layering/import rules once the cross-cut tag set is wider.
 """
 
 from __future__ import annotations
@@ -45,7 +43,7 @@ EXPECTED_LAYER: dict[str, str] = {
     "_write_": "write",
 }
 
-EXPECTED_API: dict[str, str] = {}  # path-based after #426; see expected_for()
+EXPECTED_API: dict[str, str] = {}  # path-based; see expected_for()
 CONVENTION_TAGS = frozenset(("api", "layer", "lifecycle"))
 UI_FACADE_API_PATHS = frozenset(
     (
@@ -73,7 +71,7 @@ def expected_for(name: str, path: str = "") -> dict[str, str]:
             if marker in name:
                 expected.setdefault("layer", value)
                 break
-    # Path-based api tagging after #426: polylogue/api/sync/* → sync, polylogue/api/* → async.
+    # Path-based api tagging: polylogue/api/sync/* → sync, polylogue/api/* → async.
     if path.startswith("polylogue/api/sync/"):
         expected.setdefault("api", "sync")
     elif path.startswith("polylogue/api/") or path in UI_FACADE_API_PATHS:

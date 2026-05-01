@@ -35,6 +35,25 @@ def test_committed_witness_records_semantic_facts_and_minimization_status() -> N
     assert metadata.validation_errors() == ()
 
 
+def test_committed_witness_corpus_covers_high_value_surfaces() -> None:
+    witnesses = {item.witness_id: item for item in load_committed_witnesses()}
+
+    expected = {
+        "cli.command-surface": "tests/data/witnesses/cli-command-surface.json",
+        "mcp.tool-schemas": "tests/data/witnesses/mcp-tool-schemas.json",
+        "site.publication-contract": "tests/data/witnesses/site-publication-contract.json",
+        "storage.blob-store-layout": "tests/data/witnesses/blob-store-layout.json",
+        "browser-capture.sequence": "tests/data/witnesses/browser-capture-sequence.json",
+    }
+
+    assert expected.items() <= {witness_id: item.path for witness_id, item in witnesses.items()}.items()
+    for witness_id in expected:
+        witness = witnesses[witness_id]
+        assert witness.privacy_classification == "synthetic"
+        assert witness.validation_errors() == ()
+        assert witness.preserved_semantic_facts
+
+
 def test_live_derived_witnesses_require_privacy_metadata_before_commit() -> None:
     missing_privacy = WitnessMetadata(
         witness_id="live.missing-privacy",
@@ -68,7 +87,7 @@ def test_live_derived_witnesses_require_privacy_metadata_before_commit() -> None
     assert redacted.validation_errors() == ()
 
 
-def test_known_failing_witnesses_require_strict_xfail_or_rejection() -> None:
+def test_known_failing_witnesses_require_rejection_reason() -> None:
     failing = WitnessMetadata(
         witness_id="live.failing",
         path="tests/witnesses/live-failing.json",
@@ -80,12 +99,10 @@ def test_known_failing_witnesses_require_strict_xfail_or_rejection() -> None:
         known_failing=True,
     )
 
-    assert "known failing witnesses require strict xfail with linked issue or rejection reason" in (
-        failing.validation_errors()
-    )
+    assert "known failing witnesses require an explicit rejection_reason" in failing.validation_errors()
 
-    strict_xfail = WitnessMetadata(
-        witness_id="live.failing-xfail",
+    rejected = WitnessMetadata(
+        witness_id="live.failing-rejected",
         path="tests/witnesses/live-failing.json",
         origin="live-derived",
         provenance={"source": "live archive probe"},
@@ -95,7 +112,7 @@ def test_known_failing_witnesses_require_strict_xfail_or_rejection() -> None:
         privacy=PrivacyRecord(private_material="not_observed"),
         known_failing=True,
         xfail_strict=True,
-        linked_issue="#335",
+        rejection_reason="fixture documents an unsupported provider shape",
     )
 
-    assert strict_xfail.validation_errors() == ()
+    assert rejected.validation_errors() == ()

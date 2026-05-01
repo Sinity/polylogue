@@ -28,7 +28,6 @@
   },
   "known_failing": false,
   "xfail_strict": false,
-  "linked_issue": null,
   "rejection_reason": null,
   "notes": [
     "regenerate via `devtools build-topology-projection`; verified by `devtools verify-topology` and `devtools verify-cluster-cohesion`"

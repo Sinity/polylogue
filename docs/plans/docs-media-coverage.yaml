@@ -1,4 +1,4 @@
-# Docs-and-media coverage manifest — Track B, #511.
+# Docs-and-media coverage manifest.
 #
 # Declares the current coverage and freshness policies for
 # documentation surfaces and media assets. Seed state: most
@@ -13,6 +13,9 @@ description: >
 
 surfaces:
   readme:
+    path: README.md
+    related_paths:
+      - docs/README.md
     sections:
       - overview
       - install
@@ -27,6 +30,7 @@ surfaces:
       automated freshness verification.
 
   cli_reference:
+    path: docs/cli-reference.md
     freshness_days: 7
     generated_by: devtools render-cli-reference
     verified_by: devtools render-all --check
@@ -36,6 +40,7 @@ surfaces:
       pre-commit hooks.
 
   architecture:
+    path: docs/architecture.md
     freshness_days: 90
     generated_by: null
     verified_by: null
@@ -44,6 +49,7 @@ surfaces:
       boundaries, data flow. Manually maintained.
 
   internals:
+    path: docs/internals.md
     freshness_days: 30
     generated_by: null
     verified_by: null
@@ -53,6 +59,7 @@ surfaces:
       debugging landmarks.
 
   devtools_reference:
+    path: docs/devtools.md
     freshness_days: 7
     generated_by: devtools render-devtools-reference
     verified_by: devtools render-all --check
@@ -61,6 +68,7 @@ surfaces:
       devtools/command_catalog.py. Verified by render-all --check.
 
   quality_reference:
+    path: docs/test-quality-workflows.md
     freshness_days: 7
     generated_by: devtools render-quality-reference
     verified_by: devtools render-all --check
@@ -69,6 +77,7 @@ surfaces:
       mutation, and benchmark registries. Generated.
 
   verification_catalog:
+    path: docs/verification-catalog.md
     freshness_days: 7
     generated_by: devtools render-verification-catalog
     verified_by: devtools render-all --check
@@ -77,6 +86,7 @@ surfaces:
       runners. Generated from proof registries.
 
   topology_status:
+    path: docs/topology-status.md
     freshness_days: 7
     generated_by: devtools render-topology-status
     verified_by: devtools render-all --check
@@ -159,3 +169,17 @@ surfaces:
     notes: >
       Release checklist, pre-flight checks, tagging procedure.
       Manually maintained. Updated on version bumps.
+
+coverage_gaps:
+  - domain: docs_media
+    gap: README examples and media are not yet generated from executable scenario projections.
+    owner: docs-media
+    next_evidence: Add executable scenario projection or media integrity gate
+  - domain: docs_media
+    gap: Screenshots and VHS media have no committed nonblank/readability verification.
+    owner: docs-media
+    next_evidence: Add executable scenario projection or media integrity gate
+  - domain: site_publication
+    gap: Static-site publication has no visual or hyperlink integrity gate.
+    owner: docs-media
+    next_evidence: Add executable scenario projection or media integrity gate

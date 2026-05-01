@@ -22,6 +22,7 @@ def test_list_commands_json_includes_generated_surface(capsys: pytest.CaptureFix
         "schema-generate",
         "schema-promote",
         "schema-audit",
+        "verify-schema-roundtrip",
     ]
     assert "artifact-graph" in commands
     assert "regression-capture" in commands

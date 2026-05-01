@@ -18,6 +18,7 @@ VERIFICATION_LAB_COMMAND_NAMES: tuple[str, ...] = (
     "schema-generate",
     "schema-promote",
     "schema-audit",
+    "verify-schema-roundtrip",
 )
 
 CATEGORY_ORDER: tuple[str, ...] = (
@@ -250,7 +251,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "devtools.verify_file_budgets",
         use_when=(
             "Catch file-size accretion early — fails when a module or test exceeds its declared "
-            "ceiling, or when a tracked exception's sunset issue closes."
+            "ceiling, and reports stale exceptions when their files disappear."
         ),
         examples=("devtools verify-file-budgets", "devtools verify-file-budgets --json"),
     ),
@@ -271,12 +272,12 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "Verify migration-completeness against docs/plans/migrations.yaml.",
         "devtools.verify_migrations",
         use_when=(
-            "Catch incomplete retirement work — fails when a migration's must_vanish_* entries "
-            "still survive. Default mode is informational; use --strict <name> to block."
+            "Check an active transition while it is in flight. Delete completed entries "
+            "instead of keeping one-time retirement checks as durable proof."
         ),
         examples=(
             "devtools verify-migrations",
-            "devtools verify-migrations --strict retire-audit-qa-showcase",
+            "devtools verify-migrations --strict active-import-rename",
             "devtools verify-migrations --json",
         ),
     ),
@@ -312,7 +313,11 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "instead of an undifferentiated obligation count. Maps changed paths "
             "to impacted assurance domains with oracle-classified claim counts."
         ),
-        examples=("devtools proof-pack", "devtools proof-pack --json --path polylogue/site/"),
+        examples=(
+            "devtools proof-pack --base-ref origin/master --head-ref HEAD",
+            "devtools proof-pack --base-ref origin/master --head-ref HEAD --markdown",
+            "devtools proof-pack --json --path polylogue/site/",
+        ),
     ),
     CommandSpec(
         "verify-cross-cuts",
@@ -320,8 +325,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "Verify cross-cut tags in the topology projection match module-name conventions.",
         "devtools.verify_cross_cuts",
         use_when=(
-            "Catch manual edits or rule changes that desync the cross_cut tags from the "
-            "module names they describe. Phase 1 of #432."
+            "Catch manual edits or rule changes that desync the cross_cut tags from the module names they describe."
         ),
         examples=("devtools verify-cross-cuts", "devtools verify-cross-cuts --json"),
     ),
@@ -332,7 +336,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "devtools.verify_witness_lifecycle",
         use_when=(
             "Catch witnesses that haven't been exercised, stale xfail markers "
-            "whose linked issues are closed, and validation errors."
+            "that lack rejection rationale, and validation errors."
         ),
         examples=("devtools verify-witness-lifecycle", "devtools verify-witness-lifecycle --json"),
     ),
@@ -418,6 +422,20 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools schema-audit --provider chatgpt --json",),
     ),
     CommandSpec(
+        "verify-schema-roundtrip",
+        "verification",
+        "Verify committed provider schema packages reload and roundtrip cleanly.",
+        "devtools.verify_schema_roundtrip",
+        use_when=(
+            "Close the schema inference-validation loop: package manifests must roundtrip through typed models, "
+            "and every supported element schema must be reachable from the runtime registry."
+        ),
+        examples=(
+            "devtools verify-schema-roundtrip --provider chatgpt",
+            "devtools verify-schema-roundtrip --all --json",
+        ),
+    ),
+    CommandSpec(
         "regression-capture",
         "verification",
         "Capture pipeline-probe summaries as durable local regression cases.",
@@ -444,8 +462,9 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "the changes to guide reviewer attention and verification effort."
         ),
         examples=(
-            "devtools obligation-diff --base origin/master --head HEAD",
-            "devtools obligation-diff --base origin/master --head HEAD --json",
+            "devtools obligation-diff --base-ref origin/master --head-ref HEAD",
+            "devtools obligation-diff --base-ref origin/master --head-ref HEAD --json",
+            "devtools obligation-diff --base-ref origin/master --head-ref HEAD --markdown",
         ),
     ),
     CommandSpec(
@@ -455,7 +474,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "devtools.verify_layering",
         use_when=(
             "Diagnose architecture drift: which files import across declared "
-            "package boundaries. Not yet wired into verify --quick."
+            "package boundaries. This runs in verify --quick."
         ),
         examples=("devtools verify-layering", "devtools verify-layering --json"),
     ),
@@ -489,7 +508,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         use_when="Move a minimized witness into the committed witness directory with tracking linkage.",
         examples=(
             "devtools witness-promote fts-oom",
-            "devtools witness-promote fts-oom --linked-issue '#519' --known-failing",
+            "devtools witness-promote fts-oom --known-failing --rejection-reason 'unsupported shape'",
         ),
     ),
     CommandSpec(

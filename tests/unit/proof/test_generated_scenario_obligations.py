@@ -17,7 +17,7 @@ def _obligation(claim_id: str, *, subject_id: str | None = None) -> ProofObligat
     raise AssertionError(f"missing obligation for claim={claim_id!r} subject={subject_id!r}")
 
 
-def test_generated_scenario_subjects_cover_issue_196_families() -> None:
+def test_generated_scenario_subjects_cover_generated_workload_families() -> None:
     catalog = build_verification_catalog()
     subjects = tuple(subject for subject in catalog.subjects if subject.kind == "generated.scenario_family")
     subject_ids = {subject.id for subject in subjects}
@@ -65,7 +65,7 @@ def test_generated_scenarios_map_semantic_claim_families() -> None:
             families.add(family)
             implemented_or_mapped.add(f"{state}:{family}")
             if state == "mapped":
-                assert str(claim.get("issue", "")).startswith("#")
+                assert str(claim.get("mapping_note", "")).strip()
 
     assert len(families) >= 2
     assert any(item.startswith("implemented:") for item in implemented_or_mapped)

@@ -3,8 +3,6 @@
 Every suppression in ``docs/plans/suppressions.yaml`` must have an expiry
 date. The lint fails when any suppression is past its expiry date, forcing
 review and either renewal or removal.
-
-See `#518 <https://github.com/Sinity/polylogue/issues/518>`_.
 """
 
 from __future__ import annotations

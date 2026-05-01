@@ -14,46 +14,33 @@ rules:
     description: Topology projection matches realized tree
     severity: hard
     sunset: "2026-04-26"
-    issue: 429
 
   - id: verify-cluster-cohesion
     description: Import graph respects cluster boundaries
     severity: hard
     sunset: "2026-04-26"
-    issue: 429
 
   - id: verify-file-budgets
     description: Per-file LOC budgets enforced
     severity: hard
     sunset: "2026-04-26"
-    issue: 429
 
   - id: verify-test-ownership
     description: Every production module imported by at least one unit test
     severity: hard
     sunset: "2026-04-26"
-    issue: 478
-
-  - id: verify-migrations
-    description: Migration completeness against docs/plans/migrations.yaml
-    severity: hard
-    sunset: "2026-04-26"
-    issue: 429
 
   - id: verify-manifests
     description: Internal consistency across all docs/plans/*.yaml manifests
     severity: soft
     sunset: "2026-05-15"
-    issue: 491
 
   - id: suppression-expiry
     description: No expired suppressions in docs/plans/suppressions.yaml
     severity: soft
     sunset: "2026-05-27"
-    issue: 518
 
   - id: oracle-attribution
     description: Every claim has a non-default oracle and assurance_domain
     severity: soft
     sunset: "2026-06-01"
-    issue: 507

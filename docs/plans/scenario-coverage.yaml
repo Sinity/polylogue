@@ -1,4 +1,4 @@
-# Scenario-coverage manifest — Track B, #512.
+# Scenario-coverage manifest.
 #
 # Declares verification scenario families and their subject coverage.
 # Each family groups scenarios that exercise a common surface or
@@ -92,14 +92,26 @@ families:
 
 coverage_gaps:
   - subject: storage_correctness
-    note: No dedicated scenario family for storage-layer verification
+    gap: No dedicated scenario family for storage-layer verification
+    owner: scenario-coverage
+    next_evidence: Add scenario family or generated projection for this subject
   - subject: performance
-    note: No scenario family exercising memory or throughput budgets
+    gap: No scenario family exercising memory or throughput budgets
+    owner: scenario-coverage
+    next_evidence: Add scenario family or generated projection for this subject
   - subject: security_privacy
-    note: Security verification uses unit tests, not scenario specs
+    gap: Security verification uses unit tests, not scenario specs
+    owner: scenario-coverage
+    next_evidence: Add scenario family or generated projection for this subject
   - subject: distribution
-    note: No scenario for install/package verification
+    gap: No scenario for install/package verification
+    owner: scenario-coverage
+    next_evidence: Add scenario family or generated projection for this subject
   - subject: migration_safety
-    note: No scenario for migration safety verification
+    gap: No scenario for migration safety verification
+    owner: scenario-coverage
+    next_evidence: Add scenario family or generated projection for this subject
   - subject: docs_media
-    note: No scenario for documentation freshness verification
+    gap: No scenario for documentation freshness verification
+    owner: scenario-coverage
+    next_evidence: Add scenario family or generated projection for this subject

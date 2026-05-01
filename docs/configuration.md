@@ -9,11 +9,8 @@ Polylogue follows XDG Base Directory specification:
 ```
 ~/.local/share/polylogue/           # XDG_DATA_HOME/polylogue
 ├── polylogue.db                    # SQLite database
-├── inbox/                          # Drop exports here (or symlink)
-│   ├── chatgpt/                    # Organize by provider (optional)
-│   │   └── conversations.json
-│   └── claude/
-│       └── export.jsonl
+├── blobs/                          # Stored attachment/blob payloads
+├── browser-capture/                # Browser-capture artifact spool
 └── render/                         # Rendered output
     ├── html/
     │   └── claude/
@@ -32,10 +29,11 @@ Polylogue follows XDG Base Directory specification:
 └── token.json                      # OAuth token cache
 ```
 
-## Inbox Conventions
+## Input Conventions
 
-- Drop provider exports directly in `inbox/` or in subdirectories
-- Subdirectory names are for organization only (provider auto-detected from content)
+- Import downloaded exports with `polylogue run --input PATH`
+- `--input` accepts files, directories, and archives
+- Directory names are for organization only; providers are detected from content
 - Symlinks are followed
 - Files are processed recursively
 - Supported formats: `.json`, `.jsonl`, `.zip`
@@ -70,7 +68,7 @@ These are the supported runtime overrides:
 | Variable | Description |
 |----------|-------------|
 | `XDG_CONFIG_HOME` | Base directory for `polylogue-credentials.json` |
-| `XDG_DATA_HOME` | Base directory for the database, inbox, blob store, and Drive cache |
+| `XDG_DATA_HOME` | Base directory for the database, blob store, browser-capture spool, and Drive cache |
 | `XDG_CACHE_HOME` | Base directory for cache/index output |
 | `XDG_STATE_HOME` | Base directory for OAuth token and runtime state |
 | `POLYLOGUE_ARCHIVE_ROOT` | Override the archive root instead of using `$XDG_DATA_HOME/polylogue` |
@@ -96,7 +94,9 @@ polylogue --format json > conversations.json
 polylogue -p claude-ai --format json > claude-conversations.json
 ```
 
-The inbox directory contains original exports and can be re-synced to rebuild the database.
+Polylogue does not copy one-shot input exports into a managed import directory.
+Keep the original provider export files if you need a reproducible rebuild from
+the exact downloaded payloads.
 
 ## Google Drive Integration
 

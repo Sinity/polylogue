@@ -1,8 +1,7 @@
 """Generate the topology-target projection from the current tree.
 
-Walks ``polylogue/**/*.py``, applies placement rules derived from issues
-#403, #414, #419, #420, #424, #425, #426, and emits YAML covering every
-file.
+Walks ``polylogue/**/*.py``, applies explicit placement rules, and emits YAML
+covering every file.
 
 Output is a first-cut projection. Cells where the rule is uncertain are
 marked ``target: TBD`` with a reason. The intended workflow is:
@@ -11,7 +10,6 @@ marked ``target: TBD`` with a reason. The intended workflow is:
     2. Review TBD rows and fill them in.
     3. Use the YAML as input to ``devtools verify-topology``.
 
-See `#429 <https://github.com/Sinity/polylogue/issues/429>`_.
 """
 
 from __future__ import annotations
@@ -26,10 +24,10 @@ PROJECTION = ROOT / "docs" / "plans" / "topology-target.yaml"
 
 
 # ---------------------------------------------------------------------------
-# Placement rules — derived from the seven topology issues
+# Placement rules
 # ---------------------------------------------------------------------------
 
-# polylogue/ root — kernel rule per #426
+# polylogue/ root kernel rule
 KERNEL_ROOT_FILES = frozenset(
     {
         "__init__.py",
@@ -46,7 +44,7 @@ KERNEL_ROOT_FILES = frozenset(
     }
 )
 
-# polylogue/ root product-domain modules — moved by #414 to polylogue/products/
+# polylogue/ root product-domain modules.
 PRODUCT_ROOT_MOVES = {
     "archive_products.py": "polylogue/products/archive.py",
     "archive_product_models.py": "polylogue/products/archive_models.py",
@@ -58,7 +56,7 @@ PRODUCT_ROOT_MOVES = {
     "authored_payloads.py": "polylogue/products/authored_payloads.py",
 }
 
-# polylogue/ root facade/sync — moved by #426 to polylogue/api/
+# polylogue/ root facade/sync surfaces.
 FACADE_ROOT_MOVES = {
     "facade.py": "polylogue/api/__init__.py",
     "facade_archive.py": "polylogue/api/archive.py",
@@ -70,9 +68,9 @@ FACADE_ROOT_MOVES = {
     "sync_product_queries.py": "polylogue/api/sync/products.py",
 }
 
-# polylogue/ root cross-ring concepts — homes per #426
+# polylogue/ root cross-ring concepts.
 CROSS_RING_ROOT_MOVES = {
-    "artifacts.py": "polylogue/artifacts/__init__.py",  # provisional; #426/#425 decide
+    "artifacts.py": "polylogue/artifacts/__init__.py",
     "artifact_graph.py": "polylogue/artifacts/graph.py",
     "readiness.py": "polylogue/readiness/__init__.py",
     "surface_payloads.py": "polylogue/surfaces/payloads.py",
@@ -81,7 +79,7 @@ CROSS_RING_ROOT_MOVES = {
     "publication.py": "polylogue/publication/__init__.py",
 }
 
-# polylogue/lib/ subpackage rules per #424 — prefix → subpackage
+# polylogue/lib/ subpackage rules — prefix → subpackage
 LIB_PREFIX_TO_SUBPACKAGE = {
     "query_": "lib/query/",
     "session_profile": "lib/session/",
@@ -108,16 +106,14 @@ LIB_PREFIX_TO_SUBPACKAGE = {
     "attribution": "lib/conversation/",
     "filter_": "lib/filter/",
     "filters": "lib/filter/",
-    # Subpackages added 2026-04-27 to resolve #424 lib/ TBDs
     "phase_": "lib/phase/",
     "projection_": "lib/projection/",
     "projections": "lib/projection/",
     "provider_": "lib/provider/",
-    # Split per #424 conflict (attachment_models.py vs conversation_models.py)
     "attachment_": "lib/attachment/",
 }
 
-# Lib root primitives — stay at lib/ root per #424
+# Lib root primitives stay at lib/ root.
 LIB_ROOT_PRIMITIVES = frozenset(
     {
         "__init__.py",
@@ -137,21 +133,18 @@ LIB_ROOT_PRIMITIVES = frozenset(
         "search_hits.py",
         "run_activity.py",
         "provider_identity.py",
-        # Added 2026-04-27 to resolve #424 lib/ TBDs (standalone primitives)
         "pricing.py",
         "payload_coercion.py",
     }
 )
 
-# polylogue/storage/ subpackage rules per #425
+# polylogue/storage/ subpackage rules.
 STORAGE_PREFIX_TO_SUBPACKAGE = {
     "repository_archive_": "storage/repository/archive/",
     "repository_product_": "storage/repository/product/",
-    # Split 2026-04-27 to resolve #425 conflict on archive/reads.py
     "repository_action_": "storage/repository/action/",
     "repository_raw": "storage/repository/raw/",
     "repository_vectors": "storage/repository/vectors/",
-    # Split 2026-04-27 to resolve #425 conflict on archive/conversations.py
     "repository_write_": "storage/repository/archive/writes/",
     "repository_writes": "storage/repository/archive/",
     "repository_contracts": "storage/repository/",
@@ -195,82 +188,45 @@ STORAGE_ROOT_KEEP = frozenset(
     }
 )
 
-# polylogue/showcase/ dismantling per #413 — explicit per-file targets
-# Pure scenario substrate moves to polylogue/scenarios/; runner/report/lab corpus
-# machinery moves under devtools/lab_*. Files leave the projection on move.
-SHOWCASE_MOVES = {
-    # Substrate -> polylogue/scenarios/
-    "exercises.py": "polylogue/scenarios/exercises.py",
-    "exercise_models.py": "polylogue/scenarios/exercise_models.py",
-    "dimensions.py": "polylogue/scenarios/dimensions.py",
-    "catalog_loader.py": "polylogue/scenarios/catalog_loader.py",
-    "context.py": "polylogue/scenarios/context.py",
-    "corpus_requests.py": "polylogue/scenarios/corpus_requests.py",
-    "invariants.py": "polylogue/scenarios/invariants.py",
-    # Runner machinery -> devtools/lab_runner/
-    "runner.py": "devtools/lab_runner/runner.py",
-    "showcase_runner_models.py": "devtools/lab_runner/models.py",
-    "showcase_runner_support.py": "devtools/lab_runner/support.py",
-    "qa_runner.py": "devtools/lab_runner/qa.py",
-    "qa_runner_models.py": "devtools/lab_runner/qa_models.py",
-    "qa_runner_reporting.py": "devtools/lab_runner/qa_reporting.py",
-    "qa_runner_request.py": "devtools/lab_runner/qa_request.py",
-    "qa_runner_stages.py": "devtools/lab_runner/qa_stages.py",
-    "qa_runner_workflow.py": "devtools/lab_runner/qa_workflow.py",
-    "vhs.py": "devtools/lab_runner/vhs.py",
-    "workspace.py": "devtools/lab_runner/workspace.py",
-    "cli_boundary.py": "devtools/lab_runner/cli_boundary.py",
-    # Reporting -> devtools/lab_report/
-    "qa_markdown.py": "devtools/lab_report/markdown.py",
-    "qa_report.py": "devtools/lab_report/report.py",
-    "qa_summary.py": "devtools/lab_report/summary.py",
-    "qa_session_payload.py": "devtools/lab_report/session_payload.py",
-    "report_common.py": "devtools/lab_report/common.py",
-    "report_files.py": "devtools/lab_report/files.py",
-    "report_models.py": "devtools/lab_report/models.py",
-    "showcase_report_payloads.py": "devtools/lab_report/payloads.py",
-    "showcase_report_text.py": "devtools/lab_report/text.py",
-    # Lab corpus -> devtools/lab_corpus/
-    "lab_corpus.py": "devtools/lab_corpus/corpus.py",
-    "generators.py": "devtools/lab_corpus/generators.py",
-}
+# polylogue/showcase/ is now declared as verification-lab substrate. The
+# public product CLI no longer exposes audit/qa/showcase vocabulary; lab
+# scenarios remain here until a future package split is useful.
 
-# Owning issue per target prefix
-TARGET_TO_ISSUE = [
-    ("polylogue/products/", "#414"),
-    ("polylogue/api/", "#426"),
-    ("polylogue/artifacts/", "#426"),
-    ("polylogue/readiness/", "#426"),
-    ("polylogue/surfaces/", "#426"),
-    ("polylogue/maintenance/", "#426"),
-    ("polylogue/publication/", "#426"),
-    ("polylogue/lib/query/", "#424"),
-    ("polylogue/lib/session/", "#424"),
-    ("polylogue/lib/viewport/", "#424"),
-    ("polylogue/lib/raw_payload/", "#424"),
-    ("polylogue/lib/artifact_taxonomy/", "#424"),
-    ("polylogue/lib/action_event/", "#424"),
-    ("polylogue/lib/message/", "#424"),
-    ("polylogue/lib/conversation/", "#424"),
-    ("polylogue/lib/semantic/", "#424"),
-    ("polylogue/lib/filter/", "#424"),
-    # Added 2026-04-27 — TBD resolutions and conflict splits per #424
-    ("polylogue/lib/phase/", "#424"),
-    ("polylogue/lib/projection/", "#424"),
-    ("polylogue/lib/provider/", "#424"),
-    ("polylogue/lib/attachment/", "#424"),
-    ("polylogue/storage/repository/", "#425"),
-    ("polylogue/storage/products/", "#425"),
-    ("polylogue/storage/runtime/", "#425"),
-    ("polylogue/storage/action_events/", "#425"),
-    ("polylogue/storage/embeddings/", "#425"),
-    ("polylogue/storage/search/", "#425"),
-    ("polylogue/storage/artifacts/", "#425"),
-    ("polylogue/storage/fts/", "#425"),
-    ("polylogue/storage/raw/", "#425"),
-    ("polylogue/storage/derived/", "#425"),
-    ("polylogue/sources/drive/", "#403"),
-    ("polylogue/sources/parsers/claude/", "#403"),
+# Placement owner per target prefix.
+TARGET_TO_OWNER = [
+    ("polylogue/products/", "product-domain"),
+    ("polylogue/api/", "api-surface"),
+    ("polylogue/artifacts/", "artifact-domain"),
+    ("polylogue/readiness/", "readiness-domain"),
+    ("polylogue/surfaces/", "surface-shared"),
+    ("polylogue/maintenance/", "maintenance-domain"),
+    ("polylogue/publication/", "publication-domain"),
+    ("polylogue/lib/query/", "lib-query"),
+    ("polylogue/lib/session/", "lib-session"),
+    ("polylogue/lib/viewport/", "lib-viewport"),
+    ("polylogue/lib/raw_payload/", "lib-raw-payload"),
+    ("polylogue/lib/artifact_taxonomy/", "lib-artifact-taxonomy"),
+    ("polylogue/lib/action_event/", "lib-action-event"),
+    ("polylogue/lib/message/", "lib-message"),
+    ("polylogue/lib/conversation/", "lib-conversation"),
+    ("polylogue/lib/semantic/", "lib-semantic"),
+    ("polylogue/lib/filter/", "lib-filter"),
+    ("polylogue/lib/phase/", "lib-phase"),
+    ("polylogue/lib/projection/", "lib-projection"),
+    ("polylogue/lib/provider/", "lib-provider"),
+    ("polylogue/lib/attachment/", "lib-attachment"),
+    ("polylogue/storage/repository/", "storage-repository"),
+    ("polylogue/storage/products/", "storage-products"),
+    ("polylogue/storage/runtime/", "storage-runtime"),
+    ("polylogue/storage/action_events/", "storage-action-events"),
+    ("polylogue/storage/embeddings/", "storage-embeddings"),
+    ("polylogue/storage/search/", "storage-search"),
+    ("polylogue/storage/artifacts/", "storage-artifacts"),
+    ("polylogue/storage/fts/", "storage-fts"),
+    ("polylogue/storage/raw/", "storage-raw"),
+    ("polylogue/storage/derived/", "storage-derived"),
+    ("polylogue/sources/drive/", "source-drive"),
+    ("polylogue/sources/parsers/claude/", "source-claude-parser"),
 ]
 
 
@@ -341,12 +297,12 @@ def storage_target(name: str) -> str:
     return "TBD"
 
 
-def owning_issue(target: str) -> str:
+def placement_owner(target: str) -> str:
     if target == "TBD" or target.startswith("polylogue/lib/") and "/" not in target[len("polylogue/lib/") :]:
         return ""
-    for prefix, issue in sorted(TARGET_TO_ISSUE, key=lambda x: -len(x[0])):
+    for prefix, owner in sorted(TARGET_TO_OWNER, key=lambda x: -len(x[0])):
         if target.startswith(prefix):
-            return issue
+            return owner
     return ""
 
 
@@ -360,7 +316,7 @@ def cross_cut_tags(name: str, rel: str = "") -> dict[str, Any]:
         tags["layer"] = "read"
     if "_writes" in name or "_write_" in name:
         tags["layer"] = "write"
-    # Path-based api tagging after #426 consolidation.
+    # Path-based api tagging after api-surface consolidation.
     if rel.startswith("polylogue/api/sync/"):
         tags["api"] = "sync"
     elif rel.startswith("polylogue/api/"):
@@ -376,24 +332,24 @@ def classify(path: Path) -> dict[str, Any]:
     rel = path.relative_to(ROOT).as_posix()
     name = path.name
     target = ""
-    issue = ""
+    owner = ""
     reason = ""
 
     if rel.startswith("polylogue/") and "/" not in rel[len("polylogue/") :]:
         # Root-level polylogue file
         if name in KERNEL_ROOT_FILES:
             target = rel
-            issue = "kernel"
-            reason = "kernel rule per #426"
+            owner = "kernel"
+            reason = "kernel root rule"
         elif name in PRODUCT_ROOT_MOVES:
             target = PRODUCT_ROOT_MOVES[name]
-            issue = "#414"
+            owner = "product-domain"
         elif name in FACADE_ROOT_MOVES:
             target = FACADE_ROOT_MOVES[name]
-            issue = "#426"
+            owner = "api-surface"
         elif name in CROSS_RING_ROOT_MOVES:
             target = CROSS_RING_ROOT_MOVES[name]
-            issue = "#426"
+            owner = placement_owner(target) or "cross-ring-domain"
         else:
             target = "TBD"
             reason = "root file, no rule yet"
@@ -401,57 +357,56 @@ def classify(path: Path) -> dict[str, Any]:
         suffix = rel[len("polylogue/lib/") :]
         if "/" in suffix:
             target = rel  # already in a subdir, leave for now
-            issue = "stable"
+            owner = "stable"
         else:
             target = lib_target(suffix)
             if target.startswith("polylogue/lib/") and "/" not in target[len("polylogue/lib/") :]:
-                issue = "lib-root"
-                reason = "lib-root primitive per #424"
+                owner = "lib-root"
+                reason = "lib-root primitive"
             else:
-                issue = owning_issue(target) or "#424"
+                owner = placement_owner(target) or "lib-domain"
     elif rel.startswith("polylogue/storage/"):
         suffix = rel[len("polylogue/storage/") :]
         if "/" in suffix:
             target = rel  # already in backends/ or search_providers/
-            issue = "stable"
+            owner = "stable"
         else:
             target = storage_target(suffix)
             if target.startswith("polylogue/storage/") and "/" not in target[len("polylogue/storage/") :]:
-                issue = "storage-root"
-                reason = "storage-root cross-cutting helper per #425"
+                owner = "storage-root"
+                reason = "storage-root cross-cutting helper"
             else:
-                issue = owning_issue(target) or "#425"
+                owner = placement_owner(target) or "storage-domain"
     elif rel.startswith("polylogue/showcase/"):
-        issue = "#413"
-        target = SHOWCASE_MOVES.get(name, "TBD")
-        if target == "TBD":
-            reason = "showcase dismantling — no rule yet"
+        target = rel
+        owner = "stable"
+        reason = "verification-lab showcase substrate retained"
     elif rel.startswith("polylogue/sources/"):
         # Drive-specific files cluster
         suffix = rel[len("polylogue/sources/") :]
         if suffix.startswith("drive") and "/" not in suffix:
             target = f"polylogue/sources/drive/{suffix.replace('drive_', '').replace('drive.py', '__init__.py') or '__init__.py'}"
-            issue = "#403"
+            owner = "source-drive"
         elif suffix.startswith("parsers/claude_") and "/" not in suffix[len("parsers/") :]:
             # parsers/claude_*
             stem = suffix[len("parsers/claude_") :] or "__init__.py"
             target = f"polylogue/sources/parsers/claude/{stem}"
-            issue = "#403"
+            owner = "source-claude-parser"
         elif suffix == "parsers/claude.py":
             target = "polylogue/sources/parsers/claude/__init__.py"
-            issue = "#403"
+            owner = "source-claude-parser"
         else:
             target = rel
-            issue = "stable"
+            owner = "stable"
     else:
         target = rel
-        issue = "stable"
+        owner = "stable"
 
     return {
         "path": rel,
         "loc": loc(path),
         "target": target,
-        "owner": issue,
+        "owner": owner,
         "reason": reason,
         "cross_cut": cross_cut_tags(name, rel),
     }
@@ -469,7 +424,7 @@ def yaml_escape(value: str) -> str:
 
 
 def emit_yaml(rows: list[dict[str, Any]], out: Path) -> None:
-    lines: list[str] = ["# Topology projection — generated by build_projection.py", "# See #429.", "", "files:"]
+    lines: list[str] = ["# Topology projection — generated by build_projection.py", "", "files:"]
     for row in rows:
         lines.append(f"  - path: {row['path']}")
         lines.append(f"    loc: {row['loc']}")

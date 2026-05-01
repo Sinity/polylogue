@@ -45,12 +45,13 @@ def schema_command(ctx: click.Context) -> None:
 @schema_command.command("list")
 @click.option("--provider", default=None, help="Filter to specific provider")
 @click.option("--json", "json_output", is_flag=True, help="Output as JSON")
+@click.option("--format", "output_format", type=click.Choice(["json"]), default=None, help="Output format")
 @click.pass_obj
-def schema_list(env: AppEnv, provider: str | None, json_output: bool) -> None:
+def schema_list(env: AppEnv, provider: str | None, json_output: bool, output_format: str | None) -> None:
     """List available schema packages, versions, and evidence manifests."""
     del env
     result = list_schemas(SchemaListRequest(provider=provider))
-    render_schema_list_result(provider=provider, result=result, json_output=json_output)
+    render_schema_list_result(provider=provider, result=result, json_output=json_output or output_format == "json")
 
 
 @schema_command.command("compare")
@@ -59,6 +60,7 @@ def schema_list(env: AppEnv, provider: str | None, json_output: bool) -> None:
 @click.option("--to", "to_version", required=True, help="Target version (e.g., v2)")
 @click.option("--element", "element_kind", default=None, help="Element kind inside the package")
 @click.option("--json", "json_output", is_flag=True, help="Output as JSON")
+@click.option("--format", "output_format", type=click.Choice(["json", "markdown"]), default=None, help="Output format")
 @click.option("--markdown", "md_output", is_flag=True, help="Output as Markdown")
 @click.pass_obj
 def schema_compare(
@@ -68,6 +70,7 @@ def schema_compare(
     to_version: str,
     element_kind: str | None,
     json_output: bool,
+    output_format: str | None,
     md_output: bool,
 ) -> None:
     """Compare two schema package versions for a provider."""
@@ -84,7 +87,11 @@ def schema_compare(
         ),
     )
 
-    render_schema_compare_result(result=result, json_output=json_output, md_output=md_output)
+    render_schema_compare_result(
+        result=result,
+        json_output=json_output or output_format == "json",
+        md_output=md_output or output_format == "markdown",
+    )
 
 
 @schema_command.command("explain")
@@ -92,6 +99,7 @@ def schema_compare(
 @click.option("--version", default="latest", help="Schema version (default: latest)")
 @click.option("--element", "element_kind", default=None, help="Element kind inside the package")
 @click.option("--json", "json_output", is_flag=True, help="Output as JSON")
+@click.option("--format", "output_format", type=click.Choice(["json"]), default=None, help="Output format")
 @click.option("--verbose", "-v", is_flag=True, help="Show semantic roles and coverage")
 @click.option("--proof", is_flag=True, help="Show proof surface for role assignment decisions")
 @click.pass_obj
@@ -101,6 +109,7 @@ def schema_explain(
     version: str,
     element_kind: str | None,
     json_output: bool,
+    output_format: str | None,
     verbose: bool,
     proof: bool,
 ) -> None:
@@ -118,7 +127,7 @@ def schema_explain(
         ),
     )
 
-    render_schema_explain_result(result=result, json_output=json_output, verbose=verbose)
+    render_schema_explain_result(result=result, json_output=json_output or output_format == "json", verbose=verbose)
 
 
 __all__ = ["schema_command"]

@@ -52,6 +52,10 @@ def build_catalog_markdown(catalog: VerificationCatalog) -> str:
         "",
         *_render_generated_scenario_subjects(catalog.subjects),
         "",
+        "## Assurance Coverage Subjects",
+        "",
+        *_render_coverage_subjects(catalog.subjects),
+        "",
         "## Claims",
         "",
         *_render_claims(catalog.claims),
@@ -165,6 +169,23 @@ def _render_generated_scenario_subjects(subjects: tuple[SubjectRef, ...]) -> lis
             f"| `{subject.id}` | `{_string_attr(subject, 'status')}` | {_string_attr(subject, 'generated_world')} | "
             f"{_string_attr(subject, 'workload_family')} | {_code_list(claim_names[:4])} |"
         )
+    return lines
+
+
+def _render_coverage_subjects(subjects: tuple[SubjectRef, ...]) -> list[str]:
+    rows: Counter[tuple[str, str]] = Counter()
+    for subject in subjects:
+        if not subject.kind.startswith("assurance.coverage_"):
+            continue
+        domain = _string_attr(subject, "assurance_domain") or "unclassified"
+        rows[(domain, subject.kind)] += 1
+
+    lines = [
+        "| Domain | Subject Kind | Count |",
+        "| --- | --- | ---: |",
+    ]
+    for (domain, kind), count in sorted(rows.items()):
+        lines.append(f"| `{domain}` | `{kind}` | {count} |")
     return lines
 
 

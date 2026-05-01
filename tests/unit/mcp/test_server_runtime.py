@@ -93,7 +93,7 @@ def test_get_server_caches_instance_and_updates_runtime_services() -> None:
             assert server_module._get_server() == "server"
 
         mock_set_services.assert_called_once_with(services)
-        mock_build.assert_called_once_with()
+        mock_build.assert_called_once_with(role="read")
     finally:
         server_module._server_instance = original
 
@@ -104,5 +104,5 @@ def test_serve_stdio_runs_cached_server() -> None:
     with patch("polylogue.mcp.server._get_server", return_value=server) as mock_get_server:
         server_module.serve_stdio(services="services")
 
-    mock_get_server.assert_called_once_with("services")
+    mock_get_server.assert_called_once_with("services", role="read")
     server.run.assert_called_once_with(transport="stdio")

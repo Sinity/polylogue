@@ -22,6 +22,6 @@ def mcp_server() -> MCPServerUnderTest:
 
     from polylogue.mcp.server import build_server
 
-    server = build_server()
+    server = build_server(role="admin")
     assert isinstance(server, MCPServerUnderTest)
     return server

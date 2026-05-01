@@ -137,9 +137,8 @@ Options:
   -h, --help                      Show this message and exit.
 
 Commands:
-  audit            Run archive QA: schema audit and artifact proof checks.
   auth             Authenticate with external services (Google Drive for...
-  browser-capture  Receive browser-extension captures into the normal inbox.
+  browser-capture  Receive browser-extension captures into the capture...
   bulk-export      Bulk export every matched conversation in one process.
   completions      Generate shell completion scripts.
   count            Print count of matched conversations.
@@ -335,49 +334,6 @@ Commands:
   work-events     List durable work-event products.
 ```
 
-## Audit
-
-```text
-Usage: polylogue audit [OPTIONS]
-
-  Run archive QA: schema audit and artifact proof checks.
-
-  By default, audits packaged schemas and checks raw artifact proof against the active archive.
-
-  Examples:
-    polylogue audit                         # Schema audit + artifact proof
-    polylogue audit --only audit            # Schema audit only
-    polylogue audit --snapshot release-v3   # QA + archive results
-    polylogue audit --snapshot-from ./qa_outputs
-
-  Verification-lab corpus and scenario commands live under devtools:
-    devtools lab-corpus seed --env-only
-    devtools lab-scenario run archive-smoke --tier 0
-
-Options:
-  --synthetic / --live       Data source: synthetic (default) or live real
-                             data
-  --source TEXT              Configured real source name (repeatable, implies
-                             --fresh)
-  --fresh                    Run in an isolated temp workspace (default for
-                             synthetic)
-  --workspace PATH           Reuse a specific workspace directory
-  --ingest                   Run ingestion pipeline (auto for synthetic and
-                             fresh-with-sources)
-  --schemas                  Regenerate schemas during pipeline
-  --only [audit]             Run only this stage
-  --skip [audit]             Skip this stage (repeatable)
-  --report-dir PATH          Directory for QA artifacts (auto-generated if
-                             omitted)
-  --json                     Machine-readable output
-  --verbose                  Print exercise outputs
-  --snapshot TEXT            Archive results after QA completes (optional
-                             label)
-  --snapshot-from DIRECTORY  Archive an existing output directory (skips QA
-                             execution)
-  -h, --help                 Show this message and exit.
-```
-
 ## Doctor
 
 ```text
@@ -546,6 +502,8 @@ Usage: polylogue mcp [OPTIONS]
   Start the MCP server for AI assistant integration.
 
 Options:
-  --transport [stdio]  Transport protocol
-  -h, --help           Show this message and exit.
+  --transport [stdio]        Transport protocol
+  --role [read|write|admin]  MCP capability role. Read omits mutation and
+                             maintenance tools.  [default: read]
+  -h, --help                 Show this message and exit.
 ```

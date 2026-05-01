@@ -1,4 +1,4 @@
-# Test-quality coverage manifest — Track B, #515.
+# Test-quality coverage manifest.
 #
 # Documents the dimensions of test quality tracked for the
 # polylogue test suite: direct coverage, flakiness, fuzz, and
@@ -22,10 +22,9 @@ dimensions:
     ci_gate: true
     last_verified: "2026-04-26"
     notes: >
-      Coverage floor at 90% in pyproject.toml. Ratcheted up
-      from 87/88/89 via #385/#386/#387/#389. Enforced by
-      devtools coverage-gate and CI. test-ownership.yaml
-      (#437) tracks per-module test import coverage.
+      Coverage floor at 90% in pyproject.toml. Enforced by
+      devtools coverage-gate and CI. test-ownership.yaml tracks
+      per-module test import coverage.
 
   flakiness:
     description: Flaky test identification and tracking
@@ -132,9 +131,17 @@ dimensions:
 coverage_gaps:
   - dimension: flakiness
     gap: No systematic flakiness tracking, CI retry, or quarantine
+    owner: test-quality
+    next_evidence: Add measurable quality gate for this dimension
   - dimension: mock_depth
     gap: Mock depth not measured or enforced
+    owner: test-quality
+    next_evidence: Add measurable quality gate for this dimension
   - dimension: fuzz
     gap: Atheris fuzz targets not run in CI
+    owner: test-quality
+    next_evidence: Add measurable quality gate for this dimension
   - dimension: direct_coverage
     gap: Coverage per-module not tracked (only aggregate fail_under)
+    owner: test-quality
+    next_evidence: Add measurable quality gate for this dimension

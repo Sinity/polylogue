@@ -141,7 +141,7 @@ def compile_obligations(
 
 
 def default_claims() -> tuple[Claim, ...]:
-    """Return the first vertical-slice claim set for issue #192."""
+    """Return the first vertical-slice claim set."""
     command_query = Kind("cli.command")
     values_query = _schema_annotation_query("x-polylogue-values")
     foreign_key_query = _schema_annotation_query("x-polylogue-foreign-keys")
@@ -172,7 +172,6 @@ def default_claims() -> tuple[Claim, ...]:
             staleness_conditions=("Click command registration or help option handling changes.",),
             breaker=BreakerMetadata(
                 description="A hidden or broken command makes the help runner fail for that command.",
-                issue="#333",
                 command=("devtools", "render-verification-catalog", "--check"),
             ),
         ),
@@ -187,7 +186,6 @@ def default_claims() -> tuple[Claim, ...]:
             staleness_conditions=("Click error handling, command callbacks, or exception formatting changes.",),
             breaker=BreakerMetadata(
                 description="A command callback or Click wiring error leaks traceback text into evidence.",
-                issue="#333",
                 command=("devtools", "render-verification-catalog", "--check"),
             ),
         ),
@@ -202,7 +200,6 @@ def default_claims() -> tuple[Claim, ...]:
             staleness_conditions=("Terminal renderer, rich/plain mode, or command output formatting changes.",),
             breaker=BreakerMetadata(
                 description="A rich-only output path breaks the plain-mode runner comparison.",
-                issue="#333",
                 command=("devtools", "render-verification-catalog", "--check"),
             ),
         ),
@@ -219,7 +216,6 @@ def default_claims() -> tuple[Claim, ...]:
             ),
             breaker=BreakerMetadata(
                 description="A selected JSON command that emits invalid JSON or a missing success envelope breaks the claim.",
-                issue="#333",
                 command=("devtools", "render-verification-catalog", "--check"),
             ),
         ),
@@ -239,7 +235,6 @@ def default_claims() -> tuple[Claim, ...]:
             staleness_conditions=("Repository list/count behavior or equivalent filter construction changes.",),
             breaker=BreakerMetadata(
                 description="A provider result outside all results, mismatched count, or divergent equivalent construction is a counterexample.",
-                issue="#333",
                 command=("pytest", "tests/unit/proof/test_evidence_runners.py"),
             ),
         ),
@@ -260,7 +255,6 @@ def default_claims() -> tuple[Claim, ...]:
             ),
             breaker=BreakerMetadata(
                 description="A provider without native/canonical identity mappings can silently drop provider-native facts.",
-                issue="#332",
                 command=("devtools", "render-verification-catalog", "--check"),
             ),
         ),
@@ -289,7 +283,6 @@ def default_claims() -> tuple[Claim, ...]:
             ),
             breaker=BreakerMetadata(
                 description="A provider with absent or partial facets but no explicit gap record hides verification scope.",
-                issue="#332",
                 command=("devtools", "render-verification-catalog", "--check"),
             ),
         ),
@@ -306,7 +299,6 @@ def default_claims() -> tuple[Claim, ...]:
             ),
             breaker=BreakerMetadata(
                 description="A generated payload outside the annotated value set is a counterexample.",
-                issue="#332",
                 command=("devtools", "render-verification-catalog", "--check"),
             ),
         ),
@@ -323,7 +315,6 @@ def default_claims() -> tuple[Claim, ...]:
             ),
             breaker=BreakerMetadata(
                 description="A source path pointing at a missing target path breaks the relation claim.",
-                issue="#332",
                 command=("devtools", "render-verification-catalog", "--check"),
             ),
         ),
@@ -341,7 +332,6 @@ def default_claims() -> tuple[Claim, ...]:
             staleness_conditions=("Artifact graph nodes, runtime paths, operation targets, or repair targets change.",),
             breaker=BreakerMetadata(
                 description="A runtime path with unresolved dependencies or no derived/index/projection layer breaks routing.",
-                issue="#340",
                 command=("pytest", "tests/unit/proof/test_structural_error_evidence.py"),
             ),
         ),
@@ -372,7 +362,6 @@ def default_claims() -> tuple[Claim, ...]:
             staleness_conditions=("Repair result semantics, doctor preview behavior, or maintenance targets change.",),
             breaker=BreakerMetadata(
                 description="A repair failure without an explicit unchanged/changed/rolled-back/partial state is ambiguous.",
-                issue="#340",
                 command=("pytest", "tests/unit/proof/test_structural_error_evidence.py"),
             ),
         ),
@@ -389,7 +378,6 @@ def default_claims() -> tuple[Claim, ...]:
             ),
             breaker=BreakerMetadata(
                 description="A quarantine error without source context, or one that echoes private payload text, breaks the claim.",
-                issue="#340",
                 command=("pytest", "tests/unit/proof/test_structural_error_evidence.py"),
             ),
         ),
@@ -404,7 +392,6 @@ def default_claims() -> tuple[Claim, ...]:
             staleness_conditions=("Machine error envelope, CLI error rendering, or diagnostic context keys change.",),
             breaker=BreakerMetadata(
                 description="An error surface that only carries prose, or omits required context keys, is not actionable.",
-                issue="#340",
                 command=("pytest", "tests/unit/proof/test_structural_error_evidence.py"),
             ),
         ),
@@ -425,7 +412,6 @@ def default_claims() -> tuple[Claim, ...]:
             staleness_conditions=("Surface query adapters, observable event payloads, or trace vocabulary changes.",),
             breaker=BreakerMetadata(
                 description="Equivalent operations with different semantic event signatures expose cross-surface drift.",
-                issue="#341",
                 command=("pytest", "tests/unit/proof/test_trace_evidence.py"),
             ),
         ),
@@ -446,7 +432,6 @@ def default_claims() -> tuple[Claim, ...]:
             staleness_conditions=("Pipeline probe diagnostics or observable trace vocabulary changes.",),
             breaker=BreakerMetadata(
                 description="A probe diagnostic without a proof-vocabulary mapping cannot route into trace evidence.",
-                issue="#341",
                 command=("pytest", "tests/unit/proof/test_trace_evidence.py"),
             ),
         ),
@@ -457,11 +442,10 @@ def default_claims() -> tuple[Claim, ...]:
             evidence_schema=_evidence_schema("name", "status", "generated_world", "workload_family"),
             bug_classes=("scenario-family.omission", "live-checks.overused"),
             runner_classes=("generated_scenario_static",),
-            observed_facts=("name", "status", "generated_world", "workload_family", "issue"),
+            observed_facts=("name", "status", "generated_world", "workload_family", "reproducer"),
             staleness_conditions=("Scenario inventory, pipeline probes, or validation-lane families change.",),
             breaker=BreakerMetadata(
                 description="A missing generated-world family leaves live/archive checks carrying routine confidence.",
-                issue="#196",
                 command=("devtools", "render-verification-catalog", "--check"),
             ),
         ),
@@ -476,7 +460,6 @@ def default_claims() -> tuple[Claim, ...]:
             staleness_conditions=("Generated scenario implementation status or reproducer commands change.",),
             breaker=BreakerMetadata(
                 description="An implemented generated scenario with live archive dependency is not a routine proof subject.",
-                issue="#196",
                 command=("pytest", "tests/unit/proof/test_generated_scenario_obligations.py"),
             ),
         ),
@@ -487,16 +470,228 @@ def default_claims() -> tuple[Claim, ...]:
             evidence_schema=_evidence_schema("semantic_claims", "implemented_claim_families", "mapped_claim_families"),
             bug_classes=("scenario-family.vacuous-process-check", "semantic-proof.unmapped-generated-world"),
             runner_classes=("generated_scenario_static",),
-            observed_facts=("semantic_claims", "claim_states", "mapped_issues"),
+            observed_facts=("semantic_claims", "claim_states", "mapping_notes"),
             staleness_conditions=("Semantic claim vocabulary, generated scenarios, or proof-runner mapping changes.",),
             breaker=BreakerMetadata(
                 description="A generated scenario without semantic claim mapping can go green without proving meaning.",
-                issue="#196",
                 command=("pytest", "tests/unit/proof/test_generated_scenario_obligations.py"),
             ),
         ),
+        *_coverage_manifest_claims(),
+        *_architecture_control_claims(),
+        *_schema_roundtrip_claims(),
         *_effect_implication_claims(),
         *_product_surface_claims(),
+    )
+
+
+def _coverage_manifest_claims() -> tuple[Claim, ...]:
+    return (
+        Claim(
+            id="assurance.coverage.manifest_structured",
+            description="Coverage manifests are compiled into proof subjects with item and known-gap counts.",
+            subject_query=Kind("assurance.coverage_manifest"),
+            evidence_schema=_evidence_schema(
+                "manifest_id",
+                "assurance_domain",
+                "sections",
+                "item_count",
+                "coverage_gap_count",
+            ),
+            oracle="construction_sanity",
+            oracle_kind="construction_sanity",
+            assertion_source="proof_catalog",
+            observation_source="same_source_manifest",
+            independence_level="cross_checked",
+            assurance_domain="spec_completeness",
+            bug_classes=("assurance.manifest.omission", "coverage-map.unroutable"),
+            runner_classes=("coverage_manifest_static",),
+            observed_facts=("manifest_id", "assurance_domain", "sections", "coverage_gap_count"),
+            staleness_conditions=("Coverage manifests, assurance domains, or proof subject discovery changes.",),
+            breaker=BreakerMetadata(
+                description="A coverage manifest that is not represented in the proof catalog stops proof-pack routing.",
+                command=("devtools", "render-verification-catalog", "--check"),
+            ),
+        ),
+        Claim(
+            id="assurance.coverage.item_declared",
+            description="Manifest coverage items carry domain, status, path, and automated-gate metadata.",
+            subject_query=Kind("assurance.coverage_item"),
+            evidence_schema=_evidence_schema(
+                "manifest_id",
+                "assurance_domain",
+                "section",
+                "name",
+                "status",
+                "has_automated_gate",
+            ),
+            oracle="construction_sanity",
+            oracle_kind="construction_sanity",
+            assertion_source="proof_catalog",
+            observation_source="same_source_manifest",
+            independence_level="cross_checked",
+            assurance_domain="spec_completeness",
+            bug_classes=("coverage-item.missing-domain", "coverage-item.unroutable-path"),
+            runner_classes=("coverage_manifest_static",),
+            observed_facts=("manifest_id", "section", "name", "status", "has_automated_gate"),
+            staleness_conditions=("Coverage item schema, manifest sections, or source-path routing changes.",),
+            breaker=BreakerMetadata(
+                description="An item without routable coverage metadata cannot contribute to affected proof packs.",
+                command=("devtools", "verify-manifests"),
+            ),
+        ),
+        Claim(
+            id="assurance.coverage.gap_has_closure_path",
+            description="Known coverage gaps are first-class proof subjects with owners and next-evidence paths.",
+            subject_query=Kind("assurance.coverage_gap"),
+            evidence_schema=_evidence_schema(
+                "manifest_id", "assurance_domain", "axis", "gap", "owner", "next_evidence"
+            ),
+            oracle="construction_sanity",
+            oracle_kind="construction_sanity",
+            assertion_source="proof_catalog",
+            observation_source="same_source_manifest",
+            independence_level="cross_checked",
+            assurance_domain="spec_completeness",
+            bug_classes=("coverage-gap.owner-missing", "proof-pack.known-gap-omission"),
+            runner_classes=("coverage_manifest_static",),
+            observed_facts=("manifest_id", "axis", "gap", "owner", "next_evidence"),
+            staleness_conditions=("Coverage gap manifests or proof-pack known-gap rendering changes.",),
+            breaker=BreakerMetadata(
+                description="A known coverage gap without an owner and next evidence path cannot drive closure.",
+                command=("devtools", "verify-manifests"),
+            ),
+        ),
+    )
+
+
+def _architecture_control_claims() -> tuple[Claim, ...]:
+    return (
+        Claim(
+            id="architecture.topology.projection_enforced",
+            description="Realized package topology is checked against the declared topology projection.",
+            subject_query=Kind("architecture.topology"),
+            evidence_schema=_evidence_schema("control_path", "command", "runner"),
+            oracle="drift_check",
+            oracle_kind="drift_check",
+            assertion_source="proof_catalog",
+            observation_source="repo_static_analysis",
+            independence_level="cross_checked",
+            assurance_domain="architecture_discipline",
+            bug_classes=("topology.pending-cell", "architecture.placement-drift"),
+            runner_classes=("architecture_static",),
+            observed_facts=("control_path", "command", "runner"),
+            staleness_conditions=("Topology projection, placement rules, or realized package tree changes.",),
+            breaker=BreakerMetadata(
+                description="A missing, orphan, conflict, or pending topology cell breaks structural confidence.",
+                command=("devtools", "verify-topology"),
+            ),
+        ),
+        Claim(
+            id="architecture.layering.import_rules_enforced",
+            description="Package imports obey the declared layering rules.",
+            subject_query=Kind("architecture.layering"),
+            evidence_schema=_evidence_schema("control_path", "command", "runner"),
+            oracle="drift_check",
+            oracle_kind="drift_check",
+            assertion_source="proof_catalog",
+            observation_source="repo_static_analysis",
+            independence_level="cross_checked",
+            assurance_domain="architecture_discipline",
+            bug_classes=("layering.import-violation", "architecture.boundary-drift"),
+            runner_classes=("architecture_static",),
+            observed_facts=("control_path", "command", "runner"),
+            staleness_conditions=("Layering rules, imports, or package placement changes.",),
+            breaker=BreakerMetadata(
+                description="A cross-layer import violation breaks the architecture discipline gate.",
+                command=("devtools", "verify-layering"),
+            ),
+        ),
+        Claim(
+            id="architecture.file_budget.loc_enforced",
+            description="Declared LOC budgets prevent oversized mixed-responsibility files from silently growing.",
+            subject_query=Kind("architecture.file_budget"),
+            evidence_schema=_evidence_schema("control_path", "command", "runner"),
+            oracle="drift_check",
+            oracle_kind="drift_check",
+            assertion_source="proof_catalog",
+            observation_source="repo_static_analysis",
+            independence_level="cross_checked",
+            assurance_domain="architecture_discipline",
+            bug_classes=("file-budget.exception-stale", "test-owner.mixed-responsibility"),
+            runner_classes=("architecture_static",),
+            observed_facts=("control_path", "command", "runner"),
+            staleness_conditions=("File-size budgets or large test/production files change.",),
+            breaker=BreakerMetadata(
+                description="A stale exemption or over-budget file breaks the file-budget control.",
+                command=("devtools", "verify-file-budgets"),
+            ),
+        ),
+        Claim(
+            id="architecture.manifest.consistency_enforced",
+            description="Architecture and verification manifests remain internally consistent.",
+            subject_query=Kind("architecture.manifest"),
+            evidence_schema=_evidence_schema("control_path", "command", "runner"),
+            oracle="drift_check",
+            oracle_kind="drift_check",
+            assertion_source="proof_catalog",
+            observation_source="repo_static_analysis",
+            independence_level="cross_checked",
+            assurance_domain="architecture_discipline",
+            bug_classes=("manifest.schema-drift", "verification-map.inconsistent"),
+            runner_classes=("architecture_static",),
+            observed_facts=("control_path", "command", "runner"),
+            staleness_conditions=("docs/plans manifests or manifest lint rules change.",),
+            breaker=BreakerMetadata(
+                description="A malformed or inconsistent manifest breaks structural proof routing.",
+                command=("devtools", "verify-manifests"),
+            ),
+        ),
+        Claim(
+            id="architecture.witness.lifecycle_enforced",
+            description="Committed witnesses remain classified, exercised, and free of stale xfail markers.",
+            subject_query=Kind("architecture.witness"),
+            evidence_schema=_evidence_schema("control_path", "command", "runner"),
+            oracle="drift_check",
+            oracle_kind="drift_check",
+            assertion_source="proof_catalog",
+            observation_source="repo_static_analysis",
+            independence_level="cross_checked",
+            assurance_domain="test_quality",
+            bug_classes=("witness.stale", "witness.unexercised"),
+            runner_classes=("architecture_static",),
+            observed_facts=("control_path", "command", "runner"),
+            staleness_conditions=("Committed witness metadata, witness tests, or lifecycle rules change.",),
+            breaker=BreakerMetadata(
+                description="A stale, unclassified, or unexercised witness breaks the lifecycle control.",
+                command=("devtools", "verify-witness-lifecycle"),
+            ),
+        ),
+    )
+
+
+def _schema_roundtrip_claims() -> tuple[Claim, ...]:
+    return (
+        Claim(
+            id="schema.roundtrip.inference_validation",
+            description="Committed provider schema packages pass inference-to-validation roundtrip checks.",
+            subject_query=Kind("schema.roundtrip"),
+            evidence_schema=_evidence_schema("provider_count", "package_count", "element_count", "failures"),
+            oracle="proof",
+            oracle_kind="proof",
+            assertion_source="proof_catalog",
+            observation_source="unit_test",
+            independence_level="cross_checked",
+            assurance_domain="schema_correctness",
+            bug_classes=("schema-roundtrip.validation-gap", "schema-package.unreadable"),
+            runner_classes=("schema_roundtrip_static",),
+            observed_facts=("provider_count", "package_count", "element_count", "failures"),
+            staleness_conditions=("Provider schema packages, schema registry, or validation rules change.",),
+            breaker=BreakerMetadata(
+                description="A committed schema package that cannot be reloaded and validated breaks the roundtrip gate.",
+                command=("devtools", "verify-schema-roundtrip", "--all"),
+            ),
+        ),
     )
 
 
@@ -580,7 +775,7 @@ def _effect_implication_claims() -> tuple[Claim, ...]:
                 observed_facts=("operation_name", "effect", "implication"),
                 staleness_conditions=("Operation effect declarations or implication vocabulary changes.",),
                 severity="serious" if is_severe else "info",
-                tracked_exception="#516" if is_severe else None,
+                tracked_exception="abstract effect implication requires a concrete runner" if is_severe else None,
                 abstract=(implication in _abstract_implications),
             )
         )
@@ -652,10 +847,21 @@ def default_runner_bindings(claims: Iterable[Claim]) -> tuple[RunnerBinding, ...
             bindings.append(
                 _runner_binding(claim, runner="provider-capability-static-contract", evidence_class="structural")
             )
+        elif claim.id.startswith("schema.roundtrip."):
+            bindings.append(
+                _runner_binding(
+                    claim,
+                    runner="schema-roundtrip-static-contract",
+                    evidence_class="structural",
+                    required_commands=("devtools",),
+                )
+            )
         elif claim.id.startswith("schema."):
             bindings.append(
                 _runner_binding(claim, runner="schema-annotation-static-contract", evidence_class="structural")
             )
+        elif claim.id.startswith("architecture."):
+            bindings.append(_runner_binding(claim, runner="architecture-static-contract", evidence_class="structural"))
         elif claim.id.startswith("artifact.path."):
             bindings.append(_runner_binding(claim, runner="artifact-path-static-contract", evidence_class="structural"))
         elif claim.id.startswith("maintenance.repair."):
@@ -711,6 +917,15 @@ def default_runner_bindings(claims: Iterable[Claim]) -> tuple[RunnerBinding, ...
                     evidence_class="structural",
                 )
             )
+        elif claim.id.startswith("assurance.coverage."):
+            bindings.append(
+                _runner_binding(
+                    claim,
+                    runner="coverage-manifest-static-contract",
+                    evidence_class="structural",
+                    required_commands=("devtools",),
+                )
+            )
         elif claim.id.startswith("operation.effect."):
             bindings.append(
                 _runner_binding(claim, runner="effect-implication-static-contract", evidence_class="structural")
@@ -733,6 +948,7 @@ def catalog_quality_checks(catalog: VerificationCatalog, *, now: datetime | None
         _missing_serious_bug_classes_check(catalog.claims),
         _missing_serious_breakers_check(catalog.claims),
         _missing_serious_claim_adequacy_check(catalog.claims),
+        _serious_claim_oracle_independence_check(catalog.claims),
         _zero_subject_claims_check(catalog.claims, obligations_by_claim),
     ]
     return tuple(checks)
@@ -918,6 +1134,23 @@ def _missing_serious_claim_adequacy_check(claims: tuple[Claim, ...]) -> OutcomeC
         missing,
         ok_summary="serious claims declare runner classes, observed facts, and staleness conditions",
         error_summary="serious claims missing adequacy metadata",
+    )
+
+
+def _serious_claim_oracle_independence_check(claims: tuple[Claim, ...]) -> OutcomeCheck:
+    weak_levels = {"same_source", "self_attesting", "ceremonial"}
+    failures = [
+        f"{claim.id}: {claim.independence_level}"
+        for claim in claims
+        if claim.severity == "serious"
+        and claim.tracked_exception is None
+        and (claim.oracle == "ceremonial" or claim.independence_level in weak_levels)
+    ]
+    return _check(
+        "catalog.serious_claim_oracle_independence",
+        failures,
+        ok_summary="serious claims avoid ceremonial or self-attesting evidence",
+        error_summary="serious claims rely on weak oracle independence",
     )
 
 

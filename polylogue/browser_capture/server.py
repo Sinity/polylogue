@@ -99,7 +99,7 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
                 return
             self._send_json(
                 HTTPStatus.OK,
-                existing_capture_state(provider, session_id, inbox_path=self.server.config.inbox_path),
+                existing_capture_state(provider, session_id, spool_path=self.server.config.spool_path),
             )
             return
         self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": "not_found"})
@@ -121,7 +121,7 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         try:
             payload = json.loads(self.rfile.read(length))
             envelope = BrowserCaptureEnvelope.model_validate(payload)
-            result = write_capture_envelope(envelope, inbox_path=self.server.config.inbox_path)
+            result = write_capture_envelope(envelope, spool_path=self.server.config.spool_path)
         except (json.JSONDecodeError, ValidationError, OSError) as exc:
             self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": type(exc).__name__, "detail": str(exc)})
             return
@@ -138,11 +138,11 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         )
 
 
-def make_server(host: str, port: int, *, inbox_path: Path | None = None) -> BrowserCaptureHTTPServer:
+def make_server(host: str, port: int, *, spool_path: Path | None = None) -> BrowserCaptureHTTPServer:
     """Create a configured browser-capture receiver server."""
     config = BrowserCaptureReceiverConfig.default()
-    if inbox_path is not None:
-        config = BrowserCaptureReceiverConfig(inbox_path=inbox_path, allowed_origins=config.allowed_origins)
+    if spool_path is not None:
+        config = BrowserCaptureReceiverConfig(spool_path=spool_path, allowed_origins=config.allowed_origins)
     return BrowserCaptureHTTPServer((host, port), config)
 
 

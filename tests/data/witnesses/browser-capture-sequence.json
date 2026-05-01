@@ -1,0 +1,25 @@
+{
+  "surface": "browser-capture",
+  "terms": {
+    "receiver": "HTTP endpoint accepting extension captures",
+    "spool": "local append-only capture staging directory",
+    "archive": "normal polylogue ingestion pipeline"
+  },
+  "required_sequence": [
+    "receiver-started",
+    "extension-installed-or-refreshed",
+    "supported-page-detected",
+    "capture-posted",
+    "spool-record-written",
+    "source-ingested",
+    "conversation-queryable"
+  ],
+  "forbidden_public_terms": ["inbox"],
+  "required_diagnostics": [
+    "receiver readiness",
+    "extension installation state",
+    "supported page detection",
+    "spool write success",
+    "archive ingestion success"
+  ]
+}

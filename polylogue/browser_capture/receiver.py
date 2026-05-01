@@ -13,7 +13,7 @@ import orjson
 
 from polylogue.browser_capture.models import BrowserCaptureEnvelope
 from polylogue.lib.hashing import hash_text_short
-from polylogue.paths import inbox_root
+from polylogue.paths import browser_capture_spool_root
 
 _SAFE_TOKEN = re.compile(r"[^A-Za-z0-9._-]+")
 
@@ -22,7 +22,7 @@ _SAFE_TOKEN = re.compile(r"[^A-Za-z0-9._-]+")
 class BrowserCaptureReceiverConfig:
     """Configuration for the localhost browser-capture receiver."""
 
-    inbox_path: Path
+    spool_path: Path
     allowed_origins: frozenset[str] = frozenset(
         {
             "https://chatgpt.com",
@@ -32,7 +32,7 @@ class BrowserCaptureReceiverConfig:
 
     @classmethod
     def default(cls) -> BrowserCaptureReceiverConfig:
-        return cls(inbox_path=inbox_root() / "browser-capture")
+        return cls(spool_path=browser_capture_spool_root())
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,9 +51,9 @@ def _safe_token(value: str) -> str:
     return token[:96] if token else "session"
 
 
-def capture_artifact_path(envelope: BrowserCaptureEnvelope, inbox_path: Path | None = None) -> Path:
-    """Return the deterministic inbox artifact path for an envelope."""
-    root = inbox_path if inbox_path is not None else BrowserCaptureReceiverConfig.default().inbox_path
+def capture_artifact_path(envelope: BrowserCaptureEnvelope, spool_path: Path | None = None) -> Path:
+    """Return the deterministic source artifact path for an envelope."""
+    root = spool_path if spool_path is not None else BrowserCaptureReceiverConfig.default().spool_path
     provider = _safe_token(envelope.provider.value)
     session = _safe_token(envelope.provider_session_id)
     suffix = hash_text_short(f"{envelope.provider.value}:{envelope.provider_session_id}", 12)
@@ -63,10 +63,10 @@ def capture_artifact_path(envelope: BrowserCaptureEnvelope, inbox_path: Path | N
 def write_capture_envelope(
     envelope: BrowserCaptureEnvelope,
     *,
-    inbox_path: Path | None = None,
+    spool_path: Path | None = None,
 ) -> BrowserCaptureWriteResult:
-    """Atomically write a browser-capture source artifact into the inbox."""
-    target = capture_artifact_path(envelope, inbox_path)
+    """Atomically write a browser-capture source artifact into the capture spool."""
+    target = capture_artifact_path(envelope, spool_path)
     target.parent.mkdir(parents=True, exist_ok=True)
     payload = envelope.model_dump(mode="json", exclude_none=True)
     raw = orjson.dumps(payload, option=orjson.OPT_INDENT_2 | orjson.OPT_SORT_KEYS)
@@ -91,7 +91,7 @@ def receiver_status_payload(config: BrowserCaptureReceiverConfig) -> dict[str, o
         "ok": True,
         "receiver": "polylogue-browser-capture",
         "schema_version": 1,
-        "inbox_path": str(config.inbox_path),
+        "spool_path": str(config.spool_path),
         "allowed_origins": sorted(config.allowed_origins),
         "checked_at": datetime.now(UTC).isoformat(),
     }
@@ -101,7 +101,7 @@ def existing_capture_state(
     provider: str,
     provider_session_id: str,
     *,
-    inbox_path: Path | None = None,
+    spool_path: Path | None = None,
 ) -> dict[str, object]:
     """Return the local capture state visible to the browser extension."""
     envelope = BrowserCaptureEnvelope.model_validate(
@@ -118,7 +118,7 @@ def existing_capture_state(
             },
         }
     )
-    path = capture_artifact_path(envelope, inbox_path)
+    path = capture_artifact_path(envelope, spool_path)
     state: dict[str, object] = {
         "provider": envelope.provider.value,
         "provider_session_id": envelope.provider_session_id,

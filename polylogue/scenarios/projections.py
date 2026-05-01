@@ -51,6 +51,14 @@ class ScenarioProjectionSource:
             artifact_targets=metadata.artifact_targets,
             operation_targets=metadata.operation_targets,
             tags=metadata.tags,
+            docs_role=metadata.docs_role,
+            caption=metadata.caption,
+            narrative_order=metadata.narrative_order,
+            audience=metadata.audience,
+            demonstrates=metadata.demonstrates,
+            privacy_level=metadata.privacy_level,
+            media=metadata.media,
+            visual_style=metadata.visual_style,
             source_payload=dict(self.projection_source_payload()),
         )
 
