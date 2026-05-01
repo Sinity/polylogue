@@ -7,6 +7,13 @@ from datetime import UTC, datetime
 
 from polylogue.archive.conversation.extraction import WorkEvent, WorkEventPayload
 from polylogue.archive.phase.extraction import SessionPhase
+from polylogue.archive.session.documents import (
+    SessionPhaseDocument,
+    SessionProfileDocument,
+    WorkEventDocument,
+)
+from polylogue.archive.session.models import SessionPhasePayload
+from polylogue.archive.session.session_profile import SessionAnalysis, SessionProfile
 from polylogue.lib.payload_coercion import (
     coerce_float,
     coerce_int,
@@ -16,13 +23,6 @@ from polylogue.lib.payload_coercion import (
     string_int_mapping,
     string_sequence,
 )
-from polylogue.lib.session.documents import (
-    SessionPhaseDocument,
-    SessionProfileDocument,
-    WorkEventDocument,
-)
-from polylogue.lib.session.models import SessionPhasePayload
-from polylogue.lib.session.session_profile import SessionAnalysis, SessionProfile
 from polylogue.products.archive_models import (
     SessionEnrichmentPayload,
     SessionEvidencePayload,

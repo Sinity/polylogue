@@ -36,7 +36,7 @@ Semantic-analysis/reporting helpers are still public, but they are no longer
 re-exported from package roots. Import them from their actual modules:
 
 ```python
-from polylogue.lib.session.session_profile import build_session_profile, infer_auto_tags
+from polylogue.archive.session.session_profile import build_session_profile, infer_auto_tags
 from polylogue.archive.conversation.threads import build_session_threads
 ```
 
