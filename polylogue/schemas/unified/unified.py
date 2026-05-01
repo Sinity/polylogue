@@ -22,14 +22,14 @@ import logging
 
 from pydantic import ValidationError
 
-from polylogue.lib.json import JSONDocument
-from polylogue.lib.provider.semantics import (
+from polylogue.archive.provider.semantics import (
     extract_chatgpt_text,
     extract_claude_code_text,
     extract_content_blocks,
     extract_reasoning_traces,
     extract_tool_calls,
 )
+from polylogue.lib.json import JSONDocument
 from polylogue.schemas.unified.adapters import extract_with_adapter
 from polylogue.schemas.unified.fallbacks import extract_fallback_message
 from polylogue.schemas.unified.models import HarmonizedMessage, _missing_role, extract_token_usage

@@ -576,7 +576,7 @@ def _classify_path(path: str) -> ChangeKind:
         return "architecture"
     if path == "devtools/verify_schema_roundtrip.py" or path.startswith("tests/property/"):
         return "schema_roundtrip"
-    if path == "polylogue/lib/provider/capabilities.py":
+    if path == "polylogue/archive/provider/capabilities.py":
         return "provider.capability"
     if path.startswith("polylogue/cli/") or path == "polylogue/cli/command_inventory.py":
         return "command"
