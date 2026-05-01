@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 
-from polylogue.lib.action_event.fields import (
+from polylogue.archive.action_event.fields import (
     build_search_text,
     extract_branch_names,
     extract_command,
@@ -23,7 +23,7 @@ from polylogue.lib.action_event.fields import (
     make_action_event_id,
     normalize_output_text,
 )
-from polylogue.lib.action_event.parsing import build_tool_calls_from_content_blocks
+from polylogue.archive.action_event.parsing import build_tool_calls_from_content_blocks
 from polylogue.lib.viewport.viewports import ToolCall, ToolCategory
 from polylogue.types import Provider
 

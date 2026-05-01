@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from polylogue.lib.action_event.action_events import canonical_tool_name
+from polylogue.archive.action_event.action_events import canonical_tool_name
 from polylogue.lib.viewport.enums import ToolCategory
 from polylogue.lib.viewport.tools import classify_tool
 

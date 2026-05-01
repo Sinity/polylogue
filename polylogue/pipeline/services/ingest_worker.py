@@ -53,7 +53,7 @@ from polylogue.types import (
 )
 
 if TYPE_CHECKING:
-    from polylogue.lib.action_event.action_events import ActionEvent
+    from polylogue.archive.action_event.action_events import ActionEvent
     from polylogue.schemas.packages import SchemaResolution
     from polylogue.schemas.runtime_registry import SchemaRegistry
     from polylogue.sources.parsers.base import ParsedConversation
@@ -959,7 +959,7 @@ def _build_action_event_tuples(
     Uses the lightweight action event builder that works from content blocks
     without needing full Pydantic MessageRecord hydration.
     """
-    from polylogue.lib.action_event.action_events import build_action_events, build_tool_calls_from_content_blocks
+    from polylogue.archive.action_event.action_events import build_action_events, build_tool_calls_from_content_blocks
     from polylogue.storage.hydrators import message_from_record
 
     provider = Provider.from_string(conversation.provider_name)

@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from pathlib import PurePosixPath
 
-from polylogue.lib.action_event.parsing import _clean_str, _extract_first_string
+from polylogue.archive.action_event.parsing import _clean_str, _extract_first_string
 from polylogue.lib.hashing import hash_text_short
 from polylogue.lib.viewport.viewports import ToolCall, ToolCategory
 

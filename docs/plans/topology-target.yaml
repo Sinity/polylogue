@@ -55,6 +55,22 @@ files:
     loc: 1
     target: polylogue/archive/__init__.py
     owner: stable
+  - path: polylogue/archive/action_event/__init__.py
+    loc: 0
+    target: polylogue/archive/action_event/__init__.py
+    owner: stable
+  - path: polylogue/archive/action_event/action_events.py
+    loc: 142
+    target: polylogue/archive/action_event/action_events.py
+    owner: stable
+  - path: polylogue/archive/action_event/fields.py
+    loc: 123
+    target: polylogue/archive/action_event/fields.py
+    owner: stable
+  - path: polylogue/archive/action_event/parsing.py
+    loc: 121
+    target: polylogue/archive/action_event/parsing.py
+    owner: stable
   - path: polylogue/archive/filter/__init__.py
     loc: 0
     target: polylogue/archive/filter/__init__.py
@@ -494,22 +510,6 @@ files:
     target: polylogue/lib/__init__.py
     owner: lib-root
     reason: lib-root primitive
-  - path: polylogue/lib/action_event/__init__.py
-    loc: 0
-    target: polylogue/lib/action_event/__init__.py
-    owner: stable
-  - path: polylogue/lib/action_event/action_events.py
-    loc: 142
-    target: polylogue/lib/action_event/action_events.py
-    owner: stable
-  - path: polylogue/lib/action_event/fields.py
-    loc: 123
-    target: polylogue/lib/action_event/fields.py
-    owner: stable
-  - path: polylogue/lib/action_event/parsing.py
-    loc: 121
-    target: polylogue/lib/action_event/parsing.py
-    owner: stable
   - path: polylogue/lib/artifact_taxonomy/__init__.py
     loc: 18
     target: polylogue/lib/artifact_taxonomy/__init__.py

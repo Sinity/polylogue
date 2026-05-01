@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
-from polylogue.lib.action_event.action_events import ActionEvent
+from polylogue.archive.action_event.action_events import ActionEvent
 from polylogue.lib.repo_identity import (
     normalize_repo_name,
     normalize_repo_names,

@@ -446,7 +446,7 @@ async def test_query_plan_filters_action_text_terms() -> None:
                     {
                         "type": "tool_use",
                         "tool_name": "Bash",
-                        "tool_input": {"command": "ruff check polylogue/lib/action_event/action_events.py"},
+                        "tool_input": {"command": "ruff check polylogue/archive/action_event/action_events.py"},
                         "semantic_type": "shell",
                     },
                 ],

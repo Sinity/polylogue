@@ -6,7 +6,7 @@ from collections import defaultdict
 from collections.abc import Iterable, Sequence
 from datetime import datetime, timezone
 
-from polylogue.lib.action_event.action_events import (
+from polylogue.archive.action_event.action_events import (
     ActionEvent,
     build_action_events,
     build_tool_calls_from_content_blocks,

@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 
 import pytest
 
+from polylogue.archive.action_event.action_events import ActionEvent
 from polylogue.archive.query.plan import ConversationQueryPlan
 from polylogue.archive.query.runtime_matching import (
     matches_action_sequence,
@@ -12,7 +13,6 @@ from polylogue.archive.query.runtime_matching import (
     matches_referenced_path,
     matches_tool_terms,
 )
-from polylogue.lib.action_event.action_events import ActionEvent
 from polylogue.lib.conversation.models import Conversation
 from polylogue.lib.message.messages import MessageCollection
 from polylogue.lib.viewport.enums import ToolCategory

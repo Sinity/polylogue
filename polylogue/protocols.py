@@ -19,7 +19,7 @@ from polylogue.types import Provider, ValidationMode, ValidationStatus
 if TYPE_CHECKING:
     import aiosqlite
 
-    from polylogue.lib.action_event.action_events import ActionEvent
+    from polylogue.archive.action_event.action_events import ActionEvent
     from polylogue.lib.conversation.models import Conversation, ConversationSummary
     from polylogue.lib.message.models import Message
     from polylogue.lib.message.roles import MessageRoleFilter
