@@ -15,7 +15,7 @@ from polylogue.cli.shell_completion_values import (
     complete_tag_values,
     complete_tool_values,
 )
-from polylogue.lib.provider_identity import CORE_SCHEMA_PROVIDERS
+from polylogue.core.provider_identity import CORE_SCHEMA_PROVIDERS
 
 ClickCallable: TypeAlias = Callable[..., object]
 
