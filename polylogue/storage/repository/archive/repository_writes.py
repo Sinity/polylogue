@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 
 from polylogue.archive.conversation.models import Conversation
 from polylogue.core.json import JSONDocument, JSONValue
-from polylogue.lib.payload_coercion import string_sequence
+from polylogue.core.payload_coercion import string_sequence
 from polylogue.storage.backends.queries import conversations as conversations_q
 from polylogue.storage.backends.queries import publications as publications_q
 from polylogue.storage.backends.queries import runs as runs_q

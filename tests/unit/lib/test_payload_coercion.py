@@ -4,7 +4,7 @@ from datetime import date, datetime
 
 import pytest
 
-from polylogue.lib.payload_coercion import (
+from polylogue.core.payload_coercion import (
     coerce_float,
     coerce_int,
     int_pair,
