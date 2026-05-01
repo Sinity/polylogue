@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field, field_validator
 from polylogue.lib.conversation.branch_type import BranchType
 from polylogue.lib.hashing import hash_text
 from polylogue.lib.json import json_document
+from polylogue.lib.message.types import MessageType
 from polylogue.lib.roles import Role
 from polylogue.lib.security import sanitize_path as _sanitize_path_helper
 from polylogue.storage.run_state import RunCounts, RunCountsPayload
@@ -116,6 +117,7 @@ class MessageRecord(BaseModel):
     has_tool_use: int = 0
     has_thinking: int = 0
     has_paste: int = 0
+    message_type: MessageType = MessageType.MESSAGE
 
     @field_validator("role", mode="before")
     @classmethod
@@ -127,6 +129,11 @@ class MessageRecord(BaseModel):
         if isinstance(v, str) and not v.strip():
             return Role.UNKNOWN
         return Role.normalize(str(v))
+
+    @field_validator("message_type", mode="before")
+    @classmethod
+    def coerce_message_type(cls, v: object) -> MessageType:
+        return MessageType.normalize(v)
 
     @property
     def role_typed(self) -> Role:

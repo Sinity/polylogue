@@ -12,7 +12,7 @@ from polylogue.lib.query.runtime_matching import (
     matches_action_sequence,
     matches_action_terms,
     matches_action_text_terms,
-    matches_path_terms,
+    matches_referenced_path,
     matches_tool_terms,
 )
 from polylogue.lib.viewport.enums import ToolCategory
@@ -63,7 +63,7 @@ def _patch_events(
     monkeypatch.setattr("polylogue.lib.query.runtime_matching._action_events_for", lambda _conversation: events)
 
 
-def test_matches_path_terms_requires_each_term_across_affected_paths(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_matches_referenced_path_requires_each_term_across_affected_paths(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_events(
         monkeypatch,
         (
@@ -74,8 +74,10 @@ def test_matches_path_terms_requires_each_term_across_affected_paths(monkeypatch
         ),
     )
 
-    assert matches_path_terms(ConversationQueryPlan(path_terms=("SRC\\APP", "tests")), _conversation()) is True
-    assert matches_path_terms(ConversationQueryPlan(path_terms=("missing",)), _conversation()) is False
+    assert (
+        matches_referenced_path(ConversationQueryPlan(referenced_path=("SRC\\APP", "tests")), _conversation()) is True
+    )
+    assert matches_referenced_path(ConversationQueryPlan(referenced_path=("missing",)), _conversation()) is False
 
 
 def test_matches_action_and_tool_terms_handle_none_and_exclusions(monkeypatch: pytest.MonkeyPatch) -> None:

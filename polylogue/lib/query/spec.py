@@ -168,7 +168,7 @@ def build_query_spec_from_params(
         contains_terms=as_tuple(params.get("contains")),
         exclude_text_terms=as_tuple(params.get("exclude_text")),
         retrieval_lane=str(params.get("retrieval_lane") or "auto"),
-        path_terms=as_tuple(params.get("path_terms") or params.get("referenced_path")),
+        referenced_path=as_tuple(params.get("referenced_path")),
         cwd_prefix=optional_text(params.get("cwd_prefix")),
         action_terms=normalize_action_terms("action", params.get("action")),
         excluded_action_terms=normalize_action_terms("exclude_action", params.get("exclude_action")),
@@ -215,7 +215,7 @@ def query_spec_to_plan(
         contains_terms=spec.contains_terms,
         negative_terms=spec.exclude_text_terms,
         retrieval_lane=spec.retrieval_lane,
-        path_terms=spec.path_terms,
+        referenced_path=spec.referenced_path,
         cwd_prefix=spec.cwd_prefix,
         action_terms=spec.action_terms,
         excluded_action_terms=spec.excluded_action_terms,
@@ -268,7 +268,7 @@ class ConversationQuerySpec:
     contains_terms: tuple[str, ...] = ()
     exclude_text_terms: tuple[str, ...] = ()
     retrieval_lane: str = "auto"
-    path_terms: tuple[str, ...] = ()
+    referenced_path: tuple[str, ...] = ()
     cwd_prefix: str | None = None
     action_terms: tuple[str, ...] = ()
     excluded_action_terms: tuple[str, ...] = ()

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from devtools import verify_cross_cuts
@@ -35,6 +37,11 @@ def test_expected_for_layer_writes() -> None:
 
 def test_expected_for_layer_reads() -> None:
     assert verify_cross_cuts.expected_for("repository_archive_reads.py")["layer"] == "read"
+    assert verify_cross_cuts.expected_for("product_read_support.py")["layer"] == "read"
+
+
+def test_expected_for_ui_facade_api() -> None:
+    assert verify_cross_cuts.expected_for("facade.py", "polylogue/ui/facade.py")["api"] == "async"
 
 
 def test_expected_for_unsuffixed_returns_empty() -> None:
@@ -57,3 +64,20 @@ def test_parse_cross_cut_inline_mapping() -> None:
 def test_parse_cross_cut_empty() -> None:
     assert verify_cross_cuts.parse_cross_cut("") == {}
     assert verify_cross_cuts.parse_cross_cut("{}") == {}
+
+
+def test_actual_only_convention_tags_are_blocking(tmp_path: Path) -> None:
+    projection = tmp_path / "topology-target.yaml"
+    projection.write_text(
+        """
+files:
+  - path: polylogue/lib/dates.py
+    loc: 10
+    target: polylogue/lib/dates.py
+    owner: kernel
+    cross_cut: { layer: read }
+""",
+        encoding="utf-8",
+    )
+
+    assert verify_cross_cuts.main(["--yaml", str(projection)]) == 1

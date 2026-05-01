@@ -233,7 +233,7 @@ def make_code_message(msg_type: str, text: str | None, **kwargs: object) -> Json
 CLAUDE_PARSE_CODE_CASES: list[tuple[list[object], int | str, str]] = [
     (_code_payload(make_code_message("user", "Question")), 1, "user message"),
     (_code_payload(make_code_message("assistant", "Answer")), 1, "assistant message"),
-    (_code_payload(make_code_message("summary", "Summary text")), 0, "skip summary"),
+    (_code_payload(make_code_message("summary", "Summary text")), 1, "summary message"),
     (_code_payload(make_code_message("user", "Q")), "user", "user type"),
     (_code_payload(), 0, "empty messages"),
 ]
@@ -1169,8 +1169,17 @@ def test_parse_git_operation_contract(payload: dict[str, object], expected: dict
             ],
             {"operation": "edit", "path": "/test.py"},
         ),
+        (
+            [
+                {
+                    "tool_name": "NotebookEdit",
+                    "input": {"notebook_path": "/notebook.ipynb", "new_source": "print('hello')"},
+                }
+            ],
+            {"operation": "edit", "path": "/notebook.ipynb"},
+        ),
     ],
-    ids=["read", "write", "edit"],
+    ids=["read", "write", "edit", "notebook-edit"],
 )
 def test_extract_file_changes_contract(payload: list[dict[str, object]], expected: dict[str, str]) -> None:
     changes = extract_file_changes(payload)
@@ -1264,11 +1273,13 @@ def test_parse_code_semantic_projection_contract() -> None:
 
     result = parse_code(payload, "test-session")
 
-    assert len(result.messages) == 2
+    assert len(result.messages) == 3
     assert result.messages[0].provider_meta is None
     first_types = [block.type for block in result.messages[0].content_blocks]
     assert "thinking" in first_types and "tool_use" in first_types
-    bash_blocks = [block for block in result.messages[1].content_blocks if block.tool_name == "Bash"]
+    assert result.messages[1].message_type.value == "summary"
+    assert result.messages[1].text == "Summary of conversation"
+    bash_blocks = [block for block in result.messages[2].content_blocks if block.tool_name == "Bash"]
     assert len(bash_blocks) == 1
     assert bash_blocks[0].tool_input is not None
     assert bash_blocks[0].tool_input.get("command") == "git commit -m 'Fix bug'"

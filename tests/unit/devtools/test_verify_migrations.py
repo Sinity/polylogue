@@ -85,3 +85,13 @@ def test_strict_mode_blocks_on_findings() -> None:
     rc = verify_migrations.main(["--strict", "retire-audit-qa-showcase"])
     # #413 has not landed yet — surviving entries should make this blocking.
     assert rc == 1
+
+
+def test_json_unknown_strict_name_keeps_stdout_parseable(capsys: pytest.CaptureFixture[str]) -> None:
+    rc = verify_migrations.main(["--json", "--strict", "missing-migration"])
+
+    assert rc == 1
+    captured = capsys.readouterr()
+    assert captured.out.startswith("{")
+    assert "[error]" not in captured.out
+    assert "[error]" in captured.err

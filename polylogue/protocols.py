@@ -122,7 +122,7 @@ class ConversationReader(Protocol):
         since: str | None = None,
         until: str | None = None,
         title_contains: str | None = None,
-        path_terms: builtins.list[str] | None = None,
+        referenced_path: builtins.list[str] | None = None,
         cwd_prefix: str | None = None,
         action_terms: builtins.list[str] | None = None,
         excluded_action_terms: builtins.list[str] | None = None,
@@ -133,6 +133,7 @@ class ConversationReader(Protocol):
         min_messages: int | None = None,
         max_messages: int | None = None,
         min_words: int | None = None,
+        message_type: str | None = None,
     ) -> builtins.list[Conversation]: ...
 
     async def list_summaries(
@@ -145,7 +146,7 @@ class ConversationReader(Protocol):
         since: str | None = None,
         until: str | None = None,
         title_contains: str | None = None,
-        path_terms: builtins.list[str] | None = None,
+        referenced_path: builtins.list[str] | None = None,
         cwd_prefix: str | None = None,
         action_terms: builtins.list[str] | None = None,
         excluded_action_terms: builtins.list[str] | None = None,
@@ -156,6 +157,7 @@ class ConversationReader(Protocol):
         min_messages: int | None = None,
         max_messages: int | None = None,
         min_words: int | None = None,
+        message_type: str | None = None,
     ) -> builtins.list[ConversationSummary]: ...
 
     async def count(
@@ -165,7 +167,7 @@ class ConversationReader(Protocol):
         since: str | None = None,
         until: str | None = None,
         title_contains: str | None = None,
-        path_terms: builtins.list[str] | None = None,
+        referenced_path: builtins.list[str] | None = None,
         cwd_prefix: str | None = None,
         action_terms: builtins.list[str] | None = None,
         excluded_action_terms: builtins.list[str] | None = None,
@@ -176,6 +178,7 @@ class ConversationReader(Protocol):
         min_messages: int | None = None,
         max_messages: int | None = None,
         min_words: int | None = None,
+        message_type: str | None = None,
     ) -> int: ...
 
     async def get_summary(self, conversation_id: str) -> ConversationSummary | None: ...

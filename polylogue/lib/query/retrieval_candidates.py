@@ -30,7 +30,7 @@ async def candidate_record_query_for(
 
 def uses_action_read_model(plan: ConversationQueryPlan) -> bool:
     return bool(
-        plan.path_terms
+        plan.referenced_path
         or plan.action_terms
         or plan.excluded_action_terms
         or plan.tool_terms

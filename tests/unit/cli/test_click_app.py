@@ -33,7 +33,7 @@ class TestHandleQueryMode:
             "since": None,
             "until": None,
             "title": None,
-            "path_terms": (),
+            "referenced_path": (),
             "action": (),
             "exclude_action": (),
             "action_sequence": None,
@@ -119,7 +119,7 @@ class TestHandleQueryMode:
             self._make_params(until="2025-12-31"),
             self._make_params(latest=True),
             self._make_params(title="test"),
-            self._make_params(path_terms=("/workspace/polylogue/README.md",)),
+            self._make_params(referenced_path=("/workspace/polylogue/README.md",)),
             self._make_params(action=("search",)),
             self._make_params(exclude_action=("git",)),
             self._make_params(action_sequence="file_read,file_edit,shell"),
@@ -173,6 +173,80 @@ class TestHandleQueryMode:
 
         request = mock_execute.call_args[0][1]
         assert request.query_params()["query"] == ("python", "error")
+
+
+def test_messages_verb_forwards_parent_request_and_projection_options(cli_runner: CliRunner) -> None:
+    with patch("polylogue.cli.messages.run_messages") as mock_run_messages:
+        result = cli_runner.invoke(
+            click_cli,
+            [
+                "--plain",
+                "messages",
+                "conv-1",
+                "--message-role",
+                "user",
+                "--message-type",
+                "summary",
+                "--limit",
+                "2",
+                "--offset",
+                "1",
+                "--no-code-blocks",
+                "--no-tool-calls",
+                "--no-tool-outputs",
+                "--no-file-reads",
+                "--prose-only",
+                "-f",
+                "json",
+            ],
+            catch_exceptions=False,
+        )
+
+    assert result.exit_code == 0
+    assert mock_run_messages.call_args.kwargs == {
+        "conversation_id": "conv-1",
+        "message_role": ("user",),
+        "message_type": "summary",
+        "limit": 2,
+        "offset": 1,
+        "no_code_blocks": True,
+        "no_tool_calls": True,
+        "no_tool_outputs": True,
+        "no_file_reads": True,
+        "prose_only": True,
+        "output_format": "json",
+    }
+
+
+def test_messages_verb_requires_id(cli_runner: CliRunner) -> None:
+    result = cli_runner.invoke(click_cli, ["--plain", "messages"])
+
+    assert result.exit_code != 0
+    assert "messages requires a conversation ID" in result.output
+
+
+def test_raw_verb_forwards_pagination_and_format(cli_runner: CliRunner) -> None:
+    with patch("polylogue.cli.messages.run_raw") as mock_run_raw:
+        result = cli_runner.invoke(
+            click_cli,
+            ["--plain", "raw", "conv-1", "--limit", "3", "--offset", "2", "-f", "yaml"],
+            catch_exceptions=False,
+        )
+
+    assert result.exit_code == 0
+    assert mock_run_raw.call_args.kwargs == {
+        "conversation_id": "conv-1",
+        "limit": 3,
+        "offset": 2,
+        "output_format": "yaml",
+    }
+
+
+def test_raw_verb_requires_id(cli_runner: CliRunner) -> None:
+    result = cli_runner.invoke(click_cli, ["--plain", "raw"])
+
+    assert result.exit_code != 0
+    assert "raw requires a conversation ID" in result.output
 
 
 class TestQueryFirstGroupParseArgs:

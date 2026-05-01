@@ -1,0 +1,7 @@
+Usage: polylogue diagnostics turns [OPTIONS] CONVERSATION_ID
+
+  Show per-turn cost and duration for one conversation.
+
+Options:
+  -n, --limit INTEGER  Max turns to show
+  -h, --help           Show this message and exit.

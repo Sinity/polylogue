@@ -49,13 +49,13 @@ class _StringLengthAnnotation:
 
 def _annotation_records(schema: SchemaRecord, key: str) -> tuple[SchemaRecord, ...]:
     value = schema.get(key)
-    if not isinstance(value, list):
+    if not isinstance(value, list | tuple):
         return ()
     return tuple(item for item in value if isinstance(item, dict))
 
 
 def _string_tuple(value: object) -> tuple[str, ...]:
-    if not isinstance(value, list):
+    if not isinstance(value, list | tuple):
         return ()
     return tuple(str(item) for item in value)
 

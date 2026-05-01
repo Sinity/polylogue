@@ -17,15 +17,11 @@ __all__ = [
 
 def _session_profile_order_by(sort: str) -> str:
     if sort == "first-message":
-        return (
-            "ORDER BY COALESCE(sp.first_message_at, sp.source_updated_at, sp.last_message_at) DESC, sp.conversation_id"
-        )
+        return "ORDER BY COALESCE(unixepoch(sp.first_message_at), unixepoch(sp.source_updated_at), unixepoch(sp.last_message_at)) DESC, sp.conversation_id"
     if sort == "last-message":
-        return (
-            "ORDER BY COALESCE(sp.last_message_at, sp.source_updated_at, sp.first_message_at) DESC, sp.conversation_id"
-        )
+        return "ORDER BY COALESCE(unixepoch(sp.last_message_at), unixepoch(sp.source_updated_at), unixepoch(sp.first_message_at)) DESC, sp.conversation_id"
     if sort == "wallclock":
-        return "ORDER BY sp.wall_duration_ms DESC, COALESCE(sp.last_message_at, sp.source_updated_at, sp.first_message_at) DESC, sp.conversation_id"
+        return "ORDER BY sp.wall_duration_ms DESC, COALESCE(unixepoch(sp.last_message_at), unixepoch(sp.source_updated_at), unixepoch(sp.first_message_at)) DESC, sp.conversation_id"
     return "ORDER BY COALESCE(sp.source_sort_key, 0) DESC, sp.conversation_id"
 
 

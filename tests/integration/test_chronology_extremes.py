@@ -11,10 +11,18 @@ from pathlib import Path
 
 import pytest
 
-from tests.infra.cli_subprocess import run_cli, setup_isolated_workspace
+from tests.infra.cli_subprocess import CliResult, IsolatedWorkspace, run_cli, setup_isolated_workspace
 from tests.infra.large_batches import generate_timestamp_patterns, write_jsonl_file
 
 pytestmark = [pytest.mark.integration, pytest.mark.chaos]
+
+
+def _run_inbox(workspace: IsolatedWorkspace) -> CliResult:
+    return run_cli(
+        ["run", "--input", str(workspace["paths"]["inbox"])],
+        env=workspace["env"],
+        timeout=120.0,
+    )
 
 
 # =============================================================================
@@ -37,11 +45,7 @@ def test_epoch_near_zero_timestamps_ingested(tmp_path: Path) -> None:
     write_jsonl_file(jsonl_path, lines)
 
     # Run ingestion
-    result = run_cli(
-        ["run", "--source", "inbox"],
-        env=workspace["env"],
-        timeout=120.0,
-    )
+    result = _run_inbox(workspace)
 
     assert result.success, f"Pipeline failed: {result.stderr}"
 
@@ -66,11 +70,7 @@ def test_y2038_adjacent_timestamps_ingested(tmp_path: Path) -> None:
     lines = [json.dumps(record) for record in y2038_records]
     write_jsonl_file(jsonl_path, lines)
 
-    result = run_cli(
-        ["run", "--source", "inbox"],
-        env=workspace["env"],
-        timeout=120.0,
-    )
+    result = _run_inbox(workspace)
 
     assert result.success, f"Pipeline failed: {result.stderr}"
 
@@ -94,11 +94,7 @@ def test_far_future_timestamps_ingested(tmp_path: Path) -> None:
     lines = [json.dumps(record) for record in future_records]
     write_jsonl_file(jsonl_path, lines)
 
-    result = run_cli(
-        ["run", "--source", "inbox"],
-        env=workspace["env"],
-        timeout=120.0,
-    )
+    result = _run_inbox(workspace)
 
     assert result.success, f"Pipeline failed: {result.stderr}"
 
@@ -133,11 +129,7 @@ def test_mixed_timestamp_formats_coexist(tmp_path: Path) -> None:
     lines = [json.dumps(record) for record in mixed_records]
     write_jsonl_file(jsonl_path, lines)
 
-    result = run_cli(
-        ["run", "--source", "inbox"],
-        env=workspace["env"],
-        timeout=120.0,
-    )
+    result = _run_inbox(workspace)
 
     assert result.success, f"Pipeline failed: {result.stderr}"
 
@@ -171,11 +163,7 @@ def test_missing_timestamps_handled(tmp_path: Path) -> None:
     lines = [json.dumps(record) for record in missing_ts_records]
     write_jsonl_file(jsonl_path, lines)
 
-    result = run_cli(
-        ["run", "--source", "inbox"],
-        env=workspace["env"],
-        timeout=120.0,
-    )
+    result = _run_inbox(workspace)
 
     assert result.success, f"Pipeline failed: {result.stderr}"
 
@@ -227,11 +215,7 @@ def test_chronological_ordering_preserved(tmp_path: Path) -> None:
     lines = [json.dumps(record) for record in records]
     write_jsonl_file(jsonl_path, lines)
 
-    result = run_cli(
-        ["run", "--source", "inbox"],
-        env=workspace["env"],
-        timeout=120.0,
-    )
+    result = _run_inbox(workspace)
 
     assert result.success, f"Pipeline failed: {result.stderr}"
 
@@ -264,11 +248,7 @@ def test_tomorrow_timestamps_ingested(tmp_path: Path) -> None:
     lines = [json.dumps(record) for record in tomorrow_records]
     write_jsonl_file(jsonl_path, lines)
 
-    result = run_cli(
-        ["run", "--source", "inbox"],
-        env=workspace["env"],
-        timeout=120.0,
-    )
+    result = _run_inbox(workspace)
 
     assert result.success, f"Pipeline failed: {result.stderr}"
 
@@ -297,11 +277,7 @@ def test_all_timestamp_patterns_in_single_inbox(tmp_path: Path) -> None:
         lines = [json.dumps(record) for record in records]
         write_jsonl_file(jsonl_path, lines)
 
-    result = run_cli(
-        ["run", "--source", "inbox"],
-        env=workspace["env"],
-        timeout=120.0,
-    )
+    result = _run_inbox(workspace)
 
     assert result.success, f"Pipeline failed: {result.stderr}"
 

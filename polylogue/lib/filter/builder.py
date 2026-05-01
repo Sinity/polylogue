@@ -114,7 +114,7 @@ class ConversationFilterBuilderMixin:
     def referenced_path(self, pattern: str) -> Self:
         return _replace_plan(
             self,
-            path_terms=_extend_tuple(self._plan.path_terms, (pattern,)),
+            referenced_path=_extend_tuple(self._plan.referenced_path, (pattern,)),
         )
 
     def cwd_prefix(self, prefix: str) -> Self:

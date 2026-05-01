@@ -15,7 +15,7 @@ class ConversationListQueryKwargs(TypedDict):
     since: str | None
     until: str | None
     title_contains: str | None
-    path_terms: list[str] | None
+    referenced_path: list[str] | None
     cwd_prefix: str | None
     action_terms: list[str] | None
     excluded_action_terms: list[str] | None
@@ -31,6 +31,7 @@ class ConversationListQueryKwargs(TypedDict):
     min_messages: int | None
     max_messages: int | None
     min_words: int | None
+    message_type: str | None
 
 
 class ConversationCountQueryKwargs(TypedDict):
@@ -40,7 +41,7 @@ class ConversationCountQueryKwargs(TypedDict):
     since: str | None
     until: str | None
     title_contains: str | None
-    path_terms: list[str] | None
+    referenced_path: list[str] | None
     cwd_prefix: str | None
     action_terms: list[str] | None
     excluded_action_terms: list[str] | None
@@ -54,6 +55,7 @@ class ConversationCountQueryKwargs(TypedDict):
     min_messages: int | None
     max_messages: int | None
     min_words: int | None
+    message_type: str | None
 
 
 @dataclass(frozen=True)
@@ -67,7 +69,7 @@ class ConversationRecordQuery:
     since: str | None = None
     until: str | None = None
     title_contains: str | None = None
-    path_terms: tuple[str, ...] = ()
+    referenced_path: tuple[str, ...] = ()
     cwd_prefix: str | None = None
     action_terms: tuple[str, ...] = ()
     excluded_action_terms: tuple[str, ...] = ()
@@ -98,7 +100,7 @@ class ConversationRecordQuery:
     def without_unstable_semantic_filters(self) -> ConversationRecordQuery:
         return replace(
             self,
-            path_terms=(),
+            referenced_path=(),
             action_terms=(),
             excluded_action_terms=(),
         )
@@ -119,7 +121,7 @@ class ConversationRecordQuery:
             "since": self.since,
             "until": self.until,
             "title_contains": self.title_contains,
-            "path_terms": list(self.path_terms) or None,
+            "referenced_path": list(self.referenced_path) or None,
             "cwd_prefix": self.cwd_prefix,
             "action_terms": list(self.action_terms) or None,
             "excluded_action_terms": list(self.excluded_action_terms) or None,
@@ -135,6 +137,7 @@ class ConversationRecordQuery:
             "min_messages": self.min_messages,
             "max_messages": self.max_messages,
             "min_words": self.min_words,
+            "message_type": self.message_type,
         }
 
     def to_count_kwargs(self) -> ConversationCountQueryKwargs:
@@ -145,7 +148,7 @@ class ConversationRecordQuery:
             "since": self.since,
             "until": self.until,
             "title_contains": self.title_contains,
-            "path_terms": list(self.path_terms) or None,
+            "referenced_path": list(self.referenced_path) or None,
             "cwd_prefix": self.cwd_prefix,
             "action_terms": list(self.action_terms) or None,
             "excluded_action_terms": list(self.excluded_action_terms) or None,
@@ -159,6 +162,7 @@ class ConversationRecordQuery:
             "min_messages": self.min_messages,
             "max_messages": self.max_messages,
             "min_words": self.min_words,
+            "message_type": self.message_type,
         }
 
 

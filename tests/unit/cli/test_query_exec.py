@@ -118,7 +118,7 @@ def _make_params(**overrides: object) -> dict[str, object]:
         "tag": None,
         "exclude_tag": None,
         "title": None,
-        "path_terms": (),
+        "referenced_path": (),
         "action": (),
         "exclude_action": (),
         "action_sequence": None,
@@ -694,7 +694,7 @@ async def test_query_plan_path_filters_fall_back_to_full_list_when_action_read_m
         )
     )
     repo.list_by_query = AsyncMock(return_value=[matching, non_matching])
-    plan = ConversationQuerySpec(path_terms=("/tmp/a.py",), limit=10).to_plan()
+    plan = ConversationQuerySpec(referenced_path=("/tmp/a.py",), limit=10).to_plan()
 
     results = await plan.list(repo)
 

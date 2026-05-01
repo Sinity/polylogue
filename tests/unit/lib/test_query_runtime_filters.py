@@ -46,14 +46,18 @@ def _conversation(
     provider: Provider = Provider.CLAUDE_CODE,
     title: str = "Conversation",
     metadata: dict[str, object] | None = None,
+    provider_meta: dict[str, object] | None = None,
     parent_id: str | None = None,
     branch_type: BranchType | None = None,
+    updated_at: datetime | None = None,
 ) -> Conversation:
     return make_conv(
         id=conversation_id,
         provider=provider,
         title=title,
         metadata=metadata or {},
+        provider_meta=provider_meta,
+        updated_at=updated_at,
         parent_id=parent_id,
         branch_type=branch_type,
         messages=list(messages),
@@ -205,7 +209,7 @@ def test_apply_full_filters_handles_content_word_branch_predicate_and_action_fil
     )
 
     for name in (
-        "matches_path_terms",
+        "matches_referenced_path",
         "matches_action_terms",
         "matches_action_sequence",
         "matches_action_text_terms",
@@ -227,7 +231,7 @@ def test_apply_full_filters_handles_content_word_branch_predicate_and_action_fil
             negative_terms=("negative",),
             has_branches=True,
             predicates=(lambda conversation: "branchy" in str(conversation.id),),
-            path_terms=("/repo/src/app.py",),
+            referenced_path=("/repo/src/app.py",),
             action_terms=("shell",),
             action_sequence=("search", "shell"),
             action_text_terms=("pytest",),
@@ -251,3 +255,67 @@ def test_apply_full_filters_handles_content_word_branch_predicate_and_action_fil
     )
 
     assert [str(conversation.id) for conversation in no_branches] == ["conv-plain"]
+
+
+def test_apply_full_filters_handles_message_type_and_since_session_scope() -> None:
+    reference_ts = datetime(2026, 4, 23, 10, 0, tzinfo=timezone.utc)
+    reference = _conversation(
+        "session-root",
+        make_msg(id="ref-user", role="user", text="root", timestamp=reference_ts),
+        provider_meta={"working_directories": ["/repo"]},
+        updated_at=reference_ts,
+    )
+    later_same_repo = _conversation(
+        "session-later",
+        make_msg(
+            id="later-summary",
+            role="system",
+            text="summary",
+            timestamp=datetime(2026, 4, 23, 10, 2, tzinfo=timezone.utc),
+            message_type="summary",
+        ),
+        provider_meta={"working_directories": ["/repo/polylogue"]},
+        updated_at=datetime(2026, 4, 23, 10, 2, tzinfo=timezone.utc),
+    )
+    later_other_repo = _conversation(
+        "session-other",
+        make_msg(
+            id="other-summary",
+            role="system",
+            text="summary",
+            timestamp=datetime(2026, 4, 23, 10, 3, tzinfo=timezone.utc),
+            message_type="summary",
+        ),
+        provider_meta={"working_directories": ["/other"]},
+        updated_at=datetime(2026, 4, 23, 10, 3, tzinfo=timezone.utc),
+    )
+    earlier_same_repo = _conversation(
+        "session-earlier",
+        make_msg(
+            id="earlier-summary",
+            role="system",
+            text="summary",
+            timestamp=datetime(2026, 4, 23, 9, 59, tzinfo=timezone.utc),
+            message_type="summary",
+        ),
+        provider_meta={"working_directories": ["/repo"]},
+        updated_at=datetime(2026, 4, 23, 9, 59, tzinfo=timezone.utc),
+    )
+
+    filtered = apply_full_filters(
+        ConversationQueryPlan(
+            message_type="summary",
+            since_session_id="session-root",
+        ),
+        [reference, later_same_repo, later_other_repo, earlier_same_repo],
+        sql_pushed=False,
+    )
+
+    assert [str(conversation.id) for conversation in filtered] == ["session-later"]
+
+    unchanged = apply_full_filters(
+        ConversationQueryPlan(since_session_id="missing"),
+        [reference, later_same_repo],
+        sql_pushed=False,
+    )
+    assert [str(conversation.id) for conversation in unchanged] == ["session-root", "session-later"]

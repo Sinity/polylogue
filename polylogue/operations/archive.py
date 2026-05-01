@@ -13,7 +13,7 @@ from polylogue.config import ConfigError
 from polylogue.lib.conversation.models import ConversationSummary
 from polylogue.lib.pricing import CostUsagePayload, _normalize_model, estimate_conversation_cost, generated_at
 from polylogue.lib.query.spec import ConversationQuerySpec
-from polylogue.lib.semantic.content_projection import ContentProjectionSpec
+from polylogue.lib.semantic.content_projection import ContentProjectionSpec, project_message_content
 from polylogue.maintenance.targets import build_maintenance_target_catalog
 from polylogue.paths.sanitize import conversation_render_root
 from polylogue.products.archive import (
@@ -389,17 +389,19 @@ class ArchiveSearchMixin:
         message_type: MessageTypeName | None = None,
         limit: int = 50,
         offset: int = 0,
+        content_projection: ContentProjectionSpec | None = None,
     ) -> tuple[list[Message], int]:
         resolved = await self.repository.resolve_id(conversation_id)
         if not resolved:
             return [], 0
-        return await self.repository.get_messages_paginated(
+        messages, total = await self.repository.get_messages_paginated(
             str(resolved),
             message_role=message_role,
             message_type=message_type,
             limit=limit,
             offset=offset,
         )
+        return project_message_content(messages, content_projection), total
 
     async def get_raw_records_for_conversation(
         self,

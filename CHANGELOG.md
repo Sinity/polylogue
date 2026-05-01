@@ -39,6 +39,9 @@ documentation polish do not require an entry.
 
 ### Changed
 
+- Query/file-reference filters now use `referenced_path` / `--referenced-path`
+  consistently, and MCP conversation reads return headers while message bodies
+  live behind paginated `get_messages` / `messages` reads.
 - `Config` rejects relative `archive_root`, `render_root`, or `db_path`
   with `ConfigError` at construction.
 - `_privacy_level_value` raises `ValueError` on unknown level strings

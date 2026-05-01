@@ -40,7 +40,7 @@ class RepositoryArchiveQueryMixin:
         since: str | None = None,
         until: str | None = None,
         title_contains: str | None = None,
-        path_terms: list[str] | None = None,
+        referenced_path: list[str] | None = None,
         cwd_prefix: str | None = None,
         action_terms: list[str] | None = None,
         excluded_action_terms: list[str] | None = None,
@@ -51,6 +51,7 @@ class RepositoryArchiveQueryMixin:
         min_messages: int | None = None,
         max_messages: int | None = None,
         min_words: int | None = None,
+        message_type: str | None = None,
     ) -> list[ConversationSummary]:
         return await self.list_summaries_by_query(
             ConversationRecordQuery(
@@ -60,7 +61,7 @@ class RepositoryArchiveQueryMixin:
                 since=since,
                 until=until,
                 title_contains=title_contains,
-                path_terms=tuple(path_terms or ()),
+                referenced_path=tuple(referenced_path or ()),
                 cwd_prefix=cwd_prefix,
                 action_terms=tuple(action_terms or ()),
                 excluded_action_terms=tuple(excluded_action_terms or ()),
@@ -73,6 +74,7 @@ class RepositoryArchiveQueryMixin:
                 min_messages=min_messages,
                 max_messages=max_messages,
                 min_words=min_words,
+                message_type=message_type,
             )
         )
 
@@ -86,7 +88,7 @@ class RepositoryArchiveQueryMixin:
         since: str | None = None,
         until: str | None = None,
         title_contains: str | None = None,
-        path_terms: list[str] | None = None,
+        referenced_path: list[str] | None = None,
         cwd_prefix: str | None = None,
         action_terms: list[str] | None = None,
         excluded_action_terms: list[str] | None = None,
@@ -97,6 +99,7 @@ class RepositoryArchiveQueryMixin:
         min_messages: int | None = None,
         max_messages: int | None = None,
         min_words: int | None = None,
+        message_type: str | None = None,
     ) -> AsyncIterator[list[ConversationSummary]]:
         offset = 0
         while True:
@@ -109,7 +112,7 @@ class RepositoryArchiveQueryMixin:
                 since=since,
                 until=until,
                 title_contains=title_contains,
-                path_terms=path_terms,
+                referenced_path=referenced_path,
                 cwd_prefix=cwd_prefix,
                 action_terms=action_terms,
                 excluded_action_terms=excluded_action_terms,
@@ -120,6 +123,7 @@ class RepositoryArchiveQueryMixin:
                 min_messages=min_messages,
                 max_messages=max_messages,
                 min_words=min_words,
+                message_type=message_type,
             )
             if not page:
                 break
@@ -137,7 +141,7 @@ class RepositoryArchiveQueryMixin:
         since: str | None = None,
         until: str | None = None,
         title_contains: str | None = None,
-        path_terms: list[str] | None = None,
+        referenced_path: list[str] | None = None,
         cwd_prefix: str | None = None,
         action_terms: list[str] | None = None,
         excluded_action_terms: list[str] | None = None,
@@ -148,6 +152,7 @@ class RepositoryArchiveQueryMixin:
         min_messages: int | None = None,
         max_messages: int | None = None,
         min_words: int | None = None,
+        message_type: str | None = None,
     ) -> list[Conversation]:
         return await self.list_by_query(
             ConversationRecordQuery(
@@ -156,7 +161,7 @@ class RepositoryArchiveQueryMixin:
                 since=since,
                 until=until,
                 title_contains=title_contains,
-                path_terms=tuple(path_terms or ()),
+                referenced_path=tuple(referenced_path or ()),
                 cwd_prefix=cwd_prefix,
                 action_terms=tuple(action_terms or ()),
                 excluded_action_terms=tuple(excluded_action_terms or ()),
@@ -169,6 +174,7 @@ class RepositoryArchiveQueryMixin:
                 min_messages=min_messages,
                 max_messages=max_messages,
                 min_words=min_words,
+                message_type=message_type,
             )
         )
 
@@ -197,7 +203,7 @@ class RepositoryArchiveQueryMixin:
         since: str | None = None,
         until: str | None = None,
         title_contains: str | None = None,
-        path_terms: builtins.list[str] | None = None,
+        referenced_path: builtins.list[str] | None = None,
         cwd_prefix: str | None = None,
         action_terms: builtins.list[str] | None = None,
         excluded_action_terms: builtins.list[str] | None = None,
@@ -208,6 +214,7 @@ class RepositoryArchiveQueryMixin:
         min_messages: int | None = None,
         max_messages: int | None = None,
         min_words: int | None = None,
+        message_type: str | None = None,
     ) -> int:
         return await self.count_by_query(
             ConversationRecordQuery(
@@ -216,7 +223,7 @@ class RepositoryArchiveQueryMixin:
                 since=since,
                 until=until,
                 title_contains=title_contains,
-                path_terms=tuple(path_terms or ()),
+                referenced_path=tuple(referenced_path or ()),
                 cwd_prefix=cwd_prefix,
                 action_terms=tuple(action_terms or ()),
                 excluded_action_terms=tuple(excluded_action_terms or ()),
@@ -227,6 +234,7 @@ class RepositoryArchiveQueryMixin:
                 min_messages=min_messages,
                 max_messages=max_messages,
                 min_words=min_words,
+                message_type=message_type,
             )
         )
 

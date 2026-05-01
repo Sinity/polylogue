@@ -197,7 +197,7 @@ def main(argv: list[str] | None = None) -> int:
     unknown_strict = sorted(n for n in args.strict if n not in migration_names)
     if unknown_strict:
         msg = f"unknown --strict migration name(s): {unknown_strict}"
-        print(f"[error] {msg}")
+        print(f"[error] {msg}", file=sys.stderr)
         if args.json:
             json.dump({"blocking": True, "error": msg}, sys.stdout, indent=2)
             sys.stdout.write("\n")

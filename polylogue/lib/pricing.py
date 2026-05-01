@@ -523,7 +523,7 @@ def estimate_conversation_cost(conversation: Conversation) -> CostEstimatePayloa
         provenance.extend(estimate.provenance)
     model_name, normalized_model = _dominant_model(message_estimates)
     missing_count = len(message_estimates) - len(priced)
-    all_exact = bool(priced) and all(e.status == "exact" for e in priced)
+    all_exact = missing_count == 0 and bool(priced) and all(e.status == "exact" for e in priced)
     if all_exact:
         status: CostEstimateStatus = "exact"
     elif missing_count == 0:

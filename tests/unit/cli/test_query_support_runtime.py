@@ -210,7 +210,7 @@ def test_apply_transform_covers_all_supported_variants() -> None:
     assert len(apply_transform([conversation], "strip-all")) == 1
 
 
-def test_query_semantic_matches_none_blocked_text_and_path_terms() -> None:
+def test_query_semantic_matches_none_blocked_text_and_referenced_path() -> None:
     action = _action()
 
     assert (
@@ -237,8 +237,8 @@ def test_query_semantic_matches_none_blocked_text_and_path_terms() -> None:
         )
         is False
     )
-    assert query_semantic.path_matches_slice(action, ("demo.py",)) is True
-    assert query_semantic.path_matches_slice(action, ("missing.py",)) is False
+    assert query_semantic.referenced_path_matches_slice(action, ("demo.py",)) is True
+    assert query_semantic.referenced_path_matches_slice(action, ("missing.py",)) is False
 
 
 @pytest.mark.asyncio

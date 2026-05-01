@@ -512,8 +512,11 @@ class SchemaRegistry:
         )
 
     def _package_rank(self, catalog: SchemaPackageCatalog) -> dict[str, int]:
-        ranked = sorted(catalog.packages, key=lambda package: _package_rank_key(catalog, package))
-        return {package.version: index for index, package in enumerate(ranked)}
+        return {package.version: index for index, package in enumerate(self._ranked_packages(catalog))}
+
+    @staticmethod
+    def _package_rank_from_sorted(packages: Sequence[SchemaVersionPackage]) -> dict[str, int]:
+        return {package.version: index for index, package in enumerate(packages)}
 
     def _ranked_packages(self, catalog: SchemaPackageCatalog) -> list[SchemaVersionPackage]:
         return sorted(catalog.packages, key=lambda package: _package_rank_key(catalog, package))
@@ -662,7 +665,7 @@ class SchemaRegistry:
 
         observations = self._observed_payloads(provider_token, payload, source_path=source_path)
         ranked_packages = self._ranked_packages(catalog)
-        package_rank = self._package_rank(catalog)
+        package_rank = self._package_rank_from_sorted(ranked_packages)
         best_candidate: _ResolutionCandidate | None = None
         for index, observation in enumerate(observations):
             candidate = self._resolve_observation(

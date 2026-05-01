@@ -29,6 +29,7 @@ from polylogue.pipeline.run_support import (
 )
 from polylogue.pipeline.stage_specs import (
     PipelineStageSpec,
+    StageContractError,
     stage_sequence_suspends_fts,
     stage_specs_for_sequence,
     validate_stage_contract,
@@ -280,16 +281,17 @@ async def run_sources(
 
         async def _run_stage_spec(spec: PipelineStageSpec) -> None:
             nonlocal index_outcome
-            if not spec.pipeline_managed:
-                executed_stages.add(spec.name)
-                executed_specs.append(spec)
-                return
-            validate_stage_contract(spec, executed_specs=executed_specs)
             execution_stage = spec.execution_stage(
                 requested_stage=stage,
                 explicit_sequence=explicit_sequence,
                 executed_stages=executed_stages,
             )
+            if not spec.pipeline_managed and spec.name != "embed":
+                executed_stages.add(spec.name)
+                executed_specs.append(spec)
+                return
+            if spec.pipeline_managed and (execution_stage == "all" or (explicit_sequence and executed_specs)):
+                validate_stage_contract(spec, executed_specs=executed_specs)
             if spec.name == "acquire":
                 await _run_acquire_stage(spec)
             elif spec.name == "schema":
@@ -323,8 +325,21 @@ async def run_sources(
                 await suspend_fts_triggers_async(conn)
                 await conn.commit()
 
-        for stage_spec in stage_specs:
-            await _run_stage_spec(stage_spec)
+        try:
+            for stage_spec in stage_specs:
+                await _run_stage_spec(stage_spec)
+        except StageContractError as exc:
+            index_outcome = IndexStageOutcome(indexed=False, item_count=0, error=f"{type(exc).__name__}: {exc}")
+            await persist_run_result(
+                config=config,
+                repository=active_repository,
+                plan=plan,
+                state=state,
+                metrics=metrics,
+                index_outcome=index_outcome,
+                duration_ms=int((time.perf_counter() - start) * 1000),
+            )
+            raise
 
         return await persist_run_result(
             config=config,

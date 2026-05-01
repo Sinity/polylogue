@@ -23,7 +23,12 @@ from polylogue.pipeline.run_support import RUN_LEAF_STAGES, expand_requested_sta
 from polylogue.pipeline.runner import _select_sources, latest_run, plan_sources, run_sources
 from polylogue.pipeline.services.parsing_models import IngestResult, ParseResult
 from polylogue.pipeline.stage_models import AcquireResult
-from polylogue.pipeline.stage_specs import PIPELINE_STAGE_SPECS, stage_sequence_suspends_fts, stage_specs_for_sequence
+from polylogue.pipeline.stage_specs import (
+    PIPELINE_STAGE_SPECS,
+    StageContractError,
+    stage_sequence_suspends_fts,
+    stage_specs_for_sequence,
+)
 from polylogue.sources.parsers.base import RawConversationData
 from polylogue.storage.backends import create_backend
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
@@ -104,6 +109,50 @@ def _write_chatgpt_export(path: Path, conversation_id: str, *, text: str = "Test
         ),
         encoding="utf-8",
     )
+
+
+def test_stage_contract_failure_is_persisted(workspace_env: WorkspaceEnv, tmp_path: Path) -> None:
+    config = Config(
+        sources=[Source(name="explicit", path=tmp_path / "explicit")],
+        archive_root=workspace_env["archive_root"],
+        render_root=workspace_env["archive_root"] / "render",
+    )
+    persisted_result = RunResult(
+        run_id="failed-run",
+        counts=RunCounts(),
+        drift=RunDrift.model_validate(
+            {
+                "new": {"conversations": 0},
+                "changed": {"conversations": 0},
+                "removed": {"conversations": 0},
+            }
+        ),
+        indexed=False,
+        index_error="StageContractError",
+        duration_ms=1,
+        render_failures=[],
+        run_path=None,
+    )
+
+    with patch(
+        "polylogue.pipeline.run_execution.persist_run_result",
+        new_callable=AsyncMock,
+        return_value=persisted_result,
+    ) as mock_persist:
+        with pytest.raises(StageContractError):
+            asyncio.run(
+                run_sources(
+                    config=config,
+                    stage="all",
+                    stage_sequence=("acquire", "materialize"),
+                )
+            )
+
+    mock_persist.assert_awaited_once()
+    assert mock_persist.await_args is not None
+    index_outcome = mock_persist.await_args.kwargs["index_outcome"]
+    assert index_outcome.indexed is False
+    assert "StageContractError" in str(index_outcome.error)
 
 
 def test_expand_requested_stage_contract() -> None:

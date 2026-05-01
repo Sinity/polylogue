@@ -200,7 +200,7 @@ class TestHasPostFilters:
         )
 
         candidate = plan.fetch_record_query()
-        assert candidate.path_terms == ()
+        assert candidate.referenced_path == ()
         assert candidate.action_terms == ()
         assert candidate.tool_terms == ("bash",)
 

@@ -175,7 +175,7 @@ continuations = await ConversationFilter(repo).is_continuation().list()
 | `.exclude_provider(*names)` | Exclude providers |
 | `.tag(*tags)` | Include tags |
 | `.exclude_tag(*tags)` | Exclude tags |
-| `.path(*terms)` | Require touched-path substrings |
+| `.referenced_path(*terms)` | Require touched-path substrings |
 | `.action(*kinds)` | Require semantic action kinds |
 | `.exclude_action(*kinds)` | Exclude semantic action kinds |
 | `.tool(*names)` | Require normalized tool names |

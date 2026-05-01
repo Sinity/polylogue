@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta, timezone
+from itertools import islice
 from typing import TYPE_CHECKING, TypeAlias
 
 from typing_extensions import TypedDict
@@ -78,7 +79,7 @@ def _summarize_conversation(conv: Conversation | None) -> CompareConversationPay
                 "role": _message_role(message) if message.role else "unknown",
                 "text": (message.text or "")[:200],
             }
-            for message in conv.messages.to_list()[:10]
+            for message in islice(conv.messages, 10)
         ],
     }
 

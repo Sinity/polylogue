@@ -287,13 +287,10 @@ def profile_provider_day(record: SessionProfileRecord | None) -> tuple[str, str]
         return None
     if record.canonical_session_date:
         return (record.provider_name, record.canonical_session_date)
+    evidence_created_at = record.evidence_payload.created_at
     day_candidates = [
         record.first_message_at,
-        (
-            str(record.evidence_payload.get("created_at"))
-            if isinstance(record.evidence_payload, dict) and record.evidence_payload.get("created_at")
-            else None
-        ),
+        str(evidence_created_at) if evidence_created_at else None,
         record.source_updated_at,
         record.last_message_at,
     ]

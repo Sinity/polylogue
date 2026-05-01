@@ -121,7 +121,7 @@ def open_verb(ctx: click.Context, print_path: bool, target_terms: tuple[str, ...
 def bulk_export_verb(ctx: click.Context, output_format: str, fields: str | None) -> None:
     """Bulk export every matched conversation in one process.
 
-    Reuses the parent filter chain (``--provider``, ``--since``, ``--path``,
+    Reuses the parent filter chain (``--provider``, ``--since``, ``--referenced-path``,
     ``--message-role``, etc.). Default ``--format jsonl`` emits one
     single-line conversation JSON per line, suitable for piping into ``jq``
     or downstream analysis tools. Other formats are concatenated with

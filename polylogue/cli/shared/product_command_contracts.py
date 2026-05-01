@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from polylogue.lib.query.spec import QuerySpecError, parse_query_date, split_csv
 from polylogue.products.registry import ProductType
 
 if TYPE_CHECKING:
@@ -26,6 +27,41 @@ def query_model_field_names(product_type: ProductType) -> frozenset[str]:
     if query_model is None:
         return frozenset()
     return frozenset(query_model.model_fields)
+
+
+class ProductCommandInputError(ValueError):
+    """Invalid product-command filter input."""
+
+
+def _normalize_product_provider(value: object) -> str | None:
+    providers = split_csv(value)
+    if not providers:
+        return None
+    if len(providers) > 1:
+        joined = ", ".join(providers)
+        raise ProductCommandInputError(f"products commands accept one provider, got: {joined}")
+    return providers[0]
+
+
+def _normalize_product_date(field: str, value: object) -> str | None:
+    if value is None:
+        return None
+    try:
+        parsed = parse_query_date(field, str(value))
+    except QuerySpecError as exc:
+        raise ProductCommandInputError(str(exc)) from exc
+    return parsed.isoformat() if parsed is not None else None
+
+
+def normalize_product_query_kwargs(kwargs: Mapping[str, object]) -> dict[str, object]:
+    """Normalize product query filters shared by generic/status/export commands."""
+    normalized = dict(kwargs)
+    if "provider" in normalized:
+        normalized["provider"] = _normalize_product_provider(normalized.get("provider"))
+    for field in ("since", "until"):
+        if field in normalized:
+            normalized[field] = _normalize_product_date(field, normalized.get(field))
+    return normalized
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,7 +103,7 @@ class ProductCommandRequest:
                 resolved_output_format = root_output_format
 
         return cls(
-            query_kwargs=normalized_kwargs,
+            query_kwargs=normalize_product_query_kwargs(normalized_kwargs),
             output_format=resolved_output_format,
             json_mode=json_mode,
         )
@@ -79,6 +115,8 @@ class ProductCommandRequest:
 
 __all__ = [
     "find_root_params",
+    "normalize_product_query_kwargs",
+    "ProductCommandInputError",
     "ProductCommandRequest",
     "query_model_field_names",
 ]

@@ -4,9 +4,15 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from typing import Annotated, TypeAlias
+
+from pydantic import Field
 
 from polylogue.lib.query.spec import ConversationQuerySpec
 from polylogue.lib.semantic.content_projection import ContentProjectionSpec
+
+MCPToolLimit: TypeAlias = Annotated[int, Field(ge=1)]
+MCPToolOffset: TypeAlias = Annotated[int, Field(ge=0)]
 
 _QUERY_PARAM_ALIASES = {
     "has_tool_use": "filter_has_tool_use",
@@ -56,8 +62,8 @@ class MCPConversationQueryRequest:
     min_words: int | None = None
     since_session: str | None = None
     message_type: str | None = None
-    offset: int = 0
-    limit: int = 10
+    offset: MCPToolOffset = 0
+    limit: MCPToolLimit = 10
 
     def build_spec(self, clamp_limit: Callable[[int | object], int]) -> ConversationQuerySpec:
         """Build a ConversationQuerySpec from this request using the given clamp helper."""
@@ -115,6 +121,8 @@ class MCPContentProjectionRequest:
 
 __all__ = [
     "build_query_spec",
+    "MCPToolLimit",
+    "MCPToolOffset",
     "MCPContentProjectionRequest",
     "MCPConversationQueryRequest",
     "normalize_query_params",

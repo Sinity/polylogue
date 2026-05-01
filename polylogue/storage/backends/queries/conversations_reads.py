@@ -44,7 +44,7 @@ async def list_conversations(
     since: str | None = None,
     until: str | None = None,
     title_contains: str | None = None,
-    path_terms: list[str] | None = None,
+    referenced_path: list[str] | None = None,
     cwd_prefix: str | None = None,
     action_terms: list[str] | None = None,
     excluded_action_terms: list[str] | None = None,
@@ -60,6 +60,7 @@ async def list_conversations(
     min_messages: int | None = None,
     max_messages: int | None = None,
     min_words: int | None = None,
+    message_type: str | None = None,
 ) -> list[ConversationRecord]:
     use_stats_join = _needs_stats_join(
         has_tool_use=has_tool_use,
@@ -78,7 +79,7 @@ async def list_conversations(
         since=since,
         until=until,
         title_contains=title_contains,
-        path_terms=path_terms,
+        referenced_path=referenced_path,
         cwd_prefix=cwd_prefix,
         action_terms=action_terms,
         excluded_action_terms=excluded_action_terms,
@@ -92,6 +93,7 @@ async def list_conversations(
         min_messages=min_messages,
         max_messages=max_messages,
         min_words=min_words,
+        message_type=message_type,
     )
 
     if use_stats_join:
@@ -133,7 +135,7 @@ async def list_conversation_summaries(
     since: str | None = None,
     until: str | None = None,
     title_contains: str | None = None,
-    path_terms: list[str] | None = None,
+    referenced_path: list[str] | None = None,
     cwd_prefix: str | None = None,
     action_terms: list[str] | None = None,
     excluded_action_terms: list[str] | None = None,
@@ -149,6 +151,7 @@ async def list_conversation_summaries(
     min_messages: int | None = None,
     max_messages: int | None = None,
     min_words: int | None = None,
+    message_type: str | None = None,
 ) -> list[ConversationRecord]:
     use_stats_join = _needs_stats_join(
         has_tool_use=has_tool_use,
@@ -167,7 +170,7 @@ async def list_conversation_summaries(
         since=since,
         until=until,
         title_contains=title_contains,
-        path_terms=path_terms,
+        referenced_path=referenced_path,
         cwd_prefix=cwd_prefix,
         action_terms=action_terms,
         excluded_action_terms=excluded_action_terms,
@@ -181,6 +184,7 @@ async def list_conversation_summaries(
         min_messages=min_messages,
         max_messages=max_messages,
         min_words=min_words,
+        message_type=message_type,
     )
 
     if use_stats_join:
@@ -261,7 +265,7 @@ async def count_conversations(
     since: str | None = None,
     until: str | None = None,
     title_contains: str | None = None,
-    path_terms: list[str] | None = None,
+    referenced_path: list[str] | None = None,
     cwd_prefix: str | None = None,
     action_terms: list[str] | None = None,
     excluded_action_terms: list[str] | None = None,
@@ -275,6 +279,7 @@ async def count_conversations(
     min_messages: int | None = None,
     max_messages: int | None = None,
     min_words: int | None = None,
+    message_type: str | None = None,
 ) -> int:
     use_stats_join = _needs_stats_join(
         has_tool_use=has_tool_use,
@@ -292,17 +297,21 @@ async def count_conversations(
         since=since,
         until=until,
         title_contains=title_contains,
-        path_terms=path_terms,
+        referenced_path=referenced_path,
         cwd_prefix=cwd_prefix,
         action_terms=action_terms,
         excluded_action_terms=excluded_action_terms,
         tool_terms=tool_terms,
         excluded_tool_terms=excluded_tool_terms,
+        repo_names=repo_names,
         has_tool_use=has_tool_use,
         has_thinking=has_thinking,
+        has_paste=has_paste,
+        typed_only=typed_only,
         min_messages=min_messages,
         max_messages=max_messages,
         min_words=min_words,
+        message_type=message_type,
     )
     if use_stats_join:
         sql = f"SELECT COUNT(*) as cnt FROM conversations c LEFT JOIN conversation_stats cs ON cs.conversation_id = c.conversation_id {where_sql}"

@@ -101,6 +101,7 @@ MessageTuple = tuple[
     int,
     int,
     int,
+    str,
 ]
 ContentBlockTuple = tuple[
     str,
@@ -439,6 +440,7 @@ def _build_stream_parse_plan(
         artifact=artifact,
         source_path=context.raw_record.source_path,
         mode="stream",
+        payload=sample_payloads,
         schema_payload_source=sample_payloads,
         stream_name=stream_name,
         malformed_jsonl_lines=malformed_lines,
@@ -731,6 +733,7 @@ def _message_tuple(conversation: MaterializedConversation, message: Materialized
         message.has_tool_use,
         message.has_thinking,
         message.has_paste,
+        message.message_type.value,
     )
 
 
@@ -888,6 +891,7 @@ def _message_record_for_action_events(
         has_tool_use=message.has_tool_use,
         has_thinking=message.has_thinking,
         has_paste=message.has_paste,
+        message_type=message.message_type,
         content_blocks=[
             _content_block_record_for_action_event(
                 conversation_id=conversation.conversation_id,

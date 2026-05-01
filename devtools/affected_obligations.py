@@ -27,9 +27,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true", help="Emit a machine-readable affected-obligation report.")
     args = parser.parse_args(argv)
 
-    paths = tuple(args.path) if args.path else changed_paths_between_refs(args.base_ref, args.head_ref)
-    base_ids = obligation_ids_for_ref(args.base_ref)
-    head_ids = obligation_ids_for_ref(args.head_ref)
+    explicit_paths = tuple(args.path)
+    base_ids: tuple[str, ...] | None
+    head_ids: tuple[str, ...] | None
+    if explicit_paths:
+        paths = explicit_paths
+        base_ids = ()
+        head_ids = None
+    else:
+        paths = changed_paths_between_refs(args.base_ref, args.head_ref)
+        base_ids = obligation_ids_for_ref(args.base_ref)
+        head_ids = obligation_ids_for_ref(args.head_ref)
     report = build_affected_obligation_report(
         paths,
         base_ref=args.base_ref,

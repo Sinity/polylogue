@@ -81,6 +81,6 @@ jobs:
         with:
           python-version: "3.13"
       - run: uv sync --extra dev --frozen
-      - run: uv run devtools verify-showcase
+      - run: uv run devtools lab-scenario verify-baselines
         env:
           POLYLOGUE_FORCE_PLAIN: "1"

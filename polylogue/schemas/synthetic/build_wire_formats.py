@@ -127,7 +127,6 @@ def _ensure_wire_chatgpt(
     content.setdefault("content_type", "text")
 
     msg.setdefault("create_time", ts)
-    msg.setdefault("id", str(uuid.UUID(int=rng.getrandbits(128), version=4)))
 
 
 def _ensure_wire_claude_ai(

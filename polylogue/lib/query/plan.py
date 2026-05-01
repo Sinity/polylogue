@@ -30,7 +30,7 @@ from polylogue.lib.query.runtime import (
     matches_action_sequence,
     matches_action_terms,
     matches_action_text_terms,
-    matches_path_terms,
+    matches_referenced_path,
     matches_tool_terms,
     plan_can_count_in_sql,
     plan_can_use_action_event_stats,
@@ -78,7 +78,7 @@ class ConversationQueryPlan:
     contains_terms: tuple[str, ...] = ()
     negative_terms: tuple[str, ...] = ()
     retrieval_lane: str = "auto"
-    path_terms: tuple[str, ...] = ()
+    referenced_path: tuple[str, ...] = ()
     cwd_prefix: str | None = None
     action_terms: tuple[str, ...] = ()
     excluded_action_terms: tuple[str, ...] = ()
@@ -165,8 +165,8 @@ class ConversationQueryPlan:
     def can_use_action_event_stats(self) -> bool:
         return plan_can_use_action_event_stats(self)
 
-    def _matches_path_terms(self, conversation: Conversation) -> bool:
-        return matches_path_terms(self, conversation)
+    def _matches_referenced_path(self, conversation: Conversation) -> bool:
+        return matches_referenced_path(self, conversation)
 
     def _matches_action_terms(self, conversation: Conversation) -> bool:
         return matches_action_terms(self, conversation)

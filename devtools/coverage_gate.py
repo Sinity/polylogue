@@ -15,8 +15,8 @@ CoverageThreshold = int | float
 
 def read_coverage_threshold(pyproject_path: Path) -> CoverageThreshold:
     data = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
-    threshold = data.get("tool", {}).get("coverage", {}).get("report", {}).get("fail_under")
-    if not isinstance(threshold, (int, float)):
+    threshold: object = data.get("tool", {}).get("coverage", {}).get("report", {}).get("fail_under")
+    if isinstance(threshold, bool) or not isinstance(threshold, (int, float)):
         raise ValueError(f"{pyproject_path} does not define tool.coverage.report.fail_under")
     return threshold
 

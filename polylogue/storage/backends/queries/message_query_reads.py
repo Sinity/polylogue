@@ -8,16 +8,12 @@ from typing import Literal
 import aiosqlite
 
 from polylogue.lib.message.roles import MessageRoleFilter, message_role_sql_values
+from polylogue.lib.message.types import MessageType
 from polylogue.lib.roles import Role
 from polylogue.storage.backends.queries.mappers import _row_to_message
 from polylogue.storage.runtime import MessageRecord
 
 MessageTypeName = Literal["summary", "tool_use", "tool_result", "thinking"]
-
-_MESSAGE_TYPE_SQL_COLUMNS: dict[str, str] = {
-    "tool_use": "has_tool_use",
-    "thinking": "has_thinking",
-}
 
 
 async def get_messages(
@@ -83,11 +79,11 @@ async def get_messages_paginated(
         count_query += f" AND role IN ({placeholders})"
         params.extend(role_values)
 
-    # SQL-pushable message_type filters
-    if message_type and message_type in _MESSAGE_TYPE_SQL_COLUMNS:
-        col = _MESSAGE_TYPE_SQL_COLUMNS[message_type]
-        query += f" AND {col} = 1"
-        count_query += f" AND {col} = 1"
+    if message_type:
+        normalized_type = MessageType.normalize(message_type).value
+        query += " AND message_type = ?"
+        count_query += " AND message_type = ?"
+        params.append(normalized_type)
 
     # Get total count before pagination
     count_cursor = await conn.execute(count_query, tuple(params))
@@ -102,43 +98,7 @@ async def get_messages_paginated(
     rows = await cursor.fetchall()
     messages = [_row_to_message(row) for row in rows]
 
-    # Post-filter for types that need content_blocks inspection
-    if message_type and message_type not in _MESSAGE_TYPE_SQL_COLUMNS and messages:
-        messages = await _post_filter_by_message_type(conn, messages, message_type)
-
     return messages, total
-
-
-async def _post_filter_by_message_type(
-    conn: aiosqlite.Connection,
-    messages: list[MessageRecord],
-    message_type: str,
-) -> list[MessageRecord]:
-    """Filter messages by content-block-derived type (tool_result, summary)."""
-    message_ids = [m.message_id for m in messages]
-    placeholders = ",".join("?" for _ in message_ids)
-    cursor = await conn.execute(
-        f"SELECT message_id, type FROM content_blocks WHERE message_id IN ({placeholders})",
-        message_ids,
-    )
-    rows = await cursor.fetchall()
-
-    blocks_by_message: dict[str, list[str]] = {}
-    for row in rows:
-        blocks_by_message.setdefault(row["message_id"], []).append(row["type"])
-
-    if message_type == "tool_result":
-        return [m for m in messages if "tool_result" in blocks_by_message.get(m.message_id, [])]
-    if message_type == "summary":
-        # Summary messages: role is system, all content blocks are text
-        # (Claude Code type=summary records become system-role messages)
-        return [
-            m
-            for m in messages
-            if m.role == "system" and all(t in ("text",) for t in blocks_by_message.get(m.message_id, ["text"]))
-        ]
-
-    return messages
 
 
 async def iter_messages(

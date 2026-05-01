@@ -79,7 +79,7 @@ class SimpleTitleSearchSpec(TypedDict):
 
 class RecordQueryKwargs(TypedDict, total=False):
     provider: str
-    path_terms: tuple[str, ...]
+    referenced_path: tuple[str, ...]
     action_terms: tuple[str, ...]
     excluded_action_terms: tuple[str, ...]
     tool_terms: tuple[str, ...]
@@ -287,7 +287,7 @@ async def test_aggregate_message_stats_reports_role_counts_and_words(tmp_path: P
 
 
 @pytest.mark.asyncio
-async def test_backend_path_terms_filter_contract(tmp_path: Path) -> None:
+async def test_backend_referenced_path_filter_contract(tmp_path: Path) -> None:
     """Low-level list/count filters must honor persisted semantic paths."""
     from polylogue.storage.action_events.rebuild_runtime import rebuild_action_event_read_model_sync
     from tests.infra.storage_records import ConversationBuilder
@@ -350,9 +350,9 @@ async def test_backend_path_terms_filter_contract(tmp_path: Path) -> None:
 
     backend = SQLiteBackend(db_path=db_path)
     try:
-        matches = await backend.queries.list_conversations(_record_query(path_terms=(target_path,), limit=10))
+        matches = await backend.queries.list_conversations(_record_query(referenced_path=(target_path,), limit=10))
         assert [record.conversation_id for record in matches] == ["conv-readme"]
-        assert await backend.queries.count_conversations(_record_query(path_terms=(target_path,))) == 1
+        assert await backend.queries.count_conversations(_record_query(referenced_path=(target_path,))) == 1
     finally:
         await backend.close()
 
@@ -446,7 +446,7 @@ def test_action_event_rebuild_omits_large_provider_meta_payloads(tmp_path: Path)
 
 
 @pytest.mark.asyncio
-async def test_filter_path_terms_apply_after_fts_search(tmp_path: Path) -> None:
+async def test_filter_referenced_path_apply_after_fts_search(tmp_path: Path) -> None:
     """Combined FTS + path queries must keep the path constraint after search ranking."""
     from polylogue.lib.filter.filters import ConversationFilter
     from tests.infra.storage_records import ConversationBuilder

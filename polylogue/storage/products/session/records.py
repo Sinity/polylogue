@@ -43,6 +43,7 @@ class SessionProfileRecord(BaseModel):
     word_count: int = 0
     tool_use_count: int = 0
     thinking_count: int = 0
+    paste_count: int = 0
     total_cost_usd: float = 0.0
     total_duration_ms: int = 0
     engaged_duration_ms: int = 0

@@ -161,6 +161,7 @@ def _message_tuple(
         0,
         0,
         0,
+        "message",
     )
 
 

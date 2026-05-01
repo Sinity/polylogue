@@ -113,6 +113,22 @@ def project_conversation_content(
     return conversation.model_copy(update={"messages": MessageCollection(messages=projected_messages)})
 
 
+def project_message_content(
+    messages: Sequence[Message],
+    projection: ContentProjectionSpec | Mapping[str, object] | None,
+) -> list[Message]:
+    """Return messages with content-kind projection applied."""
+    spec = coerce_content_projection_spec(projection)
+    if spec.is_default():
+        return list(messages)
+    tool_semantics = _tool_semantics_by_id(messages)
+    return [
+        projected
+        for message in messages
+        if (projected := _project_message_content(message, spec, tool_semantics)) is not None
+    ]
+
+
 def _tool_semantics_by_id(messages: Sequence[Message]) -> dict[str, str]:
     semantics: dict[str, str] = {}
     for message in messages:
@@ -322,5 +338,6 @@ __all__ = [
     "ContentKind",
     "ContentProjectionSpec",
     "coerce_content_projection_spec",
+    "project_message_content",
     "project_conversation_content",
 ]

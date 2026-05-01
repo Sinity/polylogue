@@ -40,7 +40,7 @@ class RecordQueryKwargs(TypedDict, total=False):
     provider: str
     since: str
     until: str
-    path_terms: tuple[str, ...]
+    referenced_path: tuple[str, ...]
     action_terms: tuple[str, ...]
     tool_terms: tuple[str, ...]
     limit: int

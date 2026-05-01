@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 from collections.abc import Awaitable, Callable
@@ -137,14 +138,40 @@ async def observe_slow_query(
 
     threshold = slow_query_notice_threshold() if threshold_seconds is None else max(threshold_seconds, 0.0)
     task = asyncio.ensure_future(operation)
-    done, _pending = await asyncio.wait({task}, timeout=threshold)
-    if done:
-        return task.result()
+    notice_task: asyncio.Task[QuerySlowNotice] | None = None
+    try:
+        done, _pending = await asyncio.wait({task}, timeout=threshold)
+        if done:
+            return task.result()
 
-    notice = await notice_factory()
-    sink = emit or (lambda message: click.echo(message, err=True))
-    sink(notice.message(elapsed_seconds=threshold))
-    return await task
+        notice_task = asyncio.ensure_future(notice_factory())
+        operation_task = cast("asyncio.Task[object]", task)
+        notice_task_object = cast("asyncio.Task[object]", notice_task)
+        watched = {operation_task, notice_task_object}
+        done, _pending = await asyncio.wait(watched, return_when=asyncio.FIRST_COMPLETED)  # type: ignore[arg-type]
+        if operation_task in done:
+            notice_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await notice_task
+            return task.result()
+
+        sink = emit or (lambda message: click.echo(message, err=True))
+        try:
+            notice = notice_task.result()
+        except Exception:
+            logger.exception("observe_slow_query: notice_factory() failed")
+        else:
+            sink(notice.message(elapsed_seconds=threshold))
+        return await task
+    except asyncio.CancelledError:
+        task.cancel()
+        pending: list[asyncio.Task[object]] = [cast("asyncio.Task[object]", task)]
+        if notice_task is not None:
+            notice_task.cancel()
+            pending.append(cast("asyncio.Task[object]", notice_task))
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.gather(*pending, return_exceptions=True)
+        raise
 
 
 __all__ = [

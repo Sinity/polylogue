@@ -19,6 +19,7 @@ from polylogue.cli.shared.check_validation import validate_check_options as _val
 from polylogue.cli.shared.helpers import load_effective_config
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
+from polylogue.lib.json import JSONDocument, json_document
 from polylogue.protocols import ProgressCallback
 from polylogue.readiness import ReadinessReport, get_readiness, run_runtime_readiness
 from polylogue.schemas.operator.workflow import (
@@ -113,7 +114,7 @@ def _artifact_query(options: CheckCommandOptions) -> ArtifactObservationQuery:
     )
 
 
-def _run_blob_store_check(env: AppEnv, config: Config, json_output: bool = False) -> None:
+def _run_blob_store_check(env: AppEnv, config: Config, json_output: bool = False) -> JSONDocument | None:
     from polylogue.storage.blob_store import get_blob_store
 
     blob_store = get_blob_store()
@@ -126,9 +127,7 @@ def _run_blob_store_check(env: AppEnv, config: Config, json_output: bool = False
     orphaned = sorted(disk_hashes - db_raw_ids)
 
     if json_output:
-        from polylogue.cli.shared.machine_errors import emit_success
-
-        emit_success(
+        return json_document(
             {
                 "total_blobs": len(disk_hashes),
                 "total_raw_records": len(db_raw_ids),
@@ -138,7 +137,6 @@ def _run_blob_store_check(env: AppEnv, config: Config, json_output: bool = False
                 "orphaned": orphaned[:10],
             }
         )
-        return
 
     env.ui.console.print(f"Blob store: {len(disk_hashes)} blobs on disk, {len(db_raw_ids)} raw records in DB")
     if missing:
@@ -149,6 +147,7 @@ def _run_blob_store_check(env: AppEnv, config: Config, json_output: bool = False
         env.ui.console.print(f"  Orphaned: {len(orphaned)} blobs on disk not in DB")
     if not missing and not orphaned:
         env.ui.console.print("  All blobs verified.")
+    return None
 
 
 def _run_schema_verification(options: CheckCommandOptions, config: Config) -> SchemaVerificationReport:
@@ -242,7 +241,7 @@ def run_check_workflow(env: AppEnv, options: CheckCommandOptions) -> CheckComman
         result.runtime_report = run_runtime_readiness(config)
 
     if options.check_blob:
-        _run_blob_store_check(env, config, json_output=options.json_output)
+        result.blob_report = _run_blob_store_check(env, config, json_output=options.json_output)
 
     if options.check_schemas:
         result.schema_report = _run_schema_verification(options, config)

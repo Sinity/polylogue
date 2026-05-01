@@ -13,7 +13,7 @@ import pytest
 from tests.infra.chaos_sources import (
     ChaosInboxBuilder,
 )
-from tests.infra.cli_subprocess import IsolatedWorkspace, run_cli, setup_isolated_workspace
+from tests.infra.cli_subprocess import CliResult, IsolatedWorkspace, run_cli, setup_isolated_workspace
 
 pytestmark = [pytest.mark.integration, pytest.mark.chaos]
 
@@ -22,6 +22,14 @@ def _salvage_env(workspace: IsolatedWorkspace) -> dict[str, str]:
     env = dict(workspace["env"])
     env["POLYLOGUE_SCHEMA_VALIDATION"] = "off"
     return env
+
+
+def _run_inbox(workspace: IsolatedWorkspace) -> CliResult:
+    return run_cli(
+        ["run", "--input", str(workspace["paths"]["inbox"])],
+        env=_salvage_env(workspace),
+        timeout=120.0,
+    )
 
 
 # =============================================================================
@@ -49,11 +57,7 @@ def test_partial_corruption_does_not_abort_pipeline(tmp_path: Path) -> None:
     builder.build()
 
     # Run ingestion
-    result = run_cli(
-        ["run", "--source", "inbox"],
-        env=_salvage_env(workspace),
-        timeout=120.0,
-    )
+    result = _run_inbox(workspace)
 
     # Pipeline should succeed despite corruption
     assert result.success, f"Pipeline failed: {result.stderr}"
@@ -89,11 +93,7 @@ def test_malformed_json_lines_skipped_with_context(tmp_path: Path) -> None:
     builder.build()
 
     # Run ingestion
-    result = run_cli(
-        ["run", "--source", "inbox"],
-        env=_salvage_env(workspace),
-        timeout=120.0,
-    )
+    result = _run_inbox(workspace)
 
     # Should succeed despite malformed lines
     assert result.success, f"Pipeline failed: {result.stderr}"
@@ -114,11 +114,7 @@ def test_truncated_lines_handled_gracefully(tmp_path: Path) -> None:
     )
     builder.build()
 
-    result = run_cli(
-        ["run", "--source", "inbox"],
-        env=_salvage_env(workspace),
-        timeout=120.0,
-    )
+    result = _run_inbox(workspace)
 
     assert result.success, f"Pipeline failed: {result.stderr}"
 
@@ -148,11 +144,7 @@ def test_bad_utf8_lines_skipped(tmp_path: Path) -> None:
     )
     builder.build()
 
-    result = run_cli(
-        ["run", "--source", "inbox"],
-        env=_salvage_env(workspace),
-        timeout=120.0,
-    )
+    result = _run_inbox(workspace)
 
     assert result.success, f"Pipeline failed: {result.stderr}"
 
@@ -181,11 +173,7 @@ def test_wrong_envelope_lines_skipped(tmp_path: Path) -> None:
     )
     builder.build()
 
-    result = run_cli(
-        ["run", "--source", "inbox"],
-        env=_salvage_env(workspace),
-        timeout=120.0,
-    )
+    result = _run_inbox(workspace)
 
     assert result.success, f"Pipeline failed: {result.stderr}"
 
@@ -214,11 +202,7 @@ def test_empty_file_does_not_crash(tmp_path: Path) -> None:
     builder.add_valid_jsonl("valid.jsonl", provider="codex", count=5)
     builder.build()
 
-    result = run_cli(
-        ["run", "--source", "inbox"],
-        env=_salvage_env(workspace),
-        timeout=120.0,
-    )
+    result = _run_inbox(workspace)
 
     assert result.success, f"Pipeline failed: {result.stderr}"
 
@@ -242,11 +226,7 @@ def test_binary_garbage_file_skipped(tmp_path: Path) -> None:
     builder.add_valid_jsonl("valid.jsonl", provider="codex", count=8)
     builder.build()
 
-    result = run_cli(
-        ["run", "--source", "inbox"],
-        env=_salvage_env(workspace),
-        timeout=120.0,
-    )
+    result = _run_inbox(workspace)
 
     assert result.success, f"Pipeline failed: {result.stderr}"
 
@@ -270,11 +250,7 @@ def test_zero_byte_file_handled(tmp_path: Path) -> None:
     builder.add_valid_jsonl("data.jsonl", provider="codex", count=6)
     builder.build()
 
-    result = run_cli(
-        ["run", "--source", "inbox"],
-        env=_salvage_env(workspace),
-        timeout=120.0,
-    )
+    result = _run_inbox(workspace)
 
     assert result.success, f"Pipeline failed: {result.stderr}"
 
@@ -313,11 +289,7 @@ def test_mixed_corruption_types_in_single_file(tmp_path: Path) -> None:
     builder.add_binary_garbage("junk.bin", size=256)
     builder.build()
 
-    result = run_cli(
-        ["run", "--source", "inbox"],
-        env=_salvage_env(workspace),
-        timeout=120.0,
-    )
+    result = _run_inbox(workspace)
 
     assert result.success, f"Pipeline failed: {result.stderr}"
 
@@ -340,11 +312,7 @@ def test_file_with_bom_marker_ingested(tmp_path: Path) -> None:
     builder.add_file_with_bom("bom_file.jsonl")
     builder.build()
 
-    result = run_cli(
-        ["run", "--source", "inbox"],
-        env=workspace["env"],
-        timeout=120.0,
-    )
+    result = _run_inbox(workspace)
 
     assert result.success, f"Pipeline failed: {result.stderr}"
 
@@ -368,11 +336,7 @@ def test_mixed_providers_in_single_inbox(tmp_path: Path) -> None:
     builder.add_valid_jsonl("claude_code_data.jsonl", provider="claude-code", count=7)
     builder.build()
 
-    result = run_cli(
-        ["run", "--source", "inbox"],
-        env=workspace["env"],
-        timeout=120.0,
-    )
+    result = _run_inbox(workspace)
 
     assert result.success, f"Pipeline failed: {result.stderr}"
 
