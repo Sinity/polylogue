@@ -57,7 +57,7 @@ def test_build_catalog_markdown_renders_schema_provider_and_generated_scenario_s
                 "coverage_facets": {"sidecars": "supported"},
                 "partial_coverage": ["tool-results"],
             },
-            source_span=SourceSpan("polylogue/lib/provider/capabilities.py", line=12),
+            source_span=SourceSpan("polylogue/archive/provider/capabilities.py", line=12),
         ),
         SubjectRef(
             kind="generated.scenario_family",

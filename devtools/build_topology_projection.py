@@ -109,7 +109,7 @@ LIB_PREFIX_TO_SUBPACKAGE = {
     "phase_": "lib/phase/",
     "projection_": "lib/projection/",
     "projections": "lib/projection/",
-    "provider_": "lib/provider/",
+    "provider_": "archive/provider/",
     "attachment_": "archive/attachment/",
 }
 
@@ -213,7 +213,7 @@ TARGET_TO_OWNER = [
     ("polylogue/lib/semantic/", "lib-semantic"),
     ("polylogue/lib/phase/", "lib-phase"),
     ("polylogue/lib/projection/", "lib-projection"),
-    ("polylogue/lib/provider/", "lib-provider"),
+    ("polylogue/archive/provider/", "archive-provider"),
     ("polylogue/archive/attachment/", "archive-attachment"),
     ("polylogue/storage/repository/", "storage-repository"),
     ("polylogue/storage/products/", "storage-products"),
@@ -375,7 +375,9 @@ def classify(path: Path) -> dict[str, Any]:
         reason = "archive-domain filter semantics"
     elif rel.startswith("polylogue/archive/"):
         target = rel
-        owner = "stable"
+        owner = placement_owner(target) or "stable"
+        if owner.startswith("archive-"):
+            reason = "archive-domain semantics"
     elif rel.startswith("polylogue/storage/"):
         suffix = rel[len("polylogue/storage/") :]
         if "/" in suffix:

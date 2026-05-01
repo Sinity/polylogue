@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from polylogue.archive.provider.semantics import extract_display_text_from_content_blocks
 from polylogue.lib.json import JSONDocument, json_document_list
-from polylogue.lib.provider.semantics import extract_display_text_from_content_blocks
 from polylogue.lib.roles import Role
 from polylogue.lib.viewport.viewports import ContentType, ReasoningTrace
 from polylogue.schemas.unified.models import HarmonizedMessage, _missing_role

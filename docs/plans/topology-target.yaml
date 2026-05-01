@@ -58,43 +58,53 @@ files:
   - path: polylogue/archive/action_event/__init__.py
     loc: 0
     target: polylogue/archive/action_event/__init__.py
-    owner: stable
+    owner: archive-action-event
+    reason: archive-domain semantics
   - path: polylogue/archive/action_event/action_events.py
     loc: 142
     target: polylogue/archive/action_event/action_events.py
-    owner: stable
+    owner: archive-action-event
+    reason: archive-domain semantics
   - path: polylogue/archive/action_event/fields.py
     loc: 123
     target: polylogue/archive/action_event/fields.py
-    owner: stable
+    owner: archive-action-event
+    reason: archive-domain semantics
   - path: polylogue/archive/action_event/parsing.py
     loc: 121
     target: polylogue/archive/action_event/parsing.py
-    owner: stable
+    owner: archive-action-event
+    reason: archive-domain semantics
   - path: polylogue/archive/artifact_taxonomy/__init__.py
     loc: 18
     target: polylogue/archive/artifact_taxonomy/__init__.py
-    owner: stable
+    owner: archive-artifact-taxonomy
+    reason: archive-domain semantics
   - path: polylogue/archive/artifact_taxonomy/models.py
     loc: 35
     target: polylogue/archive/artifact_taxonomy/models.py
-    owner: stable
+    owner: archive-artifact-taxonomy
+    reason: archive-domain semantics
   - path: polylogue/archive/artifact_taxonomy/runtime.py
     loc: 187
     target: polylogue/archive/artifact_taxonomy/runtime.py
-    owner: stable
+    owner: archive-artifact-taxonomy
+    reason: archive-domain semantics
   - path: polylogue/archive/artifact_taxonomy/support.py
     loc: 120
     target: polylogue/archive/artifact_taxonomy/support.py
-    owner: stable
+    owner: archive-artifact-taxonomy
+    reason: archive-domain semantics
   - path: polylogue/archive/attachment/__init__.py
     loc: 0
     target: polylogue/archive/attachment/__init__.py
-    owner: stable
+    owner: archive-attachment
+    reason: archive-domain semantics
   - path: polylogue/archive/attachment/models.py
     loc: 17
     target: polylogue/archive/attachment/models.py
-    owner: stable
+    owner: archive-attachment
+    reason: archive-domain semantics
   - path: polylogue/archive/filter/__init__.py
     loc: 0
     target: polylogue/archive/filter/__init__.py
@@ -115,6 +125,21 @@ files:
     target: polylogue/archive/filter/types.py
     owner: archive-filter
     reason: archive-domain filter semantics
+  - path: polylogue/archive/provider/__init__.py
+    loc: 0
+    target: polylogue/archive/provider/__init__.py
+    owner: archive-provider
+    reason: archive-domain semantics
+  - path: polylogue/archive/provider/capabilities.py
+    loc: 264
+    target: polylogue/archive/provider/capabilities.py
+    owner: archive-provider
+    reason: archive-domain semantics
+  - path: polylogue/archive/provider/semantics.py
+    loc: 228
+    target: polylogue/archive/provider/semantics.py
+    owner: archive-provider
+    reason: archive-domain semantics
   - path: polylogue/archive/query/__init__.py
     loc: 0
     target: polylogue/archive/query/__init__.py
@@ -684,18 +709,6 @@ files:
   - path: polylogue/lib/projection/transform_mixin.py
     loc: 68
     target: polylogue/lib/projection/transform_mixin.py
-    owner: stable
-  - path: polylogue/lib/provider/__init__.py
-    loc: 0
-    target: polylogue/lib/provider/__init__.py
-    owner: stable
-  - path: polylogue/lib/provider/capabilities.py
-    loc: 264
-    target: polylogue/lib/provider/capabilities.py
-    owner: stable
-  - path: polylogue/lib/provider/semantics.py
-    loc: 228
-    target: polylogue/lib/provider/semantics.py
     owner: stable
   - path: polylogue/lib/provider_identity.py
     loc: 97
