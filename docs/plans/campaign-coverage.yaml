@@ -19,7 +19,7 @@ mutation_campaigns:
     description: Domain model mutation testing
     paths_to_mutate:
       - polylogue/types.py
-      - polylogue/lib/roles.py
+      - polylogue/archive/message/roles.py
       - polylogue/core/timestamps.py
       - polylogue/core/hashing.py
       - polylogue/core/json.py

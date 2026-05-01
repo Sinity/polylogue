@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+from polylogue.archive.message.roles import Role
 from polylogue.core.hashing import hash_text
-from polylogue.lib.roles import Role
 from polylogue.types import ContentBlockType
 
 from .base_models import (

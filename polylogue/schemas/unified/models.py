@@ -7,9 +7,9 @@ from typing import NoReturn
 
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
+from polylogue.archive.message.roles import Role
 from polylogue.archive.viewport.viewports import ContentBlock, CostInfo, ReasoningTrace, TokenUsage, ToolCall
 from polylogue.core.json import JSONDocument
-from polylogue.lib.roles import Role
 from polylogue.types import Provider
 
 

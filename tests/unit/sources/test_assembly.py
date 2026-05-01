@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.lib.roles import Role
+from polylogue.archive.message.roles import Role
 from polylogue.sources.assembly import SidecarData, get_assembly_spec
 from polylogue.sources.assembly_claude_code import ClaudeCodeAssemblySpec
 from polylogue.sources.assembly_codex import CodexAssemblySpec, _parse_codex_session_index

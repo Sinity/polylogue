@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from polylogue.archive.message.roles import Role
 from polylogue.archive.provider.semantics import (
     extract_chatgpt_text,
     extract_claude_code_text,
@@ -14,7 +15,6 @@ from polylogue.archive.provider.semantics import (
 from polylogue.archive.viewport.viewports import CostInfo, ReasoningTrace, TokenUsage
 from polylogue.core.json import JSONDocument, json_document, json_document_list
 from polylogue.core.timestamps import parse_timestamp
-from polylogue.lib.roles import Role
 from polylogue.schemas.unified.models import HarmonizedMessage, _missing_role, extract_token_usage
 from polylogue.types import Provider
 

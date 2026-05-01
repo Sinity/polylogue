@@ -3,9 +3,44 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
+from enum import Enum
 from typing import TypeAlias
 
-from polylogue.lib.roles import Role
+
+class Role(str, Enum):
+    """Canonical conversation roles."""
+
+    USER = "user"
+    ASSISTANT = "assistant"
+    SYSTEM = "system"
+    TOOL = "tool"
+    UNKNOWN = "unknown"
+
+    def __str__(self) -> str:
+        return self.value
+
+    @classmethod
+    def normalize(cls, raw: str) -> Role:
+        """Normalize a provider role string to a canonical role."""
+        lowered = raw.strip().lower()
+        if not lowered:
+            raise ValueError("Role cannot be empty. Handle missing roles at parse time.")
+
+        if lowered in {"user", "human"}:
+            return cls.USER
+        if lowered in {"assistant", "model", "ai"}:
+            return cls.ASSISTANT
+        if lowered == "system":
+            return cls.SYSTEM
+        if lowered in {"tool", "function", "tool_use", "tool_result", "progress", "result"}:
+            return cls.TOOL
+        return cls.UNKNOWN
+
+
+def normalize_role(raw: str) -> str:
+    """Normalize a provider role string to a canonical role string."""
+    return Role.normalize(raw).value
+
 
 MessageRoleFilter: TypeAlias = tuple[Role, ...]
 
@@ -79,9 +114,11 @@ def message_role_sql_values(roles: Sequence[Role]) -> tuple[str, ...]:
 
 __all__ = [
     "MessageRoleFilter",
+    "Role",
     "message_role_count_key",
     "message_role_labels",
     "message_role_sql_values",
+    "normalize_role",
     "normalize_message_role_token",
     "normalize_message_roles",
 ]

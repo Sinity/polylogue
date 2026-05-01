@@ -18,9 +18,9 @@ from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 from typing_extensions import TypedDict
 
+from polylogue.archive.message.roles import Role, normalize_role
 from polylogue.config import Source
 from polylogue.core.json import JSONDocument, JSONValue, is_json_value
-from polylogue.lib.roles import Role, normalize_role
 from polylogue.sources import decoders as decoders_module
 from polylogue.sources import dispatch as dispatch_module
 from polylogue.sources import source_acquisition

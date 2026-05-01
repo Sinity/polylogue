@@ -9,8 +9,8 @@ from typing import TypeAlias
 from pydantic import ValidationError
 
 from polylogue.archive.conversation.branch_type import BranchType
+from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
-from polylogue.lib.roles import Role
 from polylogue.logging import get_logger
 from polylogue.pipeline.semantic_capture import detect_context_compaction
 from polylogue.sources.providers.claude_code import ClaudeCodeRecord

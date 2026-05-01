@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock
 import aiosqlite
 import pytest
 
-from polylogue.lib.roles import Role
+from polylogue.archive.message.roles import Role
 from polylogue.pipeline.services.ingest_batch import (
     _build_batch_memory_observation,
     _drain_ready_conversation_entries,

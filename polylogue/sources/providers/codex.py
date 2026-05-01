@@ -16,6 +16,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
+from polylogue.archive.message.roles import Role, normalize_role
 from polylogue.archive.provider.semantics import extract_codex_text
 from polylogue.archive.viewport.viewports import (
     ContentBlock,
@@ -26,7 +27,6 @@ from polylogue.archive.viewport.viewports import (
 )
 from polylogue.core.json import JSONDocument, JSONDocumentList, json_document, json_document_list
 from polylogue.core.timestamps import parse_timestamp
-from polylogue.lib.roles import Role, normalize_role
 from polylogue.types import Provider
 
 

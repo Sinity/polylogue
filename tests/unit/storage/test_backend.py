@@ -15,7 +15,7 @@ import aiosqlite
 import pytest
 
 import polylogue.paths
-from polylogue.lib.roles import Role
+from polylogue.archive.message.roles import Role
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.backends.connection import connection_context, open_connection, open_read_connection
 from polylogue.storage.backends.connection_profile import (

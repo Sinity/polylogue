@@ -8,8 +8,8 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from polylogue.archive.attachment.models import Attachment
 from polylogue.archive.message.model_runtime import MessageRuntimeMixin
+from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
-from polylogue.lib.roles import Role
 from polylogue.types import Provider
 
 

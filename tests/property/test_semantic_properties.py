@@ -13,7 +13,7 @@ import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-from polylogue.lib.roles import Role
+from polylogue.archive.message.roles import Role
 from polylogue.sources.dispatch import detect_provider, parse_payload
 from polylogue.sources.parsers.base import ParsedConversation
 from polylogue.sources.parsers.base_models import ParsedProviderEvent

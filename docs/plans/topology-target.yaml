@@ -207,7 +207,7 @@ files:
     owner: archive-message
     reason: archive-domain semantics
   - path: polylogue/archive/message/roles.py
-    loc: 87
+    loc: 123
     target: polylogue/archive/message/roles.py
     owner: archive-message
     reason: archive-domain semantics
@@ -857,11 +857,6 @@ files:
   - path: polylogue/lib/repo_identity.py
     loc: 156
     target: polylogue/lib/repo_identity.py
-    owner: lib-root
-    reason: lib-root primitive
-  - path: polylogue/lib/roles.py
-    loc: 80
-    target: polylogue/lib/roles.py
     owner: lib-root
     reason: lib-root primitive
   - path: polylogue/logging.py

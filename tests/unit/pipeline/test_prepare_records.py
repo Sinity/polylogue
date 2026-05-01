@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from polylogue.lib.roles import Role
+from polylogue.archive.message.roles import Role
 from polylogue.pipeline.prepare import prepare_records
 from polylogue.pipeline.prepare_models import PersistedConversationResult
 from polylogue.pipeline.services.validation import ValidationService

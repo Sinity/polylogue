@@ -6,8 +6,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from polylogue.archive.message.roles import Role
 from polylogue.core.json import is_json_document, json_document
-from polylogue.lib.roles import Role
 from polylogue.types import Provider
 
 BROWSER_CAPTURE_KIND: Literal["browser_llm_session"] = "browser_llm_session"

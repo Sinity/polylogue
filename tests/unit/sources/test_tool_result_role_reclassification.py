@@ -9,7 +9,7 @@ The reclassification flips USER → TOOL when content is exclusively
 
 from __future__ import annotations
 
-from polylogue.lib.roles import Role
+from polylogue.archive.message.roles import Role
 from polylogue.sources.parsers.base import ParsedContentBlock
 from polylogue.sources.parsers.claude.common import (
     extract_messages_from_chat_messages,

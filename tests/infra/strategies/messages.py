@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, TypeAlias
 
 from hypothesis import strategies as st
 
-from polylogue.lib.roles import Role
+from polylogue.archive.message.roles import Role
 from polylogue.types import ConversationId, Provider
 
 if TYPE_CHECKING:

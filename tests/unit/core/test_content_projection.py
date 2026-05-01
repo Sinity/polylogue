@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 from polylogue.archive.attachment.models import Attachment
+from polylogue.archive.message.roles import Role
 from polylogue.archive.semantic.content_projection import (
     ContentProjectionSpec,
     coerce_content_projection_spec,
     project_message_content,
 )
-from polylogue.lib.roles import Role
 from tests.infra.builders import make_conv, make_msg
 
 

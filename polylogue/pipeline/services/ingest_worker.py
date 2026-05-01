@@ -20,9 +20,9 @@ from typing_extensions import TypedDict
 
 from polylogue.archive.artifact_taxonomy import ArtifactClassification, classify_artifact
 from polylogue.archive.conversation.branch_type import BranchType
+from polylogue.archive.message.roles import Role
 from polylogue.archive.raw_payload.decode import RawPayloadEnvelope
 from polylogue.core.json import dumps as json_dumps
-from polylogue.lib.roles import Role
 from polylogue.logging import get_logger
 from polylogue.pipeline.materialization_runtime import (
     MaterializedContentBlock,

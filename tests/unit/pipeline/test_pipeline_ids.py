@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.archive.message.roles import Role
 from polylogue.assets import asset_path
-from polylogue.lib.roles import Role
 from polylogue.pipeline.ids import (
     attachment_content_id,
     conversation_content_hash,

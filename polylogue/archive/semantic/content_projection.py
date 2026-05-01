@@ -9,7 +9,7 @@ from enum import Enum
 from typing import TYPE_CHECKING
 
 from polylogue.archive.message.messages import MessageCollection
-from polylogue.lib.roles import Role
+from polylogue.archive.message.roles import Role
 
 if TYPE_CHECKING:
     from polylogue.archive.conversation.models import Conversation

@@ -7,6 +7,7 @@ from typing import TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from polylogue.archive.message.roles import Role
 from polylogue.archive.provider.semantics import extract_chatgpt_text
 from polylogue.archive.viewport.viewports import (
     ContentBlock,
@@ -16,7 +17,6 @@ from polylogue.archive.viewport.viewports import (
     ToolCall,
 )
 from polylogue.core.timestamps import parse_timestamp
-from polylogue.lib.roles import Role
 from polylogue.types import Provider
 
 ChatGPTMetadata: TypeAlias = dict[str, object]

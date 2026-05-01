@@ -11,6 +11,7 @@ import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
+from polylogue.archive.message.roles import Role
 from polylogue.archive.provider.semantics import (
     extract_chatgpt_text,
     extract_claude_code_text,
@@ -26,7 +27,6 @@ from polylogue.archive.viewport.viewports import (
     ToolCall,
 )
 from polylogue.core.json import JSONDocument, json_document, json_document_list
-from polylogue.lib.roles import Role
 from polylogue.schemas.unified.unified import (
     HarmonizedMessage,
     _coerce_content_blocks,

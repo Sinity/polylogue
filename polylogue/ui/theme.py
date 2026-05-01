@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from polylogue.lib.roles import Role
+from polylogue.archive.message.roles import Role
 
 # =============================================================================
 # Provider brand colors

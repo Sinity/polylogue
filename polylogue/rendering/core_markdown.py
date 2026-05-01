@@ -7,8 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from polylogue.archive.message.roles import Role
 from polylogue.assets import asset_path
-from polylogue.lib.roles import Role
 from polylogue.rendering.block_models import RenderableBlock, coerce_renderable_blocks
 from polylogue.rendering.blocks import has_structured_blocks, render_blocks_markdown
 from polylogue.rendering.core_messages import normalize_render_timestamp

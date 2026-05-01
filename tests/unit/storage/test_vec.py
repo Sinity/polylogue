@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, patch
 import httpx
 import pytest
 
-from polylogue.lib.roles import Role
+from polylogue.archive.message.roles import Role
 from polylogue.storage.runtime import MessageRecord
 from polylogue.storage.search_providers.sqlite_vec import SqliteVecProvider
 from polylogue.types import ContentHash, ConversationId, MessageId
