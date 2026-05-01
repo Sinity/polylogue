@@ -5,8 +5,7 @@ from datetime import datetime, timezone
 from polylogue.archive.conversation.models import Conversation, ConversationSummary
 from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.message.models import Message
-from polylogue.lib.roles import Role
-from polylogue.lib.search_hits import (
+from polylogue.archive.query.search_hits import (
     build_search_snippet,
     conversation_search_hit_from_conversation,
     conversation_search_hit_from_summary,
@@ -14,6 +13,7 @@ from polylogue.lib.search_hits import (
     search_query_text,
     search_terms,
 )
+from polylogue.lib.roles import Role
 from polylogue.types import ConversationId, Provider
 
 

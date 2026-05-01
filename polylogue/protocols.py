@@ -23,9 +23,9 @@ if TYPE_CHECKING:
     from polylogue.archive.conversation.models import Conversation, ConversationSummary
     from polylogue.archive.message.models import Message
     from polylogue.archive.message.roles import MessageRoleFilter
+    from polylogue.archive.query.search_hits import ConversationSearchHit
     from polylogue.archive.session.session_profile import SessionProfile
     from polylogue.archive.stats import ArchiveStats
-    from polylogue.lib.search_hits import ConversationSearchHit
     from polylogue.storage.action_events.artifacts import ActionEventArtifactState
     from polylogue.storage.archive_views import ConversationRenderProjection
     from polylogue.storage.backends.queries.messages import MessageTypeName
