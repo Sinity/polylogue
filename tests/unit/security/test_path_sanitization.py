@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.lib.security import sanitize_path
+from polylogue.core.security import sanitize_path
 from polylogue.sources.token_store import FileTokenStore
 
 # =============================================================================
