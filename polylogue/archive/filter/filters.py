@@ -19,7 +19,7 @@ from polylogue.archive.query.plan_execution import (
 )
 
 if TYPE_CHECKING:
-    from polylogue.lib.conversation.models import Conversation, ConversationSummary
+    from polylogue.archive.conversation.models import Conversation, ConversationSummary
     from polylogue.protocols import ConversationQueryRuntimeStore, VectorProvider
 
 

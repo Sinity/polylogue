@@ -6,7 +6,7 @@ import builtins
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
-from polylogue.lib.conversation.models import Conversation, ConversationSummary
+from polylogue.archive.conversation.models import Conversation, ConversationSummary
 from polylogue.protocols import ConversationQueryRuntimeStore
 from polylogue.storage.backends.queries.stats import AggregateMessageStats
 from polylogue.storage.query_models import ConversationRecordQuery

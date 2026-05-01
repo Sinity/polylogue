@@ -29,8 +29,8 @@ from polylogue.archive.projection.terminal_mixin import ProjectionTerminalMixin
 from polylogue.archive.projection.transform_mixin import ProjectionTransformMixin
 
 if TYPE_CHECKING:
+    from polylogue.archive.conversation.models import Conversation
     from polylogue.archive.message.models import Message
-    from polylogue.lib.conversation.models import Conversation
 
 
 class ConversationProjection(ProjectionFilterMixin, ProjectionTransformMixin, ProjectionTerminalMixin):

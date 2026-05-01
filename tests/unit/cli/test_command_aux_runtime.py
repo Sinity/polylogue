@@ -14,6 +14,11 @@ import pytest
 from click.shell_completion import CompletionItem
 from click.testing import CliRunner
 
+from polylogue.archive.conversation.neighbor_candidates import (
+    ConversationNeighborCandidate,
+    NeighborDiscoveryError,
+    NeighborReason,
+)
 from polylogue.archive.filter.filters import ConversationFilter
 from polylogue.cli import shell_completion_values
 from polylogue.cli.commands.neighbors import (
@@ -24,11 +29,6 @@ from polylogue.cli.commands.neighbors import (
 )
 from polylogue.cli.commands.tags import tags_command
 from polylogue.cli.filter_picker import _pick_index, pick_filter
-from polylogue.lib.conversation.neighbor_candidates import (
-    ConversationNeighborCandidate,
-    NeighborDiscoveryError,
-    NeighborReason,
-)
 from polylogue.lib.models import ConversationSummary
 from polylogue.types import ConversationId, Provider
 

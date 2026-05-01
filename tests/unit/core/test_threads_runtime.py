@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from polylogue.lib.conversation.threads import WorkThread, build_session_threads
+from polylogue.archive.conversation.threads import WorkThread, build_session_threads
 from polylogue.lib.session.session_profile import SessionProfile
 
 

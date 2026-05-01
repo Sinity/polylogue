@@ -7,18 +7,18 @@ from collections.abc import Callable, Iterator, Mapping
 from datetime import datetime
 from typing import TYPE_CHECKING, Self, cast
 
+from polylogue.archive.conversation.branch_type import BranchType
 from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.message.models import DialoguePair, Message
 from polylogue.archive.message.roles import normalize_message_roles
-from polylogue.lib.conversation.branch_type import BranchType
 from polylogue.lib.roles import Role
 from polylogue.lib.tail_overlay import TailOverlayInfo, tail_overlay_from_provider_meta
 from polylogue.types import ConversationId
 
 if TYPE_CHECKING:
+    from polylogue.archive.conversation.models import Conversation
     from polylogue.archive.projection.projections import ConversationProjection
     from polylogue.archive.semantic.content_projection import ContentProjectionSpec
-    from polylogue.lib.conversation.models import Conversation
 
 
 def _metadata_string(metadata: dict[str, object], key: str) -> str | None:
@@ -220,8 +220,8 @@ class ConversationRuntimeMixin:
         return _coerce_optional_int(self.provider_meta.get("total_duration_ms")) or 0
 
     def project(self) -> ConversationProjection:
+        from polylogue.archive.conversation.models import Conversation
         from polylogue.archive.projection.projections import ConversationProjection
-        from polylogue.lib.conversation.models import Conversation
 
         if not isinstance(self, Conversation):
             raise TypeError(f"projection requires Conversation, got {type(self).__name__}")

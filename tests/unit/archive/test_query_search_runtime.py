@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from polylogue.archive.conversation.models import ConversationSummary
 from polylogue.archive.query.plan import ConversationQueryPlan
 from polylogue.archive.query.retrieval_search import (
     conversation_action_search_score,
@@ -19,7 +20,6 @@ from polylogue.archive.query.retrieval_search import (
     search_query_text,
 )
 from polylogue.archive.query.search_hits import plan_has_search_hit_evidence, search_hits_for_plan
-from polylogue.lib.conversation.models import ConversationSummary
 from polylogue.lib.models import Conversation
 from polylogue.lib.search_hits import ConversationSearchHit
 from polylogue.protocols import VectorProvider

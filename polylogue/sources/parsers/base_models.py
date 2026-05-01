@@ -6,8 +6,8 @@ from collections.abc import Mapping
 
 from pydantic import BaseModel, Field, field_validator
 
+from polylogue.archive.conversation.branch_type import BranchType
 from polylogue.archive.message.types import MessageType
-from polylogue.lib.conversation.branch_type import BranchType
 from polylogue.lib.roles import Role
 from polylogue.lib.security import sanitize_path as _sanitize_path_helper
 from polylogue.types import ContentBlockType, Provider
