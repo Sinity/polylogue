@@ -118,7 +118,6 @@ LIB_ROOT_PRIMITIVES = frozenset(
     {
         "__init__.py",
         "stats.py",
-        "metrics.py",
         "coverage.py",
         "repo_identity.py",
         "tail_overlay.py",

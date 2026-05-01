@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 from polylogue.config import Config
 from polylogue.core.json import JSONDocument, JSONValue, json_document
-from polylogue.lib.metrics import PipelineMetrics
+from polylogue.core.metrics import PipelineMetrics
 from polylogue.logging import get_logger
 from polylogue.pipeline.payload_types import SiteBuildOptions
 from polylogue.pipeline.run_finalization import persist_run_result
