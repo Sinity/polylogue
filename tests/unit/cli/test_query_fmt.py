@@ -25,6 +25,7 @@ import pytest
 import yaml
 from rich.console import Console
 
+from polylogue.archive.attachment.models import Attachment
 from polylogue.cli.query import describe_query_filters
 from polylogue.cli.query_output import (
     _format_list,
@@ -35,7 +36,6 @@ from polylogue.cli.query_output import (
     render_stream_transcript,
 )
 from polylogue.cli.query_output_contracts import StructuredRowsDocument
-from polylogue.lib.attachment.models import Attachment
 from polylogue.lib.message.messages import MessageCollection
 from polylogue.lib.models import Conversation, ConversationSummary, Message
 from polylogue.lib.roles import Role

@@ -71,6 +71,14 @@ files:
     loc: 121
     target: polylogue/archive/action_event/parsing.py
     owner: stable
+  - path: polylogue/archive/attachment/__init__.py
+    loc: 0
+    target: polylogue/archive/attachment/__init__.py
+    owner: stable
+  - path: polylogue/archive/attachment/models.py
+    loc: 17
+    target: polylogue/archive/attachment/models.py
+    owner: stable
   - path: polylogue/archive/filter/__init__.py
     loc: 0
     target: polylogue/archive/filter/__init__.py
@@ -525,14 +533,6 @@ files:
   - path: polylogue/lib/artifact_taxonomy/support.py
     loc: 120
     target: polylogue/lib/artifact_taxonomy/support.py
-    owner: stable
-  - path: polylogue/lib/attachment/__init__.py
-    loc: 0
-    target: polylogue/lib/attachment/__init__.py
-    owner: stable
-  - path: polylogue/lib/attachment/models.py
-    loc: 17
-    target: polylogue/lib/attachment/models.py
     owner: stable
   - path: polylogue/lib/conversation/__init__.py
     loc: 0
