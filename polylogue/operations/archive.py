@@ -89,9 +89,9 @@ if TYPE_CHECKING:
     from polylogue.archive.message.models import Message
     from polylogue.archive.message.roles import MessageRoleFilter
     from polylogue.archive.query.miss_diagnostics import QueryMissDiagnostics
+    from polylogue.archive.query.search_hits import ConversationSearchHit
     from polylogue.archive.stats import ArchiveStats as StorageArchiveStats
     from polylogue.config import Config
-    from polylogue.lib.search_hits import ConversationSearchHit
     from polylogue.storage.backends.async_sqlite import SQLiteBackend
     from polylogue.storage.backends.queries.messages import MessageTypeName
     from polylogue.storage.products.session.runtime import SessionProductCounts

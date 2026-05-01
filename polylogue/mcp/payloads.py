@@ -35,9 +35,9 @@ if TYPE_CHECKING:
 
     from polylogue.archive.conversation.neighbor_candidates import ConversationNeighborCandidate
     from polylogue.archive.query.miss_diagnostics import QueryMissDiagnostics, QueryMissReason
+    from polylogue.archive.query.search_hits import ConversationSearchHit
     from polylogue.archive.stats import ArchiveStats
     from polylogue.lib.models import Conversation
-    from polylogue.lib.search_hits import ConversationSearchHit
     from polylogue.readiness import ReadinessCheck, ReadinessReport
     from polylogue.storage.runtime import RawConversationRecord
 
