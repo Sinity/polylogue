@@ -110,7 +110,7 @@ LIB_PREFIX_TO_SUBPACKAGE = {
     "projection_": "lib/projection/",
     "projections": "lib/projection/",
     "provider_": "lib/provider/",
-    "attachment_": "lib/attachment/",
+    "attachment_": "archive/attachment/",
 }
 
 # Lib root primitives stay at lib/ root.
@@ -214,7 +214,7 @@ TARGET_TO_OWNER = [
     ("polylogue/lib/phase/", "lib-phase"),
     ("polylogue/lib/projection/", "lib-projection"),
     ("polylogue/lib/provider/", "lib-provider"),
-    ("polylogue/lib/attachment/", "lib-attachment"),
+    ("polylogue/archive/attachment/", "archive-attachment"),
     ("polylogue/storage/repository/", "storage-repository"),
     ("polylogue/storage/products/", "storage-products"),
     ("polylogue/storage/runtime/", "storage-runtime"),

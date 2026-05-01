@@ -8,7 +8,7 @@ from datetime import datetime
 from functools import cached_property
 from typing import TYPE_CHECKING
 
-from polylogue.lib.attachment.models import Attachment
+from polylogue.archive.attachment.models import Attachment
 from polylogue.lib.json import JSONDocument, json_document, json_document_list
 from polylogue.lib.roles import Role
 from polylogue.logging import get_logger
