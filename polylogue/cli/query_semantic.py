@@ -10,9 +10,9 @@ from polylogue.cli.query_feedback import emit_no_results
 from polylogue.cli.query_stats import emit_structured_stats
 
 if TYPE_CHECKING:
+    from polylogue.archive.action_event.action_events import ActionEvent
     from polylogue.archive.query.spec import ConversationQuerySpec
     from polylogue.cli.shared.types import AppEnv
-    from polylogue.lib.action_event.action_events import ActionEvent
     from polylogue.lib.models import Conversation, ConversationSummary
     from polylogue.lib.semantic.facts import ConversationSemanticFacts
     from polylogue.protocols import ConversationSemanticStatsStore

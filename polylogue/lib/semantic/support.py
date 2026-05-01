@@ -92,7 +92,7 @@ def message_model_name(message: SemanticMessageLike) -> str | None:
 
 
 def _message_content_block_tool_calls(message: SemanticMessageLike) -> tuple[ToolCall, ...]:
-    from polylogue.lib.action_event.action_events import build_tool_calls_from_content_blocks
+    from polylogue.archive.action_event.action_events import build_tool_calls_from_content_blocks
 
     return build_tool_calls_from_content_blocks(
         provider=message.provider,
