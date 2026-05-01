@@ -83,7 +83,7 @@ areas:
     implemented: true
     controls:
       - sanitize_path: >
-          polylogue/lib/security.py::sanitize_path() strips null
+          polylogue/core/security.py::sanitize_path() strips null
           bytes, control characters, blocks .. traversal, symlink
           attacks, and absolute paths. Returns _blocked_<hash>
           for unsafe inputs.
