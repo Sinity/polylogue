@@ -12,6 +12,7 @@ from unittest.mock import Mock
 import pytest
 from pydantic import TypeAdapter
 
+from polylogue.archive.raw_payload import build_raw_payload_envelope
 from polylogue.lib.json import JSONDocument, JSONValue, json_document
 from polylogue.lib.message.messages import MessageCollection
 from polylogue.lib.models import Message
@@ -19,7 +20,6 @@ from polylogue.lib.provider_identity import (
     canonical_runtime_provider,
     canonical_schema_provider,
 )
-from polylogue.lib.raw_payload import build_raw_payload_envelope
 from polylogue.lib.roles import Role
 from polylogue.lib.viewport.viewports import ToolCall, classify_tool
 from polylogue.schemas.code_detection.detection import LANGUAGE_PATTERNS, detect_language, extract_code_block

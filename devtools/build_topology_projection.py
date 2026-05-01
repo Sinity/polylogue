@@ -87,8 +87,8 @@ LIB_PREFIX_TO_SUBPACKAGE = {
     "session_summaries": "lib/session/",
     "viewport_": "lib/viewport/",
     "viewports": "lib/viewport/",
-    "raw_payload_": "lib/raw_payload/",
-    "raw_payload": "lib/raw_payload/",
+    "raw_payload_": "archive/raw_payload/",
+    "raw_payload": "archive/raw_payload/",
     "artifact_taxonomy_": "lib/artifact_taxonomy/",
     "artifact_taxonomy": "lib/artifact_taxonomy/",
     "action_event_": "archive/action_event/",
@@ -205,7 +205,7 @@ TARGET_TO_OWNER = [
     ("polylogue/archive/filter/", "archive-filter"),
     ("polylogue/lib/session/", "lib-session"),
     ("polylogue/lib/viewport/", "lib-viewport"),
-    ("polylogue/lib/raw_payload/", "lib-raw-payload"),
+    ("polylogue/archive/raw_payload/", "archive-raw-payload"),
     ("polylogue/lib/artifact_taxonomy/", "lib-artifact-taxonomy"),
     ("polylogue/archive/action_event/", "archive-action-event"),
     ("polylogue/lib/message/", "lib-message"),
@@ -375,7 +375,9 @@ def classify(path: Path) -> dict[str, Any]:
         reason = "archive-domain filter semantics"
     elif rel.startswith("polylogue/archive/"):
         target = rel
-        owner = "stable"
+        owner = placement_owner(target) or "stable"
+        if owner.startswith("archive-"):
+            reason = "archive-domain semantics"
     elif rel.startswith("polylogue/storage/"):
         suffix = rel[len("polylogue/storage/") :]
         if "/" in suffix:

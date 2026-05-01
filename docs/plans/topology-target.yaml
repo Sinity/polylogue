@@ -58,27 +58,33 @@ files:
   - path: polylogue/archive/action_event/__init__.py
     loc: 0
     target: polylogue/archive/action_event/__init__.py
-    owner: stable
+    owner: archive-action-event
+    reason: archive-domain semantics
   - path: polylogue/archive/action_event/action_events.py
     loc: 142
     target: polylogue/archive/action_event/action_events.py
-    owner: stable
+    owner: archive-action-event
+    reason: archive-domain semantics
   - path: polylogue/archive/action_event/fields.py
     loc: 123
     target: polylogue/archive/action_event/fields.py
-    owner: stable
+    owner: archive-action-event
+    reason: archive-domain semantics
   - path: polylogue/archive/action_event/parsing.py
     loc: 121
     target: polylogue/archive/action_event/parsing.py
-    owner: stable
+    owner: archive-action-event
+    reason: archive-domain semantics
   - path: polylogue/archive/attachment/__init__.py
     loc: 0
     target: polylogue/archive/attachment/__init__.py
-    owner: stable
+    owner: archive-attachment
+    reason: archive-domain semantics
   - path: polylogue/archive/attachment/models.py
     loc: 17
     target: polylogue/archive/attachment/models.py
-    owner: stable
+    owner: archive-attachment
+    reason: archive-domain semantics
   - path: polylogue/archive/filter/__init__.py
     loc: 0
     target: polylogue/archive/filter/__init__.py
@@ -184,6 +190,31 @@ files:
     target: polylogue/archive/query/support.py
     owner: archive-query
     reason: archive-domain query semantics
+  - path: polylogue/archive/raw_payload/__init__.py
+    loc: 35
+    target: polylogue/archive/raw_payload/__init__.py
+    owner: archive-raw-payload
+    reason: archive-domain semantics
+  - path: polylogue/archive/raw_payload/decode.py
+    loc: 290
+    target: polylogue/archive/raw_payload/decode.py
+    owner: archive-raw-payload
+    reason: archive-domain semantics
+  - path: polylogue/archive/raw_payload/sampling_buckets.py
+    loc: 117
+    target: polylogue/archive/raw_payload/sampling_buckets.py
+    owner: archive-raw-payload
+    reason: archive-domain semantics
+  - path: polylogue/archive/raw_payload/sampling_extract.py
+    loc: 226
+    target: polylogue/archive/raw_payload/sampling_extract.py
+    owner: archive-raw-payload
+    reason: archive-domain semantics
+  - path: polylogue/archive/raw_payload/streams.py
+    loc: 26
+    target: polylogue/archive/raw_payload/streams.py
+    owner: archive-raw-payload
+    reason: archive-domain semantics
   - path: polylogue/artifacts/__init__.py
     loc: 1072
     target: polylogue/artifacts/__init__.py
@@ -702,26 +733,6 @@ files:
     target: polylogue/lib/provider_identity.py
     owner: lib-root
     reason: lib-root primitive
-  - path: polylogue/lib/raw_payload/__init__.py
-    loc: 35
-    target: polylogue/lib/raw_payload/__init__.py
-    owner: stable
-  - path: polylogue/lib/raw_payload/decode.py
-    loc: 290
-    target: polylogue/lib/raw_payload/decode.py
-    owner: stable
-  - path: polylogue/lib/raw_payload/sampling_buckets.py
-    loc: 117
-    target: polylogue/lib/raw_payload/sampling_buckets.py
-    owner: stable
-  - path: polylogue/lib/raw_payload/sampling_extract.py
-    loc: 226
-    target: polylogue/lib/raw_payload/sampling_extract.py
-    owner: stable
-  - path: polylogue/lib/raw_payload/streams.py
-    loc: 26
-    target: polylogue/lib/raw_payload/streams.py
-    owner: stable
   - path: polylogue/lib/repo_identity.py
     loc: 156
     target: polylogue/lib/repo_identity.py

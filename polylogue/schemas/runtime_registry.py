@@ -10,10 +10,10 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from polylogue.archive.raw_payload.decode import JSONRecord
 from polylogue.lib.json import json_document
 from polylogue.lib.provider_identity import canonical_schema_provider as _canonical_schema_provider
 from polylogue.lib.provider_identity import normalize_provider_token
-from polylogue.lib.raw_payload.decode import JSONRecord
 from polylogue.paths import data_home
 from polylogue.schemas.observation import (
     derive_bundle_scope,

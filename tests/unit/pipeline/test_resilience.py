@@ -19,8 +19,8 @@ import pytest
 from hypothesis import HealthCheck, given, settings
 from typing_extensions import TypedDict
 
+from polylogue.archive.raw_payload.decode import JSONValue
 from polylogue.config import Source
-from polylogue.lib.raw_payload.decode import JSONValue
 from polylogue.lib.roles import Role
 from polylogue.pipeline.services.acquisition import AcquisitionService
 from polylogue.pipeline.services.parsing import ParseResult, ParsingService
@@ -692,7 +692,7 @@ def test_ingest_record_streams_codex_jsonl_without_full_envelope_decode(tmp_path
     record = _make_raw_record("codex-streaming", "codex", content, "/exports/codex.jsonl")
 
     with patch(
-        "polylogue.lib.raw_payload.build_raw_payload_envelope",
+        "polylogue.archive.raw_payload.build_raw_payload_envelope",
         side_effect=AssertionError("legacy full envelope decode should be bypassed"),
     ):
         result = ingest_record(record, str(tmp_path / "archive"), "off")
