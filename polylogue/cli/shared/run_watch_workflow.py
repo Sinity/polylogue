@@ -9,8 +9,8 @@ import click
 
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
-from polylogue.lib.run_activity import conversation_activity_counts
 from polylogue.pipeline.observers import RunObserver
+from polylogue.pipeline.run_activity import conversation_activity_counts
 from polylogue.sources import DriveError
 from polylogue.storage.run_state import RunResult
 
