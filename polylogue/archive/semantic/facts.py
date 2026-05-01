@@ -8,9 +8,7 @@ from datetime import datetime
 from typing import Protocol
 
 from polylogue.archive.action_event.action_events import ActionEvent, build_action_events
-from polylogue.lib.message.roles import MessageRoleFilter, message_role_labels
-from polylogue.lib.roles import Role
-from polylogue.lib.semantic.models import (
+from polylogue.archive.semantic.models import (
     ConversationSemanticFacts,
     MCPDetailSemanticFacts,
     MCPSummarySemanticFacts,
@@ -19,7 +17,7 @@ from polylogue.lib.semantic.models import (
     StreamSemanticFacts,
     SummarySemanticFacts,
 )
-from polylogue.lib.semantic.support import (
+from polylogue.archive.semantic.support import (
     SemanticMessageLike,
     TextMessageLike,
     message_has_text,
@@ -30,6 +28,8 @@ from polylogue.lib.semantic.support import (
     normalized_role_label,
     sorted_counts,
 )
+from polylogue.lib.message.roles import MessageRoleFilter, message_role_labels
+from polylogue.lib.roles import Role
 
 # ---------------------------------------------------------------------------
 # Projection / message builders

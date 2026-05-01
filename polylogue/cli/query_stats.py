@@ -449,12 +449,12 @@ def _semantic_grouped_payload(
     selection: ConversationQuerySpec | None,
     key_for_action: Callable[[ActionEvent], str],
 ) -> GroupedStatsPayload:
+    from polylogue.archive.semantic.facts import build_conversation_semantic_facts
     from polylogue.cli.query_semantic import (
         SemanticStatsSlice,
         action_matches_slice,
         filtered_action_events,
     )
-    from polylogue.lib.semantic.facts import build_conversation_semantic_facts
 
     semantic_slice = SemanticStatsSlice.from_selection(selection)
     groups: dict[str, dict[str, int]] = defaultdict(lambda: {"convs": 0, "facts": 0, "msgs": 0})

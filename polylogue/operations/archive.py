@@ -10,10 +10,10 @@ from typing import TYPE_CHECKING, TypeVar, cast
 import structlog
 
 from polylogue.archive.query.spec import ConversationQuerySpec
+from polylogue.archive.semantic.content_projection import ContentProjectionSpec, project_message_content
 from polylogue.config import ConfigError
 from polylogue.lib.conversation.models import ConversationSummary
 from polylogue.lib.pricing import CostUsagePayload, _normalize_model, estimate_conversation_cost, generated_at
-from polylogue.lib.semantic.content_projection import ContentProjectionSpec, project_message_content
 from polylogue.maintenance.targets import build_maintenance_target_catalog
 from polylogue.paths.sanitize import conversation_render_root
 from polylogue.products.archive import (
