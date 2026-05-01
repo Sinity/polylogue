@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from polylogue.archive.message.types import MessageType
 from polylogue.archive.query.fields import storage_filters_require_stats_join
-from polylogue.lib.viewport.viewports import ToolCategory
+from polylogue.archive.viewport.viewports import ToolCategory
 from polylogue.storage.backends.connection import _build_provider_scope_filter
 
 _SEMANTIC_ACTION_TYPES = tuple(category.value for category in ToolCategory)

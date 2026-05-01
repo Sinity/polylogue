@@ -11,6 +11,7 @@ import pytest
 
 from polylogue.archive.action_event.action_events import ActionEvent
 from polylogue.archive.query.spec import ConversationQuerySpec
+from polylogue.archive.viewport.enums import ToolCategory
 from polylogue.cli import query_output, query_semantic, query_stats
 from polylogue.cli.query_actions import apply_modifiers, apply_transform, delete_conversations, resolve_stream_target
 from polylogue.cli.query_contracts import QueryDeliveryTarget, QueryMutationSpec, QueryOutputSpec
@@ -18,7 +19,6 @@ from polylogue.cli.shared.types import AppEnv
 from polylogue.lib.models import ConversationSummary
 from polylogue.lib.roles import Role
 from polylogue.lib.search_hits import ConversationSearchHit
-from polylogue.lib.viewport.enums import ToolCategory
 from polylogue.storage.action_events.artifacts import ActionEventArtifactState
 from polylogue.types import ConversationId, Provider
 from tests.infra.builders import make_conv, make_msg

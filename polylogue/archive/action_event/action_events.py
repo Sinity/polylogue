@@ -24,7 +24,7 @@ from polylogue.archive.action_event.fields import (
     normalize_output_text,
 )
 from polylogue.archive.action_event.parsing import build_tool_calls_from_content_blocks
-from polylogue.lib.viewport.viewports import ToolCall, ToolCategory
+from polylogue.archive.viewport.viewports import ToolCall, ToolCategory
 from polylogue.types import Provider
 
 _CANONICAL_TOOL_NAMES = {

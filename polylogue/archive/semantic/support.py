@@ -5,8 +5,8 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Protocol, TypeAlias
 
+from polylogue.archive.viewport.viewports import ReasoningTrace, TokenUsage, ToolCall
 from polylogue.lib.roles import Role
-from polylogue.lib.viewport.viewports import ReasoningTrace, TokenUsage, ToolCall
 from polylogue.types import Provider
 
 ContentBlockSequence: TypeAlias = Sequence[Mapping[str, object]]

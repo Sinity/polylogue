@@ -15,7 +15,7 @@ from polylogue.archive.query.runtime_matching import (
     matches_referenced_path,
     matches_tool_terms,
 )
-from polylogue.lib.viewport.enums import ToolCategory
+from polylogue.archive.viewport.enums import ToolCategory
 from polylogue.types import ConversationId, Provider
 
 

@@ -4,14 +4,14 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 
-from polylogue.lib.json import JSONDocument, json_document
-from polylogue.lib.viewport.viewports import (
+from polylogue.archive.viewport.viewports import (
     ContentBlock,
     ContentType,
     ReasoningTrace,
     ToolCall,
     classify_tool,
 )
+from polylogue.lib.json import JSONDocument, json_document
 from polylogue.types import Provider
 
 

@@ -6,8 +6,8 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from polylogue.archive.action_event.action_events import ActionEvent
+from polylogue.archive.viewport.viewports import ReasoningTrace, ToolCall
 from polylogue.lib.json import JSONDocument, json_document
-from polylogue.lib.viewport.viewports import ReasoningTrace, ToolCall
 
 
 @dataclass(frozen=True, slots=True)

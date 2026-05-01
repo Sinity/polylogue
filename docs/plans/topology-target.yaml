@@ -422,6 +422,31 @@ files:
     target: polylogue/archive/session/session_summaries.py
     owner: archive-session
     reason: archive-domain semantics
+  - path: polylogue/archive/viewport/__init__.py
+    loc: 0
+    target: polylogue/archive/viewport/__init__.py
+    owner: archive-viewport
+    reason: archive-domain semantics
+  - path: polylogue/archive/viewport/enums.py
+    loc: 36
+    target: polylogue/archive/viewport/enums.py
+    owner: archive-viewport
+    reason: archive-domain semantics
+  - path: polylogue/archive/viewport/models.py
+    loc: 164
+    target: polylogue/archive/viewport/models.py
+    owner: archive-viewport
+    reason: archive-domain semantics
+  - path: polylogue/archive/viewport/tools.py
+    loc: 146
+    target: polylogue/archive/viewport/tools.py
+    owner: archive-viewport
+    reason: archive-domain semantics
+  - path: polylogue/archive/viewport/viewports.py
+    loc: 31
+    target: polylogue/archive/viewport/viewports.py
+    owner: archive-viewport
+    reason: archive-domain semantics
   - path: polylogue/artifacts/__init__.py
     loc: 1072
     target: polylogue/artifacts/__init__.py
@@ -858,26 +883,6 @@ files:
     target: polylogue/lib/timestamps.py
     owner: lib-root
     reason: lib-root primitive
-  - path: polylogue/lib/viewport/__init__.py
-    loc: 0
-    target: polylogue/lib/viewport/__init__.py
-    owner: stable
-  - path: polylogue/lib/viewport/enums.py
-    loc: 36
-    target: polylogue/lib/viewport/enums.py
-    owner: stable
-  - path: polylogue/lib/viewport/models.py
-    loc: 164
-    target: polylogue/lib/viewport/models.py
-    owner: stable
-  - path: polylogue/lib/viewport/tools.py
-    loc: 146
-    target: polylogue/lib/viewport/tools.py
-    owner: stable
-  - path: polylogue/lib/viewport/viewports.py
-    loc: 31
-    target: polylogue/lib/viewport/viewports.py
-    owner: stable
   - path: polylogue/logging.py
     loc: 166
     target: polylogue/logging.py

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from polylogue.archive.action_event.action_events import canonical_tool_name
-from polylogue.lib.viewport.enums import ToolCategory
-from polylogue.lib.viewport.tools import classify_tool
+from polylogue.archive.viewport.enums import ToolCategory
+from polylogue.archive.viewport.tools import classify_tool
 
 
 def test_codex_shell_aliases_share_canonical_name_and_category() -> None:

@@ -16,9 +16,7 @@ from polylogue.archive.provider.semantics import (
     extract_claude_code_text,
     extract_codex_text,
 )
-from polylogue.lib.json import JSONDocument, json_document, json_document_list
-from polylogue.lib.roles import Role
-from polylogue.lib.viewport.viewports import (
+from polylogue.archive.viewport.viewports import (
     ContentBlock,
     ContentType,
     CostInfo,
@@ -27,6 +25,8 @@ from polylogue.lib.viewport.viewports import (
     TokenUsage,
     ToolCall,
 )
+from polylogue.lib.json import JSONDocument, json_document, json_document_list
+from polylogue.lib.roles import Role
 from polylogue.schemas.unified.unified import (
     HarmonizedMessage,
     _coerce_content_blocks,
