@@ -7,12 +7,12 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TypeAlias
 
-from polylogue.lib.json import JSONDocument, json_document
-from polylogue.lib.provider.semantics import (
+from polylogue.archive.provider.semantics import (
     extract_content_blocks,
     extract_reasoning_traces,
     extract_tool_calls,
 )
+from polylogue.lib.json import JSONDocument, json_document
 from polylogue.lib.roles import Role
 from polylogue.lib.timestamps import parse_timestamp
 from polylogue.lib.viewport.viewports import CostInfo

@@ -7,7 +7,7 @@ from typing import TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from polylogue.lib.provider.semantics import extract_chatgpt_text
+from polylogue.archive.provider.semantics import extract_chatgpt_text
 from polylogue.lib.roles import Role
 from polylogue.lib.timestamps import parse_timestamp
 from polylogue.lib.viewport.viewports import (

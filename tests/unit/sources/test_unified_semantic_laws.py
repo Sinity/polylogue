@@ -11,12 +11,12 @@ import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-from polylogue.lib.json import JSONDocument, json_document, json_document_list
-from polylogue.lib.provider.semantics import (
+from polylogue.archive.provider.semantics import (
     extract_chatgpt_text,
     extract_claude_code_text,
     extract_codex_text,
 )
+from polylogue.lib.json import JSONDocument, json_document, json_document_list
 from polylogue.lib.roles import Role
 from polylogue.lib.viewport.viewports import (
     ContentBlock,

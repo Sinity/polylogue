@@ -16,8 +16,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
+from polylogue.archive.provider.semantics import extract_codex_text
 from polylogue.lib.json import JSONDocument, JSONDocumentList, json_document, json_document_list
-from polylogue.lib.provider.semantics import extract_codex_text
 from polylogue.lib.roles import Role, normalize_role
 from polylogue.lib.timestamps import parse_timestamp
 from polylogue.lib.viewport.viewports import (

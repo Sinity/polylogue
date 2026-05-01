@@ -205,7 +205,7 @@ domains:
     notes: >
       5 known providers (ChatGPT, Claude AI, Claude Code, Codex,
       Gemini) + UNKNOWN. Provider detection by shape, not filename.
-      Provider semantics and capabilities typed in lib/provider/.
+      Provider semantics and capabilities typed in archive/provider/.
 
   archive_integrity:
     description: Archive consistency, repair, idempotency
