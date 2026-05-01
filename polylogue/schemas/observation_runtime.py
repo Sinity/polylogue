@@ -9,7 +9,7 @@ from typing import TypeAlias
 
 from polylogue.archive.artifact_taxonomy import classify_artifact
 from polylogue.archive.raw_payload import extract_payload_samples, record_bucket_key
-from polylogue.lib.json import JSONDocument, JSONValue, is_json_value, json_document
+from polylogue.core.json import JSONDocument, JSONValue, is_json_value, json_document
 from polylogue.schemas.observation_identity import derive_bundle_scope, schema_cluster_id
 from polylogue.schemas.observation_models import ProviderConfig, SchemaClusterPayload, SchemaUnit
 from polylogue.types import Provider

@@ -12,7 +12,7 @@ import copy
 from hypothesis import strategies as st
 from hypothesis_jsonschema import from_schema
 
-from polylogue.lib.json import JSONDocument, JSONValue, json_document, require_json_value
+from polylogue.core.json import JSONDocument, JSONValue, json_document, require_json_value
 from polylogue.schemas.registry import SchemaRegistry
 
 

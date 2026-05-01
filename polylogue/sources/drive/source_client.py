@@ -8,7 +8,7 @@ from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import ParamSpec, Protocol, TypeVar
 
-from polylogue.lib.json import JSONDocument, JSONValue
+from polylogue.core.json import JSONDocument, JSONValue
 from polylogue.logging import get_logger
 
 from .gateway import DriveListFilesResponse, DrivePayloadRecord

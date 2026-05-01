@@ -38,7 +38,7 @@ from polylogue.cli.query_stats import (
     output_stats_by_summaries,
     output_stats_sql,
 )
-from polylogue.lib.json import JSONDocument
+from polylogue.core.json import JSONDocument
 from polylogue.lib.roles import Role
 from polylogue.logging import get_logger
 from polylogue.rendering.formatting import format_conversation

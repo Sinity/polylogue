@@ -7,7 +7,7 @@ from enum import Enum
 from functools import lru_cache
 from typing import Literal
 
-from polylogue.lib.json import JSONDocument, JSONDocumentList, json_document
+from polylogue.core.json import JSONDocument, JSONDocumentList, json_document
 
 Effect = Literal["Pure", "DbRead", "DbWrite", "FileWrite", "Network", "LiveArchive", "Destructive"]
 """Declared runtime effect of an operation.

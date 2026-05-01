@@ -5,7 +5,7 @@ from __future__ import annotations
 import sys
 from collections.abc import Mapping
 
-from polylogue.lib.json import JSONDocument, require_json_document
+from polylogue.core.json import JSONDocument, require_json_document
 from polylogue.surfaces.payloads import (
     MachineErrorPayload,
     MachineSuccessPayload,

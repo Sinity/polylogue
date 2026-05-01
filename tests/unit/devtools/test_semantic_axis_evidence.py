@@ -9,7 +9,7 @@ from devtools.semantic_axis_evidence import (
     build_scale_observation,
     build_semantic_axis_evidence,
 )
-from polylogue.lib.json import JSONDocument
+from polylogue.core.json import JSONDocument
 from polylogue.lib.outcomes import OutcomeStatus
 from polylogue.scenarios import CorpusSourceKind
 

@@ -7,7 +7,7 @@ import pytest
 
 from devtools import regression_capture
 from devtools.regression_cases import RegressionCase
-from polylogue.lib.json import JSONDocument
+from polylogue.core.json import JSONDocument
 
 
 def _probe_summary() -> JSONDocument:

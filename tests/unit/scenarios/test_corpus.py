@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.lib.json import JSONDocument
+from polylogue.core.json import JSONDocument
 from polylogue.scenarios import (
     CorpusProfile,
     CorpusRequest,

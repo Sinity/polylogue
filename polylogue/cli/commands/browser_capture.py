@@ -8,7 +8,7 @@ import click
 
 from polylogue.browser_capture.receiver import BrowserCaptureReceiverConfig, receiver_status_payload
 from polylogue.browser_capture.server import make_server
-from polylogue.lib.json import dumps
+from polylogue.core.json import dumps
 
 
 @click.group("browser-capture")

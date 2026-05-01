@@ -7,7 +7,7 @@ from collections.abc import Mapping
 
 from pydantic import BaseModel
 
-from polylogue.lib.json import dumps as json_dumps
+from polylogue.core.json import dumps as json_dumps
 from polylogue.storage.products.aggregate.records import (
     DaySessionSummaryRecord,
     SessionTagRollupRecord,

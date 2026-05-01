@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import argparse
 
-from polylogue.lib.json import dumps
+from polylogue.core.json import dumps
 from polylogue.proof.diffing import (
     build_affected_obligation_report,
     changed_paths_between_refs,

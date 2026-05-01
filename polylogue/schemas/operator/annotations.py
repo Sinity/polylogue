@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
-from polylogue.lib.json import JSONDocument, JSONValue, json_document
+from polylogue.core.json import JSONDocument, JSONValue, json_document
 from polylogue.schemas.operator.models import (
     JSONDocument as OperatorJSONDocument,
 )

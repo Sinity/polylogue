@@ -12,7 +12,7 @@ import pytest
 from hypothesis import HealthCheck, assume, given, settings
 from hypothesis import strategies as st
 
-from polylogue.lib.json import json_document
+from polylogue.core.json import json_document
 from polylogue.schemas.operator.schema_inference import (
     _remove_nested_required,
     _structure_fingerprint,

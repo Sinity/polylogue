@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from polylogue.lib.json import JSONDocument, JSONValue, json_document
+from polylogue.core.json import JSONDocument, JSONValue, json_document
 
 _PATH_ONLY_SIDECARS = {
     "bridge-pointer.json": "bridge pointer sidecar",

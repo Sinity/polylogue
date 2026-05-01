@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import aiosqlite
 
-from polylogue.lib.json import json_document
+from polylogue.core.json import json_document
 from polylogue.storage.backends.queries.mappers import _parse_json
 from polylogue.storage.runtime import PublicationRecord, _json_or_none
 

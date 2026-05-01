@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import ParamSpec, Protocol, TypeVar
 
-from polylogue.lib.json import json_document, json_document_list
+from polylogue.core.json import json_document, json_document_list
 from polylogue.sources.drive.gateway import DriveListFilesResponse, DrivePayloadRecord
 from polylogue.sources.drive.types import DriveError, DriveNotFoundError
 

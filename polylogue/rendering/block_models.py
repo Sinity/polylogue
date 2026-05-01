@@ -6,7 +6,7 @@ import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
-from polylogue.lib.json import JSONDocument, json_document
+from polylogue.core.json import JSONDocument, json_document
 from polylogue.storage.runtime import ContentBlockRecord
 
 

@@ -4,7 +4,7 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Protocol
 
-from polylogue.lib.json import JSONValue
+from polylogue.core.json import JSONValue
 
 from .types import DriveFile
 

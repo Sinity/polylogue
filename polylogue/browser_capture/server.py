@@ -17,7 +17,7 @@ from polylogue.browser_capture.receiver import (
     receiver_status_payload,
     write_capture_envelope,
 )
-from polylogue.lib.json import dumps_bytes
+from polylogue.core.json import dumps_bytes
 
 
 def _json_bytes(payload: object) -> bytes:

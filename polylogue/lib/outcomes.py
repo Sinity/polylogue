@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 
-from polylogue.lib.json import JSONDocument, json_document
+from polylogue.core.json import JSONDocument, json_document
 
 
 class OutcomeStatus(str, Enum):

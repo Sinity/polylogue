@@ -7,7 +7,7 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 from hypothesis_jsonschema import from_schema
 
-from polylogue.lib.json import JSONValue, json_document, require_json_value
+from polylogue.core.json import JSONValue, json_document, require_json_value
 from polylogue.lib.outcomes import OutcomeStatus
 from polylogue.proof.catalog import build_verification_catalog
 from polylogue.proof.models import ProofObligation

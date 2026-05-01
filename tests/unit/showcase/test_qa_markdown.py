@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from polylogue.lib.json import JSONDocument, JSONDocumentList, json_document_list
+from polylogue.core.json import JSONDocument, JSONDocumentList, json_document_list
 from polylogue.showcase.exercise_models import Exercise
 from polylogue.showcase.report_files import generate_manifest
 from polylogue.showcase.runner import ExerciseResult, ShowcaseResult

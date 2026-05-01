@@ -10,7 +10,7 @@ from typing import Literal, TypeAlias, overload
 
 from polylogue.archive.raw_payload import extract_record_samples_from_raw_content
 from polylogue.archive.raw_payload.decode import RawPayloadEnvelope
-from polylogue.lib.json import JSONDocument
+from polylogue.core.json import JSONDocument
 from polylogue.lib.provider_identity import (
     CORE_RUNTIME_PROVIDERS,
     canonical_runtime_provider,

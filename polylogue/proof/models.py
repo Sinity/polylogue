@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Literal
 
-from polylogue.lib.json import JSONDocument, JSONValue, require_json_document, require_json_value
+from polylogue.core.json import JSONDocument, JSONValue, require_json_document, require_json_value
 from polylogue.lib.outcomes import OutcomeStatus
 
 ClaimSeverity = Literal["info", "serious"]

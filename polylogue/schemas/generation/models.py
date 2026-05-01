@@ -8,7 +8,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from polylogue.lib.json import JSONDocument
+from polylogue.core.json import JSONDocument
 from polylogue.schemas.observation import SchemaUnit
 from polylogue.schemas.packages import SchemaPackageCatalog
 from polylogue.schemas.registry import ClusterManifest

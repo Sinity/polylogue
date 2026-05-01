@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TypeAlias
 
 from polylogue.archive.viewport.viewports import ToolCategory, classify_tool
-from polylogue.lib.json import JSONDocument, JSONValue, json_document
+from polylogue.core.json import JSONDocument, JSONValue, json_document
 
 ToolInputPayload: TypeAlias = JSONDocument
 ToolMetadata: TypeAlias = JSONDocument

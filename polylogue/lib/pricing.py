@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from polylogue.archive.semantic.facts import message_model_name, message_tokens
 from polylogue.archive.viewport.viewports import TokenUsage
-from polylogue.lib.json import json_document
+from polylogue.core.json import json_document
 
 if TYPE_CHECKING:
     from polylogue.lib.models import Conversation, Message

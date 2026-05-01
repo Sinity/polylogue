@@ -6,7 +6,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from polylogue.lib.json import is_json_document, json_document
+from polylogue.core.json import is_json_document, json_document
 from polylogue.lib.roles import Role
 from polylogue.types import Provider
 

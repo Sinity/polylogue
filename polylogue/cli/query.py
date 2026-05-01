@@ -31,7 +31,7 @@ from polylogue.cli.query_contracts import (
 from polylogue.cli.query_feedback import emit_no_results
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
-from polylogue.lib.json import JSONDocument
+from polylogue.core.json import JSONDocument
 from polylogue.logging import get_logger
 from polylogue.pipeline.tail_overlay import TailOverlayUnavailableError, tail_overlay_services
 from polylogue.surfaces.payloads import ConversationListRowPayload

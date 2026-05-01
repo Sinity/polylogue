@@ -9,7 +9,7 @@ import click
 import pytest
 
 from polylogue.cli.click_app import main
-from polylogue.lib.json import JSONDocument
+from polylogue.core.json import JSONDocument
 from tests.infra.json_contracts import parse_json_object
 
 pytestmark = pytest.mark.machine_contract

@@ -22,7 +22,7 @@ from polylogue.cli.shared.machine_errors import (
     emit_success,
     success,
 )
-from polylogue.lib.json import JSONDocument
+from polylogue.core.json import JSONDocument
 from tests.infra.json_contracts import envelope_result, extract_json_object, json_object_field, parse_json_object
 
 pytestmark = pytest.mark.machine_contract

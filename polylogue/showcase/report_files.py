@@ -6,7 +6,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from polylogue.lib.json import JSONDocument, json_document
+from polylogue.core.json import JSONDocument, json_document
 from polylogue.publication import OutputManifest
 from polylogue.showcase.runner import ShowcaseResult
 

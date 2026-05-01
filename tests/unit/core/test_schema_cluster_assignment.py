@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.lib.json import JSONDocument, json_document_list
+from polylogue.core.json import JSONDocument, json_document_list
 from polylogue.schemas.registry import (
     ClusterManifest,
     SchemaRegistry,

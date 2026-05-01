@@ -14,7 +14,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from polylogue.lib.json import JSONDocument
+from polylogue.core.json import JSONDocument
 
 
 def generate_valid_jsonl_record(

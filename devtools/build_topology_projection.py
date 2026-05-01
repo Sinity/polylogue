@@ -113,11 +113,10 @@ LIB_PREFIX_TO_SUBPACKAGE = {
     "attachment_": "archive/attachment/",
 }
 
-# Lib root primitives stay at lib/ root.
+# Remaining lib root primitives stay at lib/ root until moved deliberately.
 LIB_ROOT_PRIMITIVES = frozenset(
     {
         "__init__.py",
-        "json.py",
         "hashing.py",
         "dates.py",
         "timestamps.py",
@@ -201,6 +200,7 @@ TARGET_TO_OWNER = [
     ("polylogue/surfaces/", "surface-shared"),
     ("polylogue/maintenance/", "maintenance-domain"),
     ("polylogue/publication/", "publication-domain"),
+    ("polylogue/core/", "core-primitive"),
     ("polylogue/archive/query/", "archive-query"),
     ("polylogue/archive/filter/", "archive-filter"),
     ("polylogue/archive/session/", "archive-session"),
@@ -369,6 +369,10 @@ def classify(path: Path) -> dict[str, Any]:
         target = rel
         owner = "archive-query"
         reason = "archive-domain query semantics"
+    elif rel.startswith("polylogue/core/"):
+        target = rel
+        owner = "core-primitive"
+        reason = "core primitive"
     elif rel.startswith("polylogue/archive/filter/"):
         target = rel
         owner = "archive-filter"

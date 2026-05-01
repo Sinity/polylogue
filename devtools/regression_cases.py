@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
 
-from polylogue.lib.json import JSONDocument, loads, require_json_document
+from polylogue.core.json import JSONDocument, loads, require_json_document
 
 SCHEMA_VERSION = 1
 DEFAULT_REGRESSION_CASE_DIR = Path(".local/regression-cases")

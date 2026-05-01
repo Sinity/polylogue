@@ -17,7 +17,7 @@ from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 from typing_extensions import TypedDict
 
-from polylogue.lib.json import JSONDocument
+from polylogue.core.json import JSONDocument
 from polylogue.sources.parsers import chatgpt, claude, codex, drive
 from tests.infra.strategies.schema_driven import schema_conformant_payload
 

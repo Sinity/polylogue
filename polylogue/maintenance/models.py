@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
-from polylogue.lib.json import JSONDocument, json_document
+from polylogue.core.json import JSONDocument, json_document
 
 
 class MaintenanceCategory(str, Enum):

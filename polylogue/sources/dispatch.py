@@ -9,7 +9,7 @@ from decimal import Decimal
 from io import BytesIO
 from typing import TYPE_CHECKING, Literal, TypeAlias
 
-from polylogue.lib.json import JSONDocument, JSONValue, is_json_document, is_json_value
+from polylogue.core.json import JSONDocument, JSONValue, is_json_document, is_json_value
 from polylogue.lib.payload_coercion import optional_string
 from polylogue.logging import get_logger
 from polylogue.types import Provider

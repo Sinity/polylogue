@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from polylogue.lib.json import JSONDocument, json_document
+from polylogue.core.json import JSONDocument, json_document
 from polylogue.readiness import ReadinessReport
 from polylogue.schemas.validation.models import ArtifactProofReport, SchemaVerificationReport
 from polylogue.storage.artifacts.views import ArtifactCohortSummary

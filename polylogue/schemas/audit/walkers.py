@@ -7,7 +7,7 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import TypeAlias
 
-from polylogue.lib.json import JSONDocument, JSONValue, json_document, json_document_list
+from polylogue.core.json import JSONDocument, JSONValue, json_document, json_document_list
 from polylogue.schemas.runtime_registry import SchemaRegistry
 
 SchemaPath = str

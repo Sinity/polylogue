@@ -6,7 +6,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Literal, TypeAlias
 
-from polylogue.lib.json import JSONDocument, json_document, json_document_list
+from polylogue.core.json import JSONDocument, json_document, json_document_list
 from polylogue.types import Provider
 
 

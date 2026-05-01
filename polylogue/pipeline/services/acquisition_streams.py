@@ -9,7 +9,7 @@ from functools import partial
 from itertools import islice
 from typing import TYPE_CHECKING
 
-from polylogue.lib.json import JSONDocument
+from polylogue.core.json import JSONDocument
 from polylogue.logging import get_logger
 from polylogue.pipeline.services.acquisition_records import make_raw_record
 from polylogue.sources.parsers.base import RawConversationData

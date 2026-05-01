@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from polylogue.lib.json import JSONDocument
+from polylogue.core.json import JSONDocument
 from polylogue.schemas.extraction import extract_message_from_schema
 from polylogue.schemas.observation import ProviderConfig, extract_schema_units_from_payload
 from polylogue.types import Provider

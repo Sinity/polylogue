@@ -4,7 +4,7 @@ from collections.abc import Sequence
 
 from pydantic import ValidationError
 
-from polylogue.lib.json import JSONDocument, json_document
+from polylogue.core.json import JSONDocument, json_document
 from polylogue.lib.roles import Role
 from polylogue.logging import get_logger
 from polylogue.sources.providers.gemini import GeminiMessage

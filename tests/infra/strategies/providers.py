@@ -16,8 +16,8 @@ from typing import TypedDict
 
 from hypothesis import strategies as st
 
-from polylogue.lib.json import JSONDocument, json_document
-from polylogue.lib.json import loads as json_loads
+from polylogue.core.json import JSONDocument, json_document
+from polylogue.core.json import loads as json_loads
 from polylogue.scenarios import CorpusSpec
 from polylogue.schemas.synthetic import SyntheticCorpus
 

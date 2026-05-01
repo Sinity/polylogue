@@ -6,7 +6,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from polylogue.lib.json import JSONDocument, JSONValue
+from polylogue.core.json import JSONDocument, JSONValue
 from polylogue.schemas.generation.cluster_support import (
     _artifact_priority,
     _cluster_profile_tokens,

@@ -6,7 +6,7 @@ from datetime import datetime
 
 from polylogue.archive.provider.semantics import extract_display_text_from_content_blocks
 from polylogue.archive.viewport.viewports import ContentType, ReasoningTrace
-from polylogue.lib.json import JSONDocument, json_document_list
+from polylogue.core.json import JSONDocument, json_document_list
 from polylogue.lib.roles import Role
 from polylogue.schemas.unified.models import HarmonizedMessage, _missing_role
 from polylogue.schemas.unified.provider_meta_coercion import (

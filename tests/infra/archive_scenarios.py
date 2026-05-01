@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TypeAlias
 
-from polylogue.lib.json import JSONDocument, JSONValue, json_document, loads, require_json_document
+from polylogue.core.json import JSONDocument, JSONValue, json_document, loads, require_json_document
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.backends.queries.mappers_archive import (
     _row_to_content_block,

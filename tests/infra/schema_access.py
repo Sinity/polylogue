@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from polylogue.lib.json import JSONDocument, JSONValue, json_document
+from polylogue.core.json import JSONDocument, JSONValue, json_document
 
 
 def schema_node(value: object) -> JSONDocument:

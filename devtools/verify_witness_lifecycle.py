@@ -10,7 +10,7 @@ from __future__ import annotations
 import argparse
 from datetime import datetime, timezone
 
-from polylogue.lib.json import dumps
+from polylogue.core.json import dumps
 from polylogue.proof.witnesses import COMMITTED_WITNESS_DIR, load_committed_witnesses
 
 _STALE_DAYS = 30

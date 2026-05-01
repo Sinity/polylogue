@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from enum import Enum
 from functools import lru_cache
 
-from polylogue.lib.json import JSONDocument, json_document
+from polylogue.core.json import JSONDocument, json_document
 from polylogue.lib.outcomes import OutcomeStatus
 from polylogue.maintenance.models import MaintenanceCategory
 

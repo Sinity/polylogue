@@ -46,7 +46,7 @@ from polylogue.cli.query_output import (
     output_stats_sql,
 )
 from polylogue.cli.shared.types import AppEnv
-from polylogue.lib.json import JSONDocument
+from polylogue.core.json import JSONDocument
 from polylogue.lib.models import Conversation
 from polylogue.lib.roles import Role
 from polylogue.lib.search_hits import ConversationSearchHit

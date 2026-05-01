@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from polylogue.lib.json import JSONDocument, JSONValue
+from polylogue.core.json import JSONDocument, JSONValue
 from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.repository import ConversationRepository
 from tests.infra.archive_scenarios import ArchiveScenario, repository_for_scenario_db

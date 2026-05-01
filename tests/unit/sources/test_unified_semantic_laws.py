@@ -25,7 +25,7 @@ from polylogue.archive.viewport.viewports import (
     TokenUsage,
     ToolCall,
 )
-from polylogue.lib.json import JSONDocument, json_document, json_document_list
+from polylogue.core.json import JSONDocument, json_document, json_document_list
 from polylogue.lib.roles import Role
 from polylogue.schemas.unified.unified import (
     HarmonizedMessage,

@@ -9,7 +9,7 @@ from itertools import chain
 from typing import IO, TYPE_CHECKING
 
 from polylogue.archive.artifact_taxonomy import ArtifactClassification, classify_artifact
-from polylogue.lib.json import dumps_bytes as json_dumps_bytes
+from polylogue.core.json import dumps_bytes as json_dumps_bytes
 from polylogue.logging import get_logger
 from polylogue.types import Provider
 

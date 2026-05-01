@@ -7,7 +7,7 @@ from typing import TypeAlias
 
 from hypothesis import strategies as st
 
-from polylogue.lib.json import JSONDocument, JSONValue
+from polylogue.core.json import JSONDocument, JSONValue
 
 JSONRoundTripScalar: TypeAlias = str | int | bool | None
 

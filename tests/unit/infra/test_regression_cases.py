@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from devtools.regression_cases import RegressionCase, RegressionCaseStore
-from polylogue.lib.json import JSONDocument
+from polylogue.core.json import JSONDocument
 
 
 def test_regression_case_roundtrips_probe_summary(tmp_path: Path) -> None:

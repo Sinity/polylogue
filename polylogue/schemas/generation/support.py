@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import TypeAlias, overload
 
-from polylogue.lib.json import JSONDocument, json_document
+from polylogue.core.json import JSONDocument, json_document
 from polylogue.schemas.field_stats.stats import FieldStats
 from polylogue.schemas.generation import dynamic_keys as _dynamic_keys
 from polylogue.schemas.generation.field_annotations import annotate_schema, remove_nested_required

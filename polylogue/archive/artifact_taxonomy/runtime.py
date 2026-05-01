@@ -15,7 +15,7 @@ from polylogue.archive.artifact_taxonomy.support import (
     normalize_source_path,
     path_only_sidecars,
 )
-from polylogue.lib.json import JSONDocument, JSONValue, json_document
+from polylogue.core.json import JSONDocument, JSONValue, json_document
 from polylogue.types import Provider
 
 

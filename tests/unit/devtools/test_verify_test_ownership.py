@@ -30,14 +30,14 @@ def test_imports_in_filters_to_production(tmp_path: Path) -> None:
     test_file = tmp_path / "test_something.py"
     test_file.write_text(
         """import json
-import polylogue.lib.json as plj
+import polylogue.core.json as plj
 from polylogue.storage import repository
 from devtools import verify
 from os import path
 """,
     )
     imports = verify_test_ownership.imports_in(test_file)
-    assert "polylogue.lib.json" in imports
+    assert "polylogue.core.json" in imports
     assert "polylogue.storage" in imports
     assert "devtools" in imports
     assert "json" not in imports

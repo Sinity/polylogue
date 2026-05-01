@@ -12,7 +12,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from polylogue.lib.json import JSONDocument, is_json_value, require_json_value
+from polylogue.core.json import JSONDocument, is_json_value, require_json_value
 
 
 def _read_proc_status_kb(field_name: str) -> int | None:

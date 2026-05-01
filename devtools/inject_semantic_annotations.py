@@ -13,7 +13,7 @@ import json
 import sys
 from pathlib import Path
 
-from polylogue.lib.json import JSONDocument, is_json_document, json_document
+from polylogue.core.json import JSONDocument, is_json_document, json_document
 from polylogue.schemas.registry import SchemaRegistry
 
 SCHEMAS_DIR = Path(__file__).resolve().parent.parent / "polylogue" / "schemas" / "providers"

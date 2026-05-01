@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
-from polylogue.lib.json import JSONDocument
+from polylogue.core.json import JSONDocument
 from polylogue.lib.metrics import read_peak_rss_self_mb
 from polylogue.logging import get_logger
 from polylogue.pipeline.payload_types import AcquireSplitPayloadSummary

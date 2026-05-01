@@ -6,8 +6,8 @@ import json
 import sqlite3
 from typing import TypeGuard, TypeVar, overload
 
+from polylogue.core.json import JSONValue, json_document, loads
 from polylogue.errors import DatabaseError
-from polylogue.lib.json import JSONValue, json_document, loads
 
 _T = TypeVar("_T", bound=object)
 _RowValue = str | int | float | bytes | bytearray | None

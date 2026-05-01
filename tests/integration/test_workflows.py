@@ -22,7 +22,7 @@ from typing import Literal, Protocol, TypeAlias
 import pytest
 
 from polylogue.config import Config, Source
-from polylogue.lib.json import JSONDocument
+from polylogue.core.json import JSONDocument
 from polylogue.pipeline.runner import run_sources
 from polylogue.pipeline.services.parsing import ParsingService
 from polylogue.storage.backends.async_sqlite import SQLiteBackend

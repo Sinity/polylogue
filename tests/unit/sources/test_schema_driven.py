@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import copy
 
-from polylogue.lib.json import JSONValue
+from polylogue.core.json import JSONValue
 from polylogue.schemas.registry import SchemaRegistry
 from tests.infra.strategies.schema_driven import strip_schema_extensions
 
