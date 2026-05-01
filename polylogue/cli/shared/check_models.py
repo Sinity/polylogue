@@ -37,6 +37,7 @@ class CheckCommandResult:
     proof_report: ArtifactProofReport | None = None
     artifact_rows: list[ArtifactObservationRecord] | None = None
     cohort_rows: list[ArtifactCohortSummary] | None = None
+    blob_report: JSONDocument | None = None
     maintenance_results: list[RepairResult] | None = None
     maintenance_targets: tuple[str, ...] = ()
     vacuum_result: VacuumResult | None = None

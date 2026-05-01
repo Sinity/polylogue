@@ -5,6 +5,7 @@ from __future__ import annotations
 import sqlite3
 
 from polylogue.lib.conversation.branch_type import BranchType
+from polylogue.lib.message.types import MessageType
 from polylogue.lib.roles import Role
 from polylogue.storage.backends.queries.mappers_support import (
     _json_object,
@@ -60,12 +61,13 @@ def _row_to_conversation(row: sqlite3.Row) -> ConversationRecord:
 
 def _row_to_message(row: sqlite3.Row) -> MessageRecord:
     role = _row_text(row, "role")
+    normalized_role = Role.normalize(role) if role is not None and role.strip() else None
     parent_message_id = _row_text(row, "parent_message_id")
     return MessageRecord(
         message_id=row["message_id"],
         conversation_id=row["conversation_id"],
         provider_message_id=_row_text(row, "provider_message_id"),
-        role=Role.normalize(role) if role is not None else None,
+        role=normalized_role,
         text=_row_text(row, "text"),
         sort_key=_row_float(row, "sort_key"),
         content_hash=row["content_hash"],
@@ -77,6 +79,7 @@ def _row_to_message(row: sqlite3.Row) -> MessageRecord:
         has_tool_use=_row_int(row, "has_tool_use", 0) or 0,
         has_thinking=_row_int(row, "has_thinking", 0) or 0,
         has_paste=_row_int(row, "has_paste", 0) or 0,
+        message_type=MessageType.normalize(_row_text(row, "message_type") or "message"),
     )
 
 

@@ -28,20 +28,20 @@ ObservedSchemaSample: TypeAlias = object
 
 def _dominant_keys(sample: object) -> list[str]:
     document = json_document(sample)
-    if document:
+    if document is not None:
         return sorted(document)
     documents = json_document_list(sample)
-    if documents:
+    if documents is not None and len(documents) > 0:
         return sorted(documents[0])
     return []
 
 
 def _cluster_payload(sample: object) -> SchemaClusterPayload:
     document = json_document(sample)
-    if document:
+    if document is not None:
         return document
     documents = json_document_list(sample)
-    if documents:
+    if documents is not None and len(documents) > 0:
         return require_json_value(documents, context="schema cluster payload")
     if sample is None or isinstance(sample, (str, int, float, bool)):
         return sample

@@ -27,28 +27,50 @@ from polylogue.products.readiness import (
 from polylogue.products.registry import CliOption, ProductQueryError, ProductType, get_product_type
 
 
-def _root_context(*, output_format: str | None = None, provider: str | None = None) -> click.Context:
+def _root_context(
+    *,
+    output_format: str | None = None,
+    provider: str | None = None,
+    since: str | None = "2026-04-01",
+    until: str | None = "2026-04-30",
+) -> click.Context:
     root = click.Context(click.Command("polylogue"))
     root.params = {
         "output_format": output_format,
         "provider": provider,
-        "since": "2026-04-01",
-        "until": "2026-04-30",
+        "since": since,
+        "until": until,
     }
     return root
 
 
-def _status_context(env: object, *, output_format: str | None = None, provider: str | None = None) -> click.Context:
+def _status_context(
+    env: object,
+    *,
+    output_format: str | None = None,
+    provider: str | None = None,
+    since: str | None = "2026-04-01",
+    until: str | None = "2026-04-30",
+) -> click.Context:
     ctx = click.Context(
-        products_module.products_status_command, parent=_root_context(output_format=output_format, provider=provider)
+        products_module.products_status_command,
+        parent=_root_context(output_format=output_format, provider=provider, since=since, until=until),
     )
     ctx.obj = env
     return ctx
 
 
-def _export_context(env: object, *, output_format: str | None = None, provider: str | None = None) -> click.Context:
+def _export_context(
+    env: object,
+    *,
+    output_format: str | None = None,
+    provider: str | None = None,
+    since: str | None = "2026-04-01",
+    until: str | None = "2026-04-30",
+) -> click.Context:
     ctx = click.Context(
-        products_module.products_export_command, parent=_root_context(output_format=output_format, provider=provider)
+        products_module.products_export_command,
+        parent=_root_context(output_format=output_format, provider=provider, since=since, until=until),
     )
     ctx.obj = env
     return ctx
@@ -209,9 +231,25 @@ def test_products_status_command_emits_json_and_inherits_root_filters(tmp_path: 
     query = captured["query"]
     assert query.products == ("profiles",)
     assert query.provider == "codex"
-    assert query.since == "2026-04-01"
-    assert query.until == "2026-04-30"
+    assert query.since == "2026-04-01T00:00:00+00:00"
+    assert query.until == "2026-04-30T00:00:00+00:00"
     emit_success.assert_called_once()
+
+
+def test_products_status_command_rejects_inherited_provider_csv() -> None:
+    env = SimpleNamespace(operations=SimpleNamespace(get_product_readiness_report=MagicMock()))
+    raw_callback = _command_callback(products_module.products_status_command)
+
+    with pytest.raises(SystemExit, match="products commands accept one provider"):
+        raw_callback(
+            _status_context(env, provider="codex,chatgpt"),
+            products=(),
+            provider=None,
+            since=None,
+            until=None,
+            json_mode=False,
+            output_format=None,
+        )
 
 
 def test_products_status_command_reports_invalid_product_names() -> None:
@@ -272,6 +310,8 @@ def test_products_export_command_covers_json_plain_and_error_paths(tmp_path: Pat
     assert request.output_path == tmp_path / "bundle"
     assert request.products == ("profiles",)
     assert request.provider == "codex"
+    assert request.since == "2026-04-01T00:00:00+00:00"
+    assert request.until == "2026-04-30T00:00:00+00:00"
     assert request.overwrite is True
     emit_success.assert_called_once()
 

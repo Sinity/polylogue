@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from pydantic import BaseModel, Field, field_validator
 
 from polylogue.lib.conversation.branch_type import BranchType
+from polylogue.lib.message.types import MessageType
 from polylogue.lib.roles import Role
 from polylogue.lib.security import sanitize_path as _sanitize_path_helper
 from polylogue.types import ContentBlockType, Provider
@@ -45,6 +46,7 @@ class ParsedMessage(BaseModel):
     text: str | None = None
     timestamp: str | None = None
     content_blocks: list[ParsedContentBlock] = Field(default_factory=list)
+    message_type: MessageType = MessageType.MESSAGE
     # Optional transient parser metadata for direct parser consumers.
     # Canonical persistence uses content_blocks for messages and provider_meta for conversations/attachments.
     provider_meta: dict[str, object] | None = None
@@ -57,6 +59,11 @@ class ParsedMessage(BaseModel):
         if isinstance(v, Role):
             return v
         return Role.normalize(str(v) if v is not None else "unknown")
+
+    @field_validator("message_type", mode="before")
+    @classmethod
+    def coerce_message_type(cls, v: object) -> MessageType:
+        return MessageType.normalize(v)
 
 
 class ParsedAttachment(BaseModel):

@@ -205,7 +205,7 @@ def test_apply_full_filters_handles_content_word_branch_predicate_and_action_fil
     )
 
     for name in (
-        "matches_path_terms",
+        "matches_referenced_path",
         "matches_action_terms",
         "matches_action_sequence",
         "matches_action_text_terms",
@@ -227,7 +227,7 @@ def test_apply_full_filters_handles_content_word_branch_predicate_and_action_fil
             negative_terms=("negative",),
             has_branches=True,
             predicates=(lambda conversation: "branchy" in str(conversation.id),),
-            path_terms=("/repo/src/app.py",),
+            referenced_path=("/repo/src/app.py",),
             action_terms=("shell",),
             action_sequence=("search", "shell"),
             action_text_terms=("pytest",),

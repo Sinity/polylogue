@@ -12,6 +12,8 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.errors import DatabaseError
+from polylogue.storage.fts.fts_lifecycle import check_fts_readiness
 from tests.infra.archive_scenarios import ArchiveScenario, ScenarioMessage, seed_workspace_scenarios
 from tests.infra.oracles import assert_archive_surfaces_agree, assert_provider_partition_exhaustive
 from tests.infra.query_cases import ArchiveQueryCase
@@ -120,6 +122,30 @@ def _search_cases() -> tuple[ArchiveQueryCase, ...]:
             expected_ids=("codex-retrieval-1",),
         ),
     )
+
+
+def test_fts_readiness_rejects_negative_gap_and_missing_triggers() -> None:
+    with pytest.raises(DatabaseError):
+        check_fts_readiness(
+            {
+                "exists": True,
+                "ready": False,
+                "indexed_rows": 110,
+                "total_rows": 100,
+                "triggers_present": True,
+            }
+        )
+
+    with pytest.raises(DatabaseError):
+        check_fts_readiness(
+            {
+                "exists": True,
+                "ready": False,
+                "indexed_rows": 99,
+                "total_rows": 100,
+                "triggers_present": False,
+            }
+        )
 
 
 class TestRetrievalSurfaceAgreement:

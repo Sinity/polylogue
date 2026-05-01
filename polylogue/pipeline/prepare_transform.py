@@ -74,6 +74,7 @@ def transform_to_records(convo: ParsedConversation, source_name: str, *, archive
             has_tool_use=message.has_tool_use,
             has_thinking=message.has_thinking,
             has_paste=message.has_paste,
+            message_type=message.message_type,
         )
         for message in materialized.messages
     ]

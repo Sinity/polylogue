@@ -23,6 +23,14 @@ def test_read_coverage_threshold_uses_pyproject_report_floor(tmp_path: Path) -> 
     assert coverage_gate.read_coverage_threshold(pyproject) == 84
 
 
+def test_read_coverage_threshold_rejects_bool(tmp_path: Path) -> None:
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text("[tool.coverage.report]\nfail_under = true\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="fail_under"):
+        coverage_gate.read_coverage_threshold(pyproject)
+
+
 def test_build_coverage_command_uses_threshold_and_local_options(tmp_path: Path) -> None:
     pyproject = write_pyproject(tmp_path, 84)
 

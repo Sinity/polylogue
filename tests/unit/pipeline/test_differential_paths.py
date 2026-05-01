@@ -50,11 +50,11 @@ class TestDecoderConvergence:
         records = []
         try:
             import ijson
+        except ImportError:
+            pytest.skip("ijson is required for streaming decoder convergence tests")
 
-            for record in iter_json_stream_with(logger, ijson, handle, "test.jsonl"):
-                records.append(record)
-        except Exception:
-            pass
+        for record in iter_json_stream_with(logger, ijson, handle, "test.jsonl"):
+            records.append(record)
 
         return records
 
@@ -130,23 +130,23 @@ class TestHealthRepairConvergence:
         from tests.infra.storage_records import ConversationBuilder, db_setup
 
         db_path = db_setup(workspace_env)
-        with open_connection(db_path) as conn:
-            (
-                ConversationBuilder(db_path, "conv-1")
-                .provider("chatgpt")
-                .title("First")
-                .add_message(role="user", text="Hello")
-                .add_message(role="assistant", text="Hi")
-                .save()
-            )
-            (
-                ConversationBuilder(db_path, "conv-2")
-                .provider("claude-code")
-                .title("Second")
-                .add_message(role="user", text="Test")
-                .save()
-            )
+        (
+            ConversationBuilder(db_path, "conv-1")
+            .provider("chatgpt")
+            .title("First")
+            .add_message(role="user", text="Hello")
+            .add_message(role="assistant", text="Hi")
+            .save()
+        )
+        (
+            ConversationBuilder(db_path, "conv-2")
+            .provider("claude-code")
+            .title("Second")
+            .add_message(role="user", text="Test")
+            .save()
+        )
 
+        with open_connection(db_path) as conn:
             conn.execute("PRAGMA foreign_keys = OFF")
             conn.execute(
                 "INSERT INTO messages (message_id, conversation_id, role, text, content_hash, version, provider_name, word_count, has_tool_use, has_thinking) "
@@ -198,11 +198,11 @@ class TestRepairPreviewConvergence:
         from tests.infra.storage_records import ConversationBuilder, db_setup
 
         db_path = db_setup(workspace_env)
-        with open_connection(db_path) as conn:
-            ConversationBuilder(db_path, "real-conv").provider("chatgpt").title("Real").add_message(
-                role="user", text="Real message"
-            ).save()
+        ConversationBuilder(db_path, "real-conv").provider("chatgpt").title("Real").add_message(
+            role="user", text="Real message"
+        ).save()
 
+        with open_connection(db_path) as conn:
             conn.execute("PRAGMA foreign_keys = OFF")
             conn.execute(
                 "INSERT INTO messages (message_id, conversation_id, role, text, content_hash, version, provider_name, word_count, has_tool_use, has_thinking) "

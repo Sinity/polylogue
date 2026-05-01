@@ -26,7 +26,8 @@ def _optional_string(value: object) -> str | None:
 
 
 def _content_blocks(message: JSONDocument) -> list[JSONDocument]:
-    return json_document_list(message.get("content_blocks"))
+    blocks = message.get("content_blocks")
+    return json_document_list(blocks)
 
 
 @dataclass(frozen=True)
@@ -73,7 +74,7 @@ class ConversationFacts:
     def from_json_payload(cls, payload: JSONDocument) -> ConversationFacts:
         """Extract facts from a CLI JSON output payload."""
         messages = json_document_list(payload.get("messages"))
-        roles = Counter(_string_value(m.get("role")) or "unknown" for m in messages)
+        roles = Counter(_string_value(message.get("role")) or "unknown" for message in messages)
         has_tool_use = any(
             any(block.get("type") in ("tool_use", "tool_result") for block in _content_blocks(message))
             for message in messages

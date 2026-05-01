@@ -166,3 +166,67 @@ async def test_observe_slow_query_handles_disabled_immediate_and_delayed_paths()
 
     delayed_notice_factory.assert_awaited_once()
     assert emitted == ["Query still running after 0.0s (route: show; retrieval: hybrid)."]
+
+
+@pytest.mark.asyncio
+async def test_observe_slow_query_does_not_wait_for_notice_after_operation_finishes() -> None:
+    notice_started = asyncio.Event()
+    notice_cancelled = asyncio.Event()
+
+    async def _operation() -> str:
+        await asyncio.sleep(0.01)
+        return "done"
+
+    async def _notice() -> QuerySlowNotice:
+        notice_started.set()
+        try:
+            await asyncio.sleep(1)
+        except asyncio.CancelledError:
+            notice_cancelled.set()
+            raise
+        return QuerySlowNotice(route="show", retrieval_lane="hybrid")
+
+    result = await observe_slow_query(
+        _operation(),
+        enabled=True,
+        threshold_seconds=0.0,
+        notice_factory=_notice,
+        emit=lambda _message: None,
+    )
+
+    assert result == "done"
+    assert notice_started.is_set()
+    assert notice_cancelled.is_set()
+
+
+@pytest.mark.asyncio
+async def test_observe_slow_query_cancels_operation_when_caller_cancels() -> None:
+    operation_cancelled = asyncio.Event()
+
+    async def _operation() -> str:
+        try:
+            await asyncio.sleep(1)
+        except asyncio.CancelledError:
+            operation_cancelled.set()
+            raise
+        return "done"
+
+    async def _notice() -> QuerySlowNotice:
+        await asyncio.sleep(1)
+        return QuerySlowNotice(route="show", retrieval_lane="hybrid")
+
+    task = asyncio.create_task(
+        observe_slow_query(
+            _operation(),
+            enabled=True,
+            threshold_seconds=0.0,
+            notice_factory=_notice,
+            emit=lambda _message: None,
+        )
+    )
+    await asyncio.sleep(0)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert operation_cancelled.is_set()

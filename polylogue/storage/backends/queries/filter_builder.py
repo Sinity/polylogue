@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from polylogue.lib.message.types import MessageType
 from polylogue.lib.query.fields import storage_filters_require_stats_join
 from polylogue.lib.viewport.viewports import ToolCategory
 from polylogue.storage.backends.connection import _build_provider_scope_filter
@@ -31,7 +32,7 @@ def _build_conversation_filters(
     since: str | None = None,
     until: str | None = None,
     title_contains: str | None = None,
-    path_terms: list[str] | tuple[str, ...] | None = None,
+    referenced_path: list[str] | tuple[str, ...] | None = None,
     cwd_prefix: str | None = None,
     action_terms: list[str] | tuple[str, ...] | None = None,
     excluded_action_terms: list[str] | tuple[str, ...] | None = None,
@@ -45,6 +46,7 @@ def _build_conversation_filters(
     min_messages: int | None = None,
     max_messages: int | None = None,
     min_words: int | None = None,
+    message_type: str | None = None,
 ) -> tuple[str, list[str | int | float]]:
     """Build WHERE clause and params for conversation queries.
 
@@ -107,8 +109,8 @@ def _build_conversation_filters(
     # When using stats join, outer table is aliased as 'c'; otherwise use fully qualified
     # table name to prevent ambiguity.
     conv_id_col = "c.conversation_id" if needs_stats_join else "conversations.conversation_id"
-    if path_terms:
-        for term in path_terms:
+    if referenced_path:
+        for term in referenced_path:
             normalized = str(term).replace("\\", "/").lower()
             where_clauses.append(
                 f"EXISTS (SELECT 1 FROM action_events ae "
@@ -186,6 +188,11 @@ def _build_conversation_filters(
             f"WHERE sp.conversation_id = {conv_id_col} AND value IN ({placeholders}))"
         )
         params.extend(repo_names)
+    if message_type:
+        where_clauses.append(
+            f"EXISTS (SELECT 1 FROM messages mt WHERE mt.conversation_id = {conv_id_col} AND mt.message_type = ?)"
+        )
+        params.append(MessageType.normalize(message_type).value)
     where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
     return where_sql, params
 

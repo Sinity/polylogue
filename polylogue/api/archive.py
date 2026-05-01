@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from contextlib import suppress
-from typing import TYPE_CHECKING, Any, Protocol, cast
+from typing import TYPE_CHECKING, Protocol
 
 from polylogue.lib.message.roles import MessageRoleFilter
 from polylogue.lib.semantic.content_projection import ContentProjectionSpec
@@ -19,8 +19,9 @@ from polylogue.storage.products.session.runtime import SessionProductStatusSnaps
 
 if TYPE_CHECKING:
     from polylogue.config import Config
-    from polylogue.lib.conversation.models import Conversation
+    from polylogue.lib.conversation.models import Conversation, ConversationSummary
     from polylogue.lib.filter.filters import ConversationFilter
+    from polylogue.lib.message.models import Message
     from polylogue.operations import ArchiveStats
     from polylogue.products.export_bundles import ProductExportBundleRequest, ProductExportBundleResult
     from polylogue.products.readiness import ProductReadinessQuery, ProductReadinessReport
@@ -37,6 +38,19 @@ if TYPE_CHECKING:
             *,
             content_projection: ContentProjectionSpec | None = None,
         ) -> Conversation | None: ...
+
+        async def get_conversation_summary(self, conversation_id: str) -> ConversationSummary | None: ...
+
+        async def get_messages_paginated(
+            self,
+            conversation_id: str,
+            *,
+            message_role: MessageRoleFilter = (),
+            message_type: MessageTypeName | None = None,
+            limit: int = 50,
+            offset: int = 0,
+            content_projection: ContentProjectionSpec | None = None,
+        ) -> tuple[list[Message], int]: ...
 
         async def get_conversations(
             self,
@@ -252,40 +266,18 @@ class PolylogueArchiveMixin:
         content_projection: ContentProjectionSpec | None = None,
     ) -> tuple[list[dict[str, object]], int] | None:
         """Return paginated messages for a conversation."""
-        conv = await self.operations.get_conversation(conversation_id, content_projection=content_projection)
-        if conv is None:
+        summary = await self.operations.get_conversation_summary(conversation_id)
+        if summary is None:
             return None
 
-        from polylogue.lib.message.roles import normalize_message_roles
-
-        messages: list[Any] = cast("list[Any]", conv.messages if hasattr(conv, "messages") else [])
-        roles: tuple[str, ...] = normalize_message_roles(message_role) if message_role else ()
-
-        if roles:
-            messages = [m for m in messages if str(getattr(m, "role", "")) in roles]
-
-        if message_type:
-            if message_type == "tool_use":
-                messages = [m for m in messages if getattr(m, "is_tool_use", False)]
-            elif message_type == "thinking":
-                messages = [m for m in messages if getattr(m, "is_thinking", False)]
-            elif message_type == "tool_result":
-                messages = [
-                    m
-                    for m in messages
-                    if any(b.get("type") == "tool_result" for b in (getattr(m, "content_blocks", None) or []))
-                ]
-            elif message_type == "summary":
-                messages = [
-                    m
-                    for m in messages
-                    if getattr(m, "is_system", False)
-                    and not getattr(m, "is_tool_use", False)
-                    and not getattr(m, "is_thinking", False)
-                ]
-
-        total = len(messages)
-        messages = messages[offset : offset + limit]
+        messages, total = await self.operations.get_messages_paginated(
+            conversation_id,
+            message_role=message_role,
+            message_type=message_type,
+            limit=limit,
+            offset=offset,
+            content_projection=content_projection,
+        )
 
         result = []
         for m in messages:
@@ -297,6 +289,7 @@ class PolylogueArchiveMixin:
                     "sort_key": getattr(m, "sort_key", None),
                     "has_tool_use": getattr(m, "is_tool_use", False),
                     "has_thinking": getattr(m, "is_thinking", False),
+                    "message_type": getattr(getattr(m, "message_type", "message"), "value", "message"),
                 }
             )
 

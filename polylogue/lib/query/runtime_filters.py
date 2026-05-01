@@ -6,11 +6,12 @@ from collections.abc import Sequence
 from datetime import datetime
 from typing import TYPE_CHECKING, Protocol, TypeVar
 
+from polylogue.lib.message.types import MessageType
 from polylogue.lib.query.runtime_matching import (
     matches_action_sequence,
     matches_action_terms,
     matches_action_text_terms,
-    matches_path_terms,
+    matches_referenced_path,
     matches_tool_terms,
 )
 from polylogue.lib.query.support import conversation_has_branches, provider_values
@@ -144,6 +145,16 @@ def apply_full_filters(
         results = [c for c in results if len(c.messages) <= plan.max_messages]
     if plan.min_words is not None:
         results = [c for c in results if sum(len((m.text or "").split()) for m in c.messages) >= plan.min_words]
+    if plan.message_type is not None:
+        wanted_type = MessageType.normalize(plan.message_type)
+        results = [
+            c
+            for c in results
+            if any(
+                MessageType.normalize(getattr(m, "message_type", MessageType.MESSAGE)) == wanted_type
+                for m in c.messages
+            )
+        ]
 
     if plan.negative_terms:
         negative_terms = [term.lower() for term in plan.negative_terms]
@@ -160,8 +171,8 @@ def apply_full_filters(
     for predicate in plan.predicates:
         results = [conversation for conversation in results if predicate(conversation)]
 
-    if plan.path_terms:
-        results = [conversation for conversation in results if matches_path_terms(plan, conversation)]
+    if plan.referenced_path:
+        results = [conversation for conversation in results if matches_referenced_path(plan, conversation)]
     if plan.action_terms or plan.excluded_action_terms:
         results = [conversation for conversation in results if matches_action_terms(plan, conversation)]
     if plan.action_sequence:

@@ -15,7 +15,12 @@ import click
 from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.cli.shared.helper_support import fail
 from polylogue.cli.shared.machine_errors import emit_success
-from polylogue.cli.shared.product_command_contracts import ProductCommandRequest, query_model_field_names
+from polylogue.cli.shared.product_command_contracts import (
+    ProductCommandInputError,
+    ProductCommandRequest,
+    normalize_product_query_kwargs,
+    query_model_field_names,
+)
 from polylogue.cli.shared.types import AppEnv
 from polylogue.products.archive import ArchiveProductUnavailableError
 from polylogue.products.export_bundles import (
@@ -108,18 +113,17 @@ def _make_callback(pt: ProductType) -> Callable[..., None]:
         **kwargs: object,
     ) -> None:
         env: AppEnv = ctx.obj
-        request = ProductCommandRequest.from_context(
-            ctx,
-            pt,
-            json_mode=json_mode,
-            output_format=output_format,
-            kwargs=kwargs,
-            inherited_root_keys=accepted_root_keys,
-        )
-
         try:
+            request = ProductCommandRequest.from_context(
+                ctx,
+                pt,
+                json_mode=json_mode,
+                output_format=output_format,
+                kwargs=kwargs,
+                inherited_root_keys=accepted_root_keys,
+            )
             items = fetch_products(pt, env.operations, **request.query_kwargs)
-        except (ArchiveProductUnavailableError, ProductQueryError) as exc:
+        except (ArchiveProductUnavailableError, ProductCommandInputError, ProductQueryError) as exc:
             fail(f"products {pt.resolved_cli_command_name}", str(exc))
         render_product_items(items, pt, json_mode=request.wants_json)
 
@@ -215,14 +219,21 @@ def products_status_command(
     inherited_since = since if since is not None else root_params.get("since")
     inherited_until = until if until is not None else root_params.get("until")
     try:
+        filters = normalize_product_query_kwargs(
+            {
+                "provider": inherited_provider,
+                "since": inherited_since,
+                "until": inherited_until,
+            }
+        )
         query = ProductReadinessQuery(
             products=products,
-            provider=str(inherited_provider) if inherited_provider is not None else None,
-            since=str(inherited_since) if inherited_since is not None else None,
-            until=str(inherited_until) if inherited_until is not None else None,
+            provider=filters["provider"] if isinstance(filters["provider"], str) else None,
+            since=filters["since"] if isinstance(filters["since"], str) else None,
+            until=filters["until"] if isinstance(filters["until"], str) else None,
         )
         report = run_coroutine_sync(env.operations.get_product_readiness_report(query))
-    except ValueError as exc:
+    except (ProductCommandInputError, ValueError) as exc:
         valid = ", ".join(known_product_readiness_names())
         fail("products status", f"{exc}. Known products: {valid}")
     if _status_wants_json(ctx, json_mode=json_mode, output_format=output_format):
@@ -264,17 +275,24 @@ def products_export_command(
         export_format: ProductExportFormat = "jsonl"
         if output_format != "jsonl":
             fail("products export", f"unsupported export format: {output_format}")
+        filters = normalize_product_query_kwargs(
+            {
+                "provider": inherited_provider,
+                "since": inherited_since,
+                "until": inherited_until,
+            }
+        )
         request = ProductExportBundleRequest(
             output_path=output_path,
             products=products,
-            provider=str(inherited_provider) if inherited_provider is not None else None,
-            since=str(inherited_since) if inherited_since is not None else None,
-            until=str(inherited_until) if inherited_until is not None else None,
+            provider=filters["provider"] if isinstance(filters["provider"], str) else None,
+            since=filters["since"] if isinstance(filters["since"], str) else None,
+            until=filters["until"] if isinstance(filters["until"], str) else None,
             output_format=export_format,
             overwrite=overwrite,
         )
         result = run_coroutine_sync(env.operations.export_product_bundle(request))
-    except ProductExportBundleError as exc:
+    except (ProductCommandInputError, ProductExportBundleError) as exc:
         fail("products export", str(exc))
     if json_mode or ctx.find_root().params.get("output_format") == "json":
         emit_success(result.model_dump(mode="json"))

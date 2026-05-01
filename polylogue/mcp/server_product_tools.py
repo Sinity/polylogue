@@ -7,7 +7,8 @@ lookups) are registered directly.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import inspect
+from typing import TYPE_CHECKING, Any, cast
 
 from polylogue.mcp.payloads import MCPRootPayload
 from polylogue.mcp.product_tool_contracts import ProductListToolSpec
@@ -50,6 +51,10 @@ def _register_list_tool(
 
     wrapper.__annotations__ = spec.signature.annotations
     wrapper.__kwdefaults__ = spec.signature.kwdefaults
+    cast(Any, wrapper).__signature__ = inspect.Signature(
+        parameters=spec.signature.parameters,
+        return_annotation=str,
+    )
 
     mcp.tool()(wrapper)
 

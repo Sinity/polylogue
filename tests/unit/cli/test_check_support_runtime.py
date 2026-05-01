@@ -175,7 +175,7 @@ def test_run_blob_store_check_reports_missing_orphaned_and_verified_states() -> 
         patch("polylogue.cli.shared.check_workflow.connection_context", return_value=connection()),
         patch("polylogue.storage.blob_store.get_blob_store", return_value=blob_store),
     ):
-        check_workflow._run_blob_store_check(env, config)
+        assert check_workflow._run_blob_store_check(env, config) is None
 
     console_print = cast(MagicMock, env.ui.console.print)
     printed = [call.args[0] for call in console_print.call_args_list if call.args]
@@ -193,6 +193,33 @@ def test_run_blob_store_check_reports_missing_orphaned_and_verified_states() -> 
 
     verified_console_print = cast(MagicMock, env.ui.console.print)
     assert verified_console_print.call_args_list[-1].args[0] == "  All blobs verified."
+
+
+def test_run_blob_store_check_returns_json_payload_without_emitting() -> None:
+    env = _env()
+    config = _config()
+    rows = [("raw-a",), ("raw-b",)]
+
+    @contextmanager
+    def connection() -> Iterator[object]:
+        yield SimpleNamespace(execute=lambda sql: rows)
+
+    blob_store = SimpleNamespace(iter_all=lambda: ["raw-a", "orphan-c"])
+    with (
+        patch("polylogue.cli.shared.check_workflow.connection_context", return_value=connection()),
+        patch("polylogue.storage.blob_store.get_blob_store", return_value=blob_store),
+    ):
+        payload = check_workflow._run_blob_store_check(env, config, json_output=True)
+
+    assert payload == {
+        "total_blobs": 2,
+        "total_raw_records": 2,
+        "missing_count": 1,
+        "orphaned_count": 1,
+        "missing": ["raw-b"],
+        "orphaned": ["orphan-c"],
+    }
+    cast(MagicMock, env.ui.console.print).assert_not_called()
 
 
 def test_schema_verification_and_maintenance_helpers_cover_runtime_paths() -> None:
@@ -316,5 +343,6 @@ def test_run_check_workflow_covers_runtime_blob_vacuum_and_persist_paths() -> No
     assert result.runtime_report is runtime_report
     assert result.maintenance_results == [repair_result]
     assert result.vacuum_result == VacuumResult(ok=True, detail="vacuumed")
+    assert result.blob_report is run_blob_check.return_value
     run_blob_check.assert_called_once_with(env, config, json_output=True)
     persist_run.assert_called_once()

@@ -67,7 +67,13 @@ def run_messages(
                 payload = {
                     "conversation_id": conversation_id,
                     "messages": [
-                        {"id": m.get("id", ""), "role": m.get("role", ""), "text": m.get("text", "")} for m in messages
+                        {
+                            "id": m.get("id", ""),
+                            "role": m.get("role", ""),
+                            "message_type": m.get("message_type", "message"),
+                            "text": m.get("text", ""),
+                        }
+                        for m in messages
                     ],
                     "total": total,
                     "limit": limit,
@@ -77,9 +83,10 @@ def run_messages(
             else:
                 for msg in messages:
                     role = str(msg.get("role", "unknown"))
+                    message_type_label = str(msg.get("message_type", "message"))
                     text = str(msg.get("text", ""))
                     if text:
-                        env.ui.print(f"[{role}] {text[:500]}{'...' if len(text) > 500 else ''}")
+                        env.ui.print(f"[{role} {message_type_label}] {text[:500]}{'...' if len(text) > 500 else ''}")
                         env.ui.print("---")
 
     run_coroutine_sync(_run())

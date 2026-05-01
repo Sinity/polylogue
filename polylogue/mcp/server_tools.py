@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, cast
 
 from polylogue.mcp.payloads import (
     MCPArchiveStatsPayload,
-    MCPConversationDetailPayload,
     MCPConversationSummaryPayload,
     MCPMessagePayload,
     MCPMessagesListPayload,
@@ -28,6 +27,7 @@ if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP
 
     from polylogue.mcp.server_support import ServerCallbacks
+    from polylogue.storage.backends.queries.message_query_reads import MessageTypeName
 
 
 def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
@@ -150,25 +150,18 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     @mcp.tool()
     async def get_conversation(
         id: str,
-        no_code_blocks: bool = False,
-        no_tool_calls: bool = False,
-        no_tool_outputs: bool = False,
-        no_file_reads: bool = False,
-        prose_only: bool = False,
     ) -> str:
         async def run() -> str:
-            projection = MCPContentProjectionRequest(
-                no_code_blocks=no_code_blocks,
-                no_tool_calls=no_tool_calls,
-                no_tool_outputs=no_tool_outputs,
-                no_file_reads=no_file_reads,
-                prose_only=prose_only,
-            ).build_projection()
-            conv = await hooks.get_archive_ops().get_conversation(id, content_projection=projection)
-            if conv is None:
+            ops = hooks.get_archive_ops()
+            summary = await ops.get_conversation_summary(id)
+            if summary is None:
                 return hooks.error_json(f"Conversation not found: {id}")
+            stats = await ops.get_conversation_stats(id)
             return hooks.json_payload(
-                MCPConversationDetailPayload.from_conversation(conv, content_projection=projection)
+                MCPConversationSummaryPayload.from_summary(
+                    summary,
+                    message_count=stats["total_messages"] if stats else 0,
+                )
             )
 
         return await hooks.async_safe_call("get_conversation", run)
@@ -267,39 +260,28 @@ def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             ).build_projection()
 
             ops = hooks.get_archive_ops()
-            conv = await ops.get_conversation(conversation_id, content_projection=projection)
-            if conv is None:
+            summary = await ops.get_conversation_summary(conversation_id)
+            if summary is None:
                 return hooks.error_json(f"Conversation not found: {conversation_id}")
+            from polylogue.lib.message.roles import normalize_message_roles
 
-            # Filter by message_role
-            messages = list(conv.messages)
-            if message_role:
-                from polylogue.lib.message.roles import normalize_message_roles
-
-                roles = normalize_message_roles(message_role)
-                messages = [m for m in messages if m.role in roles]
-
-            # Filter by message_type (post-filter on content blocks)
-            if message_type:
-                if message_type == "tool_use":
-                    messages = [m for m in messages if any(b.get("type") == "tool_use" for b in m.content_blocks)]
-                elif message_type == "tool_result":
-                    messages = [m for m in messages if any(b.get("type") == "tool_result" for b in m.content_blocks)]
-                elif message_type == "thinking":
-                    messages = [m for m in messages if any(b.get("type") == "thinking" for b in m.content_blocks)]
-                elif message_type == "summary":
-                    messages = [m for m in messages if str(m.role) == "system"]
-
-            total = len(messages)
-            paginated = messages[offset : offset + limit]
+            roles = normalize_message_roles(message_role) if message_role else ()
+            paginated, total = await ops.get_messages_paginated(
+                conversation_id,
+                message_role=roles,
+                message_type=cast("MessageTypeName | None", message_type),
+                limit=hooks.clamp_limit(limit),
+                offset=max(0, offset),
+                content_projection=projection,
+            )
 
             return hooks.json_payload(
                 MCPMessagesListPayload(
                     conversation_id=conversation_id,
                     messages=tuple(MCPMessagePayload.from_message(msg) for msg in paginated),
                     total=total,
-                    limit=limit,
-                    offset=offset,
+                    limit=hooks.clamp_limit(limit),
+                    offset=max(0, offset),
                 )
             )
 

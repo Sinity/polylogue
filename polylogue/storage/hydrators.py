@@ -103,6 +103,7 @@ def message_from_record(
         attachments=[attachment_from_record(a) for a in attachments],
         provider_meta=None,  # Canonical storage keeps message semantics in content_blocks, not message-level provider_meta.
         content_blocks=blocks,
+        message_type=record.message_type,
         parent_id=record.parent_message_id,
         branch_index=record.branch_index,
     )

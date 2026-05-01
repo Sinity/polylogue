@@ -35,6 +35,8 @@ def emit_json_output(result: CheckCommandResult, options: CheckCommandOptions) -
                 "items": [row.model_dump(mode="json") for row in result.cohort_rows],
             }
         )
+    if result.blob_report is not None:
+        out["blob_store"] = json_document(result.blob_report)
     if result.maintenance_results is not None:
         out["maintenance"] = json_document(
             {

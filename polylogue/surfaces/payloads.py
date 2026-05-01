@@ -124,6 +124,7 @@ class ConversationMessagePayload(SurfacePayloadModel):
     role: str
     text: str
     timestamp: datetime | None = None
+    message_type: str = "message"
 
     @classmethod
     def from_message(cls, message: Message) -> ConversationMessagePayload:
@@ -132,6 +133,7 @@ class ConversationMessagePayload(SurfacePayloadModel):
             role=normalize_role(message.role),
             text=message.text or "",
             timestamp=message.timestamp,
+            message_type=getattr(getattr(message, "message_type", "message"), "value", "message"),
         )
 
 

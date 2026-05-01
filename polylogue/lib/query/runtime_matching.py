@@ -17,15 +17,15 @@ def _action_events_for(conversation: Conversation) -> tuple[ActionEvent, ...]:
     return facts.action_events
 
 
-def matches_path_terms(plan: ConversationQueryPlan, conversation: Conversation) -> bool:
-    if not plan.path_terms:
+def matches_referenced_path(plan: ConversationQueryPlan, conversation: Conversation) -> bool:
+    if not plan.referenced_path:
         return True
     affected_paths = tuple(
         path.lower() for action in _action_events_for(conversation) for path in action.affected_paths
     )
     if not affected_paths:
         return False
-    return all(any(term.lower().replace("\\", "/") in path for path in affected_paths) for term in plan.path_terms)
+    return all(any(term.lower().replace("\\", "/") in path for path in affected_paths) for term in plan.referenced_path)
 
 
 def matches_action_terms(plan: ConversationQueryPlan, conversation: Conversation) -> bool:
@@ -89,6 +89,6 @@ __all__ = [
     "matches_action_sequence",
     "matches_action_terms",
     "matches_action_text_terms",
-    "matches_path_terms",
+    "matches_referenced_path",
     "matches_tool_terms",
 ]

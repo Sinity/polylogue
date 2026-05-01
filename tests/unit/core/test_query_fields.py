@@ -18,7 +18,7 @@ from polylogue.types import Provider
 def test_query_field_catalog_drives_spec_presence_and_descriptions() -> None:
     spec = ConversationQuerySpec(
         query_terms=("sqlite", "locks"),
-        path_terms=("polylogue/storage",),
+        referenced_path=("polylogue/storage",),
         providers=(Provider.CODEX,),
         repo_names=("thoughtspace",),
         filter_has_tool_use=True,
@@ -42,7 +42,7 @@ def test_query_field_catalog_drives_plan_presence_descriptions_and_pushdown() ->
     since = datetime(2024, 1, 1, tzinfo=timezone.utc)
     plan = ConversationQueryPlan(
         query_terms=("sqlite",),
-        path_terms=("polylogue/storage",),
+        referenced_path=("polylogue/storage",),
         tool_terms=("bash",),
         providers=(Provider.CODEX,),
         repo_names=("thoughtspace",),
@@ -78,7 +78,7 @@ def test_query_field_catalog_drives_plan_presence_descriptions_and_pushdown() ->
 
     assert plan.sql_pushdown_params() == {
         "provider": "codex",
-        "path_terms": ["polylogue/storage"],
+        "referenced_path": ["polylogue/storage"],
         "tool_terms": ["bash"],
         "repo_names": ["thoughtspace"],
         "title_contains": "locks",
@@ -94,7 +94,7 @@ def test_query_field_catalog_drives_plan_presence_descriptions_and_pushdown() ->
 
     record_query = plan.record_query
     assert record_query.provider == "codex"
-    assert record_query.path_terms == ("polylogue/storage",)
+    assert record_query.referenced_path == ("polylogue/storage",)
     assert record_query.tool_terms == ("bash",)
     assert record_query.repo_names == ("thoughtspace",)
     assert record_query.title_contains == "locks"
