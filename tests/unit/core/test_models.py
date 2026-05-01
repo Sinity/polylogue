@@ -14,6 +14,7 @@ from pydantic import TypeAdapter
 
 from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.message.roles import Role
+from polylogue.archive.models import Message
 from polylogue.archive.raw_payload import build_raw_payload_envelope
 from polylogue.archive.viewport.viewports import ToolCall, classify_tool
 from polylogue.core.json import JSONDocument, JSONValue, json_document
@@ -21,7 +22,6 @@ from polylogue.core.provider_identity import (
     canonical_runtime_provider,
     canonical_schema_provider,
 )
-from polylogue.lib.models import Message
 from polylogue.schemas.code_detection.detection import LANGUAGE_PATTERNS, detect_language, extract_code_block
 from polylogue.storage.hydrators import (
     attachment_from_record,

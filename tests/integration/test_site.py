@@ -11,8 +11,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from click.testing import CliRunner
 
+from polylogue.archive.models import ConversationSummary
 from polylogue.cli.click_app import cli
-from polylogue.lib.models import ConversationSummary
 from polylogue.site.builder import SiteBuilder, SiteConfig
 from polylogue.site.models import ConversationIndex
 from polylogue.types import ConversationId, Provider

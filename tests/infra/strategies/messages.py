@@ -15,7 +15,7 @@ from polylogue.archive.message.roles import Role
 from polylogue.types import ConversationId, Provider
 
 if TYPE_CHECKING:
-    from polylogue.lib.models import Conversation, Message
+    from polylogue.archive.models import Conversation, Message
 
 JSONRecord: TypeAlias = dict[str, object]
 
@@ -214,7 +214,7 @@ def conversation_strategy(
 @st.composite
 def message_model_strategy(draw: st.DrawFn, *, role: str | None = None) -> Message:
     """Generate a Message model instance with arbitrary content."""
-    from polylogue.lib.models import Message as MessageModel
+    from polylogue.archive.models import Message as MessageModel
 
     role_val = role or draw(st.sampled_from(["user", "assistant", "system", "tool"]))
     text = draw(st.one_of(st.none(), st.text(max_size=200)))
@@ -281,7 +281,7 @@ def parsed_attachment_model_strategy(draw: st.DrawFn) -> object:
 def conversation_model_strategy(draw: st.DrawFn, *, min_messages: int = 0, max_messages: int = 10) -> Conversation:
     """Generate a Conversation model instance with arbitrary messages."""
     from polylogue.archive.message.messages import MessageCollection
-    from polylogue.lib.models import Conversation as ConversationModel
+    from polylogue.archive.models import Conversation as ConversationModel
 
     messages = draw(st.lists(message_model_strategy(), min_size=min_messages, max_size=max_messages))
     return ConversationModel(

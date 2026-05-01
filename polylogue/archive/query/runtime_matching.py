@@ -6,8 +6,8 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from polylogue.archive.action_event.action_events import ActionEvent
+    from polylogue.archive.models import Conversation
     from polylogue.archive.query.plan import ConversationQueryPlan
-    from polylogue.lib.models import Conversation
 
 
 def _action_events_for(conversation: Conversation) -> tuple[ActionEvent, ...]:

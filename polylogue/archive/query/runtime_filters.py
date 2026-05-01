@@ -17,8 +17,8 @@ from polylogue.archive.query.runtime_matching import (
 from polylogue.archive.query.support import conversation_has_branches, provider_values
 
 if TYPE_CHECKING:
+    from polylogue.archive.models import Conversation
     from polylogue.archive.query.plan import ConversationQueryPlan
-    from polylogue.lib.models import Conversation
 
 
 class FilterableConversationLike(Protocol):

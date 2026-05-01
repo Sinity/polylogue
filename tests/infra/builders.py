@@ -1,6 +1,6 @@
 """Shared test builders for Conversation and Message domain objects.
 
-These factories build polylogue.lib.models instances with sensible defaults,
+These factories build polylogue.archive.models instances with sensible defaults,
 suitable for unit tests that operate on domain models rather than storage records.
 
 For storage-layer helpers (ConversationRecord, MessageRecord), see
@@ -21,7 +21,7 @@ from collections.abc import Sequence
 
 from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.message.roles import Role
-from polylogue.lib.models import Conversation, Message
+from polylogue.archive.models import Conversation, Message
 from polylogue.types import ConversationId, Provider
 
 

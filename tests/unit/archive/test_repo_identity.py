@@ -17,10 +17,10 @@ from polylogue.archive.conversation.repo_identity import (
 )
 from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.message.roles import Role
+from polylogue.archive.models import Conversation, Message
 from polylogue.archive.session.session_profile import SessionProfile, build_session_profile
 from polylogue.archive.session.session_summaries import summarize_day
 from polylogue.archive.viewport.viewports import ToolCategory
-from polylogue.lib.models import Conversation, Message
 from polylogue.products.archive_models import DaySessionSummaryPayload
 from polylogue.products.archive_summaries import aggregate_day_session_summary_products
 from polylogue.storage.runtime import DaySessionSummaryRecord

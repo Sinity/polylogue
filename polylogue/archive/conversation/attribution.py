@@ -18,7 +18,7 @@ from polylogue.archive.semantic.facts import ConversationSemanticFacts, build_co
 from polylogue.archive.viewport.tools import looks_like_path_candidate
 
 if TYPE_CHECKING:
-    from polylogue.lib.models import Conversation
+    from polylogue.archive.models import Conversation
 
 _LANGUAGE_EXTENSIONS = {
     ".py": "python",

@@ -20,11 +20,6 @@ rules:
   - target: polylogue/api
     description: "API surface — adapter boundary over substrate and products."
 
-  - target: polylogue/lib
-    description: "Shared semantic substrate must not import surface adapters."
-    disallow:
-      from: [polylogue/cli, polylogue/mcp, polylogue/site, polylogue/ui, polylogue/rendering]
-
   - target: polylogue/storage
     description: "Storage substrate must not import surface adapters."
     disallow:

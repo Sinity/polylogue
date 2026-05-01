@@ -59,7 +59,7 @@ _CONVERSATION_PROFILES = [
 _TOOL_NAMES = ["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent", "WebFetch", "WebSearch"]
 _FILE_PATHS = [
     "/workspace/polylogue/polylogue/storage/repository/__init__.py",
-    "/workspace/polylogue/polylogue/lib/models.py",
+    "/workspace/polylogue/polylogue/archive/models.py",
     "/workspace/polylogue/tests/unit/core/test_models.py",
     "/workspace/polylogue/polylogue/cli/commands/check.py",
     "/workspace/polylogue/polylogue/schemas/runtime_registry.py",

@@ -10,8 +10,8 @@ from polylogue.core.dates import parse_date
 from polylogue.types import Provider
 
 if TYPE_CHECKING:
+    from polylogue.archive.models import Conversation
     from polylogue.archive.query.plan import ConversationQueryPlan
-    from polylogue.lib.models import Conversation
 
 _T = TypeVar("_T")
 

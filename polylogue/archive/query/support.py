@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 from polylogue.types import Provider
 
 if TYPE_CHECKING:
-    from polylogue.lib.models import Conversation, ConversationSummary
+    from polylogue.archive.models import Conversation, ConversationSummary
 
 
 def provider_values(values: tuple[Provider | str, ...]) -> tuple[str, ...]:
@@ -19,7 +19,7 @@ def conversation_has_branches(conversation: Conversation) -> bool:
 
 
 def conversation_to_summary(conversation: Conversation) -> ConversationSummary:
-    from polylogue.lib.models import ConversationSummary
+    from polylogue.archive.models import ConversationSummary
 
     return ConversationSummary(
         id=conversation.id,

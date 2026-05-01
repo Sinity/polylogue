@@ -22,7 +22,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 PROJECTION = ROOT / "docs" / "plans" / "topology-target.yaml"
 
-KERNEL_OWNERS = frozenset({"kernel", "lib-root", "storage-root", "stable"})
+KERNEL_OWNERS = frozenset({"kernel", "storage-root", "stable"})
 
 
 def parse_yaml(text: str) -> list[dict[str, Any]]:

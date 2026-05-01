@@ -12,7 +12,7 @@ from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 from polylogue.archive.message.roles import Role
-from polylogue.lib.models import DialoguePair, Message
+from polylogue.archive.models import DialoguePair, Message
 from polylogue.sources.parsers.base import (
     ParsedAttachment,
     attachment_from_meta,

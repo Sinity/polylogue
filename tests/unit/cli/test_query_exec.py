@@ -18,13 +18,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from polylogue.archive.models import Conversation as ConversationModel
+from polylogue.archive.models import ConversationSummary
+from polylogue.archive.models import Message as MessageModel
 from polylogue.archive.semantic.content_projection import ContentProjectionSpec
 from polylogue.cli.query import QueryAction, QueryOutputSpec, QueryRoute
 from polylogue.cli.query_contracts import QueryDeliveryTarget
 from polylogue.cli.shared.types import AppEnv
-from polylogue.lib.models import Conversation as ConversationModel
-from polylogue.lib.models import ConversationSummary
-from polylogue.lib.models import Message as MessageModel
 from polylogue.paths.sanitize import conversation_render_root
 from polylogue.services import build_runtime_services
 from polylogue.storage.action_events.artifacts import ActionEventArtifactState

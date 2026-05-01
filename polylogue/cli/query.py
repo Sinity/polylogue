@@ -40,11 +40,11 @@ logger = get_logger(__name__)
 
 if TYPE_CHECKING:
     from polylogue.archive.filter.filters import ConversationFilter
+    from polylogue.archive.models import Conversation, ConversationSummary
     from polylogue.archive.query.miss_diagnostics import QueryMissDiagnostics
     from polylogue.archive.query.search_hits import ConversationSearchHit
     from polylogue.archive.query.spec import ConversationQuerySpec
     from polylogue.config import Config
-    from polylogue.lib.models import Conversation, ConversationSummary
     from polylogue.protocols import (
         ConversationArchiveStatsStore,
         ConversationQueryRuntimeStore,

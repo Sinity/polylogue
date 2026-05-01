@@ -221,6 +221,10 @@ files:
     target: polylogue/archive/message/types.py
     owner: archive-message
     reason: archive-domain semantics
+  - path: polylogue/archive/models.py
+    loc: 7
+    target: polylogue/archive/models.py
+    owner: stable
   - path: polylogue/archive/phase/__init__.py
     loc: 0
     target: polylogue/archive/phase/__init__.py
@@ -849,16 +853,6 @@ files:
     target: polylogue/errors.py
     owner: kernel
     reason: kernel root rule
-  - path: polylogue/lib/__init__.py
-    loc: 53
-    target: polylogue/lib/__init__.py
-    owner: lib-root
-    reason: lib-root primitive
-  - path: polylogue/lib/models.py
-    loc: 7
-    target: polylogue/lib/models.py
-    owner: lib-root
-    reason: lib-root primitive
   - path: polylogue/logging.py
     loc: 166
     target: polylogue/logging.py

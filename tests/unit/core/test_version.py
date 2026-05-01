@@ -70,40 +70,6 @@ def test_root_does_not_export_semantic_or_storage_helpers(name: str) -> None:
 
 @pytest.mark.parametrize(
     "name",
-    [
-        "Attachment",
-        "BranchType",
-        "Conversation",
-        "ConversationProjection",
-        "DialoguePair",
-        "Message",
-        "MessageCollection",
-        "Role",
-    ],
-)
-def test_lazy_import_domain_exports_lib(name: str) -> None:
-    import polylogue.lib
-
-    assert getattr(polylogue.lib, name).__name__ == name
-
-
-@pytest.mark.parametrize("name", ["ArchiveStats", "ConversationRepository"])
-def test_lib_root_does_not_export_archive_runtime_surfaces(name: str) -> None:
-    import polylogue.lib
-
-    with pytest.raises(AttributeError, match="has no attribute"):
-        _ = getattr(polylogue.lib, name)
-
-
-def test_lazy_import_unknown_raises_lib() -> None:
-    import polylogue.lib
-
-    with pytest.raises(AttributeError, match="has no attribute"):
-        _ = polylogue.lib.NonExistentThing
-
-
-@pytest.mark.parametrize(
-    "name",
     ["HarmonizedMessage", "SchemaValidator", "ValidationResult", "validate_provider_export"],
 )
 def test_runtime_schema_exports_are_narrow(name: str) -> None:

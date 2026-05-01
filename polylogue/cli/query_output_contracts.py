@@ -12,7 +12,7 @@ from polylogue.cli.query_contracts import QueryDeliveryTarget, QueryOutputFormat
 from polylogue.core.json import JSONDocument
 
 if TYPE_CHECKING:
-    from polylogue.lib.models import Conversation
+    from polylogue.archive.models import Conversation
 
 
 def _selected_field_names(fields: str | None) -> frozenset[str] | None:

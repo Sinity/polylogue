@@ -12,8 +12,8 @@ from polylogue.archive.semantic.facts import build_conversation_semantic_facts
 from polylogue.archive.session.models import SessionAnalysis, SessionProfile
 
 if TYPE_CHECKING:
+    from polylogue.archive.models import Conversation
     from polylogue.archive.semantic.facts import ConversationSemanticFacts
-    from polylogue.lib.models import Conversation
 
 
 def build_session_analysis(

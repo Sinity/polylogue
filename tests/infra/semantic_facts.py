@@ -11,9 +11,9 @@ from collections import Counter
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
+from polylogue.archive.models import Conversation
 from polylogue.archive.semantic.facts import build_conversation_semantic_facts
 from polylogue.core.json import JSONDocument, json_document_list
-from polylogue.lib.models import Conversation
 from polylogue.storage.runtime import AttachmentRecord, ConversationRecord, MessageRecord
 
 

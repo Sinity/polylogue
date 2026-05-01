@@ -11,8 +11,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from polylogue.archive.message.roles import Role
+from polylogue.archive.models import Conversation, ConversationSummary
 from polylogue.archive.semantic.content_projection import ContentProjectionSpec
-from polylogue.lib.models import Conversation, ConversationSummary
 from polylogue.types import ConversationId, Provider
 from tests.infra.builders import make_conv, make_msg
 from tests.infra.mcp import (

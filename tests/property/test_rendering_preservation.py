@@ -16,7 +16,7 @@ from hypothesis import HealthCheck, given, settings
 
 from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.message.roles import Role
-from polylogue.lib.models import Conversation, Message
+from polylogue.archive.models import Conversation, Message
 from polylogue.rendering.core_markdown import format_conversation_markdown
 from polylogue.rendering.formatting import format_conversation
 from polylogue.types import ConversationId, Provider

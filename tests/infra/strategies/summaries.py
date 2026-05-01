@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 
 from hypothesis import strategies as st
 
-from polylogue.lib.models import ConversationSummary
+from polylogue.archive.models import ConversationSummary
 from polylogue.types import ConversationId, Provider
 
 _PROVIDERS = ("claude-ai", "chatgpt", "gemini", "codex", "claude-code")

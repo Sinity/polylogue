@@ -20,8 +20,8 @@ if TYPE_CHECKING:
 
     from polylogue.archive.conversation.neighbor_candidates import ConversationNeighborCandidate, NeighborReason
     from polylogue.archive.conversation.tail_overlay import TailOverlayInfo
+    from polylogue.archive.models import Conversation, ConversationSummary, Message
     from polylogue.archive.query.search_hits import ConversationSearchHit
-    from polylogue.lib.models import Conversation, ConversationSummary, Message
 
 
 def serialize_surface_payload(payload: BaseModel, *, exclude_none: bool = False) -> str:

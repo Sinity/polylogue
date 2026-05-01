@@ -14,7 +14,7 @@ import pytest
 
 syrupy = pytest.importorskip("syrupy")
 
-from polylogue.lib.models import Conversation, Message
+from polylogue.archive.models import Conversation, Message
 from polylogue.rendering.renderers.html import render_conversation_html
 from polylogue.types import ContentBlockType
 from tests.infra.builders import make_conv as build_conv

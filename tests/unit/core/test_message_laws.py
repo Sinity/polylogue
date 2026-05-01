@@ -10,7 +10,7 @@ from __future__ import annotations
 from hypothesis import HealthCheck, given, settings
 
 from polylogue.archive.message.roles import Role
-from polylogue.lib.models import Conversation, Message
+from polylogue.archive.models import Conversation, Message
 from tests.infra.strategies.messages import conversation_model_strategy, message_model_strategy
 
 

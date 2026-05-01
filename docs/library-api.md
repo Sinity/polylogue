@@ -8,7 +8,7 @@ The public Python surface is split into:
 
 - `polylogue`: archive-core access (`Polylogue`, `SyncPolylogue`, `ArchiveStats`,
   `Conversation`, `Message`, `SearchResult`)
-- `polylogue.lib`: domain-model and projection helpers
+- `polylogue.archive`: domain-model, query, projection, and semantic helpers
 - precise modules for higher-order semantic analysis, storage, and reporting
 
 ## Basic Usage

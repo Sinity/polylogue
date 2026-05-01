@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from typing import Protocol, TypeAlias, TypeVar, runtime_checkable
 from unittest.mock import AsyncMock, MagicMock
 
-from polylogue.lib.models import Conversation
+from polylogue.archive.models import Conversation
 from polylogue.types import Provider
 from tests.infra.builders import make_conv, make_msg
 

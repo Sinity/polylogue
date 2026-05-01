@@ -7,8 +7,8 @@ from typing import TYPE_CHECKING, Literal, overload
 from polylogue.archive.query.support import provider_values
 
 if TYPE_CHECKING:
+    from polylogue.archive.models import Conversation, ConversationSummary
     from polylogue.archive.query.plan import ConversationQueryPlan
-    from polylogue.lib.models import Conversation, ConversationSummary
     from polylogue.protocols import ConversationQueryRuntimeStore
     from polylogue.storage.action_events.artifacts import ActionEventArtifactState
     from polylogue.storage.query_models import ConversationRecordQuery

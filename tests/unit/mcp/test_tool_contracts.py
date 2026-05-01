@@ -9,12 +9,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from polylogue.archive.conversation.neighbor_candidates import ConversationNeighborCandidate, NeighborReason
+from polylogue.archive.models import Conversation, ConversationSummary
 from polylogue.archive.query.miss_diagnostics import QueryMissDiagnostics, QueryMissReason
 from polylogue.archive.query.search_hits import ConversationSearchHit
 from polylogue.archive.query.spec import ConversationQuerySpec
 from polylogue.archive.semantic.pricing import CostEstimatePayload, CostUsagePayload
 from polylogue.archive.stats import ArchiveStats
-from polylogue.lib.models import Conversation, ConversationSummary
 from polylogue.products.archive import (
     ArchiveDebtProduct,
     ArchiveEnrichmentProvenance,

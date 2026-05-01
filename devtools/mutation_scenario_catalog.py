@@ -41,7 +41,7 @@ MUTATION_CAMPAIGNS: dict[str, MutationCampaign] = {
     "models": MutationCampaign(
         name="models",
         description="Message/Conversation semantic helpers and pairing logic",
-        paths_to_mutate=("polylogue/lib/models.py",),
+        paths_to_mutate=("polylogue/archive/models.py",),
         tests=(
             "tests/unit/core/test_models.py",
             "tests/unit/core/test_message_laws.py",

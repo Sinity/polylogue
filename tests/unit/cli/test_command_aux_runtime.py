@@ -20,6 +20,7 @@ from polylogue.archive.conversation.neighbor_candidates import (
     NeighborReason,
 )
 from polylogue.archive.filter.filters import ConversationFilter
+from polylogue.archive.models import ConversationSummary
 from polylogue.cli import shell_completion_values
 from polylogue.cli.commands.neighbors import (
     _candidate_heading,
@@ -29,7 +30,6 @@ from polylogue.cli.commands.neighbors import (
 )
 from polylogue.cli.commands.tags import tags_command
 from polylogue.cli.filter_picker import _pick_index, pick_filter
-from polylogue.lib.models import ConversationSummary
 from polylogue.types import ConversationId, Provider
 
 

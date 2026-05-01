@@ -196,7 +196,7 @@ class WorkEvent:
 
 
 if TYPE_CHECKING:
-    from polylogue.lib.models import Conversation
+    from polylogue.archive.models import Conversation
 
 
 _DEBUGGING_PATTERNS = (

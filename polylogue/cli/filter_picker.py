@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from polylogue.archive.filter.filters import ConversationFilter
-    from polylogue.lib.models import Conversation
+    from polylogue.archive.models import Conversation
 
 
 def _pick_index(choice: str, total_results: int) -> int | None:

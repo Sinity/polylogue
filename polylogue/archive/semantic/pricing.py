@@ -15,7 +15,7 @@ from polylogue.archive.viewport.viewports import TokenUsage
 from polylogue.core.json import json_document
 
 if TYPE_CHECKING:
-    from polylogue.lib.models import Conversation, Message
+    from polylogue.archive.models import Conversation, Message
 
 CostEstimateStatus = Literal["exact", "priced", "partial", "unavailable"]
 

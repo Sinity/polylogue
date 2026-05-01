@@ -13,8 +13,8 @@ from polylogue.storage.search_providers.hybrid import reciprocal_rank_fusion
 logger = get_logger(__name__)
 
 if TYPE_CHECKING:
+    from polylogue.archive.models import Conversation
     from polylogue.archive.query.plan import ConversationQueryPlan
-    from polylogue.lib.models import Conversation
     from polylogue.protocols import ConversationQueryRuntimeStore
 
 

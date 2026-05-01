@@ -30,8 +30,8 @@ from typing_extensions import TypedDict
 from polylogue.archive.conversation.models import Conversation
 from polylogue.archive.filter.filters import ConversationFilter
 from polylogue.archive.filter.types import SortField
+from polylogue.archive.models import ConversationSummary
 from polylogue.cli.filter_picker import pick_filter
-from polylogue.lib.models import ConversationSummary
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.index import rebuild_index

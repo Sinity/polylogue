@@ -7,9 +7,9 @@ The package root intentionally exposes the archive-facing contract:
 - core conversation/message model types
 - query/search result types tied to archive operations
 
-Higher-order semantic-analysis helpers remain public, but they now live behind
-their precise modules under ``polylogue.lib`` rather than being implied as part
-of the same root-level product surface.
+Higher-order semantic-analysis helpers remain public, but they live behind
+their precise modules under ``polylogue.archive`` and related packages rather
+than being implied as part of the same root-level product surface.
 """
 
 from __future__ import annotations
