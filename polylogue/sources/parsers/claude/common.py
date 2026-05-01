@@ -78,7 +78,7 @@ def normalize_timestamp(ts: int | float | str | None) -> str | None:
     except (ValueError, TypeError):
         pass
     if isinstance(ts, str):
-        from polylogue.lib.timestamps import parse_timestamp
+        from polylogue.core.timestamps import parse_timestamp
 
         dt = parse_timestamp(ts)
         if dt is not None:

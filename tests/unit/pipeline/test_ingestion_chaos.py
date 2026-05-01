@@ -16,7 +16,7 @@ from pathlib import Path
 
 from hypothesis import given, settings
 
-from polylogue.lib.timestamps import parse_timestamp
+from polylogue.core.timestamps import parse_timestamp
 from polylogue.pipeline.services.parsing import ParsingService
 from polylogue.sources.decoders import _decode_json_bytes, _iter_json_stream
 from polylogue.storage.runtime import RawConversationRecord

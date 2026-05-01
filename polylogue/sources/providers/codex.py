@@ -25,8 +25,8 @@ from polylogue.archive.viewport.viewports import (
     ToolCall,
 )
 from polylogue.core.json import JSONDocument, JSONDocumentList, json_document, json_document_list
+from polylogue.core.timestamps import parse_timestamp
 from polylogue.lib.roles import Role, normalize_role
-from polylogue.lib.timestamps import parse_timestamp
 from polylogue.types import Provider
 
 

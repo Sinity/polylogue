@@ -17,7 +17,7 @@ from polylogue.cli.shared.formatting import (
 from polylogue.cli.shared.helpers import fail
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
-from polylogue.lib.timestamps import format_timestamp
+from polylogue.core.timestamps import format_timestamp
 from polylogue.pipeline.run_support import expand_requested_stage
 from polylogue.sources import DriveError
 from polylogue.storage.run_state import PlanResult, RunResult

@@ -20,7 +20,7 @@ mutation_campaigns:
     paths_to_mutate:
       - polylogue/types.py
       - polylogue/lib/roles.py
-      - polylogue/lib/timestamps.py
+      - polylogue/core/timestamps.py
       - polylogue/core/hashing.py
       - polylogue/core/json.py
     tests:

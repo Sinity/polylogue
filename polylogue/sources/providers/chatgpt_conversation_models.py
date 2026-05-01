@@ -7,7 +7,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from polylogue.lib.timestamps import parse_timestamp
+from polylogue.core.timestamps import parse_timestamp
 
 from .chatgpt_message_models import ChatGPTMessage
 

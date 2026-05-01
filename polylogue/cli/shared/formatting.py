@@ -8,8 +8,8 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from polylogue.config import Source
+from polylogue.core.timestamps import format_timestamp
 from polylogue.lib.run_activity import conversation_activity_counts
-from polylogue.lib.timestamps import format_timestamp
 from polylogue.storage.cursor_state import CursorStatePayload
 from polylogue.storage.run_state import PlanCounts, PlanDetails, RunCounts
 
