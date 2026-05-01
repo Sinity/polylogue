@@ -7,11 +7,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, TypeAlias
 
+from polylogue.archive.message.paste_detection import detect_paste
+from polylogue.archive.message.types import MessageType
 from polylogue.lib.conversation.branch_type import BranchType
 from polylogue.lib.json import JSONDocument, json_document
 from polylogue.lib.json import dumps as json_dumps
-from polylogue.lib.message.paste_detection import detect_paste
-from polylogue.lib.message.types import MessageType
 from polylogue.lib.roles import Role
 from polylogue.lib.viewport.viewports import ToolCategory, classify_tool
 from polylogue.pipeline.ids import (

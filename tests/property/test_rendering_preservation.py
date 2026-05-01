@@ -14,7 +14,7 @@ from typing import NotRequired, TypedDict
 
 from hypothesis import HealthCheck, given, settings
 
-from polylogue.lib.message.messages import MessageCollection
+from polylogue.archive.message.messages import MessageCollection
 from polylogue.lib.models import Conversation, Message
 from polylogue.lib.roles import Role
 from polylogue.rendering.core_markdown import format_conversation_markdown

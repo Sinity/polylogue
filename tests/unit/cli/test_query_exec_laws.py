@@ -17,6 +17,7 @@ from click.testing import CliRunner
 from hypothesis import HealthCheck, given, settings
 from rich.console import Console
 
+from polylogue.archive.message.roles import MessageRoleFilter
 from polylogue.archive.query.miss_diagnostics import QueryMissDiagnostics, QueryMissReason
 from polylogue.archive.query.spec import ConversationQuerySpec, QuerySpecError
 from polylogue.cli.query import (
@@ -46,7 +47,6 @@ from polylogue.cli.query_output import (
 )
 from polylogue.cli.shared.types import AppEnv
 from polylogue.lib.json import JSONDocument
-from polylogue.lib.message.roles import MessageRoleFilter
 from polylogue.lib.models import Conversation
 from polylogue.lib.roles import Role
 from polylogue.lib.search_hits import ConversationSearchHit

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from polylogue.lib.message.paste_detection import detect_paste
+from polylogue.archive.message.paste_detection import detect_paste
 
 
 def test_detect_paste_empty_text() -> None:

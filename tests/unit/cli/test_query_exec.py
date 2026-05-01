@@ -813,8 +813,8 @@ async def test_stream_conversation_output_contract(
     limit: int | None,
     expected_fragments: list[str],
 ) -> None:
+    from polylogue.archive.message.roles import normalize_message_roles
     from polylogue.cli.query_output import stream_conversation
-    from polylogue.lib.message.roles import normalize_message_roles
 
     repo = MagicMock()
     repo.get_render_projection = AsyncMock(
