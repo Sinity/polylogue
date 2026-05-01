@@ -20,6 +20,17 @@ from tests.infra.cli_subprocess import setup_isolated_workspace
 pytestmark = [pytest.mark.integration, pytest.mark.chaos]
 
 
+def _run_command(inbox: Path) -> list[str]:
+    return [
+        sys.executable,
+        "-m",
+        "polylogue",
+        "run",
+        "--input",
+        str(inbox),
+    ]
+
+
 def _message_count_if_ready(db_path: Path) -> int | None:
     if not db_path.exists():
         return None
@@ -91,14 +102,7 @@ def test_interrupted_pipeline_preserves_partial_progress(tmp_path: Path) -> None
     env["LANG"] = "C.UTF-8"
 
     # Start pipeline
-    cmd = [
-        sys.executable,
-        "-m",
-        "polylogue",
-        "run",
-        "--source",
-        "inbox",
-    ]
+    cmd = _run_command(inbox)
 
     process = subprocess.Popen(
         cmd,
@@ -155,14 +159,7 @@ def test_rerun_after_interruption_completes_remaining(tmp_path: Path) -> None:
     env["UV_SYSTEM_PYTHON"] = "1"
     env["LANG"] = "C.UTF-8"
 
-    cmd = [
-        sys.executable,
-        "-m",
-        "polylogue",
-        "run",
-        "--source",
-        "inbox",
-    ]
+    cmd = _run_command(inbox)
 
     # First run: start and interrupt
     process = subprocess.Popen(
@@ -236,18 +233,9 @@ def test_concurrent_pipeline_runs_serialized(tmp_path: Path) -> None:
 
     project_root = Path(__file__).parent.parent.parent
 
-    cmd = [
-        sys.executable,
-        "-m",
-        "polylogue",
-        "run",
-        "--source",
-        "inbox",
-    ]
-
     # Start both pipelines concurrently
     p1 = subprocess.Popen(
-        cmd,
+        _run_command(workspace1["paths"]["inbox"]),
         cwd=project_root,
         env={**workspace1["env"], "UV_SYSTEM_PYTHON": "1", "LANG": "C.UTF-8"},
         stdout=subprocess.PIPE,
@@ -256,7 +244,7 @@ def test_concurrent_pipeline_runs_serialized(tmp_path: Path) -> None:
     )
 
     p2 = subprocess.Popen(
-        cmd,
+        _run_command(workspace2["paths"]["inbox"]),
         cwd=project_root,
         env={**workspace2["env"], "UV_SYSTEM_PYTHON": "1", "LANG": "C.UTF-8"},
         stdout=subprocess.PIPE,

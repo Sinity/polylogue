@@ -15,7 +15,11 @@ pytestmark = [pytest.mark.integration, pytest.mark.query_routing]
 
 
 def _run_inbox(workspace: IsolatedWorkspace, *, cwd: Path) -> None:
-    result = run_cli(["--plain", "run", "--source", "inbox"], env=workspace["env"], cwd=cwd)
+    result = run_cli(
+        ["--plain", "run", "--input", str(workspace["paths"]["inbox"])],
+        env=workspace["env"],
+        cwd=cwd,
+    )
     assert result.exit_code == 0, result.output
 
 
@@ -84,6 +88,39 @@ def test_cli_query_summary_list_json_route_returns_structured_rows(tmp_path: Pat
     assert len(rows) == 1
     assert str(rows[0]["id"]).endswith("conv-list")
     assert rows[0]["title"] == "List Route"
+
+
+def test_cli_messages_and_raw_routes_read_conversation_records(tmp_path: Path) -> None:
+    workspace = setup_isolated_workspace(tmp_path)
+    inbox = workspace["paths"]["inbox"]
+
+    GenericConversationBuilder("conv-read-surface").title("Read Surface").add_user("read surface alpha").add_assistant(
+        "read surface beta"
+    ).write_to(inbox / "conversation.json")
+    _run_inbox(workspace, cwd=tmp_path)
+
+    list_result = run_cli(["--plain", "alpha", "list", "-f", "json"], env=workspace["env"], cwd=tmp_path)
+    assert list_result.exit_code == 0, list_result.output
+    conversation_id = json.loads(list_result.stdout)[0]["id"]
+
+    messages_result = run_cli(
+        ["--plain", "messages", conversation_id, "--message-role", "user", "--limit", "1", "-f", "json"],
+        env=workspace["env"],
+        cwd=tmp_path,
+    )
+    assert messages_result.exit_code == 0, messages_result.output
+    messages_payload = json.loads(messages_result.stdout)
+    assert messages_payload["conversation_id"] == conversation_id
+    assert messages_payload["total"] == 1
+    assert messages_payload["messages"][0]["role"] == "user"
+    assert messages_payload["messages"][0]["text"] == "read surface alpha"
+
+    raw_result = run_cli(["--plain", "raw", conversation_id, "-f", "json"], env=workspace["env"], cwd=tmp_path)
+    assert raw_result.exit_code == 0, raw_result.output
+    raw_payload = json.loads(raw_result.stdout)
+    assert raw_payload["conversation_id"] == conversation_id
+    assert raw_payload["total"] == 1
+    assert raw_payload["records"][0]["raw_id"]
 
 
 def test_cli_query_summary_list_json_no_results_still_returns_json(tmp_path: Path) -> None:

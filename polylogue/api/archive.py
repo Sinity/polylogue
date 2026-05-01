@@ -269,9 +269,10 @@ class PolylogueArchiveMixin:
         summary = await self.operations.get_conversation_summary(conversation_id)
         if summary is None:
             return None
+        full_id = str(summary.id)
 
         messages, total = await self.operations.get_messages_paginated(
-            conversation_id,
+            full_id,
             message_role=message_role,
             message_type=message_type,
             limit=limit,
@@ -305,8 +306,13 @@ class PolylogueArchiveMixin:
         """Return paginated raw provider records for a conversation."""
         from polylogue.storage.backends.queries.raw import get_raw_records_for_conversation as _raw_query
 
+        summary = await self.operations.get_conversation_summary(conversation_id)
+        if summary is None:
+            return [], 0
+        full_id = str(summary.id)
+
         async with self.repository._backend.connection() as conn:
-            records, total = await _raw_query(conn, conversation_id, limit=limit, offset=offset)
+            records, total = await _raw_query(conn, full_id, limit=limit, offset=offset)
             result = []
             for r in records:
                 result.append(

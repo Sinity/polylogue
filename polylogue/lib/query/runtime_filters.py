@@ -145,6 +145,9 @@ def apply_full_filters(
         results = [c for c in results if len(c.messages) <= plan.max_messages]
     if plan.min_words is not None:
         results = [c for c in results if sum(len((m.text or "").split()) for m in c.messages) >= plan.min_words]
+    if plan.since_session_id:
+        results = _apply_since_session(results, plan.since_session_id)
+
     if plan.message_type is not None:
         wanted_type = MessageType.normalize(plan.message_type)
         results = [
@@ -164,9 +167,6 @@ def apply_full_filters(
         results = [item for item in results if conversation_has_branches(item)]
     if plan.has_branches is False:
         results = [item for item in results if not conversation_has_branches(item)]
-
-    if plan.since_session_id:
-        results = _apply_since_session(results, plan.since_session_id)
 
     for predicate in plan.predicates:
         results = [conversation for conversation in results if predicate(conversation)]

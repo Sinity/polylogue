@@ -4,13 +4,24 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import pytest
+
 from polylogue.lib.query.fields import (
     QUERY_FIELD_DESCRIPTORS,
     active_plan_field_names,
     storage_filters_require_stats_join,
 )
 from polylogue.lib.query.plan import ConversationQueryPlan
-from polylogue.lib.query.spec import ConversationQuerySpec
+from polylogue.lib.query.spec import (
+    ConversationQuerySpec,
+    QuerySpecError,
+    as_tuple,
+    normalize_action_sequence,
+    normalize_action_terms,
+    optional_int,
+    optional_sort_field,
+    split_csv,
+)
 from polylogue.storage.backends.queries.filter_builder import _needs_stats_join
 from polylogue.types import Provider
 
@@ -120,3 +131,30 @@ def test_query_field_catalog_marks_storage_stats_join_fields() -> None:
     assert _needs_stats_join(has_tool_use=True) is True
     assert _needs_stats_join(min_words=10) is True
     assert _needs_stats_join() is False
+
+
+def test_query_spec_normalizers_cover_scalar_iterable_and_error_paths() -> None:
+    assert split_csv(None) == ()
+    assert split_csv("file_read, shell") == ("file_read", "shell")
+    assert split_csv(["repo", "codex"]) == ("repo", "codex")
+    assert as_tuple(None) == ()
+    assert as_tuple("one") == ("one",)
+    assert as_tuple(7) == ("7",)
+    assert optional_int(None) is None
+    assert optional_int("3") == 3
+    assert optional_sort_field("date") == "date"
+    assert optional_sort_field("tokens") == "tokens"
+    assert optional_sort_field("messages") == "messages"
+    assert optional_sort_field("words") == "words"
+    assert optional_sort_field("longest") == "longest"
+    assert optional_sort_field("random") == "random"
+    assert normalize_action_terms("action", "shell") == ("shell",)
+    assert normalize_action_sequence("action_sequence", "file_read,file_edit") == ("file_read", "file_edit")
+
+    for call in (
+        lambda: optional_sort_field("bogus"),
+        lambda: normalize_action_terms("action", "bogus"),
+        lambda: normalize_action_sequence("action_sequence", "bogus"),
+    ):
+        with pytest.raises(QuerySpecError):
+            call()

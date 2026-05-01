@@ -8,6 +8,7 @@ import pytest
 
 from polylogue import Polylogue
 from polylogue.api import ArchiveStats
+from polylogue.lib.roles import Role
 from polylogue.lib.semantic.content_projection import ContentProjectionSpec
 from polylogue.products.archive import (
     ArchiveDebtProductQuery,
@@ -22,7 +23,7 @@ from polylogue.products.archive import (
     WorkThreadProductQuery,
 )
 from tests.infra.builders import make_conv, make_msg
-from tests.infra.storage_records import ConversationBuilder, make_conversation, make_message
+from tests.infra.storage_records import ConversationBuilder, make_conversation, make_message, make_raw_conversation
 
 ArchiveStatsCase = tuple[int, int, int, dict[str, int], dict[str, int], str | None]
 ListConversationsCase = tuple[int, str | None, str | None, int | None, int]
@@ -269,6 +270,99 @@ class TestPolylogueGetConversations:
         convs = await archive.get_conversations(ids)
         assert len(convs) == 3
         assert all(conv.id in ids for conv in convs)
+
+
+class TestPolylogueReadSurfaces:
+    @pytest.mark.asyncio
+    async def test_get_messages_paginated_resolves_id_and_filters_roles(self: object, tmp_path: Path) -> None:
+        archive = _archive(tmp_path)
+        repository = archive.repository
+
+        await repository.save_conversation(
+            make_conversation(
+                "conv-read-api",
+                provider_name="claude-ai",
+                title="Read API",
+                provider_conversation_id="provider-read-api",
+                created_at="2025-01-01T00:00:00Z",
+                updated_at="2025-01-01T00:00:00Z",
+                content_hash="hash-read-api",
+            ),
+            [
+                make_message(
+                    "msg-user",
+                    "conv-read-api",
+                    role="user",
+                    text="visible user",
+                    timestamp="2025-01-01T00:00:00Z",
+                    content_hash="msg-hash-user",
+                ),
+                make_message(
+                    "msg-assistant",
+                    "conv-read-api",
+                    role="assistant",
+                    text="hidden assistant",
+                    timestamp="2025-01-01T00:00:01Z",
+                    content_hash="msg-hash-assistant",
+                ),
+            ],
+            [],
+        )
+
+        result = await archive.get_messages_paginated("conv-read-api", message_role=(Role.USER,), limit=5)
+
+        assert result is not None
+        messages, total = result
+        assert total == 1
+        assert messages == [
+            {
+                "id": "msg-user",
+                "role": "user",
+                "text": "visible user",
+                "sort_key": None,
+                "has_tool_use": False,
+                "has_thinking": False,
+                "message_type": "message",
+            }
+        ]
+
+    @pytest.mark.asyncio
+    async def test_get_raw_records_resolves_id_and_handles_missing(self: object, tmp_path: Path) -> None:
+        archive = _archive(tmp_path)
+        repository = archive.repository
+
+        await repository.save_raw_conversation(
+            make_raw_conversation(
+                raw_id="raw-read-api",
+                provider_name="codex",
+                source_path="/tmp/raw.jsonl",
+                blob_size=99,
+            )
+        )
+        await repository.save_conversation(
+            make_conversation(
+                "conv-raw-api",
+                provider_name="codex",
+                title="Raw API",
+                provider_conversation_id="provider-raw-api",
+                created_at="2025-01-01T00:00:00Z",
+                updated_at="2025-01-01T00:00:00Z",
+                content_hash="hash-raw-api",
+                raw_id="raw-read-api",
+            ),
+            [],
+            [],
+        )
+
+        records, total = await archive.get_raw_records_for_conversation("conv-raw-api")
+        missing_records, missing_total = await archive.get_raw_records_for_conversation("missing")
+
+        assert total == 1
+        assert records[0]["raw_id"] == "raw-read-api"
+        assert records[0]["provider_name"] == "codex"
+        assert records[0]["blob_size"] == 99
+        assert missing_records == []
+        assert missing_total == 0
 
     @pytest.mark.asyncio
     async def test_get_conversations_partial_match(self: object, tmp_path: Path) -> None:
