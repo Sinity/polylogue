@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from polylogue.lib.artifact_taxonomy import ArtifactKind
+from polylogue.archive.artifact_taxonomy import ArtifactKind
 from polylogue.storage.artifacts.persistence import ensure_artifact_observations
 from polylogue.storage.artifacts.queries import (
     list_artifact_cohorts as list_durable_artifact_cohorts,
