@@ -11,9 +11,9 @@ import pytest
 
 from polylogue.archive.query.miss_diagnostics import QueryMissDiagnostics, diagnose_query_miss
 from polylogue.archive.query.spec import ConversationQuerySpec
+from polylogue.archive.stats import ArchiveStats
 from polylogue.config import Config
 from polylogue.core.outcomes import OutcomeCheck, OutcomeStatus
-from polylogue.lib.stats import ArchiveStats
 from polylogue.readiness import ReadinessReport
 from polylogue.storage.action_events.artifacts import ActionEventArtifactState
 from polylogue.types import Provider
