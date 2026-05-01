@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from polylogue.lib.outcomes import OutcomeCheck, OutcomeReport, OutcomeStatus
+from polylogue.core.outcomes import OutcomeCheck, OutcomeReport, OutcomeStatus
 
 
 def test_outcome_report_counts_are_typed_and_json_ready() -> None:

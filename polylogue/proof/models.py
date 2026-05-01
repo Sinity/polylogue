@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from typing import Literal
 
 from polylogue.core.json import JSONDocument, JSONValue, require_json_document, require_json_value
-from polylogue.lib.outcomes import OutcomeStatus
+from polylogue.core.outcomes import OutcomeStatus
 
 ClaimSeverity = Literal["info", "serious"]
 CostTier = Literal["static", "unit", "integration", "live"]

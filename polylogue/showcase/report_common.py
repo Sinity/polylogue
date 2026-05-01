@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from polylogue.lib.outcomes import OutcomeStatus
+from polylogue.core.outcomes import OutcomeStatus
 from polylogue.showcase.invariants import InvariantResult
 from polylogue.showcase.report_models import InvariantCheckRecord, InvariantSummary
 

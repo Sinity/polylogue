@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from polylogue.lib.outcomes import OutcomeStatus
+from polylogue.core.outcomes import OutcomeStatus
 from polylogue.proof.catalog import build_verification_catalog
 from polylogue.proof.models import ProofObligation
 from polylogue.proof.runners import run_generated_scenario_evidence

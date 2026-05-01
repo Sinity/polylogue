@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import Counter
 
 from devtools.command_catalog import control_plane_command
-from polylogue.lib.outcomes import OutcomeCheck
+from polylogue.core.outcomes import OutcomeCheck
 from polylogue.proof.catalog import VerificationCatalog
 from polylogue.proof.models import Claim, RunnerBinding, SubjectRef
 

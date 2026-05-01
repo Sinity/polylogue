@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from polylogue.core.json import JSONDocument
-from polylogue.lib.outcomes import OutcomeCheck, OutcomeStatus
+from polylogue.core.outcomes import OutcomeCheck, OutcomeStatus
 from polylogue.proof.models import (
     And,
     AttrEq,

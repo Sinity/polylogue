@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from polylogue.core.json import JSONDocument, json_document
-from polylogue.lib.outcomes import OutcomeCheck, OutcomeReport, OutcomeStatus
+from polylogue.core.outcomes import OutcomeCheck, OutcomeReport, OutcomeStatus
 
 
 @dataclass

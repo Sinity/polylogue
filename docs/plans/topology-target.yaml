@@ -791,6 +791,11 @@ files:
     target: polylogue/core/json.py
     owner: core-primitive
     reason: core primitive
+  - path: polylogue/core/outcomes.py
+    loc: 149
+    target: polylogue/core/outcomes.py
+    owner: core-primitive
+    reason: core primitive
   - path: polylogue/core/payload_coercion.py
     loc: 126
     target: polylogue/core/payload_coercion.py
@@ -829,11 +834,6 @@ files:
   - path: polylogue/lib/models.py
     loc: 7
     target: polylogue/lib/models.py
-    owner: lib-root
-    reason: lib-root primitive
-  - path: polylogue/lib/outcomes.py
-    loc: 149
-    target: polylogue/lib/outcomes.py
     owner: lib-root
     reason: lib-root primitive
   - path: polylogue/lib/pricing.py

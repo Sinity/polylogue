@@ -23,7 +23,7 @@ from click.testing import CliRunner
 
 from polylogue.cli.click_app import cli
 from polylogue.core.json import JSONDocument
-from polylogue.lib.outcomes import OutcomeCheck, OutcomeStatus
+from polylogue.core.outcomes import OutcomeCheck, OutcomeStatus
 from polylogue.proof.catalog import build_verification_catalog
 from polylogue.proof.models import ProofObligation
 from polylogue.proof.runners import run_cli_visual_evidence

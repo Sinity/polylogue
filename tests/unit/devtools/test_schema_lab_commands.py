@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from devtools import schema_audit, schema_generate, schema_promote
-from polylogue.lib.outcomes import OutcomeCheck, OutcomeStatus
+from polylogue.core.outcomes import OutcomeCheck, OutcomeStatus
 from polylogue.schemas.audit.models import AuditReport
 from polylogue.schemas.generation.models import GenerationResult
 from polylogue.schemas.operator.models import (
