@@ -10,7 +10,7 @@ from devtools.semantic_axis_evidence import (
     build_semantic_axis_evidence,
 )
 from polylogue.core.json import JSONDocument
-from polylogue.lib.outcomes import OutcomeStatus
+from polylogue.core.outcomes import OutcomeStatus
 from polylogue.scenarios import CorpusSourceKind
 
 

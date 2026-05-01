@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from polylogue.core.json import JSONDocument, require_json_value
-from polylogue.lib.outcomes import OutcomeStatus
+from polylogue.core.outcomes import OutcomeStatus
 from polylogue.proof.models import EvidenceEnvelope, TrustMetadata
 from polylogue.scenarios import CorpusSourceKind
 from polylogue.storage.backends.schema_ddl import SCHEMA_VERSION

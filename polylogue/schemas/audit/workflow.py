@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from polylogue.lib.outcomes import OutcomeCheck as CheckResult
-from polylogue.lib.outcomes import OutcomeStatus
+from polylogue.core.outcomes import OutcomeCheck as CheckResult
+from polylogue.core.outcomes import OutcomeStatus
 from polylogue.schemas.audit.checks import (
     check_annotation_coverage,
     check_cross_provider_consistency,

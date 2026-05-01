@@ -20,7 +20,7 @@ import click
 from click.testing import CliRunner, Result
 
 from polylogue.core.json import JSONDocument, JSONValue, require_json_document, require_json_value
-from polylogue.lib.outcomes import OutcomeStatus
+from polylogue.core.outcomes import OutcomeStatus
 from polylogue.proof.models import EvidenceEnvelope, ProofObligation, SourceSpan, TrustMetadata
 from polylogue.proof.traces import ObservableDiagnosticMapping, ObservableTrace, trace_signature_hash
 from polylogue.storage.backends.schema_ddl import SCHEMA_VERSION

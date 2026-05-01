@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from polylogue.lib.outcomes import OutcomeStatus
+from polylogue.core.outcomes import OutcomeStatus
 from polylogue.proof.models import (
     And,
     AttrContains,

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from polylogue.lib.outcomes import OutcomeCheck, OutcomeStatus
+from polylogue.core.outcomes import OutcomeCheck, OutcomeStatus
 from polylogue.scenarios import AssertionSpec, polylogue_execution
 from polylogue.schemas.audit.models import AuditReport
 from polylogue.schemas.validation.models import ArtifactProofReport, ProviderArtifactProof

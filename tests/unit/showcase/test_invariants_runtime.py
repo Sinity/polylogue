@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 from unittest.mock import patch
 
-from polylogue.lib.outcomes import OutcomeStatus
+from polylogue.core.outcomes import OutcomeStatus
 from polylogue.scenarios import AssertionSpec, polylogue_execution
 from polylogue.showcase.exercise_models import Exercise
 from polylogue.showcase.invariants import (

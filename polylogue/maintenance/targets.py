@@ -7,7 +7,7 @@ from enum import Enum
 from functools import lru_cache
 
 from polylogue.core.json import JSONDocument, json_document
-from polylogue.lib.outcomes import OutcomeStatus
+from polylogue.core.outcomes import OutcomeStatus
 from polylogue.maintenance.models import MaintenanceCategory
 
 

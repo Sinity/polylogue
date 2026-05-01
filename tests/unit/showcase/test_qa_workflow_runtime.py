@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, PropertyMock, patch
 
 import pytest
 
-from polylogue.lib.outcomes import OutcomeStatus
+from polylogue.core.outcomes import OutcomeStatus
 from polylogue.pipeline.run_support import RUN_STAGE_SEQUENCES
 from polylogue.scenarios import polylogue_execution
 from polylogue.showcase.exercise_models import Exercise

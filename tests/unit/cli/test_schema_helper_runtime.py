@@ -16,7 +16,7 @@ from polylogue.cli.shared.schema_rendering_results import (
     render_schema_list_result,
     render_schema_promote_result,
 )
-from polylogue.lib.outcomes import OutcomeStatus
+from polylogue.core.outcomes import OutcomeStatus
 from polylogue.scenarios import CorpusProfile, CorpusSpec, build_corpus_scenarios
 from polylogue.schemas.audit.models import AuditCheck, AuditReport
 from polylogue.schemas.generation.models import GenerationResult
