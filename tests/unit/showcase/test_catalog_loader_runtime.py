@@ -111,7 +111,7 @@ def test_load_exercise_reads_metadata_assertion_and_corpus_specs() -> None:
         "name": "json-stats",
         "group": "query-read",
         "description": "Show stats as JSON",
-        "execution": polylogue_execution("stats", "--json").to_payload(),
+        "execution": polylogue_execution("stats", "--format", "json").to_payload(),
         "corpus_specs": [
             CorpusSpec.for_provider("chatgpt", count=2, messages_min=4, messages_max=4).to_payload(),
         ],
@@ -129,7 +129,7 @@ def test_load_exercise_reads_metadata_assertion_and_corpus_specs() -> None:
     exercise = _load_exercise(payload)
 
     assert exercise.name == "json-stats"
-    assert exercise.args == ["stats", "--json"]
+    assert exercise.args == ["stats", "--format", "json"]
     assert exercise.corpus_specs[0].provider == "chatgpt"
     assert exercise.assertion.stdout_is_valid_json is True
     assert exercise.tier == 2

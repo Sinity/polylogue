@@ -74,7 +74,7 @@ def test_existing_capture_state_reports_written_artifact(tmp_path: Path) -> None
 def test_browser_capture_status_cli_json(cli_workspace: dict[str, Path]) -> None:
     runner = CliRunner()
 
-    result = runner.invoke(cli, ["browser-capture", "status", "--json"], catch_exceptions=False)
+    result = runner.invoke(cli, ["browser-capture", "status", "--format", "json"], catch_exceptions=False)
 
     assert result.exit_code == 0
     payload = json.loads(result.output)

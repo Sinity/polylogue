@@ -283,8 +283,8 @@ Options:
   -r, --rebuild                   Re-embed all conversations (ignore existing
                                   embeddings)
   -s, --stats                     Show embedding statistics only
-  --json                          Emit embedding statistics as JSON (requires
-                                  --stats)
+  --format [json]                 Output format for embedding statistics
+                                  (requires --stats)
   -n, --limit INTEGER             Maximum number of conversations to embed
   -h, --help                      Show this message and exit.
 ```
@@ -342,7 +342,7 @@ Usage: polylogue doctor [OPTIONS]
   Health check with optional maintenance and cleanup previews.
 
 Options:
-  --json                          Output as JSON
+  --format [json]                 Output format
   -v, --verbose                   Show breakdown by provider
   --repair                        Run safe derived-data and database
                                   maintenance repairs
@@ -403,12 +403,11 @@ Usage: polylogue tags [OPTIONS]
   Examples:
       polylogue tags                  # List all tags
       polylogue tags -p claude-ai     # Tags for Claude conversations only
-      polylogue tags --json           # Machine-readable output
+      polylogue tags --format json    # Machine-readable output
       polylogue tags -n 10            # Top 10 tags
 
 Options:
   -p, --provider TEXT  Filter tags by provider
-  --json               Output as JSON
   -f, --format [json]  Output format
   -n, --count INTEGER  Show top N tags
   -h, --help           Show this message and exit.

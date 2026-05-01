@@ -63,7 +63,7 @@ def test_invoke_showcase_cli_passes_runtime_options(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(cli_boundary, "run_execution", fake_run)
 
     cli_boundary.invoke_showcase_cli(
-        polylogue_execution("doctor", "--json"),
+        polylogue_execution("doctor", "--format", "json"),
         env={"POLYLOGUE_FORCE_PLAIN": "1"},
         cwd=None,
         timeout=30.0,
@@ -71,7 +71,7 @@ def test_invoke_showcase_cli_passes_runtime_options(monkeypatch: pytest.MonkeyPa
 
     execution = _captured_execution(captured)
     kwargs = _captured_kwargs(captured)
-    assert execution.display_command == ("polylogue", "doctor", "--json")
+    assert execution.display_command == ("polylogue", "doctor", "--format", "json")
     assert kwargs["capture_output"] is True
     assert kwargs["timeout"] == 30.0
 

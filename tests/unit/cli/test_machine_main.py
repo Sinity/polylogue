@@ -34,7 +34,7 @@ def test_run_machine_entry_json_polylogue_error_emits_runtime_envelope(
         raise DatabaseError("Database schema version 0 is incompatible with expected version 1.")
 
     with pytest.raises(SystemExit) as exc_info:
-        run_machine_entry(boom, ["stats", "--json"])
+        run_machine_entry(boom, ["stats", "--format", "json"])
 
     assert exc_info.value.code == 1
     captured = capsys.readouterr()

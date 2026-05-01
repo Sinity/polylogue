@@ -14,7 +14,7 @@ class CliSurfaceVariant:
     name: str
     description: str
     prefix_args: tuple[str, ...] = ()
-    suffix_args: tuple[str, ...] = ("--json",)
+    suffix_args: tuple[str, ...] = ("--format", "json")
     tags: tuple[str, ...] = ()
     timeout_s: int = 180
     needs_data: bool = True

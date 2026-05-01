@@ -93,7 +93,8 @@ class TestExercisesByGroup:
         }
         assert observed["json-doctor-action-event-preview"].args == [
             "doctor",
-            "--json",
+            "--format",
+            "json",
             "--repair",
             "--preview",
             "--target",
@@ -101,13 +102,14 @@ class TestExercisesByGroup:
         ]
         assert observed["json-doctor-session-insights-preview"].args == [
             "doctor",
-            "--json",
+            "--format",
+            "json",
             "--repair",
             "--preview",
             "--target",
             "session_products",
         ]
-        assert observed["json-run-embed"].args == ["run", "embed", "--stats", "--json"]
+        assert observed["json-run-embed"].args == ["run", "embed", "--stats", "--format", "json"]
         assert "json-schema-compare" not in observed
         assert "json-schema-generate" not in observed
         assert "json-schema-promote" not in observed

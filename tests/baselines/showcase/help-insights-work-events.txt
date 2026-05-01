@@ -8,6 +8,5 @@ Options:
   --query TEXT            FTS query against product search text
   --limit INTEGER         Maximum rows  [default: 50]
   --offset INTEGER        Start offset  [default: 0]
-  --json                  Output as JSON
   --format [json]         Output format
   -h, --help              Show this message and exit.

@@ -1,17 +1,18 @@
 Usage: polylogue insights export [OPTIONS]
 
-  Export versioned archive-product bundles.
+  Export versioned archive-insight bundles.
 
 Options:
-  --out PATH        Output bundle directory.  [required]
-  --product TEXT    Insight to include. Defaults to all exportable insights.
-  --provider TEXT   Limit supported insights to one provider.
-  --since TEXT      Limit supported insights to rows at/after this timestamp
-                    or date.
-  --until TEXT      Limit supported insights to rows at/before this timestamp
-                    or date.
-  --format [jsonl]  [default: jsonl]
-  --overwrite       Replace an existing bundle directory after writing a
-                    complete new one.
-  --json            Output bundle metadata as JSON.
-  -h, --help        Show this message and exit.
+  --out PATH               Output bundle directory.  [required]
+  --insight TEXT           Insight to include. Defaults to all exportable
+                           insights.
+  --provider TEXT          Limit supported insights to one provider.
+  --since TEXT             Limit supported insights to rows at/after this
+                           timestamp or date.
+  --until TEXT             Limit supported insights to rows at/before this
+                           timestamp or date.
+  --bundle-format [jsonl]  [default: jsonl]
+  --format [json]          Output format.
+  --overwrite              Replace an existing bundle directory after writing
+                           a complete new one.
+  -h, --help               Show this message and exit.

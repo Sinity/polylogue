@@ -219,9 +219,9 @@ def generate_command_help_exercises() -> list[Exercise]:
     return list(generate_command_help_scenarios())
 
 
-def _has_json_flag(cmd: click.Command) -> bool:
-    """Check if a Click command has a --json flag."""
-    return any(isinstance(param, click.Option) and "--json" in param.opts for param in cmd.params)
+def _has_json_output_format(cmd: click.Command) -> bool:
+    """Check if a Click command exposes JSON via --format."""
+    return any(isinstance(param, click.Option) and "--format" in param.opts for param in cmd.params)
 
 
 def _json_contract_scenario(
@@ -287,9 +287,19 @@ def _operational_json_contract_scenarios() -> tuple[Exercise, ...]:
 
 JSON_CONTRACT_SCENARIOS: tuple[Exercise, ...] = (
     *_operational_json_contract_scenarios(),
-    _json_contract_scenario("json-tags", "tags JSON contract", "tags", "--json", needs_data=False, tier=0, env="any"),
     _json_contract_scenario(
-        "json-schema-list", "schema list JSON contract", "schema", "list", "--json", needs_data=False, tier=0, env="any"
+        "json-tags", "tags JSON contract", "tags", "--format", "json", needs_data=False, tier=0, env="any"
+    ),
+    _json_contract_scenario(
+        "json-schema-list",
+        "schema list JSON contract",
+        "schema",
+        "list",
+        "--format",
+        "json",
+        needs_data=False,
+        tier=0,
+        env="any",
     ),
     *_product_json_contract_scenarios(),
     _json_contract_scenario(
@@ -298,7 +308,8 @@ JSON_CONTRACT_SCENARIOS: tuple[Exercise, ...] = (
         "run",
         "embed",
         "--stats",
-        "--json",
+        "--format",
+        "json",
         needs_data=True,
         tier=1,
         env="seeded",
@@ -323,7 +334,9 @@ def json_contract_exercise_names() -> set[str]:
 def generate_json_contract_scenarios() -> tuple[Exercise, ...]:
     """Generate JSON contract scenarios for curated runnable commands."""
     available_paths = {
-        tuple(command_path.path) for command_path in inventory_command_paths() if _has_json_flag(command_path.command)
+        tuple(command_path.path)
+        for command_path in inventory_command_paths()
+        if _has_json_output_format(command_path.command)
     }
     return tuple(
         scenario
@@ -424,8 +437,8 @@ def generate_schema_scenarios() -> tuple[Exercise, ...]:
         Exercise(
             name="gen-schema-list",
             group="generated-schema",
-            description="Generated: schema list --json returns valid JSON",
-            execution=polylogue_execution("schema", "list", "--json"),
+            description="Generated: schema list --format json returns valid JSON",
+            execution=polylogue_execution("schema", "list", "--format", "json"),
             assertion=AssertionSpec(stdout_is_valid_json=True),
             tier=dims_smoke.derived_tier,
             env="any",

@@ -14,7 +14,7 @@ from .cli_surfaces import (
 OPERATIONAL_SURFACE_FAMILIES: tuple[CliSurfaceFamily, ...] = (
     CliSurfaceFamily(
         slug="doctor-readiness",
-        command_args=("doctor", "--json"),
+        command_args=("doctor", "--format", "json"),
         tags=("maintenance", "readiness"),
         exercise=CliSurfaceVariant(
             name="json-doctor",
@@ -35,7 +35,7 @@ OPERATIONAL_SURFACE_FAMILIES: tuple[CliSurfaceFamily, ...] = (
     ),
     CliSurfaceFamily(
         slug="doctor-action-event-preview",
-        command_args=("doctor", "--json", "--repair", "--preview", "--target", "action_event_read_model"),
+        command_args=("doctor", "--format", "json", "--repair", "--preview", "--target", "action_event_read_model"),
         tags=("maintenance", "action-events"),
         exercise=CliSurfaceVariant(
             name="json-doctor-action-event-preview",
@@ -48,7 +48,7 @@ OPERATIONAL_SURFACE_FAMILIES: tuple[CliSurfaceFamily, ...] = (
     ),
     CliSurfaceFamily(
         slug="doctor-session-insights-preview",
-        command_args=("doctor", "--json", "--repair", "--preview", "--target", "session_products"),
+        command_args=("doctor", "--format", "json", "--repair", "--preview", "--target", "session_products"),
         tags=("maintenance", "session-insights"),
         exercise=CliSurfaceVariant(
             name="json-doctor-session-insights-preview",
@@ -61,7 +61,7 @@ OPERATIONAL_SURFACE_FAMILIES: tuple[CliSurfaceFamily, ...] = (
     ),
     CliSurfaceFamily(
         slug="doctor-session-insights-repair",
-        command_args=("doctor", "--json", "--repair", "--target", "session_products"),
+        command_args=("doctor", "--format", "json", "--repair", "--target", "session_products"),
         tags=("live", "repair", "session-insights"),
         live_variants=(
             CliSurfaceVariant(
@@ -74,7 +74,7 @@ OPERATIONAL_SURFACE_FAMILIES: tuple[CliSurfaceFamily, ...] = (
     ),
     CliSurfaceFamily(
         slug="maintenance-preview",
-        command_args=("doctor", "--json", "--repair", "--cleanup", "--preview"),
+        command_args=("doctor", "--format", "json", "--repair", "--cleanup", "--preview"),
         tags=("live", "maintenance", "preview"),
         live_variants=(
             CliSurfaceVariant(
@@ -98,7 +98,7 @@ OPERATIONAL_SURFACE_FAMILIES: tuple[CliSurfaceFamily, ...] = (
     ),
     CliSurfaceFamily(
         slug="embed-stats",
-        command_args=("embed", "--stats", "--json"),
+        command_args=("embed", "--stats", "--format", "json"),
         tags=("live", "embeddings", "readiness"),
         live_variants=(
             CliSurfaceVariant(

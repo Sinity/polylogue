@@ -68,9 +68,9 @@ class InvariantResult:
 
 
 def _check_json_valid(result: ExerciseResult) -> str | None:
-    """All -f json output parses as valid JSON (or JSON Lines for .jsonl)."""
+    """All --format/-f json output parses as valid JSON (or JSON Lines for .jsonl)."""
     args_str = result.exercise.args_text
-    if "-f json" not in args_str and "--json" not in args_str:
+    if "-f json" not in args_str and "--format json" not in args_str:
         return SKIP
     if result.exercise.output_ext not in (".json", ".jsonl"):
         return SKIP

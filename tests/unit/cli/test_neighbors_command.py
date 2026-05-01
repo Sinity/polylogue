@@ -43,7 +43,7 @@ def test_neighbors_command_emits_json_payload(cli_runner: CliRunner) -> None:
 
     result = cli_runner.invoke(
         neighbors_command,
-        ["--id", "target", "--json"],
+        ["--id", "target", "--format", "json"],
         obj=env,
         catch_exceptions=False,
     )

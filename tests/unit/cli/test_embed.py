@@ -288,7 +288,7 @@ class TestEmbedCommand:
         assert result.exit_code == 0
         assert "embed" in result.output.lower()
 
-    @pytest.mark.parametrize("option", ["--stats", "--json", "--model", "--rebuild", "--limit", "--conversation"])
+    @pytest.mark.parametrize("option", ["--stats", "--format", "--model", "--rebuild", "--limit", "--conversation"])
     def test_embed_command_help_lists_options(
         self, runner: CliRunner, cli_workspace: dict[str, Path], option: str
     ) -> None:
@@ -304,13 +304,13 @@ class TestEmbedCommand:
         assert opts.stats is True
 
     def test_embed_command_json_requires_stats(self, runner: CliRunner, cli_workspace: dict[str, Path]) -> None:
-        result = runner.invoke(cli, ["--plain", "run", "embed", "--json"])
+        result = runner.invoke(cli, ["--plain", "run", "embed", "--format", "json"])
         assert result.exit_code != 0
-        assert "--json requires --stats" in result.output
+        assert "--format json requires --stats" in result.output
 
     def test_embed_command_stats_json_short_circuit(self, runner: CliRunner, cli_workspace: dict[str, Path]) -> None:
         with patch("polylogue.cli.commands.run._run_embed_standalone") as mock_standalone:
-            result = runner.invoke(cli, ["--plain", "run", "embed", "--stats", "--json"])
+            result = runner.invoke(cli, ["--plain", "run", "embed", "--stats", "--format", "json"])
         assert result.exit_code == 0
         mock_standalone.assert_called_once()
         opts = mock_standalone.call_args[0][1]

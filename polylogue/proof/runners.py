@@ -1094,7 +1094,7 @@ def _json_args_for_subject(obligation: ProofObligation) -> tuple[str, ...]:
     if isinstance(value, list) and all(isinstance(item, str) for item in value):
         return tuple(str(item) for item in value)
     command_path = _command_path_for_subject(obligation)
-    return ("--plain", *command_path, "--json")
+    return ("--plain", *command_path, "--format", "json")
 
 
 def _command_path_for_subject(obligation: ProofObligation) -> tuple[str, ...]:

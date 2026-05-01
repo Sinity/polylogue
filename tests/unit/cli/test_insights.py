@@ -175,7 +175,7 @@ def test_insights_profiles_json(cli_workspace: CliWorkspace) -> None:
     _seed_products(cli_workspace)
 
     runner = CliRunner()
-    result = runner.invoke(cli, ["insights", "profiles", "--json"], catch_exceptions=False)
+    result = runner.invoke(cli, ["insights", "profiles", "--format", "json"], catch_exceptions=False)
 
     assert result.exit_code == 0
     payload = extract_json_result(result.output)
@@ -204,7 +204,7 @@ def test_insights_costs_json(cli_workspace: CliWorkspace) -> None:
     _seed_cost_products(cli_workspace)
 
     runner = CliRunner()
-    result = runner.invoke(cli, ["insights", "costs", "--json"], catch_exceptions=False)
+    result = runner.invoke(cli, ["insights", "costs", "--format", "json"], catch_exceptions=False)
 
     assert result.exit_code == 0
     payload = extract_json_result(result.output)
@@ -229,7 +229,7 @@ def test_insights_cost_rollups_json(cli_workspace: CliWorkspace) -> None:
     _seed_cost_products(cli_workspace)
 
     runner = CliRunner()
-    result = runner.invoke(cli, ["insights", "cost-rollups", "--json"], catch_exceptions=False)
+    result = runner.invoke(cli, ["insights", "cost-rollups", "--format", "json"], catch_exceptions=False)
 
     assert result.exit_code == 0
     payload = extract_json_result(result.output)
@@ -250,7 +250,7 @@ def test_insights_profiles_support_wallclock_filters_and_sort(cli_workspace: Cli
     runner = CliRunner()
     result = runner.invoke(
         cli,
-        ["insights", "profiles", "--sort", "wallclock", "--min-wallclock-seconds", "250", "--json"],
+        ["insights", "profiles", "--sort", "wallclock", "--min-wallclock-seconds", "250", "--format", "json"],
         catch_exceptions=False,
     )
 
@@ -262,7 +262,7 @@ def test_insights_profiles_support_wallclock_filters_and_sort(cli_workspace: Cli
 
     result = runner.invoke(
         cli,
-        ["insights", "profiles", "--sort", "wallclock", "--json"],
+        ["insights", "profiles", "--sort", "wallclock", "--format", "json"],
         catch_exceptions=False,
     )
 
@@ -315,7 +315,7 @@ def test_insights_status_json(cli_workspace: CliWorkspace) -> None:
     _seed_products(cli_workspace)
 
     runner = CliRunner()
-    result = runner.invoke(cli, ["insights", "status", "--json"], catch_exceptions=False)
+    result = runner.invoke(cli, ["insights", "status", "--format", "json"], catch_exceptions=False)
 
     assert result.exit_code == 0
     payload = extract_json_result(result.output)
@@ -383,7 +383,7 @@ def test_insights_export_json(cli_workspace: CliWorkspace) -> None:
     runner = CliRunner()
     result = runner.invoke(
         cli,
-        ["insights", "export", "--out", str(target), "--insight", "profiles", "--json"],
+        ["insights", "export", "--out", str(target), "--insight", "profiles", "--format", "json"],
         catch_exceptions=False,
     )
 
@@ -408,7 +408,8 @@ def test_insights_enrichments_json(cli_workspace: CliWorkspace) -> None:
             "enrichments",
             "--session-date-since",
             "2026-03-01",
-            "--json",
+            "--format",
+            "json",
         ],
         catch_exceptions=False,
     )
@@ -440,7 +441,7 @@ def test_insights_callback_rejects_unknown_query_fields() -> None:
     ):
         wrapped = getattr(callback, "__wrapped__", None)
         assert callable(wrapped)
-        wrapped(mock_ctx, json_mode=False, refined_work_kind="planning")
+        wrapped(mock_ctx, refined_work_kind="planning")
 
 
 def test_insights_profiles_json_supports_explicit_evidence_and_inference_tiers(cli_workspace: CliWorkspace) -> None:
@@ -449,12 +450,12 @@ def test_insights_profiles_json_supports_explicit_evidence_and_inference_tiers(c
     runner = CliRunner()
     evidence_result = runner.invoke(
         cli,
-        ["insights", "profiles", "--tier", "evidence", "--json"],
+        ["insights", "profiles", "--tier", "evidence", "--format", "json"],
         catch_exceptions=False,
     )
     inference_result = runner.invoke(
         cli,
-        ["insights", "profiles", "--tier", "inference", "--json"],
+        ["insights", "profiles", "--tier", "inference", "--format", "json"],
         catch_exceptions=False,
     )
 
@@ -486,12 +487,12 @@ def test_insights_profiles_json_handles_blank_tier_search_text_from_migrated_row
     runner = CliRunner()
     evidence_result = runner.invoke(
         cli,
-        ["insights", "profiles", "--tier", "evidence", "--json"],
+        ["insights", "profiles", "--tier", "evidence", "--format", "json"],
         catch_exceptions=False,
     )
     inference_result = runner.invoke(
         cli,
-        ["insights", "profiles", "--tier", "inference", "--json"],
+        ["insights", "profiles", "--tier", "inference", "--format", "json"],
         catch_exceptions=False,
     )
 
@@ -512,16 +513,16 @@ def test_insights_reconstructs_tiered_payloads_from_blank_migrated_rows(cli_work
     runner = CliRunner()
     evidence_profiles = runner.invoke(
         cli,
-        ["insights", "profiles", "--tier", "evidence", "--json"],
+        ["insights", "profiles", "--tier", "evidence", "--format", "json"],
         catch_exceptions=False,
     )
     inference_profiles = runner.invoke(
         cli,
-        ["insights", "profiles", "--tier", "inference", "--json"],
+        ["insights", "profiles", "--tier", "inference", "--format", "json"],
         catch_exceptions=False,
     )
-    work_events = runner.invoke(cli, ["insights", "work-events", "--json"], catch_exceptions=False)
-    phases = runner.invoke(cli, ["insights", "phases", "--json"], catch_exceptions=False)
+    work_events = runner.invoke(cli, ["insights", "work-events", "--format", "json"], catch_exceptions=False)
+    phases = runner.invoke(cli, ["insights", "phases", "--format", "json"], catch_exceptions=False)
 
     assert evidence_profiles.exit_code == 0
     assert inference_profiles.exit_code == 0
@@ -557,11 +558,12 @@ def test_insights_profile_date_filters_and_phases_json(cli_workspace: CliWorkspa
             "2026-03-01",
             "--session-date-until",
             "2026-03-01",
-            "--json",
+            "--format",
+            "json",
         ],
         catch_exceptions=False,
     )
-    phases = runner.invoke(cli, ["insights", "phases", "--json"], catch_exceptions=False)
+    phases = runner.invoke(cli, ["insights", "phases", "--format", "json"], catch_exceptions=False)
 
     assert profiles.exit_code == 0
     assert phases.exit_code == 0
@@ -681,7 +683,7 @@ def test_insights_threads_json(cli_workspace: CliWorkspace) -> None:
     _seed_products(cli_workspace)
 
     runner = CliRunner()
-    threads = runner.invoke(cli, ["insights", "threads", "--json"], catch_exceptions=False)
+    threads = runner.invoke(cli, ["insights", "threads", "--format", "json"], catch_exceptions=False)
 
     assert threads.exit_code == 0
 
@@ -703,9 +705,9 @@ def test_insights_tag_and_summary_rollups_json(cli_workspace: CliWorkspace) -> N
     _seed_products(cli_workspace)
 
     runner = CliRunner()
-    tags = runner.invoke(cli, ["insights", "tags", "--json"], catch_exceptions=False)
-    days = runner.invoke(cli, ["insights", "day-summaries", "--json"], catch_exceptions=False)
-    weeks = runner.invoke(cli, ["insights", "week-summaries", "--json"], catch_exceptions=False)
+    tags = runner.invoke(cli, ["insights", "tags", "--format", "json"], catch_exceptions=False)
+    days = runner.invoke(cli, ["insights", "day-summaries", "--format", "json"], catch_exceptions=False)
+    weeks = runner.invoke(cli, ["insights", "week-summaries", "--format", "json"], catch_exceptions=False)
 
     assert tags.exit_code == 0
     assert days.exit_code == 0
@@ -727,7 +729,7 @@ def test_insights_analytics_json(cli_workspace: CliWorkspace) -> None:
     runner = CliRunner()
     result = runner.invoke(
         cli,
-        ["--provider", "claude-code", "insights", "analytics", "--json"],
+        ["--provider", "claude-code", "insights", "analytics", "--format", "json"],
         catch_exceptions=False,
     )
 
@@ -743,7 +745,7 @@ def test_insights_analytics_json(cli_workspace: CliWorkspace) -> None:
 
 def test_insights_debt_json(cli_workspace: CliWorkspace) -> None:
     runner = CliRunner()
-    result = runner.invoke(cli, ["insights", "debt", "--json"], catch_exceptions=False)
+    result = runner.invoke(cli, ["insights", "debt", "--format", "json"], catch_exceptions=False)
 
     assert result.exit_code == 0
     payload = extract_json_result(result.output)
@@ -828,37 +830,37 @@ def test_session_product_status_marks_older_materializer_versions_stale(cli_work
     ("argv", "sql", "expected"),
     [
         (
-            ["insights", "profiles", "--json"],
+            ["insights", "profiles", "--format", "json"],
             "UPDATE session_profiles SET materializer_version = ?",
             "Session-profile rows are incomplete.",
         ),
         (
-            ["insights", "work-events", "--json"],
+            ["insights", "work-events", "--format", "json"],
             "UPDATE session_work_events SET materializer_version = ?",
             "Session work-event rows are incomplete.",
         ),
         (
-            ["insights", "phases", "--json"],
+            ["insights", "phases", "--format", "json"],
             "UPDATE session_phases SET materializer_version = ?",
             "Session phase rows are incomplete.",
         ),
         (
-            ["insights", "threads", "--json"],
+            ["insights", "threads", "--format", "json"],
             "UPDATE work_threads SET materializer_version = ?",
             "Work-thread rows are incomplete.",
         ),
         (
-            ["insights", "tags", "--json"],
+            ["insights", "tags", "--format", "json"],
             "UPDATE session_tag_rollups SET materializer_version = ?",
             "Session tag rollups are incomplete.",
         ),
         (
-            ["insights", "day-summaries", "--json"],
+            ["insights", "day-summaries", "--format", "json"],
             "UPDATE day_session_summaries SET materializer_version = ?",
             "Day session summaries are incomplete.",
         ),
         (
-            ["insights", "week-summaries", "--json"],
+            ["insights", "week-summaries", "--format", "json"],
             "UPDATE day_session_summaries SET materializer_version = ?",
             "Week session summaries are incomplete.",
         ),
@@ -892,7 +894,7 @@ def test_insights_profiles_reject_incomplete_profile_search_index(cli_workspace:
     runner = CliRunner()
     result = runner.invoke(
         cli,
-        ["insights", "profiles", "--query", "refactor", "--json"],
+        ["insights", "profiles", "--query", "refactor", "--format", "json"],
         catch_exceptions=False,
     )
 

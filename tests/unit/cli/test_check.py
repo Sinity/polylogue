@@ -167,7 +167,8 @@ def test_check_records_scoped_maintenance_preview(cli_workspace: WorkspacePaths,
         cli,
         [
             "doctor",
-            "--json",
+            "--format",
+            "json",
             "--repair",
             "--preview",
             "--target",
@@ -208,7 +209,8 @@ def test_check_records_scoped_maintenance_apply(cli_workspace: WorkspacePaths, c
         [
             "--plain",
             "doctor",
-            "--json",
+            "--format",
+            "json",
             "--repair",
             "--target",
             "session_products",
@@ -279,7 +281,7 @@ def test_check_warns_when_message_index_is_incomplete(cli_workspace: WorkspacePa
         conn.execute("DELETE FROM messages_fts")
         conn.commit()
 
-    result = cli_runner.invoke(cli, ["--plain", "doctor", "--json"], catch_exceptions=False)
+    result = cli_runner.invoke(cli, ["--plain", "doctor", "--format", "json"], catch_exceptions=False)
 
     assert result.exit_code == 0
     payload = _extract_json(result.output)
@@ -305,7 +307,7 @@ def test_check_ignores_null_text_messages_in_fts_readiness(
         conn.execute("UPDATE messages SET text = NULL WHERE message_id = ?", ("m-null-text-2",))
         conn.commit()
 
-    result = cli_runner.invoke(cli, ["--plain", "doctor", "--json"])
+    result = cli_runner.invoke(cli, ["--plain", "doctor", "--format", "json"])
     assert result.exit_code == 0
 
     data = _extract_json(result.output)
@@ -341,7 +343,7 @@ class TestCheckCommand:
         assert "ok" in result.output.lower() or "✓" in result.output
 
     def test_check_json_output(self, db_path: Path, cli_runner: CliRunner) -> None:
-        """Check --json flag produces valid JSON."""
+        """Check --format json flag produces valid JSON."""
         factory = DbFactory(db_path)
 
         factory.create_conversation(
@@ -350,7 +352,7 @@ class TestCheckCommand:
             messages=[{"id": "m1", "role": "user", "text": "test"}],
         )
 
-        result = cli_runner.invoke(cli, ["--plain", "doctor", "--json"])
+        result = cli_runner.invoke(cli, ["--plain", "doctor", "--format", "json"])
         assert result.exit_code == 0
 
         # Parse JSON output
@@ -434,7 +436,7 @@ class TestCheckCommand:
             conn.commit()  # Explicit commit to ensure orphan persists
             conn.execute("PRAGMA foreign_keys = ON")
 
-        result = cli_runner.invoke(cli, ["--plain", "doctor", "--json"])
+        result = cli_runner.invoke(cli, ["--plain", "doctor", "--format", "json"])
         assert result.exit_code == 0
 
         data = _extract_json(result.output)
@@ -502,7 +504,7 @@ class TestCheckCommand:
             )
             conn.commit()  # Explicit commit to ensure conversation persists
 
-        result = cli_runner.invoke(cli, ["--plain", "doctor", "--json"])
+        result = cli_runner.invoke(cli, ["--plain", "doctor", "--format", "json"])
         assert result.exit_code == 0
 
         data = _extract_json(result.output)
@@ -528,7 +530,7 @@ class TestCheckCommand:
             messages=[{"id": "m2", "role": "user", "text": "test2"}],
         )
 
-        result = cli_runner.invoke(cli, ["--plain", "doctor", "--json"])
+        result = cli_runner.invoke(cli, ["--plain", "doctor", "--format", "json"])
         assert result.exit_code == 0
 
         data = _extract_json(result.output)
@@ -554,7 +556,7 @@ class TestCheckCommand:
             conn.execute("DROP TABLE IF EXISTS messages_fts")
             conn.commit()  # Explicit commit
 
-        result = cli_runner.invoke(cli, ["--plain", "doctor", "--json"])
+        result = cli_runner.invoke(cli, ["--plain", "doctor", "--format", "json"])
         assert result.exit_code == 0
 
         data = _extract_json(result.output)
@@ -623,7 +625,7 @@ class TestCheckCommand:
             messages=[{"id": "m1", "role": "user", "text": "test"}],
         )
 
-        result = cli_runner.invoke(cli, ["--plain", "doctor", "--deep", "--json"])
+        result = cli_runner.invoke(cli, ["--plain", "doctor", "--deep", "--format", "json"])
         assert result.exit_code == 0
 
         data = _extract_json(result.output)
@@ -671,13 +673,13 @@ class TestCheckCommandSupplementary:
     # --- Remaining non-repetitive tests ---
 
     def test_json_output_with_repair(self, cli_workspace: WorkspacePaths) -> None:
-        """--json with --repair includes maintenance results."""
+        """--format json with --repair includes maintenance results."""
         from click.testing import CliRunner
 
         from polylogue.cli.click_app import cli
 
         runner = CliRunner()
-        result = runner.invoke(cli, ["doctor", "--json", "--repair", "--preview"])
+        result = runner.invoke(cli, ["doctor", "--format", "json", "--repair", "--preview"])
         assert result.exit_code == 0
         envelope = parse_json_object(
             result.output.split("\n", 1)[-1] if "Plain" in result.output else result.output,
@@ -713,13 +715,13 @@ class TestCheckCommandSupplementary:
         assert "VACUUM" in result.output
 
     def test_json_output_with_repair_and_vacuum_is_machine_safe(self, cli_workspace: WorkspacePaths) -> None:
-        """`--json --repair --vacuum` should stay valid JSON."""
+        """`--format json --repair --vacuum` should stay valid JSON."""
         from click.testing import CliRunner
 
         from polylogue.cli.click_app import cli
 
         runner = CliRunner()
-        result = runner.invoke(cli, ["--plain", "doctor", "--json", "--repair", "--preview", "--vacuum"])
+        result = runner.invoke(cli, ["--plain", "doctor", "--format", "json", "--repair", "--preview", "--vacuum"])
 
         assert result.exit_code == 0
         envelope = parse_json_object(result.output, context="repair vacuum envelope")
@@ -752,7 +754,9 @@ class TestCheckCommandSupplementary:
             return_value=fake_report,
         ):
             runner = CliRunner()
-            result = runner.invoke(cli, ["--plain", "doctor", "--json", "--schemas", "--schema-samples", "all"])
+            result = runner.invoke(
+                cli, ["--plain", "doctor", "--format", "json", "--schemas", "--schema-samples", "all"]
+            )
 
         assert result.exit_code == 0
         data = _extract_json(result.output)
@@ -787,7 +791,8 @@ class TestCheckCommandSupplementary:
                 [
                     "--plain",
                     "doctor",
-                    "--json",
+                    "--format",
+                    "json",
                     "--schemas",
                     "--schema-provider",
                     "claude-code",
@@ -829,7 +834,7 @@ class TestCheckCommandSupplementary:
             runner = CliRunner()
             result = runner.invoke(
                 cli,
-                ["--plain", "doctor", "--json", "--schemas", "--schema-quarantine-malformed"],
+                ["--plain", "doctor", "--format", "json", "--schemas", "--schema-quarantine-malformed"],
             )
 
         assert result.exit_code == 0
@@ -924,7 +929,7 @@ class TestCheckCommandSupplementary:
             return_value=ArtifactProofResult(report=fake_report),
         ):
             runner = CliRunner()
-            result = runner.invoke(cli, ["--plain", "doctor", "--json", "--proof"])
+            result = runner.invoke(cli, ["--plain", "doctor", "--format", "json", "--proof"])
 
         assert result.exit_code == 0
         data = _extract_json(result.output)
@@ -989,7 +994,8 @@ class TestCheckCommandSupplementary:
                 [
                     "--plain",
                     "doctor",
-                    "--json",
+                    "--format",
+                    "json",
                     "--proof",
                     "--artifact-provider",
                     "claude-code",
@@ -1052,7 +1058,8 @@ class TestCheckCommandSupplementary:
                 [
                     "--plain",
                     "doctor",
-                    "--json",
+                    "--format",
+                    "json",
                     "--artifacts",
                     "--artifact-provider",
                     "chatgpt",

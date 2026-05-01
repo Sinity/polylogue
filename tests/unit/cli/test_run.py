@@ -610,7 +610,7 @@ class TestTagsCommand:
         import json
 
         _seed_tag_counts(cli_workspace["db_path"], {"tag1": 10, "tag2": 2})
-        result = runner.invoke(cli, ["tags", "--json"])
+        result = runner.invoke(cli, ["tags", "--format", "json"])
         assert result.exit_code == 0
         envelope = json.loads(result.output)
         assert envelope["result"]["tags"] == {"tag1": 10, "tag2": 2}
@@ -702,7 +702,7 @@ class TestEmbedCommand:
                 "embedding_coverage_percent": 60.0,
                 "retrieval_ready": True,
             }
-            result = runner.invoke(cli, ["run", "embed", "--stats", "--json"])
+            result = runner.invoke(cli, ["run", "embed", "--stats", "--format", "json"])
 
         assert result.exit_code == 0
         assert '"status": "partial"' in result.output

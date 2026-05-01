@@ -103,13 +103,13 @@ def json_command_subjects(
     for command_path in iter_command_paths(root_command, include_root=False):
         if command_path.path not in selected:
             continue
-        command_id = f"polylogue {' '.join(command_path.path)} --json"
+        command_id = f"polylogue {' '.join(command_path.path)} --format json"
         extra_args = SELECTED_JSON_COMMAND_ARGS.get(command_path.path, ())
         attrs = _json_document(
             {
                 "command_path": list(command_path.path),
-                "display_name": f"{command_path.display_name} --json",
-                "json_args": ["--plain", *command_path.path, *extra_args, "--json"],
+                "display_name": f"{command_path.display_name} --format json",
+                "json_args": ["--plain", *command_path.path, *extra_args, "--format", "json"],
             }
         )
         subjects.append(

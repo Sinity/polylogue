@@ -10,7 +10,7 @@ Options:
   -r, --rebuild                   Re-embed all conversations (ignore existing
                                   embeddings)
   -s, --stats                     Show embedding statistics only
-  --json                          Emit embedding statistics as JSON (requires
-                                  --stats)
+  --format [json]                 Output format for embedding statistics
+                                  (requires --stats)
   -n, --limit INTEGER             Maximum number of conversations to embed
   -h, --help                      Show this message and exit.

@@ -28,11 +28,11 @@ def _string_env(value: object) -> dict[str, str]:
 
 
 def test_resolve_execution_command_applies_binary_overrides() -> None:
-    execution = polylogue_execution("doctor", "--json")
+    execution = polylogue_execution("doctor", "--format", "json")
 
     command = resolve_execution_command(execution, binary_overrides={"polylogue": "/tmp/polylogue"})
 
-    assert command == ("/tmp/polylogue", "--plain", "doctor", "--json")
+    assert command == ("/tmp/polylogue", "--plain", "doctor", "--format", "json")
 
 
 def test_run_execution_merges_env_and_captures_output(

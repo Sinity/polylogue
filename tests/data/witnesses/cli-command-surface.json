@@ -14,6 +14,6 @@
     "diagnostics"
   ],
   "required_query_verbs": ["list", "show", "search", "stats", "count", "export"],
-  "machine_output_aliases": ["--json", "--format json"],
+  "machine_output_aliases": ["--format json"],
   "semantic_filters": ["--provider", "--repo", "--cwd-prefix", "--referenced-path", "--message-role", "--message-type"]
 }

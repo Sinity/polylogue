@@ -11,14 +11,12 @@ from polylogue.cli.shared.types import AppEnv
 
 @click.command("tags")
 @click.option("--provider", "-p", default=None, help="Filter tags by provider")
-@click.option("--json", "json_mode", is_flag=True, help="Output as JSON")
 @click.option("--format", "-f", "output_format", type=click.Choice(["json"]), default=None, help="Output format")
 @click.option("--count", "-n", type=int, default=None, help="Show top N tags")
 @click.pass_obj
 def tags_command(
     env: AppEnv,
     provider: str | None,
-    json_mode: bool,
     output_format: str | None,
     count: int | None,
 ) -> None:
@@ -28,7 +26,7 @@ def tags_command(
     Examples:
         polylogue tags                  # List all tags
         polylogue tags -p claude-ai     # Tags for Claude conversations only
-        polylogue tags --json           # Machine-readable output
+        polylogue tags --format json    # Machine-readable output
         polylogue tags -n 10            # Top 10 tags
     """
     tags = run_coroutine_sync(env.repository.list_tags(provider=provider))
@@ -37,7 +35,7 @@ def tags_command(
         # Truncate to top N (already sorted by count desc from SQL)
         tags = dict(list(tags.items())[:count])
 
-    if json_mode or output_format == "json":
+    if output_format == "json":
         emit_success({"tags": tags})
         return
 

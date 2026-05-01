@@ -40,7 +40,7 @@ def _run_main_with_error(
 def test_main_wraps_usage_error_as_json(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     exit_code, payload = _run_main_with_error(
         monkeypatch,
-        ["doctor", "--json", "--bad-flag"],
+        ["doctor", "--format", "json", "--bad-flag"],
         click.NoSuchOption("--bad-flag"),
         capsys,
     )
@@ -57,7 +57,7 @@ def test_main_wraps_click_exception_as_runtime_json(
 ) -> None:
     exit_code, payload = _run_main_with_error(
         monkeypatch,
-        ["doctor", "--json"],
+        ["doctor", "--format", "json"],
         click.ClickException("boom"),
         capsys,
     )
@@ -74,7 +74,7 @@ def test_main_wraps_string_system_exit_as_invalid_arguments_json(
 ) -> None:
     exit_code, payload = _run_main_with_error(
         monkeypatch,
-        ["doctor", "--json"],
+        ["doctor", "--format", "json"],
         SystemExit("doctor: --preview requires --repair"),
         capsys,
     )
@@ -91,7 +91,7 @@ def test_main_wraps_unexpected_exception_as_runtime_json(
 ) -> None:
     exit_code, payload = _run_main_with_error(
         monkeypatch,
-        ["doctor", "--json"],
+        ["doctor", "--format", "json"],
         RuntimeError("unexpected boom"),
         capsys,
     )

@@ -166,17 +166,8 @@ def emit_success(result: Mapping[str, object] | MachineSuccess | None = None) ->
 
 
 def wants_json(argv: list[str]) -> bool:
-    """Detect ``--json`` intent from raw argv before Click parses.
-
-    Handles explicit ``--json`` subcommand flags and the query-mode
-    ``--format json`` form so machine callers still get structured
-    failures when query execution aborts before normal rendering.
-    """
+    """Detect JSON machine-output intent from raw argv before Click parses."""
     for index, arg in enumerate(argv):
-        if arg == "--json":
-            return True
-        if arg.startswith("--json="):
-            return True
         if arg == "--format" and index + 1 < len(argv) and argv[index + 1] == "json":
             return True
         if arg.startswith("--format=") and arg.split("=", 1)[1] == "json":
@@ -189,7 +180,6 @@ def wants_json(argv: list[str]) -> bool:
 def extract_command(argv: list[str]) -> list[str]:
     """Best-effort extraction of the subcommand path from raw argv."""
     flag_only_long = {
-        "--json",
         "--plain",
         "--latest",
         "--reverse",

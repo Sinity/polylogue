@@ -151,7 +151,7 @@ def test_build_click_params_and_insight_command_cover_dynamic_registration() -> 
     params = insights_module._build_click_params(insight_type)
     command = insights_module._build_insight_command(insight_type)
 
-    assert [param.name for param in params] == ["provider", "limit", "offset", "json_mode", "output_format"]
+    assert [param.name for param in params] == ["provider", "limit", "offset", "output_format"]
     assert command.name == "test-insight"
     assert command.help == "List test insights."
 
@@ -167,7 +167,7 @@ def test_make_callback_renders_insights_and_surfaces_query_errors() -> None:
     with patch("polylogue.cli.commands.insights.InsightCommandRequest.from_context", return_value=request):
         with patch("polylogue.cli.commands.insights.fetch_insights", return_value=["row"]) as fetch_insights:
             with patch("polylogue.cli.commands.insights.render_insight_items") as render_items:
-                raw_callback(ctx, json_mode=True, output_format=None)
+                raw_callback(ctx, output_format="json")
 
     fetch_insights.assert_called_once()
     render_items.assert_called_once_with(["row"], get_insight_type("session_profiles"), json_mode=True)
@@ -175,15 +175,14 @@ def test_make_callback_renders_insights_and_surfaces_query_errors() -> None:
     with patch("polylogue.cli.commands.insights.InsightCommandRequest.from_context", return_value=request):
         with patch("polylogue.cli.commands.insights.fetch_insights", side_effect=InsightQueryError("bad query")):
             with pytest.raises(SystemExit, match="insights profiles: bad query"):
-                raw_callback(ctx, json_mode=False, output_format=None)
+                raw_callback(ctx, output_format=None)
 
 
 def test_status_wants_json_checks_command_and_root_flags() -> None:
     ctx = click.Context(click.Command("status"), parent=_root_context(output_format="json"))
 
-    assert insights_module._status_wants_json(ctx, json_mode=False, output_format=None) is True
-    assert insights_module._status_wants_json(ctx, json_mode=True, output_format=None) is True
-    assert insights_module._status_wants_json(ctx, json_mode=False, output_format="json") is True
+    assert insights_module._status_wants_json(ctx, output_format=None) is True
+    assert insights_module._status_wants_json(ctx, output_format="json") is True
 
 
 def test_render_status_plain_and_export_plain_cover_optional_sections(
@@ -224,7 +223,6 @@ def test_insights_status_command_emits_json_and_inherits_root_filters(tmp_path: 
                 provider=None,
                 since=None,
                 until=None,
-                json_mode=False,
                 output_format=None,
             )
 
@@ -247,7 +245,6 @@ def test_insights_status_command_rejects_inherited_provider_csv() -> None:
             provider=None,
             since=None,
             until=None,
-            json_mode=False,
             output_format=None,
         )
 
@@ -264,7 +261,6 @@ def test_insights_status_command_reports_invalid_insight_names() -> None:
                 provider=None,
                 since=None,
                 until=None,
-                json_mode=False,
                 output_format=None,
             )
 
@@ -287,9 +283,9 @@ def test_insights_export_command_covers_json_plain_and_error_paths(tmp_path: Pat
             provider=None,
             since=None,
             until=None,
-            output_format="csv",
+            bundle_format="csv",
+            output_format=None,
             overwrite=False,
-            json_mode=False,
         )
 
     with patch("polylogue.cli.commands.insights.run_coroutine_sync", side_effect=lambda coro: asyncio.run(coro)):
@@ -301,9 +297,9 @@ def test_insights_export_command_covers_json_plain_and_error_paths(tmp_path: Pat
                 provider=None,
                 since=None,
                 until=None,
-                output_format="jsonl",
+                bundle_format="jsonl",
+                output_format=None,
                 overwrite=True,
-                json_mode=False,
             )
 
     request = captured["request"]
@@ -329,7 +325,7 @@ def test_insights_export_command_covers_json_plain_and_error_paths(tmp_path: Pat
                 provider=None,
                 since=None,
                 until=None,
-                output_format="jsonl",
+                bundle_format="jsonl",
+                output_format=None,
                 overwrite=False,
-                json_mode=False,
             )

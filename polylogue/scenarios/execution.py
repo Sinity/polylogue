@@ -33,6 +33,17 @@ class ExecutionKind(str, Enum):
     RUNNER = "runner"
 
 
+def _argv_requests_json(argv: tuple[str, ...]) -> bool:
+    for index, arg in enumerate(argv):
+        if arg == "--format" and index + 1 < len(argv) and argv[index + 1] == "json":
+            return True
+        if arg == "-f" and index + 1 < len(argv) and argv[index + 1] == "json":
+            return True
+        if arg.startswith("--format=") and arg.split("=", 1)[1] == "json":
+            return True
+    return False
+
+
 class PipelineProbeInputMode(str, Enum):
     SYNTHETIC = "synthetic"
     ARCHIVE_SUBSET = "archive-subset"
@@ -147,7 +158,7 @@ def _metadata_for_polylogue_schema(argv: tuple[str, ...]) -> ScenarioMetadata:
 
 def _metadata_for_polylogue_doctor(argv: tuple[str, ...]) -> ScenarioMetadata:
     operations: list[str] = []
-    if "--json" in argv:
+    if _argv_requests_json(argv):
         operations.append("cli.json-contract")
     targets = tuple(target for target in _find_repeated_flag_values(argv, "--target") if target)
     catalog = build_maintenance_target_catalog()
@@ -167,7 +178,7 @@ def _metadata_for_polylogue_embed(argv: tuple[str, ...]) -> ScenarioMetadata:
         operations.extend(("project-retrieval-band-readiness", "query-embedding-status"))
     else:
         operations.append("materialize-transcript-embeddings")
-    if "--json" in argv:
+    if _argv_requests_json(argv):
         operations.append("cli.json-contract")
     return _metadata_for_operations(*operations)
 

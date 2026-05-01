@@ -50,7 +50,7 @@ def test_cli_help_runner_emits_ok_evidence() -> None:
 
 
 def test_cli_json_envelope_runner_emits_ok_evidence(cli_workspace: Mapping[str, Path]) -> None:
-    obligation = _obligation("cli.command.json_envelope", subject_id="polylogue doctor --json")
+    obligation = _obligation("cli.command.json_envelope", subject_id="polylogue doctor --format json")
 
     envelope = run_cli_json_envelope_evidence(obligation)
 

@@ -70,7 +70,6 @@ class InsightCommandRequest:
 
     query_kwargs: dict[str, object]
     output_format: str | None
-    json_mode: bool
 
     @classmethod
     def from_context(
@@ -78,7 +77,6 @@ class InsightCommandRequest:
         ctx: click.Context,
         insight_type: InsightType,
         *,
-        json_mode: bool,
         output_format: str | None,
         kwargs: Mapping[str, object],
         inherited_root_keys: tuple[str, ...],
@@ -105,12 +103,11 @@ class InsightCommandRequest:
         return cls(
             query_kwargs=normalize_insight_query_kwargs(normalized_kwargs),
             output_format=resolved_output_format,
-            json_mode=json_mode,
         )
 
     @property
     def wants_json(self) -> bool:
-        return self.json_mode or self.output_format == "json"
+        return self.output_format == "json"
 
 
 __all__ = [

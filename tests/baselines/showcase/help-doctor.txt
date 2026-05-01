@@ -3,7 +3,7 @@ Usage: polylogue doctor [OPTIONS]
   Health check with optional maintenance and cleanup previews.
 
 Options:
-  --json                          Output as JSON
+  --format [json]                 Output format
   -v, --verbose                   Show breakdown by provider
   --repair                        Run safe derived-data and database
                                   maintenance repairs

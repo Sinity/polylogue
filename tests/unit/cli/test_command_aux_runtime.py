@@ -244,7 +244,7 @@ def test_tags_command_plain_paths_cover_empty_hint_and_tabular_counts(cli_runner
 
     env.repository.list_tags = AsyncMock(return_value={"alpha": 5})
     with patch("polylogue.cli.commands.tags.emit_success") as emit_success:
-        json_result = cli_runner.invoke(tags_command, ["--json"], obj=env, catch_exceptions=False)
+        json_result = cli_runner.invoke(tags_command, ["--format", "json"], obj=env, catch_exceptions=False)
     assert json_result.exit_code == 0
     emit_success.assert_called_once_with({"tags": {"alpha": 5}})
 

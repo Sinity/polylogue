@@ -1,6 +1,6 @@
 """Tests for the unified JSON success/error envelope contract.
 
-Every ``--json`` command must produce output conforming to either:
+Every ``--format json`` command must produce output conforming to either:
 - Success: ``{"status": "ok", "result": {...}}``
 - Error:   ``{"status": "error", "code": ..., "message": ..., ...}``
 
@@ -60,12 +60,12 @@ class TestEmitSuccess:
 
 
 # ---------------------------------------------------------------------------
-# Contract: every --json command wraps in success envelope
+# Contract: every --format json command wraps in success envelope
 # ---------------------------------------------------------------------------
 
 
 def _invoke_json_command(args: list[str], monkeypatch: pytest.MonkeyPatch) -> JSONDocument | None:
-    """Invoke a CLI command with --json flag, return parsed output or None on skip.
+    """Invoke a CLI command with --format json flag, return parsed output or None on skip.
 
     Returns None (and calls pytest.skip) if the command fails due to DB errors
     or other environment issues that make the test non-applicable.
@@ -80,28 +80,28 @@ def _invoke_json_command(args: list[str], monkeypatch: pytest.MonkeyPatch) -> JS
         if result.exception and "OperationalError" in type(result.exception).__name__:
             pytest.skip(f"DB operational error: {result.exception}")
         if result.exception:
-            pytest.skip(f"{args[0]} --json raised {type(result.exception).__name__}: {result.exception}")
-        pytest.skip(f"{args[0]} --json failed (exit {result.exit_code})")
+            pytest.skip(f"{args[0]} --format json raised {type(result.exception).__name__}: {result.exception}")
+        pytest.skip(f"{args[0]} --format json failed (exit {result.exit_code})")
     return extract_json_object(result.output, context=f"{args[0]} output")
 
 
 class TestCheckJsonEnvelope:
-    """check --json wraps output in success envelope."""
+    """check --format json wraps output in success envelope."""
 
     def test_check_json_has_status_ok(self: object, monkeypatch: pytest.MonkeyPatch) -> None:
-        """polylogue check --json output has status: ok."""
-        parsed = _invoke_json_command(["doctor", "--json"], monkeypatch)
+        """polylogue check --format json output has status: ok."""
+        parsed = _invoke_json_command(["doctor", "--format", "json"], monkeypatch)
         assert parsed is not None
         assert parsed["status"] == "ok"
         assert "result" in parsed
 
 
 class TestTagsJsonEnvelope:
-    """tags --json wraps output in success envelope."""
+    """tags --format json wraps output in success envelope."""
 
     def test_tags_json_has_status_ok(self: object, monkeypatch: pytest.MonkeyPatch) -> None:
-        """polylogue tags --json output has status: ok."""
-        parsed = _invoke_json_command(["tags", "--json"], monkeypatch)
+        """polylogue tags --format json output has status: ok."""
+        parsed = _invoke_json_command(["tags", "--format", "json"], monkeypatch)
         assert parsed is not None
         assert parsed["status"] == "ok"
         assert "result" in parsed
@@ -132,9 +132,9 @@ class TestQueryShapedJsonMatrix:
     @pytest.mark.parametrize(
         "args",
         [
-            ["neighbors", "--query", "__polylogue_json_contract_probe__", "--json"],
-            ["insights", "status", "--json"],
-            ["schema", "list", "--json"],
+            ["neighbors", "--query", "__polylogue_json_contract_probe__", "--format", "json"],
+            ["insights", "status", "--format", "json"],
+            ["schema", "list", "--format", "json"],
         ],
     )
     def test_json_alias_uses_success_envelope(self, args: list[str], monkeypatch: pytest.MonkeyPatch) -> None:
