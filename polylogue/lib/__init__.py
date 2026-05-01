@@ -8,7 +8,7 @@ bridge, repository, and archive statistics live on more precise modules.
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from polylogue.lib.attachment.models import Attachment
+    from polylogue.archive.attachment.models import Attachment
     from polylogue.lib.conversation.branch_type import BranchType
     from polylogue.lib.conversation.models import Conversation
     from polylogue.lib.message.messages import MessageCollection
@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 
 def __getattr__(name: str) -> object:
     lazy_exports = {
-        "Attachment": ("polylogue.lib.attachment.models", "Attachment"),
+        "Attachment": ("polylogue.archive.attachment.models", "Attachment"),
         "BranchType": ("polylogue.lib.conversation.branch_type", "BranchType"),
         "ContentKind": ("polylogue.lib.semantic.content_projection", "ContentKind"),
         "ContentProjectionSpec": ("polylogue.lib.semantic.content_projection", "ContentProjectionSpec"),

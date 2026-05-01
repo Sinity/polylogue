@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from polylogue.lib.attachment.models import Attachment
+from polylogue.archive.attachment.models import Attachment
 from polylogue.lib.roles import Role
 from polylogue.lib.semantic.content_projection import (
     ContentProjectionSpec,
