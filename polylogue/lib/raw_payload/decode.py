@@ -8,7 +8,7 @@ from typing import Literal, TypeAlias
 
 import orjson
 
-from polylogue.lib.artifact_taxonomy import (
+from polylogue.archive.artifact_taxonomy import (
     ArtifactClassification,
     classify_artifact,
 )

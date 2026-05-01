@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 from datetime import datetime, timezone
 
-from polylogue.lib.artifact_taxonomy import ArtifactKind, classify_artifact_path
+from polylogue.archive.artifact_taxonomy import ArtifactKind, classify_artifact_path
 from polylogue.lib.raw_payload import JSONValue, RawPayloadEnvelope, build_raw_payload_envelope
 from polylogue.schemas.observation import derive_bundle_scope, schema_cluster_id
 from polylogue.schemas.packages import SchemaResolution
