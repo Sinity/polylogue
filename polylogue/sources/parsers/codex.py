@@ -12,7 +12,7 @@ from datetime import datetime
 
 from pydantic import ValidationError
 
-from polylogue.lib.conversation.branch_type import BranchType
+from polylogue.archive.conversation.branch_type import BranchType
 from polylogue.lib.roles import Role
 from polylogue.lib.timestamps import format_timestamp, parse_timestamp
 from polylogue.logging import get_logger

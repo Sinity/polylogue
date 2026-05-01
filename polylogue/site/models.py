@@ -11,7 +11,7 @@ from polylogue.products.authored_payloads import PayloadDict
 from polylogue.types import SearchProvider
 
 if TYPE_CHECKING:
-    from polylogue.lib.conversation.models import ConversationSummary
+    from polylogue.archive.conversation.models import ConversationSummary
 
 logger = get_logger(__name__)
 

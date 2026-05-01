@@ -105,6 +105,52 @@ files:
     target: polylogue/archive/attachment/models.py
     owner: archive-attachment
     reason: archive-domain semantics
+  - path: polylogue/archive/conversation/__init__.py
+    loc: 0
+    target: polylogue/archive/conversation/__init__.py
+    owner: archive-conversation
+    reason: archive-domain semantics
+  - path: polylogue/archive/conversation/attribution.py
+    loc: 278
+    target: polylogue/archive/conversation/attribution.py
+    owner: archive-conversation
+    reason: archive-domain semantics
+  - path: polylogue/archive/conversation/branch_type.py
+    loc: 20
+    target: polylogue/archive/conversation/branch_type.py
+    owner: archive-conversation
+    reason: archive-domain semantics
+  - path: polylogue/archive/conversation/extraction.py
+    loc: 513
+    target: polylogue/archive/conversation/extraction.py
+    owner: archive-conversation
+    reason: archive-domain semantics
+  - path: polylogue/archive/conversation/models.py
+    loc: 63
+    target: polylogue/archive/conversation/models.py
+    owner: archive-conversation
+    reason: archive-domain semantics
+  - path: polylogue/archive/conversation/neighbor_candidates.py
+    loc: 567
+    target: polylogue/archive/conversation/neighbor_candidates.py
+    owner: archive-conversation
+    reason: archive-domain semantics
+  - path: polylogue/archive/conversation/runtime.py
+    loc: 231
+    target: polylogue/archive/conversation/runtime.py
+    owner: archive-conversation
+    reason: archive-domain semantics
+  - path: polylogue/archive/conversation/summary_runtime.py
+    loc: 85
+    target: polylogue/archive/conversation/summary_runtime.py
+    owner: archive-conversation
+    reason: archive-domain semantics
+    cross_cut: { lifecycle: runtime }
+  - path: polylogue/archive/conversation/threads.py
+    loc: 313
+    target: polylogue/archive/conversation/threads.py
+    owner: archive-conversation
+    reason: archive-domain semantics
   - path: polylogue/archive/filter/__init__.py
     loc: 0
     target: polylogue/archive/filter/__init__.py
@@ -680,43 +726,6 @@ files:
     target: polylogue/lib/__init__.py
     owner: lib-root
     reason: lib-root primitive
-  - path: polylogue/lib/conversation/__init__.py
-    loc: 0
-    target: polylogue/lib/conversation/__init__.py
-    owner: stable
-  - path: polylogue/lib/conversation/attribution.py
-    loc: 278
-    target: polylogue/lib/conversation/attribution.py
-    owner: stable
-  - path: polylogue/lib/conversation/branch_type.py
-    loc: 20
-    target: polylogue/lib/conversation/branch_type.py
-    owner: stable
-  - path: polylogue/lib/conversation/extraction.py
-    loc: 513
-    target: polylogue/lib/conversation/extraction.py
-    owner: stable
-  - path: polylogue/lib/conversation/models.py
-    loc: 63
-    target: polylogue/lib/conversation/models.py
-    owner: stable
-  - path: polylogue/lib/conversation/neighbor_candidates.py
-    loc: 567
-    target: polylogue/lib/conversation/neighbor_candidates.py
-    owner: stable
-  - path: polylogue/lib/conversation/runtime.py
-    loc: 231
-    target: polylogue/lib/conversation/runtime.py
-    owner: stable
-  - path: polylogue/lib/conversation/summary_runtime.py
-    loc: 85
-    target: polylogue/lib/conversation/summary_runtime.py
-    owner: stable
-    cross_cut: { lifecycle: runtime }
-  - path: polylogue/lib/conversation/threads.py
-    loc: 313
-    target: polylogue/lib/conversation/threads.py
-    owner: stable
   - path: polylogue/lib/coverage.py
     loc: 125
     target: polylogue/lib/coverage.py

@@ -8,8 +8,8 @@ from typing import TypeAlias
 
 from pydantic import ValidationError
 
+from polylogue.archive.conversation.branch_type import BranchType
 from polylogue.archive.message.types import MessageType
-from polylogue.lib.conversation.branch_type import BranchType
 from polylogue.lib.roles import Role
 from polylogue.logging import get_logger
 from polylogue.pipeline.semantic_capture import detect_context_compaction

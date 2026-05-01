@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from polylogue.lib.conversation.branch_type import BranchType
+from polylogue.archive.conversation.branch_type import BranchType
 from polylogue.lib.tail_overlay import TailOverlayInfo, tail_overlay_from_provider_meta
 from polylogue.types import ConversationId
 

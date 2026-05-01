@@ -6,7 +6,7 @@ import builtins
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
-from polylogue.lib.conversation.models import Conversation
+from polylogue.archive.conversation.models import Conversation
 from polylogue.lib.json import JSONDocument, JSONValue
 from polylogue.lib.payload_coercion import string_sequence
 from polylogue.storage.backends.queries import conversations as conversations_q

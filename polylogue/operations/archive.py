@@ -9,10 +9,10 @@ from typing import TYPE_CHECKING, TypeVar, cast
 
 import structlog
 
+from polylogue.archive.conversation.models import ConversationSummary
 from polylogue.archive.query.spec import ConversationQuerySpec
 from polylogue.archive.semantic.content_projection import ContentProjectionSpec, project_message_content
 from polylogue.config import ConfigError
-from polylogue.lib.conversation.models import ConversationSummary
 from polylogue.lib.pricing import CostUsagePayload, _normalize_model, estimate_conversation_cost, generated_at
 from polylogue.maintenance.targets import build_maintenance_target_catalog
 from polylogue.paths.sanitize import conversation_render_root
@@ -84,12 +84,12 @@ _PROFILE_FTS_STATUS_BY_TIER: dict[str, SessionProductReadyFlag] = {
 }
 
 if TYPE_CHECKING:
+    from polylogue.archive.conversation.models import Conversation
+    from polylogue.archive.conversation.neighbor_candidates import ConversationNeighborCandidate
     from polylogue.archive.message.models import Message
     from polylogue.archive.message.roles import MessageRoleFilter
     from polylogue.archive.query.miss_diagnostics import QueryMissDiagnostics
     from polylogue.config import Config
-    from polylogue.lib.conversation.models import Conversation
-    from polylogue.lib.conversation.neighbor_candidates import ConversationNeighborCandidate
     from polylogue.lib.search_hits import ConversationSearchHit
     from polylogue.lib.stats import ArchiveStats as StorageArchiveStats
     from polylogue.storage.backends.async_sqlite import SQLiteBackend
@@ -353,7 +353,7 @@ class ArchiveSearchMixin:
         limit: int = 10,
         window_hours: int = 24,
     ) -> list[ConversationNeighborCandidate]:
-        from polylogue.lib.conversation.neighbor_candidates import (
+        from polylogue.archive.conversation.neighbor_candidates import (
             NeighborDiscoveryRequest,
             discover_neighbor_candidates,
         )

@@ -12,8 +12,8 @@ from polylogue.archive.message.messages import MessageCollection
 from polylogue.lib.roles import Role
 
 if TYPE_CHECKING:
+    from polylogue.archive.conversation.models import Conversation
     from polylogue.archive.message.models import Message
-    from polylogue.lib.conversation.models import Conversation
 
 
 class ContentKind(str, Enum):
