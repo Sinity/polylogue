@@ -16,8 +16,8 @@ from polylogue.types import Provider
 if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP
 
+    from polylogue.archive.message.models import Message
     from polylogue.lib.conversation.models import Conversation
-    from polylogue.lib.message.models import Message
     from polylogue.mcp.server_support import ServerCallbacks
 
 

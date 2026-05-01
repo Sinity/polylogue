@@ -6,9 +6,9 @@ import asyncio
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
+from polylogue.archive.message.models import Message
+from polylogue.archive.message.roles import MessageRoleFilter
 from polylogue.lib.conversation.models import Conversation, ConversationSummary
-from polylogue.lib.message.models import Message
-from polylogue.lib.message.roles import MessageRoleFilter
 from polylogue.storage.archive_views import ConversationRenderProjection
 from polylogue.storage.hydrators import (
     conversation_from_records,

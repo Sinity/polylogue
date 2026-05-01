@@ -6,6 +6,7 @@ from collections.abc import Sequence
 from datetime import datetime
 from typing import TYPE_CHECKING, Protocol, TypeVar
 
+from polylogue.archive.message.types import MessageType
 from polylogue.archive.query.runtime_matching import (
     matches_action_sequence,
     matches_action_terms,
@@ -14,7 +15,6 @@ from polylogue.archive.query.runtime_matching import (
     matches_tool_terms,
 )
 from polylogue.archive.query.support import conversation_has_branches, provider_values
-from polylogue.lib.message.types import MessageType
 
 if TYPE_CHECKING:
     from polylogue.archive.query.plan import ConversationQueryPlan

@@ -6,7 +6,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Self
 
 if TYPE_CHECKING:
-    from polylogue.lib.message.models import Message
+    from polylogue.archive.message.models import Message
 
 MessagePredicate = Callable[["Message"], bool]
 MessageTransform = Callable[["Message"], "Message"]
