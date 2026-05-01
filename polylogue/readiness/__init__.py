@@ -541,7 +541,7 @@ def _build_source_readiness_checks(config: Config) -> list[ReadinessCheck]:
 def _build_schema_readiness_checks() -> list[ReadinessCheck]:
     checks: list[ReadinessCheck] = []
     try:
-        from polylogue.lib.provider_identity import CORE_SCHEMA_PROVIDERS
+        from polylogue.core.provider_identity import CORE_SCHEMA_PROVIDERS
         from polylogue.schemas.registry import SchemaRegistry
 
         registry = SchemaRegistry()
