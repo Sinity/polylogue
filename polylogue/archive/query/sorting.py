@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Protocol, TypeAlias, TypeVar
 if TYPE_CHECKING:
     from polylogue.lib.models import Conversation, ConversationSummary
 
-from polylogue.lib.filter.types import SortField
+from polylogue.archive.filter.types import SortField
 
 _T = TypeVar("_T")
 SortKey: TypeAlias = datetime | float | int | str

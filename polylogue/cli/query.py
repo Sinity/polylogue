@@ -39,10 +39,10 @@ from polylogue.surfaces.payloads import ConversationListRowPayload
 logger = get_logger(__name__)
 
 if TYPE_CHECKING:
+    from polylogue.archive.filter.filters import ConversationFilter
     from polylogue.archive.query.miss_diagnostics import QueryMissDiagnostics
     from polylogue.archive.query.spec import ConversationQuerySpec
     from polylogue.config import Config
-    from polylogue.lib.filter.filters import ConversationFilter
     from polylogue.lib.models import Conversation, ConversationSummary
     from polylogue.lib.search_hits import ConversationSearchHit
     from polylogue.protocols import (

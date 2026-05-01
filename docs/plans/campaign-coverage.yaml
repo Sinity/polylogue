@@ -10,7 +10,7 @@ mutation_campaigns:
   - name: filters
     description: Filter chain mutation testing
     paths_to_mutate:
-      - polylogue/lib/filters.py
+      - polylogue/archive/filter/filters.py
     tests:
       - tests/unit/core/test_filters_props.py
     status: active

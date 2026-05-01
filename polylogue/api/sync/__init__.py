@@ -27,7 +27,7 @@ from polylogue.api.sync.products import SyncProductQueriesMixin
 
 if TYPE_CHECKING:
     from polylogue.api import Polylogue
-    from polylogue.lib.filter.filters import ConversationFilter
+    from polylogue.archive.filter.filters import ConversationFilter
 
 T = TypeVar("T")
 

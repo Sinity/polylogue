@@ -57,7 +57,7 @@ debugging landmarks. For the conceptual system shape, see
 `Provider` enum variant in `types.py`. Add a provider schema bundle under
 `schemas/providers/`.
 
-**Adding a filter**: Filter chain: `lib/filters.py`. If the filter
+**Adding a filter**: Filter chain: `archive/filter/filters.py`. If the filter
 needs a stats-table join, update `_needs_stats_join()` in
 `storage/backends/connection.py`. Add the corresponding CLI flag in
 `cli/query.py` and MCP parameter in `mcp/`.
@@ -79,7 +79,7 @@ Run `devtools render-all` to update the generated catalog in
 
 Cross-check adjacent surfaces after changes:
 
-- query: `cli/query*.py` ↔ `lib/filters.py` ↔ `storage/search*.py`
+- query: `cli/query*.py` ↔ `archive/filter/filters.py` ↔ `storage/search*.py`
 - pipeline: `cli/commands/run.py` ↔ `pipeline/` ↔ `storage/` ↔ `products/`
 - maintenance: `cli/commands/check.py` ↔ `storage/repair.py` ↔ `health.py`
 - publication: `rendering/` ↔ `site/` ↔ `showcase/`

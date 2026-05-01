@@ -10,9 +10,9 @@ import click
 from polylogue.cli.query_contracts import QueryMutationSpec, result_date, result_id, result_provider, result_title
 
 if TYPE_CHECKING:
+    from polylogue.archive.filter.filters import ConversationFilter
     from polylogue.archive.query.spec import ConversationQuerySpec
     from polylogue.cli.shared.types import AppEnv
-    from polylogue.lib.filter.filters import ConversationFilter
     from polylogue.lib.models import Conversation, ConversationSummary
     from polylogue.protocols import ConversationQueryRuntimeStore, TagStore
 
