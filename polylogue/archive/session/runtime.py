@@ -51,7 +51,7 @@ def build_session_profile(
     *,
     analysis: SessionAnalysis | None = None,
 ) -> SessionProfile:
-    from polylogue.lib.pricing import harmonize_session_cost
+    from polylogue.archive.semantic.pricing import harmonize_session_cost
 
     session_analysis = analysis or build_session_analysis(conversation)
     facts = session_analysis.facts
