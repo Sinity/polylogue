@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from polylogue.archive.phase.extraction import SessionPhase
 from polylogue.lib.conversation.extraction import WorkEvent
 from polylogue.lib.hashing import hash_text
-from polylogue.lib.phase.extraction import SessionPhase
 from polylogue.lib.session.documents import WorkEventDocument
 from polylogue.lib.session.session_profile import SessionProfile
 from polylogue.products.archive_models import (

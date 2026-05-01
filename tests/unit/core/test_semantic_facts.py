@@ -7,12 +7,12 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.archive.phase.extraction import SessionPhase
+from polylogue.archive.phase.extraction import extract_phases as phase_extract_phases
 from polylogue.lib.conversation import extraction as work_event_extraction
 from polylogue.lib.message.messages import MessageCollection
 from polylogue.lib.models import Conversation as ConversationModel
 from polylogue.lib.models import ConversationSummary
-from polylogue.lib.phase.extraction import SessionPhase
-from polylogue.lib.phase.extraction import extract_phases as phase_extract_phases
 from polylogue.lib.pricing import harmonize_session_cost
 from polylogue.lib.semantic.facts import (
     ConversationSemanticFacts,

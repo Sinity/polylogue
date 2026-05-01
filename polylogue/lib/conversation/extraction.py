@@ -9,6 +9,7 @@ from datetime import date, datetime
 from enum import Enum
 from typing import TYPE_CHECKING, TypeAlias
 
+from polylogue.archive.phase.extraction import SessionPhase, extract_phases
 from polylogue.lib.payload_coercion import (
     coerce_float,
     coerce_int,
@@ -16,7 +17,6 @@ from polylogue.lib.payload_coercion import (
     optional_datetime,
     string_sequence,
 )
-from polylogue.lib.phase.extraction import SessionPhase, extract_phases
 from polylogue.lib.semantic.facts import (
     ConversationSemanticFacts,
     MessageSemanticFacts,
