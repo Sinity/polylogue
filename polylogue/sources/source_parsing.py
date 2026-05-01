@@ -6,8 +6,8 @@ import json
 import zipfile
 from collections.abc import Iterable
 
+from polylogue.archive.artifact_taxonomy import classify_artifact_path
 from polylogue.config import Source
-from polylogue.lib.artifact_taxonomy import classify_artifact_path
 from polylogue.logging import get_logger
 from polylogue.storage.blob_store import get_blob_store
 from polylogue.storage.cursor_state import CursorStatePayload
