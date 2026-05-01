@@ -327,7 +327,7 @@ class TestPolylogueReadSurfaces:
         assert await archive.get_messages_paginated("missing-read-api") == ([], 0)
 
     @pytest.mark.asyncio
-    async def test_get_raw_records_resolves_id_and_handles_missing(self: object, tmp_path: Path) -> None:
+    async def test_get_raw_artifacts_resolves_id_and_handles_missing(self: object, tmp_path: Path) -> None:
         archive = _archive(tmp_path)
         repository = archive.repository
 
@@ -354,14 +354,14 @@ class TestPolylogueReadSurfaces:
             [],
         )
 
-        records, total = await archive.get_raw_records_for_conversation("conv-raw-api")
-        missing_records, missing_total = await archive.get_raw_records_for_conversation("missing")
+        artifacts, total = await archive.get_raw_artifacts_for_conversation("conv-raw-api")
+        missing_artifacts, missing_total = await archive.get_raw_artifacts_for_conversation("missing")
 
         assert total == 1
-        assert records[0]["raw_id"] == "raw-read-api"
-        assert records[0]["provider_name"] == "codex"
-        assert records[0]["blob_size"] == 99
-        assert missing_records == []
+        assert artifacts[0]["raw_id"] == "raw-read-api"
+        assert artifacts[0]["provider_name"] == "codex"
+        assert artifacts[0]["blob_size"] == 99
+        assert missing_artifacts == []
         assert missing_total == 0
 
     @pytest.mark.asyncio

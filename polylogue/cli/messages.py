@@ -106,14 +106,14 @@ def run_raw(
 
     async def _run() -> None:
         async with Polylogue.open(config=cast(Config, request.params.get("_config"))) as api:
-            records, total = await api.get_raw_records_for_conversation(
+            artifacts, total = await api.get_raw_artifacts_for_conversation(
                 conversation_id,
                 limit=limit,
                 offset=offset,
             )
 
-            if not records:
-                env.ui.error(f"No raw records found for conversation: {conversation_id}")
+            if not artifacts:
+                env.ui.error(f"No raw artifacts found for conversation: {conversation_id}")
                 return
 
             if output_format == "json":
@@ -121,14 +121,14 @@ def run_raw(
 
                 payload = {
                     "conversation_id": conversation_id,
-                    "records": [
+                    "artifacts": [
                         {
                             "raw_id": r.get("raw_id", ""),
                             "provider_name": r.get("provider_name", ""),
                             "source_path": r.get("source_path", ""),
                             "blob_size": r.get("blob_size", 0),
                         }
-                        for r in records
+                        for r in artifacts
                     ],
                     "total": total,
                     "limit": limit,
@@ -138,7 +138,7 @@ def run_raw(
             else:
                 import yaml
 
-                env.ui.print(yaml.dump(records))
+                env.ui.print(yaml.dump(artifacts))
 
     run_coroutine_sync(_run())
 

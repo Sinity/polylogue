@@ -272,8 +272,8 @@ class MCPMessagesListPayload(SurfacePayloadModel):
     offset: int
 
 
-class MCPRawRecordPayload(SurfacePayloadModel):
-    """One raw conversation record for raw_records tool."""
+class MCPRawArtifactPayload(SurfacePayloadModel):
+    """One raw archive artifact for the raw_artifacts tool."""
 
     raw_id: str
     provider_name: str
@@ -288,7 +288,7 @@ class MCPRawRecordPayload(SurfacePayloadModel):
     validation_error: str | None = None
 
     @classmethod
-    def from_record(cls, record: RawConversationRecord) -> MCPRawRecordPayload:
+    def from_record(cls, record: RawConversationRecord) -> MCPRawArtifactPayload:
         return cls(
             raw_id=record.raw_id,
             provider_name=record.provider_name,
@@ -304,11 +304,11 @@ class MCPRawRecordPayload(SurfacePayloadModel):
         )
 
 
-class MCPRawRecordsListPayload(SurfacePayloadModel):
-    """Paginated raw records list response for raw_records tool."""
+class MCPRawArtifactsListPayload(SurfacePayloadModel):
+    """Paginated raw archive artifact response for the raw_artifacts tool."""
 
     conversation_id: str
-    raw_records: tuple[MCPRawRecordPayload, ...]
+    raw_artifacts: tuple[MCPRawArtifactPayload, ...]
     total: int
     limit: int
     offset: int
@@ -390,8 +390,8 @@ __all__ = [
     "MCPMutationStatusPayload",
     "MCPQueryMissDiagnosticsPayload",
     "MCPQueryMissReasonPayload",
-    "MCPRawRecordPayload",
-    "MCPRawRecordsListPayload",
+    "MCPRawArtifactPayload",
+    "MCPRawArtifactsListPayload",
     "MCPReadinessCheckPayload",
     "MCPReadinessReportPayload",
     "MCPRootPayload",
