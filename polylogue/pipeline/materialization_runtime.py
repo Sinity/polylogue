@@ -11,8 +11,8 @@ from polylogue.archive.conversation.branch_type import BranchType
 from polylogue.archive.message.paste_detection import detect_paste
 from polylogue.archive.message.types import MessageType
 from polylogue.archive.viewport.viewports import ToolCategory, classify_tool
-from polylogue.lib.json import JSONDocument, json_document
-from polylogue.lib.json import dumps as json_dumps
+from polylogue.core.json import JSONDocument, json_document
+from polylogue.core.json import dumps as json_dumps
 from polylogue.lib.roles import Role
 from polylogue.pipeline.ids import (
     attachment_content_id,

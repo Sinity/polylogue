@@ -5,7 +5,7 @@ from pathlib import Path
 
 from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.config import Config, Source
-from polylogue.lib.json import JSONDocument, dumps
+from polylogue.core.json import JSONDocument, dumps
 
 RUN_STAGE_CHOICES: tuple[str, ...] = (
     "acquire",

@@ -11,7 +11,7 @@ import click
 from polylogue.archive.provider.capabilities import iter_provider_capabilities
 from polylogue.artifacts.graph import ArtifactGraph, build_artifact_graph
 from polylogue.cli.command_inventory import CommandPath, iter_command_paths
-from polylogue.lib.json import JSONDocument, json_document, json_document_list, require_json_value
+from polylogue.core.json import JSONDocument, json_document, json_document_list, require_json_value
 from polylogue.maintenance.targets import MaintenanceTargetCatalog, build_maintenance_target_catalog
 from polylogue.operations import build_declared_operation_catalog
 from polylogue.products.registry import PRODUCT_REGISTRY

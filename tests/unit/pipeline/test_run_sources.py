@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from polylogue.config import Config, Source
-from polylogue.lib.json import JSONDocument, JSONValue
+from polylogue.core.json import JSONDocument, JSONValue
 from polylogue.pipeline.payload_types import IngestDiagnostics, MaterializeStageObservation
 from polylogue.pipeline.run_stages import (
     IndexStageOutcome,

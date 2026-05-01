@@ -13,7 +13,7 @@ from polylogue.archive.provider.semantics import (
     extract_tool_calls,
 )
 from polylogue.archive.viewport.viewports import CostInfo
-from polylogue.lib.json import JSONDocument, json_document
+from polylogue.core.json import JSONDocument, json_document
 from polylogue.lib.roles import Role
 from polylogue.lib.timestamps import parse_timestamp
 from polylogue.schemas.pinning import load_pins, resolve_pinned_paths

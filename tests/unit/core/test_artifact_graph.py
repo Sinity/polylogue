@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from polylogue.artifacts import build_runtime_artifact_nodes, build_runtime_artifact_paths
 from polylogue.artifacts.graph import ArtifactLayer, build_artifact_graph
-from polylogue.lib.json import JSONDocument, JSONDocumentList, json_document_list
+from polylogue.core.json import JSONDocument, JSONDocumentList, json_document_list
 from polylogue.maintenance.targets import MAINTENANCE_TARGET_NAMES
 from polylogue.operations import OperationKind, build_runtime_operation_catalog
 

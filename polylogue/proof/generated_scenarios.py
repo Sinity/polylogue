@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-from polylogue.lib.json import JSONDocument, require_json_value
+from polylogue.core.json import JSONDocument, require_json_value
 from polylogue.proof.models import SourceSpan, SubjectRef
 
 ScenarioFamilyStatus = Literal["implemented", "migration_task"]

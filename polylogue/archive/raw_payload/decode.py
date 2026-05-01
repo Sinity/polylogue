@@ -13,7 +13,7 @@ from polylogue.archive.artifact_taxonomy import (
     classify_artifact,
 )
 from polylogue.archive.raw_payload.streams import raw_line_stream
-from polylogue.lib.json import JSONDocument, JSONValue, is_json_value, loads
+from polylogue.core.json import JSONDocument, JSONValue, is_json_value, loads
 from polylogue.sources.dispatch import detect_provider
 from polylogue.types import Provider
 

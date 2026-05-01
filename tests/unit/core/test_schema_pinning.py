@@ -4,7 +4,7 @@ from typing import cast
 
 import pytest
 
-from polylogue.lib.json import JSONDocument
+from polylogue.core.json import JSONDocument
 from polylogue.schemas.pinning import PinDecision, PinSet, apply_pins_to_schema, resolve_pinned_paths
 
 

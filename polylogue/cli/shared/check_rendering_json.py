@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from polylogue.cli.shared.machine_errors import emit_success
-from polylogue.lib.json import json_document
+from polylogue.core.json import json_document
 
 from .check_models import CheckCommandResult
 from .check_workflow import CheckCommandOptions

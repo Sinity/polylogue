@@ -12,7 +12,7 @@ import json
 import sys
 from pathlib import Path
 
-from polylogue.lib.json import dumps as json_dumps
+from polylogue.core.json import dumps as json_dumps
 from polylogue.proof.witnesses import (
     LOCAL_WITNESS_INBOX,
     WITNESS_SCHEMA_VERSION,

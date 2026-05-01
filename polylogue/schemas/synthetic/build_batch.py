@@ -5,7 +5,7 @@ from __future__ import annotations
 import random
 from typing import Protocol
 
-from polylogue.lib.json import JSONValue, is_json_value
+from polylogue.core.json import JSONValue, is_json_value
 from polylogue.schemas.synthetic.models import (
     SchemaRecord,
     SyntheticArtifact,

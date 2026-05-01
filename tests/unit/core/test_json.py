@@ -19,7 +19,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from polylogue.lib import json as core_json
+from polylogue.core import json as core_json
 from polylogue.lib.provider_identity import normalize_provider_token
 from polylogue.types import AttachmentId, ContentHash, ConversationId, MessageId, Provider
 

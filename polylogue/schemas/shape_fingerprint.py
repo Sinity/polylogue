@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import TypeAlias
 
-from polylogue.lib.json import JSONDocument
+from polylogue.core.json import JSONDocument
 from polylogue.schemas.field_stats.stats import is_dynamic_key
 
 _FINGERPRINT_MAX_DEPTH = 8

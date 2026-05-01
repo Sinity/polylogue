@@ -6,8 +6,8 @@ from collections.abc import AsyncIterator
 
 import aiosqlite
 
-from polylogue.lib.json import JSONDocument, json_document
-from polylogue.lib.json import dumps as json_dumps
+from polylogue.core.json import JSONDocument, json_document
+from polylogue.core.json import dumps as json_dumps
 from polylogue.storage.backends.connection import _build_source_scope_filter
 from polylogue.storage.backends.queries.mappers import _parse_json
 

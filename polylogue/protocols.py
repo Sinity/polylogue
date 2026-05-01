@@ -13,7 +13,7 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
-from polylogue.lib.json import JSONDocument, JSONValue
+from polylogue.core.json import JSONDocument, JSONValue
 from polylogue.types import Provider, ValidationMode, ValidationStatus
 
 if TYPE_CHECKING:

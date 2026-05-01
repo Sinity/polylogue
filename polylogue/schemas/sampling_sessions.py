@@ -7,7 +7,7 @@ from collections.abc import Iterator
 from datetime import datetime, timezone
 from pathlib import Path
 
-from polylogue.lib.json import JSONDocument, json_document, loads
+from polylogue.core.json import JSONDocument, json_document, loads
 from polylogue.schemas.observation import ProviderConfig, extract_schema_units_from_payload
 from polylogue.schemas.observation_models import SchemaUnit
 from polylogue.types import Provider

@@ -15,7 +15,7 @@ from polylogue.archive.viewport.viewports import (
     TokenUsage,
     ToolCall,
 )
-from polylogue.lib.json import json_document
+from polylogue.core.json import json_document
 from polylogue.lib.roles import Role
 from polylogue.lib.timestamps import parse_timestamp
 from polylogue.types import Provider

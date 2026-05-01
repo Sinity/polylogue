@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal, cast
 
-from polylogue.lib.json import JSONDocument, loads, require_json_document
+from polylogue.core.json import JSONDocument, loads, require_json_document
 
 WITNESS_SCHEMA_VERSION = 1
 LOCAL_WITNESS_INBOX = Path(".local/witnesses/new")

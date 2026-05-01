@@ -8,7 +8,7 @@ import sys
 import pytest
 
 from devtools.query_memory_budget import _read_vm_rss_kb, main, run_memory_budget
-from polylogue.lib.json import json_document
+from polylogue.core.json import json_document
 
 
 def test_read_vm_rss_kb_missing_pid_returns_zero() -> None:

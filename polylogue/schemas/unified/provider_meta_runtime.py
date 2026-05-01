@@ -7,7 +7,7 @@ from datetime import datetime
 
 from pydantic import ValidationError
 
-from polylogue.lib.json import JSONDocument, json_document
+from polylogue.core.json import JSONDocument, json_document
 from polylogue.schemas.unified.adapters import extract_with_adapter
 from polylogue.schemas.unified.fallbacks import extract_fallback_message
 from polylogue.schemas.unified.models import HarmonizedMessage

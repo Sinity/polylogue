@@ -6,7 +6,7 @@ import time
 from typing import TYPE_CHECKING
 
 from polylogue.config import Config
-from polylogue.lib.json import JSONDocument, JSONValue, json_document
+from polylogue.core.json import JSONDocument, JSONValue, json_document
 from polylogue.lib.metrics import PipelineMetrics
 from polylogue.logging import get_logger
 from polylogue.pipeline.payload_types import SiteBuildOptions

@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
-from polylogue.lib.json import JSONDocument
+from polylogue.core.json import JSONDocument
 from polylogue.schemas.generation.models import GenerationResult
 from polylogue.schemas.operator.inference import (
     audit_schemas,

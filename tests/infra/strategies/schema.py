@@ -9,7 +9,7 @@ from typing import TypeAlias
 
 from hypothesis import strategies as st
 
-from polylogue.lib.json import JSONDocument
+from polylogue.core.json import JSONDocument
 from tests.infra.strategies.sources import json_document_strategy
 
 JSONRecord: TypeAlias = dict[str, object]

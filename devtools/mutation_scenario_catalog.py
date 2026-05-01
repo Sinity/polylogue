@@ -51,7 +51,7 @@ MUTATION_CAMPAIGNS: dict[str, MutationCampaign] = {
     "json": MutationCampaign(
         name="json",
         description="JSON serialization and parser laws",
-        paths_to_mutate=("polylogue/lib/json.py",),
+        paths_to_mutate=("polylogue/core/json.py",),
         tests=("tests/unit/core/test_json.py",),
     ),
     "hybrid": MutationCampaign(

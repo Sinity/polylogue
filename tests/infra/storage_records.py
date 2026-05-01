@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Final, TypeAlias, cast
 from uuid import uuid4
 
 from polylogue.archive.conversation.branch_type import BranchType
-from polylogue.lib.json import dumps, require_json_document, require_json_value
+from polylogue.core.json import dumps, require_json_document, require_json_value
 from polylogue.lib.roles import Role
 from polylogue.pipeline.prepare import _timestamp_sort_key
 from polylogue.storage.backends.connection import connection_context, open_connection

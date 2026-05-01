@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from polylogue.lib.json import JSONDocument, require_json_value
+from polylogue.core.json import JSONDocument, require_json_value
 from polylogue.types import Provider
 
 

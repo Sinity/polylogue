@@ -13,7 +13,7 @@ from tenacity import (
 )
 from typing_extensions import TypedDict
 
-from polylogue.lib.json import JSONDocument, JSONDocumentList
+from polylogue.core.json import JSONDocument, JSONDocumentList
 from polylogue.logging import get_logger
 
 from .types import (

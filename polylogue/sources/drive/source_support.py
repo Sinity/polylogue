@@ -4,7 +4,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import TypeAlias
 
-from polylogue.lib.json import JSONValue, loads
+from polylogue.core.json import JSONValue, loads
 from polylogue.logging import get_logger
 
 from .gateway import DriveListFilesResponse, DrivePayloadRecord

@@ -10,7 +10,7 @@ except ImportError:
     SchemaBuilder = None
     GENSON_AVAILABLE = False
 
-from polylogue.lib.json import JSONDocument, json_document, json_document_list
+from polylogue.core.json import JSONDocument, json_document, json_document_list
 from polylogue.schemas.field_stats.stats import is_dynamic_key
 
 _HIGH_CARDINALITY_KEY_THRESHOLD = 128

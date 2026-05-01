@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Self
 
-from polylogue.lib.json import JSONDocument, JSONValue, require_json_document
+from polylogue.core.json import JSONDocument, JSONValue, require_json_document
 
 
 class ObservableEventName(str, Enum):

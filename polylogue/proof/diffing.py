@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from polylogue.lib.json import JSONDocument
+from polylogue.core.json import JSONDocument
 from polylogue.operations import OperationSpec, build_declared_operation_catalog
 from polylogue.proof.catalog import VerificationCatalog, build_verification_catalog
 from polylogue.proof.models import ProofObligation, SubjectRef

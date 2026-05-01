@@ -9,7 +9,7 @@ from functools import cached_property
 from typing import TYPE_CHECKING
 
 from polylogue.archive.attachment.models import Attachment
-from polylogue.lib.json import JSONDocument, json_document, json_document_list
+from polylogue.core.json import JSONDocument, json_document, json_document_list
 from polylogue.lib.roles import Role
 from polylogue.logging import get_logger
 from polylogue.types import Provider

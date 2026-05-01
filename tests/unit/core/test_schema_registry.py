@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 from jsonschema import Draft202012Validator
 
-from polylogue.lib.json import JSONDocument, JSONDocumentList, json_document, json_document_list
+from polylogue.core.json import JSONDocument, JSONDocumentList, json_document, json_document_list
 from polylogue.schemas.registry import (
     ClusterManifest,
     PropertyChange,

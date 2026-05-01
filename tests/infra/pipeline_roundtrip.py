@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from polylogue.archive.conversation.models import Conversation
-from polylogue.lib.json import JSONValue, loads
+from polylogue.core.json import JSONValue, loads
 from polylogue.pipeline.prepare_models import TransformResult
 from polylogue.pipeline.prepare_transform import transform_to_records
 from polylogue.sources.dispatch import detect_provider, parse_payload

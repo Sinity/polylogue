@@ -6,7 +6,7 @@ from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 from typing import TypeAlias
 
-from polylogue.lib.json import JSONDocument, json_document
+from polylogue.core.json import JSONDocument, json_document
 from polylogue.schemas.field_stats.stats import _collect_field_stats
 from polylogue.schemas.generation.support import (
     GENSON_AVAILABLE,

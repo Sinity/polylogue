@@ -12,7 +12,7 @@ import ast
 import sys
 from pathlib import Path
 
-from polylogue.lib.json import dumps
+from polylogue.core.json import dumps
 
 
 def build_parser() -> argparse.ArgumentParser:
