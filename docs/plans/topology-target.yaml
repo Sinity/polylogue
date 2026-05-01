@@ -516,11 +516,11 @@ files:
     target: polylogue/cli/bulk_export.py
     owner: stable
   - path: polylogue/cli/click_app.py
-    loc: 193
+    loc: 191
     target: polylogue/cli/click_app.py
     owner: stable
   - path: polylogue/cli/click_command_registration.py
-    loc: 58
+    loc: 55
     target: polylogue/cli/click_command_registration.py
     owner: stable
   - path: polylogue/cli/click_option_groups.py
@@ -564,15 +564,11 @@ files:
     target: polylogue/cli/commands/export.py
     owner: stable
   - path: polylogue/cli/commands/insights.py
-    loc: 309
+    loc: 298
     target: polylogue/cli/commands/insights.py
     owner: stable
-  - path: polylogue/cli/commands/mcp.py
-    loc: 41
-    target: polylogue/cli/commands/mcp.py
-    owner: stable
   - path: polylogue/cli/commands/neighbors.py
-    loc: 101
+    loc: 99
     target: polylogue/cli/commands/neighbors.py
     owner: stable
   - path: polylogue/cli/commands/reset.py
@@ -580,19 +576,19 @@ files:
     target: polylogue/cli/commands/reset.py
     owner: stable
   - path: polylogue/cli/commands/resume.py
-    loc: 51
+    loc: 49
     target: polylogue/cli/commands/resume.py
     owner: stable
   - path: polylogue/cli/commands/run.py
-    loc: 602
+    loc: 603
     target: polylogue/cli/commands/run.py
     owner: stable
   - path: polylogue/cli/commands/schema.py
-    loc: 133
+    loc: 128
     target: polylogue/cli/commands/schema.py
     owner: stable
   - path: polylogue/cli/commands/tags.py
-    loc: 62
+    loc: 60
     target: polylogue/cli/commands/tags.py
     owner: stable
   - path: polylogue/cli/commands/watch.py
@@ -726,11 +722,11 @@ files:
     target: polylogue/cli/shared/helpers.py
     owner: stable
   - path: polylogue/cli/shared/insight_command_contracts.py
-    loc: 122
+    loc: 119
     target: polylogue/cli/shared/insight_command_contracts.py
     owner: stable
   - path: polylogue/cli/shared/machine_errors.py
-    loc: 315
+    loc: 305
     target: polylogue/cli/shared/machine_errors.py
     owner: stable
   - path: polylogue/cli/shared/qa_capture.py
@@ -914,6 +910,10 @@ files:
   - path: polylogue/mcp/__init__.py
     loc: 19
     target: polylogue/mcp/__init__.py
+    owner: stable
+  - path: polylogue/mcp/cli.py
+    loc: 32
+    target: polylogue/mcp/cli.py
     owner: stable
   - path: polylogue/mcp/insight_tool_contracts.py
     loc: 102
@@ -1321,7 +1321,7 @@ files:
     target: polylogue/scenarios/executable.py
     owner: stable
   - path: polylogue/scenarios/execution.py
-    loc: 635
+    loc: 646
     target: polylogue/scenarios/execution.py
     owner: stable
   - path: polylogue/scenarios/insight_surfaces.py
@@ -1811,7 +1811,7 @@ files:
     owner: stable
     reason: verification-lab showcase substrate retained
   - path: polylogue/showcase/generators.py
-    loc: 545
+    loc: 558
     target: polylogue/showcase/generators.py
     owner: stable
     reason: verification-lab showcase substrate retained

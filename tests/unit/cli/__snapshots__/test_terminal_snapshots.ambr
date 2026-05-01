@@ -234,7 +234,6 @@
     export           Export one known conversation by ID.
     insights         Inspect durable archive insights.
     list             List matched conversations.
-    mcp              Start the MCP server for AI assistant integration.
     messages         Show paginated messages for a conversation.
     neighbors        Show explainable neighboring or near-duplicate...
     open             Open matched conversation in browser<PATH>
@@ -442,8 +441,6 @@
     export           Export one known conversation by ID.
     insights         Inspect durable archive insights.
     list             List matched conversations.
-    mcp              Start the MCP server for AI assistant int
-  egration.
     messages         Show paginated messages for a conversatio
   n.
     neighbors        Show explainable neighboring or near-dupl
@@ -603,7 +600,6 @@
     export           Export one known conversation by ID.
     insights         Inspect durable archive insights.
     list             List matched conversations.
-    mcp              Start the MCP server for AI assistant integration.
     messages         Show paginated messages for a conversation.
     neighbors        Show explainable neighboring or near-duplicate...
     open             Open matched conversation in browser<PATH>
