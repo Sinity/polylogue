@@ -7,10 +7,10 @@ from collections.abc import Callable, Iterator, Mapping
 from datetime import datetime
 from typing import TYPE_CHECKING, Self, cast
 
+from polylogue.archive.message.messages import MessageCollection
+from polylogue.archive.message.models import DialoguePair, Message
+from polylogue.archive.message.roles import normalize_message_roles
 from polylogue.lib.conversation.branch_type import BranchType
-from polylogue.lib.message.messages import MessageCollection
-from polylogue.lib.message.models import DialoguePair, Message
-from polylogue.lib.message.roles import normalize_message_roles
 from polylogue.lib.roles import Role
 from polylogue.lib.tail_overlay import TailOverlayInfo, tail_overlay_from_provider_meta
 from polylogue.types import ConversationId
@@ -199,7 +199,7 @@ class ConversationRuntimeMixin:
 
     @property
     def total_cost_usd(self) -> float:
-        from polylogue.lib.message.model_runtime import _coerce_optional_float
+        from polylogue.archive.message.model_runtime import _coerce_optional_float
 
         message_total = sum((message.cost_usd or 0.0) for message in self.messages)
         if message_total > 0.0:
@@ -210,7 +210,7 @@ class ConversationRuntimeMixin:
 
     @property
     def total_duration_ms(self) -> int:
-        from polylogue.lib.message.model_runtime import _coerce_optional_int
+        from polylogue.archive.message.model_runtime import _coerce_optional_int
 
         message_total = sum((message.duration_ms or 0) for message in self.messages)
         if message_total > 0:

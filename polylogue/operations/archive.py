@@ -84,12 +84,12 @@ _PROFILE_FTS_STATUS_BY_TIER: dict[str, SessionProductReadyFlag] = {
 }
 
 if TYPE_CHECKING:
+    from polylogue.archive.message.models import Message
+    from polylogue.archive.message.roles import MessageRoleFilter
     from polylogue.archive.query.miss_diagnostics import QueryMissDiagnostics
     from polylogue.config import Config
     from polylogue.lib.conversation.models import Conversation
     from polylogue.lib.conversation.neighbor_candidates import ConversationNeighborCandidate
-    from polylogue.lib.message.models import Message
-    from polylogue.lib.message.roles import MessageRoleFilter
     from polylogue.lib.search_hits import ConversationSearchHit
     from polylogue.lib.stats import ArchiveStats as StorageArchiveStats
     from polylogue.storage.backends.async_sqlite import SQLiteBackend

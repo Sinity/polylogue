@@ -8,12 +8,12 @@ from dataclasses import dataclass, replace
 from enum import Enum
 from typing import TYPE_CHECKING
 
-from polylogue.lib.message.messages import MessageCollection
+from polylogue.archive.message.messages import MessageCollection
 from polylogue.lib.roles import Role
 
 if TYPE_CHECKING:
+    from polylogue.archive.message.models import Message
     from polylogue.lib.conversation.models import Conversation
-    from polylogue.lib.message.models import Message
 
 
 class ContentKind(str, Enum):

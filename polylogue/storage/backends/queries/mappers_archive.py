@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import sqlite3
 
+from polylogue.archive.message.types import MessageType
 from polylogue.lib.conversation.branch_type import BranchType
-from polylogue.lib.message.types import MessageType
 from polylogue.lib.roles import Role
 from polylogue.storage.backends.queries.mappers_support import (
     _json_object,

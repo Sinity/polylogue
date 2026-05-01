@@ -8,8 +8,8 @@ from pathlib import Path
 import pytest
 
 from polylogue.archive.action_event.action_events import ActionEvent
+from polylogue.archive.message.messages import MessageCollection
 from polylogue.lib.conversation.attribution import extract_attribution, extract_attribution_from_action_events
-from polylogue.lib.message.messages import MessageCollection
 from polylogue.lib.models import Conversation, Message
 from polylogue.lib.repo_identity import (
     normalize_repo_name,

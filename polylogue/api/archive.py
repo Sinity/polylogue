@@ -6,8 +6,8 @@ from collections.abc import Sequence
 from contextlib import suppress
 from typing import TYPE_CHECKING, Protocol
 
+from polylogue.archive.message.roles import MessageRoleFilter
 from polylogue.archive.semantic.content_projection import ContentProjectionSpec
-from polylogue.lib.message.roles import MessageRoleFilter
 from polylogue.products.archive import (
     SessionEnrichmentProduct,
     SessionEnrichmentProductQuery,
@@ -19,9 +19,9 @@ from polylogue.storage.products.session.runtime import SessionProductStatusSnaps
 
 if TYPE_CHECKING:
     from polylogue.archive.filter.filters import ConversationFilter
+    from polylogue.archive.message.models import Message
     from polylogue.config import Config
     from polylogue.lib.conversation.models import Conversation, ConversationSummary
-    from polylogue.lib.message.models import Message
     from polylogue.operations import ArchiveStats
     from polylogue.products.export_bundles import ProductExportBundleRequest, ProductExportBundleResult
     from polylogue.products.readiness import ProductReadinessQuery, ProductReadinessReport

@@ -12,9 +12,9 @@ from unittest.mock import Mock
 import pytest
 from pydantic import TypeAdapter
 
+from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.raw_payload import build_raw_payload_envelope
 from polylogue.lib.json import JSONDocument, JSONValue, json_document
-from polylogue.lib.message.messages import MessageCollection
 from polylogue.lib.models import Message
 from polylogue.lib.provider_identity import (
     canonical_runtime_provider,

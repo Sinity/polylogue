@@ -270,7 +270,7 @@ def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             if summary is None:
                 return hooks.error_json(f"Conversation not found: {conversation_id}")
             canonical_id = str(summary.id)
-            from polylogue.lib.message.roles import normalize_message_roles
+            from polylogue.archive.message.roles import normalize_message_roles
 
             roles = normalize_message_roles(message_role) if message_role else ()
             paginated, total = await ops.get_messages_paginated(

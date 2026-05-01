@@ -13,8 +13,8 @@ from datetime import datetime
 
 import pytest
 
+from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.projection.projections import ConversationProjection
-from polylogue.lib.message.messages import MessageCollection
 from polylogue.lib.models import Attachment, Conversation, DialoguePair, Message
 from polylogue.lib.pricing import harmonize_session_cost
 from polylogue.lib.roles import Role

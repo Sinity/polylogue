@@ -125,6 +125,42 @@ files:
     target: polylogue/archive/filter/types.py
     owner: archive-filter
     reason: archive-domain filter semantics
+  - path: polylogue/archive/message/__init__.py
+    loc: 0
+    target: polylogue/archive/message/__init__.py
+    owner: archive-message
+    reason: archive-domain semantics
+  - path: polylogue/archive/message/messages.py
+    loc: 135
+    target: polylogue/archive/message/messages.py
+    owner: archive-message
+    reason: archive-domain semantics
+  - path: polylogue/archive/message/model_runtime.py
+    loc: 298
+    target: polylogue/archive/message/model_runtime.py
+    owner: archive-message
+    reason: archive-domain semantics
+    cross_cut: { lifecycle: runtime }
+  - path: polylogue/archive/message/models.py
+    loc: 71
+    target: polylogue/archive/message/models.py
+    owner: archive-message
+    reason: archive-domain semantics
+  - path: polylogue/archive/message/paste_detection.py
+    loc: 63
+    target: polylogue/archive/message/paste_detection.py
+    owner: archive-message
+    reason: archive-domain semantics
+  - path: polylogue/archive/message/roles.py
+    loc: 87
+    target: polylogue/archive/message/roles.py
+    owner: archive-message
+    reason: archive-domain semantics
+  - path: polylogue/archive/message/types.py
+    loc: 48
+    target: polylogue/archive/message/types.py
+    owner: archive-message
+    reason: archive-domain semantics
   - path: polylogue/archive/phase/__init__.py
     loc: 0
     target: polylogue/archive/phase/__init__.py
@@ -713,35 +749,6 @@ files:
     target: polylogue/lib/json.py
     owner: lib-root
     reason: lib-root primitive
-  - path: polylogue/lib/message/__init__.py
-    loc: 0
-    target: polylogue/lib/message/__init__.py
-    owner: stable
-  - path: polylogue/lib/message/messages.py
-    loc: 135
-    target: polylogue/lib/message/messages.py
-    owner: stable
-  - path: polylogue/lib/message/model_runtime.py
-    loc: 298
-    target: polylogue/lib/message/model_runtime.py
-    owner: stable
-    cross_cut: { lifecycle: runtime }
-  - path: polylogue/lib/message/models.py
-    loc: 71
-    target: polylogue/lib/message/models.py
-    owner: stable
-  - path: polylogue/lib/message/paste_detection.py
-    loc: 63
-    target: polylogue/lib/message/paste_detection.py
-    owner: stable
-  - path: polylogue/lib/message/roles.py
-    loc: 87
-    target: polylogue/lib/message/roles.py
-    owner: stable
-  - path: polylogue/lib/message/types.py
-    loc: 48
-    target: polylogue/lib/message/types.py
-    owner: stable
   - path: polylogue/lib/metrics.py
     loc: 205
     target: polylogue/lib/metrics.py

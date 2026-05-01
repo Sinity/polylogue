@@ -20,9 +20,9 @@ if TYPE_CHECKING:
     import aiosqlite
 
     from polylogue.archive.action_event.action_events import ActionEvent
+    from polylogue.archive.message.models import Message
+    from polylogue.archive.message.roles import MessageRoleFilter
     from polylogue.lib.conversation.models import Conversation, ConversationSummary
-    from polylogue.lib.message.models import Message
-    from polylogue.lib.message.roles import MessageRoleFilter
     from polylogue.lib.search_hits import ConversationSearchHit
     from polylogue.lib.session.session_profile import SessionProfile
     from polylogue.lib.stats import ArchiveStats

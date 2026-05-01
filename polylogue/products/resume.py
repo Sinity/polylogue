@@ -23,7 +23,7 @@ from polylogue.products.archive_models import ArchiveProductModel
 from polylogue.storage.search.query_support import normalize_fts5_query
 
 if TYPE_CHECKING:
-    from polylogue.lib.message.models import Message
+    from polylogue.archive.message.models import Message
 
 
 class ResumeLastMessage(ArchiveProductModel):

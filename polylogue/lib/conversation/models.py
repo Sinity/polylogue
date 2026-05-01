@@ -6,10 +6,10 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from polylogue.archive.message.messages import MessageCollection
 from polylogue.lib.conversation.branch_type import BranchType
 from polylogue.lib.conversation.runtime import ConversationRuntimeMixin
 from polylogue.lib.conversation.summary_runtime import ConversationSummaryRuntimeMixin
-from polylogue.lib.message.messages import MessageCollection
 from polylogue.types import ConversationId, Provider
 
 

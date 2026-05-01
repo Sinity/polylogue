@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field, field_validator
 
+from polylogue.archive.message.types import MessageType
 from polylogue.lib.conversation.branch_type import BranchType
 from polylogue.lib.hashing import hash_text
 from polylogue.lib.json import json_document
-from polylogue.lib.message.types import MessageType
 from polylogue.lib.roles import Role
 from polylogue.lib.security import sanitize_path as _sanitize_path_helper
 from polylogue.storage.run_state import RunCounts, RunCountsPayload

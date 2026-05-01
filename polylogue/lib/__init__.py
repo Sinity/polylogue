@@ -9,12 +9,12 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from polylogue.archive.attachment.models import Attachment
+    from polylogue.archive.message.messages import MessageCollection
+    from polylogue.archive.message.models import DialoguePair, Message
     from polylogue.archive.projection.projections import ConversationProjection
     from polylogue.archive.semantic.content_projection import ContentKind, ContentProjectionSpec
     from polylogue.lib.conversation.branch_type import BranchType
     from polylogue.lib.conversation.models import Conversation
-    from polylogue.lib.message.messages import MessageCollection
-    from polylogue.lib.message.models import DialoguePair, Message
     from polylogue.lib.roles import Role
 
 
@@ -26,9 +26,9 @@ def __getattr__(name: str) -> object:
         "ContentProjectionSpec": ("polylogue.archive.semantic.content_projection", "ContentProjectionSpec"),
         "Conversation": ("polylogue.lib.conversation.models", "Conversation"),
         "ConversationProjection": ("polylogue.archive.projection.projections", "ConversationProjection"),
-        "DialoguePair": ("polylogue.lib.message.models", "DialoguePair"),
-        "Message": ("polylogue.lib.message.models", "Message"),
-        "MessageCollection": ("polylogue.lib.message.messages", "MessageCollection"),
+        "DialoguePair": ("polylogue.archive.message.models", "DialoguePair"),
+        "Message": ("polylogue.archive.message.models", "Message"),
+        "MessageCollection": ("polylogue.archive.message.messages", "MessageCollection"),
         "Role": ("polylogue.lib.roles", "Role"),
     }
     module_spec = lazy_exports.get(name)

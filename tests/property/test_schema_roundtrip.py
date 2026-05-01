@@ -11,7 +11,7 @@ import json
 
 from hypothesis import given, settings
 
-from polylogue.lib.message.messages import MessageCollection
+from polylogue.archive.message.messages import MessageCollection
 from polylogue.rendering.formatting import format_conversation
 from tests.infra.builders import make_conv, make_msg
 from tests.infra.strategies.schema_driven import schema_conformant_payload
