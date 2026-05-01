@@ -151,6 +151,10 @@ files:
     target: polylogue/archive/conversation/threads.py
     owner: archive-conversation
     reason: archive-domain semantics
+  - path: polylogue/archive/coverage.py
+    loc: 125
+    target: polylogue/archive/coverage.py
+    owner: stable
   - path: polylogue/archive/filter/__init__.py
     loc: 0
     target: polylogue/archive/filter/__init__.py
@@ -422,6 +426,10 @@ files:
     target: polylogue/archive/session/session_summaries.py
     owner: archive-session
     reason: archive-domain semantics
+  - path: polylogue/archive/stats.py
+    loc: 90
+    target: polylogue/archive/stats.py
+    owner: stable
   - path: polylogue/archive/viewport/__init__.py
     loc: 0
     target: polylogue/archive/viewport/__init__.py
@@ -826,11 +834,6 @@ files:
     target: polylogue/lib/__init__.py
     owner: lib-root
     reason: lib-root primitive
-  - path: polylogue/lib/coverage.py
-    loc: 125
-    target: polylogue/lib/coverage.py
-    owner: lib-root
-    reason: lib-root primitive
   - path: polylogue/lib/models.py
     loc: 7
     target: polylogue/lib/models.py
@@ -864,11 +867,6 @@ files:
   - path: polylogue/lib/search_hits.py
     loc: 132
     target: polylogue/lib/search_hits.py
-    owner: lib-root
-    reason: lib-root primitive
-  - path: polylogue/lib/stats.py
-    loc: 90
-    target: polylogue/lib/stats.py
     owner: lib-root
     reason: lib-root primitive
   - path: polylogue/lib/tail_overlay.py

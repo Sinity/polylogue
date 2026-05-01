@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from polylogue.archive.conversation.models import ConversationSummary
-from polylogue.lib.coverage import analyze_coverage
+from polylogue.archive.coverage import analyze_coverage
 from polylogue.types import ConversationId, Provider
 
 

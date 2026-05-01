@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from polylogue.lib.stats import ArchiveStats
+from polylogue.archive.stats import ArchiveStats
 
 
 def test_archive_stats_properties_handle_empty_and_partial_embedding_states() -> None:

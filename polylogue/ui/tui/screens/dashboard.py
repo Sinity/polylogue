@@ -6,7 +6,7 @@ from textual.app import ComposeResult
 from textual.containers import Container, Grid
 from textual.widgets import Static
 
-from polylogue.lib.stats import ArchiveStats
+from polylogue.archive.stats import ArchiveStats
 from polylogue.logging import get_logger
 from polylogue.ui.tui.screens.base import RepositoryBoundContainer
 from polylogue.ui.tui.widgets.stats import StatCard

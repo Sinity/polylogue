@@ -11,10 +11,10 @@ import pytest
 from polylogue.archive.conversation.neighbor_candidates import ConversationNeighborCandidate, NeighborReason
 from polylogue.archive.query.miss_diagnostics import QueryMissDiagnostics, QueryMissReason
 from polylogue.archive.query.spec import ConversationQuerySpec
+from polylogue.archive.stats import ArchiveStats
 from polylogue.lib.models import Conversation, ConversationSummary
 from polylogue.lib.pricing import CostEstimatePayload, CostUsagePayload
 from polylogue.lib.search_hits import ConversationSearchHit
-from polylogue.lib.stats import ArchiveStats
 from polylogue.products.archive import (
     ArchiveDebtProduct,
     ArchiveEnrichmentProvenance,
