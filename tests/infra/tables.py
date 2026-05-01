@@ -158,7 +158,7 @@ NORMALIZE_ROLE_CANONICAL: list[tuple[str, str, str]] = [
 # =============================================================================
 # parse_timestamp: comprehensive format table
 #
-# Production code: polylogue.lib.timestamps.parse_timestamp
+# Production code: polylogue.core.timestamps.parse_timestamp
 # Tuples: (input_value, expected_year, expected_month, expected_day, expected_microsecond_or_None, description)
 # When expected_year is None → result must be None
 # =============================================================================
@@ -193,7 +193,7 @@ PARSE_TIMESTAMP_FORMAT_TABLE: list[ParseTimestampCase] = [
 # =============================================================================
 # format_timestamp: round-trip and formatting table
 #
-# Production code: polylogue.lib.timestamps.format_timestamp
+# Production code: polylogue.core.timestamps.format_timestamp
 # Tuples: (input, expected_prefix, description)
 # expected_prefix: the ISO 8601 date prefix that must appear in the output
 # =============================================================================

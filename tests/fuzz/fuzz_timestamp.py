@@ -32,7 +32,7 @@ MAX_PARSE_TIME = 1.0
 
 def fuzz_parse_timestamp(data: bytes) -> None:
     """Fuzz the parse_timestamp function with arbitrary inputs."""
-    from polylogue.lib.timestamps import parse_timestamp
+    from polylogue.core.timestamps import parse_timestamp
 
     try:
         text = data.decode("utf-8", errors="replace")
@@ -99,7 +99,7 @@ def fuzz_normalize_timestamp(data: bytes) -> None:
 
 def fuzz_format_timestamp(data: bytes) -> None:
     """Fuzz the format_timestamp function."""
-    from polylogue.lib.timestamps import format_timestamp
+    from polylogue.core.timestamps import format_timestamp
 
     try:
         text = data.decode("utf-8", errors="replace")

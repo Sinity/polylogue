@@ -71,9 +71,9 @@ def test_actual_only_convention_tags_are_blocking(tmp_path: Path) -> None:
     projection.write_text(
         """
 files:
-  - path: polylogue/lib/dates.py
+  - path: polylogue/core/dates.py
     loc: 10
-    target: polylogue/lib/dates.py
+    target: polylogue/core/dates.py
     owner: kernel
     cross_cut: { layer: read }
 """,

@@ -418,7 +418,7 @@ class TestTimestampParseability:
         provider_conversations: tuple[str, list[ParsedConversation]],
     ) -> None:
         """Every message with a timestamp has a parseable value."""
-        from polylogue.lib.timestamps import parse_timestamp
+        from polylogue.core.timestamps import parse_timestamp
 
         provider, convos = provider_conversations
         for conv in convos:

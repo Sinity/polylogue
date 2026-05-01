@@ -21,7 +21,7 @@ from polylogue.cli.shared.run_observers import progress_observer
 from polylogue.cli.shared.run_watch_workflow import WatchDisplayObserver, WatchStatusObserver
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
-from polylogue.lib.timestamps import format_timestamp
+from polylogue.core.timestamps import format_timestamp
 from polylogue.pipeline.observers import CompositeObserver, RunObserver
 from polylogue.pipeline.payload_types import SiteBuildOptions
 from polylogue.pipeline.run_support import expand_requested_stage

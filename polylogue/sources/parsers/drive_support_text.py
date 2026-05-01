@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from datetime import datetime
 
-from polylogue.lib.timestamps import parse_timestamp
+from polylogue.core.timestamps import parse_timestamp
 
 
 def extract_text_from_chunk(chunk: object) -> str | None:

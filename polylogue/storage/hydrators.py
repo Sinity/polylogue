@@ -19,8 +19,8 @@ from polylogue.archive.conversation.models import Conversation, ConversationSumm
 from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.message.models import Message
 from polylogue.core.json import loads
+from polylogue.core.timestamps import parse_timestamp
 from polylogue.lib.roles import Role
-from polylogue.lib.timestamps import parse_timestamp
 from polylogue.storage.runtime import (
     AttachmentRecord,
     ConversationRecord,
