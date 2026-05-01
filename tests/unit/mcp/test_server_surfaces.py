@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 from collections.abc import Callable
 from datetime import datetime, timezone
@@ -9,10 +10,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from polylogue.lib.models import Conversation
+from polylogue.lib.models import Conversation, ConversationSummary
 from polylogue.lib.roles import Role
 from polylogue.lib.semantic.content_projection import ContentProjectionSpec
-from polylogue.types import Provider
+from polylogue.types import ConversationId, Provider
 from tests.infra.builders import make_conv, make_msg
 from tests.infra.mcp import (
     EXPECTED_PROMPT_NAMES,
@@ -29,6 +30,18 @@ from tests.infra.mcp import (
 )
 
 SerializationCase = tuple[str, Conversation, dict[str, object], str]
+
+
+def _summary_for(conversation: Conversation) -> ConversationSummary:
+    return ConversationSummary(
+        id=ConversationId(str(conversation.id)),
+        provider=Provider.from_string(str(conversation.provider)),
+        title=conversation.display_title,
+        message_count=len(conversation.messages),
+        created_at=conversation.created_at,
+        updated_at=conversation.updated_at,
+    )
+
 
 SERIALIZATION_CASES: list[SerializationCase] = [
     (
@@ -104,6 +117,13 @@ class TestServerSurfaceRegistration:
         assert hasattr(mcp_server, "_resource_manager")
         assert hasattr(mcp_server, "_prompt_manager")
 
+    def test_dynamic_product_tools_publish_explicit_signatures(self: object, mcp_server: MCPServerUnderTest) -> None:
+        signature = inspect.signature(mcp_server._tool_manager._tools["session_profiles"].fn)
+
+        assert "provider" in signature.parameters
+        assert "limit" in signature.parameters
+        assert not any(parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in signature.parameters.values())
+
     @pytest.mark.parametrize(
         ("surface_attr", "actual_getter", "expected"),
         [
@@ -176,7 +196,10 @@ class TestResourceSurfaces:
     ) -> None:
         with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
             mock_ops = MagicMock()
-            mock_ops.get_conversation = AsyncMock(return_value=simple_conversation)
+            mock_ops.get_conversation_summary = AsyncMock(return_value=_summary_for(simple_conversation))
+            mock_ops.get_conversation_stats = AsyncMock(
+                return_value={"total_messages": len(simple_conversation.messages)}
+            )
             mock_get_archive_ops.return_value = mock_ops
 
             result = invoke_surface(
@@ -186,12 +209,13 @@ class TestResourceSurfaces:
 
         conv = json.loads(result)
         assert conv["id"] == "test:conv-123"
-        assert "messages" in conv
+        assert conv["message_count"] == 2
+        assert "messages" not in conv
 
     def test_conversation_resource_not_found(self: object, mcp_server: MCPServerUnderTest) -> None:
         with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
             mock_ops = MagicMock()
-            mock_ops.get_conversation = AsyncMock(return_value=None)
+            mock_ops.get_conversation_summary = AsyncMock(return_value=None)
             mock_get_archive_ops.return_value = mock_ops
 
             result = invoke_surface(
@@ -403,7 +427,7 @@ class TestPromptSurfaces:
 
 
 class TestExportConversationTool:
-    def test_get_conversation_tool_applies_content_projection(
+    def test_get_messages_tool_applies_content_projection(
         self: object,
         mcp_server: MCPServerUnderTest,
     ) -> None:
@@ -422,18 +446,22 @@ class TestExportConversationTool:
 
         with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
             mock_ops = MagicMock()
-            mock_ops.get_conversation = AsyncMock(return_value=projected_input)
+            mock_ops.get_conversation_summary = AsyncMock(return_value=_summary_for(projected_input))
+            projected = projected_input.with_content_projection(ContentProjectionSpec(include_code=False))
+            mock_ops.get_messages_paginated = AsyncMock(
+                return_value=(list(projected.messages), len(projected.messages))
+            )
             mock_get_archive_ops.return_value = mock_ops
 
             result = invoke_surface(
-                mcp_server._tool_manager._tools["get_conversation"].fn,
-                id="test:conv-123",
+                mcp_server._tool_manager._tools["get_messages"].fn,
+                conversation_id="test:conv-123",
                 no_code_blocks=True,
             )
 
         payload = json.loads(result)
         assert payload["messages"][0]["text"] == "Alpha\n\nOmega"
-        projection = mock_ops.get_conversation.await_args.kwargs["content_projection"]
+        projection = mock_ops.get_messages_paginated.await_args.kwargs["content_projection"]
         assert projection.include_code is False
 
     def test_export_markdown(self: object, simple_conversation: Conversation, mcp_server: MCPServerUnderTest) -> None:

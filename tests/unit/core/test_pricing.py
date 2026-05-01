@@ -71,6 +71,29 @@ def test_partial_conversation_preserves_missing_reasons() -> None:
     assert "missing_token_usage" in estimate.missing_reasons
 
 
+def test_partial_conversation_with_exact_message_is_not_exact() -> None:
+    conversation = make_conv(
+        id="conv-exact-plus-missing",
+        provider="chatgpt",
+        messages=MessageCollection(
+            messages=[
+                make_msg(
+                    id="m-exact",
+                    role="assistant",
+                    provider="chatgpt",
+                    provider_meta={"costUSD": 0.01},
+                ),
+                make_msg(id="m-missing", role="assistant", provider="chatgpt"),
+            ]
+        ),
+    )
+
+    estimate = estimate_conversation_cost(conversation)
+
+    assert estimate.status == "partial"
+    assert estimate.total_usd == pytest.approx(0.01)
+
+
 def test_missing_price_is_unavailable_not_zero_precision() -> None:
     conversation = make_conv(
         id="conv-unknown-model",

@@ -11,6 +11,7 @@ from polylogue.lib.conversation.branch_type import BranchType
 from polylogue.lib.json import JSONDocument, json_document
 from polylogue.lib.json import dumps as json_dumps
 from polylogue.lib.message.paste_detection import detect_paste
+from polylogue.lib.message.types import MessageType
 from polylogue.lib.roles import Role
 from polylogue.lib.viewport.viewports import ToolCategory, classify_tool
 from polylogue.pipeline.ids import (
@@ -66,6 +67,7 @@ class MaterializedMessage:
     has_tool_use: int
     has_thinking: int
     has_paste: int
+    message_type: MessageType
     blocks: list[MaterializedContentBlock]
 
 
@@ -255,10 +257,18 @@ def materialize_conversation(
             message_id_map.get(str(msg.parent_message_provider_id)) if msg.parent_message_provider_id else None
         )
         block_types = {block.type for block in msg.content_blocks}
+        message_type = msg.message_type
         word_count = len(msg.text.split()) if msg.text and msg.text.strip() else 0
         has_tool_use = 1 if (block_types & {"tool_use", "tool_result"}) or msg.role == "tool" else 0
         has_thinking = 1 if "thinking" in block_types else 0
         has_paste = detect_paste(msg.text)
+        if message_type == MessageType.MESSAGE:
+            if "thinking" in block_types:
+                message_type = MessageType.THINKING
+            elif "tool_result" in block_types or msg.role == "tool":
+                message_type = MessageType.TOOL_RESULT
+            elif "tool_use" in block_types:
+                message_type = MessageType.TOOL_USE
 
         total_word_count += word_count
         total_tool_use += has_tool_use
@@ -284,6 +294,7 @@ def materialize_conversation(
                 has_tool_use=has_tool_use,
                 has_thinking=has_thinking,
                 has_paste=has_paste,
+                message_type=message_type,
                 blocks=blocks,
             )
         )

@@ -6,6 +6,7 @@ import inspect
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
+from polylogue.mcp.query_contracts import MCPToolLimit, MCPToolOffset
 from polylogue.products.registry import ProductType
 
 
@@ -49,7 +50,7 @@ class ProductListToolSpec:
                         field_name,
                         inspect.Parameter.KEYWORD_ONLY,
                         default=product_type.mcp_default_limit,
-                        annotation=int,
+                        annotation=MCPToolLimit,
                     )
                 )
                 continue
@@ -59,7 +60,7 @@ class ProductListToolSpec:
                         field_name,
                         inspect.Parameter.KEYWORD_ONLY,
                         default=0,
-                        annotation=int,
+                        annotation=MCPToolOffset,
                     )
                 )
                 continue

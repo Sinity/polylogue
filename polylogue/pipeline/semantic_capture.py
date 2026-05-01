@@ -156,7 +156,11 @@ def extract_file_changes(tool_invocations: Sequence[Mapping[str, object]]) -> li
     for invocation in tool_invocations:
         tool_name = invocation.get("tool_name")
         input_data = json_document(invocation.get("input"))
-        path = optional_string(input_data.get("file_path")) or optional_string(input_data.get("path"))
+        path = (
+            optional_string(input_data.get("file_path"))
+            or optional_string(input_data.get("path"))
+            or optional_string(input_data.get("notebook_path"))
+        )
         if not path:
             continue
 

@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from polylogue.lib.attachment.models import Attachment
 from polylogue.lib.message.model_runtime import MessageRuntimeMixin
+from polylogue.lib.message.types import MessageType
 from polylogue.lib.roles import Role
 from polylogue.types import Provider
 
@@ -21,6 +22,7 @@ class Message(MessageRuntimeMixin, BaseModel):
     attachments: list[Attachment] = Field(default_factory=list)
     provider_meta: dict[str, object] | None = None
     content_blocks: list[dict[str, object]] = Field(default_factory=list)
+    message_type: MessageType = MessageType.MESSAGE
     parent_id: str | None = None
     branch_index: int = 0
 
@@ -40,6 +42,11 @@ class Message(MessageRuntimeMixin, BaseModel):
         if isinstance(v, Provider):
             return v
         return Provider.from_string(str(v))
+
+    @field_validator("message_type", mode="before")
+    @classmethod
+    def coerce_message_type(cls, v: object) -> MessageType:
+        return MessageType.normalize(v)
 
 
 class DialoguePair(BaseModel):

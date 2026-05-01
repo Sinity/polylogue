@@ -73,7 +73,7 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Delegate additional domain proof checks through verification-lab commands.",
     )
-    args = parser.parse_args(argv)
+    args = parser.parse_args(sys.argv[1:] if argv is None else argv)
 
     sys.stderr.write("verify: running local verification baseline\n")
 

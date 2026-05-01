@@ -9,6 +9,7 @@ from typing import TypeAlias
 from pydantic import ValidationError
 
 from polylogue.lib.conversation.branch_type import BranchType
+from polylogue.lib.message.types import MessageType
 from polylogue.lib.roles import Role
 from polylogue.logging import get_logger
 from polylogue.pipeline.semantic_capture import detect_context_compaction
@@ -110,6 +111,19 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedCo
                     event_type="compaction",
                     timestamp=compaction_timestamp,
                     payload=context_compaction,
+                )
+            )
+            summary_text = str(context_compaction.get("summary") or "")
+            messages.append(
+                ParsedMessage(
+                    provider_message_id=str(item.get("uuid") or f"summary-{index}"),
+                    role=Role.SYSTEM,
+                    text=summary_text,
+                    timestamp=compaction_timestamp,
+                    content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text=summary_text)]
+                    if summary_text
+                    else [],
+                    message_type=MessageType.SUMMARY,
                 )
             )
             continue

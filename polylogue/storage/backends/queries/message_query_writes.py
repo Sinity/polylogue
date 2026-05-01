@@ -60,8 +60,10 @@ async def save_messages(
             provider_name,
             word_count,
             has_tool_use,
-            has_thinking
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            has_thinking,
+            has_paste,
+            message_type
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(message_id) DO UPDATE SET
             role = excluded.role,
             text = excluded.text,
@@ -72,13 +74,20 @@ async def save_messages(
             provider_name = excluded.provider_name,
             word_count = excluded.word_count,
             has_tool_use = excluded.has_tool_use,
-            has_thinking = excluded.has_thinking
+            has_thinking = excluded.has_thinking,
+            has_paste = excluded.has_paste,
+            message_type = excluded.message_type
         WHERE
             content_hash != excluded.content_hash
             OR IFNULL(role, '') != IFNULL(excluded.role, '')
             OR IFNULL(text, '') != IFNULL(excluded.text, '')
             OR IFNULL(parent_message_id, '') != IFNULL(excluded.parent_message_id, '')
             OR branch_index != excluded.branch_index
+            OR word_count != excluded.word_count
+            OR has_tool_use != excluded.has_tool_use
+            OR has_thinking != excluded.has_thinking
+            OR has_paste != excluded.has_paste
+            OR message_type != excluded.message_type
     """
     data = [
         (
@@ -96,6 +105,8 @@ async def save_messages(
             r.word_count,
             r.has_tool_use,
             r.has_thinking,
+            r.has_paste,
+            r.message_type.value,
         )
         for r in records
     ]

@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True, slots=True)
 class SemanticStatsSlice:
-    path_terms: tuple[str, ...] = ()
+    referenced_path: tuple[str, ...] = ()
     action_terms: tuple[str, ...] = ()
     excluded_action_terms: tuple[str, ...] = ()
     action_text_terms: tuple[str, ...] = ()
@@ -38,7 +38,7 @@ class SemanticStatsSlice:
         if selection is None:
             return cls()
         return cls(
-            path_terms=selection.path_terms,
+            referenced_path=selection.referenced_path,
             action_terms=selection.action_terms,
             excluded_action_terms=selection.excluded_action_terms,
             action_text_terms=selection.action_text_terms,
@@ -49,7 +49,7 @@ class SemanticStatsSlice:
     def has_filters(self) -> bool:
         return any(
             (
-                self.path_terms,
+                self.referenced_path,
                 self.action_terms,
                 self.excluded_action_terms,
                 self.action_text_terms,
@@ -63,17 +63,17 @@ def normalized_tool_name(action: ActionEvent) -> str:
     return action.normalized_tool_name
 
 
-def path_matches_slice(action: ActionEvent, path_terms: tuple[str, ...]) -> bool:
-    if not path_terms:
+def referenced_path_matches_slice(action: ActionEvent, referenced_path: tuple[str, ...]) -> bool:
+    if not referenced_path:
         return True
     affected_paths = tuple(path.lower().replace("\\", "/") for path in action.affected_paths)
     if not affected_paths:
         return False
-    return any(any(term.lower().replace("\\", "/") in path for path in affected_paths) for term in path_terms)
+    return any(any(term.lower().replace("\\", "/") in path for path in affected_paths) for term in referenced_path)
 
 
 def action_matches_slice(action: ActionEvent, semantic_slice: SemanticStatsSlice) -> bool:
-    if not path_matches_slice(action, semantic_slice.path_terms):
+    if not referenced_path_matches_slice(action, semantic_slice.referenced_path):
         return False
 
     if "none" in semantic_slice.action_terms:
@@ -316,5 +316,5 @@ __all__ = [
     "output_stats_by_semantic_ids",
     "output_stats_by_semantic_query",
     "output_stats_by_semantic_summaries",
-    "path_matches_slice",
+    "referenced_path_matches_slice",
 ]

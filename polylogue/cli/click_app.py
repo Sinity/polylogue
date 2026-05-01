@@ -137,7 +137,7 @@ def cli(
 
     \b
     Combined filters:
-        polylogue --path README.md --action file_read list
+        polylogue --referenced-path README.md --action file_read list
         polylogue --action search --action file_edit list
         polylogue --action-sequence file_read,file_edit,shell list
         polylogue --action-text "pytest -q" list

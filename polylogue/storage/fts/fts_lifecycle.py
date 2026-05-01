@@ -339,7 +339,6 @@ def message_fts_readiness_sync(
     conn: sqlite3.Connection,
     *,
     verify_total_rows: bool = True,
-    exact_counts: bool = True,
 ) -> dict[str, int | bool]:
     """Return whether the message FTS index is present and fully populated."""
     if verify_total_rows:
@@ -370,7 +369,6 @@ async def message_fts_readiness_async(
     conn: aiosqlite.Connection,
     *,
     verify_total_rows: bool = True,
-    exact_counts: bool = True,
 ) -> dict[str, int | bool]:
     """Return whether the message FTS index is present and fully populated."""
     if verify_total_rows:
@@ -417,9 +415,9 @@ def check_fts_readiness(readiness: Mapping[str, object], repair_hint: str = "") 
         return
     indexed = int(cast(int, readiness.get("indexed_rows", 0)))
     total = int(cast(int, readiness.get("total_rows", 0)))
-    if total > 0 and indexed > 0:
+    if total > 0 and indexed > 0 and bool(readiness.get("triggers_present", False)):
         gap_ratio = (total - indexed) / total
-        if gap_ratio <= FTS_GAP_THRESHOLD:
+        if 0 <= gap_ratio <= FTS_GAP_THRESHOLD:
             missing = total - indexed
             pct = gap_ratio * 100
             import logging

@@ -71,21 +71,21 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `polylogue messages` | `polylogue/cli/query_verbs.py:179` `polylogue.cli.query_verbs.messages_verb` |
 | `polylogue neighbors` | `polylogue/cli/commands/neighbors.py:42` `polylogue.cli.commands.neighbors.neighbors_command` |
 | `polylogue open` | `polylogue/cli/query_verbs.py:94` `polylogue.cli.query_verbs.open_verb` |
-| `polylogue products` | `polylogue/cli/commands/products.py:139` `polylogue.cli.commands.products.products_command` |
-| `polylogue products analytics` | `polylogue/cli/commands/products.py:102` `polylogue.cli.commands.products._make_callback.<locals>.callback` |
-| `polylogue products cost-rollups` | `polylogue/cli/commands/products.py:102` `polylogue.cli.commands.products._make_callback.<locals>.callback` |
-| `polylogue products costs` | `polylogue/cli/commands/products.py:102` `polylogue.cli.commands.products._make_callback.<locals>.callback` |
-| `polylogue products day-summaries` | `polylogue/cli/commands/products.py:102` `polylogue.cli.commands.products._make_callback.<locals>.callback` |
-| `polylogue products debt` | `polylogue/cli/commands/products.py:102` `polylogue.cli.commands.products._make_callback.<locals>.callback` |
-| `polylogue products enrichments` | `polylogue/cli/commands/products.py:102` `polylogue.cli.commands.products._make_callback.<locals>.callback` |
-| `polylogue products export` | `polylogue/cli/commands/products.py:234` `polylogue.cli.commands.products.products_export_command` |
-| `polylogue products phases` | `polylogue/cli/commands/products.py:102` `polylogue.cli.commands.products._make_callback.<locals>.callback` |
-| `polylogue products profiles` | `polylogue/cli/commands/products.py:102` `polylogue.cli.commands.products._make_callback.<locals>.callback` |
-| `polylogue products status` | `polylogue/cli/commands/products.py:194` `polylogue.cli.commands.products.products_status_command` |
-| `polylogue products tags` | `polylogue/cli/commands/products.py:102` `polylogue.cli.commands.products._make_callback.<locals>.callback` |
-| `polylogue products threads` | `polylogue/cli/commands/products.py:102` `polylogue.cli.commands.products._make_callback.<locals>.callback` |
-| `polylogue products week-summaries` | `polylogue/cli/commands/products.py:102` `polylogue.cli.commands.products._make_callback.<locals>.callback` |
-| `polylogue products work-events` | `polylogue/cli/commands/products.py:102` `polylogue.cli.commands.products._make_callback.<locals>.callback` |
+| `polylogue products` | `polylogue/cli/commands/products.py:143` `polylogue.cli.commands.products.products_command` |
+| `polylogue products analytics` | `polylogue/cli/commands/products.py:107` `polylogue.cli.commands.products._make_callback.<locals>.callback` |
+| `polylogue products cost-rollups` | `polylogue/cli/commands/products.py:107` `polylogue.cli.commands.products._make_callback.<locals>.callback` |
+| `polylogue products costs` | `polylogue/cli/commands/products.py:107` `polylogue.cli.commands.products._make_callback.<locals>.callback` |
+| `polylogue products day-summaries` | `polylogue/cli/commands/products.py:107` `polylogue.cli.commands.products._make_callback.<locals>.callback` |
+| `polylogue products debt` | `polylogue/cli/commands/products.py:107` `polylogue.cli.commands.products._make_callback.<locals>.callback` |
+| `polylogue products enrichments` | `polylogue/cli/commands/products.py:107` `polylogue.cli.commands.products._make_callback.<locals>.callback` |
+| `polylogue products export` | `polylogue/cli/commands/products.py:245` `polylogue.cli.commands.products.products_export_command` |
+| `polylogue products phases` | `polylogue/cli/commands/products.py:107` `polylogue.cli.commands.products._make_callback.<locals>.callback` |
+| `polylogue products profiles` | `polylogue/cli/commands/products.py:107` `polylogue.cli.commands.products._make_callback.<locals>.callback` |
+| `polylogue products status` | `polylogue/cli/commands/products.py:198` `polylogue.cli.commands.products.products_status_command` |
+| `polylogue products tags` | `polylogue/cli/commands/products.py:107` `polylogue.cli.commands.products._make_callback.<locals>.callback` |
+| `polylogue products threads` | `polylogue/cli/commands/products.py:107` `polylogue.cli.commands.products._make_callback.<locals>.callback` |
+| `polylogue products week-summaries` | `polylogue/cli/commands/products.py:107` `polylogue.cli.commands.products._make_callback.<locals>.callback` |
+| `polylogue products work-events` | `polylogue/cli/commands/products.py:107` `polylogue.cli.commands.products._make_callback.<locals>.callback` |
 | `polylogue raw` | `polylogue/cli/query_verbs.py:243` `polylogue.cli.query_verbs.raw_verb` |
 | `polylogue reset` | `polylogue/cli/commands/reset.py:23` `polylogue.cli.commands.reset.reset_command` |
 | `polylogue resume` | `polylogue/cli/commands/resume.py:22` `polylogue.cli.commands.resume.resume_command` |

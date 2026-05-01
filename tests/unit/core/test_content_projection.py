@@ -1,7 +1,12 @@
 from __future__ import annotations
 
 from polylogue.lib.attachment.models import Attachment
-from polylogue.lib.semantic.content_projection import ContentProjectionSpec
+from polylogue.lib.roles import Role
+from polylogue.lib.semantic.content_projection import (
+    ContentProjectionSpec,
+    coerce_content_projection_spec,
+    project_message_content,
+)
 from tests.infra.builders import make_conv, make_msg
 
 
@@ -124,3 +129,74 @@ def test_prose_only_drops_attachment_only_messages() -> None:
     projected = conversation.with_content_projection(ContentProjectionSpec.prose_only())
 
     assert list(projected.messages) == []
+
+
+def test_projection_default_coercion_returns_unfiltered_messages() -> None:
+    messages = [make_msg(id="plain", text="plain")]
+
+    assert coerce_content_projection_spec(None).is_default()
+    assert coerce_content_projection_spec({"no_code_blocks": True}).include_code is False
+    assert project_message_content(messages, None) == messages
+
+
+def test_projection_classifies_text_blocks_tools_attachments_and_system_noise() -> None:
+    messages = [
+        make_msg(id="tool-text", role=Role.TOOL, text="tool output"),
+        make_msg(id="system-text", role=Role.SYSTEM, text="system noise"),
+        make_msg(
+            id="mixed-text",
+            role=Role.ASSISTANT,
+            text="Lead\n\n```python\nprint('x')\n```\n\n<antml:thinking>hidden</antml:thinking>\n\nTail",
+        ),
+        make_msg(
+            id="blocks",
+            role=Role.ASSISTANT,
+            text="ignored",
+            content_blocks=[
+                {"type": "code", "code": "print('block')"},
+                {"type": "thinking", "thinking": "reason"},
+                {
+                    "type": "tool_use",
+                    "name": "LongCommand",
+                    "tool_input": {"command": "x" * 90},
+                },
+                {"type": "tool_use", "name": "Search", "tool_input": {"query": "q" * 70}},
+                {"type": "tool_use", "name": "Grep", "tool_input": {"pattern": "needle"}},
+                {"type": "tool_use", "name": "Short", "tool_input": {"mode": "fast"}},
+                {"type": "tool_use"},
+                {"type": "tool_result", "text": "tool body"},
+                {"type": "image", "name": "plot", "url": "https://example.test/plot.png", "media_type": "image/png"},
+                {"type": "custom", "content": "custom prose"},
+            ],
+        ),
+    ]
+
+    projected = project_message_content(messages, ContentProjectionSpec(include_system_noise=False))
+    rendered = "\n\n".join(message.text or "" for message in projected)
+
+    assert "tool output" in rendered
+    assert "system noise" not in rendered
+    assert "print('x')" in rendered
+    assert "hidden" in rendered
+    assert "`xxxxxxxx" in rendered
+    assert '"qqqqqq' in rendered
+    assert "`needle`" in rendered
+    assert "mode=fast" in rendered
+    assert "[Tool: unknown]" in rendered
+    assert "tool body" in rendered
+    assert "plot https://example.test/plot.png (image/png)" in rendered
+    assert "custom prose" in rendered
+
+    system_projected = project_message_content(
+        [make_msg(id="system-kept", role=Role.SYSTEM, text="system noise")],
+        ContentProjectionSpec(include_code=False),
+    )
+    assert system_projected[0].text == "system noise"
+
+    prose_without_noise = project_message_content(
+        messages,
+        ContentProjectionSpec.prose_only(),
+    )
+    assert [message.id for message in prose_without_noise] == ["mixed-text", "blocks"]
+    assert "Lead" in (prose_without_noise[0].text or "")
+    assert "custom prose" in (prose_without_noise[1].text or "")

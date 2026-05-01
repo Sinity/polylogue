@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Iterable
 from dataclasses import dataclass
+from decimal import Decimal
 from io import BytesIO
 from typing import TYPE_CHECKING, Literal, TypeAlias
 
@@ -57,10 +58,21 @@ def _payload_sequence(value: object) -> PayloadSequence | None:
         return None
     payloads: list[JSONValue] = []
     for item in value:
-        if not is_json_value(item):
+        normalized = _normalize_json_decimal(item)
+        if not is_json_value(normalized):
             return None
-        payloads.append(item)
+        payloads.append(normalized)
     return payloads
+
+
+def _normalize_json_decimal(value: object) -> object:
+    if isinstance(value, Decimal):
+        return int(value) if value == value.to_integral_value() else float(value)
+    if isinstance(value, list):
+        return [_normalize_json_decimal(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _normalize_json_decimal(item) for key, item in value.items()}
+    return value
 
 
 def _record_messages(record: PayloadRecord) -> list[JSONValue] | None:

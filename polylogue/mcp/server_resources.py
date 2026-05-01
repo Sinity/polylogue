@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 from polylogue.mcp.payloads import (
     MCPArchiveStatsPayload,
-    MCPConversationDetailPayload,
+    MCPConversationSummaryPayload,
     MCPErrorPayload,
     MCPReadinessReportPayload,
     MCPTagCountsPayload,
@@ -42,10 +42,17 @@ def register_resources(mcp: FastMCP, hooks: ServerCallbacks) -> None:
 
     @mcp.resource("polylogue://conversation/{conv_id}")
     async def conversation_resource(conv_id: str) -> str:
-        conv = await hooks.get_archive_ops().get_conversation(conv_id)
-        if not conv:
+        ops = hooks.get_archive_ops()
+        summary = await ops.get_conversation_summary(conv_id)
+        if not summary:
             return hooks.error_json(f"Conversation not found: {conv_id}")
-        return hooks.json_payload(MCPConversationDetailPayload.from_conversation(conv))
+        stats = await ops.get_conversation_stats(conv_id)
+        return hooks.json_payload(
+            MCPConversationSummaryPayload.from_summary(
+                summary,
+                message_count=stats["total_messages"] if stats else 0,
+            )
+        )
 
     @mcp.resource("polylogue://tags")
     async def tags_resource() -> str:
@@ -55,26 +62,21 @@ def register_resources(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     @mcp.resource("polylogue://messages/{conv_id}")
     async def messages_resource(conv_id: str) -> str:
         ops = hooks.get_archive_ops()
-        try:
-            messages, total = await ops.get_messages_paginated(conv_id, limit=20, offset=0)
-        except Exception:
+        summary = await ops.get_conversation_summary(conv_id)
+        if summary is None:
             return hooks.error_json(f"Conversation not found: {conv_id}")
-        import json as _json
+        canonical_id = str(summary.id)
+        messages, total = await ops.get_messages_paginated(canonical_id, limit=20, offset=0)
+        from polylogue.mcp.payloads import MCPMessagePayload, MCPMessagesListPayload
 
-        return _json.dumps(
-            {
-                "conversation_id": conv_id,
-                "messages": [
-                    {
-                        "id": str(getattr(m, "id", "")),
-                        "role": str(getattr(m, "role", "")),
-                        "text": (getattr(m, "text", None) or "")[:200],
-                    }
-                    for m in messages
-                ],
-                "total": total,
-            },
-            indent=2,
+        return hooks.json_payload(
+            MCPMessagesListPayload(
+                conversation_id=canonical_id,
+                messages=tuple(MCPMessagePayload.from_message(message) for message in messages),
+                total=total,
+                limit=20,
+                offset=0,
+            )
         )
 
     @mcp.resource("polylogue://session-tree/{conv_id}")

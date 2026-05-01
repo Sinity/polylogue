@@ -91,6 +91,7 @@ ARCHIVE_STORAGE_DDL = """
             has_tool_use INTEGER NOT NULL DEFAULT 0,
             has_thinking INTEGER NOT NULL DEFAULT 0,
             has_paste INTEGER NOT NULL DEFAULT 0,
+            message_type TEXT NOT NULL DEFAULT 'message',
             FOREIGN KEY (conversation_id)
                 REFERENCES conversations(conversation_id) ON DELETE CASCADE
         );
@@ -103,6 +104,9 @@ ARCHIVE_STORAGE_DDL = """
 
         CREATE INDEX IF NOT EXISTS idx_messages_parent
         ON messages(parent_message_id) WHERE parent_message_id IS NOT NULL;
+
+        CREATE INDEX IF NOT EXISTS idx_messages_conversation_message_type
+        ON messages(conversation_id, message_type);
 
         CREATE INDEX IF NOT EXISTS idx_messages_provider_role
         ON messages(provider_name, role);

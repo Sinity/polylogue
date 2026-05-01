@@ -2,11 +2,11 @@ Usage: polylogue bulk-export [OPTIONS]
 
   Bulk export every matched conversation in one process.
 
-  Reuses the parent filter chain (``--provider``, ``--since``, ``--path``,
-  ``--message-role``, etc.). Default ``--format jsonl`` emits one single-line
-  conversation JSON per line, suitable for piping into ``jq`` or downstream
-  analysis tools. Other formats are concatenated with ``\n---\n`` separators
-  where appropriate.
+  Reuses the parent filter chain (``--provider``, ``--since``, ``--referenced-
+  path``, ``--message-role``, etc.). Default ``--format jsonl`` emits one
+  single-line conversation JSON per line, suitable for piping into ``jq`` or
+  downstream analysis tools. Other formats are concatenated with ``\n---\n``
+  separators where appropriate.
 
 Options:
   -f, --format [jsonl|json|markdown|yaml|plaintext|html|obsidian|org]

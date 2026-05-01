@@ -362,7 +362,7 @@ class TestQueryTools:
             elif method_name == "retrieval_lane":
                 assert spec.retrieval_lane == expected_value
             elif method_name == "referenced_path":
-                assert spec.path_terms == (expected_value,)
+                assert spec.referenced_path == (expected_value,)
             elif method_name == "action":
                 assert spec.action_terms == (expected_value,)
             elif method_name == "exclude_action":
@@ -493,19 +493,29 @@ class TestGetConversationTool:
     def test_get_returns_conversation(self, simple_conversation: Conversation, mcp_server: MCPServerUnderTest) -> None:
         with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
             mock_ops = MagicMock()
-            mock_ops.get_conversation = AsyncMock(return_value=simple_conversation)
+            mock_ops.get_conversation_summary = AsyncMock(
+                return_value=_make_summary(
+                    str(simple_conversation.id),
+                    provider=Provider.from_string(str(simple_conversation.provider)),
+                    title=simple_conversation.display_title,
+                )
+            )
+            mock_ops.get_conversation_stats = AsyncMock(
+                return_value={"total_messages": len(simple_conversation.messages)}
+            )
             mock_get_archive_ops.return_value = mock_ops
 
             result = invoke_surface(mcp_server._tool_manager._tools["get_conversation"].fn, id="test:conv-123")
 
         conv = json.loads(result)
         assert conv["id"] == "test:conv-123"
-        assert len(conv["messages"]) == 2
+        assert conv["message_count"] == 2
+        assert "messages" not in conv
 
     def test_get_not_found(self, mcp_server: MCPServerUnderTest) -> None:
         with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
             mock_ops = MagicMock()
-            mock_ops.get_conversation = AsyncMock(return_value=None)
+            mock_ops.get_conversation_summary = AsyncMock(return_value=None)
             mock_get_archive_ops.return_value = mock_ops
 
             result = invoke_surface(mcp_server._tool_manager._tools["get_conversation"].fn, id="nonexistent")
@@ -514,21 +524,17 @@ class TestGetConversationTool:
         assert "error" in parsed
         assert "not found" in parsed["error"].lower()
 
-    def test_get_returns_full_messages(self, mcp_server: MCPServerUnderTest) -> None:
+    def test_get_messages_returns_full_messages(self, mcp_server: MCPServerUnderTest) -> None:
         long_text = "A" * 2000
-        conv = make_conv(
-            id="test:long",
-            provider=Provider.UNKNOWN,
-            title="Long Message",
-            messages=[make_msg(id="m1", role="assistant", text=long_text)],
-        )
+        message = make_msg(id="m1", role="assistant", text=long_text)
 
         with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
             mock_ops = MagicMock()
-            mock_ops.get_conversation = AsyncMock(return_value=conv)
+            mock_ops.get_conversation_summary = AsyncMock(return_value=_make_summary("test:long"))
+            mock_ops.get_messages_paginated = AsyncMock(return_value=([message], 1))
             mock_get_archive_ops.return_value = mock_ops
 
-            result = invoke_surface(mcp_server._tool_manager._tools["get_conversation"].fn, id="test:long")
+            result = invoke_surface(mcp_server._tool_manager._tools["get_messages"].fn, conversation_id="test:long")
 
         assert json.loads(result)["messages"][0]["text"] == long_text
 
@@ -536,7 +542,7 @@ class TestGetConversationTool:
     async def test_get_with_nonexistent_id(self, mcp_server: MCPServerUnderTest) -> None:
         with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
             mock_ops = MagicMock()
-            mock_ops.get_conversation = AsyncMock(return_value=None)
+            mock_ops.get_conversation_summary = AsyncMock(return_value=None)
             mock_get_archive_ops.return_value = mock_ops
 
             result = await invoke_surface_async(

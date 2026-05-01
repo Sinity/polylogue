@@ -241,17 +241,18 @@ class TestClaudeCodeParserProviderEvents:
         result = parse_code(payload, "test-session")
         assert result.provider_events == []
 
-    def test_compaction_not_counted_as_message(self) -> None:
-        """Compaction records should not appear in messages list."""
+    def test_compaction_preserved_as_summary_message(self) -> None:
+        """Compaction records are provider events and queryable summary messages."""
         payload: list[object] = [
             {"type": "user", "uuid": "u1", "message": {"role": "user", "content": "hello"}},
             {"type": "summary", "uuid": "s1", "message": {"content": "summary"}},
             {"type": "assistant", "uuid": "a1", "message": {"role": "assistant", "content": "world"}},
         ]
         result = parse_code(payload, "test-session")
-        assert len(result.messages) == 2
+        assert len(result.messages) == 3
         roles = [m.role for m in result.messages]
-        assert "system" not in roles or all(r in ("user", "assistant") for r in roles)
+        assert roles == ["user", "system", "assistant"]
+        assert result.messages[1].message_type.value == "summary"
 
 
 # =============================================================================

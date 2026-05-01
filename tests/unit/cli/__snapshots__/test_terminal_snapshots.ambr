@@ -113,7 +113,7 @@
         polylogue "urgent" --tag review delete --dry-run
         polylogue list --format json
     Combined filters:
-        polylogue --path README.md --action file_read list
+        polylogue --referenced-path README.md --action file_read list
         polylogue --action search --action file_edit list
         polylogue --action-sequence file_read,file_edit,shell list
         polylogue --action-text "pytest -q" list
@@ -267,7 +267,8 @@
         polylogue "urgent" --tag review delete --dry-run
         polylogue list --format json
     Combined filters:
-        polylogue --path README.md --action file_read list
+        polylogue --referenced-path README.md --action file_re
+  ad list
         polylogue --action search --action file_edit list
         polylogue --action-sequence file_read,file_edit,shell
   list
@@ -488,7 +489,7 @@
         polylogue "urgent" --tag review delete --dry-run
         polylogue list --format json
     Combined filters:
-        polylogue --path README.md --action file_read list
+        polylogue --referenced-path README.md --action file_read list
         polylogue --action search --action file_edit list
         polylogue --action-sequence file_read,file_edit,shell list
         polylogue --action-text "pytest -q" list

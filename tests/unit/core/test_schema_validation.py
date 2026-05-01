@@ -160,6 +160,29 @@ def test_schema_validator_prefers_registry_latest(monkeypatch: pytest.MonkeyPatc
     assert "from_registry" in json_document(validator.schema["properties"])
 
 
+def test_schema_validator_payload_resolution_supports_lightweight_registry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Lightweight registries with only get_schema still support payload validation."""
+    fake_schema = {
+        "type": "object",
+        "properties": {"from_default": {"type": "string"}},
+        "additionalProperties": True,
+    }
+
+    class _FakeRegistry:
+        def get_schema(self, provider: str, version: str = "latest") -> dict[str, object] | None:
+            if provider == "chatgpt" and version == "default":
+                return fake_schema
+            return None
+
+    monkeypatch.setattr("polylogue.schemas.validator.SchemaRegistry", _FakeRegistry)
+    SchemaValidator._cache.clear()
+
+    validator = SchemaValidator.for_payload("chatgpt", {"from_default": "ok"})
+    assert "from_default" in json_document(validator.schema["properties"])
+
+
 def test_dynamic_key_maps_do_not_emit_drift_warnings() -> None:
     """Explicit dynamic-key containers should suppress key-level drift noise."""
     validator = SchemaValidator(

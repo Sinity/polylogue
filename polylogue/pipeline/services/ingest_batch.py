@@ -187,8 +187,8 @@ _MESSAGE_UPSERT_SQL = """
 INSERT INTO messages (
     message_id, conversation_id, provider_message_id, role, text,
     sort_key, content_hash, version, parent_message_id, branch_index,
-    provider_name, word_count, has_tool_use, has_thinking, has_paste
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    provider_name, word_count, has_tool_use, has_thinking, has_paste, message_type
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(message_id) DO UPDATE SET
     role = excluded.role,
     text = excluded.text,
@@ -200,13 +200,19 @@ ON CONFLICT(message_id) DO UPDATE SET
     word_count = excluded.word_count,
     has_tool_use = excluded.has_tool_use,
     has_thinking = excluded.has_thinking,
-    has_paste = excluded.has_paste
+    has_paste = excluded.has_paste,
+    message_type = excluded.message_type
 WHERE
     content_hash != excluded.content_hash
     OR IFNULL(role, '') != IFNULL(excluded.role, '')
     OR IFNULL(text, '') != IFNULL(excluded.text, '')
     OR IFNULL(parent_message_id, '') != IFNULL(excluded.parent_message_id, '')
     OR branch_index != excluded.branch_index
+    OR word_count != excluded.word_count
+    OR has_tool_use != excluded.has_tool_use
+    OR has_thinking != excluded.has_thinking
+    OR has_paste != excluded.has_paste
+    OR message_type != excluded.message_type
 """
 
 _CONTENT_BLOCK_UPSERT_SQL = """

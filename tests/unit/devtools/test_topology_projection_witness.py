@@ -21,12 +21,15 @@ PROJECTION_PATH = REPO_ROOT / "docs" / "plans" / "topology-target.yaml"
 
 
 def _load_projection() -> dict[str, object]:
-    return cast(dict[str, object], yaml.safe_load(PROJECTION_PATH.read_text(encoding="utf-8")))
+    projection = yaml.safe_load(PROJECTION_PATH.read_text(encoding="utf-8"))
+    assert isinstance(projection, dict)
+    return cast(dict[str, object], projection)
 
 
 def _files(projection: dict[str, object]) -> list[dict[str, object]]:
     files = projection.get("files", [])
     assert isinstance(files, list)
+    assert all(isinstance(item, dict) for item in files)
     return cast(list[dict[str, object]], files)
 
 
@@ -41,12 +44,26 @@ def test_every_cell_has_target_path() -> None:
     projection = _load_projection()
     files = _files(projection)
     assert files, "topology projection has no files"
-    missing = [cell.get("path") for cell in files if not cell.get("target")]
+    missing = [cell.get("path") for cell in files if not cell.get("target") or cell.get("target") == "TBD"]
     assert not missing, f"files without target: {missing!r}"
 
 
+def test_projection_covers_live_polylogue_python_files() -> None:
+    projection = _load_projection()
+    projected_paths = {str(cell.get("path")) for cell in _files(projection)}
+    live_paths = {
+        path.relative_to(REPO_ROOT).as_posix()
+        for path in (REPO_ROOT / "polylogue").glob("**/*.py")
+        if "__pycache__" not in path.parts
+    }
+    missing = sorted(live_paths - projected_paths)
+    extra = sorted(projected_paths - live_paths)
+    assert not missing, f"live Python files missing from topology projection: {missing[:10]!r}"
+    assert not extra, f"topology projection references absent Python files: {extra[:10]!r}"
+
+
 def test_projection_files_are_well_formed() -> None:
-    """Each file entry has a ``path`` and ``loc``; a target may be ``TBD`` during migration."""
+    """Each file entry has a ``path`` and ``loc``."""
     projection = _load_projection()
     files = _files(projection)
     bad = [item for item in files if not item.get("path") or not isinstance(item.get("loc"), int)]
@@ -54,11 +71,14 @@ def test_projection_files_are_well_formed() -> None:
 
 
 def test_every_owner_appears_in_files() -> None:
-    """Each owner declared in the projection's owner-counts has at least one file."""
+    """Each file row declares a concrete owner from the projection vocabulary."""
     projection = _load_projection()
     files = _files(projection)
-    file_owners = {str(item.get("owner") or "stable") for item in files}
-    counts = projection.get("owners", {})
-    declared_owners = set(counts.keys()) if isinstance(counts, dict) else set()
-    missing = declared_owners - file_owners
-    assert not missing, f"owners declared with no member files: {missing!r}"
+    file_owners = {str(item["owner"] if "owner" in item and item["owner"] is not None else "stable") for item in files}
+    assert file_owners
+    malformed = sorted(
+        owner
+        for owner in file_owners
+        if owner not in {"stable", "kernel", "lib-root", "storage-root"} and not owner.startswith("#")
+    )
+    assert not malformed, f"malformed topology owners: {malformed!r}"

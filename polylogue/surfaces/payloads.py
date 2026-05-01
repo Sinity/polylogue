@@ -124,14 +124,23 @@ class ConversationMessagePayload(SurfacePayloadModel):
     role: str
     text: str
     timestamp: datetime | None = None
+    message_type: str = "message"
 
     @classmethod
     def from_message(cls, message: Message) -> ConversationMessagePayload:
+        raw_message_type = getattr(message, "message_type", None)
+        if raw_message_type is None:
+            message_type = "message"
+        elif hasattr(raw_message_type, "value"):
+            message_type = str(raw_message_type.value)
+        else:
+            message_type = str(raw_message_type)
         return cls(
             id=str(message.id),
             role=normalize_role(message.role),
             text=message.text or "",
             timestamp=message.timestamp,
+            message_type=message_type,
         )
 
 
