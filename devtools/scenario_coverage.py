@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 from devtools.scenario_projection_catalog import build_scenario_projection_entries
 from polylogue.artifacts.graph import build_artifact_graph
-from polylogue.lib.json import JSONDocument, json_document
+from polylogue.core.json import JSONDocument, json_document
 from polylogue.operations import build_declared_operation_catalog
 from polylogue.scenarios import ScenarioProjectionEntry
 

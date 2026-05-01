@@ -14,7 +14,7 @@ from polylogue.archive.raw_payload.sampling_buckets import (
     take_bucketed_samples,
 )
 from polylogue.archive.raw_payload.streams import raw_line_stream
-from polylogue.lib.json import JSONDocument, JSONValue, json_document, loads
+from polylogue.core.json import JSONDocument, JSONValue, json_document, loads
 
 
 def limit_samples(

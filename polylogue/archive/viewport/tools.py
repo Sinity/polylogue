@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from pathlib import PurePosixPath
 
 from polylogue.archive.viewport.enums import ToolCategory
-from polylogue.lib.json import JSONValue
+from polylogue.core.json import JSONValue
 
 PATH_PATTERN = re.compile(r'(?:^|[\s"\'])(/[^\s"\']+|[./][^\s"\']+)')
 NOISE_PATH_TOKENS = frozenset({"...", "//", "/dev/null", "|", "||", "&&", ";"})

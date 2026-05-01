@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from polylogue.config import get_config
-from polylogue.lib.json import JSONDocument, require_json_document
+from polylogue.core.json import JSONDocument, require_json_document
 from polylogue.lib.outcomes import OutcomeStatus
 from polylogue.pipeline.services.ingest_worker import ingest_record
 from polylogue.proof.catalog import build_verification_catalog

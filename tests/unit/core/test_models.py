@@ -15,7 +15,7 @@ from pydantic import TypeAdapter
 from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.raw_payload import build_raw_payload_envelope
 from polylogue.archive.viewport.viewports import ToolCall, classify_tool
-from polylogue.lib.json import JSONDocument, JSONValue, json_document
+from polylogue.core.json import JSONDocument, JSONValue, json_document
 from polylogue.lib.models import Message
 from polylogue.lib.provider_identity import (
     canonical_runtime_provider,

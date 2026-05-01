@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.lib.json import JSONDocument, json_document
+from polylogue.core.json import JSONDocument, json_document
 from tests.infra.cli_subprocess import run_cli, setup_isolated_workspace
 
 pytestmark = [pytest.mark.integration, pytest.mark.machine_contract]

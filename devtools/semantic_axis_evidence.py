@@ -17,7 +17,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from polylogue.lib.json import JSONDocument, require_json_value
+from polylogue.core.json import JSONDocument, require_json_value
 from polylogue.lib.outcomes import OutcomeStatus
 from polylogue.proof.models import EvidenceEnvelope, TrustMetadata
 from polylogue.scenarios import CorpusSourceKind

@@ -9,7 +9,7 @@ from typing import TypeAlias, TypeVar
 from pydantic import BaseModel
 
 from polylogue.archive.session.documents import SessionPhaseDocument, WorkEventDocument
-from polylogue.lib.json import JSONDocument, JSONValue, json_document
+from polylogue.core.json import JSONDocument, JSONValue, json_document
 from polylogue.products.archive_models import (
     SessionEnrichmentPayload,
     SessionEvidencePayload,

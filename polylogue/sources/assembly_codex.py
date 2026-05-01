@@ -6,7 +6,7 @@ import json
 from collections.abc import Mapping
 from pathlib import Path
 
-from polylogue.lib.json import json_document
+from polylogue.core.json import json_document
 from polylogue.logging import get_logger
 
 from .assembly import CodexThreadNames, SidecarData

@@ -8,7 +8,7 @@ import pytest
 
 from polylogue.archive.conversation.models import Conversation
 from polylogue.archive.message.messages import MessageCollection
-from polylogue.lib.json import JSONDocument
+from polylogue.core.json import JSONDocument
 from polylogue.pipeline.prepare import prepare_records
 from polylogue.sources.parsers.drive import parse_chunked_prompt
 from polylogue.storage.backends.async_sqlite import SQLiteBackend

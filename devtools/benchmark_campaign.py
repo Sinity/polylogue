@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TypedDict
 
-from polylogue.lib.json import JSONDocument, json_document, json_document_list
+from polylogue.core.json import JSONDocument, json_document, json_document_list
 from polylogue.scenarios import ExecutionKind, ScenarioMetadata, pytest_execution, run_execution
 
 from .authored_scenario_catalog import get_authored_scenario_catalog

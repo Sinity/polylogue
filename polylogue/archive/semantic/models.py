@@ -7,7 +7,7 @@ from datetime import datetime
 
 from polylogue.archive.action_event.action_events import ActionEvent
 from polylogue.archive.viewport.viewports import ReasoningTrace, ToolCall
-from polylogue.lib.json import JSONDocument, json_document
+from polylogue.core.json import JSONDocument, json_document
 
 
 @dataclass(frozen=True, slots=True)

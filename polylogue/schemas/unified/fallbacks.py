@@ -12,7 +12,7 @@ from polylogue.archive.provider.semantics import (
     extract_tool_calls,
 )
 from polylogue.archive.viewport.viewports import CostInfo, ReasoningTrace, TokenUsage
-from polylogue.lib.json import JSONDocument, json_document, json_document_list
+from polylogue.core.json import JSONDocument, json_document, json_document_list
 from polylogue.lib.roles import Role
 from polylogue.lib.timestamps import parse_timestamp
 from polylogue.schemas.unified.models import HarmonizedMessage, _missing_role, extract_token_usage

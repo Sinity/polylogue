@@ -771,6 +771,16 @@ files:
     target: polylogue/config.py
     owner: kernel
     reason: kernel root rule
+  - path: polylogue/core/__init__.py
+    loc: 0
+    target: polylogue/core/__init__.py
+    owner: core-primitive
+    reason: core primitive
+  - path: polylogue/core/json.py
+    loc: 140
+    target: polylogue/core/json.py
+    owner: core-primitive
+    reason: core primitive
   - path: polylogue/errors.py
     loc: 29
     target: polylogue/errors.py
@@ -794,11 +804,6 @@ files:
   - path: polylogue/lib/hashing.py
     loc: 60
     target: polylogue/lib/hashing.py
-    owner: lib-root
-    reason: lib-root primitive
-  - path: polylogue/lib/json.py
-    loc: 140
-    target: polylogue/lib/json.py
     owner: lib-root
     reason: lib-root primitive
   - path: polylogue/lib/metrics.py

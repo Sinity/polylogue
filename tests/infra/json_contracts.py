@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from polylogue.lib.json import JSONDocument, JSONValue, loads, require_json_document, require_json_value
+from polylogue.core.json import JSONDocument, JSONValue, loads, require_json_document, require_json_value
 
 JSONArray = list[JSONValue]
 

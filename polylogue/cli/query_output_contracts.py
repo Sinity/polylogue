@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from polylogue.cli.query_contracts import QueryDeliveryTarget, QueryOutputFormat
-from polylogue.lib.json import JSONDocument
+from polylogue.core.json import JSONDocument
 
 if TYPE_CHECKING:
     from polylogue.lib.models import Conversation

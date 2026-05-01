@@ -15,7 +15,7 @@ from polylogue.archive.raw_payload.sampling_extract import (
     extract_record_samples_from_raw_content,
     limit_samples,
 )
-from polylogue.lib.json import JSONDocument, JSONDocumentList, JSONScalar, JSONValue
+from polylogue.core.json import JSONDocument, JSONDocumentList, JSONScalar, JSONValue
 
 __all__ = [
     "JSONDocument",

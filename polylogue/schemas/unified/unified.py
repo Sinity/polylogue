@@ -29,7 +29,7 @@ from polylogue.archive.provider.semantics import (
     extract_reasoning_traces,
     extract_tool_calls,
 )
-from polylogue.lib.json import JSONDocument
+from polylogue.core.json import JSONDocument
 from polylogue.schemas.unified.adapters import extract_with_adapter
 from polylogue.schemas.unified.fallbacks import extract_fallback_message
 from polylogue.schemas.unified.models import HarmonizedMessage, _missing_role, extract_token_usage

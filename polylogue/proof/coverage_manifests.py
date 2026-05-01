@@ -9,7 +9,7 @@ from typing import Any
 
 import yaml
 
-from polylogue.lib.json import JSONDocument, JSONValue, require_json_value
+from polylogue.core.json import JSONDocument, JSONValue, require_json_value
 from polylogue.proof.models import SourceSpan, SubjectRef
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]

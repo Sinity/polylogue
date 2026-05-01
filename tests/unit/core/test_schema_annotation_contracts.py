@@ -21,7 +21,7 @@ from collections.abc import Mapping
 
 import pytest
 
-from polylogue.lib.json import JSONDocument
+from polylogue.core.json import JSONDocument
 from polylogue.schemas.field_stats.stats import FieldStats, _collect_field_stats
 from polylogue.schemas.generation.support import (
     _annotate_semantic_and_relational,

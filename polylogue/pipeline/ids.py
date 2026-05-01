@@ -8,8 +8,8 @@ from pathlib import Path
 from typing import TypeAlias
 
 from polylogue.assets import asset_path
+from polylogue.core.json import JSONValue
 from polylogue.lib.hashing import hash_file, hash_payload, hash_text
-from polylogue.lib.json import JSONValue
 from polylogue.sources import ParsedAttachment, ParsedConversation, ParsedMessage
 from polylogue.sources.parsers.base import ParsedContentBlock
 from polylogue.types import ContentHash, ConversationId, MessageId

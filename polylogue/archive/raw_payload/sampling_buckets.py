@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import Counter
 
-from polylogue.lib.json import JSONDocument, is_json_document, json_document
+from polylogue.core.json import JSONDocument, is_json_document, json_document
 
 RECORD_CANDIDATE_KEYS = frozenset(
     {

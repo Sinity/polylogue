@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Literal, Protocol
 
 from polylogue.config import Config
-from polylogue.lib.json import JSONDocument, dumps, require_json_document
+from polylogue.core.json import JSONDocument, dumps, require_json_document
 from polylogue.products.archive import (
     ArchiveProductUnavailableError,
     DaySessionSummaryProduct,

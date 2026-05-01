@@ -22,7 +22,7 @@ from typing_extensions import TypedDict
 
 from devtools.regression_cases import DEFAULT_REGRESSION_CASE_DIR, RegressionCase, RegressionCaseStore
 from polylogue.config import Config, Source
-from polylogue.lib.json import JSONDocument, JSONValue, is_json_document, json_document, loads, require_json_document
+from polylogue.core.json import JSONDocument, JSONValue, is_json_document, json_document, loads, require_json_document
 from polylogue.paths import blob_store_root, db_path
 from polylogue.pipeline.runner import RUN_STAGE_CHOICES, run_sources
 from polylogue.scenarios import (

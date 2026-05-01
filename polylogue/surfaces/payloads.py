@@ -13,7 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from typing_extensions import TypedDict
 
 from polylogue.archive.semantic.content_projection import ContentProjectionSpec
-from polylogue.lib.json import JSONDocument, JSONValue, require_json_document
+from polylogue.core.json import JSONDocument, JSONValue, require_json_document
 
 if TYPE_CHECKING:
     from collections.abc import Container

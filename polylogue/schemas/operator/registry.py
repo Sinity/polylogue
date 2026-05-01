@@ -6,7 +6,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Protocol
 
-from polylogue.lib.json import JSONDocument
+from polylogue.core.json import JSONDocument
 from polylogue.schemas.packages import SchemaPackageCatalog, SchemaResolution, SchemaVersionPackage
 from polylogue.schemas.tooling_models import ClusterManifest, SchemaDiff
 

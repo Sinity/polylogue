@@ -12,7 +12,7 @@ from click.testing import CliRunner
 from polylogue.cli import cli
 from polylogue.cli.shared.check_workflow import CheckCommandOptions, run_check_workflow
 from polylogue.cli.shared.types import AppEnv
-from polylogue.lib.json import JSONDocument
+from polylogue.core.json import JSONDocument
 from polylogue.readiness import ReadinessCheck, ReadinessReport, VerifyStatus
 from polylogue.schemas.operator.models import (
     ArtifactCohortListResult,

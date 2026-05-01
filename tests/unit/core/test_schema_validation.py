@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 import pytest
 
-from polylogue.lib.json import json_document
+from polylogue.core.json import json_document
 from polylogue.scenarios import CorpusSpec
 from polylogue.schemas import ValidationResult
 from polylogue.schemas.registry import SchemaRegistry
