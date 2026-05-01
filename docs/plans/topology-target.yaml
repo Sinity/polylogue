@@ -791,18 +791,6 @@ files:
     target: polylogue/lib/dates.py
     owner: lib-root
     reason: lib-root primitive
-  - path: polylogue/lib/embeddings/__init__.py
-    loc: 25
-    target: polylogue/lib/embeddings/__init__.py
-    owner: stable
-  - path: polylogue/lib/embeddings/runtime.py
-    loc: 144
-    target: polylogue/lib/embeddings/runtime.py
-    owner: stable
-  - path: polylogue/lib/embeddings/stats.py
-    loc: 150
-    target: polylogue/lib/embeddings/stats.py
-    owner: stable
   - path: polylogue/lib/hashing.py
     loc: 60
     target: polylogue/lib/hashing.py
@@ -2588,12 +2576,16 @@ files:
     target: polylogue/storage/derived/products.py
     owner: stable
   - path: polylogue/storage/embeddings/__init__.py
-    loc: 0
+    loc: 25
     target: polylogue/storage/embeddings/__init__.py
     owner: stable
   - path: polylogue/storage/embeddings/embedding_stats.py
     loc: 254
     target: polylogue/storage/embeddings/embedding_stats.py
+    owner: stable
+  - path: polylogue/storage/embeddings/materialization.py
+    loc: 144
+    target: polylogue/storage/embeddings/materialization.py
     owner: stable
   - path: polylogue/storage/embeddings/models.py
     loc: 22
@@ -2602,6 +2594,10 @@ files:
   - path: polylogue/storage/embeddings/sql.py
     loc: 45
     target: polylogue/storage/embeddings/sql.py
+    owner: stable
+  - path: polylogue/storage/embeddings/status_payload.py
+    loc: 150
+    target: polylogue/storage/embeddings/status_payload.py
     owner: stable
   - path: polylogue/storage/embeddings/support.py
     loc: 237

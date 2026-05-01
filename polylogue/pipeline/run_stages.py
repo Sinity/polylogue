@@ -455,7 +455,7 @@ async def execute_embed_stage(
     import click
 
     if stats_only:
-        from polylogue.lib.embeddings.stats import embedding_status_payload
+        from polylogue.storage.embeddings.status_payload import embedding_status_payload
 
         class _StatsEnv:
             def __init__(self, cfg: Config) -> None:
@@ -492,7 +492,7 @@ async def execute_embed_stage(
     if model != "voyage-4":
         vec_provider.model = model
 
-    from polylogue.lib.embeddings.runtime import (
+    from polylogue.storage.embeddings.materialization import (
         embed_conversation_sync,
         iter_pending_conversations,
     )

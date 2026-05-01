@@ -7,7 +7,7 @@ from collections.abc import Mapping
 
 import click
 
-from polylogue.lib.embeddings.stats import (
+from polylogue.storage.embeddings.status_payload import (
     EmbeddingStatusPayload,
     RetrievalBandPayload,
     embedding_status_payload,

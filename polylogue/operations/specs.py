@@ -340,7 +340,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         produces=("embedding_status_results",),
         path_targets=("embedding-status-query-loop",),
         code_refs=(
-            "polylogue.cli.shared.embed_stats.embedding_status_payload",
+            "polylogue.storage.embeddings.status_payload.embedding_status_payload",
             "polylogue.cli.shared.embed_stats.render_embedding_stats",
         ),
         surfaces=("run.embed", "embed", "doctor", "retrieval"),
