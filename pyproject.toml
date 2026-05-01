@@ -26,7 +26,7 @@ dependencies = [
   "google-auth-oauthlib",
   "google-api-python-client",
   "google-auth-httplib2",
-  "httpx[http2]>=0.27.0,<1.0",
+  "httpx[http2]>=0.28.1,<1.0",
   "rich>=13.0.0",
   "textual>=0.47.0",
   "jinja2",
