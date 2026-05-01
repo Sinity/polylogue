@@ -16,8 +16,8 @@ from polylogue.lib.tail_overlay import TailOverlayInfo, tail_overlay_from_provid
 from polylogue.types import ConversationId
 
 if TYPE_CHECKING:
+    from polylogue.archive.projection.projections import ConversationProjection
     from polylogue.lib.conversation.models import Conversation
-    from polylogue.lib.projection.projections import ConversationProjection
     from polylogue.lib.semantic.content_projection import ContentProjectionSpec
 
 
@@ -220,8 +220,8 @@ class ConversationRuntimeMixin:
         return _coerce_optional_int(self.provider_meta.get("total_duration_ms")) or 0
 
     def project(self) -> ConversationProjection:
+        from polylogue.archive.projection.projections import ConversationProjection
         from polylogue.lib.conversation.models import Conversation
-        from polylogue.lib.projection.projections import ConversationProjection
 
         if not isinstance(self, Conversation):
             raise TypeError(f"projection requires Conversation, got {type(self).__name__}")

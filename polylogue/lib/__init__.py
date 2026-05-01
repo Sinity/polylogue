@@ -9,11 +9,11 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from polylogue.archive.attachment.models import Attachment
+    from polylogue.archive.projection.projections import ConversationProjection
     from polylogue.lib.conversation.branch_type import BranchType
     from polylogue.lib.conversation.models import Conversation
     from polylogue.lib.message.messages import MessageCollection
     from polylogue.lib.message.models import DialoguePair, Message
-    from polylogue.lib.projection.projections import ConversationProjection
     from polylogue.lib.roles import Role
     from polylogue.lib.semantic.content_projection import ContentKind, ContentProjectionSpec
 
@@ -25,7 +25,7 @@ def __getattr__(name: str) -> object:
         "ContentKind": ("polylogue.lib.semantic.content_projection", "ContentKind"),
         "ContentProjectionSpec": ("polylogue.lib.semantic.content_projection", "ContentProjectionSpec"),
         "Conversation": ("polylogue.lib.conversation.models", "Conversation"),
-        "ConversationProjection": ("polylogue.lib.projection.projections", "ConversationProjection"),
+        "ConversationProjection": ("polylogue.archive.projection.projections", "ConversationProjection"),
         "DialoguePair": ("polylogue.lib.message.models", "DialoguePair"),
         "Message": ("polylogue.lib.message.models", "Message"),
         "MessageCollection": ("polylogue.lib.message.messages", "MessageCollection"),
