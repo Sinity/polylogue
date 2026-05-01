@@ -11,7 +11,7 @@ if TYPE_CHECKING:
 
 
 def _action_events_for(conversation: Conversation) -> tuple[ActionEvent, ...]:
-    from polylogue.lib.semantic.facts import build_conversation_semantic_facts
+    from polylogue.archive.semantic.facts import build_conversation_semantic_facts
 
     facts = build_conversation_semantic_facts(conversation)
     return facts.action_events

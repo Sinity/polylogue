@@ -6,14 +6,14 @@ from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from polylogue.archive.phase.extraction import extract_phases
+from polylogue.archive.semantic.facts import build_conversation_semantic_facts
 from polylogue.lib.conversation.attribution import extract_attribution
 from polylogue.lib.conversation.extraction import extract_work_events
-from polylogue.lib.semantic.facts import build_conversation_semantic_facts
 from polylogue.lib.session.models import SessionAnalysis, SessionProfile
 
 if TYPE_CHECKING:
+    from polylogue.archive.semantic.facts import ConversationSemanticFacts
     from polylogue.lib.models import Conversation
-    from polylogue.lib.semantic.facts import ConversationSemanticFacts
 
 
 def build_session_analysis(

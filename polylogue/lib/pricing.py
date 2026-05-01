@@ -10,8 +10,8 @@ from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from polylogue.archive.semantic.facts import message_model_name, message_tokens
 from polylogue.lib.json import json_document
-from polylogue.lib.semantic.facts import message_model_name, message_tokens
 from polylogue.lib.viewport.viewports import TokenUsage
 
 if TYPE_CHECKING:

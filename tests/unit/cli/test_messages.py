@@ -6,11 +6,11 @@ from types import TracebackType
 from typing import cast
 from unittest.mock import MagicMock, patch
 
+from polylogue.archive.semantic.content_projection import ContentProjectionSpec
 from polylogue.cli.messages import run_messages, run_raw
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
-from polylogue.lib.semantic.content_projection import ContentProjectionSpec
 
 
 class _FakeApi:

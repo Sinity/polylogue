@@ -12,9 +12,9 @@ from polylogue.cli.query_stats import emit_structured_stats
 if TYPE_CHECKING:
     from polylogue.archive.action_event.action_events import ActionEvent
     from polylogue.archive.query.spec import ConversationQuerySpec
+    from polylogue.archive.semantic.facts import ConversationSemanticFacts
     from polylogue.cli.shared.types import AppEnv
     from polylogue.lib.models import Conversation, ConversationSummary
-    from polylogue.lib.semantic.facts import ConversationSemanticFacts
     from polylogue.protocols import ConversationSemanticStatsStore
     from polylogue.storage.runtime import AttachmentRecord
 
@@ -230,7 +230,7 @@ async def output_stats_by_semantic_ids(
                 for conversation_id in batch_ids
             }
         else:
-            from polylogue.lib.semantic.facts import build_conversation_semantic_facts
+            from polylogue.archive.semantic.facts import build_conversation_semantic_facts
 
             conversations = await _load_semantic_stats_conversations(repo, batch_ids)
             conversation_actions = {

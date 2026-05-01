@@ -285,6 +285,31 @@ files:
     target: polylogue/archive/raw_payload/streams.py
     owner: archive-raw-payload
     reason: archive-domain semantics
+  - path: polylogue/archive/semantic/__init__.py
+    loc: 0
+    target: polylogue/archive/semantic/__init__.py
+    owner: archive-semantic
+    reason: archive-domain semantics
+  - path: polylogue/archive/semantic/content_projection.py
+    loc: 343
+    target: polylogue/archive/semantic/content_projection.py
+    owner: archive-semantic
+    reason: archive-domain semantics
+  - path: polylogue/archive/semantic/facts.py
+    loc: 442
+    target: polylogue/archive/semantic/facts.py
+    owner: archive-semantic
+    reason: archive-domain semantics
+  - path: polylogue/archive/semantic/models.py
+    loc: 254
+    target: polylogue/archive/semantic/models.py
+    owner: archive-semantic
+    reason: archive-domain semantics
+  - path: polylogue/archive/semantic/support.py
+    loc: 145
+    target: polylogue/archive/semantic/support.py
+    owner: archive-semantic
+    reason: archive-domain semantics
   - path: polylogue/artifacts/__init__.py
     loc: 1072
     target: polylogue/artifacts/__init__.py
@@ -772,26 +797,6 @@ files:
     target: polylogue/lib/security.py
     owner: lib-root
     reason: lib-root primitive
-  - path: polylogue/lib/semantic/__init__.py
-    loc: 0
-    target: polylogue/lib/semantic/__init__.py
-    owner: stable
-  - path: polylogue/lib/semantic/content_projection.py
-    loc: 343
-    target: polylogue/lib/semantic/content_projection.py
-    owner: stable
-  - path: polylogue/lib/semantic/facts.py
-    loc: 442
-    target: polylogue/lib/semantic/facts.py
-    owner: stable
-  - path: polylogue/lib/semantic/models.py
-    loc: 254
-    target: polylogue/lib/semantic/models.py
-    owner: stable
-  - path: polylogue/lib/semantic/support.py
-    loc: 145
-    target: polylogue/lib/semantic/support.py
-    owner: stable
   - path: polylogue/lib/session/__init__.py
     loc: 0
     target: polylogue/lib/session/__init__.py
