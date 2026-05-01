@@ -1,7 +1,7 @@
 """Canonical archive operations shared across facade, CLI, and MCP surfaces."""
 
 from .archive import (
-    ArchiveDebtProduct,
+    ArchiveDebtInsight,
     ArchiveOperations,
     ArchiveStats,
     get_provider_counts,
@@ -16,7 +16,7 @@ from .specs import (
 )
 
 __all__ = [
-    "ArchiveDebtProduct",
+    "ArchiveDebtInsight",
     "ArchiveOperations",
     "ArchiveStats",
     "build_declared_operation_catalog",

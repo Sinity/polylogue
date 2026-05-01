@@ -8,12 +8,12 @@ from collections.abc import Mapping
 from pydantic import BaseModel
 
 from polylogue.core.json import dumps as json_dumps
-from polylogue.storage.products.aggregate.records import (
+from polylogue.storage.insights.aggregate.records import (
     DaySessionSummaryRecord,
     SessionTagRollupRecord,
 )
-from polylogue.storage.products.session.records import SessionProfileRecord, WorkThreadRecord
-from polylogue.storage.products.timeline.records import SessionPhaseRecord, SessionWorkEventRecord
+from polylogue.storage.insights.session.records import SessionProfileRecord, WorkThreadRecord
+from polylogue.storage.insights.timeline.records import SessionPhaseRecord, SessionWorkEventRecord
 from polylogue.storage.runtime.action.records import ActionEventRecord
 from polylogue.storage.runtime.archive.records import (
     AttachmentRecord,
@@ -33,7 +33,7 @@ from polylogue.storage.runtime.store_constants import (
     SESSION_ENRICHMENT_VERSION,
     SESSION_INFERENCE_FAMILY,
     SESSION_INFERENCE_VERSION,
-    SESSION_PRODUCT_MATERIALIZER_VERSION,
+    SESSION_INSIGHT_MATERIALIZER_VERSION,
 )
 from polylogue.types import AttachmentId, ConversationId, MessageId
 
@@ -74,7 +74,7 @@ __all__ = [
     "SESSION_ENRICHMENT_VERSION",
     "SESSION_INFERENCE_FAMILY",
     "SESSION_INFERENCE_VERSION",
-    "SESSION_PRODUCT_MATERIALIZER_VERSION",
+    "SESSION_INSIGHT_MATERIALIZER_VERSION",
     "SessionPhaseRecord",
     "SessionProfileRecord",
     "SessionTagRollupRecord",

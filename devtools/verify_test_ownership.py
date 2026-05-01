@@ -92,7 +92,7 @@ def test_files() -> list[Path]:
     return sorted(out)
 
 
-PRODUCTION_PREFIXES = ("polylogue", "devtools")
+INSIGHTION_PREFIXES = ("polylogue", "devtools")
 
 
 def imports_in(path: Path) -> set[str]:
@@ -104,12 +104,12 @@ def imports_in(path: Path) -> set[str]:
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
-                if any(alias.name.startswith(prefix) for prefix in PRODUCTION_PREFIXES):
+                if any(alias.name.startswith(prefix) for prefix in INSIGHTION_PREFIXES):
                     found.add(alias.name)
         elif (
             isinstance(node, ast.ImportFrom)
             and node.module
-            and any(node.module.startswith(prefix) for prefix in PRODUCTION_PREFIXES)
+            and any(node.module.startswith(prefix) for prefix in INSIGHTION_PREFIXES)
         ):
             found.add(node.module)
     return found

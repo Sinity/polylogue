@@ -1,4 +1,4 @@
-"""Consolidated archive repair: orphan detection, FTS repair, session products, WAL."""
+"""Consolidated archive repair: orphan detection, FTS repair, session insights, WAL."""
 
 from __future__ import annotations
 
@@ -19,12 +19,12 @@ from polylogue.maintenance.targets import (
 )
 from polylogue.protocols import ProgressCallback
 from polylogue.storage.action_events.artifacts import ActionEventArtifactState
-from polylogue.storage.products.session.runtime import SessionProductReadyFlag, SessionProductStatusSnapshot
+from polylogue.storage.insights.session.runtime import SessionInsightReadyFlag, SessionInsightStatusSnapshot
 
 logger = get_logger(__name__)
 _MAINTENANCE_TARGET_CATALOG = build_maintenance_target_catalog()
 
-_SESSION_PRODUCT_READY_FLAGS: tuple[SessionProductReadyFlag, ...] = (
+_SESSION_INSIGHT_READY_FLAGS: tuple[SessionInsightReadyFlag, ...] = (
     "profile_rows_ready",
     "profile_merged_fts_ready",
     "profile_evidence_fts_ready",
@@ -71,7 +71,7 @@ class RepairResult:
 
 
 @dataclass(slots=True, frozen=True)
-class _SessionProductRepairAssessment:
+class _SessionInsightRepairAssessment:
     row_debt: int
     fts_debt: int
 
@@ -201,7 +201,7 @@ def _fts_repair_count(*, source_rows: int, indexed_rows: int, duplicates: int) -
     return _positive_count(source_rows - indexed_rows) + _positive_count(duplicates)
 
 
-def _session_product_row_repair_count(status: SessionProductStatusSnapshot) -> int:
+def _session_product_row_repair_count(status: SessionInsightStatusSnapshot) -> int:
     return (
         status.missing_profile_row_count
         + status.stale_profile_row_count
@@ -217,7 +217,7 @@ def _session_product_row_repair_count(status: SessionProductStatusSnapshot) -> i
     )
 
 
-def _session_product_fts_repair_count(status: SessionProductStatusSnapshot) -> int:
+def _session_product_fts_repair_count(status: SessionInsightStatusSnapshot) -> int:
     return sum(
         (
             _fts_repair_count(
@@ -254,15 +254,15 @@ def _session_product_fts_repair_count(status: SessionProductStatusSnapshot) -> i
     )
 
 
-def _assess_session_product_repairs(status: SessionProductStatusSnapshot) -> _SessionProductRepairAssessment:
-    return _SessionProductRepairAssessment(
+def _assess_session_product_repairs(status: SessionInsightStatusSnapshot) -> _SessionInsightRepairAssessment:
+    return _SessionInsightRepairAssessment(
         row_debt=_session_product_row_repair_count(status),
         fts_debt=_session_product_fts_repair_count(status),
     )
 
 
-def _session_product_status_ready(status: SessionProductStatusSnapshot) -> bool:
-    return all(status.ready_flag(flag) for flag in _SESSION_PRODUCT_READY_FLAGS)
+def _session_product_status_ready(status: SessionInsightStatusSnapshot) -> bool:
+    return all(status.ready_flag(flag) for flag in _SESSION_INSIGHT_READY_FLAGS)
 
 
 def action_event_repair_count(derived_statuses: dict[str, DerivedModelStatus]) -> int:
@@ -690,7 +690,7 @@ def preview_orphaned_attachments(*, count: int) -> RepairResult:
 
 
 # ---------------------------------------------------------------------------
-# Derived repairs (session products, action events, FTS, WAL)
+# Derived repairs (session insights, action events, FTS, WAL)
 # ---------------------------------------------------------------------------
 
 
@@ -702,8 +702,8 @@ def repair_session_products(
     progress_total: int | None = None,
 ) -> RepairResult:
     from polylogue.storage.backends.connection import connection_context
-    from polylogue.storage.products.session.rebuild import rebuild_session_products_sync
-    from polylogue.storage.products.session.status import session_product_status_sync
+    from polylogue.storage.insights.session.rebuild import rebuild_session_products_sync
+    from polylogue.storage.insights.session.status import session_product_status_sync
 
     try:
         with connection_context(None) as conn:
@@ -715,9 +715,9 @@ def repair_session_products(
                     "session_products",
                     repaired_count=assessment.pending,
                     success=True,
-                    detail="Would: session products already ready"
+                    detail="Would: session insights already ready"
                     if assessment.pending == 0
-                    else f"Would: rebuild session products ({assessment.pending:,} pending items)",
+                    else f"Would: rebuild session insights ({assessment.pending:,} pending items)",
                 )
 
             rebuilt = rebuild_session_products_sync(
@@ -732,14 +732,14 @@ def repair_session_products(
                 "session_products",
                 repaired_count=rebuilt.total(),
                 success=success,
-                detail="Session products ready" if success else "Session products still incomplete",
+                detail="Session insights ready" if success else "Session insights still incomplete",
             )
     except Exception as exc:
         return _repair_result(
             "session_products",
             repaired_count=0,
             success=False,
-            detail=f"Failed to repair session products: {exc}",
+            detail=f"Failed to repair session insights: {exc}",
         )
 
 
@@ -748,7 +748,7 @@ def preview_session_products(*, count: int) -> RepairResult:
         "session_products",
         repaired_count=count,
         success=True,
-        detail="Would: session products already ready"
+        detail="Would: session insights already ready"
         if count == 0
         else f"Would: rebuild session-product rows/fts for {count:,} pending items",
     )

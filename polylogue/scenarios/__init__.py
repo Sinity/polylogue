@@ -36,6 +36,11 @@ from .execution import (
     pytest_execution,
     runner_execution,
 )
+from .insight_surfaces import (
+    INSIGHT_SURFACE_FAMILIES,
+    build_insight_contract_surfaces,
+    build_live_insight_surface_lanes,
+)
 from .metadata import (
     ScenarioMetadata,
     declared_operation_target_names,
@@ -50,11 +55,6 @@ from .operational_surfaces import (
     build_live_operational_surface_lanes,
     build_memory_budget_operational_surface_lanes,
     build_operational_contract_surfaces,
-)
-from .product_surfaces import (
-    PRODUCT_SURFACE_FAMILIES,
-    build_live_product_surface_lanes,
-    build_product_contract_surfaces,
 )
 from .projections import (
     ScenarioProjectionEntry,
@@ -110,7 +110,7 @@ __all__ = [
     "OPERATIONAL_SURFACE_FAMILIES",
     "PipelineProbeInputMode",
     "PipelineProbeRequest",
-    "PRODUCT_SURFACE_FAMILIES",
+    "INSIGHT_SURFACE_FAMILIES",
     "ScenarioMetadata",
     "ScenarioProjectionEntry",
     "ScenarioProjectionSource",
@@ -125,8 +125,8 @@ __all__ = [
     "RunnerInvocation",
     "runner_execution",
     "run_execution",
-    "build_live_product_surface_lanes",
-    "build_product_contract_surfaces",
+    "build_insight_contract_surfaces",
+    "build_live_insight_surface_lanes",
     "runtime_artifact_graph",
     "runtime_artifact_target_names",
     "runtime_maintenance_target_names",

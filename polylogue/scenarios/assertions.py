@@ -6,7 +6,7 @@ import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
-from polylogue.products.authored_payloads import PayloadDict, payload_float, payload_int, payload_items
+from polylogue.insights.authored_payloads import PayloadDict, payload_float, payload_int, payload_items
 
 
 @dataclass(frozen=True)

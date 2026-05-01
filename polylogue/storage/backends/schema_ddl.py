@@ -26,14 +26,14 @@ from polylogue.storage.backends.schema_ddl_aux import (
 from polylogue.storage.backends.schema_ddl_aux import (
     VEC0_DDL as _VEC0_DDL,
 )
-from polylogue.storage.backends.schema_ddl_product_aggregates import (
-    SESSION_PRODUCT_AGGREGATE_DDL as _SESSION_PRODUCT_AGGREGATE_DDL,
+from polylogue.storage.backends.schema_ddl_insight_aggregates import (
+    SESSION_INSIGHT_AGGREGATE_DDL as _SESSION_INSIGHT_AGGREGATE_DDL,
 )
-from polylogue.storage.backends.schema_ddl_product_profiles import (
-    SESSION_PRODUCT_PROFILE_DDL as _SESSION_PRODUCT_PROFILE_DDL,
+from polylogue.storage.backends.schema_ddl_insight_profiles import (
+    SESSION_INSIGHT_PROFILE_DDL as _SESSION_INSIGHT_PROFILE_DDL,
 )
-from polylogue.storage.backends.schema_ddl_product_timelines import (
-    SESSION_PRODUCT_TIMELINE_DDL as _SESSION_PRODUCT_TIMELINE_DDL,
+from polylogue.storage.backends.schema_ddl_insight_timelines import (
+    SESSION_INSIGHT_TIMELINE_DDL as _SESSION_INSIGHT_TIMELINE_DDL,
 )
 
 SCHEMA_VERSION = 3
@@ -55,9 +55,9 @@ SCHEMA_DDL = (
 SCHEMA_DDL += _ACTION_EVENT_DDL
 SCHEMA_DDL += _ACTION_FTS_DDL
 
-_SESSION_PRODUCT_DDL = _SESSION_PRODUCT_PROFILE_DDL + _SESSION_PRODUCT_TIMELINE_DDL + _SESSION_PRODUCT_AGGREGATE_DDL
+_SESSION_INSIGHT_DDL = _SESSION_INSIGHT_PROFILE_DDL + _SESSION_INSIGHT_TIMELINE_DDL + _SESSION_INSIGHT_AGGREGATE_DDL
 
-SCHEMA_DDL += _SESSION_PRODUCT_DDL
+SCHEMA_DDL += _SESSION_INSIGHT_DDL
 
 __all__ = [
     "SCHEMA_VERSION",
@@ -69,6 +69,6 @@ __all__ = [
     "_MESSAGE_FTS_DDL",
     "_PUBLICATION_DDL",
     "_RAW_ARCHIVE_DDL",
-    "_SESSION_PRODUCT_DDL",
+    "_SESSION_INSIGHT_DDL",
     "_VEC0_DDL",
 ]

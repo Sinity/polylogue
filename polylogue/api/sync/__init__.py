@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, TypeVar
 
 from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.api.sync.conversations import SyncConversationQueriesMixin
-from polylogue.api.sync.products import SyncProductQueriesMixin
+from polylogue.api.sync.insights import SyncInsightQueriesMixin
 
 if TYPE_CHECKING:
     from polylogue.api import Polylogue
@@ -37,7 +37,7 @@ def _run(coro: Awaitable[T]) -> T:
     return run_coroutine_sync(coro)
 
 
-class SyncPolylogue(SyncConversationQueriesMixin, SyncProductQueriesMixin):
+class SyncPolylogue(SyncConversationQueriesMixin, SyncInsightQueriesMixin):
     """Synchronous wrapper around the async ``Polylogue`` facade."""
 
     _facade: Polylogue

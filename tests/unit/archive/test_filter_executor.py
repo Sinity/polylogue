@@ -1,6 +1,6 @@
 """Tests for ConversationFilter SQL pushdown and execution plan logic.
 
-Production code under test: polylogue/archive/filter/filters.py
+Insightion code under test: polylogue/archive/filter/filters.py
 Methods: _sql_pushdown_params, _needs_content_loading, can_use_summaries, _has_post_filters
 """
 

@@ -147,12 +147,12 @@ Commands:
   diagnostics      Temporal session diagnostics
   doctor           Health check with optional maintenance and cleanup...
   export           Export one known conversation by ID.
+  insights         Inspect durable archive insights.
   list             List matched conversations.
   mcp              Start the MCP server for AI assistant integration.
   messages         Show paginated messages for a conversation.
   neighbors        Show explainable neighboring or near-duplicate...
   open             Open matched conversation in browser/editor.
-  products         Inspect durable archive data products.
   raw              Show raw provider records for a conversation.
   reset            Reset database, blob store, assets, rendered outputs,...
   resume           Reconstruct work-state context for a fresh agent session.
@@ -307,31 +307,31 @@ Options:
   -h, --help                      Show this message and exit.
 ```
 
-## Products
+## Insights
 
 ```text
-Usage: polylogue products [OPTIONS] COMMAND [ARGS]...
+Usage: polylogue insights [OPTIONS] COMMAND [ARGS]...
 
-  Inspect durable archive data products.
+  Inspect durable archive insights.
 
 Options:
   -h, --help  Show this message and exit.
 
 Commands:
-  analytics       List provider-level analytics products.
+  analytics       List provider-level analytics insights.
   cost-rollups    List provider/model cost rollups.
   costs           List session-level cost estimates.
-  day-summaries   List durable day-level session summary products.
-  debt            List archive debt and maintenance readiness products.
-  enrichments     List durable probabilistic session-enrichment products.
-  export          Export versioned archive-product bundles.
-  phases          List durable session-phase products.
-  profiles        List durable session-profile products.
-  status          Report product materialization coverage and readiness.
-  tags            List durable session-tag rollup products.
-  threads         List durable work-thread products.
-  week-summaries  List durable week-level session summary products.
-  work-events     List durable work-event products.
+  day-summaries   List durable day-level session summary insights.
+  debt            List archive debt and maintenance readiness insights.
+  enrichments     List durable probabilistic session-enrichment insights.
+  export          Export versioned archive-insight bundles.
+  phases          List durable session-phase insights.
+  profiles        List durable session-profile insights.
+  status          Report insight materialization coverage and readiness.
+  tags            List durable session-tag rollup insights.
+  threads         List durable work-thread insights.
+  week-summaries  List durable week-level session summary insights.
+  work-events     List durable work-event insights.
 ```
 
 ## Doctor

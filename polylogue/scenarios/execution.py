@@ -5,8 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 
-from polylogue.maintenance.targets import build_maintenance_target_catalog
-from polylogue.products.authored_payloads import (
+from polylogue.insights.authored_payloads import (
     PayloadDict,
     PayloadMap,
     merge_unique_string_tuples,
@@ -16,6 +15,7 @@ from polylogue.products.authored_payloads import (
     payload_string,
     payload_string_tuple,
 )
+from polylogue.maintenance.targets import build_maintenance_target_catalog
 
 from .corpus import CorpusRequest, CorpusSourceKind
 from .metadata import ScenarioMetadata
@@ -48,7 +48,7 @@ _KNOWN_POLYLOGUE_SUBCOMMANDS = frozenset(
         "audit",
         "doctor",
         "embed",
-        "products",
+        "insights",
         "render",
         "run",
         "schema",
@@ -56,7 +56,7 @@ _KNOWN_POLYLOGUE_SUBCOMMANDS = frozenset(
         "tags",
     }
 )
-_PRODUCT_OPERATION_BY_METHOD = {
+_INSIGHT_OPERATION_BY_METHOD = {
     "list_session_profile_products": "query-session-profiles",
     "list_session_enrichment_products": "query-session-enrichments",
     "list_session_work_event_products": "query-session-work-events",
@@ -68,7 +68,7 @@ _PRODUCT_OPERATION_BY_METHOD = {
     "list_provider_analytics_products": "query-provider-analytics",
     "list_archive_debt_products": "query-archive-debt",
 }
-_PRODUCT_SUBCOMMAND_OPERATION_NAMES = {
+_INSIGHT_SUBCOMMAND_OPERATION_NAMES = {
     "status": "query-session-product-status",
     "debt": "query-archive-debt",
 }
@@ -106,24 +106,24 @@ def _first_non_option(argv: tuple[str, ...]) -> str | None:
 
 
 def _metadata_for_polylogue_products(argv: tuple[str, ...]) -> ScenarioMetadata:
-    from polylogue.products.registry import PRODUCT_REGISTRY
+    from polylogue.insights.registry import INSIGHT_REGISTRY
 
     try:
-        products_index = argv.index("products")
+        products_index = argv.index("insights")
     except ValueError:
         return ScenarioMetadata()
     if products_index + 1 >= len(argv):
         return ScenarioMetadata()
     subcommand = argv[products_index + 1]
-    direct_operation = _PRODUCT_SUBCOMMAND_OPERATION_NAMES.get(subcommand)
+    direct_operation = _INSIGHT_SUBCOMMAND_OPERATION_NAMES.get(subcommand)
     if direct_operation:
         return _metadata_for_operations(direct_operation)
     operation_name = next(
         (
-            _PRODUCT_OPERATION_BY_METHOD[product.operations_method_name]
-            for product in PRODUCT_REGISTRY.values()
+            _INSIGHT_OPERATION_BY_METHOD[product.operations_method_name]
+            for product in INSIGHT_REGISTRY.values()
             if product.resolved_cli_command_name == subcommand
-            and product.operations_method_name in _PRODUCT_OPERATION_BY_METHOD
+            and product.operations_method_name in _INSIGHT_OPERATION_BY_METHOD
         ),
         "",
     )
@@ -201,7 +201,7 @@ def _metadata_for_polylogue_run(argv: tuple[str, ...]) -> ScenarioMetadata:
 def _default_metadata_for_polylogue(argv: tuple[str, ...]) -> ScenarioMetadata:
     if "schema" in argv:
         return _metadata_for_polylogue_schema(argv)
-    if "products" in argv:
+    if "insights" in argv:
         return _metadata_for_polylogue_products(argv)
     if "doctor" in argv:
         return _metadata_for_polylogue_doctor(argv)

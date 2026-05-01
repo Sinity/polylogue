@@ -43,16 +43,16 @@ def test_render_artifact_graph_text_mentions_the_current_runtime_paths() -> None
     assert "project-session-product-readiness" in rendered
     assert "project-archive-readiness" in rendered
     assert "json-doctor-action-event-preview" in rendered
-    assert "json-doctor-session-products-preview" in rendered
+    assert "json-doctor-session-insights-preview" in rendered
     assert "run-preview-reparse" in rendered
     assert "startup-readiness" in rendered
     assert "retrieval-checks" in rendered
     assert "synthetic-benchmark:action-event-materialization" in rendered
     assert "synthetic-benchmark:session-product-materialization" in rendered
-    assert "exercise:json-products-profiles" in rendered
-    assert "exercise:json-products-work-events" in rendered
-    assert "validation-lane:live-products-status" in rendered
-    assert "validation-lane:live-products-debt" in rendered
+    assert "exercise:json-insights-profiles" in rendered
+    assert "exercise:json-insights-work-events" in rendered
+    assert "validation-lane:live-insights-status" in rendered
+    assert "validation-lane:live-insights-debt" in rendered
     assert "maintenance action_event_read_model:" in rendered
     assert "maintenance dangling_fts:" in rendered
     assert "maintenance session_products:" in rendered
@@ -125,12 +125,12 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
         (ref["source"], ref["name"], ref["origin"])
         for ref in payload["scenario_coverage"]["artifacts"]["session_product_rows"]
     } >= {
-        ("exercise", "json-doctor-session-products-preview", "generated.json-contract"),
+        ("exercise", "json-doctor-session-insights-preview", "generated.json-contract"),
         ("synthetic-benchmark", "session-product-materialization", "authored.synthetic-benchmark"),
     }
     assert (
         "exercise",
-        "json-doctor-session-products-preview",
+        "json-doctor-session-insights-preview",
         "generated.json-contract",
     ) in {
         (ref["source"], ref["name"], ref["origin"])
@@ -138,7 +138,7 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
     }
     assert (
         "exercise",
-        "json-doctor-session-products-preview",
+        "json-doctor-session-insights-preview",
         "generated.json-contract",
     ) in {
         (ref["source"], ref["name"], ref["origin"])
@@ -235,11 +235,11 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
         "authored.synthetic-benchmark",
     ) in {
         (ref["source"], ref["name"], ref["origin"])
-        for ref in payload["scenario_coverage"]["operations"]["materialize-session-products"]
+        for ref in payload["scenario_coverage"]["operations"]["materialize-session-insights"]
     }
     assert (
         "exercise",
-        "json-products-profiles",
+        "json-insights-profiles",
         "generated.json-contract",
     ) in {
         (ref["source"], ref["name"], ref["origin"])
@@ -247,7 +247,7 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
     }
     assert (
         "validation-lane",
-        "live-products-enrichments",
+        "live-insights-enrichments",
         "authored.validation-lane",
     ) in {
         (ref["source"], ref["name"], ref["origin"])
@@ -255,7 +255,7 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
     }
     assert (
         "exercise",
-        "json-products-work-events",
+        "json-insights-work-events",
         "generated.json-contract",
     ) in {
         (ref["source"], ref["name"], ref["origin"])
@@ -263,7 +263,7 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
     }
     assert (
         "exercise",
-        "json-products-threads",
+        "json-insights-threads",
         "generated.json-contract",
     ) in {
         (ref["source"], ref["name"], ref["origin"])
@@ -271,7 +271,7 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
     }
     assert (
         "validation-lane",
-        "live-products-status",
+        "live-insights-status",
         "authored.validation-lane",
     ) in {
         (ref["source"], ref["name"], ref["origin"])
@@ -279,7 +279,7 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
     }
     assert (
         "validation-lane",
-        "live-products-debt",
+        "live-insights-debt",
         "authored.validation-lane",
     ) in {
         (ref["source"], ref["name"], ref["origin"])

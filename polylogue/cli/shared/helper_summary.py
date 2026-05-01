@@ -10,8 +10,8 @@ from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.cli.shared.helper_support import load_effective_config
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config, Source
+from polylogue.insights.archive import ProviderAnalyticsInsight
 from polylogue.logging import get_logger
-from polylogue.products.archive import ProviderAnalyticsProduct
 from polylogue.readiness import ReadinessReport
 from polylogue.services import RuntimeServices
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
@@ -34,13 +34,13 @@ class GetProviderCountsFn(Protocol):
     ) -> Awaitable[list[tuple[str, int]]]: ...
 
 
-class ListProviderAnalyticsProductsFn(Protocol):
+class ListProviderAnalyticsInsightsFn(Protocol):
     def __call__(
         self,
         *,
         services: RuntimeServices | None = None,
         db_path: Path | None = None,
-    ) -> Awaitable[list[ProviderAnalyticsProduct]]: ...
+    ) -> Awaitable[list[ProviderAnalyticsInsight]]: ...
 
 
 def print_summary_impl(
@@ -52,7 +52,7 @@ def print_summary_impl(
     quick_readiness_summary_fn: Callable[[Path], str],
     get_readiness_fn: Callable[[Config], ReadinessReport],
     get_provider_counts_fn: GetProviderCountsFn,
-    list_provider_analytics_products_fn: ListProviderAnalyticsProductsFn,
+    list_provider_analytics_products_fn: ListProviderAnalyticsInsightsFn,
 ) -> None:
     ui = env.ui
     config = load_effective_config(env)

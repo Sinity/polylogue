@@ -64,7 +64,7 @@ def test_build_quality_registry_exposes_live_catalogs() -> None:
     assert live_session_product_repair.path_targets == ("session-product-repair-loop",)
     assert live_session_product_repair.operation_targets == (
         "cli.json-contract",
-        "materialize-session-products",
+        "materialize-session-insights",
         "project-session-product-readiness",
     )
     search_filters = next(entry for entry in registry.benchmark_campaigns if entry.name == "search-filters")
@@ -111,10 +111,10 @@ def test_build_quality_registry_exposes_live_catalogs() -> None:
     assert "work_thread_fts" in session_products.artifact_targets
     assert "session_product_rows" in session_products.artifact_targets
     assert "session_product_fts" in session_products.artifact_targets
-    assert session_products.operation_targets == ("materialize-session-products",)
-    assert session_products.tags == ("benchmark", "synthetic", "session-products")
+    assert session_products.operation_targets == ("materialize-session-insights",)
+    assert session_products.tags == ("benchmark", "synthetic", "session-insights")
     product_profiles = next(
-        entry for entry in registry.catalog.exercise_scenarios if entry.name == "json-products-profiles"
+        entry for entry in registry.catalog.exercise_scenarios if entry.name == "json-insights-profiles"
     )
     assert product_profiles.path_targets == ("session-profile-query-loop",)
     assert product_profiles.artifact_targets == (
@@ -124,7 +124,7 @@ def test_build_quality_registry_exposes_live_catalogs() -> None:
     )
     assert product_profiles.operation_targets == ("cli.json-contract", "query-session-profiles")
     product_threads = next(
-        entry for entry in registry.catalog.exercise_scenarios if entry.name == "json-products-threads"
+        entry for entry in registry.catalog.exercise_scenarios if entry.name == "json-insights-threads"
     )
     assert product_threads.path_targets == ("work-thread-query-loop",)
     assert product_threads.artifact_targets == ("work_thread_rows", "work_thread_fts", "work_thread_results")

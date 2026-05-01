@@ -229,7 +229,7 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
         depends_on=("action_event_rows",),
         code_refs=(
             "polylogue.storage.action_events.artifacts.ActionEventArtifactState",
-            "polylogue.storage.derived.products.build_action_statuses",
+            "polylogue.storage.derived.insights.build_action_statuses",
         ),
         repair_targets=("action_event_read_model",),
         readiness_surfaces=("doctor", "archive_debt", "retrieval_evidence"),
@@ -253,8 +253,8 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
         description="Hydratable conversation/message/attachment/block rows that feed durable session-product rebuilds.",
         depends_on=("archive_conversation_rows",),
         code_refs=(
-            "polylogue.storage.products.session.rebuild.rebuild_session_products_sync",
-            "polylogue.storage.products.session.refresh.refresh_session_products_for_conversation_async",
+            "polylogue.storage.insights.session.rebuild.rebuild_session_products_sync",
+            "polylogue.storage.insights.session.refresh.refresh_session_products_for_conversation_async",
         ),
     ),
     ArtifactNode(
@@ -263,11 +263,11 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
         description="Durable session profile rows materialized from archive conversations.",
         depends_on=("session_product_source_conversations",),
         code_refs=(
-            "polylogue.storage.products.session.rebuild.build_session_product_records",
-            "polylogue.storage.products.session.profiles.build_session_profile_record",
+            "polylogue.storage.insights.session.rebuild.build_session_product_records",
+            "polylogue.storage.insights.session.profiles.build_session_profile_record",
         ),
         repair_targets=("session_products",),
-        readiness_surfaces=("doctor", "archive_debt", "products"),
+        readiness_surfaces=("doctor", "archive_debt", "insights"),
     ),
     ArtifactNode(
         name="session_profile_merged_fts",
@@ -275,11 +275,11 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
         description="Merged session-profile FTS projection over durable session profile rows.",
         depends_on=("session_profile_rows",),
         code_refs=(
-            "polylogue.storage.products.session.status",
-            "polylogue.storage.backends.schema_ddl_product_profiles",
+            "polylogue.storage.insights.session.status",
+            "polylogue.storage.backends.schema_ddl_insight_profiles",
         ),
         repair_targets=("session_products",),
-        readiness_surfaces=("doctor", "archive_debt", "products"),
+        readiness_surfaces=("doctor", "archive_debt", "insights"),
     ),
     ArtifactNode(
         name="session_profile_evidence_fts",
@@ -287,11 +287,11 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
         description="Evidence-tier session-profile FTS projection over durable session profile rows.",
         depends_on=("session_profile_rows",),
         code_refs=(
-            "polylogue.storage.products.session.status",
-            "polylogue.storage.backends.schema_ddl_product_profiles",
+            "polylogue.storage.insights.session.status",
+            "polylogue.storage.backends.schema_ddl_insight_profiles",
         ),
         repair_targets=("session_products",),
-        readiness_surfaces=("doctor", "archive_debt", "products"),
+        readiness_surfaces=("doctor", "archive_debt", "insights"),
     ),
     ArtifactNode(
         name="session_profile_inference_fts",
@@ -299,11 +299,11 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
         description="Inference-tier session-profile FTS projection over durable session profile rows.",
         depends_on=("session_profile_rows",),
         code_refs=(
-            "polylogue.storage.products.session.status",
-            "polylogue.storage.backends.schema_ddl_product_profiles",
+            "polylogue.storage.insights.session.status",
+            "polylogue.storage.backends.schema_ddl_insight_profiles",
         ),
         repair_targets=("session_products",),
-        readiness_surfaces=("doctor", "archive_debt", "products"),
+        readiness_surfaces=("doctor", "archive_debt", "insights"),
     ),
     ArtifactNode(
         name="session_profile_enrichment_fts",
@@ -311,11 +311,11 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
         description="Enrichment-tier session-profile FTS projection over durable session profile rows.",
         depends_on=("session_profile_rows",),
         code_refs=(
-            "polylogue.storage.products.session.status",
-            "polylogue.storage.backends.schema_ddl_product_profiles",
+            "polylogue.storage.insights.session.status",
+            "polylogue.storage.backends.schema_ddl_insight_profiles",
         ),
         repair_targets=("session_products",),
-        readiness_surfaces=("doctor", "archive_debt", "products"),
+        readiness_surfaces=("doctor", "archive_debt", "insights"),
     ),
     ArtifactNode(
         name="session_work_event_rows",
@@ -323,11 +323,11 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
         description="Durable session work-event rows materialized from session profile analysis.",
         depends_on=("session_profile_rows",),
         code_refs=(
-            "polylogue.storage.products.session.rebuild.build_session_product_records",
-            "polylogue.storage.products.session.timeline_rows.build_session_work_event_records",
+            "polylogue.storage.insights.session.rebuild.build_session_product_records",
+            "polylogue.storage.insights.session.timeline_rows.build_session_work_event_records",
         ),
         repair_targets=("session_products",),
-        readiness_surfaces=("doctor", "archive_debt", "products"),
+        readiness_surfaces=("doctor", "archive_debt", "insights"),
     ),
     ArtifactNode(
         name="session_work_event_fts",
@@ -335,11 +335,11 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
         description="Session work-event FTS projection over durable work-event rows.",
         depends_on=("session_work_event_rows",),
         code_refs=(
-            "polylogue.storage.products.session.status",
-            "polylogue.storage.backends.schema_ddl_product_timelines",
+            "polylogue.storage.insights.session.status",
+            "polylogue.storage.backends.schema_ddl_insight_timelines",
         ),
         repair_targets=("session_products",),
-        readiness_surfaces=("doctor", "archive_debt", "products"),
+        readiness_surfaces=("doctor", "archive_debt", "insights"),
     ),
     ArtifactNode(
         name="session_phase_rows",
@@ -347,11 +347,11 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
         description="Durable session phase rows materialized from session profile analysis.",
         depends_on=("session_profile_rows",),
         code_refs=(
-            "polylogue.storage.products.session.rebuild.build_session_product_records",
-            "polylogue.storage.products.session.timeline_rows.build_session_phase_records",
+            "polylogue.storage.insights.session.rebuild.build_session_product_records",
+            "polylogue.storage.insights.session.timeline_rows.build_session_phase_records",
         ),
         repair_targets=("session_products",),
-        readiness_surfaces=("doctor", "archive_debt", "products"),
+        readiness_surfaces=("doctor", "archive_debt", "insights"),
     ),
     ArtifactNode(
         name="work_thread_rows",
@@ -359,11 +359,11 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
         description="Durable work-thread rows materialized from session profile families.",
         depends_on=("session_profile_rows",),
         code_refs=(
-            "polylogue.storage.products.session.threads.build_thread_records_for_roots_sync",
-            "polylogue.storage.products.session.threads.build_thread_records_for_roots_async",
+            "polylogue.storage.insights.session.threads.build_thread_records_for_roots_sync",
+            "polylogue.storage.insights.session.threads.build_thread_records_for_roots_async",
         ),
         repair_targets=("session_products",),
-        readiness_surfaces=("doctor", "archive_debt", "products"),
+        readiness_surfaces=("doctor", "archive_debt", "insights"),
     ),
     ArtifactNode(
         name="work_thread_fts",
@@ -371,11 +371,11 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
         description="Work-thread FTS projection over durable work-thread rows.",
         depends_on=("work_thread_rows",),
         code_refs=(
-            "polylogue.storage.products.session.status",
-            "polylogue.storage.backends.schema_ddl_product_aggregates",
+            "polylogue.storage.insights.session.status",
+            "polylogue.storage.backends.schema_ddl_insight_aggregates",
         ),
         repair_targets=("session_products",),
-        readiness_surfaces=("doctor", "archive_debt", "products"),
+        readiness_surfaces=("doctor", "archive_debt", "insights"),
     ),
     ArtifactNode(
         name="session_tag_rollup_rows",
@@ -383,11 +383,11 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
         description="Durable provider/day/tag rollup rows aggregated from session profiles.",
         depends_on=("session_profile_rows",),
         code_refs=(
-            "polylogue.storage.products.session.aggregates.refresh_sync_provider_day_aggregates",
-            "polylogue.storage.products.session.status",
+            "polylogue.storage.insights.session.aggregates.refresh_sync_provider_day_aggregates",
+            "polylogue.storage.insights.session.status",
         ),
         repair_targets=("session_products",),
-        readiness_surfaces=("doctor", "archive_debt", "products"),
+        readiness_surfaces=("doctor", "archive_debt", "insights"),
     ),
     ArtifactNode(
         name="day_session_summary_rows",
@@ -395,11 +395,11 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
         description="Durable provider/day summary rows aggregated from session profiles.",
         depends_on=("session_profile_rows",),
         code_refs=(
-            "polylogue.storage.products.session.aggregates.refresh_sync_provider_day_aggregates",
-            "polylogue.storage.products.session.status",
+            "polylogue.storage.insights.session.aggregates.refresh_sync_provider_day_aggregates",
+            "polylogue.storage.insights.session.status",
         ),
         repair_targets=("session_products",),
-        readiness_surfaces=("doctor", "archive_debt", "products"),
+        readiness_surfaces=("doctor", "archive_debt", "insights"),
     ),
     ArtifactNode(
         name="session_product_rows",
@@ -414,11 +414,11 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
             "day_session_summary_rows",
         ),
         code_refs=(
-            "polylogue.storage.products.session.rebuild.rebuild_session_products_sync",
-            "polylogue.storage.products.session.status",
+            "polylogue.storage.insights.session.rebuild.rebuild_session_products_sync",
+            "polylogue.storage.insights.session.status",
         ),
         repair_targets=("session_products",),
-        readiness_surfaces=("doctor", "archive_debt", "products"),
+        readiness_surfaces=("doctor", "archive_debt", "insights"),
     ),
     ArtifactNode(
         name="session_product_fts",
@@ -433,24 +433,24 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
             "work_thread_fts",
         ),
         code_refs=(
-            "polylogue.storage.products.session.status",
-            "polylogue.storage.derived.products",
+            "polylogue.storage.insights.session.status",
+            "polylogue.storage.derived.insights",
         ),
         repair_targets=("session_products",),
-        readiness_surfaces=("doctor", "archive_debt", "products"),
+        readiness_surfaces=("doctor", "archive_debt", "insights"),
     ),
     ArtifactNode(
         name="session_product_readiness",
         layer=ArtifactLayer.PROJECTION,
-        description="Projected readiness, debt, and stale-surface semantics for durable session products.",
+        description="Projected readiness, debt, and stale-surface semantics for durable session insights.",
         depends_on=("session_product_rows", "session_product_fts"),
         code_refs=(
-            "polylogue.storage.products.session.status",
+            "polylogue.storage.insights.session.status",
             "polylogue.storage.repair",
-            "polylogue.cli.commands.products",
+            "polylogue.cli.commands.insights",
         ),
         repair_targets=("session_products",),
-        readiness_surfaces=("doctor", "archive_debt", "products"),
+        readiness_surfaces=("doctor", "archive_debt", "insights"),
     ),
     ArtifactNode(
         name="retrieval_band_readiness",
@@ -492,10 +492,10 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
         description="Query/read results for durable session profiles.",
         depends_on=("session_profile_rows", "session_profile_merged_fts"),
         code_refs=(
-            "polylogue.operations.archive.ArchiveProductMixin.list_session_profile_products",
-            "polylogue.cli.commands.products",
+            "polylogue.operations.archive.ArchiveInsightMixin.list_session_profile_products",
+            "polylogue.cli.commands.insights",
         ),
-        readiness_surfaces=("products", "facade", "mcp"),
+        readiness_surfaces=("insights", "facade", "mcp"),
     ),
     ArtifactNode(
         name="session_enrichment_results",
@@ -503,10 +503,10 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
         description="Query/read results for durable session enrichments.",
         depends_on=("session_profile_rows", "session_profile_enrichment_fts"),
         code_refs=(
-            "polylogue.operations.archive.ArchiveProductMixin.list_session_enrichment_products",
-            "polylogue.cli.commands.products",
+            "polylogue.operations.archive.ArchiveInsightMixin.list_session_enrichment_products",
+            "polylogue.cli.commands.insights",
         ),
-        readiness_surfaces=("products", "facade", "mcp"),
+        readiness_surfaces=("insights", "facade", "mcp"),
     ),
     ArtifactNode(
         name="session_work_event_results",
@@ -514,10 +514,10 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
         description="Query/read results for durable session work events.",
         depends_on=("session_work_event_rows", "session_work_event_fts"),
         code_refs=(
-            "polylogue.operations.archive.ArchiveProductMixin.list_session_work_event_products",
-            "polylogue.cli.commands.products",
+            "polylogue.operations.archive.ArchiveInsightMixin.list_session_work_event_products",
+            "polylogue.cli.commands.insights",
         ),
-        readiness_surfaces=("products", "facade", "mcp"),
+        readiness_surfaces=("insights", "facade", "mcp"),
     ),
     ArtifactNode(
         name="session_phase_results",
@@ -525,10 +525,10 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
         description="Query/read results for durable session phases.",
         depends_on=("session_phase_rows",),
         code_refs=(
-            "polylogue.operations.archive.ArchiveProductMixin.list_session_phase_products",
-            "polylogue.cli.commands.products",
+            "polylogue.operations.archive.ArchiveInsightMixin.list_session_phase_products",
+            "polylogue.cli.commands.insights",
         ),
-        readiness_surfaces=("products", "facade", "mcp"),
+        readiness_surfaces=("insights", "facade", "mcp"),
     ),
     ArtifactNode(
         name="work_thread_results",
@@ -536,10 +536,10 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
         description="Query/read results for durable work threads.",
         depends_on=("work_thread_rows", "work_thread_fts"),
         code_refs=(
-            "polylogue.operations.archive.ArchiveProductMixin.list_work_thread_products",
-            "polylogue.cli.commands.products",
+            "polylogue.operations.archive.ArchiveInsightMixin.list_work_thread_products",
+            "polylogue.cli.commands.insights",
         ),
-        readiness_surfaces=("products", "facade", "mcp"),
+        readiness_surfaces=("insights", "facade", "mcp"),
     ),
     ArtifactNode(
         name="session_tag_rollup_results",
@@ -547,10 +547,10 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
         description="Query/read results for durable session tag rollups.",
         depends_on=("session_tag_rollup_rows",),
         code_refs=(
-            "polylogue.operations.archive.ArchiveProductMixin.list_session_tag_rollup_products",
-            "polylogue.cli.commands.products",
+            "polylogue.operations.archive.ArchiveInsightMixin.list_session_tag_rollup_products",
+            "polylogue.cli.commands.insights",
         ),
-        readiness_surfaces=("products", "facade", "mcp"),
+        readiness_surfaces=("insights", "facade", "mcp"),
     ),
     ArtifactNode(
         name="day_session_summary_results",
@@ -558,10 +558,10 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
         description="Query/read results for durable day session summaries.",
         depends_on=("day_session_summary_rows",),
         code_refs=(
-            "polylogue.operations.archive.ArchiveProductMixin.list_day_session_summary_products",
-            "polylogue.cli.commands.products",
+            "polylogue.operations.archive.ArchiveInsightMixin.list_day_session_summary_products",
+            "polylogue.cli.commands.insights",
         ),
-        readiness_surfaces=("products", "facade", "mcp"),
+        readiness_surfaces=("insights", "facade", "mcp"),
     ),
     ArtifactNode(
         name="week_session_summary_results",
@@ -569,10 +569,10 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
         description="Query/read results for week session summaries derived from durable day summaries.",
         depends_on=("day_session_summary_rows",),
         code_refs=(
-            "polylogue.operations.archive.ArchiveProductMixin.list_week_session_summary_products",
-            "polylogue.cli.commands.products",
+            "polylogue.operations.archive.ArchiveInsightMixin.list_week_session_summary_products",
+            "polylogue.cli.commands.insights",
         ),
-        readiness_surfaces=("products", "facade", "mcp"),
+        readiness_surfaces=("insights", "facade", "mcp"),
     ),
     ArtifactNode(
         name="session_product_status_results",
@@ -581,21 +581,21 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
         depends_on=("session_product_readiness",),
         code_refs=(
             "polylogue.operations.archive.ArchiveStatsMixin.get_session_product_status",
-            "polylogue.cli.commands.products",
+            "polylogue.cli.commands.insights",
         ),
-        readiness_surfaces=("products", "facade", "mcp"),
+        readiness_surfaces=("insights", "facade", "mcp"),
     ),
     ArtifactNode(
         name="provider_analytics_results",
         layer=ArtifactLayer.PROJECTION,
-        description="Query/read results for provider analytics derived from durable session products.",
+        description="Query/read results for provider analytics derived from durable session insights.",
         depends_on=("session_product_rows",),
         code_refs=(
-            "polylogue.operations.archive.ArchiveProductMixin.list_provider_analytics_products",
-            "polylogue.cli.commands.products",
+            "polylogue.operations.archive.ArchiveInsightMixin.list_provider_analytics_products",
+            "polylogue.cli.commands.insights",
             "polylogue.cli.shared.helper_summary",
         ),
-        readiness_surfaces=("products", "facade", "mcp", "helpers"),
+        readiness_surfaces=("insights", "facade", "mcp", "helpers"),
     ),
     ArtifactNode(
         name="archive_debt_results",
@@ -603,10 +603,10 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
         description="Query/read results for archive debt views derived from projected readiness and maintenance state.",
         depends_on=("action_event_readiness", "session_product_readiness", "archive_readiness"),
         code_refs=(
-            "polylogue.operations.archive.ArchiveProductDebtMixin.list_archive_debt_products",
-            "polylogue.cli.commands.products",
+            "polylogue.operations.archive.ArchiveInsightDebtMixin.list_archive_debt_products",
+            "polylogue.cli.commands.insights",
         ),
-        readiness_surfaces=("products", "facade", "mcp", "maintenance"),
+        readiness_surfaces=("insights", "facade", "mcp", "maintenance"),
     ),
     ArtifactNode(
         name="conversation_query_results",

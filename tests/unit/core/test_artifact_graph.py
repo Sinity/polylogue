@@ -166,9 +166,9 @@ def test_artifact_graph_contains_the_current_runtime_paths() -> None:
         "publication_records",
     )
     assert operations["project-action-event-readiness"].consumes == ("action_event_rows", "action_event_fts")
-    assert "session_product_rows" in operations["materialize-session-products"].produces
-    assert "session_profile_rows" in operations["materialize-session-products"].produces
-    assert "work_thread_fts" in operations["materialize-session-products"].produces
+    assert "session_product_rows" in operations["materialize-session-insights"].produces
+    assert "session_profile_rows" in operations["materialize-session-insights"].produces
+    assert "work_thread_fts" in operations["materialize-session-insights"].produces
     assert operations["project-session-product-readiness"].consumes == ("session_product_rows", "session_product_fts")
     assert operations["query-session-profiles"].produces == ("session_profile_results",)
     assert operations["query-session-enrichments"].produces == ("session_enrichment_results",)
@@ -297,7 +297,7 @@ def test_artifact_graph_resolves_runtime_targets() -> None:
     graph = build_artifact_graph()
 
     assert "action_event_rows" in graph.artifact_names()
-    assert "materialize-session-products" in graph.operation_names()
+    assert "materialize-session-insights" in graph.operation_names()
     assert tuple(artifact.name for artifact in graph.resolve_artifacts(("action_event_rows", "missing"))) == (
         "action_event_rows",
     )
@@ -350,7 +350,7 @@ def test_artifact_graph_lists_operations_for_each_runtime_path() -> None:
         "project-action-event-readiness",
     )
     assert tuple(operation.name for operation in graph.operations_for_path("session-product-repair-loop")) == (
-        "materialize-session-products",
+        "materialize-session-insights",
         "project-session-product-readiness",
     )
     assert tuple(operation.name for operation in graph.operations_for_path("session-profile-query-loop")) == (

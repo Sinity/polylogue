@@ -89,7 +89,7 @@ def test_render_scenario_projections_supports_targeted_filters() -> None:
 
     assert "exercise:json-doctor-action-event-preview" in rendered
     assert "synthetic-benchmark:action-event-materialization" not in rendered
-    assert "exercise:json-doctor-session-products-preview" not in rendered
+    assert "exercise:json-doctor-session-insights-preview" not in rendered
     assert "path targets: action-event-repair-loop" in rendered
 
 

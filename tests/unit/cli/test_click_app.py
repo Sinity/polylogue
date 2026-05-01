@@ -278,9 +278,9 @@ class TestQueryFirstGroupParseArgs:
         """Filter options followed by a known subcommand route to that subcommand."""
         from polylogue.cli.click_app import cli
 
-        result = cli_runner.invoke(cli, ["--plain", "-p", "claude-ai", "products", "--help"], catch_exceptions=False)
+        result = cli_runner.invoke(cli, ["--plain", "-p", "claude-ai", "insights", "--help"], catch_exceptions=False)
         assert result.exit_code == 0
-        assert "products" in result.output.lower()
+        assert "insights" in result.output.lower()
 
     def test_option_args_preserved(self, cli_runner: CliRunner) -> None:
         from polylogue.cli.click_app import cli
@@ -318,7 +318,7 @@ class TestQueryFirstGroupParseArgs:
         result = cli_runner.invoke(cli, ["--help"], catch_exceptions=False)
         assert result.exit_code == 0
         assert "polylogue" in result.output.lower()
-        assert "products" in result.output
+        assert "insights" in result.output
         assert "--provider" in result.output
         assert "--latest" in result.output
         assert "--tail" in result.output
@@ -528,7 +528,7 @@ class TestCliMetadata:
             "neighbors",
             "export",
             "resume",
-            "products",
+            "insights",
             "schema",
             "tags",
             "watch",

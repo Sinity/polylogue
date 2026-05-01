@@ -184,7 +184,7 @@ def _split_query_mode_args(group: click.Group, args: list[str]) -> tuple[list[st
             option_args.extend(_iter_option_values(args, index, nargs))
             index += nargs + 1
             continue
-        # Non-verb subcommands (run, doctor, products, etc.) recognized when
+        # Non-verb subcommands (run, doctor, insights, etc.) recognized when
         # no bare-word query terms have been collected yet.  Filter options
         # (--provider, --since, …) do NOT prevent subcommand detection — they
         # are consumed by the root group during Click's normal parse phase.

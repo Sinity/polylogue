@@ -15,37 +15,37 @@ from polylogue.archive.query.search_hits import ConversationSearchHit
 from polylogue.archive.query.spec import ConversationQuerySpec
 from polylogue.archive.semantic.pricing import CostEstimatePayload, CostUsagePayload
 from polylogue.archive.stats import ArchiveStats
-from polylogue.products.archive import (
-    ArchiveDebtProduct,
+from polylogue.insights.archive import (
+    ArchiveDebtInsight,
     ArchiveEnrichmentProvenance,
     ArchiveInferenceProvenance,
-    ArchiveProductProvenance,
-    CostRollupProduct,
-    DaySessionSummaryProduct,
-    ProviderAnalyticsProduct,
-    SessionCostProduct,
+    ArchiveInsightProvenance,
+    CostRollupInsight,
+    DaySessionSummaryInsight,
+    ProviderAnalyticsInsight,
+    SessionCostInsight,
+    SessionEnrichmentInsight,
     SessionEnrichmentPayload,
-    SessionEnrichmentProduct,
     SessionEvidencePayload,
     SessionInferencePayload,
     SessionPhaseEvidencePayload,
     SessionPhaseInferencePayload,
-    SessionPhaseProduct,
-    SessionProfileProduct,
-    SessionTagRollupProduct,
-    SessionWorkEventProduct,
-    WeekSessionSummaryProduct,
+    SessionPhaseInsight,
+    SessionProfileInsight,
+    SessionTagRollupInsight,
+    SessionWorkEventInsight,
+    WeekSessionSummaryInsight,
     WorkEventEvidencePayload,
     WorkEventInferencePayload,
-    WorkThreadProduct,
+    WorkThreadInsight,
 )
-from polylogue.products.archive_models import (
+from polylogue.insights.archive_models import (
     DaySessionSummaryPayload,
     WeekSessionSummaryPayload,
     WorkThreadMemberEvidencePayload,
     WorkThreadPayload,
 )
-from polylogue.storage.products.session.runtime import SessionProductCounts
+from polylogue.storage.insights.session.runtime import SessionInsightCounts
 from polylogue.types import ConversationId, Provider
 from tests.infra.builders import make_conv, make_msg
 from tests.infra.mcp import (
@@ -292,8 +292,8 @@ def _make_neighbor_candidate() -> ConversationNeighborCandidate:
     )
 
 
-def _provenance() -> ArchiveProductProvenance:
-    return ArchiveProductProvenance(
+def _provenance() -> ArchiveInsightProvenance:
+    return ArchiveInsightProvenance(
         materializer_version=1,
         materialized_at="2026-03-24T10:00:00+00:00",
     )
@@ -552,10 +552,10 @@ class TestGetConversationTool:
         assert isinstance(json.loads(result), dict)
 
 
-class TestProductTools:
+class TestInsightTools:
     @pytest.mark.asyncio
     async def test_session_profile_tool_uses_archive_product_contract(self, mcp_server: MCPServerUnderTest) -> None:
-        product = SessionProfileProduct(
+        product = SessionProfileInsight(
             conversation_id="conv-1",
             provider_name="claude-code",
             title="Profiled Session",
@@ -580,8 +580,8 @@ class TestProductTools:
         assert payload["conversation_id"] == "conv-1"
 
     @pytest.mark.asyncio
-    async def test_product_list_tools_use_archive_queries(self, mcp_server: MCPServerUnderTest) -> None:
-        profile = SessionProfileProduct(
+    async def test_insight_list_tools_use_archive_queries(self, mcp_server: MCPServerUnderTest) -> None:
+        profile = SessionProfileInsight(
             conversation_id="conv-1",
             provider_name="claude-code",
             title="Profiled Session",
@@ -591,7 +591,7 @@ class TestProductTools:
             inference_provenance=_inference_provenance(),
             inference=SessionInferencePayload(engaged_duration_ms=120000),
         )
-        enrichment = SessionEnrichmentProduct(
+        enrichment = SessionEnrichmentInsight(
             conversation_id="conv-1",
             provider_name="claude-code",
             title="Profiled Session",
@@ -604,7 +604,7 @@ class TestProductTools:
                 support_level="moderate",
             ),
         )
-        work_event = SessionWorkEventProduct(
+        work_event = SessionWorkEventInsight(
             event_id="evt-1",
             conversation_id="conv-1",
             provider_name="claude-code",
@@ -616,7 +616,7 @@ class TestProductTools:
             ),
             inference=WorkEventInferencePayload(kind="implementation", summary="editing files", confidence=0.8),
         )
-        phase = SessionPhaseProduct(
+        phase = SessionPhaseInsight(
             phase_id="phase-1",
             conversation_id="conv-1",
             provider_name="claude-code",
@@ -626,7 +626,7 @@ class TestProductTools:
             evidence=SessionPhaseEvidencePayload(message_range=(0, 2), tool_counts={"edit": 1}),
             inference=SessionPhaseInferencePayload(confidence=0.8),
         )
-        thread = WorkThreadProduct(
+        thread = WorkThreadInsight(
             thread_id="conv-1",
             root_id="conv-1",
             dominant_repo="polylogue",
@@ -649,7 +649,7 @@ class TestProductTools:
                 ),
             ),
         )
-        tag_rollup = SessionTagRollupProduct(
+        tag_rollup = SessionTagRollupInsight(
             tag="provider:claude-code",
             conversation_count=1,
             explicit_count=0,
@@ -658,17 +658,17 @@ class TestProductTools:
             repo_breakdown={"polylogue": 1},
             provenance=_provenance(),
         )
-        day_summary = DaySessionSummaryProduct(
+        day_summary = DaySessionSummaryInsight(
             date="2026-03-24",
             provenance=_provenance(),
             summary=DaySessionSummaryPayload(date="2026-03-24", session_count=1, total_messages=2),
         )
-        week_summary = WeekSessionSummaryProduct(
+        week_summary = WeekSessionSummaryInsight(
             iso_week="2026-W13",
             provenance=_provenance(),
             summary=WeekSessionSummaryPayload(iso_week="2026-W13", session_count=1, total_messages=2),
         )
-        analytics = ProviderAnalyticsProduct(
+        analytics = ProviderAnalyticsInsight(
             provider_name="claude-code",
             conversation_count=1,
             message_count=2,
@@ -684,7 +684,7 @@ class TestProductTools:
             tool_use_percentage=100.0,
             thinking_percentage=0.0,
         )
-        session_cost = SessionCostProduct(
+        session_cost = SessionCostInsight(
             conversation_id="conv-root",
             provider_name="claude-code",
             title="Root Thread",
@@ -700,7 +700,7 @@ class TestProductTools:
             ),
             provenance=_provenance(),
         )
-        cost_rollup = CostRollupProduct(
+        cost_rollup = CostRollupInsight(
             provider_name="claude-code",
             model_name="claude-sonnet-4-5",
             normalized_model="claude-sonnet-4-5",
@@ -713,9 +713,9 @@ class TestProductTools:
             confidence=1.0,
             provenance=_provenance(),
         )
-        debt = ArchiveDebtProduct(
+        debt = ArchiveDebtInsight(
             debt_name="session_products",
-            category="products",
+            category="insights",
             maintenance_target="session_products",
             destructive=False,
             issue_count=1,
@@ -801,7 +801,7 @@ class TestProductTools:
             )
             debt_raw = await invoke_surface_async(
                 mcp_server._tool_manager._tools["archive_debt"].fn,
-                category="products",
+                category="insights",
                 only_actionable=True,
                 limit=5,
             )
@@ -837,7 +837,7 @@ class TestProductTools:
         assert cost_rollups_payload["items"][0]["total_usd"] == 1.25
         assert debt_payload["items"][0]["product_kind"] == "archive_debt"
         debt_query = mock_ops.list_archive_debt_products.await_args.args[0]
-        assert debt_query.category == "products"
+        assert debt_query.category == "insights"
         assert debt_query.only_actionable is True
 
     @pytest.mark.asyncio
@@ -858,7 +858,7 @@ class TestProductTools:
         assert payload["tool"] == "session_enrichments"
         assert payload["error"] == "internal MCP tool error"
         assert payload["code"] == "internal_error"
-        assert payload["detail"] == "ProductQueryError"
+        assert payload["detail"] == "InsightQueryError"
         mock_ops.list_session_enrichment_products.assert_not_awaited()
 
 
@@ -1296,7 +1296,7 @@ class TestMutationTools:
         with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
             mock_ops = MagicMock()
             mock_ops.rebuild_session_products = AsyncMock(
-                return_value=SessionProductCounts(profiles=2, work_events=3, phases=1)
+                return_value=SessionInsightCounts(profiles=2, work_events=3, phases=1)
             )
             mock_get_archive_ops.return_value = mock_ops
 

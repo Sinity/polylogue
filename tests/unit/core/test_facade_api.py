@@ -10,17 +10,17 @@ from polylogue import Polylogue
 from polylogue.api import ArchiveStats
 from polylogue.archive.message.roles import Role
 from polylogue.archive.semantic.content_projection import ContentProjectionSpec
-from polylogue.products.archive import (
-    ArchiveDebtProductQuery,
-    CostRollupProductQuery,
-    DaySessionSummaryProductQuery,
-    SessionCostProductQuery,
-    SessionEnrichmentProductQuery,
-    SessionPhaseProductQuery,
-    SessionProfileProductQuery,
+from polylogue.insights.archive import (
+    ArchiveDebtInsightQuery,
+    CostRollupInsightQuery,
+    DaySessionSummaryInsightQuery,
+    SessionCostInsightQuery,
+    SessionEnrichmentInsightQuery,
+    SessionPhaseInsightQuery,
+    SessionProfileInsightQuery,
     SessionTagRollupQuery,
-    WeekSessionSummaryProductQuery,
-    WorkThreadProductQuery,
+    WeekSessionSummaryInsightQuery,
+    WorkThreadInsightQuery,
 )
 from tests.infra.builders import make_conv, make_msg
 from tests.infra.storage_records import ConversationBuilder, make_conversation, make_message, make_raw_conversation
@@ -388,14 +388,14 @@ class TestPolylogueReadSurfaces:
         assert convs[0].id == "conv-1"
 
 
-class TestPolylogueArchiveProducts:
+class TestPolylogueArchiveInsights:
     @pytest.mark.asyncio
     async def test_durable_session_products_are_publicly_queryable(
         self: object,
         cli_workspace: dict[str, Path],
     ) -> None:
         from polylogue.storage.backends.connection import open_connection
-        from polylogue.storage.products.session.rebuild import rebuild_session_products_sync
+        from polylogue.storage.insights.session.rebuild import rebuild_session_products_sync
 
         db_path = cli_workspace["db_path"]
         (
@@ -449,7 +449,7 @@ class TestPolylogueArchiveProducts:
         archive = Polylogue(archive_root=cli_workspace["archive_root"], db_path=db_path)
         profile = await archive.get_session_profile_product("conv-root")
         profiles = await archive.list_session_profile_products(
-            SessionProfileProductQuery(
+            SessionProfileInsightQuery(
                 provider="claude-code",
                 first_message_since="2026-03-01T00:00:00+00:00",
                 session_date_since="2026-03-01",
@@ -457,14 +457,14 @@ class TestPolylogueArchiveProducts:
             )
         )
         enrichments = await archive.list_session_enrichment_products(
-            SessionEnrichmentProductQuery(
+            SessionEnrichmentInsightQuery(
                 provider="claude-code",
                 session_date_since="2026-03-01",
                 limit=10,
             )
         )
-        phases = await archive.list_session_phase_products(SessionPhaseProductQuery(provider="claude-code", limit=10))
-        threads = await archive.list_work_thread_products(WorkThreadProductQuery(limit=10))
+        phases = await archive.list_session_phase_products(SessionPhaseInsightQuery(provider="claude-code", limit=10))
+        threads = await archive.list_work_thread_products(WorkThreadInsightQuery(limit=10))
 
         assert profile is not None
         assert profile.product_kind == "session_profile"
@@ -497,16 +497,16 @@ class TestPolylogueArchiveProducts:
 
         tag_rollups = await archive.list_session_tag_rollup_products(SessionTagRollupQuery(provider="claude-code"))
         day_summaries = await archive.list_day_session_summary_products(
-            DaySessionSummaryProductQuery(provider="claude-code", limit=10)
+            DaySessionSummaryInsightQuery(provider="claude-code", limit=10)
         )
         week_summaries = await archive.list_week_session_summary_products(
-            WeekSessionSummaryProductQuery(provider="claude-code", limit=10)
+            WeekSessionSummaryInsightQuery(provider="claude-code", limit=10)
         )
-        archive_debt = await archive.list_archive_debt_products(ArchiveDebtProductQuery(limit=10))
+        archive_debt = await archive.list_archive_debt_products(ArchiveDebtInsightQuery(limit=10))
         session_costs = await archive.list_session_cost_products(
-            SessionCostProductQuery(provider="claude-code", limit=10)
+            SessionCostInsightQuery(provider="claude-code", limit=10)
         )
-        cost_rollups = await archive.list_cost_rollup_products(CostRollupProductQuery(provider="claude-code"))
+        cost_rollups = await archive.list_cost_rollup_products(CostRollupInsightQuery(provider="claude-code"))
 
         assert any(item.tag == "provider:claude-code" for item in tag_rollups)
         assert len(day_summaries) == 1

@@ -28,7 +28,7 @@ Primary modules:
 
 ### 2. Derived Read Models
 
-Stored products computed over the archive:
+Stored insights computed over the archive:
 
 - session profiles
 - work events, phases, threads
@@ -37,13 +37,13 @@ Stored products computed over the archive:
 
 Primary modules:
 
-- `polylogue/products/`
+- `polylogue/insights/`
 - `polylogue/storage/session_product_*.py`
 - `polylogue/storage/repository_product_*.py`
 
 ### 3. Surfaces
 
-These expose the archive and its products:
+These expose the archive and its insights:
 
 - CLI: `polylogue/cli/`
 - Python API: `polylogue/api/__init__.py`
@@ -52,7 +52,7 @@ These expose the archive and its products:
 - dashboard and TUI: `polylogue/ui/`
 - renderers: `polylogue/rendering/`
 
-Leaf adapters over archive operations and derived products.
+Leaf adapters over archive operations and derived insights.
 
 ### 4. Verification and Maintenance
 
@@ -76,7 +76,7 @@ source files (JSON/JSONL/ZIP)
   → provider parser            # parsers/{chatgpt,claude,codex,drive}.py
   → content hash (NFC)         # pipeline/ids.py — SHA-256 over normalized payload
   → store (upsert-if-changed)  # storage/ — idempotent by content hash
-  → session products           # session_product_*.py — profiles, work events, phases, threads
+  → session insights           # session_product_*.py — profiles, work events, phases, threads
   → FTS index                  # search_providers/fts5.py — unicode61 tokenizer
 
            CLI / MCP / Python API
@@ -104,7 +104,7 @@ The `all` pipeline stage runs: acquire → parse → materialize → render → 
 | Abstraction | Location | Role |
 |-------------|----------|------|
 | `Polylogue` | `facade.py` | Async entry point. Wraps storage + search + pipeline. |
-| `ConversationRepository` | `storage/repository.py` | Mixin-composed async repository (10 mixins for reads, writes, products, vectors, raw). |
+| `ConversationRepository` | `storage/repository.py` | Mixin-composed async repository (10 mixins for reads, writes, insights, vectors, raw). |
 | `SearchProvider` protocol | `protocols.py` | FTS5 and Hybrid (RRF fusion) implementations. |
 | `ConversationFilter` | `archive/filter/filters.py` | Fluent filter chain used by CLI, MCP, and facade. |
 | `Session Products` | `storage/session_product_*.py` | Materialized read models: profiles, work events, phases, threads, aggregates. |
@@ -125,7 +125,7 @@ The `all` pipeline stage runs: acquire → parse → materialize → render → 
 - `storage/` — SQLite backends, repositories, FTS, search providers
 - `sources/` — provider detection, parsing, acquisition
 - `pipeline/` — stage execution, ingestion, validation, rendering pipeline
-- `products/` — derived read models, session products, analytics
+- `insights/` — derived read models, session insights, analytics
 - `operations/` — operation specs, artifact graph, declared runtime contracts
 
 ### Surfaces (presentation only)
@@ -148,6 +148,6 @@ The `all` pipeline stage runs: acquire → parse → materialize → render → 
 
 ### Key rules
 - Surfaces may not import substrate internals directly (see layering.yaml).
-- New semantics go into substrate or products first, then surfaces adapt.
+- New semantics go into substrate or insights first, then surfaces adapt.
 - Proof subjects and claims live in `proof/`; devtools commands that exercise
   them live in `devtools/`.

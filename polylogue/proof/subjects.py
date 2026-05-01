@@ -12,9 +12,9 @@ from polylogue.archive.provider.capabilities import iter_provider_capabilities
 from polylogue.artifacts.graph import ArtifactGraph, build_artifact_graph
 from polylogue.cli.command_inventory import CommandPath, iter_command_paths
 from polylogue.core.json import JSONDocument, json_document, json_document_list, require_json_value
+from polylogue.insights.registry import INSIGHT_REGISTRY
 from polylogue.maintenance.targets import MaintenanceTargetCatalog, build_maintenance_target_catalog
 from polylogue.operations import build_declared_operation_catalog
-from polylogue.products.registry import PRODUCT_REGISTRY
 from polylogue.proof.coverage_manifests import coverage_manifest_subjects
 from polylogue.proof.generated_scenarios import generated_scenario_subjects
 from polylogue.proof.models import SourceSpan, SubjectRef
@@ -30,7 +30,7 @@ SELECTED_JSON_COMMANDS: tuple[tuple[str, ...], ...] = (
     ("doctor",),
     ("tags",),
     ("neighbors",),
-    ("products", "status"),
+    ("insights", "status"),
     ("schema", "list"),
 )
 SELECTED_JSON_COMMAND_ARGS: Mapping[tuple[str, ...], tuple[str, ...]] = {
@@ -187,9 +187,9 @@ def product_surface_subjects() -> tuple[SubjectRef, ...]:
                 "json_key": pt.json_key,
                 "cli_command_name": pt.resolved_cli_command_name,
             },
-            source_span=SourceSpan(path="polylogue/products/registry.py", symbol=name),
+            source_span=SourceSpan(path="polylogue/insights/registry.py", symbol=name),
         )
-        for name, pt in sorted(PRODUCT_REGISTRY.items())
+        for name, pt in sorted(INSIGHT_REGISTRY.items())
     ]
     return tuple(subjects)
 

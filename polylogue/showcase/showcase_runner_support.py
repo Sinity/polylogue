@@ -8,7 +8,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
-from polylogue.products.authored_payloads import canonical_payload_json
+from polylogue.insights.authored_payloads import canonical_payload_json
 from polylogue.scenarios import CorpusRequest, CorpusSpec, ExecutionSpec
 from polylogue.showcase.corpus_requests import showcase_corpus_request
 from polylogue.showcase.exercises import EXERCISES, Exercise, topological_order

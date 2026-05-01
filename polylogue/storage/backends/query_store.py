@@ -10,20 +10,20 @@ import aiosqlite
 
 from polylogue.storage.backends.queries import action_events as action_events_q
 from polylogue.storage.backends.queries import (
-    session_product_summary_queries as session_product_summaries_q,
+    session_insight_summary_queries as session_product_summaries_q,
 )
 from polylogue.storage.backends.queries import (
-    session_product_thread_queries as session_product_threads_q,
+    session_insight_thread_queries as session_insight_threads_q,
 )
 from polylogue.storage.backends.query_store_archive import SQLiteQueryStoreArchiveMixin
+from polylogue.storage.backends.query_store_insight_profiles import (
+    SQLiteQueryStoreInsightProfilesMixin,
+)
+from polylogue.storage.backends.query_store_insight_timelines import (
+    SQLiteQueryStoreInsightTimelinesMixin,
+)
 from polylogue.storage.backends.query_store_maintenance import SQLiteQueryStoreMaintenanceMixin
-from polylogue.storage.backends.query_store_product_profiles import (
-    SQLiteQueryStoreProductProfilesMixin,
-)
-from polylogue.storage.backends.query_store_product_timelines import (
-    SQLiteQueryStoreProductTimelinesMixin,
-)
-from polylogue.storage.products.session.runtime import SessionProductStatusSnapshot
+from polylogue.storage.insights.session.runtime import SessionInsightStatusSnapshot
 from polylogue.storage.query_models import (
     DaySessionSummaryListQuery,
     SessionTagRollupListQuery,
@@ -42,8 +42,8 @@ if TYPE_CHECKING:
 
 class SQLiteQueryStore(
     SQLiteQueryStoreArchiveMixin,
-    SQLiteQueryStoreProductProfilesMixin,
-    SQLiteQueryStoreProductTimelinesMixin,
+    SQLiteQueryStoreInsightProfilesMixin,
+    SQLiteQueryStoreInsightTimelinesMixin,
     SQLiteQueryStoreMaintenanceMixin,
 ):
     """Canonical low-level read/query API for SQLite archive state."""
@@ -55,7 +55,7 @@ class SQLiteQueryStore(
     ) -> None:
         self._connection_factory = connection_factory
 
-    # -- Product status (formerly query_store_product_status.py) ------------
+    # -- Insight status (formerly query_store_insight_status.py) ------------
 
     async def get_action_event_artifact_state(self) -> ActionEventArtifactState:
         from polylogue.storage.action_events.status import action_event_artifact_state_async
@@ -63,13 +63,13 @@ class SQLiteQueryStore(
         async with self._connection_factory() as conn:
             return await action_event_artifact_state_async(conn)
 
-    async def get_session_product_status(self) -> SessionProductStatusSnapshot:
-        from polylogue.storage.products.session.status import session_product_status_async
+    async def get_session_product_status(self) -> SessionInsightStatusSnapshot:
+        from polylogue.storage.insights.session.status import session_product_status_async
 
         async with self._connection_factory() as conn:
             return await session_product_status_async(conn)
 
-    # -- Action events (formerly query_store_product_actions.py) ------------
+    # -- Action events (formerly query_store_insight_actions.py) ------------
 
     async def get_action_events(self, conversation_id: str) -> list[ActionEventRecord]:
         async with self._connection_factory() as conn:
@@ -82,18 +82,18 @@ class SQLiteQueryStore(
         async with self._connection_factory() as conn:
             return await action_events_q.get_action_events_batch(conn, conversation_ids)
 
-    # -- Work threads (formerly query_store_product_threads.py) -------------
+    # -- Work threads (formerly query_store_insight_threads.py) -------------
 
     async def get_work_thread(self, thread_id: str) -> WorkThreadRecord | None:
         async with self._connection_factory() as conn:
-            return await session_product_threads_q.get_work_thread(conn, thread_id)
+            return await session_insight_threads_q.get_work_thread(conn, thread_id)
 
     async def _list_work_threads_query(
         self,
         query: WorkThreadListQuery,
     ) -> list[WorkThreadRecord]:
         async with self._connection_factory() as conn:
-            return await session_product_threads_q.list_work_threads(conn, query)
+            return await session_insight_threads_q.list_work_threads(conn, query)
 
     async def list_work_threads(
         self,
@@ -114,7 +114,7 @@ class SQLiteQueryStore(
             )
         )
 
-    # -- Summaries (formerly query_store_product_summaries.py) --------------
+    # -- Summaries (formerly query_store_insight_summaries.py) --------------
 
     async def _list_session_tag_rollup_rows_query(
         self,

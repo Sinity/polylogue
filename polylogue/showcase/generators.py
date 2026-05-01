@@ -16,8 +16,8 @@ import click
 from polylogue.cli.click_app import cli as root_cli
 from polylogue.cli.command_inventory import CommandPath, iter_command_paths
 from polylogue.scenarios import (
+    build_insight_contract_surfaces,
     build_operational_contract_surfaces,
-    build_product_contract_surfaces,
     polylogue_execution,
 )
 from polylogue.showcase.dimensions import query_read, schema_exercise
@@ -266,7 +266,7 @@ def _product_json_contract_scenarios() -> tuple[Exercise, ...]:
             env=spec.env,
             tags=spec.tags,
         )
-        for spec in build_product_contract_surfaces()
+        for spec in build_insight_contract_surfaces()
     )
 
 

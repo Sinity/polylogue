@@ -72,7 +72,7 @@ def test_build_runtime_scenario_coverage_tracks_the_current_authored_map() -> No
     assert "query-conversations" in coverage.operations
     assert "render-conversations" in coverage.operations
     assert "publish-site" in coverage.operations
-    assert "materialize-session-products" in coverage.operations
+    assert "materialize-session-insights" in coverage.operations
     assert "project-archive-readiness" in coverage.operations
     assert "session_products" in coverage.maintenance_targets
     assert "action_event_read_model" in coverage.maintenance_targets

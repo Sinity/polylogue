@@ -33,7 +33,7 @@ from polylogue.storage.embeddings.support import (
     optional_rows_async,
     optional_rows_sync,
 )
-from polylogue.storage.products.session.status import (
+from polylogue.storage.insights.session.status import (
     session_product_status_async,
     session_product_status_sync,
 )

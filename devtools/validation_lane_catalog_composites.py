@@ -20,18 +20,18 @@ VALIDATION_FAMILIES: tuple[ValidationLaneFamily, ...] = (
         stages=(
             ValidationLaneStageSpec(
                 suffix="contracts",
-                description="Local domain read-model lane for analytics/products, consumer contracts, and debt views",
+                description="Local domain read-model lane for analytics/insights, consumer contracts, and debt views",
                 timeout_s=2400,
-                members=("archive-data-products", "maintenance-workflows"),
+                members=("archive-data-insights", "maintenance-workflows"),
             ),
             ValidationLaneStageSpec(
                 suffix="live",
-                description="Bounded live archive lane for products, analytics/debt views, and maintenance checks",
+                description="Bounded live archive lane for insights, analytics/debt views, and maintenance checks",
                 timeout_s=1800,
                 members=(
-                    "live-products-small",
-                    "live-products-analytics",
-                    "live-products-debt",
+                    "live-insights-small",
+                    "live-insights-analytics",
+                    "live-insights-debt",
                     "live-maintenance-small",
                 ),
             ),
@@ -49,9 +49,9 @@ VALIDATION_FAMILIES: tuple[ValidationLaneFamily, ...] = (
         stages=(
             ValidationLaneStageSpec(
                 suffix="contracts",
-                description="Local runtime-substrate lane across query, semantic checks, archive products, and maintenance workflows",
+                description="Local runtime-substrate lane across query, semantic checks, archive insights, and maintenance workflows",
                 timeout_s=2400,
-                members=("query-routing", "semantic-stack", "maintenance-workflows", "archive-data-products"),
+                members=("query-routing", "semantic-stack", "maintenance-workflows", "archive-data-insights"),
             ),
             ValidationLaneStageSpec(
                 suffix="live",
@@ -88,11 +88,11 @@ VALIDATION_FAMILIES: tuple[ValidationLaneFamily, ...] = (
                 timeout_s=2400,
                 members=(
                     "live-session-product-repair",
-                    "live-products-status",
-                    "live-products-profiles-evidence",
-                    "live-products-profiles-inference",
-                    "live-products-work-events",
-                    "live-products-phases",
+                    "live-insights-status",
+                    "live-insights-profiles-evidence",
+                    "live-insights-profiles-inference",
+                    "live-insights-work-events",
+                    "live-insights-phases",
                     "live-embed-stats",
                     "live-readiness-json",
                     "maintenance-memory-budget",
@@ -112,13 +112,13 @@ VALIDATION_FAMILIES: tuple[ValidationLaneFamily, ...] = (
         stages=(
             ValidationLaneStageSpec(
                 suffix="live",
-                description="Bounded live archive lane for normalized products, maintenance preview, and memory budgets",
+                description="Bounded live archive lane for normalized insights, maintenance preview, and memory budgets",
                 timeout_s=1800,
                 members=(
-                    "live-products-status",
-                    "live-products-tags",
-                    "live-products-day-summaries",
-                    "live-products-debt",
+                    "live-insights-status",
+                    "live-insights-tags",
+                    "live-insights-day-summaries",
+                    "live-insights-debt",
                     "live-maintenance-small",
                 ),
             ),
@@ -136,13 +136,13 @@ VALIDATION_FAMILIES: tuple[ValidationLaneFamily, ...] = (
         stages=(
             ValidationLaneStageSpec(
                 suffix="live",
-                description="Bounded live archive lane for enrichment products, retrieval bands, and readiness surfaces",
+                description="Bounded live archive lane for enrichment insights, retrieval bands, and readiness surfaces",
                 timeout_s=2400,
                 members=(
                     "live-session-product-repair",
-                    "live-products-status",
-                    "live-products-profiles-inference",
-                    "live-products-enrichments",
+                    "live-insights-status",
+                    "live-insights-profiles-inference",
+                    "live-insights-enrichments",
                     "live-embed-stats",
                     "live-readiness-json",
                     "memory-budget",
@@ -152,7 +152,7 @@ VALIDATION_FAMILIES: tuple[ValidationLaneFamily, ...] = (
                 suffix="cleanup-live",
                 description="Bounded live archive lane for cleanup/debt preview and maintenance budgets",
                 timeout_s=2400,
-                members=("live-products-debt", "live-maintenance-preview", "maintenance-memory-budget"),
+                members=("live-insights-debt", "live-maintenance-preview", "maintenance-memory-budget"),
             ),
             ValidationLaneStageSpec(
                 suffix="hardening",
@@ -185,15 +185,15 @@ STANDALONE_COMPOSITE_LANES = {
         480,
         "live-embed-stats",
         "live-retrieval-checks",
-        "live-products-status",
+        "live-insights-status",
         "live-readiness-json",
     ),
-    "live-products-small": composite_lane(
-        "live-products-small",
+    "live-insights-small": composite_lane(
+        "live-insights-small",
         "Bounded live archive product and grouped-stats lane",
         480,
-        "live-products-status",
-        "live-products-tags",
+        "live-insights-status",
+        "live-insights-tags",
         "live-project-stats",
     ),
     "live-archive-slow": composite_lane(
@@ -210,12 +210,12 @@ STANDALONE_COMPOSITE_LANES = {
         "retrieval-checks",
         "embeddings-coverage",
     ),
-    "archive-data-products-live": composite_lane(
-        "archive-data-products-live",
+    "archive-data-insights-live": composite_lane(
+        "archive-data-insights-live",
         "Local product-contract lane plus bounded live archive product checks",
         1800,
-        "archive-data-products",
-        "live-products-small",
+        "archive-data-insights",
+        "live-insights-small",
     ),
     "live-maintenance-small": composite_lane(
         "live-maintenance-small",

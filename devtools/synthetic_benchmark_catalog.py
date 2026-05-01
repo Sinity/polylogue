@@ -96,8 +96,8 @@ SYNTHETIC_BENCHMARK_SCENARIOS: tuple[BenchmarkCampaignEntry, ...] = (
             "session_product_rows",
             "session_product_fts",
         ),
-        operation_targets=("materialize-session-products",),
-        tags=("benchmark", "synthetic", "session-products"),
+        operation_targets=("materialize-session-insights",),
+        tags=("benchmark", "synthetic", "session-insights"),
         projection_kind=ScenarioProjectionSourceKind.SYNTHETIC_BENCHMARK,
     ),
 )

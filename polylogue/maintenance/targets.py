@@ -158,7 +158,7 @@ MAINTENANCE_TARGET_SPECS: tuple[MaintenanceTargetSpec, ...] = (
         description="Repair or rebuild the derived session-product read models.",
         include_preview_when_ready=True,
         doctor_readiness_operation="project-session-product-readiness",
-        doctor_repair_operation="materialize-session-products",
+        doctor_repair_operation="materialize-session-insights",
     ),
     MaintenanceTargetSpec(
         name="action_event_read_model",

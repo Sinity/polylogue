@@ -17,11 +17,11 @@ from polylogue.storage.conversation_replacement import (
     recount_and_prune_attachments_async,
     replace_conversation_runtime_state_async,
 )
-from polylogue.storage.products.session.refresh import (
+from polylogue.storage.insights.session.refresh import (
     delete_session_products_for_conversation_async,
     refresh_thread_after_conversation_delete_async,
 )
-from polylogue.storage.products.session.threads import thread_root_id_async
+from polylogue.storage.insights.session.threads import thread_root_id_async
 from polylogue.storage.repository.repository_contracts import RepositoryBackendProtocol
 from polylogue.storage.runtime import (
     AttachmentRecord,

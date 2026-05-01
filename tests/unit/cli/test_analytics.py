@@ -6,8 +6,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import TypeAlias
 
+from polylogue.insights.archive import ProviderAnalyticsInsight
 from polylogue.operations.archive import list_provider_analytics_products
-from polylogue.products.archive import ProviderAnalyticsProduct
 from polylogue.storage.repository import ConversationRepository
 from tests.infra.storage_records import make_conversation, make_message
 
@@ -16,12 +16,12 @@ AnalyticsRow: TypeAlias = tuple[str, str, str | None, ProviderMeta]
 AnalyticsRows: TypeAlias = list[AnalyticsRow]
 
 
-class TestProviderAnalyticsProduct:
-    """Test ProviderAnalyticsProduct contract."""
+class TestProviderAnalyticsInsight:
+    """Test ProviderAnalyticsInsight contract."""
 
     def test_tool_use_percentage_with_data(self: object) -> None:
         """Tool use percentage is calculated correctly."""
-        metrics = ProviderAnalyticsProduct(
+        metrics = ProviderAnalyticsInsight(
             provider_name="test",
             conversation_count=100,
             message_count=500,
@@ -41,7 +41,7 @@ class TestProviderAnalyticsProduct:
 
     def test_tool_use_percentage_zero_conversations(self: object) -> None:
         """Tool use percentage returns 0 when no conversations."""
-        metrics = ProviderAnalyticsProduct(
+        metrics = ProviderAnalyticsInsight(
             provider_name="empty",
             conversation_count=0,
             message_count=0,
@@ -61,7 +61,7 @@ class TestProviderAnalyticsProduct:
 
     def test_thinking_percentage_with_data(self: object) -> None:
         """Thinking percentage is calculated correctly."""
-        metrics = ProviderAnalyticsProduct(
+        metrics = ProviderAnalyticsInsight(
             provider_name="test",
             conversation_count=50,
             message_count=200,
@@ -81,7 +81,7 @@ class TestProviderAnalyticsProduct:
 
     def test_thinking_percentage_zero_conversations(self: object) -> None:
         """Thinking percentage returns 0 when no conversations."""
-        metrics = ProviderAnalyticsProduct(
+        metrics = ProviderAnalyticsInsight(
             provider_name="empty",
             conversation_count=0,
             message_count=0,
@@ -100,7 +100,7 @@ class TestProviderAnalyticsProduct:
         assert metrics.thinking_percentage == 0.0
 
 
-class TestListProviderAnalyticsProducts:
+class TestListProviderAnalyticsInsights:
     """Test list_provider_analytics_products function."""
 
     async def test_empty_database(self: object, workspace_env: dict[str, Path]) -> None:

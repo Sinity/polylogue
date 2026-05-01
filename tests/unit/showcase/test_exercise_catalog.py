@@ -68,7 +68,7 @@ class TestExercisesByGroup:
     def test_inventory_includes_nested_command_paths(self) -> None:
         observed = {command_path.display_name for command_path in inventory_command_paths()}
         assert {
-            "products analytics",
+            "insights analytics",
             "run render",
             "schema explain",
         } <= observed
@@ -99,7 +99,7 @@ class TestExercisesByGroup:
             "--target",
             "action_event_read_model",
         ]
-        assert observed["json-doctor-session-products-preview"].args == [
+        assert observed["json-doctor-session-insights-preview"].args == [
             "doctor",
             "--json",
             "--repair",
@@ -138,7 +138,7 @@ class TestExercisesByGroup:
             "action-events",
         )
 
-        session_preview = observed["json-doctor-session-products-preview"]
+        session_preview = observed["json-doctor-session-insights-preview"]
         assert session_preview.path_targets == ("session-product-repair-loop",)
         assert session_preview.artifact_targets == (
             "session_product_rows",
@@ -153,10 +153,10 @@ class TestExercisesByGroup:
             "generated",
             "json-contract",
             "maintenance",
-            "session-products",
+            "session-insights",
         )
 
-        profiles = observed["json-products-profiles"]
+        profiles = observed["json-insights-profiles"]
         assert profiles.path_targets == ("session-profile-query-loop",)
         assert profiles.artifact_targets == (
             "session_profile_rows",
@@ -170,11 +170,11 @@ class TestExercisesByGroup:
         assert profiles.tags == (
             "generated",
             "json-contract",
-            "products",
+            "insights",
             "session-profiles",
         )
 
-        threads = observed["json-products-threads"]
+        threads = observed["json-insights-threads"]
         assert threads.path_targets == ("work-thread-query-loop",)
         assert threads.artifact_targets == ("work_thread_rows", "work_thread_fts", "work_thread_results")
         assert threads.operation_targets == (
@@ -184,7 +184,7 @@ class TestExercisesByGroup:
         assert threads.tags == (
             "generated",
             "json-contract",
-            "products",
+            "insights",
             "threads",
         )
 

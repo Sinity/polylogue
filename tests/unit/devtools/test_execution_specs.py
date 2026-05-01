@@ -51,7 +51,7 @@ def test_polylogue_doctor_targeted_execution_uses_maintenance_target_catalog_met
 
     assert execution.metadata.operation_targets == (
         "materialize-action-events",
-        "materialize-session-products",
+        "materialize-session-insights",
         "project-action-event-readiness",
         "project-session-product-readiness",
     )

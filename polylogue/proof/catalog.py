@@ -796,7 +796,7 @@ def _product_surface_claims() -> tuple[Claim, ...]:
             bug_classes=("product.registry.omission",),
             runner_classes=("product_surface_static",),
             observed_facts=("name", "display_name", "json_key"),
-            staleness_conditions=("Product registry entries are added or removed.",),
+            staleness_conditions=("Insight registry entries are added or removed.",),
             severity="info",
         ),
     )

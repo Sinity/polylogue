@@ -9,7 +9,7 @@ from click.testing import CliRunner
 
 from polylogue.cli.click_app import cli
 from polylogue.storage.backends.connection import open_connection
-from polylogue.storage.products.session.rebuild import rebuild_session_products_sync
+from polylogue.storage.insights.session.rebuild import rebuild_session_products_sync
 from tests.infra.storage_records import ConversationBuilder
 
 

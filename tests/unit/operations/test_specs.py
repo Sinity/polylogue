@@ -22,7 +22,7 @@ def test_runtime_operation_catalog_covers_the_current_runtime_paths() -> None:
         "render-conversations",
         "publish-site",
         "project-action-event-readiness",
-        "materialize-session-products",
+        "materialize-session-insights",
         "project-retrieval-band-readiness",
         "query-embedding-status",
         "project-session-product-readiness",
@@ -77,13 +77,13 @@ def test_runtime_operation_catalog_covers_the_current_runtime_paths() -> None:
         "publication_records",
     )
     assert specs["publish-site"].path_targets == ("site-publication-loop",)
-    assert specs["materialize-session-products"].kind is OperationKind.MATERIALIZATION
-    assert specs["materialize-session-products"].mutates_state is True
-    assert "session_product_rows" in specs["materialize-session-products"].produces
-    assert "session_product_fts" in specs["materialize-session-products"].produces
-    assert "session_profile_rows" in specs["materialize-session-products"].produces
-    assert "work_thread_fts" in specs["materialize-session-products"].produces
-    assert specs["materialize-session-products"].path_targets == ("session-product-repair-loop",)
+    assert specs["materialize-session-insights"].kind is OperationKind.MATERIALIZATION
+    assert specs["materialize-session-insights"].mutates_state is True
+    assert "session_product_rows" in specs["materialize-session-insights"].produces
+    assert "session_product_fts" in specs["materialize-session-insights"].produces
+    assert "session_profile_rows" in specs["materialize-session-insights"].produces
+    assert "work_thread_fts" in specs["materialize-session-insights"].produces
+    assert specs["materialize-session-insights"].path_targets == ("session-product-repair-loop",)
     assert specs["project-action-event-readiness"].previewable is True
     assert specs["project-retrieval-band-readiness"].previewable is True
     assert specs["project-retrieval-band-readiness"].path_targets == ("retrieval-band-readiness-loop",)

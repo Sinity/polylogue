@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import click
 
-from polylogue.products.resume import ResumeBrief
+from polylogue.insights.resume import ResumeBrief
 
 
 def _line(label: str, value: object | None) -> None:

@@ -26,9 +26,9 @@ files:
     target: polylogue/api/ingest.py
     owner: stable
     cross_cut: { api: async }
-  - path: polylogue/api/products.py
+  - path: polylogue/api/insights.py
     loc: 175
-    target: polylogue/api/products.py
+    target: polylogue/api/insights.py
     owner: stable
     cross_cut: { api: async }
   - path: polylogue/api/sync/__init__.py
@@ -46,9 +46,9 @@ files:
     target: polylogue/api/sync/conversations.py
     owner: stable
     cross_cut: { api: sync }
-  - path: polylogue/api/sync/products.py
+  - path: polylogue/api/sync/insights.py
     loc: 141
-    target: polylogue/api/sync/products.py
+    target: polylogue/api/sync/insights.py
     owner: stable
     cross_cut: { api: sync }
   - path: polylogue/archive/__init__.py
@@ -563,6 +563,10 @@ files:
     loc: 54
     target: polylogue/cli/commands/export.py
     owner: stable
+  - path: polylogue/cli/commands/insights.py
+    loc: 309
+    target: polylogue/cli/commands/insights.py
+    owner: stable
   - path: polylogue/cli/commands/mcp.py
     loc: 41
     target: polylogue/cli/commands/mcp.py
@@ -570,10 +574,6 @@ files:
   - path: polylogue/cli/commands/neighbors.py
     loc: 101
     target: polylogue/cli/commands/neighbors.py
-    owner: stable
-  - path: polylogue/cli/commands/products.py
-    loc: 309
-    target: polylogue/cli/commands/products.py
     owner: stable
   - path: polylogue/cli/commands/reset.py
     loc: 128
@@ -603,6 +603,10 @@ files:
     loc: 57
     target: polylogue/cli/filter_picker.py
     owner: stable
+  - path: polylogue/cli/insights_rendering.py
+    loc: 49
+    target: polylogue/cli/insights_rendering.py
+    owner: stable
   - path: polylogue/cli/machine_main.py
     loc: 81
     target: polylogue/cli/machine_main.py
@@ -610,10 +614,6 @@ files:
   - path: polylogue/cli/messages.py
     loc: 146
     target: polylogue/cli/messages.py
-    owner: stable
-  - path: polylogue/cli/products_rendering.py
-    loc: 49
-    target: polylogue/cli/products_rendering.py
     owner: stable
   - path: polylogue/cli/query.py
     loc: 673
@@ -725,13 +725,13 @@ files:
     loc: 71
     target: polylogue/cli/shared/helpers.py
     owner: stable
+  - path: polylogue/cli/shared/insight_command_contracts.py
+    loc: 122
+    target: polylogue/cli/shared/insight_command_contracts.py
+    owner: stable
   - path: polylogue/cli/shared/machine_errors.py
     loc: 315
     target: polylogue/cli/shared/machine_errors.py
-    owner: stable
-  - path: polylogue/cli/shared/product_command_contracts.py
-    loc: 122
-    target: polylogue/cli/shared/product_command_contracts.py
     owner: stable
   - path: polylogue/cli/shared/qa_capture.py
     loc: 49
@@ -853,6 +853,47 @@ files:
     target: polylogue/errors.py
     owner: kernel
     reason: kernel root rule
+  - path: polylogue/insights/__init__.py
+    loc: 30
+    target: polylogue/insights/__init__.py
+    owner: stable
+  - path: polylogue/insights/archive.py
+    loc: 554
+    target: polylogue/insights/archive.py
+    owner: stable
+  - path: polylogue/insights/archive_models.py
+    loc: 204
+    target: polylogue/insights/archive_models.py
+    owner: stable
+    cross_cut: { lifecycle: model }
+  - path: polylogue/insights/archive_rollups.py
+    loc: 126
+    target: polylogue/insights/archive_rollups.py
+    owner: stable
+  - path: polylogue/insights/archive_summaries.py
+    loc: 179
+    target: polylogue/insights/archive_summaries.py
+    owner: stable
+  - path: polylogue/insights/authored_payloads.py
+    loc: 163
+    target: polylogue/insights/authored_payloads.py
+    owner: stable
+  - path: polylogue/insights/export_bundles.py
+    loc: 327
+    target: polylogue/insights/export_bundles.py
+    owner: stable
+  - path: polylogue/insights/readiness.py
+    loc: 569
+    target: polylogue/insights/readiness.py
+    owner: stable
+  - path: polylogue/insights/registry.py
+    loc: 665
+    target: polylogue/insights/registry.py
+    owner: stable
+  - path: polylogue/insights/resume.py
+    loc: 452
+    target: polylogue/insights/resume.py
+    owner: stable
   - path: polylogue/logging.py
     loc: 166
     target: polylogue/logging.py
@@ -874,13 +915,13 @@ files:
     loc: 19
     target: polylogue/mcp/__init__.py
     owner: stable
+  - path: polylogue/mcp/insight_tool_contracts.py
+    loc: 102
+    target: polylogue/mcp/insight_tool_contracts.py
+    owner: stable
   - path: polylogue/mcp/payloads.py
     loc: 407
     target: polylogue/mcp/payloads.py
-    owner: stable
-  - path: polylogue/mcp/product_tool_contracts.py
-    loc: 102
-    target: polylogue/mcp/product_tool_contracts.py
     owner: stable
   - path: polylogue/mcp/query_contracts.py
     loc: 129
@@ -890,6 +931,10 @@ files:
     loc: 118
     target: polylogue/mcp/server.py
     owner: stable
+  - path: polylogue/mcp/server_insight_tools.py
+    loc: 128
+    target: polylogue/mcp/server_insight_tools.py
+    owner: stable
   - path: polylogue/mcp/server_maintenance_tools.py
     loc: 190
     target: polylogue/mcp/server_maintenance_tools.py
@@ -897,10 +942,6 @@ files:
   - path: polylogue/mcp/server_mutation_tools.py
     loc: 158
     target: polylogue/mcp/server_mutation_tools.py
-    owner: stable
-  - path: polylogue/mcp/server_product_tools.py
-    loc: 128
-    target: polylogue/mcp/server_product_tools.py
     owner: stable
   - path: polylogue/mcp/server_prompts.py
     loc: 261
@@ -1125,47 +1166,6 @@ files:
     loc: 67
     target: polylogue/pipeline/watch.py
     owner: stable
-  - path: polylogue/products/__init__.py
-    loc: 30
-    target: polylogue/products/__init__.py
-    owner: stable
-  - path: polylogue/products/archive.py
-    loc: 554
-    target: polylogue/products/archive.py
-    owner: stable
-  - path: polylogue/products/archive_models.py
-    loc: 204
-    target: polylogue/products/archive_models.py
-    owner: stable
-    cross_cut: { lifecycle: model }
-  - path: polylogue/products/archive_rollups.py
-    loc: 126
-    target: polylogue/products/archive_rollups.py
-    owner: stable
-  - path: polylogue/products/archive_summaries.py
-    loc: 179
-    target: polylogue/products/archive_summaries.py
-    owner: stable
-  - path: polylogue/products/authored_payloads.py
-    loc: 163
-    target: polylogue/products/authored_payloads.py
-    owner: stable
-  - path: polylogue/products/export_bundles.py
-    loc: 327
-    target: polylogue/products/export_bundles.py
-    owner: stable
-  - path: polylogue/products/readiness.py
-    loc: 569
-    target: polylogue/products/readiness.py
-    owner: stable
-  - path: polylogue/products/registry.py
-    loc: 665
-    target: polylogue/products/registry.py
-    owner: stable
-  - path: polylogue/products/resume.py
-    loc: 452
-    target: polylogue/products/resume.py
-    owner: stable
   - path: polylogue/proof/__init__.py
     loc: 187
     target: polylogue/proof/__init__.py
@@ -1324,6 +1324,10 @@ files:
     loc: 635
     target: polylogue/scenarios/execution.py
     owner: stable
+  - path: polylogue/scenarios/insight_surfaces.py
+    loc: 194
+    target: polylogue/scenarios/insight_surfaces.py
+    owner: stable
   - path: polylogue/scenarios/metadata.py
     loc: 307
     target: polylogue/scenarios/metadata.py
@@ -1331,10 +1335,6 @@ files:
   - path: polylogue/scenarios/operational_surfaces.py
     loc: 191
     target: polylogue/scenarios/operational_surfaces.py
-    owner: stable
-  - path: polylogue/scenarios/product_surfaces.py
-    loc: 194
-    target: polylogue/scenarios/product_surfaces.py
     owner: stable
   - path: polylogue/scenarios/projections.py
     loc: 94
@@ -2378,21 +2378,21 @@ files:
     loc: 200
     target: polylogue/storage/backends/queries/mappers_archive.py
     owner: stable
-  - path: polylogue/storage/backends/queries/mappers_product_aggregates.py
+  - path: polylogue/storage/backends/queries/mappers_insight_aggregates.py
     loc: 82
-    target: polylogue/storage/backends/queries/mappers_product_aggregates.py
+    target: polylogue/storage/backends/queries/mappers_insight_aggregates.py
     owner: stable
-  - path: polylogue/storage/backends/queries/mappers_product_legacy.py
+  - path: polylogue/storage/backends/queries/mappers_insight_legacy.py
     loc: 405
-    target: polylogue/storage/backends/queries/mappers_product_legacy.py
+    target: polylogue/storage/backends/queries/mappers_insight_legacy.py
     owner: stable
-  - path: polylogue/storage/backends/queries/mappers_product_profiles.py
+  - path: polylogue/storage/backends/queries/mappers_insight_profiles.py
     loc: 110
-    target: polylogue/storage/backends/queries/mappers_product_profiles.py
+    target: polylogue/storage/backends/queries/mappers_insight_profiles.py
     owner: stable
-  - path: polylogue/storage/backends/queries/mappers_product_timelines.py
+  - path: polylogue/storage/backends/queries/mappers_insight_timelines.py
     loc: 167
-    target: polylogue/storage/backends/queries/mappers_product_timelines.py
+    target: polylogue/storage/backends/queries/mappers_insight_timelines.py
     owner: stable
   - path: polylogue/storage/backends/queries/mappers_support.py
     loc: 149
@@ -2442,32 +2442,32 @@ files:
     loc: 73
     target: polylogue/storage/backends/queries/runs.py
     owner: stable
-  - path: polylogue/storage/backends/queries/session_product_profile_reads.py
+  - path: polylogue/storage/backends/queries/session_insight_profile_reads.py
     loc: 117
-    target: polylogue/storage/backends/queries/session_product_profile_reads.py
+    target: polylogue/storage/backends/queries/session_insight_profile_reads.py
     owner: stable
     cross_cut: { layer: read }
-  - path: polylogue/storage/backends/queries/session_product_profile_writes.py
+  - path: polylogue/storage/backends/queries/session_insight_profile_writes.py
     loc: 73
-    target: polylogue/storage/backends/queries/session_product_profile_writes.py
+    target: polylogue/storage/backends/queries/session_insight_profile_writes.py
     owner: stable
     cross_cut: { layer: write }
-  - path: polylogue/storage/backends/queries/session_product_summary_queries.py
+  - path: polylogue/storage/backends/queries/session_insight_summary_queries.py
     loc: 163
-    target: polylogue/storage/backends/queries/session_product_summary_queries.py
+    target: polylogue/storage/backends/queries/session_insight_summary_queries.py
     owner: stable
-  - path: polylogue/storage/backends/queries/session_product_thread_queries.py
+  - path: polylogue/storage/backends/queries/session_insight_thread_queries.py
     loc: 100
-    target: polylogue/storage/backends/queries/session_product_thread_queries.py
+    target: polylogue/storage/backends/queries/session_insight_thread_queries.py
     owner: stable
-  - path: polylogue/storage/backends/queries/session_product_timeline_reads.py
+  - path: polylogue/storage/backends/queries/session_insight_timeline_reads.py
     loc: 137
-    target: polylogue/storage/backends/queries/session_product_timeline_reads.py
+    target: polylogue/storage/backends/queries/session_insight_timeline_reads.py
     owner: stable
     cross_cut: { layer: read }
-  - path: polylogue/storage/backends/queries/session_product_timeline_writes.py
+  - path: polylogue/storage/backends/queries/session_insight_timeline_writes.py
     loc: 123
-    target: polylogue/storage/backends/queries/session_product_timeline_writes.py
+    target: polylogue/storage/backends/queries/session_insight_timeline_writes.py
     owner: stable
     cross_cut: { layer: write }
   - path: polylogue/storage/backends/queries/stats.py
@@ -2482,17 +2482,17 @@ files:
     loc: 258
     target: polylogue/storage/backends/query_store_archive.py
     owner: stable
+  - path: polylogue/storage/backends/query_store_insight_profiles.py
+    loc: 81
+    target: polylogue/storage/backends/query_store_insight_profiles.py
+    owner: stable
+  - path: polylogue/storage/backends/query_store_insight_timelines.py
+    loc: 99
+    target: polylogue/storage/backends/query_store_insight_timelines.py
+    owner: stable
   - path: polylogue/storage/backends/query_store_maintenance.py
     loc: 110
     target: polylogue/storage/backends/query_store_maintenance.py
-    owner: stable
-  - path: polylogue/storage/backends/query_store_product_profiles.py
-    loc: 81
-    target: polylogue/storage/backends/query_store_product_profiles.py
-    owner: stable
-  - path: polylogue/storage/backends/query_store_product_timelines.py
-    loc: 99
-    target: polylogue/storage/backends/query_store_product_timelines.py
     owner: stable
   - path: polylogue/storage/backends/schema.py
     loc: 275
@@ -2518,17 +2518,17 @@ files:
     loc: 96
     target: polylogue/storage/backends/schema_ddl_aux.py
     owner: stable
-  - path: polylogue/storage/backends/schema_ddl_product_aggregates.py
+  - path: polylogue/storage/backends/schema_ddl_insight_aggregates.py
     loc: 101
-    target: polylogue/storage/backends/schema_ddl_product_aggregates.py
+    target: polylogue/storage/backends/schema_ddl_insight_aggregates.py
     owner: stable
-  - path: polylogue/storage/backends/schema_ddl_product_profiles.py
+  - path: polylogue/storage/backends/schema_ddl_insight_profiles.py
     loc: 158
-    target: polylogue/storage/backends/schema_ddl_product_profiles.py
+    target: polylogue/storage/backends/schema_ddl_insight_profiles.py
     owner: stable
-  - path: polylogue/storage/backends/schema_ddl_product_timelines.py
+  - path: polylogue/storage/backends/schema_ddl_insight_timelines.py
     loc: 110
-    target: polylogue/storage/backends/schema_ddl_product_timelines.py
+    target: polylogue/storage/backends/schema_ddl_insight_timelines.py
     owner: stable
   - path: polylogue/storage/backends/sqlite_vec_extension.py
     loc: 40
@@ -2557,9 +2557,9 @@ files:
     loc: 291
     target: polylogue/storage/derived/derived_status.py
     owner: stable
-  - path: polylogue/storage/derived/products.py
+  - path: polylogue/storage/derived/insights.py
     loc: 393
-    target: polylogue/storage/derived/products.py
+    target: polylogue/storage/derived/insights.py
     owner: stable
   - path: polylogue/storage/embeddings/__init__.py
     loc: 25
@@ -2611,74 +2611,74 @@ files:
     target: polylogue/storage/index.py
     owner: storage-root
     reason: storage-root cross-cutting helper
-  - path: polylogue/storage/products/__init__.py
+  - path: polylogue/storage/insights/__init__.py
     loc: 0
-    target: polylogue/storage/products/__init__.py
+    target: polylogue/storage/insights/__init__.py
     owner: stable
-  - path: polylogue/storage/products/aggregate/__init__.py
+  - path: polylogue/storage/insights/aggregate/__init__.py
     loc: 0
-    target: polylogue/storage/products/aggregate/__init__.py
+    target: polylogue/storage/insights/aggregate/__init__.py
     owner: stable
-  - path: polylogue/storage/products/aggregate/records.py
+  - path: polylogue/storage/insights/aggregate/records.py
     loc: 59
-    target: polylogue/storage/products/aggregate/records.py
+    target: polylogue/storage/insights/aggregate/records.py
     owner: stable
-  - path: polylogue/storage/products/product_read_support.py
+  - path: polylogue/storage/insights/insight_read_support.py
     loc: 35
-    target: polylogue/storage/products/product_read_support.py
+    target: polylogue/storage/insights/insight_read_support.py
     owner: stable
     cross_cut: { layer: read }
-  - path: polylogue/storage/products/session/__init__.py
+  - path: polylogue/storage/insights/session/__init__.py
     loc: 0
-    target: polylogue/storage/products/session/__init__.py
+    target: polylogue/storage/insights/session/__init__.py
     owner: stable
-  - path: polylogue/storage/products/session/aggregates.py
+  - path: polylogue/storage/insights/session/aggregates.py
     loc: 322
-    target: polylogue/storage/products/session/aggregates.py
+    target: polylogue/storage/insights/session/aggregates.py
     owner: stable
-  - path: polylogue/storage/products/session/profiles.py
+  - path: polylogue/storage/insights/session/profiles.py
     loc: 599
-    target: polylogue/storage/products/session/profiles.py
+    target: polylogue/storage/insights/session/profiles.py
     owner: stable
-  - path: polylogue/storage/products/session/rebuild.py
+  - path: polylogue/storage/insights/session/rebuild.py
     loc: 678
-    target: polylogue/storage/products/session/rebuild.py
+    target: polylogue/storage/insights/session/rebuild.py
     owner: stable
-  - path: polylogue/storage/products/session/records.py
+  - path: polylogue/storage/insights/session/records.py
     loc: 109
-    target: polylogue/storage/products/session/records.py
+    target: polylogue/storage/insights/session/records.py
     owner: stable
-  - path: polylogue/storage/products/session/refresh.py
+  - path: polylogue/storage/insights/session/refresh.py
     loc: 538
-    target: polylogue/storage/products/session/refresh.py
+    target: polylogue/storage/insights/session/refresh.py
     owner: stable
-  - path: polylogue/storage/products/session/runtime.py
+  - path: polylogue/storage/insights/session/runtime.py
     loc: 136
-    target: polylogue/storage/products/session/runtime.py
+    target: polylogue/storage/insights/session/runtime.py
     owner: stable
-  - path: polylogue/storage/products/session/status.py
+  - path: polylogue/storage/insights/session/status.py
     loc: 853
-    target: polylogue/storage/products/session/status.py
+    target: polylogue/storage/insights/session/status.py
     owner: stable
-  - path: polylogue/storage/products/session/storage.py
+  - path: polylogue/storage/insights/session/storage.py
     loc: 603
-    target: polylogue/storage/products/session/storage.py
+    target: polylogue/storage/insights/session/storage.py
     owner: stable
-  - path: polylogue/storage/products/session/threads.py
+  - path: polylogue/storage/insights/session/threads.py
     loc: 412
-    target: polylogue/storage/products/session/threads.py
+    target: polylogue/storage/insights/session/threads.py
     owner: stable
-  - path: polylogue/storage/products/session/timeline_rows.py
+  - path: polylogue/storage/insights/session/timeline_rows.py
     loc: 355
-    target: polylogue/storage/products/session/timeline_rows.py
+    target: polylogue/storage/insights/session/timeline_rows.py
     owner: stable
-  - path: polylogue/storage/products/timeline/__init__.py
+  - path: polylogue/storage/insights/timeline/__init__.py
     loc: 0
-    target: polylogue/storage/products/timeline/__init__.py
+    target: polylogue/storage/insights/timeline/__init__.py
     owner: stable
-  - path: polylogue/storage/products/timeline/records.py
+  - path: polylogue/storage/insights/timeline/records.py
     loc: 106
-    target: polylogue/storage/products/timeline/records.py
+    target: polylogue/storage/insights/timeline/records.py
     owner: stable
   - path: polylogue/storage/query_models.py
     loc: 254
@@ -2756,28 +2756,28 @@ files:
     loc: 24
     target: polylogue/storage/repository/archive/writes/metadata.py
     owner: stable
-  - path: polylogue/storage/repository/product/__init__.py
+  - path: polylogue/storage/repository/insight/__init__.py
     loc: 0
-    target: polylogue/storage/repository/product/__init__.py
+    target: polylogue/storage/repository/insight/__init__.py
     owner: stable
-  - path: polylogue/storage/repository/product/profile_reads.py
+  - path: polylogue/storage/repository/insight/profile_reads.py
     loc: 166
-    target: polylogue/storage/repository/product/profile_reads.py
+    target: polylogue/storage/repository/insight/profile_reads.py
     owner: stable
     cross_cut: { layer: read }
-  - path: polylogue/storage/repository/product/summary_reads.py
+  - path: polylogue/storage/repository/insight/summary_reads.py
     loc: 66
-    target: polylogue/storage/repository/product/summary_reads.py
+    target: polylogue/storage/repository/insight/summary_reads.py
     owner: stable
     cross_cut: { layer: read }
-  - path: polylogue/storage/repository/product/thread_reads.py
+  - path: polylogue/storage/repository/insight/thread_reads.py
     loc: 74
-    target: polylogue/storage/repository/product/thread_reads.py
+    target: polylogue/storage/repository/insight/thread_reads.py
     owner: stable
     cross_cut: { layer: read }
-  - path: polylogue/storage/repository/product/timeline_reads.py
+  - path: polylogue/storage/repository/insight/timeline_reads.py
     loc: 154
-    target: polylogue/storage/repository/product/timeline_reads.py
+    target: polylogue/storage/repository/insight/timeline_reads.py
     owner: stable
     cross_cut: { layer: read }
   - path: polylogue/storage/repository/raw/__init__.py

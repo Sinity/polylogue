@@ -7,7 +7,7 @@ from collections.abc import Iterable, Mapping
 
 import aiosqlite
 
-from polylogue.storage.products.session.runtime import SessionProductStatusSnapshot
+from polylogue.storage.insights.session.runtime import SessionInsightStatusSnapshot
 
 StatsRow = sqlite3.Row | tuple[object, ...]
 
@@ -53,7 +53,7 @@ def build_retrieval_bands_from_status(
     stale_messages: int,
     missing_provenance: int,
     action_status: Mapping[str, object],
-    session_status: SessionProductStatusSnapshot,
+    session_status: SessionInsightStatusSnapshot,
 ) -> dict[str, dict[str, object]]:
     transcript_ready = total_conversations == 0 or (
         embedded_conversations == total_conversations

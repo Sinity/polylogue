@@ -16,7 +16,7 @@ from polylogue.storage.backends.schema_ddl import (
     _ACTION_FTS_DDL,
     _ARTIFACT_OBSERVATION_DDL,
     _PUBLICATION_DDL,
-    _SESSION_PRODUCT_DDL,
+    _SESSION_INSIGHT_DDL,
     _VEC0_DDL,
     SCHEMA_DDL,
     SCHEMA_VERSION,
@@ -514,7 +514,7 @@ _SCHEMA_EXTENSION_DESCRIPTORS: tuple[SchemaExtensionDescriptor, ...] = (
             "ALTER TABLE session_phases ADD COLUMN inference_family TEXT NOT NULL DEFAULT 'heuristic_session_semantics'"
         ),
     ),
-    SchemaScriptExtensionDescriptor(_SESSION_PRODUCT_DDL),
+    SchemaScriptExtensionDescriptor(_SESSION_INSIGHT_DDL),
 )
 
 

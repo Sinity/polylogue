@@ -18,7 +18,7 @@ FormatTimestampCase = tuple[FormatTimestampInput, str, str]
 # =============================================================================
 # Claude Code: record type → role mapping (superset of all 4 files)
 #
-# Production code: ClaudeCodeRecord.role property
+# Insightion code: ClaudeCodeRecord.role property
 # Bug reference: a1c085e — 328K messages had wrong role
 # =============================================================================
 
@@ -44,7 +44,7 @@ CLAUDE_CODE_TYPE_ROLE_MAPPING: list[tuple[str, str]] = [
 # =============================================================================
 # Claude Code: timestamp parsing edge cases
 #
-# Production code: ClaudeCodeRecord.parsed_timestamp property
+# Insightion code: ClaudeCodeRecord.parsed_timestamp property
 # Bug reference: Claude Code uses Unix milliseconds, not seconds
 # =============================================================================
 
@@ -66,7 +66,7 @@ CLAUDE_CODE_TIMESTAMP_CASES: list[tuple[str | int | float | None, int | None, st
 # =============================================================================
 # Claude Code: boolean flag tables
 #
-# Production code: is_actual_message, is_context_compaction, is_tool_progress
+# Insightion code: is_actual_message, is_context_compaction, is_tool_progress
 # =============================================================================
 
 CLAUDE_CODE_IS_ACTUAL_MESSAGE: list[tuple[str, bool]] = [
@@ -130,7 +130,7 @@ GEMINI_ROLE_MAPPING: list[tuple[str, str]] = [
 # =============================================================================
 # normalize_role: canonical input→output mapping
 #
-# Production code: polylogue.archive.message.roles.normalize_role
+# Insightion code: polylogue.archive.message.roles.normalize_role
 # (re-exported as polylogue.sources.parsers.base.normalize_role)
 # =============================================================================
 
@@ -158,7 +158,7 @@ NORMALIZE_ROLE_CANONICAL: list[tuple[str, str, str]] = [
 # =============================================================================
 # parse_timestamp: comprehensive format table
 #
-# Production code: polylogue.core.timestamps.parse_timestamp
+# Insightion code: polylogue.core.timestamps.parse_timestamp
 # Tuples: (input_value, expected_year, expected_month, expected_day, expected_microsecond_or_None, description)
 # When expected_year is None → result must be None
 # =============================================================================
@@ -193,7 +193,7 @@ PARSE_TIMESTAMP_FORMAT_TABLE: list[ParseTimestampCase] = [
 # =============================================================================
 # format_timestamp: round-trip and formatting table
 #
-# Production code: polylogue.core.timestamps.format_timestamp
+# Insightion code: polylogue.core.timestamps.format_timestamp
 # Tuples: (input, expected_prefix, description)
 # expected_prefix: the ISO 8601 date prefix that must appear in the output
 # =============================================================================

@@ -148,11 +148,11 @@ class TestReadinessReportConstruction:
 
 
 def test_check_records_scoped_maintenance_preview(cli_workspace: WorkspacePaths, cli_runner: CliRunner) -> None:
-    from polylogue.storage.products.session.rebuild import rebuild_session_products_sync
+    from polylogue.storage.insights.session.rebuild import rebuild_session_products_sync
 
     db_path = cli_workspace["db_path"]
     (
-        ConversationBuilder(db_path, "conv-check-products")
+        ConversationBuilder(db_path, "conv-check-insights")
         .provider("claude-code")
         .title("Scoped Check Repair")
         .add_message("u1", role="user", text="Plan the cleanup")
@@ -188,14 +188,14 @@ def test_check_records_scoped_maintenance_preview(cli_workspace: WorkspacePaths,
 
 
 def test_check_records_scoped_maintenance_apply(cli_workspace: WorkspacePaths, cli_runner: CliRunner) -> None:
-    from polylogue.storage.products.session.rebuild import rebuild_session_products_sync
+    from polylogue.storage.insights.session.rebuild import rebuild_session_products_sync
 
     db_path = cli_workspace["db_path"]
     (
-        ConversationBuilder(db_path, "conv-check-products-apply")
+        ConversationBuilder(db_path, "conv-check-insights-apply")
         .provider("claude-code")
         .title("Scoped Check Repair Apply")
-        .add_message("u1", role="user", text="Repair the durable products")
+        .add_message("u1", role="user", text="Repair the durable insights")
         .save()
     )
     with open_connection(db_path) as conn:
@@ -230,11 +230,11 @@ def test_check_records_scoped_maintenance_apply(cli_workspace: WorkspacePaths, c
 def test_check_plain_preview_summarizes_changes_not_issues(
     cli_workspace: WorkspacePaths, cli_runner: CliRunner
 ) -> None:
-    from polylogue.storage.products.session.rebuild import rebuild_session_products_sync
+    from polylogue.storage.insights.session.rebuild import rebuild_session_products_sync
 
     db_path = cli_workspace["db_path"]
     (
-        ConversationBuilder(db_path, "conv-check-products-preview-plain")
+        ConversationBuilder(db_path, "conv-check-insights-preview-plain")
         .provider("claude-code")
         .title("Scoped Check Repair Preview Plain")
         .add_message("u1", role="user", text="Preview the repair output")

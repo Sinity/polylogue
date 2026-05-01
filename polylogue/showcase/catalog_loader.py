@@ -7,7 +7,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from polylogue.products.authored_payloads import (
+from polylogue.insights.authored_payloads import (
     PayloadDict,
     payload_bool,
     payload_float,

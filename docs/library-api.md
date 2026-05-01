@@ -40,7 +40,7 @@ from polylogue.archive.session.session_profile import build_session_profile, inf
 from polylogue.archive.conversation.threads import build_session_threads
 ```
 
-Durable archive products are public too:
+Durable archive insights are public too:
 
 ```python
 from polylogue import Polylogue
@@ -109,7 +109,7 @@ rows that can be queried directly.
 - `support_signals`
 - `provenance`
 
-Provider analytics and archive debt are public products too:
+Provider analytics and archive debt are public insights too:
 
 - `ProviderAnalyticsProduct`: provider-level conversation/message/tool/thinking metrics
 - `ArchiveDebtProduct`: governed cleanup/repair debt with maintenance targets plus preview/apply/validation lineage
@@ -278,15 +278,15 @@ asyncio.run(main())
 | `filter()` | Fluent filter builder (sync, reuses `ConversationFilter`) |
 | `get_session_product_status()` | Durable product readiness/freshness summary |
 | `get_session_profile_product(id)` | Get one durable session-profile product |
-| `list_session_profile_products(query)` | List durable session-profile products |
-| `list_session_work_event_products(query)` | List durable work-event products |
-| `list_work_thread_products(query)` | List durable work-thread products |
-| `list_session_tag_rollup_products(query)` | List durable tag-rollup products |
-| `list_day_session_summary_products(query)` | List durable day-summary products |
-| `list_week_session_summary_products(query)` | List durable week-summary products |
-| `list_maintenance_run_products(query)` | List durable maintenance lineage products |
-| `list_provider_analytics_products(query)` | List provider-level analytics products |
-| `list_archive_debt_products(query)` | List governed archive-debt products |
+| `list_session_profile_products(query)` | List durable session-profile insights |
+| `list_session_work_event_products(query)` | List durable work-event insights |
+| `list_work_thread_products(query)` | List durable work-thread insights |
+| `list_session_tag_rollup_products(query)` | List durable tag-rollup insights |
+| `list_day_session_summary_products(query)` | List durable day-summary insights |
+| `list_week_session_summary_products(query)` | List durable week-summary insights |
+| `list_maintenance_run_products(query)` | List durable maintenance lineage insights |
+| `list_provider_analytics_products(query)` | List provider-level analytics insights |
+| `list_archive_debt_products(query)` | List governed archive-debt insights |
 
 ---
 

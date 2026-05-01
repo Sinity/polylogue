@@ -67,7 +67,7 @@ def make_schema_progress_callback() -> ProgressCallback:
 
 def make_session_product_progress_callback() -> ProgressCallback:
     """Return a stderr progress reporter for session-product repairs."""
-    return make_count_progress_callback(label="Repairing session products", unit="conversations")
+    return make_count_progress_callback(label="Repairing session insights", unit="conversations")
 
 
 def vacuum_database(env: AppEnv) -> VacuumResult:

@@ -21,8 +21,8 @@ from polylogue.archive.models import Conversation, Message
 from polylogue.archive.session.session_profile import SessionProfile, build_session_profile
 from polylogue.archive.session.session_summaries import summarize_day
 from polylogue.archive.viewport.viewports import ToolCategory
-from polylogue.products.archive_models import DaySessionSummaryPayload
-from polylogue.products.archive_summaries import aggregate_day_session_summary_products
+from polylogue.insights.archive_models import DaySessionSummaryPayload
+from polylogue.insights.archive_summaries import aggregate_day_session_summary_products
 from polylogue.storage.runtime import DaySessionSummaryRecord
 from polylogue.types import ConversationId, Provider
 

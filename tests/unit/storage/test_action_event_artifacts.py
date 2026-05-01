@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from polylogue.storage.action_events.artifacts import ActionEventArtifactState
-from polylogue.storage.derived.products import build_action_statuses
+from polylogue.storage.derived.insights import build_action_statuses
 
 
 def test_action_event_artifact_state_reports_pending_and_extra_fts_rows() -> None:
