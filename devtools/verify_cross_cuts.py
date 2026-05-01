@@ -47,6 +47,14 @@ EXPECTED_LAYER: dict[str, str] = {
 
 EXPECTED_API: dict[str, str] = {}  # path-based after #426; see expected_for()
 CONVENTION_TAGS = frozenset(("api", "layer", "lifecycle"))
+UI_FACADE_API_PATHS = frozenset(
+    (
+        "polylogue/ui/facade.py",
+        "polylogue/ui/facade_console.py",
+        "polylogue/ui/facade_prompts.py",
+        "polylogue/ui/facade_rendering.py",
+    )
+)
 
 
 def expected_for(name: str, path: str = "") -> dict[str, str]:
@@ -68,7 +76,7 @@ def expected_for(name: str, path: str = "") -> dict[str, str]:
     # Path-based api tagging after #426: polylogue/api/sync/* → sync, polylogue/api/* → async.
     if path.startswith("polylogue/api/sync/"):
         expected.setdefault("api", "sync")
-    elif path.startswith("polylogue/api/") or path.startswith("polylogue/ui/facade"):
+    elif path.startswith("polylogue/api/") or path in UI_FACADE_API_PATHS:
         expected.setdefault("api", "async")
     return expected
 

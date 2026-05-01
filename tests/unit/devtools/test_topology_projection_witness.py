@@ -74,7 +74,7 @@ def test_every_owner_appears_in_files() -> None:
     """Each file row declares a concrete owner from the projection vocabulary."""
     projection = _load_projection()
     files = _files(projection)
-    file_owners = {str(item.get("owner") or "stable") for item in files}
+    file_owners = {str(item["owner"] if "owner" in item and item["owner"] is not None else "stable") for item in files}
     assert file_owners
     malformed = sorted(
         owner

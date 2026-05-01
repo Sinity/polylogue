@@ -65,12 +65,13 @@ def register_resources(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         summary = await ops.get_conversation_summary(conv_id)
         if summary is None:
             return hooks.error_json(f"Conversation not found: {conv_id}")
-        messages, total = await ops.get_messages_paginated(conv_id, limit=20, offset=0)
+        canonical_id = str(summary.id)
+        messages, total = await ops.get_messages_paginated(canonical_id, limit=20, offset=0)
         from polylogue.mcp.payloads import MCPMessagePayload, MCPMessagesListPayload
 
         return hooks.json_payload(
             MCPMessagesListPayload(
-                conversation_id=conv_id,
+                conversation_id=canonical_id,
                 messages=tuple(MCPMessagePayload.from_message(message) for message in messages),
                 total=total,
                 limit=20,

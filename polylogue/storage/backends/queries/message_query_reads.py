@@ -101,38 +101,6 @@ async def get_messages_paginated(
     return messages, total
 
 
-async def _post_filter_by_message_type(
-    conn: aiosqlite.Connection,
-    messages: list[MessageRecord],
-    message_type: str,
-) -> list[MessageRecord]:
-    """Filter messages by content-block-derived type (tool_result, summary)."""
-    message_ids = [m.message_id for m in messages]
-    placeholders = ",".join("?" for _ in message_ids)
-    cursor = await conn.execute(
-        f"SELECT message_id, type FROM content_blocks WHERE message_id IN ({placeholders})",
-        message_ids,
-    )
-    rows = await cursor.fetchall()
-
-    blocks_by_message: dict[str, list[str]] = {}
-    for row in rows:
-        blocks_by_message.setdefault(row["message_id"], []).append(row["type"])
-
-    if message_type == "tool_result":
-        return [m for m in messages if "tool_result" in blocks_by_message.get(m.message_id, [])]
-    if message_type == "summary":
-        # Summary messages: role is system, all content blocks are text
-        # (Claude Code type=summary records become system-role messages)
-        return [
-            m
-            for m in messages
-            if m.role == "system" and all(t in ("text",) for t in blocks_by_message.get(m.message_id, ["text"]))
-        ]
-
-    return messages
-
-
 async def iter_messages(
     conn: aiosqlite.Connection,
     conversation_id: str,

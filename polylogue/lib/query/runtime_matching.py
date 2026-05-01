@@ -21,7 +21,7 @@ def matches_referenced_path(plan: ConversationQueryPlan, conversation: Conversat
     if not plan.referenced_path:
         return True
     affected_paths = tuple(
-        path.lower() for action in _action_events_for(conversation) for path in action.affected_paths
+        path.lower().replace("\\", "/") for action in _action_events_for(conversation) for path in action.affected_paths
     )
     if not affected_paths:
         return False

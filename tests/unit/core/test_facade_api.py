@@ -311,7 +311,6 @@ class TestPolylogueReadSurfaces:
 
         result = await archive.get_messages_paginated("conv-read-api", message_role=(Role.USER,), limit=5)
 
-        assert result is not None
         messages, total = result
         assert total == 1
         assert messages == [
@@ -325,6 +324,7 @@ class TestPolylogueReadSurfaces:
                 "message_type": "message",
             }
         ]
+        assert await archive.get_messages_paginated("missing-read-api") == ([], 0)
 
     @pytest.mark.asyncio
     async def test_get_raw_records_resolves_id_and_handles_missing(self: object, tmp_path: Path) -> None:

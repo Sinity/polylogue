@@ -18,7 +18,12 @@ from polylogue.mcp.payloads import (
     conversation_search_result_payload,
     conversation_summary_list_payload,
 )
-from polylogue.mcp.query_contracts import MCPContentProjectionRequest, MCPConversationQueryRequest
+from polylogue.mcp.query_contracts import (
+    MCPContentProjectionRequest,
+    MCPConversationQueryRequest,
+    MCPToolLimit,
+    MCPToolOffset,
+)
 from polylogue.mcp.server_maintenance_tools import register_maintenance_tools
 from polylogue.mcp.server_mutation_tools import register_mutation_tools
 from polylogue.mcp.server_product_tools import register_product_tools
@@ -34,7 +39,7 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     @mcp.tool()
     async def search(
         query: str,
-        limit: int = 10,
+        limit: MCPToolLimit = 10,
         retrieval_lane: str | None = None,
         provider: str | None = None,
         since: str | None = None,
@@ -54,7 +59,7 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         min_words: int | None = None,
         since_session: str | None = None,
         message_type: str | None = None,
-        offset: int = 0,
+        offset: MCPToolOffset = 0,
     ) -> str:
         async def run() -> str:
             ops = hooks.get_archive_ops()
@@ -90,7 +95,7 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
 
     @mcp.tool()
     async def list_conversations(
-        limit: int = 10,
+        limit: MCPToolLimit = 10,
         retrieval_lane: str | None = None,
         provider: str | None = None,
         since: str | None = None,
@@ -112,7 +117,7 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         min_words: int | None = None,
         since_session: str | None = None,
         message_type: str | None = None,
-        offset: int = 0,
+        offset: MCPToolOffset = 0,
     ) -> str:
         async def run() -> str:
             ops = hooks.get_archive_ops()
@@ -171,7 +176,7 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         id: str | None = None,
         query: str | None = None,
         provider: str | None = None,
-        limit: int = 10,
+        limit: MCPToolLimit = 10,
         window_hours: int = 24,
     ) -> str:
         async def run() -> str:
@@ -247,8 +252,8 @@ def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         no_tool_outputs: bool = False,
         no_file_reads: bool = False,
         prose_only: bool = False,
-        limit: int = 50,
-        offset: int = 0,
+        limit: MCPToolLimit = 50,
+        offset: MCPToolOffset = 0,
     ) -> str:
         async def run() -> str:
             projection = MCPContentProjectionRequest(
@@ -263,11 +268,12 @@ def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             summary = await ops.get_conversation_summary(conversation_id)
             if summary is None:
                 return hooks.error_json(f"Conversation not found: {conversation_id}")
+            canonical_id = str(summary.id)
             from polylogue.lib.message.roles import normalize_message_roles
 
             roles = normalize_message_roles(message_role) if message_role else ()
             paginated, total = await ops.get_messages_paginated(
-                conversation_id,
+                canonical_id,
                 message_role=roles,
                 message_type=cast("MessageTypeName | None", message_type),
                 limit=hooks.clamp_limit(limit),
@@ -277,7 +283,7 @@ def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
 
             return hooks.json_payload(
                 MCPMessagesListPayload(
-                    conversation_id=conversation_id,
+                    conversation_id=canonical_id,
                     messages=tuple(MCPMessagePayload.from_message(msg) for msg in paginated),
                     total=total,
                     limit=hooks.clamp_limit(limit),
@@ -290,26 +296,27 @@ def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     @mcp.tool()
     async def raw_records(
         conversation_id: str,
-        limit: int = 50,
-        offset: int = 0,
+        limit: MCPToolLimit = 50,
+        offset: MCPToolOffset = 0,
     ) -> str:
         async def run() -> str:
             ops = hooks.get_archive_ops()
             conv_check = await ops.get_conversation_summary(conversation_id)
             if conv_check is None:
                 return hooks.error_json(f"Conversation not found: {conversation_id}")
+            canonical_id = str(conv_check.id)
             records, total = await ops.get_raw_records_for_conversation(
-                conversation_id,
-                limit=limit,
-                offset=offset,
+                canonical_id,
+                limit=hooks.clamp_limit(limit),
+                offset=max(0, offset),
             )
             return hooks.json_payload(
                 MCPRawRecordsListPayload(
-                    conversation_id=conversation_id,
+                    conversation_id=canonical_id,
                     raw_records=tuple(MCPRawRecordPayload.from_record(r) for r in records),
                     total=total,
-                    limit=limit,
-                    offset=offset,
+                    limit=hooks.clamp_limit(limit),
+                    offset=max(0, offset),
                 )
             )
 

@@ -146,7 +146,10 @@ def apply_full_filters(
     if plan.min_words is not None:
         results = [c for c in results if sum(len((m.text or "").split()) for m in c.messages) >= plan.min_words]
     if plan.since_session_id:
-        results = _apply_since_session(results, plan.since_session_id)
+        scoped_ids = {
+            str(conversation.id) for conversation in _apply_since_session(conversations, plan.since_session_id)
+        }
+        results = [conversation for conversation in results if str(conversation.id) in scoped_ids]
 
     if plan.message_type is not None:
         wanted_type = MessageType.normalize(plan.message_type)

@@ -58,7 +58,7 @@ def _score_value(value: object) -> float:
 def _string_list(value: object) -> list[str]:
     if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
         return []
-    return [str(item) for item in value if item is None or isinstance(item, (str, int, float, bool))]
+    return [str(item) for item in value if not isinstance(item, (bytes, bytearray))]
 
 
 def collect_annotation_summary(schema: Mapping[str, object]) -> SchemaAnnotationSummary:

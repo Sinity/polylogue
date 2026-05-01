@@ -5,7 +5,12 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from polylogue.mcp.payloads import MCPMutationStatusPayload, MCPRootPayload
-from polylogue.mcp.query_contracts import MCPContentProjectionRequest, MCPConversationQueryRequest
+from polylogue.mcp.query_contracts import (
+    MCPContentProjectionRequest,
+    MCPConversationQueryRequest,
+    MCPToolLimit,
+    MCPToolOffset,
+)
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP
@@ -102,8 +107,8 @@ def register_maintenance_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     async def export_query_results(
         query: str | None = None,
         format: str = "markdown",
-        limit: int = 10,
-        offset: int = 0,
+        limit: MCPToolLimit = 10,
+        offset: MCPToolOffset = 0,
         retrieval_lane: str | None = None,
         provider: str | None = None,
         since: str | None = None,

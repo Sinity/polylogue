@@ -112,12 +112,14 @@ def _build_conversation_filters(
     if referenced_path:
         for term in referenced_path:
             normalized = str(term).replace("\\", "/").lower()
+            escaped = normalized.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
             where_clauses.append(
                 f"EXISTS (SELECT 1 FROM action_events ae "
                 f"JOIN json_each(COALESCE(ae.affected_paths_json, '[]')) path "
-                f"WHERE ae.conversation_id = {conv_id_col} AND LOWER(path.value) LIKE ?)"
+                f"WHERE ae.conversation_id = {conv_id_col} "
+                f"AND REPLACE(LOWER(path.value), char(92), '/') LIKE ? ESCAPE '\\')"
             )
-            params.append(f"%{normalized}%")
+            params.append(f"%{escaped}%")
     if cwd_prefix:
         provider_meta_col = "c.provider_meta" if needs_stats_join else "provider_meta"
         escaped_prefix = cwd_prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")

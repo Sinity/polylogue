@@ -264,11 +264,11 @@ class PolylogueArchiveMixin:
         limit: int = 50,
         offset: int = 0,
         content_projection: ContentProjectionSpec | None = None,
-    ) -> tuple[list[dict[str, object]], int] | None:
+    ) -> tuple[list[dict[str, object]], int]:
         """Return paginated messages for a conversation."""
         summary = await self.operations.get_conversation_summary(conversation_id)
         if summary is None:
-            return None
+            return [], 0
         full_id = str(summary.id)
 
         messages, total = await self.operations.get_messages_paginated(

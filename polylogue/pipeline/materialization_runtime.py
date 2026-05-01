@@ -265,9 +265,9 @@ def materialize_conversation(
         if message_type == MessageType.MESSAGE:
             if "thinking" in block_types:
                 message_type = MessageType.THINKING
-            elif "tool_result" in block_types:
+            elif "tool_result" in block_types or msg.role == "tool":
                 message_type = MessageType.TOOL_RESULT
-            elif "tool_use" in block_types or msg.role == "tool":
+            elif "tool_use" in block_types:
                 message_type = MessageType.TOOL_USE
 
         total_word_count += word_count

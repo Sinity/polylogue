@@ -156,12 +156,21 @@ async def observe_slow_query(
             return task.result()
 
         sink = emit or (lambda message: click.echo(message, err=True))
-        sink(notice_task.result().message(elapsed_seconds=threshold))
+        try:
+            notice = notice_task.result()
+        except Exception:
+            logger.exception("observe_slow_query: notice_factory() failed")
+        else:
+            sink(notice.message(elapsed_seconds=threshold))
         return await task
     except asyncio.CancelledError:
         task.cancel()
+        pending: list[asyncio.Task[object]] = [cast("asyncio.Task[object]", task)]
         if notice_task is not None:
             notice_task.cancel()
+            pending.append(cast("asyncio.Task[object]", notice_task))
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.gather(*pending, return_exceptions=True)
         raise
 
 

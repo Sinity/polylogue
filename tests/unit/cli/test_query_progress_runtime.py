@@ -169,6 +169,29 @@ async def test_observe_slow_query_handles_disabled_immediate_and_delayed_paths()
 
 
 @pytest.mark.asyncio
+async def test_observe_slow_query_treats_notice_factory_failures_as_non_fatal() -> None:
+    async def _operation() -> str:
+        await asyncio.sleep(0.01)
+        return "done"
+
+    async def _notice() -> QuerySlowNotice:
+        raise RuntimeError("notice failed")
+
+    emitted: list[str] = []
+    assert (
+        await observe_slow_query(
+            _operation(),
+            enabled=True,
+            threshold_seconds=0.0,
+            notice_factory=_notice,
+            emit=emitted.append,
+        )
+        == "done"
+    )
+    assert emitted == []
+
+
+@pytest.mark.asyncio
 async def test_observe_slow_query_does_not_wait_for_notice_after_operation_finishes() -> None:
     notice_started = asyncio.Event()
     notice_cancelled = asyncio.Event()
@@ -202,6 +225,8 @@ async def test_observe_slow_query_does_not_wait_for_notice_after_operation_finis
 @pytest.mark.asyncio
 async def test_observe_slow_query_cancels_operation_when_caller_cancels() -> None:
     operation_cancelled = asyncio.Event()
+    notice_started = asyncio.Event()
+    notice_cancelled = asyncio.Event()
 
     async def _operation() -> str:
         try:
@@ -212,7 +237,12 @@ async def test_observe_slow_query_cancels_operation_when_caller_cancels() -> Non
         return "done"
 
     async def _notice() -> QuerySlowNotice:
-        await asyncio.sleep(1)
+        notice_started.set()
+        try:
+            await asyncio.sleep(1)
+        except asyncio.CancelledError:
+            notice_cancelled.set()
+            raise
         return QuerySlowNotice(route="show", retrieval_lane="hybrid")
 
     task = asyncio.create_task(
@@ -224,9 +254,11 @@ async def test_observe_slow_query_cancels_operation_when_caller_cancels() -> Non
             emit=lambda _message: None,
         )
     )
-    await asyncio.sleep(0)
+    while not notice_started.is_set():
+        await asyncio.sleep(0)
     task.cancel()
 
     with pytest.raises(asyncio.CancelledError):
         await task
     assert operation_cancelled.is_set()
+    assert notice_cancelled.is_set()

@@ -112,6 +112,7 @@ def test_cli_messages_and_raw_routes_read_conversation_records(tmp_path: Path) -
     messages_payload = json.loads(messages_result.stdout)
     assert messages_payload["conversation_id"] == conversation_id
     assert messages_payload["total"] == 1
+    assert len(messages_payload["messages"]) == 1
     assert messages_payload["messages"][0]["role"] == "user"
     assert messages_payload["messages"][0]["text"] == "read surface alpha"
 
@@ -120,6 +121,7 @@ def test_cli_messages_and_raw_routes_read_conversation_records(tmp_path: Path) -
     raw_payload = json.loads(raw_result.stdout)
     assert raw_payload["conversation_id"] == conversation_id
     assert raw_payload["total"] == 1
+    assert len(raw_payload["records"]) == 1
     assert raw_payload["records"][0]["raw_id"]
 
 

@@ -633,9 +633,6 @@ QUERY_FIELD_DESCRIPTORS: tuple[QueryFieldDescriptor, ...] = (
         sql_param="message_type",
         storage_value=lambda v: str(v) if v else None,
         selection_filter=True,
-        requires_post_filter=True,
-        requires_content_loading=True,
-        blocks_sql_count=True,
     ),
 )
 

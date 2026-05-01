@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import cast
@@ -115,8 +116,9 @@ async def test_turns_reports_duration_thinking_tools_and_characters(monkeypatch:
 
     rendered = "\n".join(call.args[0] for call in _console_print(env).call_args_list if call.args)
     assert "1.2s" in rendered
-    assert "6" in rendered
-    assert "2" in rendered
+    row = _console_print(env).call_args_list[-1].args[0]
+    assert re.search(r"\b6\b", row)
+    assert re.search(r"\b2\b", row)
 
 
 @pytest.mark.asyncio
