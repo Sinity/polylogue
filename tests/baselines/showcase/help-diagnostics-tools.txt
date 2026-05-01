@@ -1,0 +1,8 @@
+Usage: polylogue diagnostics tools [OPTIONS]
+
+  Show top tools by invocation count across filtered conversations.
+
+Options:
+  -p, --provider TEXT  Filter by provider
+  -n, --limit INTEGER  Max tools to show
+  -h, --help           Show this message and exit.

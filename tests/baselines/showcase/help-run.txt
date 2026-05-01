@@ -1,11 +1,13 @@
 Usage: polylogue run [OPTIONS] COMMAND1 [ARGS]... [COMMAND2 [ARGS]...]...
 
-  Run pipeline stages on configured sources.
+  Run pipeline stages on configured sources and/or transient input paths.
 
 Options:
   --preview       Preview work without writing
   --source TEXT   Configured source name (repeatable). Accepts 'last' for the
                   previously synced source.
+  --input PATH    Transient file, directory, or archive path (repeatable).
+                  Accepts .json, .jsonl, .ndjson, .zip.
   --watch         Watch sources for changes and run continuously
   --notify        Desktop notification on conversation changes (requires
                   --watch)
@@ -22,6 +24,7 @@ Commands:
   index        Build retrieval and search indexes.
   materialize  Refresh derived read models.
   parse        Parse persisted raw backlog into normalized conversations.
+  publish      Render and build the static site.
   render       Render human-facing publication artifacts.
   reprocess    Skip acquisition and rerun downstream stages.
   schema       Infer schemas from acquired raw payloads.

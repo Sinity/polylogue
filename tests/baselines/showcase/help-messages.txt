@@ -1,0 +1,18 @@
+Usage: polylogue messages [OPTIONS] [CONVERSATION_ID]
+
+  Show paginated messages for a conversation.
+
+Options:
+  -r, --message-role TEXT         Filter by message role
+  --message-type [summary|tool_use|tool_result|thinking]
+                                  Filter by message content type
+  -n, --limit INTEGER             Max messages to return
+  --offset INTEGER                Offset for pagination
+  --no-code-blocks                Exclude code blocks
+  --no-tool-calls                 Exclude tool calls
+  --no-tool-outputs               Exclude tool outputs
+  --no-file-reads                 Exclude file reads
+  --prose-only                    Show only prose text
+  -f, --format [markdown|json|plaintext]
+                                  Output format
+  -h, --help                      Show this message and exit.

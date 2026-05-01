@@ -1,0 +1,6 @@
+Usage: polylogue run publish [OPTIONS]
+
+  Render and build the static site.
+
+Options:
+  -h, --help  Show this message and exit.
