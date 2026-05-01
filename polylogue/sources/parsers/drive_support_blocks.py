@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+from polylogue.archive.viewport.viewports import ContentBlock
 from polylogue.lib.json import JSONDocument, json_document, json_document_list
-from polylogue.lib.viewport.viewports import ContentBlock
 from polylogue.types import ContentBlockType
 
 from .base import ParsedContentBlock

@@ -13,10 +13,7 @@ from polylogue.archive.provider.semantics import (
     extract_reasoning_traces,
     extract_tool_calls,
 )
-from polylogue.lib.json import JSONDocument, JSONDocumentList, json_document, json_document_list
-from polylogue.lib.roles import Role, normalize_role
-from polylogue.lib.timestamps import parse_timestamp
-from polylogue.lib.viewport.viewports import (
+from polylogue.archive.viewport.viewports import (
     ContentBlock,
     CostInfo,
     MessageMeta,
@@ -24,6 +21,9 @@ from polylogue.lib.viewport.viewports import (
     TokenUsage,
     ToolCall,
 )
+from polylogue.lib.json import JSONDocument, JSONDocumentList, json_document, json_document_list
+from polylogue.lib.roles import Role, normalize_role
+from polylogue.lib.timestamps import parse_timestamp
 from polylogue.types import Provider
 
 from .claude_code_models import ClaudeCodeMessageContent, ClaudeCodeUsage, ClaudeCodeUserMessage

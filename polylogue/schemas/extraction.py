@@ -12,10 +12,10 @@ from polylogue.archive.provider.semantics import (
     extract_reasoning_traces,
     extract_tool_calls,
 )
+from polylogue.archive.viewport.viewports import CostInfo
 from polylogue.lib.json import JSONDocument, json_document
 from polylogue.lib.roles import Role
 from polylogue.lib.timestamps import parse_timestamp
-from polylogue.lib.viewport.viewports import CostInfo
 from polylogue.schemas.pinning import load_pins, resolve_pinned_paths
 from polylogue.schemas.unified.models import HarmonizedMessage, extract_token_usage
 from polylogue.types import Provider

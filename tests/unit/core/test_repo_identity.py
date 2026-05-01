@@ -12,6 +12,7 @@ from polylogue.archive.conversation.attribution import extract_attribution, extr
 from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.session.session_profile import SessionProfile, build_session_profile
 from polylogue.archive.session.session_summaries import summarize_day
+from polylogue.archive.viewport.viewports import ToolCategory
 from polylogue.lib.models import Conversation, Message
 from polylogue.lib.repo_identity import (
     normalize_repo_name,
@@ -20,7 +21,6 @@ from polylogue.lib.repo_identity import (
     normalize_repo_paths,
 )
 from polylogue.lib.roles import Role
-from polylogue.lib.viewport.viewports import ToolCategory
 from polylogue.products.archive_models import DaySessionSummaryPayload
 from polylogue.products.archive_summaries import aggregate_day_session_summary_products
 from polylogue.storage.runtime import DaySessionSummaryRecord

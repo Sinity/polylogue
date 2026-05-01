@@ -5,8 +5,8 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping, Sequence
 
+from polylogue.archive.viewport.viewports import ToolCall, ToolCategory, classify_tool
 from polylogue.lib.json import JSONDocument, json_document
-from polylogue.lib.viewport.viewports import ToolCall, ToolCategory, classify_tool
 from polylogue.types import Provider
 
 

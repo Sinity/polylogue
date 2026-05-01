@@ -6,8 +6,8 @@ import re
 from pathlib import PurePosixPath
 
 from polylogue.archive.action_event.parsing import _clean_str, _extract_first_string
+from polylogue.archive.viewport.viewports import ToolCall, ToolCategory
 from polylogue.lib.hashing import hash_text_short
-from polylogue.lib.viewport.viewports import ToolCall, ToolCategory
 
 _GIT_BRANCH_PATTERN = re.compile(r"git\s+(?:checkout|switch)\s+(?:-[bc]\s+)?(\S+)")
 _QUERY_FIELDS = ("q", "query", "pattern", "search_query", "searchQuery", "needle", "term")
