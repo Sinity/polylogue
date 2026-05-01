@@ -17,7 +17,7 @@ from polylogue.types import Provider
 
 if TYPE_CHECKING:
     from polylogue.archive.filter.filters import ConversationFilter
-    from polylogue.lib.models import Conversation, ConversationSummary
+    from polylogue.archive.models import Conversation, ConversationSummary
     from polylogue.protocols import ConversationQueryRuntimeStore, VectorProvider
 
 _SpecT = TypeVar("_SpecT", bound="ConversationQuerySpec")

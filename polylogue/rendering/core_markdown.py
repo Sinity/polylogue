@@ -14,7 +14,7 @@ from polylogue.rendering.blocks import has_structured_blocks, render_blocks_mark
 from polylogue.rendering.core_messages import normalize_render_timestamp
 
 if TYPE_CHECKING:
-    from polylogue.lib.models import Conversation
+    from polylogue.archive.models import Conversation
     from polylogue.storage.archive_views import ConversationRenderProjection
 
 

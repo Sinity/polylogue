@@ -16,7 +16,7 @@ from polylogue.archive.semantic.facts import (
 if TYPE_CHECKING:
     from datetime import datetime
 
-    from polylogue.lib.models import Conversation
+    from polylogue.archive.models import Conversation
 
 
 @dataclass(frozen=True)

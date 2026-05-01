@@ -14,7 +14,7 @@ from polylogue.archive.query.spec import ConversationQuerySpec
 from polylogue.archive.semantic.content_projection import ContentProjectionSpec
 
 if TYPE_CHECKING:
-    from polylogue.lib.models import Conversation, ConversationSummary
+    from polylogue.archive.models import Conversation, ConversationSummary
 
 QueryParams: TypeAlias = dict[str, object]
 QueryParamSource: TypeAlias = Mapping[str, object] | ConversationQuerySpec

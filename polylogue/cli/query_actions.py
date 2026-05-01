@@ -11,9 +11,9 @@ from polylogue.cli.query_contracts import QueryMutationSpec, result_date, result
 
 if TYPE_CHECKING:
     from polylogue.archive.filter.filters import ConversationFilter
+    from polylogue.archive.models import Conversation, ConversationSummary
     from polylogue.archive.query.spec import ConversationQuerySpec
     from polylogue.cli.shared.types import AppEnv
-    from polylogue.lib.models import Conversation, ConversationSummary
     from polylogue.protocols import ConversationQueryRuntimeStore, TagStore
 
 

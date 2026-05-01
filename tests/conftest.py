@@ -13,7 +13,7 @@ from hypothesis import HealthCheck, settings
 from hypothesis.configuration import set_hypothesis_home_dir
 from hypothesis.database import DirectoryBasedExampleDatabase
 
-from polylogue.lib.models import Conversation
+from polylogue.archive.models import Conversation
 from polylogue.scenarios import CorpusSpec, build_default_corpus_specs
 from polylogue.storage.runtime import RawConversationRecord
 from tests.infra.builders import make_conv, make_msg

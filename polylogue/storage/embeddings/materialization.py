@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, Protocol
 
 if TYPE_CHECKING:
-    from polylogue.lib.models import Conversation
+    from polylogue.archive.models import Conversation
     from polylogue.protocols import VectorProvider
     from polylogue.storage.repository.repository_contracts import RepositoryBackendProtocol
     from polylogue.storage.runtime import MessageRecord

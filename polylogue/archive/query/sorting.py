@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Protocol, TypeAlias, TypeVar
 
 if TYPE_CHECKING:
-    from polylogue.lib.models import Conversation, ConversationSummary
+    from polylogue.archive.models import Conversation, ConversationSummary
 
 from polylogue.archive.filter.types import SortField
 

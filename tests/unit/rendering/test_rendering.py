@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from polylogue.lib.models import Conversation, ConversationSummary, Message
+from polylogue.archive.models import Conversation, ConversationSummary, Message
 from polylogue.rendering.block_models import RenderableBlock
 from polylogue.rendering.blocks import (
     render_blocks_html,

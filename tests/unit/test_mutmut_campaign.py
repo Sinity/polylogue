@@ -62,7 +62,7 @@ def test_summarize_mutmut_results_filters_by_prefix_and_groups_statuses(tmp_path
                     "polylogue.archive.filter.filters.xǁConversationFilterǁpick__mutmut_1": 0,
                     "polylogue.archive.filter.filters.xǁConversationFilterǁpick__mutmut_2": 1,
                     "polylogue.archive.filter.filters.xǁConversationFilterǁdelete__mutmut_1": -24,
-                    "polylogue.lib.models.xǁMessageǁextract_thinking__mutmut_1": 0,
+                    "polylogue.archive.models.xǁMessageǁextract_thinking__mutmut_1": 0,
                 }
             }
         )
