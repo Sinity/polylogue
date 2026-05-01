@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.lib.filter.filters import ConversationFilter
+from polylogue.archive.filter.filters import ConversationFilter
 from polylogue.storage.query_models import ConversationRecordQuery
 from tests.benchmarks.helpers import BenchmarkFixture, benchmark_store_call
 

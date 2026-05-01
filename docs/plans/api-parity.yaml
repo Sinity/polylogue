@@ -77,7 +77,7 @@ parity_checks:
   filter_consistency:
     description: "All surfaces apply the same filter chain (ConversationFilter)"
     status: established
-    path: polylogue/lib/filters.py
+    path: polylogue/archive/filter/filters.py
   error_normalization:
     description: "All surfaces normalize errors through shared error types"
     status: established

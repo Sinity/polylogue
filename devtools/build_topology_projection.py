@@ -104,8 +104,8 @@ LIB_PREFIX_TO_SUBPACKAGE = {
     "neighbor_candidates": "lib/conversation/",
     "work_event": "lib/conversation/",
     "attribution": "lib/conversation/",
-    "filter_": "lib/filter/",
-    "filters": "lib/filter/",
+    "filter_": "archive/filter/",
+    "filters": "archive/filter/",
     "phase_": "lib/phase/",
     "projection_": "lib/projection/",
     "projections": "lib/projection/",
@@ -202,6 +202,7 @@ TARGET_TO_OWNER = [
     ("polylogue/maintenance/", "maintenance-domain"),
     ("polylogue/publication/", "publication-domain"),
     ("polylogue/archive/query/", "archive-query"),
+    ("polylogue/archive/filter/", "archive-filter"),
     ("polylogue/lib/session/", "lib-session"),
     ("polylogue/lib/viewport/", "lib-viewport"),
     ("polylogue/lib/raw_payload/", "lib-raw-payload"),
@@ -210,7 +211,6 @@ TARGET_TO_OWNER = [
     ("polylogue/lib/message/", "lib-message"),
     ("polylogue/lib/conversation/", "lib-conversation"),
     ("polylogue/lib/semantic/", "lib-semantic"),
-    ("polylogue/lib/filter/", "lib-filter"),
     ("polylogue/lib/phase/", "lib-phase"),
     ("polylogue/lib/projection/", "lib-projection"),
     ("polylogue/lib/provider/", "lib-provider"),
@@ -369,6 +369,10 @@ def classify(path: Path) -> dict[str, Any]:
         target = rel
         owner = "archive-query"
         reason = "archive-domain query semantics"
+    elif rel.startswith("polylogue/archive/filter/"):
+        target = rel
+        owner = "archive-filter"
+        reason = "archive-domain filter semantics"
     elif rel.startswith("polylogue/archive/"):
         target = rel
         owner = "stable"

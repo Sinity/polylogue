@@ -12,7 +12,7 @@ from polylogue.storage.backends.queries.stats import AggregateMessageStats
 from polylogue.storage.query_models import ConversationRecordQuery
 
 if TYPE_CHECKING:
-    from polylogue.lib.filter.filters import ConversationFilter
+    from polylogue.archive.filter.filters import ConversationFilter
     from polylogue.storage.backends.query_store import SQLiteQueryStore
 
 
@@ -239,7 +239,7 @@ class RepositoryArchiveQueryMixin:
         )
 
     def filter(self: ConversationQueryRuntimeStore) -> ConversationFilter:
-        from polylogue.lib.filter import filters
+        from polylogue.archive.filter import filters
 
         return filters.ConversationFilter(self)
 

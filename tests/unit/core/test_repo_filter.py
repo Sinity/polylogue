@@ -88,7 +88,7 @@ def test_repo_describe_includes_label() -> None:
 
 
 def test_repo_fluent_builder() -> None:
-    from polylogue.lib.filter.builder import ConversationFilterBuilderMixin
+    from polylogue.archive.filter.builder import ConversationFilterBuilderMixin
 
     filt = ConversationFilterBuilderMixin()
     filt._plan = ConversationQuerySpec().to_plan()

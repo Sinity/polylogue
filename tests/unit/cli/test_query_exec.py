@@ -184,7 +184,7 @@ def test_execute_query_stream_target_resolution_contract(
     with (
         patch("polylogue.cli.shared.helpers.load_effective_config", return_value=MagicMock()),
         patch("polylogue.storage.search_providers.create_vector_provider", return_value=None),
-        patch("polylogue.lib.filter.filters.ConversationFilter", return_value=mock_filter),
+        patch("polylogue.archive.filter.filters.ConversationFilter", return_value=mock_filter),
         patch("polylogue.cli.query_output.stream_conversation", new_callable=AsyncMock) as mock_stream,
         patch("click.echo") as mock_echo,
     ):
@@ -752,10 +752,10 @@ async def test_async_execute_query_uses_session_product_stats_lane_for_repo_stat
         patch("polylogue.cli.query_output.output_stats_by_profile_summaries", new_callable=AsyncMock) as mock_output,
         patch("polylogue.cli.query_output._output_stats_by") as mock_fallback,
         patch(
-            "polylogue.lib.filter.filters.ConversationFilter.list_summaries",
+            "polylogue.archive.filter.filters.ConversationFilter.list_summaries",
             new=AsyncMock(return_value=[_make_summary("conv-semantic-1")]),
         ),
-        patch("polylogue.lib.filter.filters.ConversationFilter.can_use_summaries", return_value=True),
+        patch("polylogue.archive.filter.filters.ConversationFilter.can_use_summaries", return_value=True),
     ):
         await async_execute_query(
             env,

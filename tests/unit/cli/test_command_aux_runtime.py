@@ -14,6 +14,7 @@ import pytest
 from click.shell_completion import CompletionItem
 from click.testing import CliRunner
 
+from polylogue.archive.filter.filters import ConversationFilter
 from polylogue.cli import shell_completion_values
 from polylogue.cli.commands.neighbors import (
     _candidate_heading,
@@ -28,7 +29,6 @@ from polylogue.lib.conversation.neighbor_candidates import (
     NeighborDiscoveryError,
     NeighborReason,
 )
-from polylogue.lib.filter.filters import ConversationFilter
 from polylogue.lib.models import ConversationSummary
 from polylogue.types import ConversationId, Provider
 

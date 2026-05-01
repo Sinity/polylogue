@@ -43,8 +43,8 @@ from polylogue.storage.query_models import ConversationRecordQuery
 from polylogue.types import Provider
 
 if TYPE_CHECKING:
+    from polylogue.archive.filter.types import SortField
     from polylogue.archive.query.runtime_filters import FilterableConversationLike
-    from polylogue.lib.filter.types import SortField
     from polylogue.lib.models import Conversation, ConversationSummary
     from polylogue.protocols import ConversationQueryRuntimeStore, VectorProvider
 

@@ -203,7 +203,7 @@ class TestResourceSurfaces:
     ) -> None:
         with patch("polylogue.mcp.server._get_query_store") as mock_get_query_store:
             mock_get_query_store.return_value = MagicMock()
-            with patch("polylogue.lib.filter.filters.ConversationFilter") as mock_filter_cls:
+            with patch("polylogue.archive.filter.filters.ConversationFilter") as mock_filter_cls:
                 mock_filter_cls.return_value = make_mock_filter(results=[simple_conversation])
 
                 result = await invoke_surface_async(
@@ -296,7 +296,7 @@ class TestPromptSurfaces:
 
         with patch("polylogue.mcp.server._get_query_store") as mock_get_query_store:
             mock_get_query_store.return_value = MagicMock()
-            with patch("polylogue.lib.filter.filters.ConversationFilter") as mock_filter_cls:
+            with patch("polylogue.archive.filter.filters.ConversationFilter") as mock_filter_cls:
                 mock_filter_cls.return_value = make_mock_filter(results=[simple_conversation])
 
                 result = await invoke_surface_async(mcp_server._prompt_manager._prompts["analyze_errors"].fn)
@@ -319,7 +319,7 @@ class TestPromptSurfaces:
 
         with patch("polylogue.mcp.server._get_query_store") as mock_get_query_store:
             mock_get_query_store.return_value = MagicMock()
-            with patch("polylogue.lib.filter.filters.ConversationFilter") as mock_filter_cls:
+            with patch("polylogue.archive.filter.filters.ConversationFilter") as mock_filter_cls:
                 mock_filter_cls.return_value = make_mock_filter(results=[big_conv])
 
                 result = await invoke_surface_async(mcp_server._prompt_manager._prompts["analyze_errors"].fn)
@@ -330,7 +330,7 @@ class TestPromptSurfaces:
     async def test_analyze_errors_no_matches(self: object, mcp_server: MCPServerUnderTest) -> None:
         with patch("polylogue.mcp.server._get_query_store") as mock_get_query_store:
             mock_get_query_store.return_value = MagicMock()
-            with patch("polylogue.lib.filter.filters.ConversationFilter") as mock_filter_cls:
+            with patch("polylogue.archive.filter.filters.ConversationFilter") as mock_filter_cls:
                 mock_filter_cls.return_value = make_mock_filter(results=[])
 
                 result = await invoke_surface_async(mcp_server._prompt_manager._prompts["analyze_errors"].fn)
@@ -341,7 +341,7 @@ class TestPromptSurfaces:
     async def test_summarize_week_empty(self: object, mcp_server: MCPServerUnderTest) -> None:
         with patch("polylogue.mcp.server._get_query_store") as mock_get_query_store:
             mock_get_query_store.return_value = MagicMock()
-            with patch("polylogue.lib.filter.filters.ConversationFilter") as mock_filter_cls:
+            with patch("polylogue.archive.filter.filters.ConversationFilter") as mock_filter_cls:
                 mock_filter_cls.return_value = make_mock_filter(results=[])
 
                 result = await invoke_surface_async(mcp_server._prompt_manager._prompts["summarize_week"].fn)
@@ -360,7 +360,7 @@ class TestPromptSurfaces:
 
         with patch("polylogue.mcp.server._get_query_store") as mock_get_query_store:
             mock_get_query_store.return_value = MagicMock()
-            with patch("polylogue.lib.filter.filters.ConversationFilter") as mock_filter_cls:
+            with patch("polylogue.archive.filter.filters.ConversationFilter") as mock_filter_cls:
                 mock_filter_cls.return_value = make_mock_filter(results=[conv])
 
                 result = await invoke_surface_async(mcp_server._prompt_manager._prompts["extract_code"].fn)
@@ -384,7 +384,7 @@ class TestPromptSurfaces:
 
         with patch("polylogue.mcp.server._get_query_store") as mock_get_query_store:
             mock_get_query_store.return_value = MagicMock()
-            with patch("polylogue.lib.filter.filters.ConversationFilter") as mock_filter_cls:
+            with patch("polylogue.archive.filter.filters.ConversationFilter") as mock_filter_cls:
                 mock_filter_cls.return_value = make_mock_filter(results=[conv])
 
                 result = await invoke_surface_async(
@@ -405,7 +405,7 @@ class TestPromptSurfaces:
 
         with patch("polylogue.mcp.server._get_query_store") as mock_get_query_store:
             mock_get_query_store.return_value = MagicMock()
-            with patch("polylogue.lib.filter.filters.ConversationFilter") as mock_filter_cls:
+            with patch("polylogue.archive.filter.filters.ConversationFilter") as mock_filter_cls:
                 mock_filter_cls.return_value = make_mock_filter(results=[conv])
 
                 result = await invoke_surface_async(mcp_server._prompt_manager._prompts["extract_code"].fn)
@@ -440,7 +440,7 @@ class TestPromptSurfaces:
     ) -> None:
         with (
             patch("polylogue.mcp.server._get_query_store") as mock_get_query_store,
-            patch("polylogue.lib.filter.filters.ConversationFilter") as mock_filter_cls,
+            patch("polylogue.archive.filter.filters.ConversationFilter") as mock_filter_cls,
         ):
             mock_get_query_store.return_value = MagicMock()
             mock_filter_cls.return_value = make_mock_filter(results=[simple_conversation])
