@@ -820,9 +820,9 @@ class TestMaintenanceSelection:
         config = get_config()
         db_path = cli_workspace["db_path"]
         (
-            ConversationBuilder(db_path, "conv-products")
+            ConversationBuilder(db_path, "conv-insights")
             .provider("claude-code")
-            .title("Scoped Product Repair")
+            .title("Scoped Insight Repair")
             .add_message("u1", role="user", text="Plan the change")
             .save()
         )

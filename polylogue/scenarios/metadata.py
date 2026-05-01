@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from typing import TYPE_CHECKING
 
-from polylogue.products.authored_payloads import (
+from polylogue.insights.authored_payloads import (
     PayloadDict,
     merge_unique_string_tuples,
     payload_string,

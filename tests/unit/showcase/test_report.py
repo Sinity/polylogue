@@ -16,7 +16,7 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from polylogue.core.outcomes import OutcomeCheck, OutcomeStatus
-from polylogue.products.authored_payloads import require_payload_mapping
+from polylogue.insights.authored_payloads import require_payload_mapping
 from polylogue.scenarios import CorpusSpec, polylogue_execution
 from polylogue.schemas.audit.models import AuditReport
 from polylogue.schemas.validation.models import ArtifactProofReport, ProviderArtifactProof

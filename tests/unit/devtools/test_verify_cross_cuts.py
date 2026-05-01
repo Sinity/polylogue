@@ -20,7 +20,7 @@ def test_expected_for_models_suffix() -> None:
 
 def test_expected_for_api_sync_path() -> None:
     # After #426, sync API lives under polylogue/api/sync/.
-    assert verify_cross_cuts.expected_for("products.py", "polylogue/api/sync/products.py")["api"] == "sync"
+    assert verify_cross_cuts.expected_for("insights.py", "polylogue/api/sync/insights.py")["api"] == "sync"
     assert verify_cross_cuts.expected_for("__init__.py", "polylogue/api/sync/__init__.py")["api"] == "sync"
 
 
@@ -37,7 +37,7 @@ def test_expected_for_layer_writes() -> None:
 
 def test_expected_for_layer_reads() -> None:
     assert verify_cross_cuts.expected_for("repository_archive_reads.py")["layer"] == "read"
-    assert verify_cross_cuts.expected_for("product_read_support.py")["layer"] == "read"
+    assert verify_cross_cuts.expected_for("insight_read_support.py")["layer"] == "read"
 
 
 def test_expected_for_ui_facade_api() -> None:

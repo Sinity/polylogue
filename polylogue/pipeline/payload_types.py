@@ -7,7 +7,7 @@ from pathlib import Path
 from typing_extensions import TypedDict
 
 from polylogue.core.json import JSONDocument
-from polylogue.storage.products.session.runtime import SessionProductRefreshChunkPayload
+from polylogue.storage.insights.session.runtime import SessionInsightRefreshChunkPayload
 from polylogue.types import SearchProvider
 
 
@@ -120,7 +120,7 @@ class MaterializeStageObservation(TypedDict, total=False):
     update_max_chunk_hydrate_ms: float
     update_max_chunk_build_ms: float
     update_max_chunk_write_ms: float
-    update_chunks: list[SessionProductRefreshChunkPayload]
+    update_chunks: list[SessionInsightRefreshChunkPayload]
     failed: bool
     error: str
 

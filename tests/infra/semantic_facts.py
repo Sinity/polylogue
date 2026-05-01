@@ -1,6 +1,6 @@
 """Semantic fact extraction for cross-surface agreement testing.
 
-Normalizes conversations, query results, and products into stable
+Normalizes conversations, query results, and insights into stable
 semantic fact tuples so tests can compare meaning rather than formatting.
 """
 

@@ -1,0 +1,22 @@
+Usage: polylogue insights [OPTIONS] COMMAND [ARGS]...
+
+  Inspect durable archive data insights.
+
+Options:
+  -h, --help  Show this message and exit.
+
+Commands:
+  analytics       List provider-level analytics insights.
+  cost-rollups    List provider/model cost rollups.
+  costs           List session-level cost estimates.
+  day-summaries   List durable day-level session summary insights.
+  debt            List archive debt and maintenance readiness insights.
+  enrichments     List durable probabilistic session-enrichment insights.
+  export          Export versioned archive-product bundles.
+  phases          List durable session-phase insights.
+  profiles        List durable session-profile insights.
+  status          Report product materialization coverage and readiness.
+  tags            List durable session-tag rollup insights.
+  threads         List durable work-thread insights.
+  week-summaries  List durable week-level session summary insights.
+  work-events     List durable work-event insights.

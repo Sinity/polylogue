@@ -15,7 +15,7 @@ from polylogue.storage.backends.queries.stats import (
     ProviderConversationCountRow,
     ProviderMetricsRow,
 )
-from polylogue.storage.products.session.runtime import SessionProductStatusSnapshot
+from polylogue.storage.insights.session.runtime import SessionInsightStatusSnapshot
 from polylogue.storage.runtime import AttachmentRecord, ContentBlockRecord, ConversationRecord, MessageRecord
 from polylogue.storage.search.models import ConversationSearchResult
 
@@ -168,7 +168,7 @@ class SQLiteArchiveMixin:
         async for cid in self.queries.iter_conversation_ids(source_names=source_names, page_size=page_size):
             yield cid
 
-    async def get_session_product_status(self) -> SessionProductStatusSnapshot:
+    async def get_session_product_status(self) -> SessionInsightStatusSnapshot:
         """Return materialized session-product coverage counters."""
         return await self.queries.get_session_product_status()
 

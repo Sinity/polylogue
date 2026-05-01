@@ -66,9 +66,9 @@ needs a stats-table join, update `_needs_stats_join()` in
 goes in `cli/commands/`. The CLI is query-first — bare `polylogue` is search,
 not help.
 
-**Adding a session product**: Define the product model in `products/`. Add
+**Adding a session product**: Define the product model in `insights/`. Add
 storage in `storage/session_product_*.py`. Wire rebuild logic and register in
-`products/registry.py`.
+`insights/registry.py`.
 
 **Adding a devtools command**: Add a `CommandSpec` to
 `devtools/command_catalog.py`. Implementation goes in `devtools/<name>.py`.
@@ -80,7 +80,7 @@ Run `devtools render-all` to update the generated catalog in
 Cross-check adjacent surfaces after changes:
 
 - query: `cli/query*.py` ↔ `archive/filter/filters.py` ↔ `storage/search*.py`
-- pipeline: `cli/commands/run.py` ↔ `pipeline/` ↔ `storage/` ↔ `products/`
+- pipeline: `cli/commands/run.py` ↔ `pipeline/` ↔ `storage/` ↔ `insights/`
 - maintenance: `cli/commands/check.py` ↔ `storage/repair.py` ↔ `health.py`
 - publication: `rendering/` ↔ `site/` ↔ `showcase/`
 - schema: `schemas/` ↔ `sources/providers/` ↔ `pipeline/services/validation_*`

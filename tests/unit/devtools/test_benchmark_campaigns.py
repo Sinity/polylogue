@@ -24,7 +24,7 @@ from devtools.synthetic_benchmark_runtime import (
     run_session_product_materialization_campaign,
 )
 from polylogue.scenarios import ExecutionKind
-from polylogue.storage.products.session.runtime import SessionProductCounts
+from polylogue.storage.insights.session.runtime import SessionInsightCounts
 
 
 def test_synthetic_benchmark_registry_is_compiled_from_authored_scenarios() -> None:
@@ -220,8 +220,8 @@ def test_session_product_materialization_campaign_reports_rebuild_counts(
     )
     monkeypatch.setattr("polylogue.storage.backends.connection.open_connection", lambda _db_path: FakeContext())
     monkeypatch.setattr(
-        "polylogue.storage.products.session.rebuild.rebuild_session_products_sync",
-        lambda conn: SessionProductCounts(
+        "polylogue.storage.insights.session.rebuild.rebuild_session_products_sync",
+        lambda conn: SessionInsightCounts(
             profiles=5,
             work_events=8,
             phases=3,

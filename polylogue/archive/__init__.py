@@ -1,1 +1,1 @@
-"""Archive-domain semantics shared across storage, products, and surfaces."""
+"""Archive-domain semantics shared across storage, insights, and surfaces."""

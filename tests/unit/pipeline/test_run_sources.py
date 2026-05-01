@@ -33,7 +33,7 @@ from polylogue.sources.parsers.base import RawConversationData
 from polylogue.storage.backends import create_backend
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.backends.connection import open_connection
-from polylogue.storage.products.session.runtime import SessionProductCounts
+from polylogue.storage.insights.session.runtime import SessionInsightCounts
 from polylogue.storage.run_state import PlanCounts, PlanResult, RunCounts, RunDrift, RunResult
 from polylogue.types import PlanStage
 from tests.infra.storage_records import make_conversation, make_message, store_records
@@ -662,10 +662,10 @@ class TestRunSourcesIntegration:
         )
 
         with patch(
-            "polylogue.storage.products.session.rebuild.rebuild_session_products_async",
+            "polylogue.storage.insights.session.rebuild.rebuild_session_products_async",
             new_callable=AsyncMock,
         ) as mock_rebuild:
-            mock_rebuild.return_value = SessionProductCounts(
+            mock_rebuild.return_value = SessionInsightCounts(
                 profiles=1,
                 work_events=2,
                 phases=1,

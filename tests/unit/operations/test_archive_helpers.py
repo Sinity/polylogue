@@ -3,6 +3,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from polylogue.archive.semantic.pricing import CostEstimatePayload
+from polylogue.insights.archive import SessionCostInsight
+from polylogue.insights.archive_models import ArchiveInsightProvenance
 from polylogue.operations.archive import (
     _build_search_snippet,
     _cost_model_matches,
@@ -12,8 +14,6 @@ from polylogue.operations.archive import (
     _row_str,
     _slice_products,
 )
-from polylogue.products.archive import SessionCostProduct
-from polylogue.products.archive_models import ArchiveProductProvenance
 
 
 def test_archive_helper_snippets_rows_queries_and_slices() -> None:
@@ -40,7 +40,7 @@ def test_archive_helper_snippets_rows_queries_and_slices() -> None:
 
 
 def test_archive_cost_product_filters() -> None:
-    product = SessionCostProduct(
+    product = SessionCostInsight(
         conversation_id="conv-cost",
         provider_name="claude-ai",
         estimate=CostEstimatePayload(
@@ -50,7 +50,7 @@ def test_archive_cost_product_filters() -> None:
             normalized_model="claude-sonnet-4-5",
             status="priced",
         ),
-        provenance=ArchiveProductProvenance(materializer_version=1, materialized_at="2026-01-01T00:00:00Z"),
+        provenance=ArchiveInsightProvenance(materializer_version=1, materialized_at="2026-01-01T00:00:00Z"),
     )
 
     assert _cost_model_matches(product, None) is True

@@ -11,8 +11,8 @@ from devtools.validation_lane_base import pipeline_probe_lane as _pipeline_probe
 from devtools.validation_lane_base import polylogue_lane as _polylogue_lane
 from polylogue.scenarios import (
     PipelineProbeInputMode,
+    build_live_insight_surface_lanes,
     build_live_operational_surface_lanes,
-    build_live_product_surface_lanes,
     build_memory_budget_operational_surface_lanes,
     polylogue_execution,
 )
@@ -32,7 +32,7 @@ def _live_product_lanes() -> dict[str, LaneEntry]:
             *spec.args,
             tags=spec.tags,
         )
-        for spec in build_live_product_surface_lanes()
+        for spec in build_live_insight_surface_lanes()
     }
 
 

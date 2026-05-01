@@ -8,12 +8,12 @@ from typing import TypeAlias
 
 from polylogue.maintenance.models import DerivedModelStatus
 from polylogue.storage.action_events.status import action_event_read_model_status_sync
-from polylogue.storage.derived.products import build_archive_product_statuses, pending_docs, pending_rows
+from polylogue.storage.derived.insights import build_archive_product_statuses, pending_docs, pending_rows
 from polylogue.storage.embeddings.embedding_stats import read_embedding_stats_sync
 from polylogue.storage.embeddings.models import EmbeddingStatsSnapshot
 from polylogue.storage.fts.fts_lifecycle import message_fts_readiness_sync
-from polylogue.storage.products.session.runtime import SessionProductStatusSnapshot
-from polylogue.storage.products.session.status import session_product_status_sync
+from polylogue.storage.insights.session.runtime import SessionInsightStatusSnapshot
+from polylogue.storage.insights.session.status import session_product_status_sync
 
 MetricValue: TypeAlias = int | bool
 Metrics: TypeAlias = dict[str, MetricValue]
@@ -48,7 +48,7 @@ def _action_event_metrics(action_status: StatusMap) -> Metrics:
     }
 
 
-def _session_product_metrics(session_status: SessionProductStatusSnapshot) -> Metrics:
+def _session_product_metrics(session_status: SessionInsightStatusSnapshot) -> Metrics:
     return {
         "profile_rows": session_status.profile_row_count,
         "profile_merged_fts_rows": session_status.profile_merged_fts_count,
@@ -121,7 +121,7 @@ def _retrieval_metrics(
     metrics: StatusMap,
     *,
     action_status: StatusMap,
-    session_status: SessionProductStatusSnapshot,
+    session_status: SessionInsightStatusSnapshot,
 ) -> Metrics:
     evidence_rows = int(metrics["profile_evidence_fts_rows"]) + int(metrics["action_fts_rows"])
     expected_evidence_rows = int(metrics["profile_rows"]) + int(metrics["action_rows"])

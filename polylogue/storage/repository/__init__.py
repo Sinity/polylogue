@@ -20,17 +20,17 @@ if TYPE_CHECKING:
 from polylogue.storage.repository.action.reads import RepositoryActionReadMixin
 from polylogue.storage.repository.archive.reads import RepositoryArchiveReadMixin
 from polylogue.storage.repository.archive.repository_writes import RepositoryWriteMixin
-from polylogue.storage.repository.product.profile_reads import (
-    RepositoryProductProfileReadMixin,
+from polylogue.storage.repository.insight.profile_reads import (
+    RepositoryInsightProfileReadMixin,
 )
-from polylogue.storage.repository.product.summary_reads import (
-    RepositoryProductSummaryReadMixin,
+from polylogue.storage.repository.insight.summary_reads import (
+    RepositoryInsightSummaryReadMixin,
 )
-from polylogue.storage.repository.product.thread_reads import (
-    RepositoryProductThreadReadMixin,
+from polylogue.storage.repository.insight.thread_reads import (
+    RepositoryInsightThreadReadMixin,
 )
-from polylogue.storage.repository.product.timeline_reads import (
-    RepositoryProductTimelineReadMixin,
+from polylogue.storage.repository.insight.timeline_reads import (
+    RepositoryInsightTimelineReadMixin,
 )
 from polylogue.storage.repository.raw.repository_raw import RepositoryRawMixin
 from polylogue.storage.repository.vectors.repository_vectors import RepositoryVectorMixin
@@ -39,10 +39,10 @@ from polylogue.storage.repository.vectors.repository_vectors import RepositoryVe
 class ConversationRepository(
     RepositoryArchiveReadMixin,
     RepositoryActionReadMixin,
-    RepositoryProductProfileReadMixin,
-    RepositoryProductTimelineReadMixin,
-    RepositoryProductThreadReadMixin,
-    RepositoryProductSummaryReadMixin,
+    RepositoryInsightProfileReadMixin,
+    RepositoryInsightTimelineReadMixin,
+    RepositoryInsightThreadReadMixin,
+    RepositoryInsightSummaryReadMixin,
     RepositoryRawMixin,
     RepositoryWriteMixin,
     RepositoryVectorMixin,
