@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from polylogue.lib.raw_payload import RawPayloadEnvelope, build_raw_payload_envelope
+from polylogue.archive.raw_payload import RawPayloadEnvelope, build_raw_payload_envelope
 from polylogue.logging import get_logger
 from polylogue.schemas.validator import SchemaValidator
 from polylogue.storage.blob_store import BlobStore

@@ -13,11 +13,11 @@ from collections import Counter
 
 import pytest
 
-from polylogue.lib.json import JSONDocument, JSONValue, json_document
-from polylogue.lib.raw_payload.sampling_extract import (
+from polylogue.archive.raw_payload.sampling_extract import (
     extract_payload_samples,
     extract_record_samples_from_raw_content,
 )
+from polylogue.lib.json import JSONDocument, JSONValue, json_document
 from polylogue.schemas.field_stats.stats import FieldStats
 from polylogue.schemas.generation.schema_builder import (
     _STRUCTURE_EXEMPLARS_PER_FINGERPRINT,

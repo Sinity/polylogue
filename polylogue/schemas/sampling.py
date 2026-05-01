@@ -5,8 +5,8 @@ from __future__ import annotations
 from collections.abc import Iterator
 from pathlib import Path
 
+from polylogue.archive.raw_payload import build_raw_payload_envelope, collect_limited_samples
 from polylogue.lib.json import JSONDocument
-from polylogue.lib.raw_payload import build_raw_payload_envelope, collect_limited_samples
 from polylogue.paths import db_path as archive_db_path
 from polylogue.schemas.observation import resolve_provider_config
 from polylogue.schemas.observation_models import SchemaUnit
