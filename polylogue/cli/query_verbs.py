@@ -242,7 +242,7 @@ def messages_verb(
 
 @click.command("raw")
 @click.argument("conversation_id", required=False)
-@click.option("--limit", "-n", type=int, default=50, help="Max records to return")
+@click.option("--limit", "-n", type=int, default=50, help="Max raw artifacts to return")
 @click.option("--offset", type=int, default=0, help="Offset for pagination")
 @click.option(
     "--format", "-f", "output_format", type=click.Choice(["json", "yaml"]), default="json", help="Output format"
@@ -255,7 +255,7 @@ def raw_verb(
     offset: int,
     output_format: str,
 ) -> None:
-    """Show raw provider records for a conversation."""
+    """Show raw archive artifacts for a conversation."""
     from polylogue.cli.messages import run_raw
 
     env: AppEnv = ctx.obj

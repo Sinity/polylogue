@@ -408,7 +408,7 @@ class ArchiveSearchMixin:
         )
         return project_message_content(messages, content_projection), total
 
-    async def get_raw_records_for_conversation(
+    async def get_raw_artifacts_for_conversation(
         self,
         conversation_id: str,
         *,

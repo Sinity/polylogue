@@ -42,7 +42,7 @@ class _FakeApi:
         self.messages_kwargs = {"conversation_id": conversation_id, **kwargs}
         return self.messages_result
 
-    async def get_raw_records_for_conversation(
+    async def get_raw_artifacts_for_conversation(
         self, conversation_id: str, **kwargs: object
     ) -> tuple[list[dict[str, object]], int]:
         self.raw_kwargs = {"conversation_id": conversation_id, **kwargs}
@@ -156,7 +156,7 @@ def test_run_raw_emits_json_yaml_and_empty_error(tmp_path: Path) -> None:
         run_raw(env, _request(tmp_path), conversation_id="conv-raw", limit=3, offset=1)
 
     payload = json.loads(_ui_print(env).call_args.args[0])
-    assert payload["records"][0]["raw_id"] == "raw-1"
+    assert payload["artifacts"][0]["raw_id"] == "raw-1"
     assert api.raw_kwargs == {"conversation_id": "conv-raw", "limit": 3, "offset": 1}
 
     yaml_env = _env()
@@ -167,4 +167,4 @@ def test_run_raw_emits_json_yaml_and_empty_error(tmp_path: Path) -> None:
     empty_env = _env()
     with patch("polylogue.api.Polylogue.open", return_value=_FakeApi(raw_result=([], 0))):
         run_raw(empty_env, _request(tmp_path), conversation_id="missing")
-    _ui_error(empty_env).assert_called_once_with("No raw records found for conversation: missing")
+    _ui_error(empty_env).assert_called_once_with("No raw artifacts found for conversation: missing")
