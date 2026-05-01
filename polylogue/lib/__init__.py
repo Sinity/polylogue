@@ -13,9 +13,9 @@ if TYPE_CHECKING:
     from polylogue.archive.conversation.models import Conversation
     from polylogue.archive.message.messages import MessageCollection
     from polylogue.archive.message.models import DialoguePair, Message
+    from polylogue.archive.message.roles import Role
     from polylogue.archive.projection.projections import ConversationProjection
     from polylogue.archive.semantic.content_projection import ContentKind, ContentProjectionSpec
-    from polylogue.lib.roles import Role
 
 
 def __getattr__(name: str) -> object:
@@ -29,7 +29,7 @@ def __getattr__(name: str) -> object:
         "DialoguePair": ("polylogue.archive.message.models", "DialoguePair"),
         "Message": ("polylogue.archive.message.models", "Message"),
         "MessageCollection": ("polylogue.archive.message.messages", "MessageCollection"),
-        "Role": ("polylogue.lib.roles", "Role"),
+        "Role": ("polylogue.archive.message.roles", "Role"),
     }
     module_spec = lazy_exports.get(name)
     if module_spec is not None:

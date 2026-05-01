@@ -24,8 +24,8 @@ from unittest.mock import AsyncMock
 import pytest
 
 from polylogue.archive.filter.filters import ConversationFilter
+from polylogue.archive.message.roles import Role
 from polylogue.lib.models import Conversation
-from polylogue.lib.roles import Role
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.repository import ConversationRepository
 from tests.infra.builders import make_conv, make_msg

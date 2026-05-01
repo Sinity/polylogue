@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from polylogue.lib.roles import Role
+from polylogue.archive.message.roles import Role
 from polylogue.pipeline import prepare as prepare_module
 from polylogue.pipeline.prepare_models import (
     AttachmentMaterializationPlan,

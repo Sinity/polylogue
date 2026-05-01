@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from polylogue.lib.roles import normalize_role
+from polylogue.archive.message.roles import normalize_role
 
 from .base_models import (
     ParsedAttachment,

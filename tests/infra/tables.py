@@ -130,7 +130,7 @@ GEMINI_ROLE_MAPPING: list[tuple[str, str]] = [
 # =============================================================================
 # normalize_role: canonical input→output mapping
 #
-# Production code: polylogue.lib.roles.normalize_role
+# Production code: polylogue.archive.message.roles.normalize_role
 # (re-exported as polylogue.sources.parsers.base.normalize_role)
 # =============================================================================
 

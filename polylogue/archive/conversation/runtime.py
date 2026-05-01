@@ -11,8 +11,7 @@ from polylogue.archive.conversation.branch_type import BranchType
 from polylogue.archive.conversation.tail_overlay import TailOverlayInfo, tail_overlay_from_provider_meta
 from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.message.models import DialoguePair, Message
-from polylogue.archive.message.roles import normalize_message_roles
-from polylogue.lib.roles import Role
+from polylogue.archive.message.roles import Role, normalize_message_roles
 from polylogue.types import ConversationId
 
 if TYPE_CHECKING:

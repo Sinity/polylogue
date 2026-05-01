@@ -4,8 +4,7 @@ from __future__ import annotations
 
 import aiosqlite
 
-from polylogue.archive.message.roles import message_role_count_key, message_role_sql_values
-from polylogue.lib.roles import Role
+from polylogue.archive.message.roles import Role, message_role_count_key, message_role_sql_values
 
 
 def _role_count(role_counts: dict[str, int], role: Role) -> int:

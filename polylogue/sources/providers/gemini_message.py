@@ -7,6 +7,7 @@ from typing import TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from polylogue.archive.message.roles import Role
 from polylogue.archive.viewport.viewports import (
     ContentBlock,
     ContentType,
@@ -17,7 +18,6 @@ from polylogue.archive.viewport.viewports import (
 )
 from polylogue.core.json import json_document
 from polylogue.core.timestamps import parse_timestamp
-from polylogue.lib.roles import Role
 from polylogue.types import Provider
 
 from .gemini_models import GeminiBranchParent, GeminiGrounding, GeminiPart, GeminiThoughtSignature

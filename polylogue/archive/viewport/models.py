@@ -7,6 +7,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field, field_validator
 
+from polylogue.archive.message.roles import Role
 from polylogue.archive.viewport.enums import ContentType, ToolCategory
 from polylogue.archive.viewport.tools import (
     PATH_PATTERN,
@@ -14,7 +15,6 @@ from polylogue.archive.viewport.tools import (
     clean_path_candidate,
     clean_shell_path_candidate,
 )
-from polylogue.lib.roles import Role
 from polylogue.types import Provider
 
 

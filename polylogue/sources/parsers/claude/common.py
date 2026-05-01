@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from polylogue.lib.roles import Role
+from polylogue.archive.message.roles import Role
 from polylogue.types import ContentBlockType
 
 from ..base import (
