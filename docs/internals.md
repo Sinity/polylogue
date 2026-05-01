@@ -10,7 +10,7 @@ debugging landmarks. For the conceptual system shape, see
 | --- | --- |
 | Archive writes are idempotent by content hash | `pipeline/ids.py`, `pipeline/prepare_enrichment.py` |
 | Content hash excludes user metadata (tags, summaries) | `pipeline/ids.py:conversation_content_hash()` |
-| Content hash uses NFC normalization | `lib/hashing.py:hash_text()` |
+| Content hash uses NFC normalization | `core/hashing.py:hash_text()` |
 | Async SQLite is the primary runtime; sync SQLite exists for CLI, schema tooling, and batch-ingest write paths | `storage/backends/async_sqlite.py`, `storage/backends/connection.py`, `pipeline/services/ingest_batch.py` |
 | SQLite read/write tuning is profile-driven, not backend-local | `storage/backends/connection_profile.py` |
 | FTS tokenizer is `unicode61` (no porter stemmer) | `storage/backends/schema_ddl_archive.py` |
