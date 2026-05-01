@@ -5,8 +5,8 @@ from __future__ import annotations
 import builtins
 
 from polylogue.archive.conversation.models import Conversation
+from polylogue.core.hashing import hash_payload
 from polylogue.core.json import JSONValue, json_document
-from polylogue.lib.hashing import hash_payload
 from polylogue.storage.action_events.rows import attach_blocks_to_messages, build_action_event_records
 from polylogue.storage.backends.queries import action_events as action_events_q
 from polylogue.storage.backends.queries import attachments as attachments_q

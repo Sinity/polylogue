@@ -12,7 +12,7 @@ from pathlib import Path
 import orjson
 
 from polylogue.browser_capture.models import BrowserCaptureEnvelope
-from polylogue.lib.hashing import hash_text_short
+from polylogue.core.hashing import hash_text_short
 from polylogue.paths import browser_capture_spool_root
 
 _SAFE_TOKEN = re.compile(r"[^A-Za-z0-9._-]+")
