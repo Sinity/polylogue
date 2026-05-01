@@ -9,8 +9,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO, TypeAlias
 
+from polylogue.archive.artifact_taxonomy import classify_artifact
 from polylogue.config import Source
-from polylogue.lib.artifact_taxonomy import classify_artifact
 from polylogue.lib.json import JSONDocument, JSONValue, is_json_value
 from polylogue.lib.json import dumps_bytes as json_dumps_bytes
 from polylogue.lib.metrics import read_current_rss_mb, read_peak_rss_self_mb

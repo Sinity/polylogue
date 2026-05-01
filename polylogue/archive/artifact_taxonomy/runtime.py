@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from polylogue.lib.artifact_taxonomy.models import ArtifactClassification, ArtifactKind
-from polylogue.lib.artifact_taxonomy.support import (
+from polylogue.archive.artifact_taxonomy.models import ArtifactClassification, ArtifactKind
+from polylogue.archive.artifact_taxonomy.support import (
     is_subagent_path,
     looks_like_conversation_document,
     looks_like_record_entry,

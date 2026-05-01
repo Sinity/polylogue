@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 from dataclasses import dataclass, field
 
-from polylogue.lib.artifact_taxonomy import ArtifactKind
+from polylogue.archive.artifact_taxonomy import ArtifactKind
 from polylogue.storage.artifacts.views import ArtifactCohortSummary
 from polylogue.storage.backends.queries.mappers import _row_to_artifact_observation
 from polylogue.storage.query_models import ArtifactObservationListQuery
