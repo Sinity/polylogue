@@ -7,14 +7,14 @@ from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Literal
 
-from polylogue.lib.json import JSONDocument, JSONValue, json_document, loads
-from polylogue.lib.raw_payload.sampling_buckets import (
+from polylogue.archive.raw_payload.sampling_buckets import (
     bucket_target_counts,
     is_record_candidate,
     record_bucket_key,
     take_bucketed_samples,
 )
-from polylogue.lib.raw_payload.streams import raw_line_stream
+from polylogue.archive.raw_payload.streams import raw_line_stream
+from polylogue.lib.json import JSONDocument, JSONValue, json_document, loads
 
 
 def limit_samples(

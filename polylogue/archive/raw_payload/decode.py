@@ -8,12 +8,12 @@ from typing import Literal, TypeAlias
 
 import orjson
 
+from polylogue.archive.raw_payload.streams import raw_line_stream
 from polylogue.lib.artifact_taxonomy import (
     ArtifactClassification,
     classify_artifact,
 )
 from polylogue.lib.json import JSONDocument, JSONValue, is_json_value, loads
-from polylogue.lib.raw_payload.streams import raw_line_stream
 from polylogue.sources.dispatch import detect_provider
 from polylogue.types import Provider
 

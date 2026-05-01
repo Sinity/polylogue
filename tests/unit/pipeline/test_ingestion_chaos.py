@@ -350,7 +350,7 @@ class TestDecodeRawPayloadCorruption:
 
     def test_malformed_line_counted_in_envelope(self) -> None:
         """malformed_jsonl_lines reflects the number of bad lines."""
-        from polylogue.lib.raw_payload import build_raw_payload_envelope
+        from polylogue.archive.raw_payload import build_raw_payload_envelope
 
         lines = generate_large_jsonl(100, provider="codex")
         corrupted = corrupt_line_malformed_json(lines, 50)
@@ -369,7 +369,7 @@ class TestDecodeRawPayloadCorruption:
 
     def test_multiple_malformed_lines_counted(self) -> None:
         """All malformed lines are counted."""
-        from polylogue.lib.raw_payload import build_raw_payload_envelope
+        from polylogue.archive.raw_payload import build_raw_payload_envelope
 
         lines = generate_large_jsonl(100, provider="codex")
         for idx in [10, 30, 50, 70, 90]:
@@ -387,7 +387,7 @@ class TestDecodeRawPayloadCorruption:
 
     def test_bad_utf8_lines_are_counted_and_salvaged(self, tmp_path: Path) -> None:
         """Invalid UTF-8 lines count as malformed JSONL but do not poison the whole file."""
-        from polylogue.lib.raw_payload import build_raw_payload_envelope
+        from polylogue.archive.raw_payload import build_raw_payload_envelope
 
         lines = generate_large_jsonl(20, provider="codex")
         corrupted = corrupt_line_bad_utf8(lines, 4)
