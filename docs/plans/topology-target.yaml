@@ -135,6 +135,31 @@ files:
     target: polylogue/archive/phase/extraction.py
     owner: archive-phase
     reason: archive-domain semantics
+  - path: polylogue/archive/projection/__init__.py
+    loc: 0
+    target: polylogue/archive/projection/__init__.py
+    owner: archive-projection
+    reason: archive-domain semantics
+  - path: polylogue/archive/projection/filter_mixin.py
+    loc: 73
+    target: polylogue/archive/projection/filter_mixin.py
+    owner: archive-projection
+    reason: archive-domain semantics
+  - path: polylogue/archive/projection/projections.py
+    loc: 52
+    target: polylogue/archive/projection/projections.py
+    owner: archive-projection
+    reason: archive-domain semantics
+  - path: polylogue/archive/projection/terminal_mixin.py
+    loc: 78
+    target: polylogue/archive/projection/terminal_mixin.py
+    owner: archive-projection
+    reason: archive-domain semantics
+  - path: polylogue/archive/projection/transform_mixin.py
+    loc: 68
+    target: polylogue/archive/projection/transform_mixin.py
+    owner: archive-projection
+    reason: archive-domain semantics
   - path: polylogue/archive/provider/__init__.py
     loc: 0
     target: polylogue/archive/provider/__init__.py
@@ -717,26 +742,6 @@ files:
     target: polylogue/lib/pricing.py
     owner: lib-root
     reason: lib-root primitive
-  - path: polylogue/lib/projection/__init__.py
-    loc: 0
-    target: polylogue/lib/projection/__init__.py
-    owner: stable
-  - path: polylogue/lib/projection/filter_mixin.py
-    loc: 73
-    target: polylogue/lib/projection/filter_mixin.py
-    owner: stable
-  - path: polylogue/lib/projection/projections.py
-    loc: 52
-    target: polylogue/lib/projection/projections.py
-    owner: stable
-  - path: polylogue/lib/projection/terminal_mixin.py
-    loc: 78
-    target: polylogue/lib/projection/terminal_mixin.py
-    owner: stable
-  - path: polylogue/lib/projection/transform_mixin.py
-    loc: 68
-    target: polylogue/lib/projection/transform_mixin.py
-    owner: stable
   - path: polylogue/lib/provider_identity.py
     loc: 97
     target: polylogue/lib/provider_identity.py

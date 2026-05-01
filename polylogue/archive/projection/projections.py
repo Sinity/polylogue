@@ -24,9 +24,9 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
-from polylogue.lib.projection.filter_mixin import ProjectionFilterMixin
-from polylogue.lib.projection.terminal_mixin import ProjectionTerminalMixin
-from polylogue.lib.projection.transform_mixin import ProjectionTransformMixin
+from polylogue.archive.projection.filter_mixin import ProjectionFilterMixin
+from polylogue.archive.projection.terminal_mixin import ProjectionTerminalMixin
+from polylogue.archive.projection.transform_mixin import ProjectionTransformMixin
 
 if TYPE_CHECKING:
     from polylogue.lib.conversation.models import Conversation
