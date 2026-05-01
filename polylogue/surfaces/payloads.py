@@ -19,8 +19,8 @@ if TYPE_CHECKING:
     from collections.abc import Container
 
     from polylogue.archive.conversation.neighbor_candidates import ConversationNeighborCandidate, NeighborReason
+    from polylogue.archive.query.search_hits import ConversationSearchHit
     from polylogue.lib.models import Conversation, ConversationSummary, Message
-    from polylogue.lib.search_hits import ConversationSearchHit
     from polylogue.lib.tail_overlay import TailOverlayInfo
 
 

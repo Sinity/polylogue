@@ -19,6 +19,7 @@ from rich.console import Console
 
 from polylogue.archive.message.roles import MessageRoleFilter
 from polylogue.archive.query.miss_diagnostics import QueryMissDiagnostics, QueryMissReason
+from polylogue.archive.query.search_hits import ConversationSearchHit
 from polylogue.archive.query.spec import ConversationQuerySpec, QuerySpecError
 from polylogue.cli.query import (
     QueryAction,
@@ -49,7 +50,6 @@ from polylogue.cli.shared.types import AppEnv
 from polylogue.core.json import JSONDocument
 from polylogue.lib.models import Conversation
 from polylogue.lib.roles import Role
-from polylogue.lib.search_hits import ConversationSearchHit
 from polylogue.services import build_runtime_services
 from polylogue.storage.action_events.artifacts import ActionEventArtifactState
 from polylogue.storage.runtime import ContentBlockRecord, ConversationRecord, MessageRecord

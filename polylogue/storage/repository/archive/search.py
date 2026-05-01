@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from polylogue.archive.conversation.models import Conversation, ConversationSummary
-    from polylogue.lib.search_hits import ConversationSearchHit
+    from polylogue.archive.query.search_hits import ConversationSearchHit
     from polylogue.storage.backends.query_store import SQLiteQueryStore
     from polylogue.storage.runtime import ConversationRecord
     from polylogue.storage.search.models import ConversationSearchEvidenceHit, ConversationSearchResult
@@ -71,8 +71,8 @@ class RepositoryArchiveSearchMixin:
         providers: builtins.list[str] | None = None,
         since: str | None = None,
     ) -> builtins.list[ConversationSearchHit]:
+        from polylogue.archive.query.search_hits import conversation_search_hit_from_summary
         from polylogue.errors import DatabaseError
-        from polylogue.lib.search_hits import conversation_search_hit_from_summary
         from polylogue.storage.hydrators import conversation_summary_from_record
 
         attachment_hits = await self.queries.search_attachment_identity_evidence_hits(
