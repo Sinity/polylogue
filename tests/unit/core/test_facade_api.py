@@ -8,8 +8,8 @@ import pytest
 
 from polylogue import Polylogue
 from polylogue.api import ArchiveStats
+from polylogue.archive.semantic.content_projection import ContentProjectionSpec
 from polylogue.lib.roles import Role
-from polylogue.lib.semantic.content_projection import ContentProjectionSpec
 from polylogue.products.archive import (
     ArchiveDebtProductQuery,
     CostRollupProductQuery,

@@ -9,7 +9,7 @@ from typing import Annotated, TypeAlias
 from pydantic import Field
 
 from polylogue.archive.query.spec import ConversationQuerySpec
-from polylogue.lib.semantic.content_projection import ContentProjectionSpec
+from polylogue.archive.semantic.content_projection import ContentProjectionSpec
 
 MCPToolLimit: TypeAlias = Annotated[int, Field(ge=1)]
 MCPToolOffset: TypeAlias = Annotated[int, Field(ge=0)]

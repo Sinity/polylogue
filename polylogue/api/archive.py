@@ -6,8 +6,8 @@ from collections.abc import Sequence
 from contextlib import suppress
 from typing import TYPE_CHECKING, Protocol
 
+from polylogue.archive.semantic.content_projection import ContentProjectionSpec
 from polylogue.lib.message.roles import MessageRoleFilter
-from polylogue.lib.semantic.content_projection import ContentProjectionSpec
 from polylogue.products.archive import (
     SessionEnrichmentProduct,
     SessionEnrichmentProductQuery,

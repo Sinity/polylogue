@@ -26,6 +26,7 @@ import yaml
 from rich.console import Console
 
 from polylogue.archive.attachment.models import Attachment
+from polylogue.archive.semantic.content_projection import ContentProjectionSpec
 from polylogue.cli.query import describe_query_filters
 from polylogue.cli.query_output import (
     _format_list,
@@ -40,7 +41,6 @@ from polylogue.lib.message.messages import MessageCollection
 from polylogue.lib.models import Conversation, ConversationSummary, Message
 from polylogue.lib.roles import Role
 from polylogue.lib.search_hits import ConversationSearchHit
-from polylogue.lib.semantic.content_projection import ContentProjectionSpec
 from polylogue.rendering.formatting import _conv_to_dict, _yaml_safe, format_conversation
 from polylogue.types import ConversationId, Provider
 from tests.infra.builders import make_conv as build_conv

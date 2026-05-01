@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, TypeAlias
 
 import click
 
+from polylogue.archive.semantic.content_projection import ContentProjectionSpec, coerce_content_projection_spec
 from polylogue.cli.query_contracts import QueryDeliveryTarget, QueryOutputSpec
 from polylogue.cli.query_feedback import emit_no_results
 from polylogue.cli.query_output_contracts import QueryOutputDocument, StructuredRowsDocument
@@ -39,7 +40,6 @@ from polylogue.cli.query_stats import (
 from polylogue.lib.json import JSONDocument
 from polylogue.lib.message.roles import MessageRoleFilter, message_role_count_key, message_role_labels
 from polylogue.lib.roles import Role
-from polylogue.lib.semantic.content_projection import ContentProjectionSpec, coerce_content_projection_spec
 from polylogue.logging import get_logger
 from polylogue.rendering.formatting import format_conversation
 from polylogue.surfaces.payloads import ConversationListRowPayload, ConversationSearchHitPayload, model_json_document

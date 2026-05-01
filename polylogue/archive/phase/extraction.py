@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import TYPE_CHECKING
 
-from polylogue.lib.semantic.facts import (
+from polylogue.archive.semantic.facts import (
     ConversationSemanticFacts,
     MessageSemanticFacts,
     build_conversation_semantic_facts,

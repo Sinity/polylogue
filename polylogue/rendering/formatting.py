@@ -18,7 +18,7 @@ import io
 import json
 from typing import TYPE_CHECKING
 
-from polylogue.lib.semantic.content_projection import ContentProjectionSpec
+from polylogue.archive.semantic.content_projection import ContentProjectionSpec
 from polylogue.surfaces.payloads import (
     ConversationDetailPayload,
     ConversationListRowPayload,

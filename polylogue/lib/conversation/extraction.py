@@ -10,17 +10,17 @@ from enum import Enum
 from typing import TYPE_CHECKING, TypeAlias
 
 from polylogue.archive.phase.extraction import SessionPhase, extract_phases
+from polylogue.archive.semantic.facts import (
+    ConversationSemanticFacts,
+    MessageSemanticFacts,
+    build_conversation_semantic_facts,
+)
 from polylogue.lib.payload_coercion import (
     coerce_float,
     coerce_int,
     optional_date,
     optional_datetime,
     string_sequence,
-)
-from polylogue.lib.semantic.facts import (
-    ConversationSemanticFacts,
-    MessageSemanticFacts,
-    build_conversation_semantic_facts,
 )
 from polylogue.lib.session.documents import WorkEventDocument
 

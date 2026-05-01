@@ -48,7 +48,7 @@ def conversation_action_search_score(
     query_text: str,
     terms: tuple[str, ...],
 ) -> float:
-    from polylogue.lib.semantic.facts import build_conversation_semantic_facts
+    from polylogue.archive.semantic.facts import build_conversation_semantic_facts
 
     facts = build_conversation_semantic_facts(conversation)
     matches = [

@@ -17,8 +17,8 @@ from polylogue.types import ConversationId
 
 if TYPE_CHECKING:
     from polylogue.archive.projection.projections import ConversationProjection
+    from polylogue.archive.semantic.content_projection import ContentProjectionSpec
     from polylogue.lib.conversation.models import Conversation
-    from polylogue.lib.semantic.content_projection import ContentProjectionSpec
 
 
 def _metadata_string(metadata: dict[str, object], key: str) -> str | None:
@@ -114,7 +114,7 @@ class ConversationRuntimeMixin:
         self,
         projection: ContentProjectionSpec | Mapping[str, object] | None,
     ) -> Self:
-        from polylogue.lib.semantic.content_projection import project_conversation_content
+        from polylogue.archive.semantic.content_projection import project_conversation_content
 
         return cast(Self, project_conversation_content(cast("Conversation", self), projection))
 

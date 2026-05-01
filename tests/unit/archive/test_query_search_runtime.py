@@ -59,7 +59,7 @@ def test_search_query_text_terms_and_scoring_are_normalized() -> None:
 
 def test_conversation_action_search_score_uses_best_match_and_bonus(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        "polylogue.lib.semantic.facts.build_conversation_semantic_facts",
+        "polylogue.archive.semantic.facts.build_conversation_semantic_facts",
         lambda _conversation: SimpleNamespace(
             action_events=[
                 SimpleNamespace(search_text="alpha beta"),

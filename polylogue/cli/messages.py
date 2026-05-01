@@ -5,11 +5,11 @@ from __future__ import annotations
 from typing import cast
 
 from polylogue.api.sync.bridge import run_coroutine_sync
+from polylogue.archive.semantic.content_projection import ContentProjectionSpec
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
 from polylogue.lib.message.roles import MessageRoleFilter, normalize_message_roles
-from polylogue.lib.semantic.content_projection import ContentProjectionSpec
 from polylogue.storage.backends.queries.message_query_reads import MessageTypeName
 
 
