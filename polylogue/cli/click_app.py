@@ -2,7 +2,7 @@
 
 The CLI uses a hybrid structure:
 - Positional args without subcommand prefix → query mode
-- Known subcommand prefixes (sync, check, mcp, etc.) → subcommand mode
+- Known subcommand prefixes (run, doctor, schema, etc.) → subcommand mode
 - No args → stats mode
 """
 
@@ -13,7 +13,6 @@ import click
 from polylogue.cli.click_command_registration import (
     completions_command,
     dashboard_command,
-    mcp_command,
     register_root_commands,
 )
 from polylogue.cli.click_option_groups import apply_query_mode_options
@@ -189,5 +188,4 @@ __all__ = [
     "completions_command",
     "dashboard_command",
     "main",
-    "mcp_command",
 ]

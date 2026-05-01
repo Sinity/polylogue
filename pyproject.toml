@@ -109,6 +109,7 @@ Documentation = "https://github.com/sinity/polylogue#readme"
 
 [project.scripts]
 polylogue = "polylogue.cli:main"
+polylogue-mcp = "polylogue.mcp.cli:main"
 devtools = "devtools.__main__:main"
 
 [tool.hatch.build.targets.wheel]

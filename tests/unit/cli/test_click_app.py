@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -10,7 +9,6 @@ import pytest
 from click.testing import CliRunner
 
 from polylogue.cli.click_app import cli as click_cli
-from polylogue.cli.click_app import mcp_command
 from tests.infra.cli_subprocess import run_cli
 
 QueryParams = dict[str, object]
@@ -509,8 +507,9 @@ class TestCliMetadata:
 
         result = cli_runner.invoke(cli, ["--help"])
         assert result.exit_code == 0
-        for command in ("run", "doctor", "mcp", "tags", "list", "count", "stats"):
+        for command in ("run", "doctor", "tags", "list", "count", "stats"):
             assert command in result.output
+        assert "mcp" not in click_cli.commands
         assert result.output.count("Commands:") == 1
 
     def test_all_subcommands_registered(self) -> None:
@@ -521,7 +520,6 @@ class TestCliMetadata:
             "browser-capture",
             "doctor",
             "reset",
-            "mcp",
             "auth",
             "completions",
             "dashboard",
@@ -647,49 +645,6 @@ class TestCompletionsCommand:
         result = cli_runner.invoke(click_cli, ["completions", "--shell", "powershell"])
         assert result.exit_code != 0
         assert "invalid value" in result.output.lower() or "choice" in result.output.lower()
-
-
-class TestMcpCommandUnit:
-    @pytest.fixture
-    def mock_env(self) -> MagicMock:
-        mock_ui = MagicMock()
-        mock_ui.plain = True
-        mock_ui.console = MagicMock()
-        env = MagicMock()
-        env.ui = mock_ui
-        return env
-
-    def test_default_transport_is_stdio(self, cli_runner: CliRunner, mock_env: MagicMock) -> None:
-        with patch("polylogue.mcp.server.serve_stdio") as mock_serve:
-            result = cli_runner.invoke(mcp_command, [], obj=mock_env)
-        mock_serve.assert_called_once()
-        assert result.exit_code == 0
-
-    def test_explicit_stdio_transport_works(self, cli_runner: CliRunner, mock_env: MagicMock) -> None:
-        with patch("polylogue.mcp.server.serve_stdio") as mock_serve:
-            result = cli_runner.invoke(mcp_command, ["--transport", "stdio"], obj=mock_env)
-        mock_serve.assert_called_once()
-        assert result.exit_code == 0
-
-    def test_missing_mcp_dependencies_error(self, cli_runner: CliRunner, mock_env: MagicMock) -> None:
-        with patch.dict(sys.modules, {"polylogue.mcp.server": None}):
-
-            def mock_import(*args: object, **kwargs: object) -> object:
-                raise ImportError("No module named 'mcp'")
-
-            with patch("builtins.__import__", side_effect=mock_import):
-                result = cli_runner.invoke(mcp_command, [], obj=mock_env)
-        assert result.exit_code != 0 or mock_env.ui.console.print.called
-
-    def test_unsupported_transport_error(self, cli_runner: CliRunner, mock_env: MagicMock) -> None:
-        result = cli_runner.invoke(click_cli, ["mcp", "--transport", "http"])
-        assert result.exit_code != 0
-
-    def test_mcp_help_shows_description(self, cli_runner: CliRunner) -> None:
-        result = cli_runner.invoke(click_cli, ["mcp", "--help"])
-        assert result.exit_code == 0
-        assert "mcp" in result.output.lower()
-        assert "server" in result.output.lower() or "protocol" in result.output.lower()
 
 
 class TestMcpServerImport:

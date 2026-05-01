@@ -2,60 +2,10 @@
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
-from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
-from click.testing import CliRunner
-
-from polylogue.cli.commands.mcp import mcp_command
 from polylogue.sources.drive.source_factory import build_drive_source_client
-
-
-def test_mcp_command_runs_stdio_server_and_handles_missing_dependency() -> None:
-    runner = CliRunner()
-    env = SimpleNamespace(ui=SimpleNamespace(console=SimpleNamespace(print=lambda *_args: None)), services="services")
-
-    with patch("polylogue.mcp.server.serve_stdio") as mock_serve:
-        result = runner.invoke(mcp_command, ["--transport", "stdio"], obj=env)
-
-    assert result.exit_code == 0
-    mock_serve.assert_called_once_with("services", role="read")
-
-    console = SimpleNamespace(print=MagicMock())
-    env = SimpleNamespace(ui=SimpleNamespace(console=console), services="services")
-    original_module = sys.modules.get("polylogue.mcp.server")
-
-    try:
-        sys.modules["polylogue.mcp.server"] = None
-        result = runner.invoke(mcp_command, [], obj=env)
-    finally:
-        if original_module is None:
-            sys.modules.pop("polylogue.mcp.server", None)
-        else:
-            sys.modules["polylogue.mcp.server"] = original_module
-
-    assert result.exit_code == 1
-    assert "MCP dependencies not installed" in console.print.call_args_list[0].args[0]
-    assert "Install the base polylogue package" in console.print.call_args_list[1].args[0]
-
-
-def test_mcp_command_rejects_unsupported_transport_via_callback() -> None:
-    console = SimpleNamespace(print=MagicMock())
-    env = SimpleNamespace(ui=SimpleNamespace(console=console), services="services")
-
-    wrapped = getattr(mcp_command.callback, "__wrapped__", None)
-    assert callable(wrapped)
-
-    try:
-        wrapped(env, "http", "read")
-    except SystemExit as exc:
-        assert exc.code == 1
-    else:  # pragma: no cover - defensive
-        raise AssertionError("expected SystemExit")
-
-    console.print.assert_called_once_with("Unsupported transport: http")
 
 
 def test_build_drive_source_client_wires_auth_gateway_and_client(tmp_path: Path) -> None:

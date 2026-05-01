@@ -8,10 +8,10 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 
 ## Snapshot
 
-- subjects: `505`
+- subjects: `504`
 - claims: `44`
 - runner bindings: `44`
-- proof obligations: `579`
+- proof obligations: `576`
 
 ## Quality Checks
 
@@ -40,7 +40,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `assurance.coverage_gap` | 23 |
 | `assurance.coverage_item` | 91 |
 | `assurance.coverage_manifest` | 9 |
-| `cli.command` | 59 |
+| `cli.command` | 58 |
 | `cli.json_command` | 5 |
 | `diagnostic.observable` | 1 |
 | `error.surface` | 2 |
@@ -59,7 +59,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 
 | Command | Source |
 | --- | --- |
-| `polylogue` | `polylogue/cli/click_app.py:51` `polylogue.cli.click_app.cli` |
+| `polylogue` | `polylogue/cli/click_app.py:50` `polylogue.cli.click_app.cli` |
 | `polylogue auth` | `polylogue/cli/commands/auth.py:16` `polylogue.cli.commands.auth.auth_command` |
 | `polylogue browser-capture` | `polylogue/cli/commands/browser_capture.py:14` `polylogue.cli.commands.browser_capture.browser_capture_command` |
 | `polylogue browser-capture serve` | `polylogue/cli/commands/browser_capture.py:38` `polylogue.cli.commands.browser_capture.serve_command` |
@@ -91,7 +91,6 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `polylogue insights week-summaries` | `polylogue/cli/commands/insights.py:100` `polylogue.cli.commands.insights._make_callback.<locals>.callback` |
 | `polylogue insights work-events` | `polylogue/cli/commands/insights.py:100` `polylogue.cli.commands.insights._make_callback.<locals>.callback` |
 | `polylogue list` | `polylogue/cli/query_verbs.py:22` `polylogue.cli.query_verbs.list_verb` |
-| `polylogue mcp` | `polylogue/cli/commands/mcp.py:13` `polylogue.cli.commands.mcp.mcp_command` |
 | `polylogue messages` | `polylogue/cli/query_verbs.py:179` `polylogue.cli.query_verbs.messages_verb` |
 | `polylogue neighbors` | `polylogue/cli/commands/neighbors.py:42` `polylogue.cli.commands.neighbors.neighbors_command` |
 | `polylogue open` | `polylogue/cli/query_verbs.py:94` `polylogue.cli.query_verbs.open_verb` |
@@ -296,10 +295,10 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `assurance.coverage.gap_has_closure_path` | 23 |
 | `assurance.coverage.item_declared` | 91 |
 | `assurance.coverage.manifest_structured` | 9 |
-| `cli.command.help` | 59 |
+| `cli.command.help` | 58 |
 | `cli.command.json_envelope` | 5 |
-| `cli.command.no_traceback` | 59 |
-| `cli.command.plain_mode` | 59 |
+| `cli.command.no_traceback` | 58 |
+| `cli.command.plain_mode` | 58 |
 | `diagnostic.observable_trace_mapping` | 1 |
 | `error.machine_user_context` | 2 |
 | `generated.scenario.family_registered` | 9 |

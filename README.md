@@ -88,7 +88,7 @@ Pipeline and maintenance verbs are explicit:
 ```bash
 polylogue run acquire parse materialize render index
 polylogue browser-capture serve --host 127.0.0.1 --port 8765
-polylogue mcp
+polylogue-mcp --role read
 ```
 
 See [docs/cli-reference.md](docs/cli-reference.md) for the full command reference.
@@ -127,11 +127,11 @@ extension. The unpacked extension source lives in `browser-extension/`.
 
 ```bash
 polylogue run site -o ./site-preview
-polylogue mcp
+polylogue-mcp --role read
 ```
 
 - Static HTML archive with search
-- MCP server for AI assistant integration
+- MCP stdio bridge for AI assistant integration
 
 ### Python API
 

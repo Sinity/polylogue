@@ -30,7 +30,6 @@ SUBCOMMANDS = [
     "run",
     "doctor",
     "reset",
-    "mcp",
     "auth",
     "completions",
     "dashboard",
@@ -243,18 +242,6 @@ class TestCompletionsErrorBoundaries:
         """Missing --shell should not produce traceback (Click enforces required)."""
         result = runner.invoke(cli, ["completions"])
         # Click will show usage error, not traceback
-        assert TRACEBACK_SENTINEL not in result.output
-
-
-# =============================================================================
-# MCP subcommand
-# =============================================================================
-
-
-class TestMCPErrorBoundaries:
-    def test_mcp_invalid_transport(self, runner: CliRunner) -> None:
-        """Unknown --transport should not produce traceback."""
-        result = runner.invoke(cli, ["mcp", "--transport", "invalid-transport"])
         assert TRACEBACK_SENTINEL not in result.output
 
 

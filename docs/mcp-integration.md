@@ -10,7 +10,7 @@ search past sessions semantically and retrieve archived conversations directly.
 ## Starting the Server
 
 ```bash
-polylogue mcp
+polylogue-mcp --role read
 ```
 
 Runs in stdio mode (standard for MCP). Logs to stderr.
@@ -23,8 +23,8 @@ Add to `~/.claude/settings.json`:
 {
   "mcpServers": {
     "polylogue": {
-      "command": "polylogue",
-      "args": ["mcp"]
+      "command": "polylogue-mcp",
+      "args": ["--role", "read"]
     }
   }
 }
@@ -38,8 +38,8 @@ Add to `~/.config/claude/claude_desktop_config.json`:
 {
   "mcpServers": {
     "polylogue": {
-      "command": "polylogue",
-      "args": ["mcp"]
+      "command": "polylogue-mcp",
+      "args": ["--role", "read"]
     }
   }
 }

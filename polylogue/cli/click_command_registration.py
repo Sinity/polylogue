@@ -12,7 +12,6 @@ from polylogue.cli.commands.dashboard import dashboard_command
 from polylogue.cli.commands.diagnostics import diagnostics_group
 from polylogue.cli.commands.export import export_command
 from polylogue.cli.commands.insights import insights_command
-from polylogue.cli.commands.mcp import mcp_command
 from polylogue.cli.commands.neighbors import neighbors_command
 from polylogue.cli.commands.reset import reset_command
 from polylogue.cli.commands.resume import resume_command
@@ -26,7 +25,6 @@ ROOT_COMMANDS: tuple[click.Command, ...] = (
     browser_capture_command,
     check_command,
     reset_command,
-    mcp_command,
     auth_command,
     completions_command,
     dashboard_command,
@@ -51,7 +49,6 @@ __all__ = [
     "completions_command",
     "dashboard_command",
     "export_command",
-    "mcp_command",
     "neighbors_command",
     "resume_command",
     "register_root_commands",
