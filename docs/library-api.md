@@ -14,7 +14,7 @@ The public Python surface is split into:
 ## Basic Usage
 
 ```python
-from polylogue.lib.filter.filters import ConversationFilter
+from polylogue.archive.filter.filters import ConversationFilter
 from polylogue.storage.repository import ConversationRepository
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 

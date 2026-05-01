@@ -52,9 +52,29 @@ files:
     owner: stable
     cross_cut: { api: sync }
   - path: polylogue/archive/__init__.py
-    loc: 0
+    loc: 1
     target: polylogue/archive/__init__.py
     owner: stable
+  - path: polylogue/archive/filter/__init__.py
+    loc: 0
+    target: polylogue/archive/filter/__init__.py
+    owner: archive-filter
+    reason: archive-domain filter semantics
+  - path: polylogue/archive/filter/builder.py
+    loc: 228
+    target: polylogue/archive/filter/builder.py
+    owner: archive-filter
+    reason: archive-domain filter semantics
+  - path: polylogue/archive/filter/filters.py
+    loc: 101
+    target: polylogue/archive/filter/filters.py
+    owner: archive-filter
+    reason: archive-domain filter semantics
+  - path: polylogue/archive/filter/types.py
+    loc: 7
+    target: polylogue/archive/filter/types.py
+    owner: archive-filter
+    reason: archive-domain filter semantics
   - path: polylogue/archive/query/__init__.py
     loc: 0
     target: polylogue/archive/query/__init__.py
@@ -572,22 +592,6 @@ files:
   - path: polylogue/lib/embeddings/stats.py
     loc: 150
     target: polylogue/lib/embeddings/stats.py
-    owner: stable
-  - path: polylogue/lib/filter/__init__.py
-    loc: 0
-    target: polylogue/lib/filter/__init__.py
-    owner: stable
-  - path: polylogue/lib/filter/builder.py
-    loc: 228
-    target: polylogue/lib/filter/builder.py
-    owner: stable
-  - path: polylogue/lib/filter/filters.py
-    loc: 101
-    target: polylogue/lib/filter/filters.py
-    owner: stable
-  - path: polylogue/lib/filter/types.py
-    loc: 7
-    target: polylogue/lib/filter/types.py
     owner: stable
   - path: polylogue/lib/hashing.py
     loc: 60

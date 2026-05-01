@@ -8,15 +8,15 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import TYPE_CHECKING, TypeVar
 
+from polylogue.archive.filter.types import SortField
 from polylogue.archive.query.fields import describe_spec_fields, query_spec_has_selection_filters
 from polylogue.archive.query.plan import ConversationQueryPlan
 from polylogue.lib.dates import parse_date
-from polylogue.lib.filter.types import SortField
 from polylogue.lib.viewport.viewports import ToolCategory
 from polylogue.types import Provider
 
 if TYPE_CHECKING:
-    from polylogue.lib.filter.filters import ConversationFilter
+    from polylogue.archive.filter.filters import ConversationFilter
     from polylogue.lib.models import Conversation, ConversationSummary
     from polylogue.protocols import ConversationQueryRuntimeStore, VectorProvider
 
@@ -364,7 +364,7 @@ class ConversationQuerySpec:
         vector_provider: VectorProvider | None = None,
     ) -> ConversationFilter:
         """Build a fluent filter facade over the canonical execution plan."""
-        from polylogue.lib.filter.filters import ConversationFilter
+        from polylogue.archive.filter.filters import ConversationFilter
 
         return ConversationFilter(
             repository,

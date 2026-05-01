@@ -37,11 +37,11 @@ addopts = "-q"
 
     patched = patch_mutmut_section(
         original,
-        paths_to_mutate=("polylogue/lib/filter/filters.py",),
+        paths_to_mutate=("polylogue/archive/filter/filters.py",),
         tests=("tests/unit/core/test_filters.py", "tests/unit/core/test_filters_props.py"),
     )
 
-    assert 'paths_to_mutate = ["polylogue/lib/filter/filters.py"]' in patched
+    assert 'paths_to_mutate = ["polylogue/archive/filter/filters.py"]' in patched
     assert (
         'pytest_add_cli_args_test_selection = ["tests/unit/core/test_filters.py", '
         '"tests/unit/core/test_filters_props.py"]'
@@ -59,9 +59,9 @@ def test_summarize_mutmut_results_filters_by_prefix_and_groups_statuses(tmp_path
         json.dumps(
             {
                 "exit_code_by_key": {
-                    "polylogue.lib.filter.filters.xǁConversationFilterǁpick__mutmut_1": 0,
-                    "polylogue.lib.filter.filters.xǁConversationFilterǁpick__mutmut_2": 1,
-                    "polylogue.lib.filter.filters.xǁConversationFilterǁdelete__mutmut_1": -24,
+                    "polylogue.archive.filter.filters.xǁConversationFilterǁpick__mutmut_1": 0,
+                    "polylogue.archive.filter.filters.xǁConversationFilterǁpick__mutmut_2": 1,
+                    "polylogue.archive.filter.filters.xǁConversationFilterǁdelete__mutmut_1": -24,
                     "polylogue.lib.models.xǁMessageǁextract_thinking__mutmut_1": 0,
                 }
             }
@@ -70,7 +70,7 @@ def test_summarize_mutmut_results_filters_by_prefix_and_groups_statuses(tmp_path
 
     counts, survivors, timeouts, not_checked, survivor_keys, timeout_keys, not_checked_keys = summarize_mutmut_results(
         mutants_dir,
-        prefixes=("polylogue.lib.filter.filters*",),
+        prefixes=("polylogue.archive.filter.filters*",),
     )
 
     assert counts["survived"] == 1
@@ -80,8 +80,8 @@ def test_summarize_mutmut_results_filters_by_prefix_and_groups_statuses(tmp_path
     assert survivors["pick"] == 1
     assert timeouts["delete"] == 1
     assert not not_checked
-    assert survivor_keys == ["polylogue.lib.filter.filters.xǁConversationFilterǁpick__mutmut_1"]
-    assert timeout_keys == ["polylogue.lib.filter.filters.xǁConversationFilterǁdelete__mutmut_1"]
+    assert survivor_keys == ["polylogue.archive.filter.filters.xǁConversationFilterǁpick__mutmut_1"]
+    assert timeout_keys == ["polylogue.archive.filter.filters.xǁConversationFilterǁdelete__mutmut_1"]
     assert not not_checked_keys
 
 

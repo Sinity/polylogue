@@ -28,7 +28,7 @@ MUTATION_CAMPAIGNS: dict[str, MutationCampaign] = {
     "filters": MutationCampaign(
         name="filters",
         description="ConversationFilter semantics and summary/picker contracts",
-        paths_to_mutate=("polylogue/lib/filter/filters.py",),
+        paths_to_mutate=("polylogue/archive/filter/filters.py",),
         tests=(
             "tests/unit/core/test_filters_schemas.py",
             "tests/unit/core/test_filters_props.py",

@@ -106,7 +106,7 @@ The `all` pipeline stage runs: acquire → parse → materialize → render → 
 | `Polylogue` | `facade.py` | Async entry point. Wraps storage + search + pipeline. |
 | `ConversationRepository` | `storage/repository.py` | Mixin-composed async repository (10 mixins for reads, writes, products, vectors, raw). |
 | `SearchProvider` protocol | `protocols.py` | FTS5 and Hybrid (RRF fusion) implementations. |
-| `ConversationFilter` | `lib/filters.py` | Fluent filter chain used by CLI, MCP, and facade. |
+| `ConversationFilter` | `archive/filter/filters.py` | Fluent filter chain used by CLI, MCP, and facade. |
 | `Session Products` | `storage/session_product_*.py` | Materialized read models: profiles, work events, phases, threads, aggregates. |
 | `ContentHash` | `pipeline/ids.py` | SHA-256 over NFC-normalized conversation payload. Title, timestamps, messages, attachments are hashed. User metadata (tags, summaries) is excluded — editable metadata doesn't trigger re-import. |
 | `Provider` enum | `types.py` | 6 known providers + UNKNOWN. All provider identity flows through this enum. |

@@ -18,9 +18,9 @@ from polylogue.storage.backends.queries.message_query_reads import MessageTypeNa
 from polylogue.storage.products.session.runtime import SessionProductStatusSnapshot
 
 if TYPE_CHECKING:
+    from polylogue.archive.filter.filters import ConversationFilter
     from polylogue.config import Config
     from polylogue.lib.conversation.models import Conversation, ConversationSummary
-    from polylogue.lib.filter.filters import ConversationFilter
     from polylogue.lib.message.models import Message
     from polylogue.operations import ArchiveStats
     from polylogue.products.export_bundles import ProductExportBundleRequest, ProductExportBundleResult
@@ -210,7 +210,7 @@ class PolylogueArchiveMixin:
         return await self.operations.list_session_enrichment_products(query)
 
     def filter(self) -> ConversationFilter:
-        from polylogue.lib.filter.filters import ConversationFilter
+        from polylogue.archive.filter.filters import ConversationFilter
         from polylogue.storage.search_providers import create_vector_provider
 
         vector_provider = None
