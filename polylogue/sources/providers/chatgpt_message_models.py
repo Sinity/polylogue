@@ -15,8 +15,8 @@ from polylogue.archive.viewport.viewports import (
     ReasoningTrace,
     ToolCall,
 )
+from polylogue.core.timestamps import parse_timestamp
 from polylogue.lib.roles import Role
-from polylogue.lib.timestamps import parse_timestamp
 from polylogue.types import Provider
 
 ChatGPTMetadata: TypeAlias = dict[str, object]

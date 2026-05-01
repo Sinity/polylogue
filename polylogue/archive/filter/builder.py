@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Protocol, Self, TypeVar
 
 from polylogue.archive.filter.types import SortField
-from polylogue.lib.dates import parse_date
+from polylogue.core.dates import parse_date
 from polylogue.types import Provider
 
 if TYPE_CHECKING:

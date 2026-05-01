@@ -12,7 +12,7 @@ from polylogue.archive.filter.types import SortField
 from polylogue.archive.query.fields import describe_spec_fields, query_spec_has_selection_filters
 from polylogue.archive.query.plan import ConversationQueryPlan
 from polylogue.archive.viewport.viewports import ToolCategory
-from polylogue.lib.dates import parse_date
+from polylogue.core.dates import parse_date
 from polylogue.types import Provider
 
 if TYPE_CHECKING:

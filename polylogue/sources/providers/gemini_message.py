@@ -16,8 +16,8 @@ from polylogue.archive.viewport.viewports import (
     ToolCall,
 )
 from polylogue.core.json import json_document
+from polylogue.core.timestamps import parse_timestamp
 from polylogue.lib.roles import Role
-from polylogue.lib.timestamps import parse_timestamp
 from polylogue.types import Provider
 
 from .gemini_models import GeminiBranchParent, GeminiGrounding, GeminiPart, GeminiThoughtSignature
