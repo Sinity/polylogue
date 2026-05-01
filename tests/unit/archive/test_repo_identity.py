@@ -9,18 +9,18 @@ import pytest
 
 from polylogue.archive.action_event.action_events import ActionEvent
 from polylogue.archive.conversation.attribution import extract_attribution, extract_attribution_from_action_events
+from polylogue.archive.conversation.repo_identity import (
+    normalize_repo_name,
+    normalize_repo_names,
+    normalize_repo_path,
+    normalize_repo_paths,
+)
 from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.message.roles import Role
 from polylogue.archive.session.session_profile import SessionProfile, build_session_profile
 from polylogue.archive.session.session_summaries import summarize_day
 from polylogue.archive.viewport.viewports import ToolCategory
 from polylogue.lib.models import Conversation, Message
-from polylogue.lib.repo_identity import (
-    normalize_repo_name,
-    normalize_repo_names,
-    normalize_repo_path,
-    normalize_repo_paths,
-)
 from polylogue.products.archive_models import DaySessionSummaryPayload
 from polylogue.products.archive_summaries import aggregate_day_session_summary_products
 from polylogue.storage.runtime import DaySessionSummaryRecord

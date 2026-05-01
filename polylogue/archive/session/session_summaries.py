@@ -7,8 +7,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 
+from polylogue.archive.conversation.repo_identity import normalize_repo_names
 from polylogue.archive.session.session_profile import SessionProfile
-from polylogue.lib.repo_identity import normalize_repo_names
 
 
 @dataclass(frozen=True)

@@ -8,14 +8,14 @@ from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
 from polylogue.archive.action_event.action_events import ActionEvent
-from polylogue.archive.semantic.facts import ConversationSemanticFacts, build_conversation_semantic_facts
-from polylogue.archive.viewport.tools import looks_like_path_candidate
-from polylogue.lib.repo_identity import (
+from polylogue.archive.conversation.repo_identity import (
     normalize_repo_name,
     normalize_repo_names,
     normalize_repo_path,
     normalize_repo_paths,
 )
+from polylogue.archive.semantic.facts import ConversationSemanticFacts, build_conversation_semantic_facts
+from polylogue.archive.viewport.tools import looks_like_path_candidate
 
 if TYPE_CHECKING:
     from polylogue.lib.models import Conversation
