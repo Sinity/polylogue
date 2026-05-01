@@ -176,7 +176,7 @@ class TestServerSurfaceRegistration:
 
 class TestResourceSurfaces:
     def test_stats_returns_archive_statistics(self: object, mcp_server: MCPServerUnderTest) -> None:
-        from polylogue.lib.stats import ArchiveStats
+        from polylogue.archive.stats import ArchiveStats
 
         with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
             mock_ops = MagicMock()

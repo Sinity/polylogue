@@ -89,7 +89,7 @@ def register_product_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         """Show archive coverage statistics."""
 
         async def run() -> str:
-            from polylogue.lib.coverage import analyze_coverage
+            from polylogue.archive.coverage import analyze_coverage
 
             summaries = await hooks.get_query_store().list_summaries()
             coverage = analyze_coverage(summaries)

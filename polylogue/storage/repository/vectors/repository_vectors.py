@@ -15,7 +15,7 @@ if TYPE_CHECKING:
     import aiosqlite
 
     from polylogue.archive.conversation.models import Conversation
-    from polylogue.lib.stats import ArchiveStats
+    from polylogue.archive.stats import ArchiveStats
     from polylogue.storage.backends.query_store import SQLiteQueryStore
 
 
@@ -133,7 +133,7 @@ class RepositoryVectorMixin:
         return [(msg_to_conv[msg_id], msg_id, distance) for msg_id, distance in results if msg_id in msg_to_conv]
 
     async def get_archive_stats(self, *, conn: aiosqlite.Connection | None = None) -> ArchiveStats:
-        from polylogue.lib.stats import ArchiveStats
+        from polylogue.archive.stats import ArchiveStats
 
         if conn is None:
             async with self._backend.read_connection() as active_conn:

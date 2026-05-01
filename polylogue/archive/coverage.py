@@ -13,7 +13,7 @@ from datetime import date, datetime, timedelta
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from polylogue.lib.models import ConversationSummary
+    from polylogue.archive.conversation.models import ConversationSummary
 
 
 @dataclass(frozen=True)

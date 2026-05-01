@@ -117,8 +117,6 @@ LIB_PREFIX_TO_SUBPACKAGE = {
 LIB_ROOT_PRIMITIVES = frozenset(
     {
         "__init__.py",
-        "stats.py",
-        "coverage.py",
         "repo_identity.py",
         "tail_overlay.py",
         "models.py",
