@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
-from polylogue.lib.action_event.action_events import ActionEvent
+from polylogue.archive.action_event.action_events import ActionEvent
 from polylogue.lib.json import JSONDocument, json_document
 from polylogue.lib.viewport.viewports import ReasoningTrace, ToolCall
 

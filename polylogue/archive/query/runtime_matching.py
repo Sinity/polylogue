@@ -5,8 +5,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from polylogue.archive.action_event.action_events import ActionEvent
     from polylogue.archive.query.plan import ConversationQueryPlan
-    from polylogue.lib.action_event.action_events import ActionEvent
     from polylogue.lib.models import Conversation
 
 

@@ -7,7 +7,7 @@ from collections.abc import Collection, Iterator, Sequence
 from datetime import datetime
 from typing import Protocol
 
-from polylogue.lib.action_event.action_events import ActionEvent, build_action_events
+from polylogue.archive.action_event.action_events import ActionEvent, build_action_events
 from polylogue.lib.message.roles import MessageRoleFilter, message_role_labels
 from polylogue.lib.roles import Role
 from polylogue.lib.semantic.models import (
