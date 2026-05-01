@@ -11,8 +11,8 @@ Covers:
 
 from __future__ import annotations
 
+from polylogue.archive.viewport.viewports import ToolCategory, classify_tool
 from polylogue.lib.json import JSONDocument, json_document
-from polylogue.lib.viewport.viewports import ToolCategory, classify_tool
 from polylogue.pipeline.semantic_capture import extract_subagent_spawns, parse_git_operation
 from polylogue.pipeline.semantic_metadata import extract_tool_metadata
 
@@ -201,7 +201,7 @@ class TestSemanticTypeValues:
     def test_semantic_type_for_thinking(self) -> None:
         # "thinking" is set directly (not from ToolCategory)
         # Verify it's consistent with what prepare.py sets
-        from polylogue.lib.viewport.viewports import ToolCategory
+        from polylogue.archive.viewport.viewports import ToolCategory
 
         assert "thinking" not in [c.value for c in ToolCategory]
 

@@ -5,8 +5,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Protocol, TypeAlias
 
+from polylogue.archive.viewport.viewports import ContentBlock, MessageMeta, ReasoningTrace, ToolCall
 from polylogue.lib.json import JSONDocument
-from polylogue.lib.viewport.viewports import ContentBlock, MessageMeta, ReasoningTrace, ToolCall
 from polylogue.schemas.unified.models import HarmonizedMessage, _missing_role
 from polylogue.types import Provider
 

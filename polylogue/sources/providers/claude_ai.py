@@ -11,9 +11,9 @@ from typing import TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from polylogue.archive.viewport.viewports import ContentBlock, ContentType, MessageMeta, ReasoningTrace, ToolCall
 from polylogue.lib.roles import Role
 from polylogue.lib.timestamps import parse_timestamp
-from polylogue.lib.viewport.viewports import ContentBlock, ContentType, MessageMeta, ReasoningTrace, ToolCall
 from polylogue.types import Provider
 
 ClaudeAIObject: TypeAlias = dict[str, object]

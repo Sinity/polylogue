@@ -11,7 +11,7 @@ from polylogue.archive.action_event.action_events import (
     build_action_events,
     build_tool_calls_from_content_blocks,
 )
-from polylogue.lib.viewport.viewports import ToolCategory
+from polylogue.archive.viewport.viewports import ToolCategory
 from polylogue.storage.hydrators import message_from_record
 from polylogue.storage.runtime import (
     ACTION_EVENT_MATERIALIZER_VERSION,
