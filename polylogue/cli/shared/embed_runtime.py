@@ -6,15 +6,15 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 import click
 
-from polylogue.lib.embeddings.runtime import (
+from polylogue.storage.embeddings.materialization import (
     EmbedConversationOutcome,
     embed_conversation_sync,
     iter_pending_conversations,
 )
 
 if TYPE_CHECKING:
-    from polylogue.lib.embeddings.runtime import _EmbedConversationStore
     from polylogue.protocols import VectorProvider
+    from polylogue.storage.embeddings.materialization import _EmbedConversationStore
 
 
 class _ProgressHandle(Protocol):

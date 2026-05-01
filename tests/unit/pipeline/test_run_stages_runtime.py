@@ -389,7 +389,9 @@ async def test_execute_embed_stage_covers_stats_errors_single_and_batch_paths() 
         "embedded_conversations": 5,
         "pending_conversations": 0,
     }
-    with patch("polylogue.lib.embeddings.stats.embedding_status_payload", return_value=stats_payload) as show_stats:
+    with patch(
+        "polylogue.storage.embeddings.status_payload.embedding_status_payload", return_value=stats_payload
+    ) as show_stats:
         stats = await run_stages.execute_embed_stage(
             config=config, backend=SimpleNamespace(), stats_only=True, json_output=True
         )
@@ -406,13 +408,13 @@ async def test_execute_embed_stage_covers_stats_errors_single_and_batch_paths() 
                 await run_stages.execute_embed_stage(config=config, backend=SimpleNamespace())
 
     provider = SimpleNamespace(model="voyage-4")
-    from polylogue.lib.embeddings.runtime import EmbedConversationOutcome
+    from polylogue.storage.embeddings.materialization import EmbedConversationOutcome
 
     embedded_outcome = EmbedConversationOutcome(status="embedded", conversation_id="conv-1", embedded_message_count=2)
     with patch.dict("os.environ", {"VOYAGE_API_KEY": "key"}, clear=True):
         with patch("polylogue.storage.search_providers.create_vector_provider", return_value=provider):
             with patch(
-                "polylogue.lib.embeddings.runtime.embed_conversation_sync",
+                "polylogue.storage.embeddings.materialization.embed_conversation_sync",
                 return_value=embedded_outcome,
             ) as embed_one:
                 with patch("polylogue.storage.repository.ConversationRepository", return_value="repo"):
@@ -430,7 +432,7 @@ async def test_execute_embed_stage_covers_stats_errors_single_and_batch_paths() 
     with patch.dict("os.environ", {"VOYAGE_API_KEY": "key"}, clear=True):
         with patch("polylogue.storage.search_providers.create_vector_provider", return_value=provider):
             with patch(
-                "polylogue.lib.embeddings.runtime.iter_pending_conversations",
+                "polylogue.storage.embeddings.materialization.iter_pending_conversations",
                 return_value=[],
             ) as iter_pending:
                 with patch("polylogue.storage.repository.ConversationRepository", return_value="repo"):

@@ -481,7 +481,7 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
             "retrieval_band_readiness",
         ),
         code_refs=(
-            "polylogue.cli.shared.embed_stats.embedding_status_payload",
+            "polylogue.storage.embeddings.status_payload.embedding_status_payload",
             "polylogue.cli.shared.embed_stats.show_embedding_stats",
         ),
         readiness_surfaces=("embed", "doctor", "retrieval", "cli"),
