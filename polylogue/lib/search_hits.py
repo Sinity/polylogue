@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
-from polylogue.lib.query.support import conversation_to_summary
+from polylogue.archive.query.support import conversation_to_summary
 
 if TYPE_CHECKING:
     from polylogue.lib.models import Conversation, ConversationSummary

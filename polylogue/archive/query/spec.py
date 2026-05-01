@@ -8,10 +8,10 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import TYPE_CHECKING, TypeVar
 
+from polylogue.archive.query.fields import describe_spec_fields, query_spec_has_selection_filters
+from polylogue.archive.query.plan import ConversationQueryPlan
 from polylogue.lib.dates import parse_date
 from polylogue.lib.filter.types import SortField
-from polylogue.lib.query.fields import describe_spec_fields, query_spec_has_selection_filters
-from polylogue.lib.query.plan import ConversationQueryPlan
 from polylogue.lib.viewport.viewports import ToolCategory
 from polylogue.types import Provider
 

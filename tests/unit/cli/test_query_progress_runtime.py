@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from polylogue.archive.query.spec import ConversationQuerySpec
 from polylogue.cli.query_contracts import QueryDeliveryTarget, QueryOutputSpec
 from polylogue.cli.query_progress import (
     QuerySlowNotice,
@@ -18,7 +19,6 @@ from polylogue.cli.query_progress import (
     should_emit_slow_query_notes,
     slow_query_notice_threshold,
 )
-from polylogue.lib.query.spec import ConversationQuerySpec
 from polylogue.storage.action_events.artifacts import ActionEventArtifactState
 
 

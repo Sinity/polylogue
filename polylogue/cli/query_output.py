@@ -47,10 +47,10 @@ from polylogue.surfaces.payloads import ConversationListRowPayload, Conversation
 logger = get_logger(__name__)
 
 if TYPE_CHECKING:
+    from polylogue.archive.query.miss_diagnostics import QueryMissDiagnostics
+    from polylogue.archive.query.spec import ConversationQuerySpec
     from polylogue.cli.shared.types import AppEnv
     from polylogue.lib.models import Conversation, ConversationSummary, Message
-    from polylogue.lib.query.miss_diagnostics import QueryMissDiagnostics
-    from polylogue.lib.query.spec import ConversationQuerySpec
     from polylogue.lib.search_hits import ConversationSearchHit
     from polylogue.protocols import ConversationOutputStore
     from polylogue.storage.runtime import MessageRecord

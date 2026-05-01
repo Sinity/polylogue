@@ -6,15 +6,15 @@ from datetime import datetime, timezone
 from heapq import heappush, heappushpop
 from typing import TYPE_CHECKING
 
-from polylogue.lib.query.support import provider_values
+from polylogue.archive.query.support import provider_values
 from polylogue.logging import get_logger
 from polylogue.storage.search_providers.hybrid import reciprocal_rank_fusion
 
 logger = get_logger(__name__)
 
 if TYPE_CHECKING:
+    from polylogue.archive.query.plan import ConversationQueryPlan
     from polylogue.lib.models import Conversation
-    from polylogue.lib.query.plan import ConversationQueryPlan
     from polylogue.protocols import ConversationQueryRuntimeStore
 
 
@@ -68,11 +68,11 @@ async def search_action_results_fallback(
     *,
     limit: int,
 ) -> list[Conversation]:
-    from polylogue.lib.query.retrieval_candidates import (
+    from polylogue.archive.query.retrieval_candidates import (
         candidate_batch_limit,
         candidate_record_query_for,
     )
-    from polylogue.lib.query.runtime import apply_common_filters
+    from polylogue.archive.query.runtime import apply_common_filters
 
     request, sql_pushed = await candidate_record_query_for(plan, repository)
     batch_limit = candidate_batch_limit(plan)
@@ -116,7 +116,7 @@ async def search_action_results(
     *,
     limit: int,
 ) -> list[Conversation]:
-    from polylogue.lib.query.retrieval_candidates import action_search_ready
+    from polylogue.archive.query.retrieval_candidates import action_search_ready
 
     query = search_query_text(plan)
     provider_names = list(provider_values(plan.providers)) or None
@@ -185,11 +185,11 @@ async def fetch_batched_filtered_conversations(
     plan: ConversationQueryPlan,
     repository: ConversationQueryRuntimeStore,
 ) -> list[Conversation]:
-    from polylogue.lib.query.retrieval_candidates import (
+    from polylogue.archive.query.retrieval_candidates import (
         candidate_batch_limit,
         candidate_record_query_for,
     )
-    from polylogue.lib.query.runtime import apply_full_filters
+    from polylogue.archive.query.runtime import apply_full_filters
 
     request, sql_pushed = await candidate_record_query_for(plan, repository)
     batch_limit = candidate_batch_limit(plan)

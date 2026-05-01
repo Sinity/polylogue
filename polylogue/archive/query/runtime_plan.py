@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from polylogue.lib.query.fields import has_message_content_type_filter, plan_has_fields_matching
+from polylogue.archive.query.fields import has_message_content_type_filter, plan_has_fields_matching
 
 if TYPE_CHECKING:
-    from polylogue.lib.query.plan import ConversationQueryPlan
+    from polylogue.archive.query.plan import ConversationQueryPlan
 
 
 def plan_has_post_filters(plan: ConversationQueryPlan) -> bool:

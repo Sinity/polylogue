@@ -4,17 +4,17 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from polylogue.lib.query.fields import plan_has_fields_matching
-from polylogue.lib.query.retrieval import search_limit
-from polylogue.lib.query.retrieval_search import search_query_text
-from polylogue.lib.query.support import provider_values
+from polylogue.archive.query.fields import plan_has_fields_matching
+from polylogue.archive.query.retrieval import search_limit
+from polylogue.archive.query.retrieval_search import search_query_text
+from polylogue.archive.query.support import provider_values
 from polylogue.lib.search_hits import (
     ConversationSearchHit,
     conversation_search_hit_from_conversation,
 )
 
 if TYPE_CHECKING:
-    from polylogue.lib.query.plan import ConversationQueryPlan
+    from polylogue.archive.query.plan import ConversationQueryPlan
     from polylogue.protocols import ConversationQueryRuntimeStore
 
 

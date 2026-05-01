@@ -7,6 +7,7 @@ from typing import TypeAlias
 
 import click
 
+from polylogue.archive.query.spec import QUERY_ACTION_TYPES, QUERY_RETRIEVAL_LANES
 from polylogue.cli.query_contracts import normalize_message_role_option
 from polylogue.cli.shell_completion_values import (
     complete_conversation_ids,
@@ -15,7 +16,6 @@ from polylogue.cli.shell_completion_values import (
     complete_tool_values,
 )
 from polylogue.lib.provider_identity import CORE_SCHEMA_PROVIDERS
-from polylogue.lib.query.spec import QUERY_ACTION_TYPES, QUERY_RETRIEVAL_LANES
 
 ClickCallable: TypeAlias = Callable[..., object]
 
