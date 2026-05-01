@@ -282,6 +282,7 @@ async def test_async_execute_query_errors_for_similar_without_embeddings() -> No
 
 @pytest.mark.asyncio
 async def test_async_execute_query_reports_non_date_query_spec_errors() -> None:
+    from polylogue.archive.query.spec import QuerySpecError
     from polylogue.cli.query import (
         QueryAction,
         QueryExecutionPlan,
@@ -289,7 +290,6 @@ async def test_async_execute_query_reports_non_date_query_spec_errors() -> None:
         QueryOutputSpec,
         async_execute_query,
     )
-    from polylogue.lib.query.spec import QuerySpecError
 
     env = _make_env(repo=MagicMock(), config=MagicMock())
     selection = MagicMock()
@@ -317,7 +317,7 @@ async def test_async_execute_query_reports_non_date_query_spec_errors() -> None:
 
 @pytest.mark.asyncio
 async def test_query_plan_filters_ordered_action_sequence() -> None:
-    from polylogue.lib.query.spec import ConversationQuerySpec
+    from polylogue.archive.query.spec import ConversationQuerySpec
 
     matching = make_conv(
         id="conv-sequence-match",
@@ -411,7 +411,7 @@ async def test_query_plan_filters_ordered_action_sequence() -> None:
 
 @pytest.mark.asyncio
 async def test_query_plan_filters_action_text_terms() -> None:
-    from polylogue.lib.query.spec import ConversationQuerySpec
+    from polylogue.archive.query.spec import ConversationQuerySpec
 
     matching = make_conv(
         id="conv-action-text-match",
@@ -466,7 +466,7 @@ async def test_query_plan_filters_action_text_terms() -> None:
 
 @pytest.mark.asyncio
 async def test_query_plan_batches_post_filter_candidate_fetches() -> None:
-    from polylogue.lib.query.spec import ConversationQuerySpec
+    from polylogue.archive.query.spec import ConversationQuerySpec
 
     matching = make_conv(
         id="conv-batched-match",
@@ -509,7 +509,7 @@ async def test_query_plan_batches_post_filter_candidate_fetches() -> None:
 
 @pytest.mark.asyncio
 async def test_query_plan_action_retrieval_lane_matches_tool_command_text() -> None:
-    from polylogue.lib.query.spec import ConversationQuerySpec
+    from polylogue.archive.query.spec import ConversationQuerySpec
 
     matching = make_conv(
         id="conv-actions-lane-match",
@@ -547,7 +547,7 @@ async def test_query_plan_action_retrieval_lane_matches_tool_command_text() -> N
 
 @pytest.mark.asyncio
 async def test_query_plan_action_retrieval_lane_falls_back_when_action_read_model_unready() -> None:
-    from polylogue.lib.query.spec import ConversationQuerySpec
+    from polylogue.archive.query.spec import ConversationQuerySpec
 
     matching = make_conv(
         id="conv-actions-lane-fallback",
@@ -593,7 +593,7 @@ async def test_query_plan_action_retrieval_lane_falls_back_when_action_read_mode
 
 @pytest.mark.asyncio
 async def test_query_plan_hybrid_retrieval_lane_combines_text_and_action_hits() -> None:
-    from polylogue.lib.query.spec import ConversationQuerySpec
+    from polylogue.archive.query.spec import ConversationQuerySpec
 
     text_hit = make_conv(
         id="conv-text-hit",
@@ -641,7 +641,7 @@ async def test_query_plan_hybrid_retrieval_lane_combines_text_and_action_hits() 
 
 @pytest.mark.asyncio
 async def test_query_plan_path_filters_fall_back_to_full_list_when_action_read_model_unready() -> None:
-    from polylogue.lib.query.spec import ConversationQuerySpec
+    from polylogue.archive.query.spec import ConversationQuerySpec
 
     matching = make_conv(
         id="conv-summary-path-match",

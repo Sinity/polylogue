@@ -8,9 +8,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from polylogue.archive.query.spec import ConversationQuerySpec
 from polylogue.cli.commands import diagnostics
 from polylogue.cli.shared.types import AppEnv
-from polylogue.lib.query.spec import ConversationQuerySpec
 
 
 def _env() -> AppEnv:

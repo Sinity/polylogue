@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from polylogue.lib.query.spec import QuerySpecError, parse_query_date, split_csv
+from polylogue.archive.query.spec import QuerySpecError, parse_query_date, split_csv
 from polylogue.products.registry import ProductType
 
 if TYPE_CHECKING:

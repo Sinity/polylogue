@@ -6,8 +6,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
+from polylogue.archive.query.spec import ConversationQuerySpec
 from polylogue.cli.query_contracts import coerce_query_terms
-from polylogue.lib.query.spec import ConversationQuerySpec
 
 if TYPE_CHECKING:
     import click

@@ -9,8 +9,8 @@ from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, TypeAlias
 
+from polylogue.archive.query.spec import ConversationQuerySpec
 from polylogue.lib.message.roles import MessageRoleFilter, normalize_message_roles
-from polylogue.lib.query.spec import ConversationQuerySpec
 from polylogue.lib.roles import Role
 from polylogue.lib.semantic.content_projection import ContentProjectionSpec
 

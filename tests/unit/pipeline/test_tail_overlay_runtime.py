@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.archive.query.spec import ConversationQuerySpec
 from polylogue.config import Config, get_config
-from polylogue.lib.query.spec import ConversationQuerySpec
 from polylogue.pipeline.services.parsing import ParsingService
 from polylogue.pipeline.tail_overlay import tail_overlay_services
 from polylogue.services import RuntimeServices, build_runtime_services

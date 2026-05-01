@@ -10,8 +10,8 @@ from polylogue.lib.filter.types import SortField
 from polylogue.types import Provider
 
 if TYPE_CHECKING:
+    from polylogue.archive.query.plan import ConversationQueryPlan
     from polylogue.lib.models import Conversation
-    from polylogue.lib.query.plan import ConversationQueryPlan
 
 _T = TypeVar("_T")
 

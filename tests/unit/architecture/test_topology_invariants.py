@@ -54,11 +54,17 @@ def test_polylogue_root_matches_kernel_rule() -> None:
     assert not extra, f"non-kernel files at polylogue/ root: {sorted(extra)}"
 
 
-# Query runtime lives under the lib query package.
+# Query semantics live under the archive query package.
 
 
-def test_lib_has_query_subpackage() -> None:
-    assert (ROOT / "polylogue" / "lib" / "query" / "__init__.py").exists()
+def test_archive_has_query_subpackage() -> None:
+    assert (ROOT / "polylogue" / "archive" / "query" / "__init__.py").exists()
+
+
+def test_archive_package_imports() -> None:
+    import polylogue.archive as archive
+
+    assert archive.__doc__
 
 
 def test_no_query_runtime_at_lib_root() -> None:

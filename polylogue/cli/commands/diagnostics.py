@@ -7,9 +7,9 @@ from datetime import timedelta
 import click
 
 from polylogue.api.sync.bridge import run_coroutine_sync
+from polylogue.archive.query.spec import ConversationQuerySpec
 from polylogue.cli.shared.helpers import fail
 from polylogue.cli.shared.types import AppEnv
-from polylogue.lib.query.spec import ConversationQuerySpec
 
 
 @click.group("diagnostics", help="Temporal session diagnostics")

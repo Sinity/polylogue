@@ -8,9 +8,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, cast
 
+from polylogue.archive.query.retrieval_candidates import uses_action_read_model
+from polylogue.archive.query.spec import ConversationQuerySpec
 from polylogue.lib.json import JSONDocument
-from polylogue.lib.query.retrieval_candidates import uses_action_read_model
-from polylogue.lib.query.spec import ConversationQuerySpec
 from polylogue.readiness import VerifyStatus, get_readiness
 
 logger = logging.getLogger(__name__)

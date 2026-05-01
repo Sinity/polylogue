@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from polylogue.lib.query.spec import ConversationQuerySpec
+from polylogue.archive.query.spec import ConversationQuerySpec
 from polylogue.storage.backends.queries.filter_builder import _build_conversation_filters
 
 

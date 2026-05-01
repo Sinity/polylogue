@@ -13,6 +13,7 @@ from typing import cast
 
 import yaml
 
+from devtools.build_topology_projection import TARGET_TO_OWNER
 from polylogue.proof.witnesses import WITNESS_SCHEMA_VERSION, WitnessMetadata
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -76,9 +77,6 @@ def test_every_owner_appears_in_files() -> None:
     files = _files(projection)
     file_owners = {str(item["owner"] if "owner" in item and item["owner"] is not None else "stable") for item in files}
     assert file_owners
-    malformed = sorted(
-        owner
-        for owner in file_owners
-        if owner not in {"stable", "kernel", "lib-root", "storage-root"} and not owner.startswith("#")
-    )
+    vocabulary = {"stable", "kernel", "lib-root", "storage-root"} | {owner for _prefix, owner in TARGET_TO_OWNER}
+    malformed = sorted(owner for owner in file_owners if owner not in vocabulary and not owner.startswith("#"))
     assert not malformed, f"malformed topology owners: {malformed!r}"

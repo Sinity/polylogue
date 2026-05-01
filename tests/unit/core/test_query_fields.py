@@ -6,13 +6,13 @@ from datetime import datetime, timezone
 
 import pytest
 
-from polylogue.lib.query.fields import (
+from polylogue.archive.query.fields import (
     QUERY_FIELD_DESCRIPTORS,
     active_plan_field_names,
     storage_filters_require_stats_join,
 )
-from polylogue.lib.query.plan import ConversationQueryPlan
-from polylogue.lib.query.spec import (
+from polylogue.archive.query.plan import ConversationQueryPlan
+from polylogue.archive.query.spec import (
     ConversationQuerySpec,
     QuerySpecError,
     as_tuple,
