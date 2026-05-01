@@ -167,7 +167,7 @@ class TestMCPRealRepositoryPaths:
             )
 
             with patch("polylogue.mcp.server._get_repo", return_value=repo):
-                server = build_server()
+                server = build_server(role="write")
 
                 initial_tags = json.loads(
                     invoke_surface(server._tool_manager._tools["list_tags"].fn, provider="chatgpt")
