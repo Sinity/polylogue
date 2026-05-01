@@ -327,7 +327,7 @@ files:
     owner: archive-query
     reason: archive-domain query semantics
   - path: polylogue/archive/query/search_hits.py
-    loc: 196
+    loc: 195
     target: polylogue/archive/query/search_hits.py
     owner: archive-query
     reason: archive-domain query semantics
@@ -859,11 +859,6 @@ files:
     target: polylogue/lib/roles.py
     owner: lib-root
     reason: lib-root primitive
-  - path: polylogue/lib/run_activity.py
-    loc: 49
-    target: polylogue/lib/run_activity.py
-    owner: lib-root
-    reason: lib-root primitive
   - path: polylogue/lib/tail_overlay.py
     loc: 79
     target: polylogue/lib/tail_overlay.py
@@ -999,6 +994,10 @@ files:
   - path: polylogue/pipeline/prepare_transform_content.py
     loc: 97
     target: polylogue/pipeline/prepare_transform_content.py
+    owner: stable
+  - path: polylogue/pipeline/run_activity.py
+    loc: 49
+    target: polylogue/pipeline/run_activity.py
     owner: stable
   - path: polylogue/pipeline/run_execution.py
     loc: 375
