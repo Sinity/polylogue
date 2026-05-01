@@ -23,7 +23,7 @@ Primary modules:
 - `polylogue/sources/`
 - `polylogue/pipeline/`
 - `polylogue/storage/`
-- `polylogue/lib/`
+- `polylogue/archive/`
 - `polylogue/operations/archive.py`
 
 ### 2. Derived Read Models

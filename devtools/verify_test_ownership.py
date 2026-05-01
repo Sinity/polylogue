@@ -152,7 +152,7 @@ def main(argv: list[str] | None = None) -> int:
             continue
         imports = imports_in(tf)
         production_imports = {name_to_path[n] for n in imports if n in name_to_path}
-        # Also resolve sub-module imports: e.g. import polylogue.lib triggers any descendant.
+        # Also resolve sub-module imports: e.g. import polylogue.archive triggers any descendant.
         for imp in imports:
             for name, prod_rel in name_to_path.items():
                 if imp == name or imp.startswith(name + "."):

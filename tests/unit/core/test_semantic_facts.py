@@ -9,6 +9,8 @@ import pytest
 
 from polylogue.archive.conversation import extraction as work_event_extraction
 from polylogue.archive.message.messages import MessageCollection
+from polylogue.archive.models import Conversation as ConversationModel
+from polylogue.archive.models import ConversationSummary
 from polylogue.archive.phase.extraction import SessionPhase
 from polylogue.archive.phase.extraction import extract_phases as phase_extract_phases
 from polylogue.archive.semantic.facts import (
@@ -20,8 +22,6 @@ from polylogue.archive.semantic.facts import (
 from polylogue.archive.semantic.pricing import harmonize_session_cost
 from polylogue.archive.session import runtime as session_profile_runtime
 from polylogue.archive.session.session_profile import build_session_profile
-from polylogue.lib.models import Conversation as ConversationModel
-from polylogue.lib.models import ConversationSummary
 from polylogue.storage.archive_views import ConversationRenderProjection
 from polylogue.types import ConversationId, Provider
 from tests.infra.builders import make_conv, make_msg

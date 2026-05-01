@@ -18,6 +18,7 @@ from hypothesis import HealthCheck, given, settings
 from rich.console import Console
 
 from polylogue.archive.message.roles import MessageRoleFilter, Role
+from polylogue.archive.models import Conversation
 from polylogue.archive.query.miss_diagnostics import QueryMissDiagnostics, QueryMissReason
 from polylogue.archive.query.search_hits import ConversationSearchHit
 from polylogue.archive.query.spec import ConversationQuerySpec, QuerySpecError
@@ -48,7 +49,6 @@ from polylogue.cli.query_output import (
 )
 from polylogue.cli.shared.types import AppEnv
 from polylogue.core.json import JSONDocument
-from polylogue.lib.models import Conversation
 from polylogue.services import build_runtime_services
 from polylogue.storage.action_events.artifacts import ActionEventArtifactState
 from polylogue.storage.runtime import ContentBlockRecord, ConversationRecord, MessageRecord
@@ -320,7 +320,7 @@ def _sample_semantic_conversation() -> Conversation:
                         "type": "tool_use",
                         "tool_name": "Edit",
                         "tool_id": "tool-edit",
-                        "tool_input": {"file_path": "/workspace/polylogue/polylogue/lib/models.py"},
+                        "tool_input": {"file_path": "/workspace/polylogue/polylogue/archive/models.py"},
                     }
                 ],
             ),

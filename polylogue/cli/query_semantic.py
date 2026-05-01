@@ -11,10 +11,10 @@ from polylogue.cli.query_stats import emit_structured_stats
 
 if TYPE_CHECKING:
     from polylogue.archive.action_event.action_events import ActionEvent
+    from polylogue.archive.models import Conversation, ConversationSummary
     from polylogue.archive.query.spec import ConversationQuerySpec
     from polylogue.archive.semantic.facts import ConversationSemanticFacts
     from polylogue.cli.shared.types import AppEnv
-    from polylogue.lib.models import Conversation, ConversationSummary
     from polylogue.protocols import ConversationSemanticStatsStore
     from polylogue.storage.runtime import AttachmentRecord
 

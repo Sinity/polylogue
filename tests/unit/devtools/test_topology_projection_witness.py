@@ -77,6 +77,6 @@ def test_every_owner_appears_in_files() -> None:
     files = _files(projection)
     file_owners = {str(item["owner"] if "owner" in item and item["owner"] is not None else "stable") for item in files}
     assert file_owners
-    vocabulary = {"stable", "kernel", "lib-root", "storage-root"} | {owner for _prefix, owner in TARGET_TO_OWNER}
+    vocabulary = {"stable", "kernel", "storage-root"} | {owner for _prefix, owner in TARGET_TO_OWNER}
     malformed = sorted(owner for owner in file_owners if owner not in vocabulary and not owner.startswith("#"))
     assert not malformed, f"malformed topology owners: {malformed!r}"

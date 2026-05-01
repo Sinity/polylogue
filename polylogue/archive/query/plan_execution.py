@@ -12,7 +12,7 @@ from polylogue.archive.query.retrieval import (
 from polylogue.archive.query.support import conversation_to_summary
 
 if TYPE_CHECKING:
-    from polylogue.lib.models import Conversation, ConversationSummary
+    from polylogue.archive.models import Conversation, ConversationSummary
     from polylogue.protocols import ConversationQueryRuntimeStore
 
 

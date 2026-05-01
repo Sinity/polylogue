@@ -28,8 +28,8 @@ from hypothesis.strategies import SearchStrategy
 
 from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.message.roles import Role
+from polylogue.archive.models import Conversation, ConversationSummary, Message
 from polylogue.core.timestamps import parse_timestamp
-from polylogue.lib.models import Conversation, ConversationSummary, Message
 from polylogue.sources.providers.gemini import GeminiMessage, GeminiPart
 from polylogue.types import ConversationId, Provider
 

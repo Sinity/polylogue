@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-from polylogue.lib.models import ConversationSummary
+from polylogue.archive.models import ConversationSummary
 from polylogue.paths.sanitize import safe_path_component
 from polylogue.site.builder import ArchiveIndexStats, ConversationIndex, SiteBuilder, SiteConfig
 from polylogue.types import SearchProvider

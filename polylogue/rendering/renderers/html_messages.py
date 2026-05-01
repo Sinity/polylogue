@@ -10,7 +10,7 @@ from polylogue.rendering.core import build_rendered_message
 from polylogue.rendering.core_messages import RenderedMessage, attach_rendered_message_branches
 
 if TYPE_CHECKING:
-    from polylogue.lib.models import Conversation
+    from polylogue.archive.models import Conversation
     from polylogue.storage.archive_views import ConversationRenderProjection
 
 

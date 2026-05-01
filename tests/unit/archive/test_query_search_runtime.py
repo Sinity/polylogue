@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from polylogue.archive.conversation.models import ConversationSummary
+from polylogue.archive.models import Conversation
 from polylogue.archive.query.plan import ConversationQueryPlan
 from polylogue.archive.query.retrieval_search import (
     conversation_action_search_score,
@@ -24,7 +25,6 @@ from polylogue.archive.query.search_hits import (
     plan_has_search_hit_evidence,
     search_hits_for_plan,
 )
-from polylogue.lib.models import Conversation
 from polylogue.protocols import VectorProvider
 from polylogue.types import ConversationId, Provider
 from tests.infra.builders import make_conv, make_msg

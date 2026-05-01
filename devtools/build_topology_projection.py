@@ -79,48 +79,6 @@ CROSS_RING_ROOT_MOVES = {
     "publication.py": "polylogue/publication/__init__.py",
 }
 
-# Archive-domain subpackage rules — prefix → subpackage
-LIB_PREFIX_TO_SUBPACKAGE = {
-    "query_": "archive/query/",
-    "session_profile": "archive/session/",
-    "session_payload": "archive/session/",
-    "session_summaries": "archive/session/",
-    "viewport_": "archive/viewport/",
-    "viewports": "archive/viewport/",
-    "raw_payload_": "archive/raw_payload/",
-    "raw_payload": "archive/raw_payload/",
-    "artifact_taxonomy_": "archive/artifact_taxonomy/",
-    "artifact_taxonomy": "archive/artifact_taxonomy/",
-    "action_event_": "archive/action_event/",
-    "action_events": "archive/action_event/",
-    "message_": "archive/message/",
-    "messages": "archive/message/",
-    "conversation_": "archive/conversation/",
-    "semantic_fact_": "archive/semantic/",
-    "semantic_facts": "archive/semantic/facts.py",
-    "content_projection": "archive/semantic/",
-    "branch_type": "archive/conversation/",
-    "threads": "archive/conversation/",
-    "neighbor_candidates": "archive/conversation/",
-    "work_event": "archive/conversation/",
-    "attribution": "archive/conversation/",
-    "filter_": "archive/filter/",
-    "filters": "archive/filter/",
-    "phase_": "archive/phase/",
-    "projection_": "archive/projection/",
-    "projections": "archive/projection/",
-    "provider_": "archive/provider/",
-    "attachment_": "archive/attachment/",
-}
-
-# Remaining lib root primitives stay at lib/ root until moved deliberately.
-LIB_ROOT_PRIMITIVES = frozenset(
-    {
-        "__init__.py",
-        "models.py",
-    }
-)
-
 # polylogue/storage/ subpackage rules.
 STORAGE_PREFIX_TO_SUBPACKAGE = {
     "repository_archive_": "storage/repository/archive/",
@@ -261,17 +219,6 @@ def _apply_rule(name: str, prefix: str, sub: str) -> str:
     return _resolve_target(name, sub, prefix)
 
 
-def lib_target(name: str) -> str:
-    """Return target path for a polylogue/lib/<name> file, or 'TBD'."""
-    if name in LIB_ROOT_PRIMITIVES:
-        return f"polylogue/lib/{name}"
-    # match longest prefix first
-    for prefix in sorted(LIB_PREFIX_TO_SUBPACKAGE, key=len, reverse=True):
-        if name.startswith(prefix):
-            return _apply_rule(name, prefix, LIB_PREFIX_TO_SUBPACKAGE[prefix])
-    return "TBD"
-
-
 def storage_target(name: str) -> str:
     if name in STORAGE_ROOT_KEEP:
         return f"polylogue/storage/{name}"
@@ -282,7 +229,7 @@ def storage_target(name: str) -> str:
 
 
 def placement_owner(target: str) -> str:
-    if target == "TBD" or target.startswith("polylogue/lib/") and "/" not in target[len("polylogue/lib/") :]:
+    if target == "TBD":
         return ""
     for prefix, owner in sorted(TARGET_TO_OWNER, key=lambda x: -len(x[0])):
         if target.startswith(prefix):
@@ -337,18 +284,6 @@ def classify(path: Path) -> dict[str, Any]:
         else:
             target = "TBD"
             reason = "root file, no rule yet"
-    elif rel.startswith("polylogue/lib/"):
-        suffix = rel[len("polylogue/lib/") :]
-        if "/" in suffix:
-            target = rel  # already in a subdir, leave for now
-            owner = "stable"
-        else:
-            target = lib_target(suffix)
-            if target.startswith("polylogue/lib/") and "/" not in target[len("polylogue/lib/") :]:
-                owner = "lib-root"
-                reason = "lib-root primitive"
-            else:
-                owner = placement_owner(target) or "lib-domain"
     elif rel.startswith("polylogue/archive/query/"):
         target = rel
         owner = "archive-query"

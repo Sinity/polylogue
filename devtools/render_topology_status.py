@@ -54,7 +54,7 @@ def render_dashboard(rows: Iterable[dict[str, object]], realized: set[str]) -> s
         if owner == "kernel":
             kernel_count += 1
             continue
-        if owner in {"lib-root", "storage-root"}:
+        if owner == "storage-root":
             primitive_count += 1
             continue
         if target == "TBD":
@@ -102,7 +102,7 @@ def render_dashboard(rows: Iterable[dict[str, object]], realized: set[str]) -> s
     parts.append("")
     parts.append(f"- **Stable** (no move scoped): {stable_count}")
     parts.append(f"- **Kernel** (polylogue/ root): {kernel_count}")
-    parts.append(f"- **Primitives** (lib-root + storage-root): {primitive_count}")
+    parts.append(f"- **Primitives** (storage-root): {primitive_count}")
     parts.append(f"- **TBD** (cell needs explicit assignment): {len(tbd)}")
     parts.append(
         f"- **Total declared**: {sum(len(v) for v in by_owner.values()) + stable_count + kernel_count + primitive_count + len(tbd)}"

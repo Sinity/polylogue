@@ -27,7 +27,7 @@ from polylogue.surfaces.payloads import (
 )
 
 if TYPE_CHECKING:
-    from polylogue.lib.models import Conversation
+    from polylogue.archive.models import Conversation
 
 CONVERSATION_OUTPUT_FORMATS = (
     "markdown",
