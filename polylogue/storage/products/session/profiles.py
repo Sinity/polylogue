@@ -14,7 +14,7 @@ from polylogue.archive.session.documents import (
 )
 from polylogue.archive.session.models import SessionPhasePayload
 from polylogue.archive.session.session_profile import SessionAnalysis, SessionProfile
-from polylogue.lib.payload_coercion import (
+from polylogue.core.payload_coercion import (
     coerce_float,
     coerce_int,
     int_pair,

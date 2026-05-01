@@ -8,7 +8,7 @@ from typing import NotRequired
 from typing_extensions import TypedDict
 
 from polylogue.core.json import JSONDocument, JSONValue, is_json_value, json_document, json_document_list
-from polylogue.lib.payload_coercion import mapping_or_empty, optional_string
+from polylogue.core.payload_coercion import mapping_or_empty, optional_string
 from polylogue.pipeline.semantic_metadata import (
     ToolInputPayload,
     ToolMetadata,

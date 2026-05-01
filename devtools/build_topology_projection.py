@@ -129,7 +129,6 @@ LIB_ROOT_PRIMITIVES = frozenset(
         "run_activity.py",
         "provider_identity.py",
         "pricing.py",
-        "payload_coercion.py",
     }
 )
 
