@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "witness_id": "browser-capture.sequence",
+  "path": "tests/data/witnesses/browser-capture-sequence.json",
+  "origin": "synthetic",
+  "committed": true,
+  "provenance": {
+    "fixture_kind": "browser-capture-sequence-contract",
+    "source_test": "tests/unit/proof/test_witnesses.py",
+    "raw_material": "synthetic",
+    "generator": "polylogue.browser_capture"
+  },
+  "preserved_semantic_facts": [
+    "browser capture is a receiver-to-spool-to-archive sequence",
+    "readiness diagnostics distinguish extension, receiver, page support, spool write, and archive ingestion",
+    "public browser-capture vocabulary no longer calls the spool an inbox"
+  ],
+  "minimization_status": "not_applicable",
+  "privacy": {
+    "private_material": "not_observed",
+    "transformed": false,
+    "redacted": false,
+    "discarded": false,
+    "retained": false,
+    "notes": [
+      "witness contains synthetic state names only"
+    ]
+  },
+  "known_failing": false,
+  "xfail_strict": false,
+  "rejection_reason": null,
+  "notes": [
+    "pairs with browser-capture public terminology cleanup"
+  ],
+  "privacy_classification": "synthetic",
+  "lifecycle": {
+    "state": "committed",
+    "discovered_at": "2026-04-15T00:00:00+00:00",
+    "minimized_at": "2026-04-15T00:00:00+00:00",
+    "committed_at": "2026-04-15T00:00:00+00:00",
+    "last_exercised_at": "2026-04-15T00:00:00+00:00",
+    "retired_at": null,
+    "retirement_reason": null
+  }
+}

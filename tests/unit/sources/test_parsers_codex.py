@@ -387,6 +387,17 @@ class TestGitContextAndInstructions:
         assert _nested_meta(result, "git")["branch"] == "feature"
         assert _provider_meta(result)["instructions"] == "Be concise."
 
+    def test_turn_context_cwd_feeds_working_directories(self) -> None:
+        payload = [
+            {"type": "turn_context", "payload": {"cwd": "/repo/polylogue"}},
+            {"type": "turn_context", "payload": {"turn_context": {"cwd": "/repo/other"}}},
+        ]
+
+        result = parse(payload, "fallback")
+
+        assert _provider_meta(result)["working_directories"] == ["/repo/other", "/repo/polylogue"]
+        assert result.provider_events[0].payload["cwd"] == "/repo/polylogue"
+
 
 # =============================================================================
 # Edge Cases
@@ -549,3 +560,42 @@ class TestEdgeCases:
         assert result.messages[0].role == "user"
         assert result.messages[1].role == "assistant"
         assert result.messages[2].role == "user"
+
+    def test_function_call_items_become_tool_messages_and_events(self) -> None:
+        payload = [
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "function_call",
+                    "id": "fc_1",
+                    "call_id": "call_1",
+                    "name": "exec_command",
+                    "arguments": '{"cmd": "git status"}',
+                },
+            },
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "function_call_output",
+                    "call_id": "call_1",
+                    "output": "clean",
+                },
+            },
+            {
+                "type": "response_item",
+                "payload": {"type": "token_count", "input_tokens": 10, "output_tokens": 5},
+            },
+        ]
+
+        result = parse(payload, "fallback")
+
+        assert [event.event_type for event in result.provider_events] == [
+            "function_call",
+            "function_call_output",
+            "token_count",
+        ]
+        assert len(result.messages) == 2
+        assert result.messages[0].content_blocks[0].type == "tool_use"
+        assert result.messages[0].content_blocks[0].tool_name == "exec_command"
+        assert result.messages[0].content_blocks[0].tool_input == {"cmd": "git status"}
+        assert result.messages[1].content_blocks[0].type == "tool_result"

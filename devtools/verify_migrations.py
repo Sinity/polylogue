@@ -2,16 +2,13 @@
 
 Each migration declares paths, CLI commands, devtools commands, and
 forbidden substrings that must vanish for it to count as complete.
-Running migrations report "pending" (informational, not blocking) until
-they are explicitly started; in-flight migrations report blocking
-findings until every must_vanish_* entry is gone.
+This command is for active transitions only. Completed migrations should be
+deleted from the manifest and replaced with semantic boundary checks when their
+post-state remains important.
 
-The default lint mode treats unstarted migrations as informational so
-landing this manifest does not gate every PR. Once a migration's owning
-issue is moved to in-progress, run with ``--strict <migration-name>`` (or
-add it to ``in_flight:`` in the manifest, future extension) to gate.
-
-See `#434 <https://github.com/Sinity/polylogue/issues/434>`_.
+The default lint mode treats unstarted migrations as informational so landing
+this manifest does not gate every PR. Use ``--strict <migration-name>`` for an
+active transition that must block until its done detector passes.
 """
 
 from __future__ import annotations
@@ -63,6 +60,17 @@ def parse_yaml(text: str) -> dict[str, Any]:
         indent = len(line) - len(line.lstrip())
         stripped = line.lstrip()
         if indent == 0:
+            if cur_subfield_dict is not None and cur_migration and cur_field:
+                out["migrations"][cur_migration][cur_field].append(cur_subfield_dict)
+                cur_subfield_dict = None
+            if stripped == "migrations: {}":
+                state = "migrations"
+                cur_migration = None
+                continue
+            if stripped == "completed: []":
+                state = "completed"
+                cur_migration = None
+                continue
             key = stripped.rstrip(":")
             if key in {"migrations", "completed"}:
                 state = key
@@ -218,11 +226,12 @@ def main(argv: list[str] | None = None) -> int:
     else:
         for result in results:
             tag = "[BLOCK]" if result["name"] in args.strict and any(result["findings"].values()) else "[info]"
-            issue = result.get("issue", "")
             findings = result.get("findings", {})
             n = sum(len(v) for v in findings.values())
             status = "complete" if result["complete"] else f"{n} surviving"
-            print(f"{tag} {result['name']} ({issue}): {status}")
+            issue = str(result.get("issue") or "").strip()
+            suffix = f" ({issue})" if issue else ""
+            print(f"{tag} {result['name']}{suffix}: {status}")
             for kind, items in findings.items():
                 for item in items[:5]:
                     print(f"    {kind}: {item}")

@@ -1,8 +1,8 @@
 Usage: polylogue browser-capture status [OPTIONS]
 
-  Show receiver configuration and inbox target.
+  Show receiver configuration and capture-spool target.
 
 Options:
-  --inbox PATH
+  --spool PATH
   --json
   -h, --help    Show this message and exit.

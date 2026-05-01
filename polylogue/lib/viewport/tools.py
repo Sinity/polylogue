@@ -49,14 +49,14 @@ def classify_tool(name: str, input_data: Mapping[str, JSONValue]) -> ToolCategor
         )
     ):
         return ToolCategory.SEARCH
-    if name_lower in ("bash", "shell", "terminal", "run"):
-        cmd = input_data.get("command", "")
+    if name_lower in ("bash", "shell", "terminal", "run", "exec_command", "shell_command"):
+        cmd = input_data.get("command", input_data.get("cmd", ""))
         if isinstance(cmd, str) and cmd.strip().startswith("git "):
             return ToolCategory.GIT
         return ToolCategory.SHELL
     if name_lower in ("killshell",):
         return ToolCategory.SHELL
-    if name_lower in ("task", "subagent"):
+    if name_lower in ("task", "subagent", "spawn_agent"):
         return ToolCategory.SUBAGENT
     if (
         name_lower == "agent"
@@ -68,6 +68,7 @@ def classify_tool(name: str, input_data: Mapping[str, JSONValue]) -> ToolCategor
             "exitplanmode",
             "skill",
             "batch",
+            "update_plan",
             "mcp__sequential-thinking__sequentialthinking",
             "mcp__cclsp__restart_server",
         )

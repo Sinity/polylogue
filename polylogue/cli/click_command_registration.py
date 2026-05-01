@@ -14,7 +14,6 @@ from polylogue.cli.commands.export import export_command
 from polylogue.cli.commands.mcp import mcp_command
 from polylogue.cli.commands.neighbors import neighbors_command
 from polylogue.cli.commands.products import products_command
-from polylogue.cli.commands.qa import qa_command
 from polylogue.cli.commands.reset import reset_command
 from polylogue.cli.commands.resume import resume_command
 from polylogue.cli.commands.run import run_command
@@ -36,7 +35,6 @@ ROOT_COMMANDS: tuple[click.Command, ...] = (
     resume_command,
     products_command,
     tags_command,
-    qa_command,
     schema_command,
     watch_command,
     diagnostics_group,

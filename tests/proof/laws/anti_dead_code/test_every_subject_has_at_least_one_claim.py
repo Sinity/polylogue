@@ -19,12 +19,20 @@ import pytest
 
 from polylogue.proof.catalog import build_verification_catalog
 
+pytestmark = pytest.mark.proof_law
+
 _FULLY_BOUND_KINDS = (
     "cli.command",
     "cli.json_command",
     "provider.capability",
     "trace.operation",
     "diagnostic.observable",
+    "architecture.topology",
+    "architecture.layering",
+    "architecture.file_budget",
+    "architecture.manifest",
+    "architecture.witness",
+    "schema.roundtrip",
 )
 
 

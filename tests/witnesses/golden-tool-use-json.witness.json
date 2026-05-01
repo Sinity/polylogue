@@ -27,7 +27,6 @@
   },
   "known_failing": false,
   "xfail_strict": false,
-  "linked_issue": null,
   "rejection_reason": null,
   "notes": [
     "accepted minimized witness metadata lives under tests/witnesses; new local candidates start under .local/witnesses/new"

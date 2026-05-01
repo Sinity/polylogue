@@ -1,4 +1,4 @@
-# Security-and-privacy coverage manifest — Track B, #513.
+# Security-and-privacy coverage manifest.
 #
 # Documents the current security and privacy verification surface
 # across path sanitization, attachment security, MCP safety, exec
@@ -163,9 +163,17 @@ areas:
 coverage_gaps:
    - area: xss_prevention
      gap: No dedicated XSS test file; relies on snapshot rendering
+     owner: security-privacy
+     next_evidence: Add dedicated security/privacy gate for this area
    - area: dependency_audit
      gap: No dependency vulnerability scanning in CI
+     owner: security-privacy
+     next_evidence: Add dedicated security/privacy gate for this area
    - area: file_permissions
      gap: Crawl-source file permissions not verified
+     owner: security-privacy
+     next_evidence: Add dedicated security/privacy gate for this area
    - area: secrets_detection
      gap: No automated secrets scanning in CI
+     owner: security-privacy
+     next_evidence: Add dedicated security/privacy gate for this area

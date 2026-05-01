@@ -856,7 +856,9 @@ class TestProductTools:
 
         payload = json.loads(raw)
         assert payload["tool"] == "session_enrichments"
-        assert payload["error"].startswith("Unknown query field(s) for session_enrichments: refined_work_kind.")
+        assert payload["error"] == "internal MCP tool error"
+        assert payload["code"] == "internal_error"
+        assert payload["detail"] == "ProductQueryError"
         mock_ops.list_session_enrichment_products.assert_not_awaited()
 
 
@@ -947,7 +949,9 @@ class TestMutationTools:
             )
 
         parsed = json.loads(result)
-        assert "Invalid tag" in parsed["error"]
+        assert parsed["error"] == "internal MCP tool error"
+        assert parsed["code"] == "internal_error"
+        assert parsed["detail"] == "ValueError"
 
     def test_remove_tag_success(self, mcp_server: MCPServerUnderTest) -> None:
         with (

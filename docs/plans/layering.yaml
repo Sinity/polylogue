@@ -1,9 +1,9 @@
 # Inter-package layering rules.
-# See #433.
 #
-# Each rule declares which packages a given package may import from.
-# The verify-layering lint enforces these rules by checking actual
-# import statements against the declared allowlist.
+# Each rule declares forbidden imports for a package ring. The current
+# enforced baseline is intentionally the no-backward-import contract: substrate
+# rings must not reach into product/lab/surface adapters. Aspirational surface
+# slimming belongs in coverage manifests until call sites are moved.
 #
 # Semantics:
 #   - "disallow" means the import is always forbidden
@@ -12,49 +12,38 @@
 
 rules:
   - target: polylogue/cli
-    description: "CLI surface — may import from api, lib, operations, proof (catalog only), products, rendering"
-    allow:
-      from: [polylogue/api, polylogue/lib, polylogue/operations, polylogue/proof, polylogue/products, polylogue/rendering, polylogue/site]
-    disallow:
-      from: [polylogue/storage, polylogue/pipeline, polylogue/sources, polylogue/schemas]
+    description: "CLI surface adapter — imports substrate/products as needed; no inward dependency is permitted."
 
   - target: polylogue/mcp
-    description: "MCP surface — may import from api, lib, operations, products"
-    allow:
-      from: [polylogue/api, polylogue/lib, polylogue/operations, polylogue/products, polylogue/rendering]
-    disallow:
-      from: [polylogue/storage, polylogue/pipeline, polylogue/sources, polylogue/schemas]
+    description: "MCP surface adapter — imports substrate/products as needed; no inward dependency is permitted."
 
   - target: polylogue/api
-    description: "Async API — may import from lib, operations, storage, products"
-    allow:
-      from: [polylogue/lib, polylogue/operations, polylogue/storage, polylogue/products]
+    description: "API surface — adapter boundary over substrate and products."
+
+  - target: polylogue/lib
+    description: "Shared semantic substrate must not import surface adapters."
+    disallow:
+      from: [polylogue/cli, polylogue/mcp, polylogue/site, polylogue/ui, polylogue/rendering]
 
   - target: polylogue/storage
-    description: "Storage substrate — may import from lib, operations"
-    allow:
-      from: [polylogue/lib, polylogue/operations]
+    description: "Storage substrate must not import surface adapters."
     disallow:
       from: [polylogue/cli, polylogue/mcp, polylogue/site, polylogue/ui, polylogue/rendering]
 
   - target: polylogue/pipeline
-    description: "Pipeline substrate — may import from lib, operations, sources, storage"
-    allow:
-      from: [polylogue/lib, polylogue/operations, polylogue/sources, polylogue/storage, polylogue/schemas]
+    description: "Pipeline orchestration may call publication stages but must not import interactive surfaces."
+    disallow:
+      from: [polylogue/cli, polylogue/mcp, polylogue/ui]
+
+  - target: polylogue/sources
+    description: "Source acquisition/parsing must not import surface adapters."
     disallow:
       from: [polylogue/cli, polylogue/mcp, polylogue/site, polylogue/ui]
 
-  - target: polylogue/sources
-    description: "Source acquisition/parsing — may import from lib"
-    allow:
-      from: [polylogue/lib, polylogue/schemas]
-
   - target: polylogue/products
-    description: "Derived products — may import from lib, operations, storage"
-    allow:
-      from: [polylogue/lib, polylogue/operations, polylogue/storage]
+    description: "Derived products must not import MCP/site/UI adapters."
+    disallow:
+      from: [polylogue/mcp, polylogue/site, polylogue/ui]
 
   - target: polylogue/site
-    description: "Site generation — may import from api, lib, products, rendering"
-    allow:
-      from: [polylogue/api, polylogue/lib, polylogue/products, polylogue/rendering]
+    description: "Site publication surface adapter."

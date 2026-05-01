@@ -33,27 +33,33 @@ def _load_rules(rules_path: Path) -> list[dict[str, object]]:
     return []
 
 
-def _collect_imports(package_dir: Path) -> dict[str, set[str]]:
+def _collect_imports(package_dir: Path, *, repo_root: Path) -> dict[str, set[str]]:
     imports: dict[str, set[str]] = {}
     for py_file in package_dir.rglob("*.py"):
         try:
             tree = ast.parse(py_file.read_text(encoding="utf-8"))
         except (SyntaxError, UnicodeDecodeError):
             continue
-        rel = str(py_file.relative_to(package_dir.parent))
+        rel = py_file.relative_to(repo_root).as_posix()
         imports.setdefault(rel, set())
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 for alias in node.names:
-                    imports[rel].add(alias.name.split(".")[0])
+                    imports[rel].add(alias.name)
             elif isinstance(node, ast.ImportFrom) and node.module is not None:
                 imports[rel].add(node.module)
     return imports
 
 
+def _package_name(value: str) -> str:
+    return value.strip().replace("/", ".").removesuffix(".__init__").removesuffix(".py")
+
+
 def _package_matches(target: str, import_module: str) -> bool:
     """Check if import_module falls under the target package."""
-    return import_module == target or import_module.startswith(target + ".")
+    normalized_target = _package_name(target)
+    normalized_import = _package_name(import_module)
+    return normalized_import == normalized_target or normalized_import.startswith(normalized_target + ".")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -89,7 +95,7 @@ def main(argv: list[str] | None = None) -> int:
             if isinstance(df, list):
                 disallow_from = [str(x) for x in df]
 
-        imports = _collect_imports(target_dir)
+        imports = _collect_imports(target_dir, repo_root=repo_root)
         for file_rel, file_imports in imports.items():
             for imp in file_imports:
                 # Only check polylogue-internal imports
@@ -103,7 +109,7 @@ def main(argv: list[str] | None = None) -> int:
                         violations.append(
                             {
                                 "target": target,
-                                "file": f"{target}/{file_rel}",
+                                "file": file_rel,
                                 "import": module,
                                 "rule": "disallow",
                                 "disallowed_package": disallowed,
@@ -116,7 +122,7 @@ def main(argv: list[str] | None = None) -> int:
                         violations.append(
                             {
                                 "target": target,
-                                "file": f"{target}/{file_rel}",
+                                "file": file_rel,
                                 "import": module,
                                 "rule": "not_allowed",
                                 "allowed": allow_from,

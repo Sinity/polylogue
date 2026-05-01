@@ -5,5 +5,5 @@ Usage: polylogue browser-capture serve [OPTIONS]
 Options:
   --host TEXT     [default: 127.0.0.1]
   --port INTEGER  [default: 8765]
-  --inbox PATH
+  --spool PATH
   -h, --help      Show this message and exit.

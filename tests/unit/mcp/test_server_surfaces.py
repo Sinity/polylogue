@@ -148,6 +148,31 @@ class TestServerSurfaceRegistration:
         missing = expected - actual
         assert not missing, f"Missing {surface_attr}: {sorted(missing)}"
 
+    def test_read_role_omits_mutation_and_maintenance_tools(self: object) -> None:
+        from polylogue.mcp.server import build_server
+
+        server = build_server(role="read")
+        tools = set(server._tool_manager._tools.keys())
+
+        assert "search" in tools
+        assert "get_messages" in tools
+        assert "session_profiles" in tools
+        assert "add_tag" not in tools
+        assert "set_metadata" not in tools
+        assert "rebuild_index" not in tools
+        assert "rebuild_session_products" not in tools
+
+    def test_write_role_omits_admin_maintenance_tools(self: object) -> None:
+        from polylogue.mcp.server import build_server
+
+        server = build_server(role="write")
+        tools = set(server._tool_manager._tools.keys())
+
+        assert "add_tag" in tools
+        assert "set_metadata" in tools
+        assert "rebuild_index" not in tools
+        assert "rebuild_session_products" not in tools
+
 
 class TestResourceSurfaces:
     def test_stats_returns_archive_statistics(self: object, mcp_server: MCPServerUnderTest) -> None:

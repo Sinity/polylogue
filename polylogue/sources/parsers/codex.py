@@ -6,6 +6,7 @@ with automatic validation and normalization.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterable, Sequence
 from datetime import datetime
 
@@ -18,7 +19,13 @@ from polylogue.logging import get_logger
 from polylogue.sources.providers.codex import CodexRecord
 from polylogue.types import ContentBlockType, Provider
 
-from .base import ParsedConversation, ParsedMessage, ParsedProviderEvent, content_blocks_from_segments
+from .base import (
+    ParsedContentBlock,
+    ParsedConversation,
+    ParsedMessage,
+    ParsedProviderEvent,
+    content_blocks_from_segments,
+)
 
 logger = get_logger(__name__)
 
@@ -87,6 +94,81 @@ def _git_context(record: CodexRecord) -> dict[str, object] | None:
     return record.git.model_dump(exclude_none=True) or None
 
 
+def _record_payload(record: CodexRecord) -> dict[str, object]:
+    return record.model_dump(mode="json", exclude_none=True)
+
+
+def _extract_cwd(payload: dict[str, object] | None) -> str | None:
+    if not payload:
+        return None
+    cwd = payload.get("cwd")
+    if isinstance(cwd, str) and cwd.strip():
+        return cwd.strip()
+    turn_context = payload.get("turn_context")
+    if isinstance(turn_context, dict):
+        nested = turn_context.get("cwd")
+        if isinstance(nested, str) and nested.strip():
+            return nested.strip()
+    return None
+
+
+def _tool_input_from_arguments(value: object) -> dict[str, object]:
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return {"arguments": value}
+        return dict(parsed) if isinstance(parsed, dict) else {"arguments": value}
+    return {}
+
+
+def _codex_tool_message(record: CodexRecord, *, index: int) -> ParsedMessage | None:
+    payload = _record_payload(record)
+    record_type = record.type
+    timestamp = _normalize_timestamp(record.timestamp)
+    if record_type == "function_call":
+        tool_name = payload.get("name")
+        if not isinstance(tool_name, str) or not tool_name:
+            return None
+        tool_id = payload.get("call_id") or payload.get("id")
+        return ParsedMessage(
+            provider_message_id=str(payload.get("id") or tool_id or f"function-call-{index}"),
+            role=Role.ASSISTANT,
+            text=tool_name,
+            timestamp=timestamp,
+            content_blocks=[
+                ParsedContentBlock(
+                    type=ContentBlockType.TOOL_USE,
+                    tool_name=tool_name,
+                    tool_id=str(tool_id) if tool_id else None,
+                    tool_input=_tool_input_from_arguments(payload.get("arguments")),
+                )
+            ],
+        )
+    if record_type == "function_call_output":
+        tool_id = payload.get("call_id") or payload.get("id")
+        output = payload.get("output")
+        output_text = output if isinstance(output, str) else json.dumps(output, sort_keys=True) if output else None
+        if not tool_id and not output_text:
+            return None
+        return ParsedMessage(
+            provider_message_id=str(payload.get("id") or tool_id or f"function-call-output-{index}"),
+            role=Role.TOOL,
+            text=output_text,
+            timestamp=timestamp,
+            content_blocks=[
+                ParsedContentBlock(
+                    type=ContentBlockType.TOOL_RESULT,
+                    tool_id=str(tool_id) if tool_id else None,
+                    text=output_text,
+                )
+            ],
+        )
+    return None
+
+
 def looks_like(payload: Sequence[object]) -> bool:
     """Detect Codex JSONL format using typed validation.
 
@@ -136,6 +218,7 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedConvers
     session_metas_seen: list[str] = []  # Collect all session_meta IDs for parent tracking
     session_git: dict[str, object] | None = None  # Git context from session metadata
     session_instructions: str | None = None  # System instructions from session metadata
+    working_directories: set[str] = set()
 
     for idx, item in enumerate(records, start=1):
         record = _validate_record(item, index=idx)
@@ -167,6 +250,10 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedConvers
             tc_payload: dict[str, object] = {}
             if record.payload:
                 tc_payload["raw"] = record.payload
+                cwd = _extract_cwd(record.payload)
+                if cwd:
+                    tc_payload["cwd"] = cwd
+                    working_directories.add(cwd)
             provider_events.append(
                 ParsedProviderEvent(
                     event_type="turn_context",
@@ -175,6 +262,26 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedConvers
                 )
             )
             continue
+
+        if record.type == "response_item":
+            inner = _payload_record(record, index=idx, context="response_item payload")
+            if inner is not None and not inner.is_message:
+                event_payload = _record_payload(inner)
+                provider_events.append(
+                    ParsedProviderEvent(
+                        event_type=inner.type or "response_item",
+                        timestamp=_normalize_timestamp(inner.timestamp or record.timestamp),
+                        payload={"raw": event_payload},
+                    )
+                )
+                tool_message = _codex_tool_message(inner, index=idx)
+                if tool_message is not None:
+                    messages.append(tool_message)
+                    latest_message_timestamp = _latest_timestamp(latest_message_timestamp, tool_message.timestamp)
+                cwd = _extract_cwd(event_payload)
+                if cwd:
+                    working_directories.add(cwd)
+                continue
 
         session_meta = _session_meta_record(record, index=idx)
         if session_meta is not None:
@@ -225,7 +332,7 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedConvers
 
     # Build conversation-level provider_meta with session context
     conv_meta: dict[str, object] | None = None
-    if session_git or session_instructions or context_compactions:
+    if session_git or session_instructions or context_compactions or working_directories:
         conv_meta = {}
         if session_git:
             conv_meta["git"] = session_git
@@ -233,6 +340,8 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedConvers
             conv_meta["instructions"] = session_instructions
         if context_compactions:
             conv_meta["context_compactions"] = context_compactions
+        if working_directories:
+            conv_meta["working_directories"] = sorted(working_directories)
 
     return ParsedConversation(
         provider_name=Provider.CODEX,

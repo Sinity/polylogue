@@ -23,8 +23,9 @@ Selected vertical slices:
 This surface is intentionally a repo operator surface. It works over proof
 subjects, generated docs, changed files, evidence envelopes, and local
 verification artifacts. Product/archive-facing checks remain in the product CLI
-where they already belong, such as `polylogue doctor --proof`, schema proof
-rendering, and archive audit/proof checks.
+where they already belong, such as `polylogue doctor --proof` and schema proof
+rendering. Schema package auditing moved to `devtools schema-audit` so
+repository QA does not pollute first-contact product help.
 
 ## Catalog Grounding
 
@@ -55,8 +56,8 @@ settled.
 the product CLI. That blurs the boundary between archive workflows and
 repository proof obligations.
 
-`polylogue audit` is already an archive/product QA surface. Adding the proof lab
-there would deepen the overload that this issue is meant to resolve.
+`polylogue audit` overloaded product help with repository QA. Keeping the lab
+surface in `devtools` avoids turning archive usage into source-tree ceremony.
 
 Exposing only `devtools render-verification-catalog` is now too narrow. The
 catalog slice exists, but affected-obligation routing and semantic-axis evidence
@@ -91,5 +92,8 @@ devtools lab-scenario run archive-smoke --tier 0
 devtools lab-scenario verify-baselines
 ```
 
-`polylogue audit` remains the product/archive QA command for schema audit and
-artifact proof checks.
+Schema package audit is now explicit lab/operator surface:
+
+```bash
+devtools schema-audit --provider chatgpt --json
+```

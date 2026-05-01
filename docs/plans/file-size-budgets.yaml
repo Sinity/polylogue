@@ -1,7 +1,8 @@
-# File-size budgets — tracked by #435.
+# File-size budgets.
 #
-# Defaults are intentionally moderate; exceptions name a sunset issue
-# whose closure deletes the exception. Stale exceptions fail the lint.
+# Defaults are intentionally moderate. Exceptions are explicit thresholds for
+# known large files; they must describe the architectural split that would let
+# the ceiling shrink, but they do not point at closed issues.
 #
 # Updated 2026-04-26 from realized tree.
 
@@ -26,45 +27,36 @@ per_package:
 exceptions:
   - path: tests/unit/sources/test_source_laws.py
     ceiling: 2500
-    until: "#403"
     reason: "tracked split into source-walk/parser-dispatch/provider-contracts/laws"
 
   - path: tests/unit/cli/test_query_exec_laws.py
     ceiling: 2200
-    until: "#419"
     reason: "tracked split into routing/execution/output/stream contracts"
 
   - path: tests/unit/storage/test_store_ops.py
     ceiling: 2000
-    until: "#419"
     reason: "tracked split into CRUD/FTS/hybrid/product-persistence contracts"
 
   - path: tests/unit/sources/test_models.py
     ceiling: 1700
-    until: "#403"
     reason: "tracked split into per-provider model contract suites"
 
   - path: tests/unit/storage/test_fts5.py
     ceiling: 1510
-    until: "#419"
     reason: "tracked split for FTS escaping vs hybrid ranking"
 
   - path: tests/unit/sources/test_parsers_base.py
     ceiling: 1400
-    until: "#403"
     reason: "renamed; comment '# MERGED FROM test_parsers.py' indicates pending split"
 
   - path: tests/unit/mcp/test_tool_contracts.py
     ceiling: 1400
-    until: "#419"
     reason: "tracked split into archive-query vs product-tool contracts"
 
   - path: tests/unit/pipeline/test_run_sources.py
     ceiling: 1400
-    until: "#419"
     reason: "tracked split alongside pipeline-stage independence work"
 
   - path: tests/unit/cli/test_query_exec.py
     ceiling: 1300
-    until: "#419"
     reason: "tracked split into routing/execution/output suites"

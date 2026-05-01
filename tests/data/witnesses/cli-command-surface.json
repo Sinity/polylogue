@@ -1,0 +1,19 @@
+{
+  "surface": "polylogue-cli",
+  "removed_public_commands": ["audit", "qa", "showcase"],
+  "required_root_commands": [
+    "run",
+    "watch",
+    "browser-capture",
+    "doctor",
+    "mcp",
+    "schema",
+    "messages",
+    "raw",
+    "bulk-export",
+    "diagnostics"
+  ],
+  "required_query_verbs": ["list", "show", "search", "stats", "count", "export"],
+  "machine_output_aliases": ["--json", "--format json"],
+  "semantic_filters": ["--provider", "--repo", "--cwd-prefix", "--referenced-path", "--message-role", "--message-type"]
+}

@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 from polylogue.mcp.server_prompts import register_prompts
 from polylogue.mcp.server_resources import register_resources
 from polylogue.mcp.server_support import (
+    MCPRole,
     ServerCallbacks,
     _async_safe_call,
     _clamp_limit,
@@ -62,7 +63,7 @@ def _get_archive_ops() -> ArchiveOperations:
     )
 
 
-def build_server() -> FastMCP:
+def build_server(*, role: MCPRole = "read") -> FastMCP:
     """Construct the FastMCP server with all tools, resources, and prompts."""
     from mcp.server.fastmcp import FastMCP
 
@@ -72,7 +73,7 @@ def build_server() -> FastMCP:
             "Polylogue is an AI conversation archive. Use the tools to search, "
             "list, and retrieve conversations from ChatGPT, Claude, Codex, and "
             "other providers. Conversations include full message history. "
-            "You can also manage tags, metadata, trigger indexing, and export conversations."
+            f"This server is running with the {role!r} MCP role."
         ),
     )
     hooks = ServerCallbacks(
@@ -87,6 +88,7 @@ def build_server() -> FastMCP:
         get_config=lambda: _get_config(),
         get_archive_ops=lambda: _get_archive_ops(),
         extract_fenced_code=_extract_fenced_code,
+        role=role,
     )
     register_tools(mcp, hooks)
     register_resources(mcp, hooks)
@@ -95,17 +97,22 @@ def build_server() -> FastMCP:
 
 
 _server_instance: FastMCP | None = None
+_server_instance_role: MCPRole | None = None
 
 
-def _get_server(services: RuntimeServices | None = None) -> FastMCP:
-    global _server_instance
+def _get_server(services: RuntimeServices | None = None, *, role: MCPRole = "read") -> FastMCP:
+    global _server_instance, _server_instance_role
     if services is not None:
         _set_runtime_services(services)
-    if _server_instance is None:
-        _server_instance = build_server()
+    if _server_instance is None or _server_instance_role != role:
+        _server_instance = build_server(role=role)
+        _server_instance_role = role
     return _server_instance
 
 
-def serve_stdio(services: RuntimeServices | None = None) -> None:
+def serve_stdio(services: RuntimeServices | None = None, *, role: MCPRole = "read") -> None:
     """Start MCP server with stdio transport."""
-    _get_server(services).run(transport="stdio")
+    _get_server(services, role=role).run(transport="stdio")
+
+
+__all__ = ["build_server", "serve_stdio"]

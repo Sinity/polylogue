@@ -21,7 +21,7 @@ def test_mcp_command_runs_stdio_server_and_handles_missing_dependency() -> None:
         result = runner.invoke(mcp_command, ["--transport", "stdio"], obj=env)
 
     assert result.exit_code == 0
-    mock_serve.assert_called_once_with("services")
+    mock_serve.assert_called_once_with("services", role="read")
 
     console = SimpleNamespace(print=MagicMock())
     env = SimpleNamespace(ui=SimpleNamespace(console=console), services="services")
@@ -49,7 +49,7 @@ def test_mcp_command_rejects_unsupported_transport_via_callback() -> None:
     assert callable(wrapped)
 
     try:
-        wrapped(env, "http")
+        wrapped(env, "http", "read")
     except SystemExit as exc:
         assert exc.code == 1
     else:  # pragma: no cover - defensive
