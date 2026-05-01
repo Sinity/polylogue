@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from polylogue.lib.query.fields import describe_plan_fields, plan_has_selection_filters
+from polylogue.archive.query.fields import describe_plan_fields, plan_has_selection_filters
 
 if TYPE_CHECKING:
-    from polylogue.lib.query.plan import ConversationQueryPlan
+    from polylogue.archive.query.plan import ConversationQueryPlan
 
 
 def describe_plan(plan: ConversationQueryPlan) -> list[str]:

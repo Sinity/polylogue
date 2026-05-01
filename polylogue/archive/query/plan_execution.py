@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from polylogue.lib.query.plan import ConversationQueryPlan
-from polylogue.lib.query.retrieval import (
+from polylogue.archive.query.plan import ConversationQueryPlan
+from polylogue.archive.query.retrieval import (
     fetch_batched_filtered_conversations,
     fetch_candidates,
 )
-from polylogue.lib.query.support import conversation_to_summary
+from polylogue.archive.query.support import conversation_to_summary
 
 if TYPE_CHECKING:
     from polylogue.lib.models import Conversation, ConversationSummary

@@ -8,13 +8,13 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import TYPE_CHECKING, TypeVar
 
-from polylogue.lib.query.fields import (
+from polylogue.archive.query.fields import (
     SqlPushdownParams,
     conversation_record_query_for_plan,
     sql_pushdown_params_for_plan,
 )
-from polylogue.lib.query.plan_description import describe_plan, effective_fetch_limit, plan_has_filters
-from polylogue.lib.query.retrieval import (
+from polylogue.archive.query.plan_description import describe_plan, effective_fetch_limit, plan_has_filters
+from polylogue.archive.query.retrieval import (
     action_event_rows_ready,
     can_use_action_event_stats_with,
     candidate_record_query,
@@ -24,7 +24,7 @@ from polylogue.lib.query.retrieval import (
     should_batch_post_filter_fetch,
     uses_action_read_model,
 )
-from polylogue.lib.query.runtime import (
+from polylogue.archive.query.runtime import (
     apply_common_filters,
     apply_full_filters,
     matches_action_sequence,
@@ -37,15 +37,15 @@ from polylogue.lib.query.runtime import (
     plan_has_post_filters,
     plan_needs_content_loading,
 )
-from polylogue.lib.query.sorting import SortKey, finalize_results, sort_conversations, sort_generic, sort_summaries
-from polylogue.lib.query.support import conversation_has_branches
+from polylogue.archive.query.sorting import SortKey, finalize_results, sort_conversations, sort_generic, sort_summaries
+from polylogue.archive.query.support import conversation_has_branches
 from polylogue.storage.query_models import ConversationRecordQuery
 from polylogue.types import Provider
 
 if TYPE_CHECKING:
+    from polylogue.archive.query.runtime_filters import FilterableConversationLike
     from polylogue.lib.filter.types import SortField
     from polylogue.lib.models import Conversation, ConversationSummary
-    from polylogue.lib.query.runtime_filters import FilterableConversationLike
     from polylogue.protocols import ConversationQueryRuntimeStore, VectorProvider
 
 _T = TypeVar("_T")
@@ -237,27 +237,27 @@ class ConversationQueryPlan:
         return search_limit(self)
 
     async def list(self, repository: ConversationQueryRuntimeStore) -> list[Conversation]:
-        from polylogue.lib.query.plan_execution import list_for_plan
+        from polylogue.archive.query.plan_execution import list_for_plan
 
         return await list_for_plan(self, repository)
 
     async def list_summaries(self, repository: ConversationQueryRuntimeStore) -> builtins.list[ConversationSummary]:
-        from polylogue.lib.query.plan_execution import list_summaries_for_plan
+        from polylogue.archive.query.plan_execution import list_summaries_for_plan
 
         return await list_summaries_for_plan(self, repository)
 
     async def first(self, repository: ConversationQueryRuntimeStore) -> Conversation | None:
-        from polylogue.lib.query.plan_execution import first_for_plan
+        from polylogue.archive.query.plan_execution import first_for_plan
 
         return await first_for_plan(self, repository)
 
     async def count(self, repository: ConversationQueryRuntimeStore) -> int:
-        from polylogue.lib.query.plan_execution import count_for_plan
+        from polylogue.archive.query.plan_execution import count_for_plan
 
         return await count_for_plan(self, repository)
 
     async def delete(self, repository: ConversationQueryRuntimeStore) -> int:
-        from polylogue.lib.query.plan_execution import delete_for_plan
+        from polylogue.archive.query.plan_execution import delete_for_plan
 
         return await delete_for_plan(self, repository)
 

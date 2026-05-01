@@ -62,7 +62,7 @@ def cluster_for(target: str) -> str | None:
     """Map a target path to its cluster identifier.
 
     Cluster = the first two segments under polylogue/ that produce a
-    subpackage, e.g. polylogue/lib/query/foo.py → 'lib/query'.
+    subpackage, e.g. polylogue/archive/query/foo.py → 'archive/query'.
     Files at polylogue/<dir>/<file>.py with no further nesting are in cluster
     '<dir>'.
     """
@@ -111,7 +111,7 @@ def collect_imports(path: Path) -> list[str]:
 def main(argv: list[str]) -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--yaml", type=Path, default=PROJECTION)
-    p.add_argument("--cluster", help="Limit report to one cluster name (e.g. 'lib/query').")
+    p.add_argument("--cluster", help="Limit report to one cluster name (e.g. 'archive/query').")
     p.add_argument("--min-cluster-size", type=int, default=3)
     args = p.parse_args(argv)
 

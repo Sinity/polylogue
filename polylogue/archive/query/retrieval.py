@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from polylogue.lib.query.retrieval_candidates import (
+from polylogue.archive.query.retrieval_candidates import (
     action_event_rows_ready,
     action_search_ready,
     can_use_action_event_stats_with,
@@ -17,7 +17,7 @@ from polylogue.lib.query.retrieval_candidates import (
     should_batch_post_filter_fetch,
     uses_action_read_model,
 )
-from polylogue.lib.query.retrieval_search import (
+from polylogue.archive.query.retrieval_search import (
     fetch_batched_filtered_conversations,
     score_action_search_text,
     search_action_results,

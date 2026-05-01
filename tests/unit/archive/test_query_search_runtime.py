@@ -8,10 +8,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from polylogue.lib.conversation.models import ConversationSummary
-from polylogue.lib.models import Conversation
-from polylogue.lib.query.plan import ConversationQueryPlan
-from polylogue.lib.query.retrieval_search import (
+from polylogue.archive.query.plan import ConversationQueryPlan
+from polylogue.archive.query.retrieval_search import (
     conversation_action_search_score,
     fetch_batched_filtered_conversations,
     score_action_search_text,
@@ -20,7 +18,9 @@ from polylogue.lib.query.retrieval_search import (
     search_query_terms,
     search_query_text,
 )
-from polylogue.lib.query.search_hits import plan_has_search_hit_evidence, search_hits_for_plan
+from polylogue.archive.query.search_hits import plan_has_search_hit_evidence, search_hits_for_plan
+from polylogue.lib.conversation.models import ConversationSummary
+from polylogue.lib.models import Conversation
 from polylogue.lib.search_hits import ConversationSearchHit
 from polylogue.protocols import VectorProvider
 from polylogue.types import ConversationId, Provider
@@ -95,12 +95,14 @@ async def test_search_action_results_fallback_batches_scores_and_keeps_best(monk
         return (_Request(), False)
 
     monkeypatch.setattr(
-        "polylogue.lib.query.retrieval_candidates.candidate_record_query_for", _candidate_record_query_for
+        "polylogue.archive.query.retrieval_candidates.candidate_record_query_for", _candidate_record_query_for
     )
-    monkeypatch.setattr("polylogue.lib.query.retrieval_candidates.candidate_batch_limit", lambda _plan: 2)
-    monkeypatch.setattr("polylogue.lib.query.runtime.apply_common_filters", lambda _plan, batch, *, sql_pushed: batch)
+    monkeypatch.setattr("polylogue.archive.query.retrieval_candidates.candidate_batch_limit", lambda _plan: 2)
     monkeypatch.setattr(
-        "polylogue.lib.query.retrieval_search.conversation_action_search_score",
+        "polylogue.archive.query.runtime.apply_common_filters", lambda _plan, batch, *, sql_pushed: batch
+    )
+    monkeypatch.setattr(
+        "polylogue.archive.query.retrieval_search.conversation_action_search_score",
         lambda conversation, *, query_text, terms: {
             "conv-a": 1.0,
             "conv-b": 6.0,
@@ -123,8 +125,10 @@ async def test_search_action_results_uses_ready_path_and_falls_back_on_error(mon
     direct = [_conversation("conv-direct")]
     fallback = AsyncMock(return_value=[_conversation("conv-fallback")])
 
-    monkeypatch.setattr("polylogue.lib.query.retrieval_candidates.action_search_ready", AsyncMock(return_value=True))
-    monkeypatch.setattr("polylogue.lib.query.retrieval_search.search_action_results_fallback", fallback)
+    monkeypatch.setattr(
+        "polylogue.archive.query.retrieval_candidates.action_search_ready", AsyncMock(return_value=True)
+    )
+    monkeypatch.setattr("polylogue.archive.query.retrieval_search.search_action_results_fallback", fallback)
 
     repository.search_actions.return_value = direct
     ready_results = await search_action_results(
@@ -156,11 +160,11 @@ async def test_search_hybrid_results_orders_fused_ids_and_skips_missing(monkeypa
     )
 
     monkeypatch.setattr(
-        "polylogue.lib.query.retrieval_search.search_action_results",
+        "polylogue.archive.query.retrieval_search.search_action_results",
         AsyncMock(return_value=[conv_action]),
     )
     monkeypatch.setattr(
-        "polylogue.lib.query.retrieval_search.reciprocal_rank_fusion",
+        "polylogue.archive.query.retrieval_search.reciprocal_rank_fusion",
         lambda *_ranked: [
             ("conv-action", 0.9),
             ("conv-text", 0.8),
@@ -211,10 +215,10 @@ async def test_fetch_batched_filtered_conversations_deduplicates_and_respects_li
         return (_Request(), False)
 
     monkeypatch.setattr(
-        "polylogue.lib.query.retrieval_candidates.candidate_record_query_for", _candidate_record_query_for
+        "polylogue.archive.query.retrieval_candidates.candidate_record_query_for", _candidate_record_query_for
     )
-    monkeypatch.setattr("polylogue.lib.query.retrieval_candidates.candidate_batch_limit", lambda _plan: 2)
-    monkeypatch.setattr("polylogue.lib.query.runtime.apply_full_filters", lambda _plan, batch, *, sql_pushed: batch)
+    monkeypatch.setattr("polylogue.archive.query.retrieval_candidates.candidate_batch_limit", lambda _plan: 2)
+    monkeypatch.setattr("polylogue.archive.query.runtime.apply_full_filters", lambda _plan, batch, *, sql_pushed: batch)
 
     results = await fetch_batched_filtered_conversations(
         ConversationQueryPlan(limit=3),
@@ -241,7 +245,7 @@ async def test_search_hits_for_plan_handles_empty_simple_and_fallback_paths(monk
     assert plan_has_search_hit_evidence(ConversationQueryPlan()) is False
     assert await search_hits_for_plan(ConversationQueryPlan(query_terms=("   ",)), repository) == []
 
-    monkeypatch.setattr("polylogue.lib.query.search_hits.plan_has_fields_matching", lambda _plan, _predicate: False)
+    monkeypatch.setattr("polylogue.archive.query.search_hits.plan_has_fields_matching", lambda _plan, _predicate: False)
     simple_hits = await search_hits_for_plan(
         ConversationQueryPlan(
             query_terms=("needle",),

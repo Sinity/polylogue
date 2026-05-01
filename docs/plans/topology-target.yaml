@@ -51,6 +51,95 @@ files:
     target: polylogue/api/sync/products.py
     owner: stable
     cross_cut: { api: sync }
+  - path: polylogue/archive/__init__.py
+    loc: 0
+    target: polylogue/archive/__init__.py
+    owner: stable
+  - path: polylogue/archive/query/__init__.py
+    loc: 0
+    target: polylogue/archive/query/__init__.py
+    owner: archive-query
+    reason: archive-domain query semantics
+  - path: polylogue/archive/query/fields.py
+    loc: 743
+    target: polylogue/archive/query/fields.py
+    owner: archive-query
+    reason: archive-domain query semantics
+  - path: polylogue/archive/query/miss_diagnostics.py
+    loc: 296
+    target: polylogue/archive/query/miss_diagnostics.py
+    owner: archive-query
+    reason: archive-domain query semantics
+  - path: polylogue/archive/query/plan.py
+    loc: 265
+    target: polylogue/archive/query/plan.py
+    owner: archive-query
+    reason: archive-domain query semantics
+  - path: polylogue/archive/query/plan_description.py
+    loc: 35
+    target: polylogue/archive/query/plan_description.py
+    owner: archive-query
+    reason: archive-domain query semantics
+  - path: polylogue/archive/query/plan_execution.py
+    loc: 106
+    target: polylogue/archive/query/plan_execution.py
+    owner: archive-query
+    reason: archive-domain query semantics
+  - path: polylogue/archive/query/retrieval.py
+    loc: 49
+    target: polylogue/archive/query/retrieval.py
+    owner: archive-query
+    reason: archive-domain query semantics
+  - path: polylogue/archive/query/retrieval_candidates.py
+    loc: 262
+    target: polylogue/archive/query/retrieval_candidates.py
+    owner: archive-query
+    reason: archive-domain query semantics
+  - path: polylogue/archive/query/retrieval_search.py
+    loc: 228
+    target: polylogue/archive/query/retrieval_search.py
+    owner: archive-query
+    reason: archive-domain query semantics
+  - path: polylogue/archive/query/runtime.py
+    loc: 32
+    target: polylogue/archive/query/runtime.py
+    owner: archive-query
+    reason: archive-domain query semantics
+  - path: polylogue/archive/query/runtime_filters.py
+    loc: 238
+    target: polylogue/archive/query/runtime_filters.py
+    owner: archive-query
+    reason: archive-domain query semantics
+  - path: polylogue/archive/query/runtime_matching.py
+    loc: 94
+    target: polylogue/archive/query/runtime_matching.py
+    owner: archive-query
+    reason: archive-domain query semantics
+  - path: polylogue/archive/query/runtime_plan.py
+    loc: 40
+    target: polylogue/archive/query/runtime_plan.py
+    owner: archive-query
+    reason: archive-domain query semantics
+  - path: polylogue/archive/query/search_hits.py
+    loc: 77
+    target: polylogue/archive/query/search_hits.py
+    owner: archive-query
+    reason: archive-domain query semantics
+  - path: polylogue/archive/query/sorting.py
+    loc: 118
+    target: polylogue/archive/query/sorting.py
+    owner: archive-query
+    reason: archive-domain query semantics
+  - path: polylogue/archive/query/spec.py
+    loc: 381
+    target: polylogue/archive/query/spec.py
+    owner: archive-query
+    reason: archive-domain query semantics
+  - path: polylogue/archive/query/support.py
+    loc: 43
+    target: polylogue/archive/query/support.py
+    owner: archive-query
+    reason: archive-domain query semantics
   - path: polylogue/artifacts/__init__.py
     loc: 1072
     target: polylogue/artifacts/__init__.py
@@ -609,74 +698,6 @@ files:
     target: polylogue/lib/provider_identity.py
     owner: lib-root
     reason: lib-root primitive
-  - path: polylogue/lib/query/__init__.py
-    loc: 0
-    target: polylogue/lib/query/__init__.py
-    owner: stable
-  - path: polylogue/lib/query/fields.py
-    loc: 743
-    target: polylogue/lib/query/fields.py
-    owner: stable
-  - path: polylogue/lib/query/miss_diagnostics.py
-    loc: 296
-    target: polylogue/lib/query/miss_diagnostics.py
-    owner: stable
-  - path: polylogue/lib/query/plan.py
-    loc: 265
-    target: polylogue/lib/query/plan.py
-    owner: stable
-  - path: polylogue/lib/query/plan_description.py
-    loc: 35
-    target: polylogue/lib/query/plan_description.py
-    owner: stable
-  - path: polylogue/lib/query/plan_execution.py
-    loc: 106
-    target: polylogue/lib/query/plan_execution.py
-    owner: stable
-  - path: polylogue/lib/query/retrieval.py
-    loc: 49
-    target: polylogue/lib/query/retrieval.py
-    owner: stable
-  - path: polylogue/lib/query/retrieval_candidates.py
-    loc: 262
-    target: polylogue/lib/query/retrieval_candidates.py
-    owner: stable
-  - path: polylogue/lib/query/retrieval_search.py
-    loc: 228
-    target: polylogue/lib/query/retrieval_search.py
-    owner: stable
-  - path: polylogue/lib/query/runtime.py
-    loc: 32
-    target: polylogue/lib/query/runtime.py
-    owner: stable
-  - path: polylogue/lib/query/runtime_filters.py
-    loc: 238
-    target: polylogue/lib/query/runtime_filters.py
-    owner: stable
-  - path: polylogue/lib/query/runtime_matching.py
-    loc: 94
-    target: polylogue/lib/query/runtime_matching.py
-    owner: stable
-  - path: polylogue/lib/query/runtime_plan.py
-    loc: 40
-    target: polylogue/lib/query/runtime_plan.py
-    owner: stable
-  - path: polylogue/lib/query/search_hits.py
-    loc: 77
-    target: polylogue/lib/query/search_hits.py
-    owner: stable
-  - path: polylogue/lib/query/sorting.py
-    loc: 118
-    target: polylogue/lib/query/sorting.py
-    owner: stable
-  - path: polylogue/lib/query/spec.py
-    loc: 381
-    target: polylogue/lib/query/spec.py
-    owner: stable
-  - path: polylogue/lib/query/support.py
-    loc: 43
-    target: polylogue/lib/query/support.py
-    owner: stable
   - path: polylogue/lib/raw_payload/__init__.py
     loc: 35
     target: polylogue/lib/raw_payload/__init__.py
@@ -1115,7 +1136,7 @@ files:
     target: polylogue/proof/__init__.py
     owner: stable
   - path: polylogue/proof/catalog.py
-    loc: 1184
+    loc: 1186
     target: polylogue/proof/catalog.py
     owner: stable
   - path: polylogue/proof/corpus.py
@@ -1131,7 +1152,7 @@ files:
     target: polylogue/proof/diffing.py
     owner: stable
   - path: polylogue/proof/generated_scenarios.py
-    loc: 286
+    loc: 314
     target: polylogue/proof/generated_scenarios.py
     owner: stable
   - path: polylogue/proof/models.py
@@ -1167,7 +1188,7 @@ files:
     target: polylogue/proof/traces.py
     owner: stable
   - path: polylogue/proof/witnesses.py
-    loc: 318
+    loc: 313
     target: polylogue/proof/witnesses.py
     owner: stable
   - path: polylogue/protocols.py

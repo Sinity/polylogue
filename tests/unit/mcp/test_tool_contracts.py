@@ -8,11 +8,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from polylogue.archive.query.miss_diagnostics import QueryMissDiagnostics, QueryMissReason
+from polylogue.archive.query.spec import ConversationQuerySpec
 from polylogue.lib.conversation.neighbor_candidates import ConversationNeighborCandidate, NeighborReason
 from polylogue.lib.models import Conversation, ConversationSummary
 from polylogue.lib.pricing import CostEstimatePayload, CostUsagePayload
-from polylogue.lib.query.miss_diagnostics import QueryMissDiagnostics, QueryMissReason
-from polylogue.lib.query.spec import ConversationQuerySpec
 from polylogue.lib.search_hits import ConversationSearchHit
 from polylogue.lib.stats import ArchiveStats
 from polylogue.products.archive import (

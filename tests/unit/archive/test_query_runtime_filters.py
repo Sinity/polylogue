@@ -4,11 +4,11 @@ from datetime import datetime, timezone
 
 import pytest
 
+from polylogue.archive.query.plan import ConversationQueryPlan
+from polylogue.archive.query.runtime_filters import apply_common_filters, apply_full_filters
 from polylogue.lib.conversation.branch_type import BranchType
 from polylogue.lib.conversation.models import ConversationSummary
 from polylogue.lib.models import Attachment, Conversation, Message
-from polylogue.lib.query.plan import ConversationQueryPlan
-from polylogue.lib.query.runtime_filters import apply_common_filters, apply_full_filters
 from polylogue.types import ConversationId, Provider
 from tests.infra.builders import make_conv, make_msg
 
@@ -216,7 +216,7 @@ def test_apply_full_filters_handles_content_word_branch_predicate_and_action_fil
         "matches_tool_terms",
     ):
         monkeypatch.setattr(
-            "polylogue.lib.query.runtime_filters." + name,
+            "polylogue.archive.query.runtime_filters." + name,
             lambda _plan, conversation, *, _target="conv-branchy": str(conversation.id) == _target,
         )
 

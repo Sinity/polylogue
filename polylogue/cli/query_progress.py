@@ -12,9 +12,9 @@ from typing import TYPE_CHECKING, TypeVar, cast
 
 import click
 
+from polylogue.archive.query.retrieval_candidates import uses_action_read_model
+from polylogue.archive.query.spec import ConversationQuerySpec
 from polylogue.cli.query_contracts import QueryOutputSpec
-from polylogue.lib.query.retrieval_candidates import uses_action_read_model
-from polylogue.lib.query.spec import ConversationQuerySpec
 
 logger = logging.getLogger(__name__)
 

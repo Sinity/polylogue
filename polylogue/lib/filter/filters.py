@@ -6,17 +6,17 @@ import builtins
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from polylogue.lib.filter.builder import ConversationFilterBuilderMixin
-from polylogue.lib.filter.types import SortField
-from polylogue.lib.query.fields import SqlPushdownParams
-from polylogue.lib.query.plan import ConversationQueryPlan
-from polylogue.lib.query.plan_execution import (
+from polylogue.archive.query.fields import SqlPushdownParams
+from polylogue.archive.query.plan import ConversationQueryPlan
+from polylogue.archive.query.plan_execution import (
     count_for_plan,
     delete_for_plan,
     first_for_plan,
     list_for_plan,
     list_summaries_for_plan,
 )
+from polylogue.lib.filter.builder import ConversationFilterBuilderMixin
+from polylogue.lib.filter.types import SortField
 
 if TYPE_CHECKING:
     from polylogue.lib.conversation.models import Conversation, ConversationSummary

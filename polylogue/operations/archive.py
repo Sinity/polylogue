@@ -9,10 +9,10 @@ from typing import TYPE_CHECKING, TypeVar, cast
 
 import structlog
 
+from polylogue.archive.query.spec import ConversationQuerySpec
 from polylogue.config import ConfigError
 from polylogue.lib.conversation.models import ConversationSummary
 from polylogue.lib.pricing import CostUsagePayload, _normalize_model, estimate_conversation_cost, generated_at
-from polylogue.lib.query.spec import ConversationQuerySpec
 from polylogue.lib.semantic.content_projection import ContentProjectionSpec, project_message_content
 from polylogue.maintenance.targets import build_maintenance_target_catalog
 from polylogue.paths.sanitize import conversation_render_root
@@ -84,12 +84,12 @@ _PROFILE_FTS_STATUS_BY_TIER: dict[str, SessionProductReadyFlag] = {
 }
 
 if TYPE_CHECKING:
+    from polylogue.archive.query.miss_diagnostics import QueryMissDiagnostics
     from polylogue.config import Config
     from polylogue.lib.conversation.models import Conversation
     from polylogue.lib.conversation.neighbor_candidates import ConversationNeighborCandidate
     from polylogue.lib.message.models import Message
     from polylogue.lib.message.roles import MessageRoleFilter
-    from polylogue.lib.query.miss_diagnostics import QueryMissDiagnostics
     from polylogue.lib.search_hits import ConversationSearchHit
     from polylogue.lib.stats import ArchiveStats as StorageArchiveStats
     from polylogue.storage.backends.async_sqlite import SQLiteBackend
@@ -336,7 +336,7 @@ class ArchiveSearchMixin:
         return [conversation.with_content_projection(content_projection) for conversation in conversations]
 
     async def search_conversation_hits(self, spec: ConversationQuerySpec) -> list[ConversationSearchHit]:
-        from polylogue.lib.query.search_hits import search_hits_for_plan
+        from polylogue.archive.query.search_hits import search_hits_for_plan
 
         hits = await search_hits_for_plan(spec.to_plan(), self.repository)
         if not hits:
@@ -374,7 +374,7 @@ class ArchiveSearchMixin:
         return [candidate.with_message_count(counts.get(candidate.conversation_id)) for candidate in candidates]
 
     async def diagnose_query_miss(self, spec: ConversationQuerySpec) -> QueryMissDiagnostics:
-        from polylogue.lib.query.miss_diagnostics import diagnose_query_miss
+        from polylogue.archive.query.miss_diagnostics import diagnose_query_miss
 
         return await diagnose_query_miss(self.repository, spec, config=self.config)
 

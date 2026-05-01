@@ -17,6 +17,8 @@ from click.testing import CliRunner
 from hypothesis import HealthCheck, given, settings
 from rich.console import Console
 
+from polylogue.archive.query.miss_diagnostics import QueryMissDiagnostics, QueryMissReason
+from polylogue.archive.query.spec import ConversationQuerySpec, QuerySpecError
 from polylogue.cli.query import (
     QueryAction,
     QueryExecutionPlan,
@@ -46,8 +48,6 @@ from polylogue.cli.shared.types import AppEnv
 from polylogue.lib.json import JSONDocument
 from polylogue.lib.message.roles import MessageRoleFilter
 from polylogue.lib.models import Conversation
-from polylogue.lib.query.miss_diagnostics import QueryMissDiagnostics, QueryMissReason
-from polylogue.lib.query.spec import ConversationQuerySpec, QuerySpecError
 from polylogue.lib.roles import Role
 from polylogue.lib.search_hits import ConversationSearchHit
 from polylogue.services import build_runtime_services

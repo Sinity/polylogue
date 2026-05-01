@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Literal, overload
 
-from polylogue.lib.query.support import provider_values
+from polylogue.archive.query.support import provider_values
 
 if TYPE_CHECKING:
+    from polylogue.archive.query.plan import ConversationQueryPlan
     from polylogue.lib.models import Conversation, ConversationSummary
-    from polylogue.lib.query.plan import ConversationQueryPlan
     from polylogue.protocols import ConversationQueryRuntimeStore
     from polylogue.storage.action_events.artifacts import ActionEventArtifactState
     from polylogue.storage.query_models import ConversationRecordQuery
@@ -169,13 +169,13 @@ async def fetch_search_results(
     if plan.retrieval_lane == "actions":
         if summaries:
             return False, []
-        from polylogue.lib.query.retrieval_search import search_action_results
+        from polylogue.archive.query.retrieval_search import search_action_results
 
         return True, await search_action_results(plan, repository, limit=search_limit(plan))
     if plan.retrieval_lane == "hybrid":
         if summaries:
             return False, []
-        from polylogue.lib.query.retrieval_search import search_hybrid_results
+        from polylogue.archive.query.retrieval_search import search_hybrid_results
 
         return True, await search_hybrid_results(plan, repository, limit=search_limit(plan))
 

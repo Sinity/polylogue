@@ -79,9 +79,9 @@ CROSS_RING_ROOT_MOVES = {
     "publication.py": "polylogue/publication/__init__.py",
 }
 
-# polylogue/lib/ subpackage rules — prefix → subpackage
+# Archive-domain subpackage rules — prefix → subpackage
 LIB_PREFIX_TO_SUBPACKAGE = {
-    "query_": "lib/query/",
+    "query_": "archive/query/",
     "session_profile": "lib/session/",
     "session_payload": "lib/session/",
     "session_summaries": "lib/session/",
@@ -201,7 +201,7 @@ TARGET_TO_OWNER = [
     ("polylogue/surfaces/", "surface-shared"),
     ("polylogue/maintenance/", "maintenance-domain"),
     ("polylogue/publication/", "publication-domain"),
-    ("polylogue/lib/query/", "lib-query"),
+    ("polylogue/archive/query/", "archive-query"),
     ("polylogue/lib/session/", "lib-session"),
     ("polylogue/lib/viewport/", "lib-viewport"),
     ("polylogue/lib/raw_payload/", "lib-raw-payload"),
@@ -365,6 +365,13 @@ def classify(path: Path) -> dict[str, Any]:
                 reason = "lib-root primitive"
             else:
                 owner = placement_owner(target) or "lib-domain"
+    elif rel.startswith("polylogue/archive/query/"):
+        target = rel
+        owner = "archive-query"
+        reason = "archive-domain query semantics"
+    elif rel.startswith("polylogue/archive/"):
+        target = rel
+        owner = "stable"
     elif rel.startswith("polylogue/storage/"):
         suffix = rel[len("polylogue/storage/") :]
         if "/" in suffix:

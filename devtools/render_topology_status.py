@@ -25,7 +25,7 @@ GENERATED_END = "<!-- END GENERATED: topology-status -->"
 OWNER_TITLES = {
     "api-surface": "library API and sync adapters",
     "product-domain": "derived product modules",
-    "lib-query": "query-domain primitives",
+    "archive-query": "archive query semantics",
     "storage-repository": "repository persistence adapters",
     "source-drive": "Drive source adapters",
     "source-claude-parser": "Claude parser package",

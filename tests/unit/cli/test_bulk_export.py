@@ -10,12 +10,12 @@ from unittest.mock import patch
 import click
 from click.testing import CliRunner
 
+from polylogue.archive.query.spec import ConversationQuerySpec
 from polylogue.cli import bulk_export, query_verbs
 from polylogue.cli.click_app import cli
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
 from polylogue.lib.models import Conversation
-from polylogue.lib.query.spec import ConversationQuerySpec
 from polylogue.types import Provider
 from tests.infra.builders import make_conv, make_msg
 

@@ -132,7 +132,7 @@ MUTATION_CAMPAIGNS: dict[str, MutationCampaign] = {
         description="Query command planning, action routing, and summary output contracts",
         paths_to_mutate=(
             "polylogue/cli/query.py",
-            "polylogue/lib/query/plan.py",
+            "polylogue/archive/query/plan.py",
             "polylogue/cli/query_actions.py",
             "polylogue/cli/query_output.py",
         ),

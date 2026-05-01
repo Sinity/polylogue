@@ -219,7 +219,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
         examples=(
             "devtools verify-cluster-cohesion",
-            "devtools verify-cluster-cohesion --cluster lib/query",
+            "devtools verify-cluster-cohesion --cluster archive/query",
         ),
     ),
     CommandSpec(

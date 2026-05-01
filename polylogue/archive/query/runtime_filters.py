@@ -6,19 +6,19 @@ from collections.abc import Sequence
 from datetime import datetime
 from typing import TYPE_CHECKING, Protocol, TypeVar
 
-from polylogue.lib.message.types import MessageType
-from polylogue.lib.query.runtime_matching import (
+from polylogue.archive.query.runtime_matching import (
     matches_action_sequence,
     matches_action_terms,
     matches_action_text_terms,
     matches_referenced_path,
     matches_tool_terms,
 )
-from polylogue.lib.query.support import conversation_has_branches, provider_values
+from polylogue.archive.query.support import conversation_has_branches, provider_values
+from polylogue.lib.message.types import MessageType
 
 if TYPE_CHECKING:
+    from polylogue.archive.query.plan import ConversationQueryPlan
     from polylogue.lib.models import Conversation
-    from polylogue.lib.query.plan import ConversationQueryPlan
 
 
 class FilterableConversationLike(Protocol):
