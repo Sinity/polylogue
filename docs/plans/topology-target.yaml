@@ -105,6 +105,16 @@ files:
     target: polylogue/archive/filter/types.py
     owner: archive-filter
     reason: archive-domain filter semantics
+  - path: polylogue/archive/phase/__init__.py
+    loc: 0
+    target: polylogue/archive/phase/__init__.py
+    owner: archive-phase
+    reason: archive-domain semantics
+  - path: polylogue/archive/phase/extraction.py
+    loc: 108
+    target: polylogue/archive/phase/extraction.py
+    owner: archive-phase
+    reason: archive-domain semantics
   - path: polylogue/archive/query/__init__.py
     loc: 0
     target: polylogue/archive/query/__init__.py
@@ -683,14 +693,6 @@ files:
     target: polylogue/lib/payload_coercion.py
     owner: lib-root
     reason: lib-root primitive
-  - path: polylogue/lib/phase/__init__.py
-    loc: 0
-    target: polylogue/lib/phase/__init__.py
-    owner: stable
-  - path: polylogue/lib/phase/extraction.py
-    loc: 108
-    target: polylogue/lib/phase/extraction.py
-    owner: stable
   - path: polylogue/lib/pricing.py
     loc: 581
     target: polylogue/lib/pricing.py

@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date, datetime
 
+from polylogue.archive.phase.extraction import SessionPhase
 from polylogue.lib.conversation.attribution import ConversationAttribution
 from polylogue.lib.conversation.extraction import WorkEvent
 from polylogue.lib.payload_coercion import (
@@ -19,7 +20,6 @@ from polylogue.lib.payload_coercion import (
     string_int_mapping,
     string_sequence,
 )
-from polylogue.lib.phase.extraction import SessionPhase
 from polylogue.lib.repo_identity import normalize_repo_names, normalize_repo_paths
 from polylogue.lib.semantic.facts import ConversationSemanticFacts
 from polylogue.lib.session.documents import (

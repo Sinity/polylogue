@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
+from polylogue.archive.phase.extraction import SessionPhase
 from polylogue.lib.conversation.extraction import WorkEvent, WorkEventPayload
 from polylogue.lib.payload_coercion import (
     coerce_float,
@@ -15,7 +16,6 @@ from polylogue.lib.payload_coercion import (
     string_int_mapping,
     string_sequence,
 )
-from polylogue.lib.phase.extraction import SessionPhase
 from polylogue.lib.session.documents import (
     SessionPhaseDocument,
     SessionProfileDocument,
