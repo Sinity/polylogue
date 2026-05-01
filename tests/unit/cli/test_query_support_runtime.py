@@ -382,7 +382,7 @@ async def test_query_stats_helpers_cover_structured_sql_and_profile_paths() -> N
         repo_names=("repo-a", "repo-b"), auto_tags=("kind:implementation",), work_events=[1], message_count=3
     )
     with (
-        patch("polylogue.lib.session.session_profile.build_session_profile", return_value=profile),
+        patch("polylogue.archive.session.session_profile.build_session_profile", return_value=profile),
         patch("polylogue.cli.query_stats._emit_grouped_stats_table") as emit_table,
         patch("polylogue.cli.query_stats.emit_no_results"),
     ):

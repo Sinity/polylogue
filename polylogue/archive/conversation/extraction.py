@@ -15,6 +15,7 @@ from polylogue.archive.semantic.facts import (
     MessageSemanticFacts,
     build_conversation_semantic_facts,
 )
+from polylogue.archive.session.documents import WorkEventDocument
 from polylogue.lib.payload_coercion import (
     coerce_float,
     coerce_int,
@@ -22,7 +23,6 @@ from polylogue.lib.payload_coercion import (
     optional_datetime,
     string_sequence,
 )
-from polylogue.lib.session.documents import WorkEventDocument
 
 # Strip XML-like protocol artifacts from user messages before summarizing.
 # Claude Code sessions contain <command-name>, <task-notification>,

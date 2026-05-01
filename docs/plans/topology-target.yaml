@@ -392,6 +392,36 @@ files:
     target: polylogue/archive/semantic/support.py
     owner: archive-semantic
     reason: archive-domain semantics
+  - path: polylogue/archive/session/__init__.py
+    loc: 0
+    target: polylogue/archive/session/__init__.py
+    owner: archive-session
+    reason: archive-domain semantics
+  - path: polylogue/archive/session/documents.py
+    loc: 114
+    target: polylogue/archive/session/documents.py
+    owner: archive-session
+    reason: archive-domain semantics
+  - path: polylogue/archive/session/models.py
+    loc: 205
+    target: polylogue/archive/session/models.py
+    owner: archive-session
+    reason: archive-domain semantics
+  - path: polylogue/archive/session/runtime.py
+    loc: 111
+    target: polylogue/archive/session/runtime.py
+    owner: archive-session
+    reason: archive-domain semantics
+  - path: polylogue/archive/session/session_profile.py
+    loc: 16
+    target: polylogue/archive/session/session_profile.py
+    owner: archive-session
+    reason: archive-domain semantics
+  - path: polylogue/archive/session/session_summaries.py
+    loc: 163
+    target: polylogue/archive/session/session_summaries.py
+    owner: archive-session
+    reason: archive-domain semantics
   - path: polylogue/artifacts/__init__.py
     loc: 1072
     target: polylogue/artifacts/__init__.py
@@ -813,30 +843,6 @@ files:
     target: polylogue/lib/security.py
     owner: lib-root
     reason: lib-root primitive
-  - path: polylogue/lib/session/__init__.py
-    loc: 0
-    target: polylogue/lib/session/__init__.py
-    owner: stable
-  - path: polylogue/lib/session/documents.py
-    loc: 114
-    target: polylogue/lib/session/documents.py
-    owner: stable
-  - path: polylogue/lib/session/models.py
-    loc: 205
-    target: polylogue/lib/session/models.py
-    owner: stable
-  - path: polylogue/lib/session/runtime.py
-    loc: 111
-    target: polylogue/lib/session/runtime.py
-    owner: stable
-  - path: polylogue/lib/session/session_profile.py
-    loc: 16
-    target: polylogue/lib/session/session_profile.py
-    owner: stable
-  - path: polylogue/lib/session/session_summaries.py
-    loc: 163
-    target: polylogue/lib/session/session_summaries.py
-    owner: stable
   - path: polylogue/lib/stats.py
     loc: 90
     target: polylogue/lib/stats.py

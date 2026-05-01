@@ -82,9 +82,9 @@ CROSS_RING_ROOT_MOVES = {
 # Archive-domain subpackage rules — prefix → subpackage
 LIB_PREFIX_TO_SUBPACKAGE = {
     "query_": "archive/query/",
-    "session_profile": "lib/session/",
-    "session_payload": "lib/session/",
-    "session_summaries": "lib/session/",
+    "session_profile": "archive/session/",
+    "session_payload": "archive/session/",
+    "session_summaries": "archive/session/",
     "viewport_": "lib/viewport/",
     "viewports": "lib/viewport/",
     "raw_payload_": "archive/raw_payload/",
@@ -203,7 +203,7 @@ TARGET_TO_OWNER = [
     ("polylogue/publication/", "publication-domain"),
     ("polylogue/archive/query/", "archive-query"),
     ("polylogue/archive/filter/", "archive-filter"),
-    ("polylogue/lib/session/", "lib-session"),
+    ("polylogue/archive/session/", "archive-session"),
     ("polylogue/lib/viewport/", "lib-viewport"),
     ("polylogue/archive/raw_payload/", "archive-raw-payload"),
     ("polylogue/archive/artifact_taxonomy/", "archive-artifact-taxonomy"),
@@ -247,7 +247,7 @@ def _resolve_target(name: str, sub: str, prefix: str) -> str:
 
     When the module name equals the prefix exactly, keep the full name as the
     target stem (so e.g. ``session_payload`` lands at
-    ``lib/session/session_payload.py``, not at the cluster's ``__init__.py``
+    ``archive/session/session_payload.py``, not at the cluster's ``__init__.py``
     where it would collide with sibling modules).
 
     When the prefix has a trailing underscore (``query_``, ``store_runtime_``),

@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.archive.conversation import extraction as work_event_extraction
 from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.phase.extraction import SessionPhase
 from polylogue.archive.phase.extraction import extract_phases as phase_extract_phases
@@ -16,12 +17,11 @@ from polylogue.archive.semantic.facts import (
     build_mcp_summary_semantic_facts,
     build_projection_semantic_facts,
 )
-from polylogue.lib.conversation import extraction as work_event_extraction
+from polylogue.archive.session import runtime as session_profile_runtime
+from polylogue.archive.session.session_profile import build_session_profile
 from polylogue.lib.models import Conversation as ConversationModel
 from polylogue.lib.models import ConversationSummary
 from polylogue.lib.pricing import harmonize_session_cost
-from polylogue.lib.session import runtime as session_profile_runtime
-from polylogue.lib.session.session_profile import build_session_profile
 from polylogue.storage.archive_views import ConversationRenderProjection
 from polylogue.types import ConversationId, Provider
 from tests.infra.builders import make_conv, make_msg
@@ -30,7 +30,8 @@ from tests.infra.storage_records import make_attachment, make_conversation, make
 REPO_ROOT = Path(__file__).resolve().parents[3]
 EXPECTED_REPO_NAME = REPO_ROOT.name
 README_PATH = REPO_ROOT / "README.md"
-LIB_PATH = REPO_ROOT / "polylogue" / "lib"
+ARCHIVE_SESSION_PATH = REPO_ROOT / "polylogue" / "archive" / "session"
+ARCHIVE_ACTION_EVENTS_PATH = REPO_ROOT / "polylogue" / "archive" / "action_event" / "events.py"
 SHOWCASE_REPORT_PATH = REPO_ROOT / "polylogue" / "showcase" / "report.py"
 
 
@@ -575,7 +576,7 @@ def test_action_events_capture_normalized_command_query_branch_and_cwd() -> None
                             "tool_name": "Grep",
                             "tool_input": {
                                 "pattern": "build_session_profile",
-                                "path": str(LIB_PATH),
+                                "path": str(ARCHIVE_SESSION_PATH),
                             },
                             "semantic_type": "search",
                         },
@@ -597,8 +598,8 @@ def test_action_events_capture_normalized_command_query_branch_and_cwd() -> None
     assert "feature/action-facts" in git_action.search_text
     assert search_action.kind.value == "search"
     assert search_action.query == "build_session_profile"
-    assert search_action.affected_paths == (str(LIB_PATH),)
-    assert str(LIB_PATH) in search_action.search_text
+    assert search_action.affected_paths == (str(ARCHIVE_SESSION_PATH),)
+    assert str(ARCHIVE_SESSION_PATH) in search_action.search_text
 
     profile = build_session_profile(conversation)
     assert profile.repo_names == (EXPECTED_REPO_NAME,)
@@ -752,7 +753,7 @@ def test_build_session_profile_discards_shell_path_noise_from_action_events() ->
                             "tool_input": {
                                 "command": (
                                     f"echo /# /12 /AFK/browser /Codex /DAG && "
-                                    f"cat {README_PATH} {LIB_PATH / 'action_events.py'}"
+                                    f"cat {README_PATH} {ARCHIVE_ACTION_EVENTS_PATH}"
                                 )
                             },
                             "semantic_type": "shell",
@@ -766,7 +767,7 @@ def test_build_session_profile_discards_shell_path_noise_from_action_events() ->
     profile = build_session_profile(conversation)
 
     assert str(README_PATH) in profile.file_paths_touched
-    assert str(LIB_PATH / "action_events.py") in profile.file_paths_touched
+    assert str(ARCHIVE_ACTION_EVENTS_PATH) in profile.file_paths_touched
     assert str(REPO_ROOT) in profile.repo_paths
     assert "/#" not in profile.file_paths_touched
     assert "/12" not in profile.file_paths_touched

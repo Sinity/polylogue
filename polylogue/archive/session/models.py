@@ -10,6 +10,10 @@ from polylogue.archive.conversation.attribution import ConversationAttribution
 from polylogue.archive.conversation.extraction import WorkEvent
 from polylogue.archive.phase.extraction import SessionPhase
 from polylogue.archive.semantic.facts import ConversationSemanticFacts
+from polylogue.archive.session.documents import (
+    SessionPhaseDocument,
+    SessionProfileDocument,
+)
 from polylogue.lib.payload_coercion import (
     coerce_float,
     coerce_int,
@@ -22,10 +26,6 @@ from polylogue.lib.payload_coercion import (
     string_sequence,
 )
 from polylogue.lib.repo_identity import normalize_repo_names, normalize_repo_paths
-from polylogue.lib.session.documents import (
-    SessionPhaseDocument,
-    SessionProfileDocument,
-)
 
 SessionPhasePayload = SessionPhaseDocument
 SessionProfilePayload = SessionProfileDocument

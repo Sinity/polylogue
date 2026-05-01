@@ -638,7 +638,7 @@ async def output_stats_by_profile_ids(
     if not conversation_ids:
         emit_no_results(env, selection=selection, output_format=output_format)
 
-    from polylogue.lib.session.session_profile import build_session_profile
+    from polylogue.archive.session.session_profile import build_session_profile
 
     groups: dict[str, dict[str, int]] = defaultdict(lambda: {"conversations": 0, "work_events": 0, "messages": 0})
     matched_conversations = 0

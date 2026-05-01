@@ -3,8 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 
+from polylogue.archive.session.session_profile import build_session_analysis, build_session_profile
 from polylogue.lib.models import Conversation
-from polylogue.lib.session.session_profile import build_session_analysis, build_session_profile
 from polylogue.storage.products.session.timeline_rows import (
     build_session_phase_records,
     build_session_work_event_records,

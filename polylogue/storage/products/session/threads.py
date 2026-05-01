@@ -8,7 +8,7 @@ from collections.abc import AsyncIterator, Iterable, Iterator, Sequence
 import aiosqlite
 
 from polylogue.archive.conversation.threads import WorkThread, WorkThreadPayload, build_session_threads
-from polylogue.lib.session.documents import WorkThreadDocument
+from polylogue.archive.session.documents import WorkThreadDocument
 from polylogue.products.archive_models import WorkThreadPayload as ArchivedWorkThreadPayload
 from polylogue.storage.backends.queries.mappers import _row_to_session_profile_record
 from polylogue.storage.products.session.profiles import hydrate_session_profile, now_iso
