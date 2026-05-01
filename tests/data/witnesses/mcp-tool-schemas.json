@@ -1090,7 +1090,7 @@
     }
   },
   {
-    "name": "raw_records",
+    "name": "raw_artifacts",
     "parameters": {
       "properties": {
         "conversation_id": {
@@ -1113,7 +1113,7 @@
       "required": [
         "conversation_id"
       ],
-      "title": "raw_recordsArguments",
+      "title": "raw_artifactsArguments",
       "type": "object"
     }
   },

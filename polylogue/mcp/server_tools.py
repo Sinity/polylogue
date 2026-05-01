@@ -9,8 +9,8 @@ from polylogue.mcp.payloads import (
     MCPConversationSummaryPayload,
     MCPMessagePayload,
     MCPMessagesListPayload,
-    MCPRawRecordPayload,
-    MCPRawRecordsListPayload,
+    MCPRawArtifactPayload,
+    MCPRawArtifactsListPayload,
     MCPReadinessReportPayload,
     MCPStatsByPayload,
     conversation_neighbor_candidate_list_payload,
@@ -295,7 +295,7 @@ def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         return await hooks.async_safe_call("get_messages", run)
 
     @mcp.tool()
-    async def raw_records(
+    async def raw_artifacts(
         conversation_id: str,
         limit: MCPToolLimit = 50,
         offset: MCPToolOffset = 0,
@@ -306,22 +306,22 @@ def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             if conv_check is None:
                 return hooks.error_json(f"Conversation not found: {conversation_id}")
             canonical_id = str(conv_check.id)
-            records, total = await ops.get_raw_records_for_conversation(
+            artifacts, total = await ops.get_raw_artifacts_for_conversation(
                 canonical_id,
                 limit=hooks.clamp_limit(limit),
                 offset=max(0, offset),
             )
             return hooks.json_payload(
-                MCPRawRecordsListPayload(
+                MCPRawArtifactsListPayload(
                     conversation_id=canonical_id,
-                    raw_records=tuple(MCPRawRecordPayload.from_record(r) for r in records),
+                    raw_artifacts=tuple(MCPRawArtifactPayload.from_record(r) for r in artifacts),
                     total=total,
                     limit=hooks.clamp_limit(limit),
                     offset=max(0, offset),
                 )
             )
 
-        return await hooks.async_safe_call("raw_records", run)
+        return await hooks.async_safe_call("raw_artifacts", run)
 
     @mcp.tool()
     def readiness_check() -> str:

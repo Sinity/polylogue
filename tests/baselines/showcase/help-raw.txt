@@ -1,9 +1,9 @@
 Usage: polylogue raw [OPTIONS] [CONVERSATION_ID]
 
-  Show raw provider records for a conversation.
+  Show raw archive artifacts for a conversation.
 
 Options:
-  -n, --limit INTEGER       Max records to return
+  -n, --limit INTEGER       Max raw artifacts to return
   --offset INTEGER          Offset for pagination
   -f, --format [json|yaml]  Output format
   -h, --help                Show this message and exit.

@@ -121,8 +121,8 @@ def test_cli_messages_and_raw_routes_read_conversation_records(tmp_path: Path) -
     raw_payload = json.loads(raw_result.stdout)
     assert raw_payload["conversation_id"] == conversation_id
     assert raw_payload["total"] == 1
-    assert len(raw_payload["records"]) == 1
-    assert raw_payload["records"][0]["raw_id"]
+    assert len(raw_payload["artifacts"]) == 1
+    assert raw_payload["artifacts"][0]["raw_id"]
 
 
 def test_cli_query_summary_list_json_no_results_still_returns_json(tmp_path: Path) -> None:

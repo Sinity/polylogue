@@ -296,14 +296,14 @@ class PolylogueArchiveMixin:
 
         return result, total
 
-    async def get_raw_records_for_conversation(
+    async def get_raw_artifacts_for_conversation(
         self,
         conversation_id: str,
         *,
         limit: int = 50,
         offset: int = 0,
     ) -> tuple[list[dict[str, object]], int]:
-        """Return paginated raw provider records for a conversation."""
+        """Return paginated raw archive artifact rows for a conversation."""
         from polylogue.storage.backends.queries.raw import get_raw_records_for_conversation as _raw_query
 
         summary = await self.operations.get_conversation_summary(conversation_id)
