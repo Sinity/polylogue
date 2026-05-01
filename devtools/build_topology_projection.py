@@ -119,7 +119,6 @@ LIB_ROOT_PRIMITIVES = frozenset(
         "__init__.py",
         "repo_identity.py",
         "models.py",
-        "provider_identity.py",
     }
 )
 

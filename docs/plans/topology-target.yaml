@@ -824,6 +824,11 @@ files:
     target: polylogue/core/payload_coercion.py
     owner: core-primitive
     reason: core primitive
+  - path: polylogue/core/provider_identity.py
+    loc: 97
+    target: polylogue/core/provider_identity.py
+    owner: core-primitive
+    reason: core primitive
   - path: polylogue/core/security.py
     loc: 63
     target: polylogue/core/security.py
@@ -847,11 +852,6 @@ files:
   - path: polylogue/lib/models.py
     loc: 7
     target: polylogue/lib/models.py
-    owner: lib-root
-    reason: lib-root primitive
-  - path: polylogue/lib/provider_identity.py
-    loc: 97
-    target: polylogue/lib/provider_identity.py
     owner: lib-root
     reason: lib-root primitive
   - path: polylogue/lib/repo_identity.py
@@ -929,7 +929,7 @@ files:
     target: polylogue/operations/__init__.py
     owner: stable
   - path: polylogue/operations/archive.py
-    loc: 1058
+    loc: 1063
     target: polylogue/operations/archive.py
     owner: stable
   - path: polylogue/operations/specs.py

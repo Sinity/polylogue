@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import TypeAlias
 
 from polylogue.archive.raw_payload import build_raw_payload_envelope
-from polylogue.lib.provider_identity import CORE_RUNTIME_PROVIDERS
+from polylogue.core.provider_identity import CORE_RUNTIME_PROVIDERS
 from polylogue.schemas.validator import SchemaValidator
 from polylogue.storage.blob_store import get_blob_store
 

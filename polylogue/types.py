@@ -5,7 +5,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import NewType
 
-from polylogue.lib.provider_identity import canonical_runtime_provider
+from polylogue.core.provider_identity import canonical_runtime_provider
 
 # Semantic ID types - provides compile-time distinction
 ConversationId = NewType("ConversationId", str)

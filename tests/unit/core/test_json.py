@@ -20,7 +20,7 @@ from hypothesis import given
 from hypothesis import strategies as st
 
 from polylogue.core import json as core_json
-from polylogue.lib.provider_identity import normalize_provider_token
+from polylogue.core.provider_identity import normalize_provider_token
 from polylogue.types import AttachmentId, ContentHash, ConversationId, MessageId, Provider
 
 SURROGATE_CATEGORY: tuple[Literal["Cs"], ...] = ("Cs",)
