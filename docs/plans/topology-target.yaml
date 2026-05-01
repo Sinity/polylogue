@@ -146,6 +146,11 @@ files:
     owner: archive-conversation
     reason: archive-domain semantics
     cross_cut: { lifecycle: runtime }
+  - path: polylogue/archive/conversation/tail_overlay.py
+    loc: 79
+    target: polylogue/archive/conversation/tail_overlay.py
+    owner: archive-conversation
+    reason: archive-domain semantics
   - path: polylogue/archive/conversation/threads.py
     loc: 313
     target: polylogue/archive/conversation/threads.py
@@ -857,11 +862,6 @@ files:
   - path: polylogue/lib/roles.py
     loc: 80
     target: polylogue/lib/roles.py
-    owner: lib-root
-    reason: lib-root primitive
-  - path: polylogue/lib/tail_overlay.py
-    loc: 79
-    target: polylogue/lib/tail_overlay.py
     owner: lib-root
     reason: lib-root primitive
   - path: polylogue/logging.py

@@ -9,8 +9,8 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from polylogue.archive.conversation.tail_overlay import TailOverlayInfo, with_tail_overlay_provider_meta
 from polylogue.config import Config, Source
-from polylogue.lib.tail_overlay import TailOverlayInfo, with_tail_overlay_provider_meta
 from polylogue.pipeline.prepare import prepare_bundle, save_bundle
 from polylogue.services import RuntimeServices, build_runtime_services
 from polylogue.sources.source_parsing import iter_source_conversations_with_raw
