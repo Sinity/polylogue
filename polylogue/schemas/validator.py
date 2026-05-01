@@ -14,8 +14,8 @@ except ImportError:
     jsonschema = None
     Draft202012Validator = None
 
+from polylogue.archive.raw_payload import extract_payload_samples
 from polylogue.lib.json import JSONDocument, JSONValue, is_json_value, json_document
-from polylogue.lib.raw_payload import extract_payload_samples
 from polylogue.schemas.runtime_registry import SchemaRegistry
 from polylogue.types import Provider
 

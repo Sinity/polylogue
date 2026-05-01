@@ -18,10 +18,10 @@ from typing import TYPE_CHECKING, Literal
 
 from typing_extensions import TypedDict
 
+from polylogue.archive.raw_payload.decode import RawPayloadEnvelope
 from polylogue.lib.artifact_taxonomy import ArtifactClassification, classify_artifact
 from polylogue.lib.conversation.branch_type import BranchType
 from polylogue.lib.json import dumps as json_dumps
-from polylogue.lib.raw_payload.decode import RawPayloadEnvelope
 from polylogue.lib.roles import Role
 from polylogue.logging import get_logger
 from polylogue.pipeline.materialization_runtime import (
@@ -397,7 +397,7 @@ def _build_stream_parse_plan(
     *,
     payload_provider: str | None,
 ) -> _ParsePlan | None:
-    from polylogue.lib.raw_payload.decode import _sample_jsonl_payload_with_detail
+    from polylogue.archive.raw_payload.decode import _sample_jsonl_payload_with_detail
     from polylogue.sources.dispatch import detect_provider
 
     stream_name = context.raw_record.source_path or context.raw_record.raw_id
@@ -643,7 +643,7 @@ def ingest_record(
     subprocess via ProcessPoolExecutor and must be self-contained (no shared
     state, no DB access).
     """
-    from polylogue.lib.raw_payload import build_raw_payload_envelope
+    from polylogue.archive.raw_payload import build_raw_payload_envelope
     from polylogue.paths import blob_store_root
 
     archive_root = Path(archive_root_str)
