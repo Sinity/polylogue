@@ -63,10 +63,13 @@ def _make_result(
 
 def test_json_valid_skips_non_json_and_validates_json_documents() -> None:
     assert _check_json_valid(_make_result(args=("stats",), output="plain")) == SKIP
-    assert _check_json_valid(_make_result(args=("stats", "--json"), output='{"ok": true}', output_ext=".json")) is None
-    assert _check_json_valid(_make_result(args=("stats", "--json"), output="{", output_ext=".json")).startswith(
-        "Invalid JSON:"
+    assert (
+        _check_json_valid(_make_result(args=("stats", "--format", "json"), output='{"ok": true}', output_ext=".json"))
+        is None
     )
+    assert _check_json_valid(
+        _make_result(args=("stats", "--format", "json"), output="{", output_ext=".json")
+    ).startswith("Invalid JSON:")
 
 
 def test_json_valid_handles_jsonl_line_errors() -> None:

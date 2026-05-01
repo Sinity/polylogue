@@ -37,7 +37,7 @@ def test_run_machine_entry_json_bad_parameter_with_tuple_param_hint_emits_invali
 
     with patch("polylogue.cli.machine_main.click.UsageError", DummyUsageError):
         with pytest.raises(SystemExit) as exc_info:
-            run_machine_entry(bad_parameter, ["stats", "--json"])
+            run_machine_entry(bad_parameter, ["stats", "--format", "json"])
 
     assert exc_info.value.code == 2
     captured = capsys.readouterr().out
@@ -54,7 +54,7 @@ def test_run_machine_entry_system_exit_string_emits_machine_invalid_argument(
         raise SystemExit("bad invocation")
 
     with pytest.raises(SystemExit) as exc_info:
-        run_machine_entry(exits_with_string, ["stats", "--json"])
+        run_machine_entry(exits_with_string, ["stats", "--format", "json"])
 
     assert exc_info.value.code == 1
     captured = capsys.readouterr().out
@@ -68,6 +68,6 @@ def test_run_machine_entry_reraises_nonzero_system_exit_for_json_mode() -> None:
         raise SystemExit(7)
 
     with pytest.raises(SystemExit) as exc_info:
-        run_machine_entry(exits_with_code, ["stats", "--json"])
+        run_machine_entry(exits_with_code, ["stats", "--format", "json"])
 
     assert exc_info.value.code == 7

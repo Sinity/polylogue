@@ -78,13 +78,6 @@ def _build_click_params(pt: InsightType) -> list[click.Parameter]:
     )
     params.append(
         click.Option(
-            ("--json", "json_mode"),
-            is_flag=True,
-            help="Output as JSON",
-        )
-    )
-    params.append(
-        click.Option(
             ("--format", "output_format"),
             type=click.Choice(["json"]),
             default=None,
@@ -108,7 +101,6 @@ def _make_callback(pt: InsightType) -> Callable[..., None]:
     def callback(
         ctx: click.Context,
         /,
-        json_mode: bool = False,
         output_format: str | None = None,
         **kwargs: object,
     ) -> None:
@@ -117,7 +109,6 @@ def _make_callback(pt: InsightType) -> Callable[..., None]:
             request = InsightCommandRequest.from_context(
                 ctx,
                 pt,
-                json_mode=json_mode,
                 output_format=output_format,
                 kwargs=kwargs,
                 inherited_root_keys=accepted_root_keys,
@@ -145,8 +136,8 @@ def insights_command() -> None:
     """Inspect durable archive insights."""
 
 
-def _status_wants_json(ctx: click.Context, *, json_mode: bool, output_format: str | None) -> bool:
-    if json_mode or output_format == "json":
+def _status_wants_json(ctx: click.Context, *, output_format: str | None) -> bool:
+    if output_format == "json":
         return True
     root_output = ctx.find_root().params.get("output_format")
     return root_output == "json"
@@ -200,7 +191,6 @@ def _render_export_plain(result: InsightExportBundleResult) -> None:
 @click.option("--provider", default=None, help="Limit provider coverage details to one provider.")
 @click.option("--since", default=None, help="Limit coverage details to rows at/after this timestamp or date.")
 @click.option("--until", default=None, help="Limit coverage details to rows at/before this timestamp or date.")
-@click.option("--json", "json_mode", is_flag=True, help="Output as JSON.")
 @click.option("--format", "output_format", type=click.Choice(["json"]), default=None, help="Output format.")
 @click.pass_context
 def insights_status_command(
@@ -209,7 +199,6 @@ def insights_status_command(
     provider: str | None,
     since: str | None,
     until: str | None,
-    json_mode: bool,
     output_format: str | None,
 ) -> None:
     """Report insight materialization coverage and readiness."""
@@ -236,7 +225,7 @@ def insights_status_command(
     except (InsightCommandInputError, ValueError) as exc:
         valid = ", ".join(known_insight_readiness_names())
         fail("insights status", f"{exc}. Known insights: {valid}")
-    if _status_wants_json(ctx, json_mode=json_mode, output_format=output_format):
+    if _status_wants_json(ctx, output_format=output_format):
         emit_success(report.model_dump(mode="json"))
         return
     _render_status_plain(report)
@@ -248,11 +237,11 @@ def insights_status_command(
 @click.option("--provider", default=None, help="Limit supported insights to one provider.")
 @click.option("--since", default=None, help="Limit supported insights to rows at/after this timestamp or date.")
 @click.option("--until", default=None, help="Limit supported insights to rows at/before this timestamp or date.")
-@click.option("--format", "output_format", type=click.Choice(["jsonl"]), default="jsonl", show_default=True)
+@click.option("--bundle-format", type=click.Choice(["jsonl"]), default="jsonl", show_default=True)
+@click.option("--format", "output_format", type=click.Choice(["json"]), default=None, help="Output format.")
 @click.option(
     "--overwrite", is_flag=True, help="Replace an existing bundle directory after writing a complete new one."
 )
-@click.option("--json", "json_mode", is_flag=True, help="Output bundle metadata as JSON.")
 @click.pass_context
 def insights_export_command(
     ctx: click.Context,
@@ -261,9 +250,9 @@ def insights_export_command(
     provider: str | None,
     since: str | None,
     until: str | None,
-    output_format: str,
+    bundle_format: str,
+    output_format: str | None,
     overwrite: bool,
-    json_mode: bool,
 ) -> None:
     """Export versioned archive-insight bundles."""
     env: AppEnv = ctx.obj
@@ -273,8 +262,8 @@ def insights_export_command(
     inherited_until = until if until is not None else root_params.get("until")
     try:
         export_format: InsightExportFormat = "jsonl"
-        if output_format != "jsonl":
-            fail("insights export", f"unsupported export format: {output_format}")
+        if bundle_format != "jsonl":
+            fail("insights export", f"unsupported export format: {bundle_format}")
         filters = normalize_insight_query_kwargs(
             {
                 "provider": inherited_provider,
@@ -294,7 +283,7 @@ def insights_export_command(
         result = run_coroutine_sync(env.operations.export_product_bundle(request))
     except (InsightCommandInputError, InsightExportBundleError) as exc:
         fail("insights export", str(exc))
-    if json_mode or ctx.find_root().params.get("output_format") == "json":
+    if output_format == "json" or ctx.find_root().params.get("output_format") == "json":
         emit_success(result.model_dump(mode="json"))
         return
     _render_export_plain(result)

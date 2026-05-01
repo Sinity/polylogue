@@ -1,7 +1,7 @@
 """Property tests for the machine error and success envelope contract.
 
 Validates the JSON envelope shapes and builder functions used by the CLI
-when --json is requested — via Hypothesis property tests instead of
+when JSON machine output is requested — via Hypothesis property tests instead of
 hand-enumerated cases.
 """
 
@@ -193,9 +193,6 @@ class TestWantsJsonDetection:
         result = wants_json(argv)
         has_json_flag = False
         for index, arg in enumerate(argv):
-            if arg == "--json" or arg.startswith("--json="):
-                has_json_flag = True
-                break
             if arg == "--format" and index + 1 < len(argv) and argv[index + 1] == "json":
                 has_json_flag = True
                 break

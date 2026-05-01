@@ -504,7 +504,7 @@ def _run_embed_standalone(env: AppEnv, opts: EmbedOptions) -> None:
     from polylogue.cli.shared.embed_stats import show_embedding_stats
 
     if opts.json_output and not opts.stats:
-        click.echo("Error: --json requires --stats", err=True)
+        click.echo("Error: --format json requires --stats", err=True)
         raise click.Abort()
 
     voyage_key = os.environ.get("VOYAGE_API_KEY")
@@ -564,10 +564,11 @@ def _run_embed_standalone(env: AppEnv, opts: EmbedOptions) -> None:
     help="Show embedding statistics only",
 )
 @click.option(
-    "--json",
-    "json_output",
-    is_flag=True,
-    help="Emit embedding statistics as JSON (requires --stats)",
+    "--format",
+    "output_format",
+    type=click.Choice(["json"]),
+    default=None,
+    help="Output format for embedding statistics (requires --stats)",
 )
 @click.option(
     "--limit",
@@ -581,7 +582,7 @@ def run_embed_stage(
     model: str,
     rebuild: bool,
     stats: bool,
-    json_output: bool,
+    output_format: str | None,
     limit: int | None,
 ) -> RunStageRequest:
     """Generate semantic embeddings for conversations."""
@@ -593,7 +594,7 @@ def run_embed_stage(
             model=model,
             rebuild=rebuild,
             stats=stats,
-            json_output=json_output,
+            json_output=output_format == "json",
             limit=limit,
         ),
     )

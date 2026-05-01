@@ -76,7 +76,7 @@
       },
       "assertion": {
         "stdout_contains": [
-          "--json"
+          "--format"
         ]
       },
       "tier": 0
@@ -893,7 +893,8 @@
         "kind": "polylogue",
         "argv": [
           "doctor",
-          "--json"
+          "--format",
+          "json"
         ]
       },
       "assertion": {
@@ -923,7 +924,8 @@
         "kind": "polylogue",
         "argv": [
           "doctor",
-          "--json",
+          "--format",
+          "json",
           "--proof"
         ]
       },
@@ -941,7 +943,8 @@
         "kind": "polylogue",
         "argv": [
           "doctor",
-          "--json",
+          "--format",
+          "json",
           "--cohorts"
         ]
       },
@@ -973,7 +976,8 @@
         "kind": "polylogue",
         "argv": [
           "tags",
-          "--json"
+          "--format",
+          "json"
         ]
       },
       "assertion": {

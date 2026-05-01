@@ -23,13 +23,13 @@ INSIGHT_SURFACE_FAMILIES: tuple[CliSurfaceFamily, ...] = (
             CliSurfaceVariant(
                 name="live-insights-profiles-evidence",
                 description="Live archive evidence-tier session-profile insight surface",
-                suffix_args=("--tier", "evidence", "--limit", "3", "--json"),
+                suffix_args=("--tier", "evidence", "--limit", "3", "--format", "json"),
                 env="any",
             ),
             CliSurfaceVariant(
                 name="live-insights-profiles-inference",
                 description="Live archive inference-tier session-profile insight surface",
-                suffix_args=("--tier", "inference", "--limit", "3", "--json"),
+                suffix_args=("--tier", "inference", "--limit", "3", "--format", "json"),
                 env="any",
             ),
         ),
@@ -42,7 +42,7 @@ INSIGHT_SURFACE_FAMILIES: tuple[CliSurfaceFamily, ...] = (
             CliSurfaceVariant(
                 name="live-insights-enrichments",
                 description="Live archive probabilistic session-enrichment insight surface",
-                suffix_args=("--limit", "5", "--json"),
+                suffix_args=("--limit", "5", "--format", "json"),
                 env="any",
             ),
         ),
@@ -59,7 +59,7 @@ INSIGHT_SURFACE_FAMILIES: tuple[CliSurfaceFamily, ...] = (
             CliSurfaceVariant(
                 name="live-insights-work-events",
                 description="Live archive inferred work-event insight surface",
-                suffix_args=("--limit", "3", "--json"),
+                suffix_args=("--limit", "3", "--format", "json"),
                 env="any",
             ),
         ),
@@ -76,7 +76,7 @@ INSIGHT_SURFACE_FAMILIES: tuple[CliSurfaceFamily, ...] = (
             CliSurfaceVariant(
                 name="live-insights-phases",
                 description="Live archive inferred phase insight surface",
-                suffix_args=("--limit", "3", "--json"),
+                suffix_args=("--limit", "3", "--format", "json"),
                 env="any",
             ),
         ),
@@ -102,7 +102,7 @@ INSIGHT_SURFACE_FAMILIES: tuple[CliSurfaceFamily, ...] = (
             CliSurfaceVariant(
                 name="live-insights-tags",
                 description="Live archive tag-rollup insight view",
-                suffix_args=("--limit", "20", "--json"),
+                suffix_args=("--limit", "20", "--format", "json"),
                 env="any",
             ),
         ),
@@ -120,7 +120,7 @@ INSIGHT_SURFACE_FAMILIES: tuple[CliSurfaceFamily, ...] = (
                 name="live-insights-day-summaries",
                 description="Live archive day-summary insight surface over the recent semantic slice",
                 prefix_args=("--provider", "claude-code", "--since", "2026-03-01"),
-                suffix_args=("--limit", "14", "--json"),
+                suffix_args=("--limit", "14", "--format", "json"),
                 env="any",
             ),
         ),
@@ -146,7 +146,7 @@ INSIGHT_SURFACE_FAMILIES: tuple[CliSurfaceFamily, ...] = (
             CliSurfaceVariant(
                 name="live-insights-analytics",
                 description="Live archive provider-analytics insight surface",
-                suffix_args=("--limit", "20", "--json"),
+                suffix_args=("--limit", "20", "--format", "json"),
                 env="any",
             ),
         ),
@@ -171,7 +171,7 @@ INSIGHT_SURFACE_FAMILIES: tuple[CliSurfaceFamily, ...] = (
             CliSurfaceVariant(
                 name="live-insights-debt",
                 description="Live archive debt and cleanup insight view",
-                suffix_args=("--limit", "20", "--json"),
+                suffix_args=("--limit", "20", "--format", "json"),
                 env="any",
             ),
         ),

@@ -4,6 +4,5 @@ Usage: polylogue schema list [OPTIONS]
 
 Options:
   --provider TEXT  Filter to specific provider
-  --json           Output as JSON
   --format [json]  Output format
   -h, --help       Show this message and exit.

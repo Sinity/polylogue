@@ -16,7 +16,7 @@ def test_exercise_scenario_compiles_to_exercise() -> None:
         name="json-doctor",
         group="subcommands",
         description="doctor JSON contract",
-        execution=polylogue_execution("doctor", "--json"),
+        execution=polylogue_execution("doctor", "--format", "json"),
         assertion=AssertionSpec(stdout_is_valid_json=True),
         needs_data=False,
         output_ext=".json",
@@ -30,7 +30,7 @@ def test_exercise_scenario_compiles_to_exercise() -> None:
     exercise = scenario.compile()
 
     assert exercise.name == "json-doctor"
-    assert exercise.args == ["doctor", "--json"]
+    assert exercise.args == ["doctor", "--format", "json"]
     assert exercise.assertion.stdout_is_valid_json is True
     assert exercise.output_ext == ".json"
     assert exercise.artifact_class == "json"

@@ -1,14 +1,13 @@
 Usage: polylogue insights status [OPTIONS]
 
-  Report product materialization coverage and readiness.
+  Report insight materialization coverage and readiness.
 
 Options:
-  --product TEXT   Insight readiness target. May be repeated.
+  --insight TEXT   Insight readiness target. May be repeated.
   --provider TEXT  Limit provider coverage details to one provider.
   --since TEXT     Limit coverage details to rows at/after this timestamp or
                    date.
   --until TEXT     Limit coverage details to rows at/before this timestamp or
                    date.
-  --json           Output as JSON.
   --format [json]  Output format.
   -h, --help       Show this message and exit.

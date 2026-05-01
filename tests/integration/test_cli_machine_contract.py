@@ -20,7 +20,7 @@ def _parse_json(stdout: str) -> JSONDocument:
 def test_script_entrypoint_invalid_flag_emits_json_error(tmp_path: Path) -> None:
     workspace = setup_isolated_workspace(tmp_path)
 
-    result = run_cli(["doctor", "--json", "--bad-flag"], env=workspace["env"], cwd=tmp_path)
+    result = run_cli(["doctor", "--format", "json", "--bad-flag"], env=workspace["env"], cwd=tmp_path)
 
     assert result.exit_code != 0
     payload = _parse_json(result.stdout)
@@ -35,7 +35,7 @@ def test_module_entrypoint_invalid_flag_emits_json_error(tmp_path: Path) -> None
     workspace = setup_isolated_workspace(tmp_path)
 
     result = run_cli(
-        ["doctor", "--json", "--bad-flag"],
+        ["doctor", "--format", "json", "--bad-flag"],
         env=workspace["env"],
         cwd=tmp_path,
         entrypoint="module",
@@ -54,7 +54,7 @@ def test_module_entrypoint_command_validation_emits_json_error(tmp_path: Path) -
     workspace = setup_isolated_workspace(tmp_path)
 
     result = run_cli(
-        ["doctor", "--json", "--proof", "--artifact-limit", "0"],
+        ["doctor", "--format", "json", "--proof", "--artifact-limit", "0"],
         env=workspace["env"],
         cwd=tmp_path,
         entrypoint="module",
@@ -71,7 +71,7 @@ def test_module_entrypoint_command_validation_emits_json_error(tmp_path: Path) -
 def test_script_entrypoint_success_still_uses_success_envelope(tmp_path: Path) -> None:
     workspace = setup_isolated_workspace(tmp_path)
 
-    result = run_cli(["doctor", "--json"], env=workspace["env"], cwd=tmp_path)
+    result = run_cli(["doctor", "--format", "json"], env=workspace["env"], cwd=tmp_path)
 
     assert result.exit_code == 0, result.output
     payload = _parse_json(result.stdout)

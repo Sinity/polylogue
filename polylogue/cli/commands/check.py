@@ -33,7 +33,7 @@ def _format_count_mapping(counts: dict[str, int]) -> str:
 @click.pass_obj
 def check_command(
     env: AppEnv,
-    json_output: bool,
+    output_format: str | None,
     verbose: bool,
     repair: bool,
     cleanup: bool,
@@ -60,7 +60,7 @@ def check_command(
 ) -> None:
     """Health check with optional maintenance and cleanup previews."""
     options = CheckCommandOptions(
-        json_output=json_output,
+        json_output=output_format == "json",
         verbose=verbose,
         repair=repair,
         cleanup=cleanup,

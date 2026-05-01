@@ -31,12 +31,12 @@ def test_pytest_execution_normalizes_leading_pytest_binary() -> None:
 
 
 def test_polylogue_execution_renders_runtime_and_display_forms() -> None:
-    execution = polylogue_execution("doctor", "--json")
+    execution = polylogue_execution("doctor", "--format", "json")
 
     assert execution.kind is ExecutionKind.POLYLOGUE
-    assert execution.command == ("polylogue", "--plain", "doctor", "--json")
-    assert execution.display_command == ("polylogue", "doctor", "--json")
-    assert execution.polylogue_invoke_args == ("--plain", "doctor", "--json")
+    assert execution.command == ("polylogue", "--plain", "doctor", "--format", "json")
+    assert execution.display_command == ("polylogue", "doctor", "--format", "json")
+    assert execution.polylogue_invoke_args == ("--plain", "doctor", "--format", "json")
 
 
 def test_polylogue_doctor_targeted_execution_uses_maintenance_target_catalog_metadata() -> None:
@@ -89,7 +89,7 @@ def test_pipeline_probe_execution_renders_control_plane_command() -> None:
 
 
 def test_memory_budget_execution_wraps_structured_execution() -> None:
-    wrapped = polylogue_execution("doctor", "--json")
+    wrapped = polylogue_execution("doctor", "--format", "json")
     execution = memory_budget_execution(1536, wrapped)
 
     assert execution.kind is ExecutionKind.MEMORY_BUDGET
@@ -102,7 +102,8 @@ def test_memory_budget_execution_wraps_structured_execution() -> None:
         "polylogue",
         "--plain",
         "doctor",
-        "--json",
+        "--format",
+        "json",
     )
     assert execution.display_command == (
         "devtools",
@@ -112,7 +113,8 @@ def test_memory_budget_execution_wraps_structured_execution() -> None:
         "--",
         "polylogue",
         "doctor",
-        "--json",
+        "--format",
+        "json",
     )
 
 

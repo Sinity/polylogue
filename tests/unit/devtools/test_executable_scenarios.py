@@ -72,7 +72,7 @@ def test_executable_scenario_infers_schema_query_metadata_from_polylogue_executi
     scenario = _ExecutableFixture(
         name="gen-schema-list",
         description="schema list contract",
-        execution=polylogue_execution("schema", "list", "--json"),
+        execution=polylogue_execution("schema", "list", "--format", "json"),
     )
 
     assert scenario.path_targets == ("schema-list-query-loop",)
@@ -90,7 +90,7 @@ def test_executable_scenario_infers_schema_explain_metadata_from_polylogue_execu
     scenario = _ExecutableFixture(
         name="gen-schema-explain-chatgpt",
         description="schema explain contract",
-        execution=polylogue_execution("schema", "explain", "--provider", "chatgpt", "--json"),
+        execution=polylogue_execution("schema", "explain", "--provider", "chatgpt", "--format", "json"),
     )
 
     assert scenario.path_targets == ("schema-explain-query-loop",)
@@ -181,7 +181,7 @@ def test_executable_scenario_infers_embed_stats_metadata_from_polylogue_executio
     scenario = _ExecutableFixture(
         name="embed-stats-contract",
         description="embed stats contract",
-        execution=polylogue_execution("embed", "--stats", "--json"),
+        execution=polylogue_execution("embed", "--stats", "--format", "json"),
     )
 
     assert scenario.path_targets == ("retrieval-band-readiness-loop", "embedding-status-query-loop")

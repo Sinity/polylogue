@@ -75,21 +75,21 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `polylogue diagnostics turns` | `polylogue/cli/commands/diagnostics.py:92` `polylogue.cli.commands.diagnostics.turns_command` |
 | `polylogue doctor` | `polylogue/cli/commands/check.py:31` `polylogue.cli.commands.check.check_command` |
 | `polylogue export` | `polylogue/cli/commands/export.py:29` `polylogue.cli.commands.export.export_command` |
-| `polylogue insights` | `polylogue/cli/commands/insights.py:143` `polylogue.cli.commands.insights.insights_command` |
-| `polylogue insights analytics` | `polylogue/cli/commands/insights.py:107` `polylogue.cli.commands.insights._make_callback.<locals>.callback` |
-| `polylogue insights cost-rollups` | `polylogue/cli/commands/insights.py:107` `polylogue.cli.commands.insights._make_callback.<locals>.callback` |
-| `polylogue insights costs` | `polylogue/cli/commands/insights.py:107` `polylogue.cli.commands.insights._make_callback.<locals>.callback` |
-| `polylogue insights day-summaries` | `polylogue/cli/commands/insights.py:107` `polylogue.cli.commands.insights._make_callback.<locals>.callback` |
-| `polylogue insights debt` | `polylogue/cli/commands/insights.py:107` `polylogue.cli.commands.insights._make_callback.<locals>.callback` |
-| `polylogue insights enrichments` | `polylogue/cli/commands/insights.py:107` `polylogue.cli.commands.insights._make_callback.<locals>.callback` |
-| `polylogue insights export` | `polylogue/cli/commands/insights.py:245` `polylogue.cli.commands.insights.insights_export_command` |
-| `polylogue insights phases` | `polylogue/cli/commands/insights.py:107` `polylogue.cli.commands.insights._make_callback.<locals>.callback` |
-| `polylogue insights profiles` | `polylogue/cli/commands/insights.py:107` `polylogue.cli.commands.insights._make_callback.<locals>.callback` |
-| `polylogue insights status` | `polylogue/cli/commands/insights.py:198` `polylogue.cli.commands.insights.insights_status_command` |
-| `polylogue insights tags` | `polylogue/cli/commands/insights.py:107` `polylogue.cli.commands.insights._make_callback.<locals>.callback` |
-| `polylogue insights threads` | `polylogue/cli/commands/insights.py:107` `polylogue.cli.commands.insights._make_callback.<locals>.callback` |
-| `polylogue insights week-summaries` | `polylogue/cli/commands/insights.py:107` `polylogue.cli.commands.insights._make_callback.<locals>.callback` |
-| `polylogue insights work-events` | `polylogue/cli/commands/insights.py:107` `polylogue.cli.commands.insights._make_callback.<locals>.callback` |
+| `polylogue insights` | `polylogue/cli/commands/insights.py:134` `polylogue.cli.commands.insights.insights_command` |
+| `polylogue insights analytics` | `polylogue/cli/commands/insights.py:100` `polylogue.cli.commands.insights._make_callback.<locals>.callback` |
+| `polylogue insights cost-rollups` | `polylogue/cli/commands/insights.py:100` `polylogue.cli.commands.insights._make_callback.<locals>.callback` |
+| `polylogue insights costs` | `polylogue/cli/commands/insights.py:100` `polylogue.cli.commands.insights._make_callback.<locals>.callback` |
+| `polylogue insights day-summaries` | `polylogue/cli/commands/insights.py:100` `polylogue.cli.commands.insights._make_callback.<locals>.callback` |
+| `polylogue insights debt` | `polylogue/cli/commands/insights.py:100` `polylogue.cli.commands.insights._make_callback.<locals>.callback` |
+| `polylogue insights enrichments` | `polylogue/cli/commands/insights.py:100` `polylogue.cli.commands.insights._make_callback.<locals>.callback` |
+| `polylogue insights export` | `polylogue/cli/commands/insights.py:234` `polylogue.cli.commands.insights.insights_export_command` |
+| `polylogue insights phases` | `polylogue/cli/commands/insights.py:100` `polylogue.cli.commands.insights._make_callback.<locals>.callback` |
+| `polylogue insights profiles` | `polylogue/cli/commands/insights.py:100` `polylogue.cli.commands.insights._make_callback.<locals>.callback` |
+| `polylogue insights status` | `polylogue/cli/commands/insights.py:189` `polylogue.cli.commands.insights.insights_status_command` |
+| `polylogue insights tags` | `polylogue/cli/commands/insights.py:100` `polylogue.cli.commands.insights._make_callback.<locals>.callback` |
+| `polylogue insights threads` | `polylogue/cli/commands/insights.py:100` `polylogue.cli.commands.insights._make_callback.<locals>.callback` |
+| `polylogue insights week-summaries` | `polylogue/cli/commands/insights.py:100` `polylogue.cli.commands.insights._make_callback.<locals>.callback` |
+| `polylogue insights work-events` | `polylogue/cli/commands/insights.py:100` `polylogue.cli.commands.insights._make_callback.<locals>.callback` |
 | `polylogue list` | `polylogue/cli/query_verbs.py:22` `polylogue.cli.query_verbs.list_verb` |
 | `polylogue mcp` | `polylogue/cli/commands/mcp.py:13` `polylogue.cli.commands.mcp.mcp_command` |
 | `polylogue messages` | `polylogue/cli/query_verbs.py:179` `polylogue.cli.query_verbs.messages_verb` |
@@ -111,8 +111,8 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `polylogue run schema` | `polylogue/cli/commands/run.py:392` `polylogue.cli.commands.run.run_schema_stage` |
 | `polylogue run site` | `polylogue/cli/commands/run.py:448` `polylogue.cli.commands.run.run_site_stage` |
 | `polylogue schema` | `polylogue/cli/commands/schema.py:38` `polylogue.cli.commands.schema.schema_command` |
-| `polylogue schema compare` | `polylogue/cli/commands/schema.py:57` `polylogue.cli.commands.schema.schema_compare` |
-| `polylogue schema explain` | `polylogue/cli/commands/schema.py:97` `polylogue.cli.commands.schema.schema_explain` |
+| `polylogue schema compare` | `polylogue/cli/commands/schema.py:56` `polylogue.cli.commands.schema.schema_compare` |
+| `polylogue schema explain` | `polylogue/cli/commands/schema.py:94` `polylogue.cli.commands.schema.schema_explain` |
 | `polylogue schema list` | `polylogue/cli/commands/schema.py:45` `polylogue.cli.commands.schema.schema_list` |
 | `polylogue show` | `polylogue/cli/query_verbs.py:80` `polylogue.cli.query_verbs.show_verb` |
 | `polylogue stats` | `polylogue/cli/query_verbs.py:52` `polylogue.cli.query_verbs.stats_verb` |
