@@ -791,6 +791,11 @@ files:
     target: polylogue/core/json.py
     owner: core-primitive
     reason: core primitive
+  - path: polylogue/core/metrics.py
+    loc: 205
+    target: polylogue/core/metrics.py
+    owner: core-primitive
+    reason: core primitive
   - path: polylogue/core/outcomes.py
     loc: 149
     target: polylogue/core/outcomes.py
@@ -824,11 +829,6 @@ files:
   - path: polylogue/lib/coverage.py
     loc: 125
     target: polylogue/lib/coverage.py
-    owner: lib-root
-    reason: lib-root primitive
-  - path: polylogue/lib/metrics.py
-    loc: 205
-    target: polylogue/lib/metrics.py
     owner: lib-root
     reason: lib-root primitive
   - path: polylogue/lib/models.py

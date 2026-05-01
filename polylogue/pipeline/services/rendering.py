@@ -9,7 +9,7 @@ from collections.abc import AsyncIterable, AsyncIterator, Iterable, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from polylogue.lib.metrics import read_current_rss_mb
+from polylogue.core.metrics import read_current_rss_mb
 from polylogue.logging import get_logger
 from polylogue.protocols import OutputRenderer, ProgressCallback
 from polylogue.storage.run_state import RenderFailurePayload

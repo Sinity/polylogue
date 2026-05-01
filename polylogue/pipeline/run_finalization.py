@@ -17,7 +17,7 @@ from polylogue.storage.runtime import RunRecord
 
 if TYPE_CHECKING:
     from polylogue.config import Config
-    from polylogue.lib.metrics import PipelineMetrics
+    from polylogue.core.metrics import PipelineMetrics
     from polylogue.pipeline.run_stages import IndexStageOutcome
     from polylogue.pipeline.run_state import RunExecutionState
     from polylogue.storage.backends.async_sqlite import SQLiteBackend
