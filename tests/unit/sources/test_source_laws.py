@@ -1789,6 +1789,35 @@ def test_iter_drive_raw_data_contract() -> None:
     assert cursor_state["latest_file_name"] == "gemini-prompt.json"
 
 
+def test_iter_drive_raw_data_reports_status_and_observations(monkeypatch: pytest.MonkeyPatch) -> None:
+    source = Source(name="gemini", folder="Google AI Studio", path=Path("/tmp/drive-cache"))
+    files = [DriveFile("gemini-1", "gemini-prompt.json", "application/json", "2025-01-01T00:05:00Z", 8)]
+    client = _StubDriveRawClient(files, raw_bytes={"gemini-1": b'{"role":"model"}'})
+    statuses: list[str] = []
+    observations: list[dict[str, object]] = []
+
+    def _observe(_callback: object, **kwargs: object) -> None:
+        observations.append(dict(kwargs))
+
+    monkeypatch.setattr("polylogue.sources.drive.observe_acquisition", _observe)
+
+    items = list(
+        iter_drive_raw_data(
+            source=source,
+            client=client,
+            status_callback=statuses.append,
+            observation_callback=lambda payload: observations.append(dict(payload)),
+        )
+    )
+
+    assert len(items) == 1
+    assert statuses == ["Scanning [gemini] reading gemini-prompt.json"]
+    assert observations[0]["phase"] == "drive-file-streamed"
+    assert observations[0]["source_path"] == "/tmp/drive-cache/gemini-prompt.json"
+    assert observations[0]["drive_file_id"] == "gemini-1"
+    assert observations[0]["drive_file_name"] == "gemini-prompt.json"
+
+
 def test_iter_drive_raw_data_skips_known_mtimes_and_tracks_failures() -> None:
     source = Source(name="gemini", folder="Google AI Studio", path=Path("/tmp/drive-cache"))
     files = [

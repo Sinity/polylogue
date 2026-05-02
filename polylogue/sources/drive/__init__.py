@@ -13,6 +13,12 @@ from ...config import Source
 from ...paths.sanitize import safe_path_component
 from ..dispatch import parse_drive_payload
 from ..parsers.base import ParsedConversation, RawConversationData
+from ..source_acquisition_components import (
+    ObservationCallback,
+    StatusCallback,
+    make_status_heartbeat,
+    observe_acquisition,
+)
 from .source import DriveSourceAPI, _parse_modified_time, build_drive_source_client
 from .types import DriveConfigLike, DriveFile, DriveUILike
 
@@ -207,6 +213,8 @@ def iter_drive_raw_data(
     cursor_state: CursorStatePayload | None = None,
     drive_config: DriveConfigLike | None = None,
     known_mtimes: dict[str, str] | None = None,
+    observation_callback: ObservationCallback | None = None,
+    status_callback: StatusCallback | None = None,
 ) -> Iterable[RawConversationData]:
     """Iterate Drive payloads as raw bytes without writing a local cache.
 
@@ -225,6 +233,13 @@ def iter_drive_raw_data(
         dest_path = drive_cache_file_path(source.path or Path(source.name), file_meta.name)
         source_path = str(dest_path)
         tracker.observe_file(file_meta)
+        heartbeat = make_status_heartbeat(
+            status_callback,
+            source_name=source.name,
+            source_path=source_path,
+        )
+        if heartbeat is not None:
+            heartbeat()
 
         if (
             known_mtimes is not None
@@ -264,6 +279,17 @@ def iter_drive_raw_data(
             del raw_bytes
 
         provider_hint = Provider.from_string(source.name)
+        observe_acquisition(
+            observation_callback,
+            phase="drive-file-streamed",
+            source_path=source_path,
+            provider_hint=provider_hint,
+            blob_size=blob_size,
+            drive_file_id=file_meta.file_id,
+            drive_file_name=file_meta.name,
+            drive_modified_time=file_meta.modified_time,
+            drive_size_bytes=file_meta.size_bytes,
+        )
         yield RawConversationData(
             raw_bytes=b"",
             source_path=source_path,

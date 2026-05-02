@@ -8,8 +8,11 @@ import sqlite3
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
+import polylogue.sources.live.watcher as live_watcher
 from polylogue.sources.live import LiveWatcher, WatchSource
-from polylogue.sources.live.cursor import CursorStore
+from polylogue.sources.live.cursor import CursorRecord, CursorStore
 
 # --- CursorStore ---------------------------------------------------------------
 
@@ -24,6 +27,12 @@ def test_cursor_round_trip(tmp_path: Path) -> None:
     p = tmp_path / "session.jsonl"
     store.set(p, 42, record_count=3)
     assert store.get(p) == 42
+    record = store.get_record(p)
+    assert isinstance(record, CursorRecord)
+    assert record.byte_size == 42
+    assert record.byte_offset == 42
+    assert record.last_complete_newline == 42
+    assert record.record_count == 3
 
 
 def test_cursor_upsert_overwrites(tmp_path: Path) -> None:
@@ -71,6 +80,64 @@ def test_cursor_writes_updated_at(tmp_path: Path) -> None:
     assert "T" in row[0]  # ISO 8601
 
 
+def test_cursor_round_trips_freshness_metadata(tmp_path: Path) -> None:
+    store = CursorStore(tmp_path / "live.sqlite")
+    p = tmp_path / "session.jsonl"
+    store.set(
+        p,
+        42,
+        byte_offset=40,
+        last_complete_newline=37,
+        last_record_ts="2026-05-01T12:00:00+00:00",
+        parser_fingerprint="parser-v1",
+        content_fingerprint="abc123",
+        source_name="codex",
+    )
+
+    record = store.get_record(p)
+
+    assert record is not None
+    assert record.byte_size == 42
+    assert record.byte_offset == 40
+    assert record.last_complete_newline == 37
+    assert record.last_record_ts == "2026-05-01T12:00:00+00:00"
+    assert record.parser_fingerprint == "parser-v1"
+    assert record.content_fingerprint == "abc123"
+    assert record.source_name == "codex"
+
+
+def test_cursor_migrates_size_only_rows(tmp_path: Path) -> None:
+    db = tmp_path / "live.sqlite"
+    legacy_path = tmp_path / "legacy.jsonl"
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            """
+            CREATE TABLE live_cursor (
+                source_path TEXT PRIMARY KEY,
+                byte_size INTEGER NOT NULL,
+                record_count INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO live_cursor (source_path, byte_size, record_count, updated_at) VALUES (?, ?, ?, ?)",
+            (str(legacy_path), 12, 2, "2026-05-01T00:00:00+00:00"),
+        )
+        conn.commit()
+
+    store = CursorStore(db)
+    record = store.get_record(legacy_path)
+
+    assert record is not None
+    assert record.byte_size == 12
+    assert record.byte_offset == 0
+    assert record.content_fingerprint is None
+    with sqlite3.connect(db) as conn:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(live_cursor)")}
+    assert {"byte_offset", "content_fingerprint", "source_name"}.issubset(columns)
+
+
 # --- LiveWatcher: ingest_if_grown ---------------------------------------------
 
 
@@ -112,6 +179,108 @@ def test_reingest_when_file_grows(tmp_path: Path) -> None:
     asyncio.run(watcher._ingest_if_grown(f))
 
     assert parse_file.await_count == 3
+
+
+def test_same_size_rewrite_triggers_reingest(tmp_path: Path) -> None:
+    root = tmp_path / "src"
+    root.mkdir()
+    f = root / "session.jsonl"
+    f.write_text('{"a":1}\n')
+    watcher, parse_file = _make_watcher(tmp_path, root)
+
+    asyncio.run(watcher._ingest_if_grown(f))
+    assert parse_file.await_count == 1
+
+    f.write_text('{"b":2}\n')
+    assert f.stat().st_size == len('{"a":1}\n')
+    asyncio.run(watcher._ingest_if_grown(f))
+
+    assert parse_file.await_count == 2
+
+
+def test_legacy_size_only_cursor_reingests_to_populate_fingerprint(tmp_path: Path) -> None:
+    root = tmp_path / "src"
+    root.mkdir()
+    f = root / "session.jsonl"
+    f.write_text('{"a":1}\n')
+    watcher, parse_file = _make_watcher(tmp_path, root)
+    watcher._cursor.set(f, f.stat().st_size)
+
+    asyncio.run(watcher._ingest_if_grown(f))
+    asyncio.run(watcher._ingest_if_grown(f))
+
+    assert parse_file.await_count == 1
+    record = watcher._cursor.get_record(f)
+    assert record is not None
+    assert record.content_fingerprint
+    assert record.parser_fingerprint
+
+
+def test_parser_fingerprint_change_triggers_reingest(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = tmp_path / "src"
+    root.mkdir()
+    f = root / "session.jsonl"
+    f.write_text('{"a":1}\n')
+    watcher, parse_file = _make_watcher(tmp_path, root)
+
+    asyncio.run(watcher._ingest_if_grown(f))
+    monkeypatch.setattr(live_watcher, "_PARSER_FINGERPRINT", "live-jsonl-full-file-v2")
+    asyncio.run(watcher._ingest_if_grown(f))
+
+    assert parse_file.await_count == 2
+    record = watcher._cursor.get_record(f)
+    assert record is not None
+    assert record.parser_fingerprint == "live-jsonl-full-file-v2"
+
+
+def test_truncate_rewrite_triggers_reingest(tmp_path: Path) -> None:
+    root = tmp_path / "src"
+    root.mkdir()
+    f = root / "session.jsonl"
+    f.write_text('{"a":1}\n{"b":2}\n')
+    watcher, parse_file = _make_watcher(tmp_path, root)
+
+    asyncio.run(watcher._ingest_if_grown(f))
+    f.write_text('{"c":3}\n')
+    asyncio.run(watcher._ingest_if_grown(f))
+
+    assert parse_file.await_count == 2
+
+
+def test_partial_trailing_line_keeps_cursor_at_last_newline(tmp_path: Path) -> None:
+    root = tmp_path / "src"
+    root.mkdir()
+    f = root / "session.jsonl"
+    complete = b'{"a":1}\n'
+    partial = b'{"b":'
+    f.write_bytes(complete + partial)
+    watcher, parse_file = _make_watcher(tmp_path, root)
+
+    asyncio.run(watcher._ingest_if_grown(f))
+
+    record = watcher._cursor.get_record(f)
+    assert parse_file.await_count == 1
+    assert record is not None
+    assert record.byte_size == len(complete + partial)
+    assert record.byte_offset == len(complete)
+    assert record.last_complete_newline == len(complete)
+
+
+def test_append_after_partial_line_reingests_completed_record(tmp_path: Path) -> None:
+    root = tmp_path / "src"
+    root.mkdir()
+    f = root / "session.jsonl"
+    f.write_text('{"a":1}\n{"b":')
+    watcher, parse_file = _make_watcher(tmp_path, root)
+
+    asyncio.run(watcher._ingest_if_grown(f))
+    f.write_text('{"a":1}\n{"b":2}\n')
+    asyncio.run(watcher._ingest_if_grown(f))
+
+    assert parse_file.await_count == 2
+    record = watcher._cursor.get_record(f)
+    assert record is not None
+    assert record.byte_offset == f.stat().st_size
 
 
 def test_year_old_file_resumed_triggers_reingest(tmp_path: Path) -> None:
@@ -168,7 +337,7 @@ def test_parse_failure_retries_on_next_event(tmp_path: Path) -> None:
     assert parse_file.await_count == 2
 
 
-def test_parse_file_receives_parent_dir_as_source_name(tmp_path: Path) -> None:
+def test_parse_file_receives_watch_source_name(tmp_path: Path) -> None:
     root = tmp_path / "src"
     project_dir = root / "my-project-slug"
     project_dir.mkdir(parents=True)
@@ -180,7 +349,22 @@ def test_parse_file_receives_parent_dir_as_source_name(tmp_path: Path) -> None:
     parse_file.assert_awaited_once()
     call = parse_file.await_args
     assert call is not None
-    assert call.kwargs["source_name"] == "my-project-slug"
+    assert call.kwargs["source_name"] == "test"
+
+
+def test_cursor_records_watch_source_name(tmp_path: Path) -> None:
+    root = tmp_path / "src"
+    nested = root / "my-project-slug"
+    nested.mkdir(parents=True)
+    f = nested / "session.jsonl"
+    f.write_text('{"a":1}\n')
+    watcher, _parse_file = _make_watcher(tmp_path, root)
+
+    asyncio.run(watcher._ingest_if_grown(f))
+
+    record = watcher._cursor.get_record(f)
+    assert record is not None
+    assert record.source_name == "test"
 
 
 # --- catch_up bootstrap --------------------------------------------------------
@@ -204,7 +388,8 @@ def test_catch_up_skips_already_processed(tmp_path: Path) -> None:
     f = root / "s.jsonl"
     f.write_text('{"a":1}\n')
     watcher, parse_file = _make_watcher(tmp_path, root)
-    watcher._cursor.set(f, f.stat().st_size)
+    asyncio.run(watcher._ingest_if_grown(f))
+    parse_file.reset_mock()
 
     asyncio.run(watcher._catch_up([root]))
     assert parse_file.await_count == 0
