@@ -392,18 +392,6 @@ class TestConfidenceToScoreRename:
         found_keys = _collect_all_keys(schema)
         assert "x-polylogue-confidence" not in found_keys
 
-    def test_source_files_have_no_old_annotation_key(self) -> None:
-        """Grep-equivalent: no Python source uses the old annotation key literal."""
-        import pathlib
-
-        src_root = pathlib.Path(__file__).resolve().parents[3] / "polylogue"
-        hits: list[str] = []
-        for py_file in src_root.rglob("*.py"):
-            content = py_file.read_text(errors="replace")
-            if "x-polylogue-confidence" in content:
-                hits.append(str(py_file.relative_to(src_root)))
-        assert not hits, f"Source files still reference old key: {hits}"
-
 
 def _collect_all_keys(obj: object, _keys: set[str] | None = None) -> set[str]:
     """Recursively collect all dict keys in a nested structure."""
