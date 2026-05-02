@@ -18,10 +18,11 @@ def _iso_to_epoch(iso_str: str) -> float:
     try:
         return datetime.fromisoformat(iso_str).timestamp()
     except (ValueError, TypeError):
-        try:
-            return float(iso_str)
-        except (ValueError, TypeError):
-            return 0.0
+        pass
+    try:
+        return float(iso_str)
+    except (ValueError, TypeError):
+        raise ValueError(f"Invalid date filter value {iso_str!r}. Use ISO 8601 format (e.g., 2026-01-01).") from None
 
 
 def _build_conversation_filters(
