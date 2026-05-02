@@ -1,4 +1,4 @@
-"""Tests for product readiness report construction."""
+"""Tests for insight readiness report construction."""
 
 from __future__ import annotations
 
@@ -17,13 +17,13 @@ from polylogue.insights.readiness import (
 )
 from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.insights.session.rebuild import rebuild_session_products_sync
-from polylogue.storage.insights.session.status import session_product_status_sync
+from polylogue.storage.insights.session.status import session_insight_status_sync
 from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZER_VERSION
 from tests.infra.storage_records import ConversationBuilder
 
 
 def _entry_by_name(report: InsightReadinessReport, name: str) -> InsightReadinessEntry:
-    return next(product for product in report.insights if product.insight_name == name)
+    return next(insight for insight in report.insights if insight.insight_name == name)
 
 
 def _seed_readiness_conversations(db_path: Path) -> None:
@@ -36,7 +36,7 @@ def _seed_readiness_conversations(db_path: Path) -> None:
         .add_message(
             "u1",
             role="user",
-            text="Plan product readiness reporting.",
+            text="Plan insight readiness reporting.",
             timestamp="2026-04-01T09:00:00+00:00",
         )
         .add_message(
@@ -50,17 +50,17 @@ def _seed_readiness_conversations(db_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_insight_readiness_report_marks_rebuilt_products_ready(cli_workspace: dict[str, Path]) -> None:
+async def test_insight_readiness_report_marks_rebuilt_insights_ready(cli_workspace: dict[str, Path]) -> None:
     db_path = cli_workspace["db_path"]
     _seed_readiness_conversations(db_path)
     with open_connection(db_path) as conn:
         rebuild_session_products_sync(conn)
 
     archive = Polylogue(archive_root=cli_workspace["archive_root"], db_path=db_path)
-    report = await archive.product_readiness_report()
+    report = await archive.insight_readiness_report()
 
     assert report.aggregate_verdict == "ready"
-    assert {product.insight_name for product in report.insights} >= {
+    assert {insight.insight_name for insight in report.insights} >= {
         "session_profiles",
         "session_enrichments",
         "session_work_events",
@@ -79,10 +79,10 @@ async def test_insight_readiness_report_marks_rebuilt_products_ready(cli_workspa
 
 
 @pytest.mark.asyncio
-async def test_insight_readiness_report_marks_empty_products(cli_workspace: dict[str, Path]) -> None:
+async def test_insight_readiness_report_marks_empty_insights(cli_workspace: dict[str, Path]) -> None:
     archive = Polylogue(archive_root=cli_workspace["archive_root"], db_path=cli_workspace["db_path"])
 
-    report = await archive.product_readiness_report(InsightReadinessQuery(insights=("session_profiles",)))
+    report = await archive.insight_readiness_report(InsightReadinessQuery(insights=("session_profiles",)))
 
     profile = _entry_by_name(report, "session_profiles")
     assert report.aggregate_verdict == "empty"
@@ -92,7 +92,7 @@ async def test_insight_readiness_report_marks_empty_products(cli_workspace: dict
 
 
 @pytest.mark.asyncio
-async def test_insight_readiness_report_marks_partial_and_legacy_products(cli_workspace: dict[str, Path]) -> None:
+async def test_insight_readiness_report_marks_partial_and_legacy_insights(cli_workspace: dict[str, Path]) -> None:
     db_path = cli_workspace["db_path"]
     _seed_readiness_conversations(db_path)
     (
@@ -110,7 +110,7 @@ async def test_insight_readiness_report_marks_partial_and_legacy_products(cli_wo
         conn.commit()
 
     archive = Polylogue(archive_root=cli_workspace["archive_root"], db_path=db_path)
-    partial = await archive.product_readiness_report(InsightReadinessQuery(insights=("session_profiles",)))
+    partial = await archive.insight_readiness_report(InsightReadinessQuery(insights=("session_profiles",)))
     assert _entry_by_name(partial, "session_profiles").verdict == "partial"
 
     with open_connection(db_path) as conn:
@@ -120,14 +120,14 @@ async def test_insight_readiness_report_marks_partial_and_legacy_products(cli_wo
         )
         conn.commit()
 
-    legacy = await archive.product_readiness_report(InsightReadinessQuery(insights=("session_profiles",)))
+    legacy = await archive.insight_readiness_report(InsightReadinessQuery(insights=("session_profiles",)))
     profile = _entry_by_name(legacy, "session_profiles")
     assert profile.verdict == "legacy"
     assert profile.legacy_incompatible_count == 2
 
 
 @pytest.mark.asyncio
-async def test_insight_readiness_report_marks_stale_products(cli_workspace: dict[str, Path]) -> None:
+async def test_insight_readiness_report_marks_stale_insights(cli_workspace: dict[str, Path]) -> None:
     db_path = cli_workspace["db_path"]
     _seed_readiness_conversations(db_path)
     with open_connection(db_path) as conn:
@@ -136,7 +136,7 @@ async def test_insight_readiness_report_marks_stale_products(cli_workspace: dict
         conn.commit()
 
     archive = Polylogue(archive_root=cli_workspace["archive_root"], db_path=db_path)
-    report = await archive.product_readiness_report(InsightReadinessQuery(insights=("session_profiles",)))
+    report = await archive.insight_readiness_report(InsightReadinessQuery(insights=("session_profiles",)))
 
     profile = _entry_by_name(report, "session_profiles")
     assert report.aggregate_verdict == "stale"
@@ -145,7 +145,7 @@ async def test_insight_readiness_report_marks_stale_products(cli_workspace: dict
 
 
 @pytest.mark.asyncio
-async def test_insight_readiness_report_marks_missing_product_tables(tmp_path: Path) -> None:
+async def test_insight_readiness_report_marks_missing_insight_tables(tmp_path: Path) -> None:
     db_path = tmp_path / "missing.db"
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
@@ -162,7 +162,7 @@ async def test_insight_readiness_report_marks_missing_product_tables(tmp_path: P
             VALUES ('missing-root', NULL, 'codex', 1.0, '2026-04-01T00:00:00Z');
             """
         )
-        status = session_product_status_sync(conn)
+        status = session_insight_status_sync(conn)
 
     async with aiosqlite.connect(db_path) as conn:
         conn.row_factory = aiosqlite.Row

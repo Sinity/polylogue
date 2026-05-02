@@ -1,4 +1,4 @@
-"""Typed legacy-payload hydrators for session-product row mappers."""
+"""Typed legacy-payload hydrators for session-insight row mappers."""
 
 from __future__ import annotations
 

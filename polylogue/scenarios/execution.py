@@ -68,19 +68,19 @@ _KNOWN_POLYLOGUE_SUBCOMMANDS = frozenset(
     }
 )
 _INSIGHT_OPERATION_BY_METHOD = {
-    "list_session_profile_products": "query-session-profiles",
-    "list_session_enrichment_products": "query-session-enrichments",
-    "list_session_work_event_products": "query-session-work-events",
-    "list_session_phase_products": "query-session-phases",
-    "list_work_thread_products": "query-work-threads",
-    "list_session_tag_rollup_products": "query-session-tag-rollups",
-    "list_day_session_summary_products": "query-day-session-summaries",
-    "list_week_session_summary_products": "query-week-session-summaries",
-    "list_provider_analytics_products": "query-provider-analytics",
-    "list_archive_debt_products": "query-archive-debt",
+    "list_session_profile_insights": "query-session-profiles",
+    "list_session_enrichment_insights": "query-session-enrichments",
+    "list_session_work_event_insights": "query-session-work-events",
+    "list_session_phase_insights": "query-session-phases",
+    "list_work_thread_insights": "query-work-threads",
+    "list_session_tag_rollup_insights": "query-session-tag-rollups",
+    "list_day_session_summary_insights": "query-day-session-summaries",
+    "list_week_session_summary_insights": "query-week-session-summaries",
+    "list_provider_analytics_insights": "query-provider-analytics",
+    "list_archive_debt_insights": "query-archive-debt",
 }
 _INSIGHT_SUBCOMMAND_OPERATION_NAMES = {
-    "status": "query-session-product-status",
+    "status": "query-session-insight-status",
     "debt": "query-archive-debt",
 }
 
@@ -131,10 +131,10 @@ def _metadata_for_polylogue_products(argv: tuple[str, ...]) -> ScenarioMetadata:
         return _metadata_for_operations(direct_operation)
     operation_name = next(
         (
-            _INSIGHT_OPERATION_BY_METHOD[product.operations_method_name]
-            for product in INSIGHT_REGISTRY.values()
-            if product.resolved_cli_command_name == subcommand
-            and product.operations_method_name in _INSIGHT_OPERATION_BY_METHOD
+            _INSIGHT_OPERATION_BY_METHOD[insight.operations_method_name]
+            for insight in INSIGHT_REGISTRY.values()
+            if insight.resolved_cli_command_name == subcommand
+            and insight.operations_method_name in _INSIGHT_OPERATION_BY_METHOD
         ),
         "",
     )

@@ -151,8 +151,8 @@ CONTRACT_LANES = {
         "tests/unit/core/test_health_core.py",
         "tests/integration/test_health.py",
     ),
-    "semantic-product-normalization": pytest_lane(
-        "semantic-product-normalization",
+    "semantic-insight-normalization": pytest_lane(
+        "semantic-insight-normalization",
         "Semantic/session product normalization, operator/toolchain narrowing, schema contracts, and provider parser cleanup",
         900,
         "-q",

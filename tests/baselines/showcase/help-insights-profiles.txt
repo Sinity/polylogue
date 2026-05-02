@@ -24,7 +24,7 @@ Options:
   --tier [merged|evidence|inference]
                                   Return merged, evidence-only, or inference-
                                   only profile insights  [default: merged]
-  --query TEXT                    FTS query against product search text
+  --query TEXT                    FTS query against insight search text
   --limit INTEGER                 Maximum rows  [default: 50]
   --offset INTEGER                Start offset  [default: 0]
   --format [json]                 Output format

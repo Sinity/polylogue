@@ -106,7 +106,7 @@ def test_read_embedding_stats_sync_exposes_retrieval_bands_when_archive_tables_e
         )
         monkeypatch.setattr(
             embedding_stats_mod,
-            "session_product_status_sync",
+            "session_insight_status_sync",
             lambda _conn: SessionInsightStatusSnapshot(
                 profile_row_count=2,
                 profile_evidence_fts_count=2,
@@ -155,7 +155,7 @@ def test_read_embedding_stats_sync_can_skip_retrieval_band_status(
         raise AssertionError("action-event status should not be read")
 
     def fail_session_status(_conn: object) -> None:
-        raise AssertionError("session-product status should not be read")
+        raise AssertionError("session-insight status should not be read")
 
     conn = sqlite3.connect(":memory:")
     try:
@@ -167,7 +167,7 @@ def test_read_embedding_stats_sync_can_skip_retrieval_band_status(
         conn.commit()
 
         monkeypatch.setattr(embedding_stats_mod, "action_event_read_model_status_sync", fail_action_status)
-        monkeypatch.setattr(embedding_stats_mod, "session_product_status_sync", fail_session_status)
+        monkeypatch.setattr(embedding_stats_mod, "session_insight_status_sync", fail_session_status)
 
         stats = read_embedding_stats_sync(conn, include_retrieval_bands=False)
     finally:
@@ -253,7 +253,7 @@ async def test_read_embedding_stats_async_derives_pending_from_total_conversatio
         await conn.commit()
 
         monkeypatch.setattr(embedding_stats_mod, "action_event_read_model_status_async", fake_action_status)
-        monkeypatch.setattr(embedding_stats_mod, "session_product_status_async", fake_session_status)
+        monkeypatch.setattr(embedding_stats_mod, "session_insight_status_async", fake_session_status)
 
         stats = await read_embedding_stats_async(conn)
 
@@ -270,7 +270,7 @@ async def test_read_embedding_stats_async_can_skip_retrieval_band_status(
         raise AssertionError("action-event status should not be read")
 
     async def fail_session_status(_conn: object) -> None:
-        raise AssertionError("session-product status should not be read")
+        raise AssertionError("session-insight status should not be read")
 
     async with aiosqlite.connect(":memory:") as conn:
         await conn.execute("CREATE TABLE conversations (conversation_id TEXT)")
@@ -281,7 +281,7 @@ async def test_read_embedding_stats_async_can_skip_retrieval_band_status(
         await conn.commit()
 
         monkeypatch.setattr(embedding_stats_mod, "action_event_read_model_status_async", fail_action_status)
-        monkeypatch.setattr(embedding_stats_mod, "session_product_status_async", fail_session_status)
+        monkeypatch.setattr(embedding_stats_mod, "session_insight_status_async", fail_session_status)
 
         stats = await read_embedding_stats_async(conn, include_retrieval_bands=False)
 

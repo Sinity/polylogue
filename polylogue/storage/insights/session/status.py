@@ -1,4 +1,4 @@
-"""Canonical session-product status and repair-candidate queries."""
+"""Canonical session-insight status and repair-candidate queries."""
 
 from __future__ import annotations
 
@@ -162,7 +162,7 @@ class SessionInsightReadyDescriptor:
 
 
 # ---------------------------------------------------------------------------
-# SQL constants for session-product status and drift checks
+# SQL constants for session-insight status and drift checks
 # ---------------------------------------------------------------------------
 
 SESSION_PROFILE_COUNT_SQL = "SELECT COUNT(*) FROM session_profiles"
@@ -792,7 +792,7 @@ async def session_profile_repair_candidate_ids_async(conn: aiosqlite.Connection)
     return [str(row["conversation_id"]) for row in rows]
 
 
-def session_product_status_sync(
+def session_insight_status_sync(
     conn: sqlite3.Connection,
     *,
     verify_freshness: bool = True,
@@ -835,7 +835,7 @@ async def _status_counts_async(conn: aiosqlite.Connection, tables: TablePresence
     return counts
 
 
-async def session_product_status_async(conn: aiosqlite.Connection) -> SessionInsightStatusSnapshot:
+async def session_insight_status_async(conn: aiosqlite.Connection) -> SessionInsightStatusSnapshot:
     tables = await _tables_async(conn)
     counts = await _status_counts_async(conn, tables)
     return _status_payload(tables, counts)
@@ -846,8 +846,8 @@ __all__ = [
     "SessionInsightFtsDescriptor",
     "SessionInsightReadyDescriptor",
     "SessionInsightTableDescriptor",
-    "session_product_status_async",
-    "session_product_status_sync",
+    "session_insight_status_async",
+    "session_insight_status_sync",
     "session_profile_repair_candidate_ids_async",
     "session_profile_repair_candidate_ids_sync",
 ]

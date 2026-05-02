@@ -3,7 +3,7 @@ Usage: polylogue insights threads [OPTIONS]
   List durable work-thread insights.
 
 Options:
-  --query TEXT      FTS query against product search text
+  --query TEXT      FTS query against insight search text
   --limit INTEGER   Maximum rows  [default: 50]
   --offset INTEGER  Start offset  [default: 0]
   --format [json]   Output format

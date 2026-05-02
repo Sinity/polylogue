@@ -119,7 +119,7 @@ class SourceSpan:
 
 @dataclass(frozen=True, slots=True)
 class SubjectRef:
-    """A verifiable object discovered from code, schema, or a product registry."""
+    """A verifiable object discovered from code, schema, or an insight registry."""
 
     kind: str
     id: str

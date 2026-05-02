@@ -1,4 +1,4 @@
-"""Typed product materialization readiness reports."""
+"""Typed insight materialization readiness reports."""
 
 from __future__ import annotations
 
@@ -260,7 +260,7 @@ def normalize_insight_readiness_name(value: str) -> str:
     alias = _ALIASES.get(value.strip()) or _ALIASES.get(value.strip().replace("_", "-"))
     if alias is not None:
         return alias
-    raise ValueError(f"Unknown product readiness target: {value}")
+    raise ValueError(f"Unknown insight readiness target: {value}")
 
 
 def _count(status: SessionInsightStatusSnapshot, attr: str | None) -> int:
@@ -538,7 +538,7 @@ async def build_insight_readiness_report(
     query: InsightReadinessQuery | None = None,
 ) -> InsightReadinessReport:
     request = query or InsightReadinessQuery()
-    selected = tuple(normalize_insight_readiness_name(product) for product in request.insights)
+    selected = tuple(normalize_insight_readiness_name(insight) for insight in request.insights)
     specs = tuple(_SPEC_BY_NAME[name] for name in selected) if selected else _SPECS
     entries: list[InsightReadinessEntry] = []
     for spec in specs:

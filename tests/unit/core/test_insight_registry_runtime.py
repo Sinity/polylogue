@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
-from polylogue.insights import registry as product_registry
+from polylogue.insights import registry as insight_registry
 from polylogue.insights.archive import ProviderAnalyticsInsight
 from polylogue.insights.registry import (
     CliOption,
@@ -24,7 +24,7 @@ from polylogue.insights.registry import (
 )
 
 
-def _provider_analytics_product() -> ProviderAnalyticsInsight:
+def _provider_analytics_insight() -> ProviderAnalyticsInsight:
     return ProviderAnalyticsInsight(
         provider_name="claude-code",
         conversation_count=1,
@@ -54,21 +54,21 @@ def test_registry_accessors_format_values_and_defaults() -> None:
         percentage=82.5,
     )
 
-    assert product_registry._stringify(None) == "-"
-    assert product_registry._stringify("") == "-"
-    assert product_registry._attr("thread_id")(item) == "thread-1"
-    assert product_registry._nested("nested", "value")(item) == "nested-value"
-    assert product_registry._nested("missing", "value")(item) == "-"
-    assert product_registry._id_with_provider("thread_id")(item) == "thread-1 [claude-code]"
-    assert product_registry._list_preview("values", limit=2)(item) == "a, b"
-    assert product_registry._formatted_float("ratio", precision=2)(item) == "12.35"
-    assert product_registry._formatted_float("missing")(item) == "-"
-    assert product_registry._count_with_percentage("count", "percentage")(item) == "7 (82.5%)"
-    assert product_registry._count_with_percentage("missing", "percentage")(item) == "-"
+    assert insight_registry._stringify(None) == "-"
+    assert insight_registry._stringify("") == "-"
+    assert insight_registry._attr("thread_id")(item) == "thread-1"
+    assert insight_registry._nested("nested", "value")(item) == "nested-value"
+    assert insight_registry._nested("missing", "value")(item) == "-"
+    assert insight_registry._id_with_provider("thread_id")(item) == "thread-1 [claude-code]"
+    assert insight_registry._list_preview("values", limit=2)(item) == "a, b"
+    assert insight_registry._formatted_float("ratio", precision=2)(item) == "12.35"
+    assert insight_registry._formatted_float("missing")(item) == "-"
+    assert insight_registry._count_with_percentage("count", "percentage")(item) == "7 (82.5%)"
+    assert insight_registry._count_with_percentage("missing", "percentage")(item) == "-"
 
 
 def test_insight_type_registry_helpers_cover_register_lookup_and_sorting() -> None:
-    name = "runtime_dummy_product"
+    name = "runtime_dummy_insight"
     insight_type = InsightType(
         name=name,
         display_name="Runtime Dummy",
@@ -81,36 +81,36 @@ def test_insight_type_registry_helpers_cover_register_lookup_and_sorting() -> No
         assert returned is insight_type
         assert get_insight_type(name) is insight_type
         assert name in list_insight_types()
-        assert insight_type.resolved_cli_command_name == "runtime-dummy-product"
+        assert insight_type.resolved_cli_command_name == "runtime-dummy-insight"
     finally:
-        product_registry.INSIGHT_REGISTRY.pop(name, None)
+        insight_registry.INSIGHT_REGISTRY.pop(name, None)
 
 
 def test_get_insight_type_and_build_query_raise_useful_errors() -> None:
-    with pytest.raises(KeyError, match="Unknown product type"):
-        get_insight_type("missing-product")
+    with pytest.raises(KeyError, match="Unknown insight type"):
+        get_insight_type("missing-insight")
 
     with pytest.raises(InsightQueryError, match="does not declare a query model"):
-        product_registry._build_query(
+        insight_registry._build_query(
             InsightType(name="dummy", display_name="Dummy", json_key="items"),
             query="value",
         )
 
     with pytest.raises(InsightQueryError, match="Unknown query field\\(s\\) for session_profiles: refined_work_kind"):
-        product_registry._build_query(get_insight_type("session_profiles"), refined_work_kind="planning")
+        insight_registry._build_query(get_insight_type("session_profiles"), refined_work_kind="planning")
 
 
 def test_insight_items_payload_and_rendering_cover_json_plain_and_empty_paths() -> None:
-    product = _provider_analytics_product()
+    insight = _provider_analytics_insight()
     insight_type = get_insight_type("provider_analytics")
 
-    payload = insight_items_payload([product], insight_type, item_key="items")
+    payload = insight_items_payload([insight], insight_type, item_key="items")
     assert payload["count"] == 1
     assert payload["items"][0]["provider_name"] == "claude-code"
 
     with patch("polylogue.cli.shared.machine_errors.emit_success") as mock_emit:
-        render_insight_items([product], insight_type, json_mode=True)
-    mock_emit.assert_called_once_with(insight_items_payload([product], insight_type))
+        render_insight_items([insight], insight_type, json_mode=True)
+    mock_emit.assert_called_once_with(insight_items_payload([insight], insight_type))
 
     custom_type = InsightType(
         name="custom",
@@ -138,7 +138,7 @@ def test_fetch_insights_sync_uses_registry_dispatch() -> None:
     insight_type = get_insight_type("provider_analytics")
 
     class _Operations:
-        def list_provider_analytics_products(self, query: object) -> str:
+        def list_provider_analytics_insights(self, query: object) -> str:
             return f"sync:{query.provider}"
 
     with patch("polylogue.api.sync.bridge.run_coroutine_sync", side_effect=lambda value: [value]):
@@ -150,7 +150,7 @@ async def test_fetch_insights_async_uses_registry_dispatch() -> None:
     insight_type = get_insight_type("provider_analytics")
 
     class _AsyncOperations:
-        async def list_provider_analytics_products(self, query: object) -> list[str]:
+        async def list_provider_analytics_insights(self, query: object) -> list[str]:
             return [f"async:{query.provider}"]
 
     assert await fetch_insights_async(insight_type, _AsyncOperations(), provider="claude-code") == ["async:claude-code"]

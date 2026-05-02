@@ -213,7 +213,7 @@ class WorkThreadListQuery:
 
 @dataclass(frozen=True, slots=True)
 class SessionTagRollupListQuery:
-    """Canonical tag-rollup selection for durable product aggregate reads."""
+    """Canonical tag-rollup selection for durable insight aggregate reads."""
 
     provider: str | None = None
     since: str | None = None
@@ -223,7 +223,7 @@ class SessionTagRollupListQuery:
 
 @dataclass(frozen=True, slots=True)
 class DaySessionSummaryListQuery:
-    """Canonical day-summary selection for durable product aggregate reads."""
+    """Canonical day-summary selection for durable insight aggregate reads."""
 
     provider: str | None = None
     since: str | None = None

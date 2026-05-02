@@ -77,7 +77,7 @@ async def _ameasure(coro: Awaitable[_T]) -> tuple[float, _T]:
 
 
 def _session_product_table_counts(db_path: Path) -> dict[str, int]:
-    """Collect row counts for durable session-product tables and FTS projections."""
+    """Collect row counts for durable session-insight tables and FTS projections."""
     from polylogue.storage.backends.connection import open_connection
 
     stats: dict[str, int] = {}
@@ -313,7 +313,7 @@ def run_action_event_materialization_campaign(db_path: Path) -> CampaignResult:
 
 
 def run_session_product_materialization_campaign(db_path: Path) -> CampaignResult:
-    """Benchmark full durable session-product rebuild."""
+    """Benchmark full durable session-insight rebuild."""
     from polylogue.storage.backends.connection import open_connection
     from polylogue.storage.insights.session.rebuild import rebuild_session_products_sync
 
@@ -326,7 +326,7 @@ def run_session_product_materialization_campaign(db_path: Path) -> CampaignResul
     stats_after = _session_product_table_counts(db_path)
 
     return CampaignResult(
-        campaign_name="session-product-materialization",
+        campaign_name="session-insight-materialization",
         scale_level="",
         metrics={
             "rebuild_wall_s": round(elapsed, 3),
@@ -359,7 +359,7 @@ SYNTHETIC_BENCHMARK_RUNNERS: dict[str, SyntheticBenchmarkRunner] = {
     "filter-scan": run_filter_scan_campaign,
     "startup-readiness": run_startup_readiness_campaign,
     "action-event-materialization": run_action_event_materialization_campaign,
-    "session-product-materialization": run_session_product_materialization_campaign,
+    "session-insight-materialization": run_session_product_materialization_campaign,
 }
 
 

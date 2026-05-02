@@ -1,4 +1,4 @@
-"""Hydrated work-thread durable product reads for the repository."""
+"""Hydrated work-thread durable insight reads for the repository."""
 
 from __future__ import annotations
 

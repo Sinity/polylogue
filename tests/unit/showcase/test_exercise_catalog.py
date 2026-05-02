@@ -141,15 +141,15 @@ class TestExercisesByGroup:
         )
 
         session_preview = observed["json-doctor-session-insights-preview"]
-        assert session_preview.path_targets == ("session-product-repair-loop",)
+        assert session_preview.path_targets == ("session-insight-repair-loop",)
         assert session_preview.artifact_targets == (
-            "session_product_rows",
-            "session_product_fts",
-            "session_product_readiness",
+            "session_insight_rows",
+            "session_insight_fts",
+            "session_insight_readiness",
         )
         assert session_preview.operation_targets == (
             "cli.json-contract",
-            "project-session-product-readiness",
+            "project-session-insight-readiness",
         )
         assert session_preview.tags == (
             "generated",

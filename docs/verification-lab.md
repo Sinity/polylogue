@@ -18,11 +18,11 @@ Selected vertical slices:
 | Routing | `devtools affected-obligations` | Map changed paths or refs to affected proof obligations and focused verification commands. |
 | Evidence | `devtools semantic-axis-evidence` | Produce comparative proof-envelope performance evidence across semantic scale tiers. |
 | Corpus | `devtools lab-corpus` | Generate raw synthetic corpus fixtures or seed complete demo archive workspaces for lab runs. |
-| Scenarios | `devtools lab-scenario` | Run showcase exercise scenario sets and committed showcase baseline checks outside the product CLI. |
+| Scenarios | `devtools lab-scenario` | Run showcase exercise scenario sets and committed showcase baseline checks outside the archive CLI. |
 
 This surface is intentionally a repo operator surface. It works over proof
 subjects, generated docs, changed files, evidence envelopes, and local
-verification artifacts. Product/archive-facing checks remain in the product CLI
+verification artifacts. Product/archive-facing checks remain in the archive CLI
 where they already belong, such as `polylogue doctor --proof` and schema proof
 rendering. Schema package auditing moved to `devtools schema-audit` so
 repository QA does not pollute first-contact product help.
@@ -33,7 +33,7 @@ The decision depends on the proof-obligation catalog from issue #192, not on a
 hypothetical future taxonomy. The catalog at
 [`docs/verification-catalog.md`](verification-catalog.md) already records:
 
-- command subjects for the product CLI;
+- command subjects for the archive CLI;
 - claims for CLI, schema, provider capability, operation-spec, workflow, and
   semantic archive behavior;
 - runner bindings and trust metadata;
@@ -53,7 +53,7 @@ distribution and packaging boundary before the proof/evidence runner UX is
 settled.
 
 `polylogue lab` would put repo verification and source-control operations into
-the product CLI. That blurs the boundary between archive workflows and
+the archive CLI. That blurs the boundary between archive workflows and
 repository proof obligations.
 
 `polylogue audit` overloaded product help with repository QA. Keeping the lab
@@ -72,7 +72,7 @@ Generated docs and `devtools --list-commands --json` must keep naming the
 selected surface, so agents and scripts can discover it without scraping prose.
 
 If a future command must operate on user archives rather than repo proof
-obligations, it belongs in the product CLI or API first, not in the
+obligations, it belongs in the archive CLI or API first, not in the
 verification-lab surface.
 
 ## Migration Notes

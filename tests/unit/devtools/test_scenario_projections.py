@@ -62,7 +62,7 @@ def test_render_scenario_projections_json_is_machine_readable() -> None:
     assert any(entry["source_kind"] == "mutation-campaign" and entry["name"] == "filters" for entry in payload)
     assert any(entry["source_kind"] == "exercise" and entry["name"] == "gen-fmt-json-latest" for entry in payload)
     assert any(
-        entry["source_kind"] == "synthetic-benchmark" and entry["name"] == "session-product-materialization"
+        entry["source_kind"] == "synthetic-benchmark" and entry["name"] == "session-insight-materialization"
         for entry in payload
     )
     assert any(

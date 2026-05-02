@@ -784,11 +784,11 @@ def _effect_implication_claims() -> tuple[Claim, ...]:
 
 
 def _product_surface_claims() -> tuple[Claim, ...]:
-    """Mint claims for registered product surfaces."""
+    """Mint claims for registered insight surfaces."""
     return (
         Claim(
             id="product.surface.registered",
-            description="Every registered product type has a corresponding proof subject.",
+            description="Every registered insight type has a corresponding proof subject.",
             subject_query=Kind("product.surface"),
             evidence_schema=_evidence_schema("name", "display_name", "json_key"),
             oracle="construction_sanity",

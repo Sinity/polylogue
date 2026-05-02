@@ -5,7 +5,7 @@ from .archive import (
     ArchiveOperations,
     ArchiveStats,
     get_provider_counts,
-    list_provider_analytics_products,
+    list_provider_analytics_insights,
 )
 from .specs import (
     OperationCatalog,
@@ -25,5 +25,5 @@ __all__ = [
     "OperationKind",
     "OperationSpec",
     "get_provider_counts",
-    "list_provider_analytics_products",
+    "list_provider_analytics_insights",
 ]

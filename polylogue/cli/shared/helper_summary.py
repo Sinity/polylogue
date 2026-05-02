@@ -52,7 +52,7 @@ def print_summary_impl(
     quick_readiness_summary_fn: Callable[[Path], str],
     get_readiness_fn: Callable[[Config], ReadinessReport],
     get_provider_counts_fn: GetProviderCountsFn,
-    list_provider_analytics_products_fn: ListProviderAnalyticsInsightsFn,
+    list_provider_analytics_insights_fn: ListProviderAnalyticsInsightsFn,
 ) -> None:
     ui = env.ui
     config = load_effective_config(env)
@@ -124,7 +124,7 @@ def print_summary_impl(
 
     try:
         if verbose:
-            metrics = run_coroutine_sync(list_provider_analytics_products_fn(services=env.services))
+            metrics = run_coroutine_sync(list_provider_analytics_insights_fn(services=env.services))
             counts: list[tuple[str, int]] = [(metric.provider_name, metric.conversation_count) for metric in metrics]
         else:
             counts = run_coroutine_sync(get_provider_counts_fn(services=env.services))

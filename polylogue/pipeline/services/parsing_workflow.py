@@ -290,7 +290,7 @@ async def parse_from_raw(
     """Parse raw_conversations from DB into conversations.
 
     Uses the unified ingest batch processor (decode + validate + parse +
-    transform + write in one pass). Derived session-product materialization
+    transform + write in one pass). Derived session-insight materialization
     happens in an explicit downstream pipeline stage.
     """
     from polylogue.pipeline.services.ingest_batch import process_ingest_batch

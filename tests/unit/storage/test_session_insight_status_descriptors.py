@@ -1,4 +1,4 @@
-"""Descriptor contracts for session-product status queries."""
+"""Descriptor contracts for session-insight status queries."""
 
 from __future__ import annotations
 
@@ -12,8 +12,8 @@ from polylogue.storage.insights.session.status import (
     SessionInsightCountDescriptor,
     SessionInsightFtsDescriptor,
     SessionInsightReadyDescriptor,
-    session_product_status_async,
-    session_product_status_sync,
+    session_insight_status_async,
+    session_insight_status_sync,
 )
 
 
@@ -89,10 +89,10 @@ async def test_status_sync_and_async_match_when_product_tables_are_absent(tmp_pa
             VALUES ('child', 'root', 2.0, '2026-04-01T00:01:00Z');
             """
         )
-        sync_status = session_product_status_sync(conn)
+        sync_status = session_insight_status_sync(conn)
 
     async with aiosqlite.connect(db_path) as conn:
-        async_status = await session_product_status_async(conn)
+        async_status = await session_insight_status_async(conn)
 
     assert asdict(sync_status) == asdict(async_status)
     assert sync_status.total_conversations == 2

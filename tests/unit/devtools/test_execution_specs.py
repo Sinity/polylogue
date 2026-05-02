@@ -53,7 +53,7 @@ def test_polylogue_doctor_targeted_execution_uses_maintenance_target_catalog_met
         "materialize-action-events",
         "materialize-session-insights",
         "project-action-event-readiness",
-        "project-session-product-readiness",
+        "project-session-insight-readiness",
     )
     assert execution.metadata.maintenance_targets == (
         "action_event_read_model",

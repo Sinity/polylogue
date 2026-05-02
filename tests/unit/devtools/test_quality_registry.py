@@ -21,7 +21,7 @@ def test_build_quality_registry_exposes_live_catalogs() -> None:
     assert any(entry.name == "search-filters" for entry in registry.benchmark_campaigns)
     assert any(entry.name == "pipeline" for entry in registry.benchmark_campaigns)
     assert any(entry.name == "action-event-materialization" for entry in registry.synthetic_benchmark_campaigns)
-    assert any(entry.name == "session-product-materialization" for entry in registry.synthetic_benchmark_campaigns)
+    assert any(entry.name == "session-insight-materialization" for entry in registry.synthetic_benchmark_campaigns)
     assert any(entry.name == "startup-readiness" for entry in registry.synthetic_benchmark_campaigns)
     assert any(
         scenario.provider == "chatgpt" and scenario.package_version == "v1"
@@ -38,7 +38,7 @@ def test_build_quality_registry_exposes_live_catalogs() -> None:
         for entry in registry.scenario_projections
     )
     assert any(entry.name == "search-filters" for entry in registry.scenario_projections)
-    assert any(entry.name == "session-product-materialization" for entry in registry.scenario_projections)
+    assert any(entry.name == "session-insight-materialization" for entry in registry.scenario_projections)
     assert any(entry.source_kind.value == "inferred-corpus-scenario" for entry in registry.scenario_projections)
     assert registry.scenario_projections == registry.catalog.compile_projection_entries()
     inferred_chatgpt = next(
@@ -59,13 +59,13 @@ def test_build_quality_registry_exposes_live_catalogs() -> None:
     assert machine_contract.operation_targets == ("cli.json-contract",)
     assert machine_contract.tags == ("contract", "json", "cli")
     live_session_product_repair = next(
-        entry for entry in registry.live_lanes if entry.name == "live-session-product-repair"
+        entry for entry in registry.live_lanes if entry.name == "live-session-insight-repair"
     )
-    assert live_session_product_repair.path_targets == ("session-product-repair-loop",)
+    assert live_session_product_repair.path_targets == ("session-insight-repair-loop",)
     assert live_session_product_repair.operation_targets == (
         "cli.json-contract",
         "materialize-session-insights",
-        "project-session-product-readiness",
+        "project-session-insight-readiness",
     )
     search_filters = next(entry for entry in registry.benchmark_campaigns if entry.name == "search-filters")
     assert search_filters.origin == "authored.benchmark-domain"
@@ -101,16 +101,16 @@ def test_build_quality_registry_exposes_live_catalogs() -> None:
     assert action_events.operation_targets == ("materialize-action-events",)
     assert action_events.tags == ("benchmark", "synthetic", "action-events")
     session_products = next(
-        entry for entry in registry.synthetic_benchmark_campaigns if entry.name == "session-product-materialization"
+        entry for entry in registry.synthetic_benchmark_campaigns if entry.name == "session-insight-materialization"
     )
     assert session_products.origin == "authored.synthetic-benchmark"
-    assert "session_product_source_conversations" in session_products.artifact_targets
+    assert "session_insight_source_conversations" in session_products.artifact_targets
     assert "session_profile_rows" in session_products.artifact_targets
     assert "session_profile_merged_fts" in session_products.artifact_targets
     assert "session_work_event_rows" in session_products.artifact_targets
     assert "work_thread_fts" in session_products.artifact_targets
-    assert "session_product_rows" in session_products.artifact_targets
-    assert "session_product_fts" in session_products.artifact_targets
+    assert "session_insight_rows" in session_products.artifact_targets
+    assert "session_insight_fts" in session_products.artifact_targets
     assert session_products.operation_targets == ("materialize-session-insights",)
     assert session_products.tags == ("benchmark", "synthetic", "session-insights")
     product_profiles = next(

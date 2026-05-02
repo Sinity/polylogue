@@ -1,4 +1,4 @@
-"""Typed registration contracts for registry-driven MCP product tools."""
+"""Typed registration contracts for registry-driven MCP insight tools."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ def _sanitize_offset(value: object) -> int:
 
 @dataclass(frozen=True, slots=True)
 class InsightToolSignature:
-    """Normalized dynamic signature for one product list MCP tool."""
+    """Normalized dynamic signature for one insight list MCP tool."""
 
     parameters: tuple[inspect.Parameter, ...]
     annotations: dict[str, object]
@@ -29,7 +29,7 @@ class InsightToolSignature:
 
 @dataclass(frozen=True, slots=True)
 class InsightListToolSpec:
-    """Registry-derived MCP list-tool contract for one product type."""
+    """Registry-derived MCP list-tool contract for one insight type."""
 
     name: str
     doc: str
