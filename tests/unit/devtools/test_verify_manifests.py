@@ -163,3 +163,64 @@ def test_coverage_reference_manifest_rejects_missing_command_and_path(tmp_path: 
         f"{plans / 'example-coverage.yaml'}: items.example.verified_by command does not resolve: "
         "'devtools missing-command'",
     ]
+
+
+def test_coverage_status_claims_accept_realized_implemented_item(tmp_path: Path) -> None:
+    plans = tmp_path
+    (plans / "example-coverage.yaml").write_text(
+        """areas:
+  path_traversal:
+    implemented: true
+    controls:
+      - sanitize_path: blocks traversal
+    test_coverage:
+      location: tests/unit/security/test_path_sanitization.py
+""",
+        encoding="utf-8",
+    )
+
+    assert verify_manifests.check_coverage_status_claims(plans) == []
+
+
+def test_coverage_status_claims_reject_implemented_item_without_evidence(tmp_path: Path) -> None:
+    plans = tmp_path
+    (plans / "example-coverage.yaml").write_text(
+        """areas:
+  path_traversal:
+    implemented: true
+    controls: []
+    test_coverage:
+      location: null
+""",
+        encoding="utf-8",
+    )
+
+    errors = verify_manifests.check_coverage_status_claims(plans)
+
+    assert errors == [
+        f"{plans / 'example-coverage.yaml'}: areas.path_traversal implemented=true but controls are missing or empty",
+        f"{plans / 'example-coverage.yaml'}: areas.path_traversal implemented=true but test_coverage.location is missing",
+    ]
+
+
+def test_coverage_status_claims_reject_missing_item_with_realized_evidence(tmp_path: Path) -> None:
+    plans = tmp_path
+    (plans / "example-coverage.yaml").write_text(
+        """areas:
+  dependency_audit:
+    implemented: false
+    controls:
+      - pip_audit: configured
+    test_coverage:
+      location: tests/unit/security/test_dependency_audit.py
+""",
+        encoding="utf-8",
+    )
+
+    errors = verify_manifests.check_coverage_status_claims(plans)
+
+    assert errors == [
+        f"{plans / 'example-coverage.yaml'}: areas.dependency_audit implemented=false but controls are declared",
+        f"{plans / 'example-coverage.yaml'}: areas.dependency_audit implemented=false "
+        "but test_coverage.location is declared",
+    ]
