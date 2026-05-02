@@ -149,7 +149,7 @@ def _message_tuple(
     role: str,
     text: str,
     content_hash: str,
-    sort_key: float,
+    sort_key: float | None,
 ) -> MessageTuple:
     return (
         MessageId(message_id),

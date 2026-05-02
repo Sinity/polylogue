@@ -14,7 +14,6 @@ from polylogue.cli.shared.check_rendering_plain import (
 )
 from polylogue.cli.shared.check_workflow import CheckCommandOptions
 from polylogue.core.outcomes import OutcomeCheck, OutcomeStatus
-from polylogue.maintenance.resources import ResourceBoundaryReport
 from polylogue.readiness import ReadinessReport
 
 
@@ -36,7 +35,6 @@ def _options(**overrides: object) -> CheckCommandOptions:
         "cleanup": False,
         "preview": False,
         "vacuum": False,
-        "resource_mode": "auto",
         "deep": False,
         "runtime": False,
         "check_daemon": False,
@@ -227,14 +225,6 @@ def test_emit_maintenance_output_handles_preview_empty_selection_and_vacuum_mode
             ),
         ],
         maintenance_targets=("session_insights",),
-        resource_boundary=ResourceBoundaryReport(
-            workload="doctor-maintenance",
-            requested_mode="auto",
-            effective_mode="test_harness",
-            status="skipped",
-            detail="test",
-            heavy=True,
-        ),
     )
     with patch("polylogue.cli.shared.check_rendering_plain.run_vacuum") as run_vacuum:
         emit_maintenance_output(env, result, _options(repair=True, preview=True, vacuum=True))

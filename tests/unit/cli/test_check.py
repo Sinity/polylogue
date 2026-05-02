@@ -420,7 +420,6 @@ class TestCheckCommand:
             cleanup=False,
             preview=False,
             vacuum=False,
-            resource_mode="auto",
             deep=False,
             runtime=True,
             check_daemon=False,
@@ -731,8 +730,7 @@ class TestCheckCommandSupplementary:
         data = json_object(envelope.get("result", envelope), context="repair preview payload")
         assert "maintenance" in data
         maintenance = json_object_field(data, "maintenance", context="repair preview payload")
-        resource_mode = json_object_field(maintenance, "resource_mode", context="repair preview payload")
-        assert resource_mode["effective_mode"] == "not_applicable"
+        assert "resource_boundary" not in maintenance
 
     def test_repair_with_no_issues_shows_message(self, cli_workspace: WorkspacePaths) -> None:
         """When repair finds no issues, should show a maintenance status message."""
@@ -774,8 +772,7 @@ class TestCheckCommandSupplementary:
         data = json_object(envelope.get("result", envelope), context="repair vacuum payload")
         assert "maintenance" in data
         maintenance = json_object_field(data, "maintenance", context="repair vacuum payload")
-        resource_mode = json_object_field(maintenance, "resource_mode", context="repair vacuum payload")
-        assert resource_mode["heavy"] is False
+        assert "resource_boundary" not in maintenance
         vacuum = json_object_field(data, "vacuum", context="repair vacuum payload")
         assert vacuum.get("ok") is True
         assert vacuum.get("preview") is True

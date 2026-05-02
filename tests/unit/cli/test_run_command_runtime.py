@@ -172,7 +172,6 @@ def test_run_result_callback_rejects_watch_only_flags_without_watch_mode() -> No
             None,
             None,
             False,
-            "auto",
         )
 
 
@@ -190,7 +189,6 @@ def test_run_result_callback_surfaces_stage_normalization_errors() -> None:
                 None,
                 None,
                 False,
-                "auto",
             )
 
 
@@ -209,7 +207,6 @@ def test_run_result_callback_embed_only_returns_before_source_resolution() -> No
                 None,
                 None,
                 False,
-                "auto",
             )
 
     run_embed.assert_called_once()
@@ -237,7 +234,6 @@ def test_run_result_callback_embed_then_parse_strips_embed_from_stage_sequence()
                             None,
                             None,
                             False,
-                            "auto",
                         )
 
     run_embed.assert_called_once()
@@ -263,7 +259,6 @@ def test_run_result_callback_forwards_reparse_as_force_write() -> None:
                             None,
                             None,
                             True,
-                            "auto",
                         )
 
     assert run_sync_once.call_args.kwargs["force_write"] is True
@@ -310,14 +305,12 @@ def test_run_result_callback_watch_mode_builds_observers_and_executes_sync_once(
                                                 "echo hi",
                                                 "https://example.test",
                                                 False,
-                                                "auto",
                                             )
 
     assert runner_state["interval"] == 60
     assert runner_state["observer"] == ("display", "status", "notify", "exec", "webhook")
     run_with_progress.assert_called_once()
     printed = [call.args[0] for call in env.ui.console.print.call_args_list]
-    assert "Resource mode: test_harness (skipped)" in printed
     assert "Watch mode: syncing every 60 seconds. Press Ctrl+C to stop." in printed
     assert printed[-1] == "\nWatch mode stopped."
 
@@ -338,7 +331,6 @@ def test_run_result_callback_can_cancel_nonwatch_execution_before_running() -> N
                     None,
                     None,
                     False,
-                    "auto",
                 )
 
     run_sync_once.assert_not_called()
@@ -353,25 +345,23 @@ def test_run_embed_standalone_covers_error_stats_single_and_batch_paths() -> Non
         run_command_module._run_embed_standalone(
             env,
             run_command_module.EmbedOptions(json_output=True, stats=False),
-            resource_mode="auto",
         )
 
     with patch.dict("os.environ", {}, clear=True):
         with pytest.raises(click.Abort):
-            run_command_module._run_embed_standalone(env, run_command_module.EmbedOptions(), resource_mode="auto")
+            run_command_module._run_embed_standalone(env, run_command_module.EmbedOptions())
 
     with patch("polylogue.cli.shared.embed_stats.show_embedding_stats") as show_stats:
         run_command_module._run_embed_standalone(
             env,
             run_command_module.EmbedOptions(stats=True, json_output=True),
-            resource_mode="auto",
         )
     show_stats.assert_called_once_with(env, json_output=True)
 
     with patch.dict("os.environ", {"VOYAGE_API_KEY": "key"}, clear=True):
         with patch("polylogue.storage.search_providers.create_vector_provider", return_value=None):
             with pytest.raises(click.Abort):
-                run_command_module._run_embed_standalone(env, run_command_module.EmbedOptions(), resource_mode="auto")
+                run_command_module._run_embed_standalone(env, run_command_module.EmbedOptions())
 
     provider = SimpleNamespace(model="voyage-4")
     with patch.dict("os.environ", {"VOYAGE_API_KEY": "key"}, clear=True):
@@ -380,7 +370,6 @@ def test_run_embed_standalone_covers_error_stats_single_and_batch_paths() -> Non
                 run_command_module._run_embed_standalone(
                     env,
                     run_command_module.EmbedOptions(conversation="conv-1", model="voyage-4-large"),
-                    resource_mode="auto",
                 )
     embed_single.assert_called_once_with(env, "repo", provider, "conv-1")
     assert provider.model == "voyage-4-large"
@@ -392,6 +381,5 @@ def test_run_embed_standalone_covers_error_stats_single_and_batch_paths() -> Non
                 run_command_module._run_embed_standalone(
                     env,
                     run_command_module.EmbedOptions(rebuild=True, limit=9),
-                    resource_mode="auto",
                 )
     embed_batch.assert_called_once_with(env, "repo", provider, rebuild=True, limit=9)
