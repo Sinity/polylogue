@@ -11,6 +11,7 @@ from polylogue.archive.query.fields import (
     QUERY_FIELD_DESCRIPTORS,
     active_plan_field_names,
     api_query_field_names,
+    describe_spec_selection_fields,
     mcp_query_field_names,
     query_completion_sources,
     storage_filters_require_stats_join,
@@ -54,6 +55,16 @@ def test_query_field_catalog_drives_spec_presence_and_descriptions() -> None:
         "min_messages: 3",
         "since: 2024-01-01",
         "offset: 10",
+        "since-session: conv-anchor",
+    ]
+    assert describe_spec_selection_fields(spec) == [
+        "search: sqlite locks",
+        "referenced-path: polylogue/storage",
+        "provider: codex",
+        "repo: thoughtspace",
+        "has: tool_use (sql)",
+        "min_messages: 3",
+        "since: 2024-01-01",
         "since-session: conv-anchor",
     ]
 
