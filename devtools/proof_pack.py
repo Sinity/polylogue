@@ -66,9 +66,24 @@ def build_proof_pack(
     affected_subjects = [
         subjects_by_id[item.subject_id] for item in affected.affected_obligations if item.subject_id in subjects_by_id
     ]
-    affected_domains = sorted(
+    affected_domain_names = sorted(
         {claim.assurance_domain for claim in affected_claims}
         | {domain for subject in affected_subjects for domain in (_subject_assurance_domain(subject),) if domain}
+    )
+    affected_domains = [
+        _domain_payload(domain, domains_data.get(domain, {}), affected_claims) for domain in affected_domain_names
+    ]
+    gate_groups = {
+        "focused": _checks_payload(affected.inner_loop_checks),
+        "required": _checks_payload(affected.pr_gates),
+        "optional_confidence": _checks_payload(affected.deployment_gates),
+    }
+    visible_gap_domains = {domain["domain"] for domain in affected_domains if domain["claim_count"] > 0}
+    known_gaps, additional_known_gaps = _known_gaps(
+        domains_data,
+        catalog,
+        affected_domain_names,
+        visible_domains=visible_gap_domains,
     )
     return {
         "refs": {"base_ref": base_ref, "head_ref": head_ref},
@@ -79,16 +94,14 @@ def build_proof_pack(
             "obligation_count": len(catalog.obligations),
         },
         "affected": affected.to_payload(),
-        "affected_domains": [
-            _domain_payload(domain, domains_data.get(domain, {}), affected_claims) for domain in affected_domains
-        ],
+        "affected_domains": affected_domains,
         "domain_coverage": _domain_coverage(domains_data, catalog),
-        "required_gates": _checks_payload(
-            (*affected.inner_loop_checks, *affected.pr_gates, *affected.deployment_gates)
-        ),
+        "gate_groups": gate_groups,
+        "required_gates": _checks_payload((*affected.inner_loop_checks, *affected.pr_gates)),
         "manual_review_cells": _manual_review_cells(affected_claims),
-        "stale_evidence": list(affected.obligation_diff.stale_evidence),
-        "known_gaps": _known_gaps(domains_data, catalog, affected_domains),
+        "stable_affected_obligations": list(affected.obligation_diff.stable_affected),
+        "known_gaps": known_gaps,
+        "additional_known_gaps": additional_known_gaps,
         "oracle_mix": dict(Counter(claim.oracle for claim in affected_claims)),
         "cost_tier": _cost_tier_counts(affected, catalog),
     }
@@ -161,7 +174,9 @@ def _known_gaps(
     domains_data: dict[str, dict[str, Any]],
     catalog: Any,
     affected_domains: list[str],
-) -> list[dict[str, Any]]:
+    *,
+    visible_domains: set[str],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     gaps_by_domain: dict[str, list[str]] = defaultdict(list)
     for subject in catalog.subjects:
         if subject.kind != "assurance.coverage_gap":
@@ -188,11 +203,14 @@ def _known_gaps(
         raw_gaps = info.get("coverage_gaps", []) if isinstance(info, dict) else []
         for raw_gap in raw_gaps:
             gaps_by_domain[domain].append(str(raw_gap))
-    return [
+    gap_payloads = [
         {"domain": domain, "gaps": sorted(dict.fromkeys(gaps))}
         for domain, gaps in sorted(gaps_by_domain.items())
         if gaps
     ]
+    visible = [item for item in gap_payloads if item["domain"] in visible_domains]
+    additional = [item for item in gap_payloads if item["domain"] not in visible_domains]
+    return visible, additional
 
 
 def _subject_assurance_domain(subject: Any) -> str | None:
@@ -248,28 +266,62 @@ def render_markdown(report: dict[str, Any]) -> str:
         "### Affected Domains",
     ]
     affected_domains = report.get("affected_domains", [])
-    if affected_domains:
-        for domain in affected_domains:
+    visible_domains = [domain for domain in affected_domains if domain.get("claim_count", 0) > 0]
+    zero_claim_domains = [domain for domain in affected_domains if domain.get("claim_count", 0) == 0]
+    if visible_domains:
+        for domain in visible_domains:
             lines.append(f"- `{domain['domain']}` — {domain['claim_count']} claim(s), maturity `{domain['maturity']}`")
     else:
-        lines.append("- none")
-    lines.extend(["", "### Required Gates"])
-    for gate in report.get("required_gates", []):
-        command = " ".join(gate["command"])
-        lines.append(f"- `{command}` — {gate['reason']}")
+        lines.append("- none with affected claims")
+    if zero_claim_domains:
+        lines.extend(
+            [
+                "",
+                "<details>",
+                "<summary>Additional routed domains with zero affected claims</summary>",
+                "",
+            ]
+        )
+        for domain in zero_claim_domains:
+            lines.append(f"- `{domain['domain']}` — maturity `{domain['maturity']}`")
+        lines.extend(["", "</details>"])
+
+    gate_groups = report.get("gate_groups", {})
+    lines.extend(["", "### Focused Gates"])
+    _append_gate_lines(lines, gate_groups.get("focused", []), empty_text="- none")
+    lines.extend(["", "### Required PR Gates"])
+    _append_gate_lines(lines, gate_groups.get("required", report.get("required_gates", [])), empty_text="- none")
+    lines.extend(["", "### Optional Confidence Gates"])
+    _append_gate_lines(lines, gate_groups.get("optional_confidence", []), empty_text="- none")
+
     lines.extend(["", "### Known Gaps"])
     known_gaps = report.get("known_gaps", [])
     if known_gaps:
         for item in known_gaps:
             lines.append(f"- `{item['domain']}`: {', '.join(item['gaps'])}")
     else:
-        lines.append("- none for affected domains")
+        lines.append("- none for domains with affected claims")
+    additional_known_gaps = report.get("additional_known_gaps", [])
+    if additional_known_gaps:
+        lines.extend(["", "<details>", "<summary>Additional gaps in zero-claim routed domains</summary>", ""])
+        for item in additional_known_gaps:
+            lines.append(f"- `{item['domain']}`: {', '.join(item['gaps'])}")
+        lines.extend(["", "</details>"])
     lines.extend(["", "### Oracle / Cost"])
     lines.append(f"- oracle mix: `{json.dumps(report.get('oracle_mix', {}), sort_keys=True)}`")
     lines.append(f"- cost tier: `{json.dumps(report.get('cost_tier', {}), sort_keys=True)}`")
-    lines.append(f"- stale evidence: {len(report.get('stale_evidence', []))}")
+    lines.append(f"- stable affected obligations: {len(report.get('stable_affected_obligations', []))}")
     lines.append(f"- manual review cells: {len(report.get('manual_review_cells', []))}")
     return "\n".join(lines)
+
+
+def _append_gate_lines(lines: list[str], gates: list[dict[str, Any]], *, empty_text: str) -> None:
+    if not gates:
+        lines.append(empty_text)
+        return
+    for gate in gates:
+        command = " ".join(gate["command"])
+        lines.append(f"- `{command}` — {gate['reason']}")
 
 
 def _print_human_report(report: dict[str, Any]) -> None:
@@ -282,18 +334,25 @@ def _print_human_report(report: dict[str, Any]) -> None:
     print(f"Changed paths: {len(report['changed_paths'])}")
     print()
     print("Affected domains:")
-    affected_domains = report.get("affected_domains", [])
+    affected_domains = [domain for domain in report.get("affected_domains", []) if domain.get("claim_count", 0) > 0]
     if not affected_domains:
-        print("  none")
+        print("  none with affected claims")
     for domain in affected_domains:
         print(f"  {domain['domain']:<30} {domain['claim_count']:>3} claims  {domain['oracle_counts']}")
     print()
-    print("Required gates:")
-    for gate in report.get("required_gates", []):
+    gate_groups = report.get("gate_groups", {})
+    print("Focused gates:")
+    for gate in gate_groups.get("focused", []):
+        print(f"  {' '.join(gate['command'])} — {gate['reason']}")
+    print("Required PR gates:")
+    for gate in gate_groups.get("required", []):
+        print(f"  {' '.join(gate['command'])} — {gate['reason']}")
+    print("Optional confidence gates:")
+    for gate in gate_groups.get("optional_confidence", []):
         print(f"  {' '.join(gate['command'])} — {gate['reason']}")
     print()
     print(f"Manual review cells: {len(report.get('manual_review_cells', []))}")
-    print(f"Stale evidence: {len(report.get('stale_evidence', []))}")
+    print(f"Stable affected obligations: {len(report.get('stable_affected_obligations', []))}")
     print(f"Known gaps: {len(report.get('known_gaps', []))}")
 
 
