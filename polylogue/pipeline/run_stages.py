@@ -151,6 +151,7 @@ async def execute_ingest_stage(
     raw_batch_size: int = 50,
     ingest_workers: int | None = None,
     measure_ingest_result_size: bool = False,
+    force_write: bool = False,
 ) -> IngestResult:
     from polylogue.pipeline.services.parsing import ParsingService
 
@@ -169,6 +170,7 @@ async def execute_ingest_stage(
         progress_callback=progress_callback,
         parse_records=stage in PARSE_STAGES,
         skip_acquire=skip_acquire,
+        force_write=force_write,
     )
 
 

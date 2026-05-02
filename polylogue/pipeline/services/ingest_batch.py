@@ -426,7 +426,9 @@ def _parent_ready(
     return parent_id in materialized_ids or _conversation_exists(conn, parent_id)
 
 
-def _write_conversation(conn: sqlite3.Connection, cdata: ConversationData) -> tuple[bool, dict[str, int]]:
+def _write_conversation(
+    conn: sqlite3.Connection, cdata: ConversationData, *, force_write: bool = False
+) -> tuple[bool, dict[str, int]]:
     """Write one conversation's data to DB via sync sqlite3.
 
     Returns (content_changed, counts).
@@ -440,9 +442,10 @@ def _write_conversation(conn: sqlite3.Connection, cdata: ConversationData) -> tu
         "skipped_attachments": 0,
     }
 
-    content_unchanged = _check_content_unchanged(conn, cdata.conversation_id, cdata.content_hash)
+    content_unchanged = (
+        False if force_write else _check_content_unchanged(conn, cdata.conversation_id, cdata.content_hash)
+    )
 
-    # Upsert conversation record — WHERE clause prevents the update when content_hash matches
     conn.execute(_CONVERSATION_UPSERT_SQL, _resolved_conversation_tuple(conn, cdata))
 
     if content_unchanged:
@@ -545,10 +548,11 @@ def _write_conversation_entry(
     cdata: ConversationData,
     *,
     summary: _IngestBatchSummary,
+    force_write: bool = False,
 ) -> bool:
     try:
         t_write = time.perf_counter()
-        content_changed, counts = _write_conversation(conn, cdata)
+        content_changed, counts = _write_conversation(conn, cdata, force_write=force_write)
         write_elapsed = time.perf_counter() - t_write
         summary.write_elapsed_s += write_elapsed
         if write_elapsed > summary.max_write_elapsed_s:
@@ -581,6 +585,7 @@ def _drain_ready_conversation_entries(
     summary: _IngestBatchSummary,
     materialized_ids: set[str],
     pending_by_parent: dict[str, list[_ConversationEntry]],
+    force_write: bool = False,
 ) -> None:
     stack = list(reversed(ready_entries))
     while stack:
@@ -590,7 +595,7 @@ def _drain_ready_conversation_entries(
             if parent_id is not None:
                 pending_by_parent.setdefault(parent_id, []).append((raw_id, cdata))
             continue
-        if not _write_conversation_entry(conn, raw_id, cdata, summary=summary):
+        if not _write_conversation_entry(conn, raw_id, cdata, summary=summary, force_write=force_write):
             continue
         materialized_ids.add(cdata.conversation_id)
         children = pending_by_parent.pop(cdata.conversation_id, [])
@@ -729,6 +734,7 @@ def _drain_ingest_result(
     summary: _IngestBatchSummary,
     materialized_ids: set[str],
     pending_by_parent: dict[str, list[_ConversationEntry]],
+    force_write: bool = False,
 ) -> None:
     _record_outcome(summary, ir)
     _observe_current_rss(summary)
@@ -749,6 +755,7 @@ def _drain_ingest_result(
             summary=summary,
             materialized_ids=materialized_ids,
             pending_by_parent=pending_by_parent,
+            force_write=force_write,
         )
         summary.drain_elapsed_s += time.perf_counter() - drain_started
         _observe_current_rss(summary)
@@ -762,6 +769,7 @@ def _consume_ingest_results(
     summary: _IngestBatchSummary,
     materialized_ids: set[str],
     pending_by_parent: dict[str, list[_ConversationEntry]],
+    force_write: bool = False,
 ) -> None:
     result_iterator = iter(
         _iter_ingest_results_sync(
@@ -784,6 +792,7 @@ def _consume_ingest_results(
             summary=summary,
             materialized_ids=materialized_ids,
             pending_by_parent=pending_by_parent,
+            force_write=force_write,
         )
 
 
@@ -832,6 +841,7 @@ def _process_ingest_batch_sync(
     validation_mode: str,
     ingest_workers: int | None,
     measure_ingest_result_size: bool,
+    force_write: bool = False,
 ) -> _IngestBatchSummary:
     from polylogue.storage.fts.fts_lifecycle import (
         suspend_fts_triggers_sync,
@@ -865,6 +875,7 @@ def _process_ingest_batch_sync(
             summary=summary,
             materialized_ids=materialized_ids,
             pending_by_parent=pending_by_parent,
+            force_write=force_write,
         )
         _commit_ingest_results(
             conn,
@@ -1024,6 +1035,8 @@ async def process_ingest_batch(
     batch_ids: list[str],
     result: ParseResult,
     progress_callback: ProgressCallback | None,
+    *,
+    force_write: bool = False,
 ) -> ParseBatchObservation | None:
     """Process a batch of raw records through the unified ingest pipeline.
 
@@ -1055,6 +1068,7 @@ async def process_ingest_batch(
         validation_mode=validation_mode,
         ingest_workers=service.ingest_workers,
         measure_ingest_result_size=service.measure_ingest_result_size,
+        force_write=force_write,
     )
 
     _apply_ingest_batch_summary(result, batch_summary)
