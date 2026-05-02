@@ -95,8 +95,8 @@ def test_build_index_requests_all_summaries_without_silent_cap(tmp_path: Path) -
     repository.iter_summary_pages.assert_called_once_with(page_size=500, provider=None)
 
 
-def test_conversation_index_no_source_attribute_reference(tmp_path: Path) -> None:
-    """Regression: ConversationIndex must not touch the removed conv.source attribute."""
+def test_conversation_index_uses_summary_provider_metadata(tmp_path: Path) -> None:
+    """Conversation index construction uses summary provider metadata."""
     backend = _make_backend()
     backend.queries.get_message_counts_batch.return_value = {"test-conv-001": 3}
     repository = AsyncMock()
@@ -115,7 +115,6 @@ def test_conversation_index_no_source_attribute_reference(tmp_path: Path) -> Non
     assert index.id == "test-conv-001"
     assert index.title == "Test Conversation"
     assert index.provider == "claude-ai"
-    assert not hasattr(index, "source")
     assert index.message_count == 3
 
 

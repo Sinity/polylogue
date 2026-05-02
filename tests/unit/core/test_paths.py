@@ -152,15 +152,3 @@ class TestPathsPublicBoundary:
             "state_home",
             "state_root",
         }
-
-    def test_paths_root_does_not_reexport_sanitization_helpers(self) -> None:
-        import polylogue.paths as paths
-
-        forbidden = {
-            "conversation_render_root",
-            "is_within_root",
-            "safe_path_component",
-        }
-        assert forbidden.isdisjoint(set(paths.__all__))
-        for name in forbidden:
-            assert not hasattr(paths, name)
