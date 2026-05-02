@@ -15,19 +15,9 @@ import yaml
 
 from devtools.command_catalog import COMMANDS
 
-_REPO_ROOT = Path(__file__).resolve().parents[1]
 _COVERAGE_AXIS_KEYS = ("domain", "subject", "area", "dimension", "artifact", "platform", "concern")
 _COVERAGE_GAP_SEVERITIES = {"info", "minor", "major", "serious"}
-_EVIDENCE_COMMAND_PREFIXES = (
-    "devtools ",
-    "pytest ",
-    "ruff ",
-    "mypy ",
-    "nix ",
-    "polylogue ",
-    "polylogued ",
-    "polylogue-mcp ",
-)
+_EVIDENCE_COMMANDS = {"pytest", "ruff", "mypy", "nix", "polylogue", "polylogued", "polylogue-mcp"}
 
 
 def load_manifest(path: Path) -> dict[str, object]:
@@ -149,6 +139,7 @@ def check_coverage_gaps(plans_dir: Path) -> list[str]:
     """Validate that passive coverage gaps are tracked as actionable records."""
     errors: list[str] = []
     gap_ids: set[str] = set()
+    gap_subject_leaves: set[str] = set()
     for path in sorted(plans_dir.glob("*coverage*.yaml")):
         try:
             data = load_manifest(path)
@@ -173,6 +164,11 @@ def check_coverage_gaps(plans_dir: Path) -> list[str]:
                 errors.append(f"{label} duplicate id {gap_id!r}")
             else:
                 gap_ids.add(gap_id)
+                gap_subject_leaf = _coverage_gap_slug(gap_id)
+                if gap_subject_leaf in gap_subject_leaves:
+                    errors.append(f"{label} duplicate proof subject slug {gap_subject_leaf!r}")
+                else:
+                    gap_subject_leaves.add(gap_subject_leaf)
             if not any(isinstance(gap.get(key), str) and gap.get(key, "").strip() for key in _COVERAGE_AXIS_KEYS):
                 errors.append(f"{path}: coverage_gaps[{index}] missing coverage axis")
             if not isinstance(gap.get("gap"), str) or not gap.get("gap", "").strip():
@@ -230,11 +226,8 @@ def _valid_suppression_ref(value: object) -> bool:
 
 
 def _resolvable_next_evidence(value: str) -> bool:
-    stripped = value.strip()
-    if not any(stripped.startswith(prefix) for prefix in _EVIDENCE_COMMAND_PREFIXES):
-        return False
     try:
-        tokens = shlex.split(stripped)
+        tokens = shlex.split(value)
     except ValueError:
         return False
     if not tokens:
@@ -242,14 +235,11 @@ def _resolvable_next_evidence(value: str) -> bool:
     command = tokens[0]
     if command == "devtools":
         return len(tokens) >= 2 and tokens[1] in COMMANDS
-    if command == "pytest":
-        return _pytest_target_exists(tokens[1:])
-    return command in {"ruff", "mypy", "nix", "polylogue", "polylogued", "polylogue-mcp"}
+    return command in _EVIDENCE_COMMANDS
 
 
-def _pytest_target_exists(tokens: list[str]) -> bool:
-    targets = [token for token in tokens if not token.startswith("-")]
-    return not targets or any((_REPO_ROOT / token).exists() for token in targets)
+def _coverage_gap_slug(value: str) -> str:
+    return "".join(char if char.isalnum() else "-" for char in value.lower()).strip("-") or "unnamed"
 
 
 def main(argv: list[str] | None = None) -> int:

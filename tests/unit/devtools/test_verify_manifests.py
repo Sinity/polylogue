@@ -71,3 +71,57 @@ def test_coverage_gap_manifest_rejects_non_command_next_evidence(tmp_path: Path)
         f"{plans / 'example-coverage.yaml'}: coverage_gaps[0] 'docs-media.generated-proof' "
         "next_evidence does not resolve to a known command"
     ]
+
+
+def test_coverage_gap_manifest_allows_pytest_filter_next_evidence(tmp_path: Path) -> None:
+    plans = tmp_path
+    (plans / "example-coverage.yaml").write_text(
+        """coverage_gaps:
+  - id: docs-media.generated-proof
+    domain: docs_media
+    gap: Missing generated media proof
+    owner: docs-media
+    severity: major
+    declared_at: "2026-05-02"
+    review_after: "2026-08-01"
+    issue: "#590"
+    next_evidence: pytest -k "docs_media and not slow"
+""",
+        encoding="utf-8",
+    )
+
+    assert verify_manifests.check_coverage_gaps(plans) == []
+
+
+def test_coverage_gap_manifest_rejects_proof_subject_slug_collision(tmp_path: Path) -> None:
+    plans = tmp_path
+    (plans / "example-coverage.yaml").write_text(
+        """coverage_gaps:
+  - id: docs_media.generated_proof
+    domain: docs_media
+    gap: Missing generated media proof
+    owner: docs-media
+    severity: major
+    declared_at: "2026-05-02"
+    review_after: "2026-08-01"
+    issue: "#590"
+    next_evidence: devtools render-docs-surface --check
+  - id: docs-media.generated-proof
+    domain: docs_media
+    gap: Missing generated media proof
+    owner: docs-media
+    severity: major
+    declared_at: "2026-05-02"
+    review_after: "2026-08-01"
+    issue: "#590"
+    next_evidence: devtools render-docs-surface --check
+""",
+        encoding="utf-8",
+    )
+
+    errors = verify_manifests.check_coverage_gaps(plans)
+
+    assert errors == [
+        f"{plans / 'example-coverage.yaml'}: coverage_gaps[1] 'docs-media.generated-proof' "
+        "duplicate proof subject slug 'docs-media-generated-proof'"
+    ]
