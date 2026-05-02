@@ -91,6 +91,7 @@ async def run_sources(
     raw_batch_size: int = 50,
     ingest_workers: int | None = None,
     measure_ingest_result_size: bool = False,
+    force_write: bool = False,
     backend: SQLiteBackend | None = None,
     repository: ConversationRepository | None = None,
 ) -> RunResult:
@@ -156,6 +157,7 @@ async def run_sources(
                 raw_batch_size=raw_batch_size,
                 ingest_workers=ingest_workers,
                 measure_ingest_result_size=measure_ingest_result_size,
+                force_write=force_write,
             )
             sm.sub_timings.update({f"{k}_s": v for k, v in ingest_result.timings.items()})
             sm.details.update(_json_detail_payload(ingest_result.diagnostics))

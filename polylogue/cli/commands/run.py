@@ -35,6 +35,7 @@ from polylogue.cli.shared.run_workflow import (
 )
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Source
+from polylogue.maintenance.resources import apply_resource_boundary, normalize_resource_mode, pipeline_resource_request
 from polylogue.pipeline.observers import (
     CompositeObserver,
     ExecObserver,
@@ -196,6 +197,13 @@ def _build_transient_sources(paths: tuple[Path, ...]) -> list[Source]:
 @click.option("--exec", "exec_cmd", help="Execute command on conversation changes (requires --watch)")
 @click.option("--webhook", help="Call webhook URL on conversation changes (requires --watch)")
 @click.option("--reparse", is_flag=True, help="Force re-parsing of all raw conversations (clears parse tracking)")
+@click.option(
+    "--resource-mode",
+    type=click.Choice(["auto", "scope", "process", "off"]),
+    default="auto",
+    show_default=True,
+    help="Resource isolation for heavy foreground runs.",
+)
 @click.pass_context
 def run_command(
     ctx: click.Context,
@@ -207,6 +215,7 @@ def run_command(
     exec_cmd: str | None,
     webhook: str | None,
     reparse: bool,
+    resource_mode: str,
 ) -> None:
     """Run pipeline stages on configured sources and/or transient input paths."""
 
@@ -224,6 +233,7 @@ def _run_result_callback(
     exec_cmd: str | None,
     webhook: str | None,
     reparse: bool,
+    resource_mode: str,
 ) -> None:
     env: AppEnv = ctx.obj
     if (notify or exec_cmd or webhook) and not watch:
@@ -255,7 +265,7 @@ def _run_result_callback(
     # When chained with other stages, run embed first, then strip it
     # from the sequence so the pipeline sees only real pipeline stages.
     if embed_options is not None:
-        _run_embed_standalone(ctx.obj, embed_options)
+        _run_embed_standalone(ctx.obj, embed_options, resource_mode=resource_mode)
         remaining = tuple(s for s in stage_sequence if s != "embed")
         if not remaining:
             return
@@ -308,6 +318,18 @@ def _run_result_callback(
         env.ui.console.print("Cancelled.")
         return
 
+    boundary = apply_resource_boundary(
+        pipeline_resource_request(
+            stage_sequence=tuple(stage_sequence),
+            preview=preview,
+            watch=watch,
+            embed_batch=False,
+            resource_mode=normalize_resource_mode(resource_mode),
+        )
+    )
+    if boundary.heavy:
+        env.ui.console.print(f"Resource mode: {boundary.effective_mode} ({boundary.status})")
+
     if reparse:
         reset_count = run_coroutine_sync(env.repository.reset_parse_status(source_names=selected_sources or None))
         click.echo(f"Reset parse status for {reset_count:,} raw records.", err=False)
@@ -347,6 +369,7 @@ def _run_result_callback(
                 plan_snapshot=plan_snapshot,
                 observer=composite,
                 site_options=site_options,
+                force_write=reparse,
             )
 
         env.ui.console.print("Watch mode: syncing every 60 seconds. Press Ctrl+C to stop.")
@@ -369,6 +392,7 @@ def _run_result_callback(
             render_format,
             plan_snapshot,
             site_options=site_options,
+            force_write=reparse,
         )
     except DriveError as exc:
         fail("run", str(exc))
@@ -496,7 +520,7 @@ def run_site_stage(
     )
 
 
-def _run_embed_standalone(env: AppEnv, opts: EmbedOptions) -> None:
+def _run_embed_standalone(env: AppEnv, opts: EmbedOptions, *, resource_mode: str) -> None:
     """Execute the embed stage directly, outside the normal pipeline flow."""
     import os
 
@@ -516,6 +540,18 @@ def _run_embed_standalone(env: AppEnv, opts: EmbedOptions) -> None:
     if opts.stats:
         show_embedding_stats(env, json_output=opts.json_output)
         return
+
+    boundary = apply_resource_boundary(
+        pipeline_resource_request(
+            stage_sequence=("embed",),
+            preview=False,
+            watch=False,
+            embed_batch=opts.conversation is None,
+            resource_mode=normalize_resource_mode(resource_mode),
+        )
+    )
+    if boundary.heavy:
+        env.ui.console.print(f"Resource mode: {boundary.effective_mode} ({boundary.status})")
 
     from polylogue.storage.search_providers import create_vector_provider
 
