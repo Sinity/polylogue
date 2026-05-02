@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import time
 from typing import TYPE_CHECKING
 
@@ -96,6 +97,8 @@ async def run_sources(
     repository: ConversationRepository | None = None,
 ) -> RunResult:
     """Run the async pipeline with stage control."""
+    if force_write:
+        os.environ["POLYLOGUE_FORCE_WRITE"] = "1"
     start = time.perf_counter()
     metrics = PipelineMetrics()
     state = RunExecutionState()

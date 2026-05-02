@@ -149,7 +149,7 @@ def _message_tuple(
     role: str,
     text: str,
     content_hash: str,
-    sort_key: float,
+    sort_key: float | None,
 ) -> MessageTuple:
     return (
         MessageId(message_id),
@@ -443,19 +443,20 @@ def test_write_conversation_replaces_runtime_rows_on_content_change(tmp_path: Pa
         assert stats_row[0] == 1
 
 
-def test_write_conversation_force_write_replaces_same_hash_rows(tmp_path: Path) -> None:
+def test_write_conversation_force_write_updates_sort_key_only(tmp_path: Path) -> None:
+    """force_write with identical content updates sort_key without DELETE+INSERT cascade."""
     with open_connection(tmp_path / "ingest.db") as conn:
         v1 = _conversation_data(
             "codex:force",
             content_hash="same-hash",
             message_tuples=[
                 _message_tuple(
-                    "msg-old",
+                    "msg-1",
                     "codex:force",
                     role="user",
-                    text="old",
-                    content_hash="msg-old",
-                    sort_key=1.0,
+                    text="hello",
+                    content_hash="msg-hash",
+                    sort_key=None,
                 )
             ],
         )
@@ -467,12 +468,12 @@ def test_write_conversation_force_write_replaces_same_hash_rows(tmp_path: Path) 
             content_hash="same-hash",
             message_tuples=[
                 _message_tuple(
-                    "msg-new",
+                    "msg-1",
                     "codex:force",
-                    role="assistant",
-                    text="new",
-                    content_hash="msg-new",
-                    sort_key=1.0,
+                    role="user",
+                    text="hello",
+                    content_hash="msg-hash",
+                    sort_key=1777636800.0,
                 )
             ],
         )
@@ -486,10 +487,14 @@ def test_write_conversation_force_write_replaces_same_hash_rows(tmp_path: Path) 
         conn.commit()
 
         rows = conn.execute(
-            "SELECT message_id, role, text FROM messages WHERE conversation_id = ?",
+            "SELECT message_id, role, text, sort_key FROM messages WHERE conversation_id = ?",
             ("codex:force",),
         ).fetchall()
-        assert [(row["message_id"], row["role"], row["text"]) for row in rows] == [("msg-new", "assistant", "new")]
+        assert len(rows) == 1
+        assert rows[0]["message_id"] == "msg-1"
+        assert rows[0]["role"] == "user"
+        assert rows[0]["text"] == "hello"
+        assert rows[0]["sort_key"] == 1777636800.0
 
 
 def test_iter_ingest_results_sync_runs_inline_for_single_worker(

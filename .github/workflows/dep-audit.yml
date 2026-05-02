@@ -2,22 +2,6 @@ name: Dependency Audit
 
 on:
   workflow_dispatch:
-  push:
-    branches: [master]
-    paths:
-      - "pyproject.toml"
-      - "uv.lock"
-      - ".github/workflows/dep-audit.yml"
-  pull_request:
-    branches: [master]
-    paths:
-      - "pyproject.toml"
-      - "uv.lock"
-      - ".github/workflows/dep-audit.yml"
-  schedule:
-    # Weekly Monday 06:00 UTC — picks up newly-disclosed CVEs against the
-    # current pinned lockfile even when no PR touches dependencies.
-    - cron: "0 6 * * 1"
 
 permissions:
   contents: read

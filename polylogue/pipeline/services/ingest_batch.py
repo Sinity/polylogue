@@ -182,6 +182,7 @@ WHERE
     OR IFNULL(parent_conversation_id, '') != IFNULL(excluded.parent_conversation_id, '')
     OR IFNULL(branch_type, '') != IFNULL(excluded.branch_type, '')
     OR IFNULL(raw_id, '') != IFNULL(excluded.raw_id, '')
+    OR IFNULL(sort_key, 0) != IFNULL(excluded.sort_key, 0)
 """
 
 _MESSAGE_UPSERT_SQL = """
@@ -443,7 +444,7 @@ def _write_conversation(
         "skipped_attachments": 0,
     }
 
-    content_unchanged = (not force_write) and _check_content_unchanged(conn, cdata.conversation_id, cdata.content_hash)
+    content_unchanged = _check_content_unchanged(conn, cdata.conversation_id, cdata.content_hash)
 
     if not force_write and content_unchanged:
         counts["skipped_conversations"] = 1
