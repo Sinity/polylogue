@@ -1,4 +1,4 @@
-"""Session-level derived product storage models."""
+"""Session-level derived insight storage models."""
 
 from __future__ import annotations
 

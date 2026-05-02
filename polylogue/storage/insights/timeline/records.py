@@ -1,4 +1,4 @@
-"""Timeline-oriented derived product storage models."""
+"""Timeline-oriented derived insight storage models."""
 
 from __future__ import annotations
 
