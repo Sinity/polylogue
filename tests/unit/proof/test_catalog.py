@@ -97,6 +97,12 @@ def test_default_catalog_compiles_first_vertical_slice() -> None:
     assert {"distribution", "docs_media", "performance", "security_privacy", "test_quality"}.issubset(
         coverage_gap_domains
     )
+    coverage_gap_attrs = [subject.attrs for subject in catalog.subjects if subject.kind == "assurance.coverage_gap"]
+    assert all(attrs.get("gap_id") for attrs in coverage_gap_attrs)
+    assert all(attrs.get("severity") for attrs in coverage_gap_attrs)
+    assert all(attrs.get("declared_at") for attrs in coverage_gap_attrs)
+    assert all(attrs.get("review_after") for attrs in coverage_gap_attrs)
+    assert all(attrs.get("issue") or attrs.get("suppression") for attrs in coverage_gap_attrs)
     assert {runner.claim_id for runner in catalog.runner_bindings} == {claim.id for claim in catalog.claims}
     assert {"smoke", "semantic", "structural", "trace"}.issubset(
         {runner.evidence_class for runner in catalog.runner_bindings}

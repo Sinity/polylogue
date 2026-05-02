@@ -110,27 +110,57 @@ artifacts:
       3.13). No macOS or Windows runners.
 
 coverage_gaps:
-  - artifact: wheel
+  - id: distribution.wheel-ci
+    artifact: wheel
     gap: Distribution gate exists locally but is not scheduled in CI
     owner: distribution
-    next_evidence: Add CI job for devtools verify-distribution-surface
-  - artifact: sdist
+    severity: major
+    declared_at: "2026-05-02"
+    review_after: "2026-08-01"
+    issue: 593
+    next_evidence: devtools verify-distribution-surface
+  - id: distribution.sdist-ci
+    artifact: sdist
     gap: Distribution gate exists locally but is not scheduled in CI
     owner: distribution
-    next_evidence: Add CI job for devtools verify-distribution-surface
-  - artifact: dev_install
+    severity: major
+    declared_at: "2026-05-02"
+    review_after: "2026-08-01"
+    issue: 593
+    next_evidence: devtools verify-distribution-surface
+  - id: distribution.dev-install-ci
+    artifact: dev_install
     gap: Not verified in CI; devshell is canonical environment
     owner: distribution
-    next_evidence: Add package/build or cross-artifact CI gate
-  - platform: macos
+    severity: minor
+    declared_at: "2026-05-02"
+    review_after: "2026-08-01"
+    issue: 593
+    next_evidence: devtools verify-distribution-surface
+  - id: distribution.macos-ci
+    platform: macos
     gap: No macOS CI runner
     owner: distribution
-    next_evidence: Add package/build or cross-artifact CI gate
-  - platform: windows
+    severity: minor
+    declared_at: "2026-05-02"
+    review_after: "2026-08-01"
+    issue: 593
+    next_evidence: devtools verify-distribution-surface
+  - id: distribution.windows-ci
+    platform: windows
     gap: No Windows CI runner
     owner: distribution
-    next_evidence: Add package/build or cross-artifact CI gate
-  - concern: install_parity
+    severity: minor
+    declared_at: "2026-05-02"
+    review_after: "2026-08-01"
+    issue: 593
+    next_evidence: devtools verify-distribution-surface
+  - id: distribution.nix-wheel-parity
+    concern: install_parity
     gap: Local gate smokes wheel and sdist-built wheel, but exact Nix/devshell parity is not yet compared in CI
     owner: distribution
-    next_evidence: Add CI job comparing devtools verify-distribution-surface with nix flake check smoke output
+    severity: major
+    declared_at: "2026-05-02"
+    review_after: "2026-08-01"
+    issue: 593
+    next_evidence: devtools verify-distribution-surface

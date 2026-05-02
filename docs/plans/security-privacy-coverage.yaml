@@ -161,19 +161,39 @@ areas:
       pip-audit, etc.) configured in CI.
 
 coverage_gaps:
-   - area: xss_prevention
+   - id: security.xss-prevention
+     area: xss_prevention
      gap: No dedicated XSS test file; relies on snapshot rendering
      owner: security-privacy
-     next_evidence: Add dedicated security/privacy gate for this area
-   - area: dependency_audit
+     severity: major
+     declared_at: "2026-05-02"
+     review_after: "2026-08-01"
+     issue: 590
+     next_evidence: pytest -q tests/unit/security
+   - id: security.dependency-audit
+     area: dependency_audit
      gap: No dependency vulnerability scanning in CI
      owner: security-privacy
-     next_evidence: Add dedicated security/privacy gate for this area
-   - area: file_permissions
+     severity: major
+     declared_at: "2026-05-02"
+     review_after: "2026-08-01"
+     issue: 590
+     next_evidence: devtools verify --quick
+   - id: security.file-permissions
+     area: file_permissions
      gap: Crawl-source file permissions not verified
      owner: security-privacy
-     next_evidence: Add dedicated security/privacy gate for this area
-   - area: secrets_detection
+     severity: major
+     declared_at: "2026-05-02"
+     review_after: "2026-08-01"
+     issue: 590
+     next_evidence: pytest -q tests/unit/security
+   - id: security.secrets-detection
+     area: secrets_detection
      gap: No automated secrets scanning in CI
      owner: security-privacy
-     next_evidence: Add dedicated security/privacy gate for this area
+     severity: major
+     declared_at: "2026-05-02"
+     review_after: "2026-08-01"
+     issue: 590
+     next_evidence: devtools verify --quick

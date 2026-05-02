@@ -91,27 +91,57 @@ families:
       and pipeline-probe execution kinds.
 
 coverage_gaps:
-  - subject: storage_correctness
+  - id: scenario.storage-correctness
+    subject: storage_correctness
     gap: No dedicated scenario family for storage-layer verification
     owner: scenario-coverage
-    next_evidence: Add scenario family or generated projection for this subject
-  - subject: performance
+    severity: major
+    declared_at: "2026-05-02"
+    review_after: "2026-08-01"
+    issue: 590
+    next_evidence: devtools scenario-projections
+  - id: scenario.performance
+    subject: performance
     gap: No scenario family exercising memory or throughput budgets
     owner: scenario-coverage
-    next_evidence: Add scenario family or generated projection for this subject
-  - subject: security_privacy
+    severity: major
+    declared_at: "2026-05-02"
+    review_after: "2026-08-01"
+    issue: 590
+    next_evidence: devtools scenario-projections
+  - id: scenario.security-privacy
+    subject: security_privacy
     gap: Security verification uses unit tests, not scenario specs
     owner: scenario-coverage
-    next_evidence: Add scenario family or generated projection for this subject
-  - subject: distribution
+    severity: major
+    declared_at: "2026-05-02"
+    review_after: "2026-08-01"
+    issue: 590
+    next_evidence: devtools scenario-projections
+  - id: scenario.distribution
+    subject: distribution
     gap: No scenario for install/package verification
     owner: scenario-coverage
-    next_evidence: Add scenario family or generated projection for this subject
-  - subject: migration_safety
+    severity: major
+    declared_at: "2026-05-02"
+    review_after: "2026-08-01"
+    issue: 590
+    next_evidence: devtools scenario-projections
+  - id: scenario.migration-safety
+    subject: migration_safety
     gap: No scenario for migration safety verification
     owner: scenario-coverage
-    next_evidence: Add scenario family or generated projection for this subject
-  - subject: docs_media
+    severity: major
+    declared_at: "2026-05-02"
+    review_after: "2026-08-01"
+    issue: 590
+    next_evidence: devtools scenario-projections
+  - id: scenario.docs-media
+    subject: docs_media
     gap: No scenario for documentation freshness verification
     owner: scenario-coverage
-    next_evidence: Add scenario family or generated projection for this subject
+    severity: major
+    declared_at: "2026-05-02"
+    review_after: "2026-08-01"
+    issue: 590
+    next_evidence: devtools scenario-projections

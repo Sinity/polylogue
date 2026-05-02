@@ -6,10 +6,18 @@ consistent. Runs as part of devtools verify.
 
 from __future__ import annotations
 
+import shlex
 import sys
+from datetime import date
 from pathlib import Path
 
 import yaml
+
+from devtools.command_catalog import COMMANDS
+
+_COVERAGE_AXIS_KEYS = ("domain", "subject", "area", "dimension", "artifact", "platform", "concern")
+_COVERAGE_GAP_SEVERITIES = {"info", "minor", "major", "serious"}
+_EVIDENCE_COMMANDS = {"pytest", "ruff", "mypy", "nix", "polylogue", "polylogued", "polylogue-mcp"}
 
 
 def load_manifest(path: Path) -> dict[str, object]:
@@ -130,6 +138,8 @@ def check_assurance_domains(plans_dir: Path) -> list[str]:
 def check_coverage_gaps(plans_dir: Path) -> list[str]:
     """Validate that passive coverage gaps are tracked as actionable records."""
     errors: list[str] = []
+    gap_ids: set[str] = set()
+    gap_subject_leaves: set[str] = set()
     for path in sorted(plans_dir.glob("*coverage*.yaml")):
         try:
             data = load_manifest(path)
@@ -146,16 +156,90 @@ def check_coverage_gaps(plans_dir: Path) -> list[str]:
             if not isinstance(gap, dict):
                 errors.append(f"{path}: coverage_gaps[{index}] must be a mapping")
                 continue
-            axis_keys = ("domain", "subject", "area", "dimension", "artifact", "platform", "concern")
-            if not any(isinstance(gap.get(key), str) and gap.get(key, "").strip() for key in axis_keys):
+            label = _coverage_gap_label(path, index, gap)
+            gap_id = gap.get("id")
+            if not isinstance(gap_id, str) or not gap_id.strip():
+                errors.append(f"{label} missing id")
+            elif gap_id in gap_ids:
+                errors.append(f"{label} duplicate id {gap_id!r}")
+            else:
+                gap_ids.add(gap_id)
+                gap_subject_leaf = _coverage_gap_slug(gap_id)
+                if gap_subject_leaf in gap_subject_leaves:
+                    errors.append(f"{label} duplicate proof subject slug {gap_subject_leaf!r}")
+                else:
+                    gap_subject_leaves.add(gap_subject_leaf)
+            if not any(isinstance(gap.get(key), str) and gap.get(key, "").strip() for key in _COVERAGE_AXIS_KEYS):
                 errors.append(f"{path}: coverage_gaps[{index}] missing coverage axis")
             if not isinstance(gap.get("gap"), str) or not gap.get("gap", "").strip():
-                errors.append(f"{path}: coverage_gaps[{index}] missing gap text")
+                errors.append(f"{label} missing gap text")
             if not isinstance(gap.get("owner"), str) or not gap.get("owner", "").strip():
-                errors.append(f"{path}: coverage_gaps[{index}] missing owner")
-            if not isinstance(gap.get("next_evidence"), str) or not gap.get("next_evidence", "").strip():
-                errors.append(f"{path}: coverage_gaps[{index}] missing next_evidence")
+                errors.append(f"{label} missing owner")
+            severity = gap.get("severity")
+            if severity not in _COVERAGE_GAP_SEVERITIES:
+                errors.append(f"{label} missing or invalid severity")
+            for field in ("declared_at", "review_after"):
+                if not _valid_iso_date(gap.get(field)):
+                    errors.append(f"{label} missing or invalid {field}")
+            issue = gap.get("issue")
+            suppression = gap.get("suppression")
+            if not _valid_issue_ref(issue) and not _valid_suppression_ref(suppression):
+                errors.append(f"{label} missing issue or suppression")
+            next_evidence = gap.get("next_evidence")
+            if not isinstance(next_evidence, str) or not next_evidence.strip():
+                errors.append(f"{label} missing next_evidence")
+            elif not _resolvable_next_evidence(next_evidence):
+                errors.append(f"{label} next_evidence does not resolve to a known command")
     return errors
+
+
+def _coverage_gap_label(path: Path, index: int, gap: dict[object, object]) -> str:
+    gap_id = gap.get("id")
+    if isinstance(gap_id, str) and gap_id.strip():
+        return f"{path}: coverage_gaps[{index}] {gap_id!r}"
+    return f"{path}: coverage_gaps[{index}]"
+
+
+def _valid_iso_date(value: object) -> bool:
+    if not isinstance(value, str) or not value.strip():
+        return False
+    try:
+        date.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
+
+
+def _valid_issue_ref(value: object) -> bool:
+    if isinstance(value, int):
+        return value > 0
+    if not isinstance(value, str):
+        return False
+    stripped = value.strip()
+    if stripped.startswith("#"):
+        stripped = stripped[1:]
+    return stripped.isdecimal() and int(stripped) > 0
+
+
+def _valid_suppression_ref(value: object) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _resolvable_next_evidence(value: str) -> bool:
+    try:
+        tokens = shlex.split(value)
+    except ValueError:
+        return False
+    if not tokens:
+        return False
+    command = tokens[0]
+    if command == "devtools":
+        return len(tokens) >= 2 and tokens[1] in COMMANDS
+    return command in _EVIDENCE_COMMANDS
+
+
+def _coverage_gap_slug(value: str) -> str:
+    return "".join(char if char.isalnum() else "-" for char in value.lower()).strip("-") or "unnamed"
 
 
 def main(argv: list[str] | None = None) -> int:

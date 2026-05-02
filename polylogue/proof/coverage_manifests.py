@@ -165,10 +165,16 @@ def _iter_manifest_gaps(entry: CoverageManifestEntry) -> Iterator[dict[str, Any]
         axis = _gap_axis(payload)
         yield {
             "index": index,
+            "id": str(payload.get("id") or ""),
             "axis": axis,
             "domain": _gap_domain(entry, axis, payload),
             "gap": str(payload.get("gap") or payload.get("note") or payload.get("value") or ""),
             "owner": str(payload.get("owner") or ""),
+            "severity": str(payload.get("severity") or ""),
+            "declared_at": str(payload.get("declared_at") or ""),
+            "review_after": str(payload.get("review_after") or ""),
+            "issue": str(payload.get("issue") or ""),
+            "suppression": str(payload.get("suppression") or ""),
             "next_evidence": str(payload.get("next_evidence") or ""),
             "payload": payload,
         }
@@ -207,15 +213,23 @@ def _coverage_item_subject(entry: CoverageManifestEntry, item: Mapping[str, Any]
 def _coverage_gap_subject(entry: CoverageManifestEntry, gap: Mapping[str, Any]) -> SubjectRef:
     index = int(gap.get("index") or 0)
     axis = str(gap.get("axis") or "gap")
+    gap_id = str(gap.get("id") or "")
     domain = str(gap.get("domain") or entry.domain)
-    subject_id = f"assurance.coverage_gap.{entry.manifest_id}.{index:03d}.{_slug(axis)}"
+    subject_leaf = _slug(gap_id) if gap_id else f"{index:03d}.{_slug(axis)}"
+    subject_id = f"assurance.coverage_gap.{entry.manifest_id}.{subject_leaf}"
     attrs = _json_document(
         {
             "manifest_id": entry.manifest_id,
+            "gap_id": gap_id,
             "assurance_domain": domain,
             "axis": axis,
             "gap": str(gap.get("gap") or ""),
             "owner": str(gap.get("owner") or ""),
+            "severity": str(gap.get("severity") or ""),
+            "declared_at": str(gap.get("declared_at") or ""),
+            "review_after": str(gap.get("review_after") or ""),
+            "issue": str(gap.get("issue") or ""),
+            "suppression": str(gap.get("suppression") or ""),
             "next_evidence": str(gap.get("next_evidence") or ""),
             "path": entry.repo_path,
         }
