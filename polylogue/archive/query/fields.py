@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime
-from typing import Protocol, TypeAlias, cast
+from typing import Literal, Protocol, TypeAlias, cast
 
 from polylogue.storage.query_models import ConversationRecordQuery
 from polylogue.types import Provider
@@ -16,7 +16,18 @@ StorageValue = Callable[[object], object]
 _ReplaceRecordQuery: Callable[..., ConversationRecordQuery] = replace
 SqlPushdownValue: TypeAlias = str | int | bool | list[str]
 SqlPushdownParams: TypeAlias = dict[str, SqlPushdownValue]
-CompletionSource: TypeAlias = str
+CompletionSource: TypeAlias = Literal[
+    "action",
+    "action_sequence",
+    "conversation_id",
+    "cwd_prefix",
+    "message_type",
+    "provider",
+    "repo",
+    "retrieval_lane",
+    "tag",
+    "tool",
+]
 
 
 class _ProviderScopedPlan(Protocol):
@@ -215,6 +226,8 @@ QUERY_FIELD_DESCRIPTORS: tuple[QueryFieldDescriptor, ...] = (
         spec_description=_label("retrieval"),
         plan_description=_label("retrieval"),
         selection_filter=False,
+        completion_source="retrieval_lane",
+        completion_label="retrieval lane",
     ),
     QueryFieldDescriptor(
         name="referenced_path",
@@ -257,6 +270,8 @@ QUERY_FIELD_DESCRIPTORS: tuple[QueryFieldDescriptor, ...] = (
         requires_content_loading=True,
         blocks_sql_count=True,
         blocks_simple_message_hit=True,
+        completion_source="action",
+        completion_label="action",
     ),
     QueryFieldDescriptor(
         name="excluded_action_terms",
@@ -271,6 +286,8 @@ QUERY_FIELD_DESCRIPTORS: tuple[QueryFieldDescriptor, ...] = (
         requires_content_loading=True,
         blocks_sql_count=True,
         blocks_simple_message_hit=True,
+        completion_source="action",
+        completion_label="action",
     ),
     QueryFieldDescriptor(
         name="action_sequence",
@@ -285,6 +302,8 @@ QUERY_FIELD_DESCRIPTORS: tuple[QueryFieldDescriptor, ...] = (
         blocks_sql_count=True,
         blocks_action_event_stats=True,
         blocks_simple_message_hit=True,
+        completion_source="action_sequence",
+        completion_label="action sequence",
     ),
     QueryFieldDescriptor(
         name="action_text_terms",
@@ -750,7 +769,20 @@ def storage_filters_require_stats_join(filters: Mapping[str, object]) -> bool:
     return False
 
 
+def query_completion_sources() -> tuple[CompletionSource, ...]:
+    return tuple(
+        sorted(
+            {
+                descriptor.completion_source
+                for descriptor in QUERY_FIELD_DESCRIPTORS
+                if descriptor.completion_source is not None
+            }
+        )
+    )
+
+
 __all__ = [
+    "CompletionSource",
     "QUERY_FIELD_DESCRIPTORS",
     "QueryFieldDescriptor",
     "SqlPushdownParams",
@@ -762,6 +794,7 @@ __all__ = [
     "has_message_content_type_filter",
     "plan_has_fields_matching",
     "plan_has_selection_filters",
+    "query_completion_sources",
     "query_spec_has_selection_filters",
     "sql_pushdown_params_for_plan",
     "storage_filters_require_stats_join",

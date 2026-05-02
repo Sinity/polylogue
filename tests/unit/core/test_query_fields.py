@@ -9,6 +9,7 @@ import pytest
 from polylogue.archive.query.fields import (
     QUERY_FIELD_DESCRIPTORS,
     active_plan_field_names,
+    query_completion_sources,
     storage_filters_require_stats_join,
 )
 from polylogue.archive.query.plan import ConversationQueryPlan
@@ -139,6 +140,11 @@ def test_query_field_catalog_marks_completion_sources() -> None:
 
     assert descriptors["conversation_id"].completion_source == "conversation_id"
     assert descriptors["since_session_id"].completion_source == "conversation_id"
+    assert descriptors["retrieval_lane"].completion_source == "retrieval_lane"
+    assert descriptors["referenced_path"].completion_source is None
+    assert descriptors["action_terms"].completion_source == "action"
+    assert descriptors["excluded_action_terms"].completion_source == "action"
+    assert descriptors["action_sequence"].completion_source == "action_sequence"
     assert descriptors["providers"].completion_source == "provider"
     assert descriptors["excluded_providers"].completion_source == "provider"
     assert descriptors["repo_names"].completion_source == "repo"
@@ -148,6 +154,18 @@ def test_query_field_catalog_marks_completion_sources() -> None:
     assert descriptors["tool_terms"].completion_source == "tool"
     assert descriptors["excluded_tool_terms"].completion_source == "tool"
     assert descriptors["message_type"].completion_source == "message_type"
+    assert query_completion_sources() == (
+        "action",
+        "action_sequence",
+        "conversation_id",
+        "cwd_prefix",
+        "message_type",
+        "provider",
+        "repo",
+        "retrieval_lane",
+        "tag",
+        "tool",
+    )
 
 
 def test_query_spec_normalizers_cover_scalar_iterable_and_error_paths() -> None:

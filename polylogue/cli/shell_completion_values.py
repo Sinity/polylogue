@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Final
 
 import click
 from click.shell_completion import CompletionItem
 
+from polylogue.archive.message.types import MessageType
+from polylogue.archive.query.fields import CompletionSource
+from polylogue.archive.query.spec import QUERY_ACTION_TYPES, QUERY_RETRIEVAL_LANES, QUERY_SEQUENCE_ACTION_TYPES
 from polylogue.paths import db_path
 from polylogue.storage.backends.connection import open_read_connection
 
@@ -23,6 +26,7 @@ _PROVIDER_DESCRIPTIONS: Final[dict[str, str]] = {
 _MAX_ID_COMPLETIONS = 24
 _MAX_VALUE_COMPLETIONS = 32
 CompletionHelpBuilder = Callable[[sqlite3.Row], str]
+CompletionCallback = Callable[[click.Context, click.Parameter, str], list[CompletionItem]]
 
 
 def _split_csv_incomplete(incomplete: str) -> tuple[str, str]:
@@ -77,6 +81,18 @@ def _trim_help(value: str, *, limit: int = 72) -> str:
     return cleaned[: limit - 1] + "…"
 
 
+def _static_completion_items(
+    values: tuple[str, ...],
+    incomplete: str,
+    *,
+    csv: bool = False,
+) -> list[CompletionItem]:
+    prefix, current = _split_csv_incomplete(incomplete) if csv else ("", incomplete.strip())
+    current_lower = current.lower()
+    items = [CompletionItem(value) for value in values if not current_lower or value.lower().startswith(current_lower)]
+    return _with_csv_prefix(items, prefix) if csv else items
+
+
 def complete_provider_values(
     ctx: click.Context,
     param: click.Parameter,
@@ -91,6 +107,42 @@ def complete_provider_values(
         if not current_lower or name.startswith(current_lower)
     ]
     return _with_csv_prefix(items, prefix)
+
+
+def complete_action_values(
+    ctx: click.Context,
+    param: click.Parameter,
+    incomplete: str,
+) -> list[CompletionItem]:
+    del ctx, param
+    return _static_completion_items(QUERY_ACTION_TYPES, incomplete)
+
+
+def complete_action_sequence_values(
+    ctx: click.Context,
+    param: click.Parameter,
+    incomplete: str,
+) -> list[CompletionItem]:
+    del ctx, param
+    return _static_completion_items(QUERY_SEQUENCE_ACTION_TYPES, incomplete, csv=True)
+
+
+def complete_message_type_values(
+    ctx: click.Context,
+    param: click.Parameter,
+    incomplete: str,
+) -> list[CompletionItem]:
+    del ctx, param
+    return _static_completion_items(tuple(message_type.value for message_type in MessageType), incomplete)
+
+
+def complete_retrieval_lane_values(
+    ctx: click.Context,
+    param: click.Parameter,
+    incomplete: str,
+) -> list[CompletionItem]:
+    del ctx, param
+    return _static_completion_items(QUERY_RETRIEVAL_LANES, incomplete)
 
 
 def complete_conversation_ids(
@@ -278,12 +330,36 @@ def complete_tool_values(
     )
 
 
+COMPLETION_SOURCE_HANDLERS: Final[Mapping[CompletionSource, CompletionCallback]] = {
+    "action": complete_action_values,
+    "action_sequence": complete_action_sequence_values,
+    "conversation_id": complete_conversation_ids,
+    "cwd_prefix": complete_cwd_prefix_values,
+    "message_type": complete_message_type_values,
+    "provider": complete_provider_values,
+    "repo": complete_repo_values,
+    "retrieval_lane": complete_retrieval_lane_values,
+    "tag": complete_tag_values,
+    "tool": complete_tool_values,
+}
+
+
+def complete_query_source(source: CompletionSource) -> CompletionCallback:
+    return COMPLETION_SOURCE_HANDLERS[source]
+
+
 __all__ = [
+    "COMPLETION_SOURCE_HANDLERS",
+    "complete_action_sequence_values",
+    "complete_action_values",
     "complete_conversation_ids",
     "complete_cwd_prefix_values",
+    "complete_message_type_values",
     "complete_open_targets",
     "complete_provider_values",
+    "complete_query_source",
     "complete_repo_values",
+    "complete_retrieval_lane_values",
     "complete_tag_values",
     "complete_tool_values",
 ]

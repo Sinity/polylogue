@@ -10,28 +10,23 @@ import click
 from polylogue.archive.message.types import MessageType
 from polylogue.archive.query.spec import QUERY_ACTION_TYPES, QUERY_RETRIEVAL_LANES
 from polylogue.cli.query_contracts import normalize_message_role_option
-from polylogue.cli.shell_completion_values import (
-    complete_conversation_ids,
-    complete_cwd_prefix_values,
-    complete_provider_values,
-    complete_repo_values,
-    complete_tag_values,
-    complete_tool_values,
-)
+from polylogue.cli.shell_completion_values import complete_query_source
 from polylogue.core.provider_identity import CORE_SCHEMA_PROVIDERS
 
 ClickCallable: TypeAlias = Callable[..., object]
 
 # Providers the user can filter by (excludes "unknown" and "drive" which are internal).
 _CLI_PROVIDER_CHOICES: tuple[str, ...] = CORE_SCHEMA_PROVIDERS
-
-
-def _complete_providers(
-    ctx: click.Context,
-    param: click.Parameter,
-    incomplete: str,
-) -> list[click.shell_completion.CompletionItem]:
-    return complete_provider_values(ctx, param, incomplete)
+_complete_action = complete_query_source("action")
+_complete_action_sequence = complete_query_source("action_sequence")
+_complete_conversation_id = complete_query_source("conversation_id")
+_complete_cwd_prefix = complete_query_source("cwd_prefix")
+_complete_message_type = complete_query_source("message_type")
+_complete_provider = complete_query_source("provider")
+_complete_repo = complete_query_source("repo")
+_complete_retrieval_lane = complete_query_source("retrieval_lane")
+_complete_tag = complete_query_source("tag")
+_complete_tool = complete_query_source("tool")
 
 
 def _validate_provider_tokens(
@@ -69,7 +64,7 @@ FILTER_OPTION_DECORATORS: tuple[Callable[[ClickCallable], ClickCallable], ...] =
         "-i",
         "conv_id",
         help="Conversation ID (exact or prefix match)",
-        shell_complete=complete_conversation_ids,
+        shell_complete=_complete_conversation_id,
     ),
     click.option("--contains", "-c", multiple=True, help="FTS term (repeatable = AND)"),
     click.option("--exclude-text", multiple=True, help="Exclude FTS term"),
@@ -77,30 +72,29 @@ FILTER_OPTION_DECORATORS: tuple[Callable[[ClickCallable], ClickCallable], ...] =
         "--retrieval-lane",
         type=click.Choice(QUERY_RETRIEVAL_LANES),
         help="Query lane: dialogue FTS, action text, or hybrid",
+        shell_complete=_complete_retrieval_lane,
     ),
     click.option(
         "--provider",
         "-p",
         help="Include providers (comma = OR)",
         callback=_validate_provider_tokens,
-        shell_complete=_complete_providers,
+        shell_complete=_complete_provider,
     ),
     click.option(
         "--exclude-provider",
         help="Exclude providers",
         callback=_validate_provider_tokens,
-        shell_complete=_complete_providers,
+        shell_complete=_complete_provider,
     ),
     click.option(
         "--repo",
         "-r",
         help="Filter by repository name (comma = OR)",
-        shell_complete=complete_repo_values,
+        shell_complete=_complete_repo,
     ),
-    click.option(
-        "--tag", "-t", help="Include tags (comma = OR, supports key:value)", shell_complete=complete_tag_values
-    ),
-    click.option("--exclude-tag", help="Exclude tags", shell_complete=complete_tag_values),
+    click.option("--tag", "-t", help="Include tags (comma = OR, supports key:value)", shell_complete=_complete_tag),
+    click.option("--exclude-tag", help="Exclude tags", shell_complete=_complete_tag),
     click.option("--title", help="Title contains"),
     click.option(
         "--referenced-path",
@@ -113,23 +107,26 @@ FILTER_OPTION_DECORATORS: tuple[Callable[[ClickCallable], ClickCallable], ...] =
         "cwd_prefix",
         default=None,
         help="Filter conversations whose recorded working directory starts with this prefix",
-        shell_complete=complete_cwd_prefix_values,
+        shell_complete=_complete_cwd_prefix,
     ),
     click.option(
         "--action",
         multiple=True,
         type=click.Choice(QUERY_ACTION_TYPES),
         help="Require semantic action category (repeatable = AND)",
+        shell_complete=_complete_action,
     ),
     click.option(
         "--exclude-action",
         multiple=True,
         type=click.Choice(QUERY_ACTION_TYPES),
         help="Exclude semantic action category (repeatable = AND)",
+        shell_complete=_complete_action,
     ),
     click.option(
         "--action-sequence",
         help="Require ordered semantic action subsequence (comma-separated)",
+        shell_complete=_complete_action_sequence,
     ),
     click.option(
         "--action-text",
@@ -140,13 +137,13 @@ FILTER_OPTION_DECORATORS: tuple[Callable[[ClickCallable], ClickCallable], ...] =
         "--tool",
         multiple=True,
         help="Require normalized tool name (repeatable = AND)",
-        shell_complete=complete_tool_values,
+        shell_complete=_complete_tool,
     ),
     click.option(
         "--exclude-tool",
         multiple=True,
         help="Exclude normalized tool name (repeatable = AND)",
-        shell_complete=complete_tool_values,
+        shell_complete=_complete_tool,
     ),
     click.option("--similar", "similar_text", help="Semantic similarity query (requires embeddings)"),
     click.option(
@@ -187,6 +184,7 @@ FILTER_OPTION_DECORATORS: tuple[Callable[[ClickCallable], ClickCallable], ...] =
         "message_type",
         type=click.Choice([message_type.value for message_type in MessageType]),
         help="Filter by message content type (message, summary, tool_use, tool_result, thinking)",
+        shell_complete=_complete_message_type,
     ),
     click.option(
         "--since-session",

@@ -192,6 +192,10 @@ def test_completion_functions_cover_provider_conversation_tag_tool_and_open_targ
 
     provider_items = shell_completion_values.complete_provider_values(ctx, param, "chatgpt,cla")
     assert [item.value for item in provider_items] == ["chatgpt,claude-ai", "chatgpt,claude-code"]
+    action_items = shell_completion_values.complete_action_values(ctx, param, "file")
+    action_sequence_items = shell_completion_values.complete_action_sequence_values(ctx, param, "shell,file")
+    message_type_items = shell_completion_values.complete_message_type_values(ctx, param, "m")
+    retrieval_lane_items = shell_completion_values.complete_retrieval_lane_values(ctx, param, "h")
 
     conversation_rows = [
         {
@@ -201,24 +205,45 @@ def test_completion_functions_cover_provider_conversation_tag_tool_and_open_targ
         }
     ]
     tag_rows = [{"tag_name": "review", "cnt": 3}]
+    repo_rows = [{"repo_name": "polylogue", "cnt": 4}]
+    cwd_rows = [{"cwd_path": "/realm/project/polylogue", "cnt": 2}]
     tool_rows = [{"normalized_tool_name": "read_file", "cnt": 7}]
 
     with patch(
         "polylogue.cli.shell_completion_values._fetch_rows",
-        side_effect=[conversation_rows, conversation_rows, tag_rows, tool_rows],
+        side_effect=[conversation_rows, conversation_rows, tag_rows, repo_rows, cwd_rows, tool_rows],
     ):
         conversation_items = shell_completion_values.complete_conversation_ids(ctx, param, "conv")
         open_items = shell_completion_values.complete_open_targets(ctx, param, "conv")
         tag_items = shell_completion_values.complete_tag_values(ctx, param, "alpha,rev")
+        repo_items = shell_completion_values.complete_repo_values(ctx, param, "old,poly")
+        cwd_items = shell_completion_values.complete_cwd_prefix_values(ctx, param, "/realm")
         tool_items = shell_completion_values.complete_tool_values(ctx, param, "read")
 
+    assert [item.value for item in action_items] == ["file_read", "file_write", "file_edit"]
+    assert "shell,file_read" in [item.value for item in action_sequence_items]
+    assert [item.value for item in message_type_items] == ["message"]
+    assert [item.value for item in retrieval_lane_items] == ["hybrid"]
     assert conversation_items[0].value == "conv-1"
     assert conversation_items[0].help is not None and "claude-code" in conversation_items[0].help
     assert open_items[0].value == "conv-1"
     assert [item.value for item in tag_items] == ["alpha,review"]
     assert tag_items[0].help == "3 conversations"
+    assert [item.value for item in repo_items] == ["old,polylogue"]
+    assert repo_items[0].help == "4 sessions"
+    assert [item.value for item in cwd_items] == ["/realm/project/polylogue"]
+    assert cwd_items[0].help == "2 sessions"
     assert [item.value for item in tool_items] == ["read_file"]
     assert tool_items[0].help == "7 actions"
+
+
+def test_completion_source_registry_covers_descriptor_sources() -> None:
+    from polylogue.archive.query.fields import query_completion_sources
+
+    assert tuple(shell_completion_values.COMPLETION_SOURCE_HANDLERS) == query_completion_sources()
+    assert shell_completion_values.complete_query_source("message_type") is (
+        shell_completion_values.complete_message_type_values
+    )
 
 
 @pytest.fixture
