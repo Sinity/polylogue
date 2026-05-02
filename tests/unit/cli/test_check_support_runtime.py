@@ -49,6 +49,7 @@ def _options(**overrides: object) -> CheckCommandOptions:
         "vacuum": False,
         "deep": False,
         "runtime": False,
+        "check_daemon": False,
         "check_blob": False,
         "check_schemas": False,
         "check_proof": False,
@@ -346,3 +347,21 @@ def test_run_check_workflow_covers_runtime_blob_vacuum_and_persist_paths() -> No
     assert result.blob_report is run_blob_check.return_value
     run_blob_check.assert_called_once_with(env, config, json_output=True)
     persist_run.assert_called_once()
+
+
+def test_run_check_workflow_includes_daemon_status_when_requested() -> None:
+    env = _env()
+    config = _config()
+    report = _report()
+    daemon_report = {"ok": True, "daemon": "polylogued"}
+
+    with (
+        patch("polylogue.cli.shared.check_workflow.load_effective_config", return_value=config),
+        patch("polylogue.cli.shared.check_workflow.get_readiness", return_value=report),
+        patch("polylogue.cli.shared.check_workflow.daemon_status_payload", return_value=daemon_report) as daemon_status,
+    ):
+        result = check_workflow.run_check_workflow(env, _options(check_daemon=True))
+
+    assert result.report is report
+    assert result.daemon_report is daemon_report
+    daemon_status.assert_called_once_with()

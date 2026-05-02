@@ -10,7 +10,7 @@ import click
 from polylogue.api import Polylogue
 from polylogue.core.json import dumps
 from polylogue.daemon.browser_capture import browser_capture_command
-from polylogue.daemon.status import daemon_status_payload
+from polylogue.daemon.status import daemon_status_payload, format_daemon_status_lines
 from polylogue.sources.live import LiveWatcher, WatchSource
 from polylogue.sources.live.watcher import default_sources
 
@@ -44,22 +44,8 @@ def status_command(spool_path: Path | None, output_format: str | None) -> None:
     if output_format == "json":
         click.echo(dumps(payload))
         return
-    click.echo("Polylogue daemon")
-    live = payload["live"]
-    browser_capture = payload["browser_capture"]
-    if isinstance(live, dict):
-        click.echo(f"Live sources: {live.get('existing_source_count', 0)}/{live.get('source_count', 0)} available")
-        sources = live.get("sources", [])
-        if isinstance(sources, list):
-            for source in sources:
-                if isinstance(source, dict):
-                    state = "available" if source.get("exists") else "missing"
-                    click.echo(f"  {source.get('name')}: {source.get('root')} ({state})")
-    if isinstance(browser_capture, dict):
-        click.echo(f"Browser capture spool: {browser_capture.get('spool_path')}")
-        origins = browser_capture.get("allowed_origins", [])
-        origin_text = ", ".join(str(item) for item in origins) if isinstance(origins, list) else str(origins)
-        click.echo(f"Browser capture origins: {origin_text}")
+    for line in format_daemon_status_lines(payload):
+        click.echo(line)
 
 
 @main.command("watch", help="Watch source directories and ingest new sessions live.")

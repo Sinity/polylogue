@@ -8,6 +8,7 @@ from polylogue.cli.shared.check_models import CheckCommandResult
 from polylogue.cli.shared.check_support import format_count_mapping, run_vacuum
 from polylogue.cli.shared.check_workflow import CheckCommandOptions
 from polylogue.cli.shared.types import AppEnv
+from polylogue.daemon.status import format_daemon_status_lines
 from polylogue.readiness import VerifyStatus
 
 # ---------------------------------------------------------------------------
@@ -87,6 +88,13 @@ def append_runtime_lines(lines: list[str], result: CheckCommandResult, *, plain:
         f"  Runtime: {rt_summary.get('ok', 0)} ok, {rt_summary.get('warning', 0)} warnings, "
         f"{rt_summary.get('error', 0)} errors"
     )
+
+
+def append_daemon_lines(lines: list[str], result: CheckCommandResult) -> None:
+    if result.daemon_report is None:
+        return
+    lines.extend(["", "Daemon Components:"])
+    lines.extend(f"  {line}" for line in format_daemon_status_lines(result.daemon_report)[1:])
 
 
 # ---------------------------------------------------------------------------
@@ -197,6 +205,7 @@ def build_report_lines(
     append_artifact_proof_lines(lines, result)
     append_artifact_observation_lines(lines, result)
     append_runtime_lines(lines, result, plain=env.ui.plain)
+    append_daemon_lines(lines, result)
     return lines
 
 
@@ -258,6 +267,7 @@ def render_plain_output(
 
 __all__ = [
     "emit_maintenance_output",
+    "append_daemon_lines",
     "render_plain_output",
     "status_icon",
 ]

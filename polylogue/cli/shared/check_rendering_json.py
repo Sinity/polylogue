@@ -13,6 +13,8 @@ def emit_json_output(result: CheckCommandResult, options: CheckCommandOptions) -
     out = result.report.to_dict()
     if result.runtime_report is not None:
         out["runtime"] = result.runtime_report.to_dict()
+    if result.daemon_report is not None:
+        out["daemon"] = json_document(result.daemon_report)
     if result.schema_report is not None:
         out["schema_verification"] = json_document(result.schema_report.to_dict())
     if result.proof_report is not None:

@@ -229,6 +229,47 @@ def test_check_records_scoped_maintenance_apply(cli_workspace: WorkspacePaths, c
     assert maintenance_item.get("success") is True
 
 
+def test_check_daemon_json_uses_shared_daemon_status(cli_runner: CliRunner) -> None:
+    daemon_report: JSONDocument = {
+        "ok": True,
+        "daemon": "polylogued",
+        "live": {"source_count": 1, "existing_source_count": 1, "sources": []},
+        "browser_capture": {"spool_path": "/tmp/captures"},
+    }
+
+    with patch("polylogue.cli.shared.check_workflow.daemon_status_payload", return_value=daemon_report):
+        result = cli_runner.invoke(cli, ["--plain", "doctor", "--daemon", "--format", "json"])
+
+    assert result.exit_code == 0
+    payload = _extract_json(result.output)
+    daemon = json_object_field(payload, "daemon", context="check payload")
+    assert daemon.get("daemon") == "polylogued"
+    browser_capture = json_object_field(daemon, "browser_capture", context="daemon")
+    assert browser_capture.get("spool_path") == "/tmp/captures"
+
+
+def test_check_daemon_plain_renders_component_status(cli_runner: CliRunner) -> None:
+    daemon_report: JSONDocument = {
+        "ok": True,
+        "daemon": "polylogued",
+        "live": {
+            "source_count": 1,
+            "existing_source_count": 1,
+            "sources": [{"name": "codex", "root": "/tmp/codex", "exists": True}],
+        },
+        "browser_capture": {"spool_path": "/tmp/captures"},
+    }
+
+    with patch("polylogue.cli.shared.check_workflow.daemon_status_payload", return_value=daemon_report):
+        result = cli_runner.invoke(cli, ["--plain", "doctor", "--daemon"])
+
+    assert result.exit_code == 0
+    assert "Daemon Components:" in result.output
+    assert "Live sources: 1/1 available" in result.output
+    assert "codex: /tmp/codex (available)" in result.output
+    assert "Browser capture spool: /tmp/captures" in result.output
+
+
 def test_check_plain_preview_summarizes_changes_not_issues(
     cli_workspace: WorkspacePaths, cli_runner: CliRunner
 ) -> None:
@@ -381,6 +422,7 @@ class TestCheckCommand:
             vacuum=False,
             deep=False,
             runtime=True,
+            check_daemon=False,
             check_blob=False,
             check_schemas=False,
             check_proof=False,
