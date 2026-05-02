@@ -3,73 +3,279 @@
 # Documents active mutation and benchmark campaigns, their paths,
 # and their coverage targets. Consumed by devtools mutmut-campaign
 # and devtools benchmark-campaign.
+#
+# Updated 2026-05-02 from the authored scenario catalog.
 
 description: Mutation and benchmark campaign registry with covered paths and test targets.
 
 mutation_campaigns:
-  - name: filters
-    description: Filter chain mutation testing
+  - name: cli-query
+    description: >
+      Query command planning, action routing, and summary output contracts
     paths_to_mutate:
-      - polylogue/archive/filter/filters.py
+      - polylogue/cli/query.py
+      - polylogue/archive/query/plan.py
+      - polylogue/cli/query_actions.py
+      - polylogue/cli/query_output.py
     tests:
-      - tests/unit/core/test_filters_props.py
+      - tests/unit/cli/test_query_exec.py
+      - tests/unit/cli/test_query_exec_laws.py
+      - tests/unit/cli/test_query_fmt.py
     status: active
 
-  - name: models
-    description: Domain model mutation testing
+  - name: cli-run
+    description: >
+      Run command execution, display, and watch contracts
     paths_to_mutate:
-      - polylogue/types.py
-      - polylogue/archive/message/roles.py
-      - polylogue/core/timestamps.py
-      - polylogue/core/hashing.py
-      - polylogue/core/json.py
+      - polylogue/cli/commands/run.py
     tests:
-      - tests/unit/core/test_models.py
-      - tests/unit/core/test_message_laws.py
-      - tests/unit/core/test_hashing.py
-      - tests/unit/core/test_json.py
-      - tests/unit/core/test_timestamp_guards.py
-    status: active
-
-  - name: search
-    description: FTS5 and hybrid search mutation testing
-    paths_to_mutate:
-      - polylogue/storage/search_providers/fts5.py
-      - polylogue/storage/search_providers/hybrid.py
-    tests:
-      - tests/unit/storage/test_fts5.py
-      - tests/unit/storage/test_hybrid_laws.py
+      - tests/unit/cli/test_run.py
+      - tests/unit/cli/test_run_int.py
+      - tests/unit/cli/test_run_laws.py
     status: active
 
   - name: drive-client
-    description: Drive auth, transport, and parsing mutation testing
+    description: >
+      Drive auth, transport, JSON payload parsing, and ingest attachment contracts
     paths_to_mutate:
       - polylogue/sources/drive/source.py
       - polylogue/sources/drive/gateway.py
       - polylogue/sources/drive/auth.py
       - polylogue/sources/drive/__init__.py
     tests:
-      - tests/unit/sources/test_drive_auth.py
-      - tests/unit/sources/test_drive_gateway.py
-      - tests/unit/sources/test_drive_ops.py
       - tests/unit/sources/test_drive_source_client.py
+      - tests/unit/sources/test_drive_gateway.py
+      - tests/unit/sources/test_drive_auth.py
+      - tests/unit/sources/test_drive_ops.py
+    status: active
+
+  - name: filters
+    description: >
+      ConversationFilter semantics and summary/picker contracts
+    paths_to_mutate:
+      - polylogue/archive/filter/filters.py
+    tests:
+      - tests/unit/core/test_filters_schemas.py
+      - tests/unit/core/test_filters_props.py
+    status: active
+
+  - name: fts5
+    description: >
+      FTS5 query escaping and conversation search semantics
+    paths_to_mutate:
+      - polylogue/storage/search_providers/fts5.py
+    tests:
+      - tests/unit/storage/test_fts5.py
+    status: active
+
+  - name: hybrid
+    description: >
+      Hybrid search fusion and ranked-conversation resolution
+    paths_to_mutate:
+      - polylogue/storage/search_providers/hybrid.py
+    tests:
+      - tests/unit/storage/test_hybrid.py
+      - tests/unit/storage/test_hybrid_laws.py
+    status: active
+
+  - name: json
+    description: >
+      JSON serialization and parser laws
+    paths_to_mutate:
+      - polylogue/core/json.py
+    tests:
+      - tests/unit/core/test_json.py
+    status: active
+
+  - name: models
+    description: >
+      Message/Conversation semantic helpers and pairing logic
+    paths_to_mutate:
+      - polylogue/archive/models.py
+    tests:
+      - tests/unit/core/test_models.py
+      - tests/unit/core/test_message_laws.py
+      - tests/unit/core/test_conversation_semantics.py
+    status: active
+
+  - name: pipeline-services
+    description: >
+      Acquire/validate/parse planning and stage contracts
+    paths_to_mutate:
+      - polylogue/pipeline/services
+    tests:
+      - tests/unit/pipeline/test_acquisition_streams.py
+      - tests/unit/pipeline/test_parsing_service.py
+      - tests/unit/pipeline/test_render_service.py
+      - tests/unit/pipeline/test_indexing.py
+      - tests/unit/pipeline/test_ingest_batch.py
+      - tests/unit/pipeline/test_stage_independence.py
+      - tests/unit/pipeline/test_resilience.py
+    status: active
+
+  - name: provider-parsers
+    description: >
+      Provider parser semantic correctness where message extraction and compaction detection live
+    paths_to_mutate:
+      - polylogue/sources/parsers/chatgpt.py
+      - polylogue/sources/parsers/claude/code_parser.py
+      - polylogue/sources/parsers/codex.py
+      - polylogue/sources/parsers/claude/index.py
+      - polylogue/pipeline/semantic_capture.py
+    tests:
+      - tests/unit/sources/test_parsers_chatgpt.py
+      - tests/unit/sources/test_parsers_codex.py
+      - tests/unit/sources/test_parsers_props.py
+      - tests/unit/sources/test_parser_crashlessness.py
+      - tests/unit/sources/test_compaction.py
+      - tests/unit/sources/test_assembly.py
+    status: active
+
+  - name: providers-semantics
+    description: >
+      Provider semantic extraction, harmonization, and viewport contracts
+    paths_to_mutate:
+      - polylogue/sources/providers
+      - polylogue/schemas/registry.py
+    tests:
+      - tests/unit/sources/test_unified_semantic_laws.py
+      - tests/unit/sources/test_null_guard_properties.py
+      - tests/unit/sources/test_models.py
+      - tests/unit/sources/test_parsers_props.py
+      - tests/unit/sources/test_assembly.py
+    status: active
+
+  - name: repository
+    description: >
+      Repository query, projection, and CRUD contracts
+    paths_to_mutate:
+      - polylogue/storage/repository/__init__.py
+    tests:
+      - tests/unit/storage/test_store_ops.py
+      - tests/unit/storage/test_tree_laws.py
+    status: active
+
+  - name: schema-core
+    description: >
+      Schema generation, privacy, verification, and safety contracts
+    paths_to_mutate:
+      - polylogue/schemas/operator/schema_inference.py
+      - polylogue/schemas/validator.py
+      - polylogue/schemas/operator/verification.py
+    tests:
+      - tests/unit/core/test_schema_validation.py
+      - tests/unit/core/test_schema_generation.py
+      - tests/unit/core/test_schema_annotation_contracts.py
+      - tests/unit/core/test_schema_laws.py
+      - tests/unit/core/test_schema_privacy.py
+      - tests/unit/core/test_verification.py
+      - tests/unit/storage/test_schema_safety.py
+    status: active
+
+  - name: schema-inference
+    description: >
+      Schema inference and privacy heuristics
+    paths_to_mutate:
+      - polylogue/schemas/operator/schema_inference.py
+    tests:
+      - tests/unit/core/test_schema_generation.py
+      - tests/unit/core/test_schema_laws.py
+      - tests/unit/core/test_schema_privacy.py
+    status: active
+
+  - name: schema-validation
+    description: >
+      Schema validator and verification contracts
+    paths_to_mutate:
+      - polylogue/schemas/validator.py
+      - polylogue/schemas/operator/verification.py
+    tests:
+      - tests/unit/core/test_schema_validation.py
+      - tests/unit/core/test_schema_laws.py
+      - tests/unit/core/test_verification.py
+      - tests/unit/storage/test_schema_safety.py
+    status: active
+
+  - name: site-builder
+    description: >
+      Static-site builder and CLI archive contracts
+    paths_to_mutate:
+      - polylogue/site/builder.py
+    tests:
+      - tests/integration/test_site.py
+      - tests/integration/test_site_laws.py
+    status: active
+
+  - name: source-detection
+    description: >
+      Source detection, sniffing, and parser dispatch
+    paths_to_mutate:
+      - polylogue/sources/source_parsing.py
+      - polylogue/sources/source_acquisition.py
+      - polylogue/sources/dispatch.py
+      - polylogue/sources/decoders.py
+    tests:
+      - tests/unit/sources/test_source_laws.py
+      - tests/unit/sources/test_parsers_base.py
+      - tests/unit/sources/test_parsers_chatgpt.py
+      - tests/unit/sources/test_parsers_codex.py
+      - tests/unit/sources/test_parsers_props.py
+      - tests/unit/sources/test_parsers_drive.py
+    status: active
+
+  - name: sources-parse
+    description: >
+      Provider detection, parsing, harmonization, and parser laws
+    paths_to_mutate:
+      - polylogue/sources
+      - polylogue/schemas/registry.py
+    tests:
+      - tests/unit/sources/test_parsers_props.py
+      - tests/unit/sources/test_source_laws.py
+      - tests/unit/sources/test_unified_semantic_laws.py
+      - tests/unit/sources/test_parsers_base.py
+      - tests/unit/sources/test_parsers_chatgpt.py
+      - tests/unit/sources/test_parsers_codex.py
+      - tests/unit/sources/test_parsers_drive.py
+      - tests/unit/sources/test_drive_source_client.py
+      - tests/unit/sources/test_drive_gateway.py
+      - tests/unit/sources/test_drive_auth.py
+      - tests/unit/sources/test_drive_ops.py
+      - tests/unit/sources/test_null_guard_properties.py
+      - tests/unit/sources/test_models.py
+      - tests/unit/sources/test_token_store.py
+    status: active
+
+  - name: ui-core
+    description: >
+      UI prompt, progress, and facade interaction contracts
+    paths_to_mutate:
+      - polylogue/ui/__init__.py
+      - polylogue/ui/facade.py
+    tests:
+      - tests/unit/ui/test_ui.py
+      - tests/unit/ui/test_ui_visual.py
+      - tests/unit/ui/test_tui.py
     status: active
 
 benchmark_campaigns:
-  - name: search-filters
-    description: Filter chain query performance benchmarks
-    tests:
-      - tests/benchmarks/test_search_filters.py
-    status: active
-
   - name: pipeline
-    description: Pipeline throughput benchmarks
+    description: >
+      Index rebuild/update, action-event repair, plus hashing/semantic helper benchmark domain
     tests:
       - tests/benchmarks/test_pipeline.py
     status: active
 
-  - name: storage-scale
-    description: Storage scale benchmarks
+  - name: search-filters
+    description: >
+      FTS and ConversationFilter benchmark domain
+    tests:
+      - tests/benchmarks/test_search_filters.py
+    status: active
+
+  - name: storage
+    description: >
+      Repository/backend list/get-many/save benchmark domain
     tests:
       - tests/benchmarks/test_storage.py
     status: active

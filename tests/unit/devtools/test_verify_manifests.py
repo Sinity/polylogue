@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
+
+from pytest import MonkeyPatch
 
 from devtools import verify_manifests
 
@@ -223,4 +226,110 @@ def test_coverage_status_claims_reject_missing_item_with_realized_evidence(tmp_p
         f"{plans / 'example-coverage.yaml'}: areas.dependency_audit implemented=false but controls are declared",
         f"{plans / 'example-coverage.yaml'}: areas.dependency_audit implemented=false "
         "but test_coverage.location is declared",
+    ]
+
+
+def test_campaign_coverage_catalog_accepts_authored_catalog(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    plans = tmp_path
+    monkeypatch.setattr(
+        verify_manifests,
+        "get_authored_scenario_catalog",
+        lambda: SimpleNamespace(
+            mutation_campaigns=(
+                SimpleNamespace(
+                    name="filters",
+                    description="Filter campaign",
+                    paths_to_mutate=("polylogue/archive/filter/filters.py",),
+                    tests=("tests/unit/core/test_filters_props.py",),
+                ),
+            ),
+            benchmark_campaigns=(
+                SimpleNamespace(
+                    name="storage",
+                    description="Storage benchmarks",
+                    tests=("tests/benchmarks/test_storage.py",),
+                ),
+            ),
+        ),
+    )
+    (plans / "campaign-coverage.yaml").write_text(
+        """mutation_campaigns:
+  - name: filters
+    description: Filter campaign
+    paths_to_mutate:
+      - polylogue/archive/filter/filters.py
+    tests:
+      - tests/unit/core/test_filters_props.py
+    status: active
+
+benchmark_campaigns:
+  - name: storage
+    description: Storage benchmarks
+    tests:
+      - tests/benchmarks/test_storage.py
+    status: active
+""",
+        encoding="utf-8",
+    )
+
+    assert verify_manifests.check_campaign_coverage_catalog(plans) == []
+
+
+def test_campaign_coverage_catalog_rejects_stale_manifest(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    plans = tmp_path
+    monkeypatch.setattr(
+        verify_manifests,
+        "get_authored_scenario_catalog",
+        lambda: SimpleNamespace(
+            mutation_campaigns=(
+                SimpleNamespace(
+                    name="filters",
+                    description="Filter campaign",
+                    paths_to_mutate=("polylogue/archive/filter/filters.py",),
+                    tests=("tests/unit/core/test_filters_props.py",),
+                ),
+            ),
+            benchmark_campaigns=(
+                SimpleNamespace(
+                    name="storage",
+                    description="Storage benchmarks",
+                    tests=("tests/benchmarks/test_storage.py",),
+                ),
+            ),
+        ),
+    )
+    (plans / "campaign-coverage.yaml").write_text(
+        """mutation_campaigns:
+  - name: filters
+    description: Old filter campaign
+    paths_to_mutate:
+      - polylogue/archive/filter/old_filters.py
+    tests:
+      - tests/unit/core/test_filters_props.py
+    status: active
+
+benchmark_campaigns:
+  - name: storage-scale
+    description: Storage benchmarks
+    tests:
+      - tests/benchmarks/test_storage.py
+    status: active
+""",
+        encoding="utf-8",
+    )
+
+    errors = verify_manifests.check_campaign_coverage_catalog(plans)
+
+    assert errors == [
+        f"{plans / 'campaign-coverage.yaml'}: mutation_campaigns['filters'] paths_to_mutate does not match "
+        "authored catalog (expected ('polylogue/archive/filter/filters.py',), "
+        "got ('polylogue/archive/filter/old_filters.py',))",
+        f"{plans / 'campaign-coverage.yaml'}: benchmark_campaigns missing catalog campaign 'storage'",
+        f"{plans / 'campaign-coverage.yaml'}: benchmark_campaigns declares unknown campaign 'storage-scale'",
     ]
