@@ -80,9 +80,18 @@ async def iter_drive_raw_stream(
     ui: DriveUILike | None = None,
     cursor_state: CursorStatePayload | None = None,
     drive_config: DriveConfigLike | None = None,
+    observation_callback: ObservationCallback | None = None,
+    progress_callback: Callable[[int, str | None], None] | None = None,
 ) -> AsyncIterator[RawConversationData]:
     """Stream Drive payloads as raw records without touching the local cache."""
     from polylogue.sources.drive import iter_drive_raw_data
+
+    loop = asyncio.get_running_loop()
+
+    def _status_callback(desc: str) -> None:
+        if progress_callback is None:
+            return
+        loop.call_soon_threadsafe(progress_callback, 0, desc)
 
     batch_size = 32
     iterator = iter(
@@ -92,6 +101,8 @@ async def iter_drive_raw_stream(
             cursor_state=cursor_state,
             drive_config=drive_config,
             known_mtimes=known_mtimes,
+            observation_callback=observation_callback,
+            status_callback=_status_callback if progress_callback is not None else None,
         )
     )
 
@@ -127,6 +138,8 @@ async def iter_raw_record_stream(
             ui=ui,
             cursor_state=cursor_state,
             drive_config=drive_config,
+            observation_callback=observation_callback,
+            progress_callback=progress_callback,
         )
     else:
         raw_stream = iter_source_raw_stream(

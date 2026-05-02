@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.config import Source
+from polylogue.core.json import JSONDocument
 from polylogue.pipeline.services import acquisition_streams
 from polylogue.sources.parsers.base import RawConversationData
 from polylogue.types import Provider
@@ -88,3 +89,47 @@ async def test_iter_raw_record_stream_forwards_source_status_progress(
 
     assert len(items) == 1
     assert progress_events == [(0, "Scanning [chatgpt] reading export.json")]
+
+
+@pytest.mark.asyncio
+async def test_iter_raw_record_stream_forwards_drive_progress_and_observations(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import polylogue.sources.drive as drive_module
+
+    observations: list[JSONDocument] = []
+    progress_events: list[tuple[int, str | None]] = []
+
+    def _iter_drive_raw_data(*args: object, **kwargs: object) -> Iterator[RawConversationData]:
+        del args
+        observation_callback = kwargs["observation_callback"]
+        status_callback = kwargs["status_callback"]
+        assert callable(observation_callback)
+        assert callable(status_callback)
+        observation_callback({"phase": "drive-test", "source_path": "drive.json"})
+        status_callback("Scanning [gemini] reading drive.json")
+        yield RawConversationData(
+            raw_bytes=b'{"id":"drive"}',
+            source_path=str(tmp_path / "drive.json"),
+            provider_hint=Provider.GEMINI,
+        )
+
+    def _record_progress(amount: int, desc: str | None = None) -> None:
+        progress_events.append((amount, desc))
+
+    monkeypatch.setattr(drive_module, "iter_drive_raw_data", _iter_drive_raw_data)
+
+    items = [
+        item
+        async for item in acquisition_streams.iter_raw_record_stream(
+            Source(name="gemini", path=tmp_path, folder="Google AI Studio"),
+            observation_callback=observations.append,
+            progress_callback=_record_progress,
+        )
+    ]
+    await asyncio.sleep(0)
+
+    assert len(items) == 1
+    assert observations == [{"phase": "drive-test", "source_path": "drive.json"}]
+    assert progress_events == [(0, "Scanning [gemini] reading drive.json")]

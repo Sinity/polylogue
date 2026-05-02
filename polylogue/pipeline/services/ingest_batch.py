@@ -207,6 +207,7 @@ WHERE
     content_hash != excluded.content_hash
     OR IFNULL(role, '') != IFNULL(excluded.role, '')
     OR IFNULL(text, '') != IFNULL(excluded.text, '')
+    OR IFNULL(sort_key, 0) != IFNULL(excluded.sort_key, 0)
     OR IFNULL(parent_message_id, '') != IFNULL(excluded.parent_message_id, '')
     OR branch_index != excluded.branch_index
     OR word_count != excluded.word_count
@@ -442,51 +443,55 @@ def _write_conversation(
         "skipped_attachments": 0,
     }
 
-    content_unchanged = (
-        False if force_write else _check_content_unchanged(conn, cdata.conversation_id, cdata.content_hash)
-    )
+    content_unchanged = (not force_write) and _check_content_unchanged(conn, cdata.conversation_id, cdata.content_hash)
 
-    conn.execute(_CONVERSATION_UPSERT_SQL, _resolved_conversation_tuple(conn, cdata))
-
-    if content_unchanged:
+    if not force_write and content_unchanged:
         counts["skipped_conversations"] = 1
         counts["skipped_messages"] = len(cdata.message_tuples)
         counts["skipped_attachments"] = len(cdata.attachment_tuples)
         return False, counts
 
-    counts["conversations"] = 1
-    affected_attachment_ids = replace_conversation_runtime_state_sync(conn, cdata.conversation_id)
+    conn.execute(_CONVERSATION_UPSERT_SQL, _resolved_conversation_tuple(conn, cdata))
 
-    # Messages (topo-sorted for parent FK)
+    affected_attachment_ids: set[str] = set()
+    if not content_unchanged:
+        counts["conversations"] = 1
+        affected_attachment_ids = replace_conversation_runtime_state_sync(conn, cdata.conversation_id)
+    else:
+        counts["conversations"] = 0
+
     if cdata.message_tuples:
         sorted_msgs = _topo_sort_message_tuples(cdata.message_tuples)
         conn.executemany(_MESSAGE_UPSERT_SQL, sorted_msgs)
         counts["messages"] = len(sorted_msgs)
 
     # Conversation stats
-    if cdata.stats_tuple:
+    if cdata.stats_tuple and not content_unchanged:
         conn.execute(_STATS_UPSERT_SQL, cdata.stats_tuple)
 
-    # Content blocks (replace all for this conversation)
-    conn.execute("DELETE FROM content_blocks WHERE conversation_id = ?", (cdata.conversation_id,))
-    if cdata.block_tuples:
-        conn.executemany(_CONTENT_BLOCK_UPSERT_SQL, cdata.block_tuples)
+    if not content_unchanged:
+        conn.execute("DELETE FROM content_blocks WHERE conversation_id = ?", (cdata.conversation_id,))
+        if cdata.block_tuples:
+            conn.executemany(_CONTENT_BLOCK_UPSERT_SQL, cdata.block_tuples)
 
-    # Action events (replace all for this conversation)
-    conn.execute("DELETE FROM action_events WHERE conversation_id = ?", (cdata.conversation_id,))
-    if cdata.action_event_tuples:
-        conn.executemany(_ACTION_EVENT_INSERT_SQL, cdata.action_event_tuples)
+    if not content_unchanged:
+        conn.execute("DELETE FROM action_events WHERE conversation_id = ?", (cdata.conversation_id,))
+        if cdata.action_event_tuples:
+            conn.executemany(_ACTION_EVENT_INSERT_SQL, cdata.action_event_tuples)
 
     # Attachments
-    new_attachment_ids = {
-        attachment_id for attachment_id, *_rest in cdata.attachment_tuples if isinstance(attachment_id, str)
-    }
-    affected_attachment_ids |= new_attachment_ids
-    if cdata.attachment_tuples:
-        conn.executemany(_ATTACHMENT_UPSERT_SQL, cdata.attachment_tuples)
-        conn.executemany(_ATTACHMENT_REF_INSERT_SQL, cdata.attachment_ref_tuples)
-        counts["attachments"] = len(cdata.attachment_tuples)
-    recount_and_prune_attachments_sync(conn, affected_attachment_ids)
+    if not content_unchanged:
+        new_attachment_ids = {
+            attachment_id for attachment_id, *_rest in cdata.attachment_tuples if isinstance(attachment_id, str)
+        }
+        affected_attachment_ids |= new_attachment_ids
+        if cdata.attachment_tuples:
+            conn.executemany(_ATTACHMENT_UPSERT_SQL, cdata.attachment_tuples)
+            conn.executemany(_ATTACHMENT_REF_INSERT_SQL, cdata.attachment_ref_tuples)
+            counts["attachments"] = len(cdata.attachment_tuples)
+        recount_and_prune_attachments_sync(conn, affected_attachment_ids)
+    else:
+        counts["attachments"] = 0
 
     return True, counts
 
@@ -1247,11 +1252,6 @@ async def refresh_session_insights_bulk(
 
         elapsed = time.perf_counter() - t_start
         chunk_observations = update.chunk_observations
-        chunk_total_values = [chunk.total_ms for chunk in chunk_observations]
-        chunk_load_values = [chunk.load_ms for chunk in chunk_observations]
-        chunk_hydrate_values = [chunk.hydrate_ms for chunk in chunk_observations]
-        chunk_build_values = [chunk.build_ms for chunk in chunk_observations]
-        chunk_write_values = [chunk.write_ms for chunk in chunk_observations]
         observation: MaterializeStageObservation = {
             "conversations": len(changed_conversation_ids),
             "unique_thread_roots": len(thread_root_ids),
@@ -1263,17 +1263,16 @@ async def refresh_session_insights_bulk(
             "update_chunk_count": len(chunk_observations),
             "update_slow_chunk_count": sum(1 for chunk in chunk_observations if chunk.slow),
         }
-        if chunk_total_values:
-            observation["update_max_chunk_ms"] = round(max(chunk_total_values), 1)
-        if chunk_load_values:
-            observation["update_max_chunk_load_ms"] = round(max(chunk_load_values), 1)
-        if chunk_hydrate_values:
-            observation["update_max_chunk_hydrate_ms"] = round(max(chunk_hydrate_values), 1)
-        if chunk_build_values:
-            observation["update_max_chunk_build_ms"] = round(max(chunk_build_values), 1)
-        if chunk_write_values:
-            observation["update_max_chunk_write_ms"] = round(max(chunk_write_values), 1)
         if chunk_observations:
+            observation.update(
+                {
+                    "update_max_chunk_ms": round(max(chunk.total_ms for chunk in chunk_observations), 1),
+                    "update_max_chunk_load_ms": round(max(chunk.load_ms for chunk in chunk_observations), 1),
+                    "update_max_chunk_hydrate_ms": round(max(chunk.hydrate_ms for chunk in chunk_observations), 1),
+                    "update_max_chunk_build_ms": round(max(chunk.build_ms for chunk in chunk_observations), 1),
+                    "update_max_chunk_write_ms": round(max(chunk.write_ms for chunk in chunk_observations), 1),
+                }
+            )
             observation["update_chunks"] = [chunk.to_observation() for chunk in chunk_observations]
         if elapsed > 2.0:
             logger.info(

@@ -2,8 +2,8 @@
 
 Watches one or more roots for ``*.jsonl`` changes via ``watchfiles`` and
 re-parses each grown file through the existing ingest pipeline. Idempotent
-via content-hash dedup; the cursor table only suppresses re-work when a file
-hasn't grown since we last saw it.
+via content-hash dedup; the cursor table only suppresses re-work when the
+stored content fingerprint and parser fingerprint still match the file.
 
 There's no concept of a "live" or "active" session here — any JSONL under the
 roots may grow at any time, including ones years old (resume). The watcher
@@ -13,6 +13,7 @@ treats every grown file identically.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -25,6 +26,7 @@ if TYPE_CHECKING:
     from polylogue.api import Polylogue
 
 logger = get_logger(__name__)
+_PARSER_FINGERPRINT = "live-jsonl-full-file-v1"
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,16 +123,44 @@ class LiveWatcher:
         except FileNotFoundError:
             return
         size = stat.st_size
-        cursor = self._cursor.get(path)
-        if size == cursor:
-            return
         try:
-            await self._polylogue.parse_file(path, source_name=path.parent.name)
+            fingerprint, last_complete_newline = _fingerprint_file(path)
+        except FileNotFoundError:
+            return
+        cursor = self._cursor.get_record(path)
+        if (
+            cursor is not None
+            and size == cursor.byte_size
+            and fingerprint == cursor.content_fingerprint
+            and cursor.parser_fingerprint == _PARSER_FINGERPRINT
+        ):
+            return
+        source_name = self._source_name_for(path)
+        try:
+            await self._polylogue.parse_file(path, source_name=source_name)
         except Exception as exc:
             logger.warning("live.watcher: parse failed for %s: %s", path, exc)
             return
-        self._cursor.set(path, size)
-        logger.debug("live.watcher: ingested %s (size=%d)", path, size)
+        self._cursor.set(
+            path,
+            size,
+            byte_offset=last_complete_newline,
+            last_complete_newline=last_complete_newline,
+            parser_fingerprint=_PARSER_FINGERPRINT,
+            content_fingerprint=fingerprint,
+            source_name=source_name,
+        )
+        logger.debug("live.watcher: ingested %s (size=%d, source=%s)", path, size, source_name)
+
+    def _source_name_for(self, path: Path) -> str:
+        resolved = path.resolve()
+        for source in self._sources:
+            try:
+                if resolved.is_relative_to(source.root.resolve()):
+                    return source.name
+            except OSError:
+                continue
+        return path.parent.name
 
 
 def default_sources() -> tuple[WatchSource, ...]:
@@ -141,6 +171,13 @@ def default_sources() -> tuple[WatchSource, ...]:
         WatchSource(name="claude-code", root=claude_code_path()),
         WatchSource(name="codex", root=codex_path()),
     )
+
+
+def _fingerprint_file(path: Path) -> tuple[str, int]:
+    content = path.read_bytes()
+    newline_at = content.rfind(b"\n")
+    last_complete_newline = 0 if newline_at < 0 else newline_at + 1
+    return hashlib.sha256(content).hexdigest(), last_complete_newline
 
 
 __all__ = ["LiveWatcher", "WatchSource", "default_sources"]
