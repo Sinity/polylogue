@@ -87,6 +87,7 @@ Pipeline and maintenance verbs are explicit:
 
 ```bash
 polylogue run acquire parse materialize render index
+polylogue doctor --daemon
 polylogued status
 polylogued watch
 polylogued browser-capture serve --host 127.0.0.1 --port 8765

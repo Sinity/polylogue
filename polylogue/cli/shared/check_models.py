@@ -33,6 +33,7 @@ class CheckCommandResult:
 
     report: ReadinessReport
     runtime_report: ReadinessReport | None = None
+    daemon_report: JSONDocument | None = None
     schema_report: SchemaVerificationReport | None = None
     proof_report: ArtifactProofReport | None = None
     artifact_rows: list[ArtifactObservationRecord] | None = None

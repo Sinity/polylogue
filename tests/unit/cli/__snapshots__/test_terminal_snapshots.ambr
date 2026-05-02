@@ -26,6 +26,7 @@
                                     scans (slow on large databases)
     --runtime                       Run environment and runtime verification
                                     checks
+    --daemon                        Show daemon component status
     --blob                          Verify blob store integrity
                                     (missing<PATH> blobs)
     --schemas                       Run raw-corpus schema verification (non-

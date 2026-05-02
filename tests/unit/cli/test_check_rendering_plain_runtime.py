@@ -37,6 +37,7 @@ def _options(**overrides: object) -> CheckCommandOptions:
         "vacuum": False,
         "deep": False,
         "runtime": False,
+        "check_daemon": False,
         "check_blob": False,
         "check_schemas": False,
         "check_proof": False,
@@ -168,6 +169,17 @@ def test_build_report_lines_renders_all_sections_and_breakdowns() -> None:
         proof_report=proof_report,
         artifact_rows=artifact_rows,
         cohort_rows=cohort_rows,
+        daemon_report={
+            "live": {
+                "source_count": 2,
+                "existing_source_count": 1,
+                "sources": [
+                    {"name": "codex", "root": "/tmp/codex", "exists": True},
+                    {"name": "claude-code", "root": "/tmp/claude", "exists": False},
+                ],
+            },
+            "browser_capture": {"spool_path": "/tmp/captures"},
+        },
     )
 
     lines = build_report_lines(env, result, _options(verbose=True))
@@ -184,6 +196,10 @@ def test_build_report_lines_renders_all_sections_and_breakdowns() -> None:
     assert "payload.json -> v1/tool_use [schema]" in rendered
     assert "Artifact cohorts: 1 cohorts" in rendered
     assert "Runtime Environment:" in rendered
+    assert "Daemon Components:" in rendered
+    assert "Live sources: 1/2 available" in rendered
+    assert "codex: /tmp/codex (available)" in rendered
+    assert "Browser capture spool: /tmp/captures" in rendered
 
 
 def test_emit_maintenance_output_handles_preview_empty_selection_and_vacuum_modes() -> None:

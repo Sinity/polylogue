@@ -16,7 +16,9 @@ The receiver listens on `127.0.0.1:8765` by default and accepts:
 - `POST /v1/browser-captures`
 
 Inspect the receiver target directly with `polylogued browser-capture status`,
-or include it in the daemon component summary with `polylogued status`.
+include it in the daemon component summary with `polylogued status`, or include
+the same component status in archive health output with `polylogue doctor
+--daemon`.
 
 Accepted captures are typed browser-capture envelopes and are written
 atomically under the configured capture spool at `<provider>/...json`.
