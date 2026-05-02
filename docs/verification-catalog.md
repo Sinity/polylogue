@@ -45,10 +45,10 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `diagnostic.observable` | 1 |
 | `error.surface` | 2 |
 | `generated.scenario_family` | 9 |
+| `insight.surface` | 12 |
 | `maintenance.target` | 8 |
 | `operation.spec` | 43 |
 | `operation.spec.effect` | 108 |
-| `product.surface` | 12 |
 | `provider.capability` | 3 |
 | `schema.annotation` | 95 |
 | `schema.roundtrip` | 1 |
@@ -226,7 +226,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `operation.effect.privacy_safe_evidence` | `serious` | `operation.effect.implication_violation` | tracked: abstract effect implication requires a concrete runner |
 | `operation.effect.explicit_dry_run_evidence` | `serious` | `operation.effect.implication_violation` | tracked: abstract effect implication requires a concrete runner |
 | `operation.effect.confirmed_before_execute` | `serious` | `operation.effect.implication_violation` | tracked: abstract effect implication requires a concrete runner |
-| `product.surface.registered` | `info` | `product.registry.omission` | tracked: None |
+| `insight.surface.registered` | `info` | `insight.registry.omission` | tracked: None |
 
 ## Runner Bindings
 
@@ -275,7 +275,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `effect-implication-static-contract:operation.effect.privacy_safe_evidence` | `operation.effect.privacy_safe_evidence` | `structural` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
 | `effect-implication-static-contract:operation.effect.explicit_dry_run_evidence` | `operation.effect.explicit_dry_run_evidence` | `structural` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
 | `effect-implication-static-contract:operation.effect.confirmed_before_execute` | `operation.effect.confirmed_before_execute` | `structural` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
-| `product-surface-static-contract:product.surface.registered` | `product.surface.registered` | `structural` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
+| `insight-surface-static-contract:insight.surface.registered` | `insight.surface.registered` | `structural` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
 
 ## Proof Obligations
 
@@ -300,6 +300,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `generated.scenario.family_registered` | 9 |
 | `generated.scenario.local_deterministic` | 4 |
 | `generated.scenario.semantic_claim_mapping` | 9 |
+| `insight.surface.registered` | 12 |
 | `maintenance.repair.crash_consistency` | 8 |
 | `operation.effect.atomic` | 12 |
 | `operation.effect.atomic_rename` | 2 |
@@ -316,7 +317,6 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `operation.effect.snapshot_consistent` | 34 |
 | `operation.effect.timeout_bounded` | 1 |
 | `parser.quarantine.context_redaction` | 1 |
-| `product.surface.registered` | 12 |
 | `provider.capability.identity_bridge` | 3 |
 | `provider.capability.partial_coverage_declared` | 3 |
 | `schema.foreign_key.resolves` | 7 |

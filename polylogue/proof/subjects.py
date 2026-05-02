@@ -175,12 +175,12 @@ def operation_spec_subjects() -> tuple[SubjectRef, ...]:
     return tuple(sorted(subjects, key=lambda subject: subject.id))
 
 
-def product_surface_subjects() -> tuple[SubjectRef, ...]:
+def insight_surface_subjects() -> tuple[SubjectRef, ...]:
     """Compile registered insight types into proof subjects."""
     subjects = [
         SubjectRef(
-            kind="product.surface",
-            id=f"product.surface.{name}",
+            kind="insight.surface",
+            id=f"insight.surface.{name}",
             attrs={
                 "name": name,
                 "display_name": pt.display_name,
@@ -510,7 +510,7 @@ def build_catalog_subjects() -> tuple[SubjectRef, ...]:
         *provider_capability_subjects(),
         *operation_spec_subjects(),
         *effect_implication_subjects(),
-        *product_surface_subjects(),
+        *insight_surface_subjects(),
         *architecture_control_subjects(),
         *schema_roundtrip_subjects(),
         *artifact_path_subjects(),

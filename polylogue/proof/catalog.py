@@ -481,7 +481,7 @@ def default_claims() -> tuple[Claim, ...]:
         *_architecture_control_claims(),
         *_schema_roundtrip_claims(),
         *_effect_implication_claims(),
-        *_product_surface_claims(),
+        *_insight_surface_claims(),
     )
 
 
@@ -783,18 +783,18 @@ def _effect_implication_claims() -> tuple[Claim, ...]:
     return tuple(claims)
 
 
-def _product_surface_claims() -> tuple[Claim, ...]:
+def _insight_surface_claims() -> tuple[Claim, ...]:
     """Mint claims for registered insight surfaces."""
     return (
         Claim(
-            id="product.surface.registered",
+            id="insight.surface.registered",
             description="Every registered insight type has a corresponding proof subject.",
-            subject_query=Kind("product.surface"),
+            subject_query=Kind("insight.surface"),
             evidence_schema=_evidence_schema("name", "display_name", "json_key"),
             oracle="construction_sanity",
             assurance_domain="surface_parity",
-            bug_classes=("product.registry.omission",),
-            runner_classes=("product_surface_static",),
+            bug_classes=("insight.registry.omission",),
+            runner_classes=("insight_surface_static",),
             observed_facts=("name", "display_name", "json_key"),
             staleness_conditions=("Insight registry entries are added or removed.",),
             severity="info",
@@ -930,9 +930,9 @@ def default_runner_bindings(claims: Iterable[Claim]) -> tuple[RunnerBinding, ...
             bindings.append(
                 _runner_binding(claim, runner="effect-implication-static-contract", evidence_class="structural")
             )
-        elif claim.id.startswith("product.surface."):
+        elif claim.id.startswith("insight.surface."):
             bindings.append(
-                _runner_binding(claim, runner="product-surface-static-contract", evidence_class="structural")
+                _runner_binding(claim, runner="insight-surface-static-contract", evidence_class="structural")
             )
     return tuple(bindings)
 
