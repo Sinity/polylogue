@@ -49,6 +49,7 @@ from polylogue.storage.conversation_replacement import (
 )
 from polylogue.storage.raw.models import RawConversationStateUpdate
 from polylogue.storage.runtime import RawConversationRecord
+from polylogue.storage.search.cache import invalidate_search_cache
 
 if TYPE_CHECKING:
     import aiosqlite
@@ -807,6 +808,21 @@ def _commit_ingest_results(
     summary.commit_elapsed_s = time.perf_counter() - commit_started
 
 
+def _commit_sync_ingest_side_effects(conn: sqlite3.Connection, changed_conversation_ids: Sequence[str]) -> None:
+    from polylogue.storage.fts.fts_lifecycle import (
+        repair_fts_index_sync,
+        restore_fts_triggers_sync,
+    )
+
+    changed_ids = sorted(set(changed_conversation_ids))
+    restore_fts_triggers_sync(conn)
+    if changed_ids:
+        repair_fts_index_sync(conn, changed_ids)
+    conn.commit()
+    if changed_ids:
+        invalidate_search_cache()
+
+
 def _process_ingest_batch_sync(
     raw_records: list[RawConversationRecord],
     *,
@@ -818,8 +834,6 @@ def _process_ingest_batch_sync(
     measure_ingest_result_size: bool,
 ) -> _IngestBatchSummary:
     from polylogue.storage.fts.fts_lifecycle import (
-        repair_fts_index_sync,
-        restore_fts_triggers_sync,
         suspend_fts_triggers_sync,
     )
 
@@ -863,10 +877,13 @@ def _process_ingest_batch_sync(
         conn.rollback()
         raise
     finally:
-        restore_fts_triggers_sync(conn)
-        if changed_ids:
-            repair_fts_index_sync(conn, list(changed_ids))
-        conn.close()
+        try:
+            _commit_sync_ingest_side_effects(conn, tuple(changed_ids))
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
     summary.elapsed_s = time.perf_counter() - t_start
     return summary
