@@ -182,6 +182,71 @@ def complete_tag_values(
     return _with_csv_prefix(items, prefix)
 
 
+def complete_repo_values(
+    ctx: click.Context,
+    param: click.Parameter,
+    incomplete: str,
+) -> list[CompletionItem]:
+    del ctx, param
+    prefix, current = _split_csv_incomplete(incomplete)
+    rows = _fetch_rows(
+        """
+        SELECT
+            repo.value AS repo_name,
+            COUNT(*) AS cnt
+        FROM session_profiles AS sp,
+             json_each(COALESCE(sp.repo_names_json, '[]')) AS repo
+        WHERE (? = '' OR repo.value LIKE ?)
+        GROUP BY repo.value
+        ORDER BY cnt DESC, repo.value ASC
+        LIMIT ?
+        """,
+        (
+            current,
+            f"{current}%",
+            _MAX_VALUE_COMPLETIONS,
+        ),
+    )
+    items = _rows_to_completion_items(
+        rows,
+        value_column="repo_name",
+        help_builder=lambda row: f"{int(row['cnt'])} sessions",
+    )
+    return _with_csv_prefix(items, prefix)
+
+
+def complete_cwd_prefix_values(
+    ctx: click.Context,
+    param: click.Parameter,
+    incomplete: str,
+) -> list[CompletionItem]:
+    del ctx, param
+    current = incomplete.strip()
+    rows = _fetch_rows(
+        """
+        SELECT
+            cwd.value AS cwd_path,
+            COUNT(*) AS cnt
+        FROM session_profiles AS sp,
+             json_each(COALESCE(json_extract(sp.evidence_payload_json, '$.cwd_paths'), '[]')) AS cwd
+        WHERE (? = '' OR cwd.value LIKE ?)
+        GROUP BY cwd.value
+        ORDER BY cnt DESC, cwd.value ASC
+        LIMIT ?
+        """,
+        (
+            current,
+            f"{current}%",
+            _MAX_VALUE_COMPLETIONS,
+        ),
+    )
+    return _rows_to_completion_items(
+        rows,
+        value_column="cwd_path",
+        help_builder=lambda row: f"{int(row['cnt'])} sessions",
+    )
+
+
 def complete_tool_values(
     ctx: click.Context,
     param: click.Parameter,
@@ -215,8 +280,10 @@ def complete_tool_values(
 
 __all__ = [
     "complete_conversation_ids",
+    "complete_cwd_prefix_values",
     "complete_open_targets",
     "complete_provider_values",
+    "complete_repo_values",
     "complete_tag_values",
     "complete_tool_values",
 ]
