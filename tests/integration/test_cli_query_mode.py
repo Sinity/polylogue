@@ -125,6 +125,30 @@ def test_cli_messages_and_raw_routes_read_conversation_records(tmp_path: Path) -
     assert raw_payload["artifacts"][0]["raw_id"]
 
 
+def test_cli_query_select_returns_first_matched_conversation_for_pipes(tmp_path: Path) -> None:
+    workspace = setup_isolated_workspace(tmp_path)
+    inbox = workspace["paths"]["inbox"]
+
+    GenericConversationBuilder("conv-select").title("Select Surface").add_user("select alpha").add_assistant(
+        "select beta"
+    ).write_to(inbox / "conversation.json")
+    _run_inbox(workspace, cwd=tmp_path)
+
+    id_result = run_cli(["--plain", "select alpha", "select", "--print", "id"], env=workspace["env"], cwd=tmp_path)
+    assert id_result.exit_code == 0, id_result.output
+    assert id_result.stdout.strip().endswith("conv-select")
+
+    json_result = run_cli(
+        ["--plain", "select alpha", "select", "--print", "json"],
+        env=workspace["env"],
+        cwd=tmp_path,
+    )
+    assert json_result.exit_code == 0, json_result.output
+    payload = json.loads(json_result.stdout)
+    assert str(payload["id"]).endswith("conv-select")
+    assert payload["title"] == "Select Surface"
+
+
 def test_cli_query_summary_list_json_no_results_still_returns_json(tmp_path: Path) -> None:
     workspace = setup_isolated_workspace(tmp_path)
 

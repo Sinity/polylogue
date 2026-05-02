@@ -242,6 +242,7 @@
     resume       Reconstruct work-state context for a fresh agent session.
     run          Run pipeline stages on configured sources and<PATH> transient...
     schema       Inspect schema packages, versions, and evidence.
+    select       Select one matched conversation and print a field.
     show         Show matched conversations with default full-content output.
     stats        Show statistics for matched conversations.
     tags         List all tags with conversation counts.
@@ -453,6 +454,8 @@
   <PATH> transient...
     schema       Inspect schema packages, versions, and eviden
   ce.
+    select       Select one matched conversation and print a f
+  ield.
     show         Show matched conversations with default full-
   content output.
     stats        Show statistics for matched conversations.
@@ -600,6 +603,7 @@
     resume       Reconstruct work-state context for a fresh agent session.
     run          Run pipeline stages on configured sources and<PATH> transient...
     schema       Inspect schema packages, versions, and evidence.
+    select       Select one matched conversation and print a field.
     show         Show matched conversations with default full-content output.
     stats        Show statistics for matched conversations.
     tags         List all tags with conversation counts.

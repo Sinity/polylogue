@@ -15,7 +15,7 @@ from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
 from polylogue.cli.shell_completion_values import complete_open_targets, complete_query_source
 
-VERB_NAMES = frozenset({"list", "count", "stats", "open", "show", "bulk-export", "delete", "messages", "raw"})
+VERB_NAMES = frozenset({"list", "count", "stats", "open", "show", "bulk-export", "delete", "messages", "raw", "select"})
 
 _BULK_EXPORT_FORMATS = ("jsonl", "json", "markdown", "yaml", "plaintext", "html", "obsidian", "org")
 _complete_conversation_id = complete_query_source("conversation_id")
@@ -282,6 +282,30 @@ def raw_verb(
     )
 
 
+@click.command("select")
+@click.argument(
+    "selector_kind",
+    required=False,
+    default="conversation",
+    type=click.Choice(["conversation"]),
+)
+@click.option("--print", "print_field", type=click.Choice(["id", "title", "provider", "json"]), default="id")
+@click.option("--limit", "-n", type=int, default=50, help="Max candidates to offer")
+@click.pass_context
+def select_verb(ctx: click.Context, selector_kind: str, print_field: str, limit: int) -> None:
+    """Select one matched conversation and print a field."""
+    from polylogue.cli.select import SelectPrintField, run_select
+
+    del selector_kind
+    env: AppEnv = ctx.obj
+    run_select(
+        env,
+        _parent_request(ctx),
+        limit=limit,
+        print_field=cast(SelectPrintField, print_field),
+    )
+
+
 QUERY_VERBS = (
     list_verb,
     count_verb,
@@ -292,6 +316,7 @@ QUERY_VERBS = (
     delete_verb,
     messages_verb,
     raw_verb,
+    select_verb,
 )
 
 
@@ -303,6 +328,7 @@ __all__ = [
     "delete_verb",
     "list_verb",
     "open_verb",
+    "select_verb",
     "show_verb",
     "stats_verb",
 ]

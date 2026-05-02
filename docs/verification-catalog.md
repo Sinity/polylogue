@@ -8,10 +8,10 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 
 ## Snapshot
 
-- subjects: `501`
+- subjects: `502`
 - claims: `44`
 - runner bindings: `44`
-- proof obligations: `565`
+- proof obligations: `568`
 
 ## Quality Checks
 
@@ -40,7 +40,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `assurance.coverage_gap` | 23 |
 | `assurance.coverage_item` | 92 |
 | `assurance.coverage_manifest` | 9 |
-| `cli.command` | 54 |
+| `cli.command` | 55 |
 | `cli.json_command` | 5 |
 | `diagnostic.observable` | 1 |
 | `error.surface` | 2 |
@@ -110,6 +110,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `polylogue schema compare` | `polylogue/cli/commands/schema.py:56` `polylogue.cli.commands.schema.schema_compare` |
 | `polylogue schema explain` | `polylogue/cli/commands/schema.py:94` `polylogue.cli.commands.schema.schema_explain` |
 | `polylogue schema list` | `polylogue/cli/commands/schema.py:45` `polylogue.cli.commands.schema.schema_list` |
+| `polylogue select` | `polylogue/cli/query_verbs.py:285` `polylogue.cli.query_verbs.select_verb` |
 | `polylogue show` | `polylogue/cli/query_verbs.py:83` `polylogue.cli.query_verbs.show_verb` |
 | `polylogue stats` | `polylogue/cli/query_verbs.py:55` `polylogue.cli.query_verbs.stats_verb` |
 | `polylogue tags` | `polylogue/cli/commands/tags.py:12` `polylogue.cli.commands.tags.tags_command` |
@@ -291,10 +292,10 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `assurance.coverage.gap_has_closure_path` | 23 |
 | `assurance.coverage.item_declared` | 92 |
 | `assurance.coverage.manifest_structured` | 9 |
-| `cli.command.help` | 54 |
+| `cli.command.help` | 55 |
 | `cli.command.json_envelope` | 5 |
-| `cli.command.no_traceback` | 54 |
-| `cli.command.plain_mode` | 54 |
+| `cli.command.no_traceback` | 55 |
+| `cli.command.plain_mode` | 55 |
 | `diagnostic.observable_trace_mapping` | 1 |
 | `error.machine_user_context` | 2 |
 | `generated.scenario.family_registered` | 9 |
