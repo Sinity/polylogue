@@ -7,13 +7,15 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Literal
+from typing import TYPE_CHECKING, Literal, Protocol, cast
 
 import click
 
 from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.archive.conversation.models import Conversation, ConversationSummary
+from polylogue.archive.query.spec import QuerySpecError
 from polylogue.cli.query_contracts import (
+    QueryPlanError,
     build_query_execution_plan,
     result_date,
     result_id,
@@ -23,6 +25,20 @@ from polylogue.cli.query_contracts import (
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
 from polylogue.core.json import JSONDocument, dumps
+from polylogue.pipeline.tail_overlay import TailOverlayUnavailableError, tail_overlay_services
+
+if TYPE_CHECKING:
+    from polylogue.config import Config
+    from polylogue.protocols import ConversationQueryRuntimeStore
+    from polylogue.storage.backends.async_sqlite import SQLiteBackend
+
+
+class _SelectQueryStore(Protocol):
+    @property
+    def backend(self) -> SQLiteBackend: ...
+
+    async def list_summaries_by_query(self, query: object) -> list[ConversationSummary]: ...
+
 
 SelectPrintField = Literal["id", "title", "provider", "json"]
 
@@ -107,7 +123,7 @@ def choose_select_row(env: AppEnv, rows: list[SelectConversationRow]) -> SelectC
     """Choose one row, using fzf/prompt only when the terminal can support it."""
     if not rows:
         return None
-    if not sys.stdout.isatty():
+    if env.ui.plain or not sys.stdin.isatty() or not sys.stdout.isatty():
         return rows[0]
 
     fzf_row = _choose_with_fzf(rows)
@@ -121,20 +137,61 @@ def choose_select_row(env: AppEnv, rows: list[SelectConversationRow]) -> SelectC
     return next((row for row in rows if row.label == selected), None)
 
 
-async def select_conversation_rows(env: AppEnv, request: RootModeRequest, *, limit: int) -> list[SelectConversationRow]:
-    """Return selector rows from the same query/filter path as query verbs."""
+async def _select_conversation_rows_from_store(
+    config: Config,
+    repo: _SelectQueryStore,
+    request: RootModeRequest,
+    *,
+    limit: int,
+) -> list[SelectConversationRow]:
     from polylogue.cli.query import _create_query_vector_provider
 
     request = request.with_param_updates(limit=limit, list_mode=True)
     plan = build_query_execution_plan(request.query_params())
-    vector_provider = _create_query_vector_provider(env.config, db_path=env.backend.db_path)
-    filter_chain = plan.selection.build_filter(env.repository, vector_provider=vector_provider)
+    vector_provider = _create_query_vector_provider(config, db_path=repo.backend.db_path)
+    filter_chain = plan.selection.build_filter(
+        cast("ConversationQueryRuntimeStore", repo),
+        vector_provider=vector_provider,
+    )
 
     if filter_chain.can_use_summaries():
         results: list[Conversation | ConversationSummary] = list(await filter_chain.list_summaries())
     else:
         results = list(await filter_chain.list())
     return [select_row_from_result(result) for result in results]
+
+
+async def select_conversation_rows(env: AppEnv, request: RootModeRequest, *, limit: int) -> list[SelectConversationRow]:
+    """Return selector rows from the same query/filter path as query verbs."""
+    if request.params.get("tail"):
+        async with tail_overlay_services(env.services) as overlay_services:
+            return await _select_conversation_rows_from_store(
+                overlay_services.get_config(),
+                cast("_SelectQueryStore", overlay_services.get_repository()),
+                request,
+                limit=limit,
+            )
+    return await _select_conversation_rows_from_store(
+        env.config,
+        cast("_SelectQueryStore", env.repository),
+        request,
+        limit=limit,
+    )
+
+
+def _raise_select_query_error(exc: QuerySpecError | QueryPlanError | TailOverlayUnavailableError) -> None:
+    if isinstance(exc, QuerySpecError):
+        if exc.field in {"since", "until"}:
+            click.echo(f"Error: Cannot parse date: '{exc.value}'", err=True)
+            click.echo(
+                "Hint: use ISO format (2025-01-15), relative ('yesterday', 'last week'), or month (2025-01)",
+                err=True,
+            )
+        else:
+            click.echo(f"Error: invalid {exc.field}: '{exc.value}'", err=True)
+    else:
+        click.echo(f"Error: {exc}", err=True)
+    raise SystemExit(1) from exc
 
 
 async def async_run_select(
@@ -144,9 +201,15 @@ async def async_run_select(
     limit: int,
     print_field: SelectPrintField,
 ) -> None:
-    rows = await select_conversation_rows(env, request, limit=limit)
+    try:
+        rows = await select_conversation_rows(env, request, limit=limit)
+    except (QuerySpecError, QueryPlanError, TailOverlayUnavailableError) as exc:
+        _raise_select_query_error(exc)
     selected = choose_select_row(env, rows)
     if selected is None:
+        if rows:
+            click.echo("Selection cancelled.", err=True)
+            raise SystemExit(1)
         click.echo("No conversations matched.", err=True)
         raise SystemExit(2)
     click.echo(render_select_row(selected, print_field))
