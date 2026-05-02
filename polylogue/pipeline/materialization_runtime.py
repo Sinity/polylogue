@@ -14,6 +14,7 @@ from polylogue.archive.message.types import MessageType
 from polylogue.archive.viewport.viewports import ToolCategory, classify_tool
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.core.json import dumps as json_dumps
+from polylogue.core.timestamps import parse_timestamp
 from polylogue.pipeline.ids import (
     attachment_content_id,
     conversation_content_hash,
@@ -120,17 +121,10 @@ def _timestamp_sort_key(ts: str | None) -> float | None:
         return value
     except (ValueError, TypeError):
         pass
-
-    from datetime import datetime, timezone
-
-    try:
-        normalized = ts.replace("Z", "+00:00")
-        dt = datetime.fromisoformat(normalized)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt.timestamp()
-    except (ValueError, TypeError):
-        return None
+    parsed = parse_timestamp(ts)
+    if parsed is not None:
+        return parsed.timestamp()
+    return None
 
 
 def _merged_conversation_provider_meta(
