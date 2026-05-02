@@ -19,7 +19,6 @@ from polylogue.archive.conversation.neighbor_candidates import (
     NeighborDiscoveryError,
     NeighborReason,
 )
-from polylogue.archive.filter.filters import ConversationFilter
 from polylogue.archive.models import ConversationSummary
 from polylogue.cli import shell_completion_values
 from polylogue.cli.commands.neighbors import (
@@ -29,7 +28,6 @@ from polylogue.cli.commands.neighbors import (
     neighbors_command,
 )
 from polylogue.cli.commands.tags import tags_command
-from polylogue.cli.filter_picker import _pick_index, pick_filter
 from polylogue.types import ConversationId, Provider
 
 
@@ -71,74 +69,6 @@ def _candidate(*, message_id: str | None = "message-1") -> ConversationNeighborC
         ),
         source_conversation_id="target",
     )
-
-
-def _picker_result(index: int) -> SimpleNamespace:
-    return SimpleNamespace(
-        provider="claude-code",
-        display_title=f"Conversation {index} " + ("x" * 60),
-        display_date=datetime(2026, 4, 23, tzinfo=timezone.utc),
-    )
-
-
-@pytest.mark.parametrize(
-    ("choice", "total_results", "expected"),
-    [
-        ("", 3, 0),
-        ("1", 3, 0),
-        ("3", 3, 2),
-        ("0", 3, None),
-        ("4", 3, None),
-        ("abc", 3, None),
-    ],
-)
-def test_pick_index_covers_blank_valid_and_invalid_choices(
-    choice: str,
-    total_results: int,
-    expected: int | None,
-) -> None:
-    assert _pick_index(choice, total_results) == expected
-
-
-@pytest.mark.asyncio
-async def test_pick_filter_returns_first_for_non_tty_and_none_for_empty_results() -> None:
-    filter_obj = cast(ConversationFilter, SimpleNamespace(list=AsyncMock(return_value=[_picker_result(1)])))
-    with patch("sys.stdout.isatty", return_value=False):
-        assert await pick_filter(filter_obj) == _picker_result(1)
-
-    empty_filter = cast(ConversationFilter, SimpleNamespace(list=AsyncMock(return_value=[])))
-    assert await pick_filter(empty_filter) is None
-
-
-@pytest.mark.asyncio
-async def test_pick_filter_tty_path_renders_menu_and_handles_blank_invalid_and_interrupt() -> None:
-    results = [_picker_result(index) for index in range(1, 23)]
-    filter_obj = cast(ConversationFilter, SimpleNamespace(list=AsyncMock(return_value=results)))
-
-    with (
-        patch("sys.stdout.isatty", return_value=True),
-        patch("builtins.input", return_value=""),
-        patch("builtins.print") as mock_print,
-    ):
-        assert await pick_filter(filter_obj) == results[0]
-
-    printed = [" ".join(str(arg) for arg in call.args) for call in mock_print.call_args_list]
-    assert any("22 matching conversations" in line for line in printed)
-    assert any("... and 2 more" in line for line in printed)
-
-    with (
-        patch("sys.stdout.isatty", return_value=True),
-        patch("builtins.input", return_value="99"),
-        patch("builtins.print"),
-    ):
-        assert await pick_filter(filter_obj) is None
-
-    with (
-        patch("sys.stdout.isatty", return_value=True),
-        patch("builtins.input", side_effect=KeyboardInterrupt),
-        patch("builtins.print"),
-    ):
-        assert await pick_filter(filter_obj) is None
 
 
 def test_shell_completion_helpers_cover_csv_prefix_rows_and_trimming(tmp_path: Path) -> None:

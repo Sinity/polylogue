@@ -281,7 +281,7 @@ files:
     owner: archive-query
     reason: archive-domain query semantics
   - path: polylogue/archive/query/fields.py
-    loc: 901
+    loc: 910
     target: polylogue/archive/query/fields.py
     owner: archive-query
     reason: archive-domain query semantics
@@ -597,10 +597,6 @@ files:
     loc: 60
     target: polylogue/cli/commands/tags.py
     owner: stable
-  - path: polylogue/cli/filter_picker.py
-    loc: 57
-    target: polylogue/cli/filter_picker.py
-    owner: stable
   - path: polylogue/cli/insights_rendering.py
     loc: 49
     target: polylogue/cli/insights_rendering.py
@@ -626,7 +622,7 @@ files:
     target: polylogue/cli/query_contracts.py
     owner: stable
   - path: polylogue/cli/query_feedback.py
-    loc: 52
+    loc: 53
     target: polylogue/cli/query_feedback.py
     owner: stable
   - path: polylogue/cli/query_output.py
@@ -658,7 +654,7 @@ files:
     target: polylogue/cli/root_request.py
     owner: stable
   - path: polylogue/cli/select.py
-    loc: 174
+    loc: 237
     target: polylogue/cli/select.py
     owner: stable
   - path: polylogue/cli/shared/check_maintenance.py

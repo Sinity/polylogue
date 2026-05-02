@@ -20,7 +20,6 @@ from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Literal, NotRequired, TypeAlias
-from unittest.mock import patch
 
 import pytest
 from hypothesis import HealthCheck, given, settings
@@ -31,7 +30,6 @@ from polylogue.archive.conversation.models import Conversation
 from polylogue.archive.filter.filters import ConversationFilter
 from polylogue.archive.filter.types import SortField
 from polylogue.archive.models import ConversationSummary
-from polylogue.cli.filter_picker import pick_filter
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.index import rebuild_index
@@ -852,7 +850,6 @@ class TestConversationFilterEmptyRepository:
             ("first", None),
             ("count", 0),
             ("delete", 0),
-            ("pick", None),
         ],
     )
     @pytest.mark.asyncio
@@ -872,13 +869,11 @@ class TestConversationFilterEmptyRepository:
             result = await filter_obj.count()
         elif terminal_method == "delete":
             result = await filter_obj.delete()
-        elif terminal_method == "pick":
-            result = await pick_filter(filter_obj)
         assert result == expected_result
 
 
 class TestConversationFilterBranching:
-    """Branch predicate and pick regression tests."""
+    """Branch predicate regression tests."""
 
     @pytest.fixture
     def filter_repo_branches(self, tmp_path: Path) -> ConversationRepository:
@@ -936,31 +931,6 @@ class TestConversationFilterBranching:
         result = await ConversationFilter(filter_repo_branches).parent("root").list()
         for conv in result:
             assert conv.parent_id == "root"
-
-
-class TestFiltersPick:
-    """pick() interactive picker regression tests."""
-
-    @pytest.fixture
-    def filter_repo_pick(self, tmp_path: Path) -> ConversationRepository:
-        db_path = tmp_path / "filter_pick.db"
-        with open_connection(db_path) as conn:
-            rebuild_index(conn)
-        for i in range(5):
-            (ConversationBuilder(db_path, f"conv{i}").provider("claude-ai").title(f"Conversation {i}").save())
-        backend = SQLiteBackend(db_path)
-        return ConversationRepository(backend)
-
-    @pytest.mark.asyncio
-    async def test_pick_no_results(self, filter_repo_pick: ConversationRepository) -> None:
-        result = await pick_filter(ConversationFilter(filter_repo_pick).provider("nonexistent"))
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_pick_non_tty(self, filter_repo_pick: ConversationRepository) -> None:
-        with patch("sys.stdout.isatty", return_value=False):
-            result = await pick_filter(ConversationFilter(filter_repo_pick))
-            assert result is not None
 
 
 class TestFtsWithProviderFilter:
