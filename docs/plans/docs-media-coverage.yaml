@@ -171,15 +171,30 @@ surfaces:
       Manually maintained. Updated on version bumps.
 
 coverage_gaps:
-  - domain: docs_media
+  - id: docs-media.executable-examples
+    domain: docs_media
     gap: README examples and media are not yet generated from executable scenario projections.
     owner: docs-media
-    next_evidence: Add executable scenario projection or media integrity gate
-  - domain: docs_media
+    severity: major
+    declared_at: "2026-05-02"
+    review_after: "2026-08-01"
+    issue: 590
+    next_evidence: devtools render-docs-surface --check
+  - id: docs-media.screenshot-integrity
+    domain: docs_media
     gap: Screenshots and VHS media have no committed nonblank/readability verification.
     owner: docs-media
-    next_evidence: Add executable scenario projection or media integrity gate
-  - domain: site_publication
+    severity: major
+    declared_at: "2026-05-02"
+    review_after: "2026-08-01"
+    issue: 590
+    next_evidence: devtools render-docs-surface --check
+  - id: docs-media.site-publication-integrity
+    domain: site_publication
     gap: Static-site publication has no visual or hyperlink integrity gate.
     owner: docs-media
-    next_evidence: Add executable scenario projection or media integrity gate
+    severity: major
+    declared_at: "2026-05-02"
+    review_after: "2026-08-01"
+    issue: 590
+    next_evidence: devtools render-docs-surface --check

@@ -129,19 +129,39 @@ dimensions:
       - tests/fuzz/
 
 coverage_gaps:
-  - dimension: flakiness
+  - id: test-quality.flakiness
+    dimension: flakiness
     gap: No systematic flakiness tracking, CI retry, or quarantine
     owner: test-quality
-    next_evidence: Add measurable quality gate for this dimension
-  - dimension: mock_depth
+    severity: major
+    declared_at: "2026-05-02"
+    review_after: "2026-08-01"
+    issue: 590
+    next_evidence: devtools run-validation-lanes --list
+  - id: test-quality.mock-depth
+    dimension: mock_depth
     gap: Mock depth not measured or enforced
     owner: test-quality
-    next_evidence: Add measurable quality gate for this dimension
-  - dimension: fuzz
+    severity: major
+    declared_at: "2026-05-02"
+    review_after: "2026-08-01"
+    issue: 590
+    next_evidence: devtools run-validation-lanes --list
+  - id: test-quality.fuzz-ci
+    dimension: fuzz
     gap: Atheris fuzz targets not run in CI
     owner: test-quality
-    next_evidence: Add measurable quality gate for this dimension
-  - dimension: direct_coverage
+    severity: major
+    declared_at: "2026-05-02"
+    review_after: "2026-08-01"
+    issue: 590
+    next_evidence: devtools run-validation-lanes --list
+  - id: test-quality.per-module-coverage
+    dimension: direct_coverage
     gap: Coverage per-module not tracked (only aggregate fail_under)
     owner: test-quality
-    next_evidence: Add measurable quality gate for this dimension
+    severity: major
+    declared_at: "2026-05-02"
+    review_after: "2026-08-01"
+    issue: 590
+    next_evidence: devtools coverage-gate
