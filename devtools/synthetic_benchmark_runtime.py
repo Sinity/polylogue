@@ -76,7 +76,7 @@ async def _ameasure(coro: Awaitable[_T]) -> tuple[float, _T]:
     return time.monotonic() - t0, result
 
 
-def _session_product_table_counts(db_path: Path) -> dict[str, int]:
+def _session_insight_table_counts(db_path: Path) -> dict[str, int]:
     """Collect row counts for durable session-insight tables and FTS projections."""
     from polylogue.storage.backends.connection import open_connection
 
@@ -312,18 +312,18 @@ def run_action_event_materialization_campaign(db_path: Path) -> CampaignResult:
     )
 
 
-def run_session_product_materialization_campaign(db_path: Path) -> CampaignResult:
+def run_session_insight_materialization_campaign(db_path: Path) -> CampaignResult:
     """Benchmark full durable session-insight rebuild."""
     from polylogue.storage.backends.connection import open_connection
-    from polylogue.storage.insights.session.rebuild import rebuild_session_products_sync
+    from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
 
-    stats_before = _session_product_table_counts(db_path)
+    stats_before = _session_insight_table_counts(db_path)
 
     with open_connection(db_path) as conn:
-        elapsed, rebuilt = _measure(rebuild_session_products_sync, conn)
+        elapsed, rebuilt = _measure(rebuild_session_insights_sync, conn)
         conn.commit()
 
-    stats_after = _session_product_table_counts(db_path)
+    stats_after = _session_insight_table_counts(db_path)
 
     return CampaignResult(
         campaign_name="session-insight-materialization",
@@ -359,7 +359,7 @@ SYNTHETIC_BENCHMARK_RUNNERS: dict[str, SyntheticBenchmarkRunner] = {
     "filter-scan": run_filter_scan_campaign,
     "startup-readiness": run_startup_readiness_campaign,
     "action-event-materialization": run_action_event_materialization_campaign,
-    "session-insight-materialization": run_session_product_materialization_campaign,
+    "session-insight-materialization": run_session_insight_materialization_campaign,
 }
 
 
@@ -377,7 +377,7 @@ __all__ = [
     "run_filter_scan_campaign",
     "run_fts_rebuild_campaign",
     "run_incremental_index_campaign",
-    "run_session_product_materialization_campaign",
+    "run_session_insight_materialization_campaign",
     "run_startup_readiness_campaign",
     "SYNTHETIC_BENCHMARK_RUNNERS",
     "SyntheticBenchmarkRunner",

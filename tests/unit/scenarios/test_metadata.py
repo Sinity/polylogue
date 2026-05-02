@@ -69,7 +69,7 @@ def test_scenario_metadata_payload_omits_empty_collections() -> None:
         path_targets=("raw-reparse-loop",),
         artifact_targets=("doctor_runtime",),
         operation_targets=(),
-        maintenance_targets=("session_products",),
+        maintenance_targets=("session_insights",),
         tags=("generated",),
         docs_role="reference",
         caption="Session insights are visible to docs projections.",
@@ -85,7 +85,7 @@ def test_scenario_metadata_payload_omits_empty_collections() -> None:
         "origin": "generated.contract",
         "path_targets": ["raw-reparse-loop"],
         "artifact_targets": ["doctor_runtime"],
-        "maintenance_targets": ["session_products"],
+        "maintenance_targets": ["session_insights"],
         "tags": ["generated"],
         "docs_role": "reference",
         "caption": "Session insights are visible to docs projections.",
@@ -135,7 +135,7 @@ def test_runtime_target_names_include_declared_runtime_specs() -> None:
     assert "action_event_rows" in runtime_artifact_target_names()
     assert "project-action-event-readiness" in runtime_operation_target_names()
     assert "action-event-repair-loop" in runtime_path_target_names()
-    assert "session_products" in runtime_maintenance_target_names()
+    assert "session_insights" in runtime_maintenance_target_names()
     assert "cli.json-contract" in declared_operation_target_names()
     assert "benchmark.storage.crud" in declared_operation_target_names()
 
@@ -160,7 +160,7 @@ def test_runtime_artifact_graph_exposes_resolved_specs() -> None:
 
     assert "action_event_rows" in graph.artifact_names()
     assert "materialize-session-insights" in graph.operation_names()
-    assert "session_products" in graph.maintenance_target_names()
+    assert "session_insights" in graph.maintenance_target_names()
 
 
 def test_scenario_metadata_resolves_runtime_specs() -> None:

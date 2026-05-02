@@ -153,7 +153,7 @@ CONTRACT_LANES = {
     ),
     "semantic-insight-normalization": pytest_lane(
         "semantic-insight-normalization",
-        "Semantic/session product normalization, operator/toolchain narrowing, schema contracts, and provider parser cleanup",
+        "Semantic/session insight normalization, operator/toolchain narrowing, schema contracts, and provider parser cleanup",
         900,
         "-q",
         "-n",
@@ -221,7 +221,7 @@ CONTRACT_LANES = {
     ),
     "evidence-tier-contracts": pytest_lane(
         "evidence-tier-contracts",
-        "Explicit evidence-tier product contracts, chronology fields, and evidence payload/query surfaces",
+        "Explicit evidence-tier insight contracts, chronology fields, and evidence payload/query surfaces",
         420,
         "-q",
         "-n",
@@ -245,7 +245,7 @@ CONTRACT_LANES = {
     ),
     "mixed-consumer-contracts": pytest_lane(
         "mixed-consumer-contracts",
-        "CLI, facade, MCP, and readiness surfaces consuming the same evidence/inference product model",
+        "CLI, facade, MCP, and readiness surfaces consuming the same evidence/inference insight model",
         480,
         "-q",
         "-n",

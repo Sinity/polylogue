@@ -151,7 +151,7 @@ def _unique(items: tuple[str, ...]) -> tuple[str, ...]:
 
 MAINTENANCE_TARGET_SPECS: tuple[MaintenanceTargetSpec, ...] = (
     MaintenanceTargetSpec(
-        name="session_products",
+        name="session_insights",
         mode=MaintenanceTargetMode.REPAIR,
         category=MaintenanceCategory.DERIVED_REPAIR,
         destructive=False,

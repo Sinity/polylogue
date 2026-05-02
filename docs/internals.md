@@ -66,8 +66,8 @@ needs a stats-table join, update `_needs_stats_join()` in
 goes in `cli/commands/`. The CLI is query-first — bare `polylogue` is search,
 not help.
 
-**Adding a session product**: Define the product model in `insights/`. Add
-storage in `storage/session_product_*.py`. Wire rebuild logic and register in
+**Adding a session insight**: Define the insight model in `insights/`. Add
+storage in `storage/insights/session/`. Wire rebuild logic and register in
 `insights/registry.py`.
 
 **Adding a devtools command**: Add a `CommandSpec` to

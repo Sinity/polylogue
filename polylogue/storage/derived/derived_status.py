@@ -48,7 +48,7 @@ def _action_event_metrics(action_status: StatusMap) -> Metrics:
     }
 
 
-def _session_product_metrics(session_status: SessionInsightStatusSnapshot) -> Metrics:
+def _session_insight_metrics(session_status: SessionInsightStatusSnapshot) -> Metrics:
     return {
         "profile_rows": session_status.profile_row_count,
         "profile_merged_fts_rows": session_status.profile_merged_fts_count,
@@ -164,7 +164,7 @@ def collect_derived_model_statuses_sync(
     }
     metrics.update(_message_fts_metrics(fts_status, verify_full=verify_full))
     metrics.update(_action_event_metrics(action_status))
-    metrics.update(_session_product_metrics(session_status))
+    metrics.update(_session_insight_metrics(session_status))
     metrics.update(_embedding_metrics(total_conversations, embedding_stats))
     metrics.update(
         _retrieval_metrics(

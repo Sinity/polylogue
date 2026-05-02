@@ -143,7 +143,7 @@ def test_artifact_graph_contains_the_current_runtime_paths() -> None:
     assert nodes["archive_readiness"].repair_targets == (
         "dangling_fts",
         "action_event_read_model",
-        "session_products",
+        "session_insights",
     )
     assert operations["acquire-raw-conversations"].produces == ("raw_validation_state", "artifact_observation_rows")
     assert operations["plan-validation-backlog"].produces == ("validation_backlog",)
@@ -193,7 +193,7 @@ def test_artifact_graph_contains_the_current_runtime_paths() -> None:
     )
     assert operations["plan-validation-backlog"].kind is OperationKind.PLANNING
     assert graph.maintenance_target_names() == MAINTENANCE_TARGET_NAMES
-    assert {node.name for node in graph.artifacts_for_maintenance_target("session_products")} == {
+    assert {node.name for node in graph.artifacts_for_maintenance_target("session_insights")} == {
         "session_profile_rows",
         "session_profile_merged_fts",
         "session_profile_evidence_fts",

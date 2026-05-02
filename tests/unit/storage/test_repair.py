@@ -96,13 +96,13 @@ def test_action_event_repair_detail_reports_stale_extra_fts_rows() -> None:
 
 def test_preview_counts_from_archive_debt_include_healthy_preview_targets_only() -> None:
     statuses = {
-        "session_products": repair_mod.ArchiveDebtStatus(
-            name="session_products",
-            category=repair_mod._maintenance_target_spec("session_products").category,
+        "session_insights": repair_mod.ArchiveDebtStatus(
+            name="session_insights",
+            category=repair_mod._maintenance_target_spec("session_insights").category,
             destructive=False,
             issue_count=0,
             detail="ready",
-            maintenance_target="session_products",
+            maintenance_target="session_insights",
         ),
         "dangling_fts": repair_mod.ArchiveDebtStatus(
             name="dangling_fts",
@@ -131,7 +131,7 @@ def test_preview_counts_from_archive_debt_include_healthy_preview_targets_only()
     }
 
     assert repair_mod.preview_counts_from_archive_debt(statuses) == {
-        "session_products": 0,
+        "session_insights": 0,
         "dangling_fts": 0,
         "empty_conversations": 4,
     }

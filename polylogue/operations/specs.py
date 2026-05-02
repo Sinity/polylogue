@@ -298,8 +298,8 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         ),
         path_targets=("session-insight-repair-loop",),
         code_refs=(
-            "polylogue.storage.insights.session.rebuild.rebuild_session_products_sync",
-            "polylogue.storage.insights.session.refresh.refresh_session_products_for_conversation_async",
+            "polylogue.storage.insights.session.rebuild.rebuild_session_insights_sync",
+            "polylogue.storage.insights.session.refresh.refresh_session_insights_for_conversation_async",
         ),
         surfaces=("insights", "doctor", "repair", "run.materialize"),
         mutates_state=True,

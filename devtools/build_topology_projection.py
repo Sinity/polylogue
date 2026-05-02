@@ -70,7 +70,6 @@ CROSS_RING_ROOT_MOVES = {
 # polylogue/storage/ subpackage rules.
 STORAGE_PREFIX_TO_SUBPACKAGE = {
     "repository_archive_": "storage/repository/archive/",
-    "repository_product_": "storage/repository/product/",
     "repository_action_": "storage/repository/action/",
     "repository_raw": "storage/repository/raw/",
     "repository_vectors": "storage/repository/vectors/",
@@ -78,13 +77,10 @@ STORAGE_PREFIX_TO_SUBPACKAGE = {
     "repository_writes": "storage/repository/archive/",
     "repository_contracts": "storage/repository/",
     "repository.py": "storage/repository/__init__.py",
-    "session_product_": "storage/insights/session/",
+    "session_insight_": "storage/insights/session/",
     "store_runtime_action_": "storage/runtime/action/",
     "store_runtime_archive_": "storage/runtime/archive/",
     "store_runtime_raw_": "storage/runtime/raw/",
-    "store_product_aggregate_": "storage/insights/aggregate/",
-    "store_product_session_": "storage/insights/session/",
-    "store_product_timeline_": "storage/insights/timeline/",
     "store_constants": "storage/runtime/",
     "store.py": "storage/runtime/__init__.py",
     "action_event_": "storage/action_events/",
@@ -98,7 +94,6 @@ STORAGE_PREFIX_TO_SUBPACKAGE = {
     "raw_state_": "storage/raw/",
     "derived_status": "storage/derived/",
     "insight_read_support": "storage/insights/",
-    "store_product": "storage/insights/",  # catch
     "store_runtime": "storage/runtime/",  # catch
 }
 

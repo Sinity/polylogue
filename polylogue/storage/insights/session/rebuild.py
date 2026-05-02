@@ -173,7 +173,7 @@ async def iter_conversation_id_pages_async(
         yield [str(row["conversation_id"]) for row in rows]
 
 
-def _row_to_session_product_conversation(row: sqlite3.Row) -> ConversationRecord:
+def _row_to_session_insight_conversation(row: sqlite3.Row) -> ConversationRecord:
     provider_meta: dict[str, object] = {}
     cwd_value = _row_get(row, "provider_meta_cwd")
     if isinstance(cwd_value, str) and cwd_value:
@@ -256,7 +256,7 @@ def load_sync_batch(
 ) -> SessionInsightArchiveBatch:
     placeholders = ", ".join("?" for _ in conversation_ids)
     conversations = [
-        _row_to_session_product_conversation(row)
+        _row_to_session_insight_conversation(row)
         for row in conn.execute(
             _SESSION_INSIGHT_CONVERSATION_SQL_TEMPLATE.format(placeholders=placeholders),
             tuple(conversation_ids),
@@ -300,7 +300,7 @@ async def load_async_batch(
 ) -> SessionInsightArchiveBatch:
     placeholders = ", ".join("?" for _ in conversation_ids)
     conversations = [
-        _row_to_session_product_conversation(row)
+        _row_to_session_insight_conversation(row)
         for row in await (
             await conn.execute(
                 _SESSION_INSIGHT_CONVERSATION_SQL_TEMPLATE.format(placeholders=placeholders),
@@ -372,7 +372,7 @@ def hydrate_conversations(
     return hydrated
 
 
-def build_session_product_records(
+def build_session_insight_records(
     conversation: Conversation,
 ) -> SessionInsightRecordBundle:
     analysis = build_session_analysis(conversation)
@@ -389,10 +389,10 @@ def build_session_product_records(
     )
 
 
-def build_session_product_record_bundles(
+def build_session_insight_record_bundles(
     conversations: Iterable[Conversation],
 ) -> list[SessionInsightRecordBundle]:
-    return [build_session_product_records(conversation) for conversation in conversations]
+    return [build_session_insight_records(conversation) for conversation in conversations]
 
 
 def _count_record_bundles(
@@ -438,7 +438,7 @@ def _finalize_rebuild_counts(
     )
 
 
-def rebuild_session_products_sync(
+def rebuild_session_insights_sync(
     conn: sqlite3.Connection,
     *,
     conversation_ids: Sequence[str] | None = None,
@@ -471,7 +471,7 @@ def rebuild_session_products_sync(
     for chunk in conversation_chunks:
         saw_conversation_ids = True
         batch = load_sync_batch(conn, chunk)
-        record_bundles = build_session_product_record_bundles(hydrate_conversations(batch))
+        record_bundles = build_session_insight_record_bundles(hydrate_conversations(batch))
         chunk_profiles, chunk_work_events, chunk_phases = _count_record_bundles(record_bundles)
         for bundle in record_bundles:
             replace_session_profile_sync(conn, bundle.profile_record)
@@ -531,7 +531,7 @@ def rebuild_session_products_sync(
     )
 
 
-async def rebuild_session_products_async(
+async def rebuild_session_insights_async(
     conn: aiosqlite.Connection,
     *,
     conversation_ids: Sequence[str] | None = None,
@@ -568,7 +568,7 @@ async def rebuild_session_products_async(
     if conversation_ids is None:
         async for chunk in iter_conversation_id_pages_async(conn, page_size=page_size):
             batch = await load_async_batch(conn, chunk)
-            record_bundles = build_session_product_record_bundles(hydrate_conversations(batch))
+            record_bundles = build_session_insight_record_bundles(hydrate_conversations(batch))
             chunk_profiles, chunk_work_events, chunk_phases = _count_record_bundles(record_bundles)
             for bundle in record_bundles:
                 await replace_session_profile(conn, bundle.profile_record, transaction_depth)
@@ -598,7 +598,7 @@ async def rebuild_session_products_async(
     else:
         for chunk_ids in chunked(list(conversation_ids), size=page_size):
             batch = await load_async_batch(conn, chunk_ids)
-            record_bundles = build_session_product_record_bundles(hydrate_conversations(batch))
+            record_bundles = build_session_insight_record_bundles(hydrate_conversations(batch))
             chunk_profiles, chunk_work_events, chunk_phases = _count_record_bundles(record_bundles)
             for bundle in record_bundles:
                 await replace_session_profile(conn, bundle.profile_record, transaction_depth)
@@ -663,8 +663,8 @@ __all__ = [
     "_ALL_SESSION_PROFILE_ROWS_SQL",
     "SessionInsightArchiveBatch",
     "SessionInsightRecordBundle",
-    "build_session_product_record_bundles",
-    "build_session_product_records",
+    "build_session_insight_record_bundles",
+    "build_session_insight_records",
     "chunked",
     "hydrate_conversations",
     "iter_conversation_id_pages_async",
@@ -672,7 +672,7 @@ __all__ = [
     "iter_hydrated_session_profiles_sync",
     "load_async_batch",
     "load_sync_batch",
-    "rebuild_session_products_async",
-    "rebuild_session_products_sync",
+    "rebuild_session_insights_async",
+    "rebuild_session_insights_sync",
     "sync_attachment_batch",
 ]

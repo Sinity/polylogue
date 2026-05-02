@@ -9,7 +9,7 @@ from click.testing import CliRunner
 
 from polylogue.cli.click_app import cli
 from polylogue.storage.backends.connection import open_connection
-from polylogue.storage.insights.session.rebuild import rebuild_session_products_sync
+from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
 from tests.infra.storage_records import ConversationBuilder
 
 
@@ -35,7 +35,7 @@ def _seed_resume_session(db_path: Path) -> None:
         .save()
     )
     with open_connection(db_path) as conn:
-        rebuild_session_products_sync(conn)
+        rebuild_session_insights_sync(conn)
 
 
 def test_resume_json_by_root_format(cli_workspace: dict[str, Path]) -> None:

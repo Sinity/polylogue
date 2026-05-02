@@ -740,7 +740,7 @@ async def test_async_execute_query_uses_action_event_stats_lane_for_semantic_sta
 
 
 @pytest.mark.asyncio
-async def test_async_execute_query_uses_session_product_stats_lane_for_repo_stats() -> None:
+async def test_async_execute_query_uses_session_insight_stats_lane_for_repo_stats() -> None:
     from polylogue.cli.query import async_execute_query
 
     repo = MagicMock()

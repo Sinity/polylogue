@@ -10,7 +10,7 @@ import pytest
 from polylogue.api import Polylogue
 from polylogue.insights.export_bundles import InsightExportBundleError, InsightExportBundleRequest
 from polylogue.storage.backends.connection import open_connection
-from polylogue.storage.insights.session.rebuild import rebuild_session_products_sync
+from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
 from tests.infra.storage_records import ConversationBuilder
 
 
@@ -65,7 +65,7 @@ def _seed_export_insights(db_path: Path) -> None:
         .save()
     )
     with open_connection(db_path) as conn:
-        rebuild_session_products_sync(conn)
+        rebuild_session_insights_sync(conn)
 
 
 @pytest.mark.asyncio

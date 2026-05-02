@@ -29,7 +29,7 @@ def test_build_operational_contract_surfaces_compiles_runtime_aligned_json_contr
         "--repair",
         "--preview",
         "--target",
-        "session_products",
+        "session_insights",
     )
     assert surfaces["json-doctor-session-insights-preview"].tags == ("maintenance", "session-insights")
 

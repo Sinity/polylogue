@@ -55,7 +55,7 @@ def test_render_artifact_graph_text_mentions_the_current_runtime_paths() -> None
     assert "validation-lane:live-insights-debt" in rendered
     assert "maintenance action_event_read_model:" in rendered
     assert "maintenance dangling_fts:" in rendered
-    assert "maintenance session_products:" in rendered
+    assert "maintenance session_insights:" in rendered
     assert (
         "uncovered maintenance targets: empty_conversations, orphaned_attachments, orphaned_content_blocks, orphaned_messages, wal_checkpoint"
         in rendered
@@ -90,7 +90,7 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
     assert any(node["name"] == "archive_conversation_rows" for node in payload["nodes"])
     assert any(node["name"] == "message_fts" for node in payload["nodes"])
     assert {target["name"] for target in payload["maintenance_targets"]} >= {
-        "session_products",
+        "session_insights",
         "action_event_read_model",
         "dangling_fts",
     }
@@ -142,7 +142,7 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
         "generated.json-contract",
     ) in {
         (ref["source"], ref["name"], ref["origin"])
-        for ref in payload["scenario_coverage"]["maintenance_targets"]["session_products"]
+        for ref in payload["scenario_coverage"]["maintenance_targets"]["session_insights"]
     }
     assert (
         "exercise",

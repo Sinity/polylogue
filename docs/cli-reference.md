@@ -345,9 +345,9 @@ Options:
                                   maintenance repairs
   --cleanup                       Run destructive archive cleanup for orphaned
                                   or empty persisted data
-  --target [session_products|action_event_read_model|dangling_fts|wal_checkpoint|orphaned_messages|orphaned_content_blocks|empty_conversations|orphaned_attachments]
+  --target [session_insights|action_event_read_model|dangling_fts|wal_checkpoint|orphaned_messages|orphaned_content_blocks|empty_conversations|orphaned_attachments]
                                   Limit maintenance to named targets such as
-                                  session_products, action_event_read_model,
+                                  session_insights, action_event_read_model,
                                   dangling_fts, wal_checkpoint,
                                   orphaned_messages, orphaned_content_blocks,
                                   empty_conversations, or orphaned_attachments

@@ -19,7 +19,7 @@ from polylogue.storage.runtime.store_constants import (
 )
 
 InsightReadinessVerdict = Literal["ready", "partial", "empty", "missing", "stale", "legacy", "unknown"]
-_REPAIR_HINT = build_maintenance_target_catalog().repair_hint(("session_products",), include_run_all=True)
+_REPAIR_HINT = build_maintenance_target_catalog().repair_hint(("session_insights",), include_run_all=True)
 
 
 class InsightReadinessQuery(ArchiveInsightModel):

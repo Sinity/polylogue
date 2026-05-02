@@ -18,7 +18,7 @@ from polylogue.storage.conversation_replacement import (
     replace_conversation_runtime_state_async,
 )
 from polylogue.storage.insights.session.refresh import (
-    delete_session_products_for_conversation_async,
+    delete_session_insights_for_conversation_async,
     refresh_thread_after_conversation_delete_async,
 )
 from polylogue.storage.insights.session.threads import thread_root_id_async
@@ -261,7 +261,7 @@ async def delete_conversation_via_backend(
         ).fetchone()
         deleted = False
         if existing_row is not None:
-            await delete_session_products_for_conversation_async(
+            await delete_session_insights_for_conversation_async(
                 conn,
                 conversation_id,
                 transaction_depth=backend.transaction_depth,

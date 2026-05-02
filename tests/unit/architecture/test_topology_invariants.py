@@ -32,11 +32,11 @@ def root_files() -> set[str]:
 # Insight modules live under polylogue/insights/.
 
 
-def test_no_archive_product_modules_at_root() -> None:
+def test_no_legacy_insight_modules_at_root() -> None:
     files = root_files()
     legacy = {f for f in files if f.startswith("archive_product") or f.startswith("product_")}
     legacy.update({f for f in files if f in {"archive_resume.py", "authored_payloads.py"}})
-    assert not legacy, f"legacy product modules still at root: {sorted(legacy)}"
+    assert not legacy, f"legacy insight modules still at root: {sorted(legacy)}"
 
 
 # Facade/sync surfaces live under polylogue/api/.
@@ -73,17 +73,17 @@ def test_no_query_runtime_at_lib_root() -> None:
     assert not legacy, f"query_* modules still at lib/ root: {sorted(legacy)}"
 
 
-# Insight storage lives under the storage product package.
+# Insight storage lives under the storage insights package.
 
 
-def test_storage_has_products_session_subpackage() -> None:
+def test_storage_has_insights_session_subpackage() -> None:
     assert (ROOT / "polylogue" / "storage" / "insights" / "session" / "__init__.py").exists()
 
 
-def test_no_session_product_at_storage_root() -> None:
+def test_no_legacy_insight_modules_at_storage_root() -> None:
     files = {p.name for p in (ROOT / "polylogue" / "storage").glob("*.py")}
-    legacy = {f for f in files if f.startswith("session_product_") or f.startswith("store_product_")}
-    assert not legacy, f"product-storage modules still at storage/ root: {sorted(legacy)}"
+    legacy = {f for f in files if f.startswith("session_insight_") or f.startswith("store_insight_")}
+    assert not legacy, f"insight-storage modules still at storage/ root: {sorted(legacy)}"
 
 
 # Structural verification commands exist.
