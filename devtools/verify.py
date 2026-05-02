@@ -8,9 +8,10 @@ Steps:
   2. ruff check (fast, <2s)
   3. mypy (polylogue + tests + devtools) (warm ~1s, cold ~25s)
   4. devtools render-all --check (fast, <5s)
-  5. pytest --ignore=tests/integration (slow but essential, ~3min)
+  5. devtools proof-pack --check (fast proof-policy gate)
+  6. pytest --ignore=tests/integration (slow but essential, ~3min)
 
-Use --quick to run only steps 1-4 (suitable for pre-commit).
+Use --quick to run only the non-pytest gates (suitable for pre-commit).
 Use --lab to add verification-lab scenario checks through lab commands.
 """
 
@@ -54,6 +55,7 @@ def build_verify_steps(*, quick: bool, lab: bool) -> list[tuple[str, list[str]]]
         ("verify-suppressions", ["devtools", "verify-suppressions"]),
         ("verify-manifests", ["devtools", "verify-manifests"]),
         ("verify-witness-lifecycle", ["devtools", "verify-witness-lifecycle"]),
+        ("proof-pack check", ["devtools", "proof-pack", "--check"]),
     ]
 
     if not quick:

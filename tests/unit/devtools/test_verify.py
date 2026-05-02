@@ -21,6 +21,7 @@ def test_quick_verify_omits_pytest() -> None:
         "verify-suppressions",
         "verify-manifests",
         "verify-witness-lifecycle",
+        "proof-pack check",
     ]
 
 
