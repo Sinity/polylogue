@@ -326,6 +326,9 @@ class TestPolylogueReadSurfaces:
         ]
         assert await archive.get_messages_paginated("missing-read-api") == ([], 0)
 
+        with pytest.raises(ValueError, match="Unknown message type"):
+            await archive.get_messages_paginated("conv-read-api", message_type="summmary")  # type: ignore[arg-type]
+
     @pytest.mark.asyncio
     async def test_get_raw_artifacts_resolves_id_and_handles_missing(self: object, tmp_path: Path) -> None:
         archive = _archive(tmp_path)

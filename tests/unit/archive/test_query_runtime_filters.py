@@ -7,6 +7,7 @@ import pytest
 from polylogue.archive.conversation.branch_type import BranchType
 from polylogue.archive.conversation.models import ConversationSummary
 from polylogue.archive.models import Attachment, Conversation, Message
+from polylogue.archive.query.path_prefix import path_matches_prefix
 from polylogue.archive.query.plan import ConversationQueryPlan
 from polylogue.archive.query.runtime_filters import apply_common_filters, apply_full_filters
 from polylogue.types import ConversationId, Provider
@@ -277,6 +278,30 @@ def test_apply_full_filters_handles_message_type_and_since_session_scope() -> No
         provider_meta={"working_directories": ["/repo/polylogue"]},
         updated_at=datetime(2026, 4, 23, 10, 2, tzinfo=timezone.utc),
     )
+    later_sibling_repo = _conversation(
+        "session-sibling",
+        make_msg(
+            id="sibling-summary",
+            role="system",
+            text="summary",
+            timestamp=datetime(2026, 4, 23, 10, 4, tzinfo=timezone.utc),
+            message_type="summary",
+        ),
+        provider_meta={"working_directories": ["/repository"]},
+        updated_at=datetime(2026, 4, 23, 10, 4, tzinfo=timezone.utc),
+    )
+    later_unknown_cwd = _conversation(
+        "session-unknown",
+        make_msg(
+            id="unknown-summary",
+            role="system",
+            text="summary",
+            timestamp=datetime(2026, 4, 23, 10, 5, tzinfo=timezone.utc),
+            message_type="summary",
+        ),
+        provider_meta={},
+        updated_at=datetime(2026, 4, 23, 10, 5, tzinfo=timezone.utc),
+    )
     later_other_repo = _conversation(
         "session-other",
         make_msg(
@@ -307,15 +332,52 @@ def test_apply_full_filters_handles_message_type_and_since_session_scope() -> No
             message_type="summary",
             since_session_id="session-root",
         ),
-        [reference, later_same_repo, later_other_repo, earlier_same_repo],
+        [reference, later_same_repo, later_sibling_repo, later_unknown_cwd, later_other_repo, earlier_same_repo],
         sql_pushed=False,
     )
 
     assert [str(conversation.id) for conversation in filtered] == ["session-later"]
 
-    unchanged = apply_full_filters(
+    missing_reference = apply_full_filters(
         ConversationQueryPlan(since_session_id="missing"),
         [reference, later_same_repo],
         sql_pushed=False,
     )
-    assert [str(conversation.id) for conversation in unchanged] == ["session-root", "session-later"]
+    assert missing_reference == []
+
+
+def test_apply_full_filters_rejects_unknown_message_type() -> None:
+    conversation = _conversation(
+        "session",
+        make_msg(id="msg", role="user", text="hello", message_type="message"),
+    )
+
+    with pytest.raises(ValueError, match="Unknown message type"):
+        apply_full_filters(
+            ConversationQueryPlan(message_type="summmary"),
+            [conversation],
+            sql_pushed=False,
+        )
+
+
+def test_apply_full_filters_cwd_prefix_is_path_component_bounded() -> None:
+    exact = _conversation("exact", provider_meta={"working_directories": ["/realm/project/polylogue"]})
+    child = _conversation("child", provider_meta={"working_directories": ["/realm/project/polylogue/src"]})
+    sibling = _conversation("sibling", provider_meta={"working_directories": ["/realm/project/polylogue2"]})
+    missing = _conversation("missing", provider_meta={})
+
+    filtered = apply_full_filters(
+        ConversationQueryPlan(cwd_prefix="/realm/project/polylogue"),
+        [exact, child, sibling, missing],
+        sql_pushed=False,
+    )
+
+    assert [str(conversation.id) for conversation in filtered] == ["exact", "child"]
+
+
+def test_path_prefix_matching_is_component_bounded() -> None:
+    assert path_matches_prefix("/repo/foo", "/repo/foo")
+    assert path_matches_prefix("/repo/foo/bar", "/repo/foo")
+    assert path_matches_prefix(r"C:\\repo\\foo\\bar", r"C:\\repo\\foo")
+    assert not path_matches_prefix("/repo/foobar", "/repo/foo")
+    assert not path_matches_prefix("/repo/fooish/bar", "/repo/foo")

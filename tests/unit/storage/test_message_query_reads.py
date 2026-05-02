@@ -131,6 +131,25 @@ async def test_message_query_reads_cover_type_filters_batches_and_stream_limits(
         assert tool_total == 1
         assert [message.message_id for message in tool_messages] == ["msg-tool"]
 
+        user_messages, user_total = await get_messages_paginated(
+            conn,
+            "conv-message-reads",
+            message_type="message",
+            limit=10,
+            offset=0,
+        )
+        assert user_total == 2
+        assert [message.message_id for message in user_messages] == ["msg-user", "msg-assistant"]
+
+        with pytest.raises(ValueError, match="Unknown message type"):
+            await get_messages_paginated(
+                conn,
+                "conv-message-reads",
+                message_type="summmary",  # type: ignore[arg-type]
+                limit=10,
+                offset=0,
+            )
+
         hydrated = await get_messages(conn, "conv-message-reads")
         assert len(hydrated) == 5
 
