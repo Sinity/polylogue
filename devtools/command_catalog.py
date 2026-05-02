@@ -316,6 +316,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=(
             "devtools proof-pack --base-ref origin/master --head-ref HEAD",
             "devtools proof-pack --base-ref origin/master --head-ref HEAD --markdown",
+            "devtools proof-pack --path polylogue/proof/catalog.py --check",
             "devtools proof-pack --json --path polylogue/site/",
         ),
     ),

@@ -13,6 +13,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
+from polylogue.core.outcomes import OutcomeStatus
 from polylogue.proof.catalog import build_verification_catalog
 from polylogue.proof.diffing import (
     AffectedObligationReport,
@@ -93,6 +94,7 @@ def build_proof_pack(
             "subject_count": len(catalog.subjects),
             "obligation_count": len(catalog.obligations),
         },
+        "catalog_quality_checks": [check.to_dict() for check in catalog.quality_checks],
         "affected": affected.to_payload(),
         "affected_domains": affected_domains,
         "domain_coverage": _domain_coverage(domains_data, catalog),
@@ -105,6 +107,62 @@ def build_proof_pack(
         "oracle_mix": dict(Counter(claim.oracle for claim in affected_claims)),
         "cost_tier": _cost_tier_counts(affected, catalog),
     }
+
+
+def evaluate_check_policy(report: dict[str, Any]) -> dict[str, Any]:
+    """Evaluate proof-pack blocking policy over an already-built report."""
+    errors: list[str] = []
+    warnings: list[str] = []
+    for check in report.get("catalog_quality_checks", []):
+        if not isinstance(check, dict):
+            continue
+        name = str(check.get("name", "catalog.check"))
+        summary = str(check.get("summary", "")).strip()
+        line = f"{name}: {summary}" if summary else name
+        status = str(check.get("status", "")).strip().lower()
+        if status == OutcomeStatus.ERROR.value:
+            errors.append(line)
+        elif status == OutcomeStatus.WARNING.value:
+            warnings.append(line)
+
+    serious_manual_cells = [
+        cell
+        for cell in report.get("manual_review_cells", [])
+        if isinstance(cell, dict) and cell.get("severity") == "serious" and not cell.get("tracked_exception")
+    ]
+    for cell in serious_manual_cells:
+        errors.append(
+            "affected serious claim needs manual/same-source review: "
+            f"{cell.get('claim_id')} ({cell.get('oracle')}, {cell.get('independence_level')})"
+        )
+
+    suppressed = _suppressed_change_subjects(report)
+    if suppressed:
+        warnings.append("changed paths were suppressed from obligation routing: " + ", ".join(suppressed[:10]))
+    known_gaps = report.get("known_gaps", [])
+    if known_gaps:
+        warnings.append(f"known coverage gaps intersect affected domains: {len(known_gaps)} domain(s)")
+    if report.get("additional_known_gaps"):
+        warnings.append("additional known gaps exist in zero-claim routed domains")
+
+    return {
+        "status": "error" if errors else "ok",
+        "errors": errors,
+        "warnings": warnings,
+    }
+
+
+def _suppressed_change_subjects(report: dict[str, Any]) -> list[str]:
+    affected = report.get("affected")
+    if not isinstance(affected, dict):
+        return []
+    diff = affected.get("obligation_diff")
+    if not isinstance(diff, dict):
+        return []
+    suppressed = diff.get("suppressed")
+    if not isinstance(suppressed, list):
+        return []
+    return [str(item) for item in suppressed]
 
 
 def _domain_payload(domain: str, info: object, claims: list[Any]) -> dict[str, Any]:
@@ -155,8 +213,8 @@ def _checks_payload(checks: tuple[RecommendedCheck, ...]) -> list[dict[str, Any]
     return payload
 
 
-def _manual_review_cells(claims: list[Any]) -> list[dict[str, str]]:
-    cells: list[dict[str, str]] = []
+def _manual_review_cells(claims: list[Any]) -> list[dict[str, Any]]:
+    cells: list[dict[str, Any]] = []
     for claim in claims:
         if claim.oracle == "manual_review" or claim.independence_level in {"same_source", "self_attesting"}:
             cells.append(
@@ -164,6 +222,8 @@ def _manual_review_cells(claims: list[Any]) -> list[dict[str, str]]:
                     "claim_id": claim.id,
                     "oracle": claim.oracle,
                     "independence_level": claim.independence_level,
+                    "severity": claim.severity,
+                    "tracked_exception": claim.tracked_exception,
                     "reason": "requires human confirmation or independent evidence upgrade",
                 }
             )
@@ -233,6 +293,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--path", action="append", dest="paths", default=None, help="Changed file path (repeatable).")
     parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON.")
     parser.add_argument("--markdown", action="store_true", help="Emit PR-comment-ready Markdown.")
+    parser.add_argument("--check", action="store_true", help="Exit non-zero when proof-pack blocking policy fails.")
     args = parser.parse_args(argv)
 
     root = Path(__file__).resolve().parents[1]
@@ -242,6 +303,9 @@ def main(argv: list[str] | None = None) -> int:
         head_ref=args.head_ref,
         changed_paths=args.paths,
     )
+    check_result = evaluate_check_policy(report)
+    if args.check:
+        report["check"] = check_result
 
     if args.json:
         json.dump(report, sys.stdout, indent=2, sort_keys=True)
@@ -252,6 +316,8 @@ def main(argv: list[str] | None = None) -> int:
     else:
         _print_human_report(report)
 
+    if args.check and check_result["status"] != "ok":
+        return 1
     return 0
 
 
@@ -262,9 +328,19 @@ def render_markdown(report: dict[str, Any]) -> str:
         "",
         f"**Refs:** `{refs['base_ref']}..{refs['head_ref']}`",
         f"**Changed paths:** {len(report['changed_paths'])}",
-        "",
-        "### Affected Domains",
     ]
+    check_result = report.get("check")
+    if isinstance(check_result, dict):
+        lines.extend(["", "### Check Policy"])
+        if check_result.get("status") == "ok":
+            lines.append("- status: `ok`")
+        else:
+            lines.append("- status: `error`")
+        for error in check_result.get("errors", []) or []:
+            lines.append(f"- blocking: {error}")
+        for warning in check_result.get("warnings", []) or []:
+            lines.append(f"- warning: {warning}")
+    lines.extend(["", "### Affected Domains"])
     affected_domains = report.get("affected_domains", [])
     visible_domains = [domain for domain in affected_domains if domain.get("claim_count", 0) > 0]
     zero_claim_domains = [domain for domain in affected_domains if domain.get("claim_count", 0) == 0]
@@ -354,6 +430,13 @@ def _print_human_report(report: dict[str, Any]) -> None:
     print(f"Manual review cells: {len(report.get('manual_review_cells', []))}")
     print(f"Stable affected obligations: {len(report.get('stable_affected_obligations', []))}")
     print(f"Known gaps: {len(report.get('known_gaps', []))}")
+    check_result = report.get("check")
+    if isinstance(check_result, dict):
+        print(f"Check policy: {check_result.get('status', 'unknown')}")
+        for error in check_result.get("errors", []) or []:
+            print(f"  blocking: {error}")
+        for warning in check_result.get("warnings", []) or []:
+            print(f"  warning: {warning}")
 
 
 if __name__ == "__main__":
