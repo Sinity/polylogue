@@ -586,7 +586,11 @@ def _classify_path(path: str) -> ChangeKind:
         or path in {"devtools/generated_surfaces.py", "devtools/command_catalog.py"}
     ):
         return "generated_surface"
-    if path.startswith("polylogue/proof/") or path == "devtools/affected_obligations.py":
+    if path.startswith("polylogue/proof/") or path in {
+        "devtools/affected_obligations.py",
+        "devtools/obligation_diff.py",
+        "devtools/proof_pack.py",
+    }:
         return "proof_catalog"
     if path == "polylogue/operations/specs.py":
         return "operation.spec"

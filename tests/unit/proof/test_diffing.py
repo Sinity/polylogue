@@ -125,6 +125,22 @@ def test_schema_change_routes_to_roundtrip_obligation() -> None:
     assert "schema.roundtrip.inference_validation" in {item.claim_id for item in affected}
 
 
+def test_proof_report_tool_change_routes_to_catalog_obligations() -> None:
+    catalog = build_verification_catalog()
+
+    report = build_affected_obligation_report(
+        ("devtools/proof_pack.py",),
+        catalog=catalog,
+        base_obligation_ids=(obligation.id for obligation in catalog.obligations),
+        head_obligation_ids=(obligation.id for obligation in catalog.obligations),
+    )
+
+    assert report.change_subjects[0].kind == "proof_catalog"
+    assert report.obligation_diff.suppressed == ()
+    assert report.affected_obligations
+    assert "pytest tests/unit/proof" in [check.rendered_command for check in report.inner_loop_checks]
+
+
 def test_obligation_diff_buckets_new_dropped_stale_and_suppressed() -> None:
     diff = diff_obligation_ids(
         base_ids=("stable", "dropped"),
