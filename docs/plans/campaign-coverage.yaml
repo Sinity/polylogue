@@ -25,7 +25,10 @@ mutation_campaigns:
       - polylogue/core/json.py
     tests:
       - tests/unit/core/test_models.py
-      - tests/unit/core/test_properties.py
+      - tests/unit/core/test_message_laws.py
+      - tests/unit/core/test_hashing.py
+      - tests/unit/core/test_json.py
+      - tests/unit/core/test_timestamp_guards.py
     status: active
 
   - name: search
@@ -34,7 +37,7 @@ mutation_campaigns:
       - polylogue/storage/search_providers/fts5.py
       - polylogue/storage/search_providers/hybrid.py
     tests:
-      - tests/unit/storage/test_fts5_laws.py
+      - tests/unit/storage/test_fts5.py
       - tests/unit/storage/test_hybrid_laws.py
     status: active
 
@@ -56,17 +59,17 @@ benchmark_campaigns:
   - name: search-filters
     description: Filter chain query performance benchmarks
     tests:
-      - tests/benchmarks/test_search_bench.py
+      - tests/benchmarks/test_search_filters.py
     status: active
 
   - name: pipeline
     description: Pipeline throughput benchmarks
     tests:
-      - tests/benchmarks/test_pipeline_bench.py
+      - tests/benchmarks/test_pipeline.py
     status: active
 
   - name: storage-scale
     description: Storage scale benchmarks
     tests:
-      - tests/benchmarks/test_storage_scale.py
+      - tests/benchmarks/test_storage.py
     status: active
