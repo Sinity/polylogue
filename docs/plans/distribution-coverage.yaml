@@ -3,8 +3,7 @@
 # Documents the current state of install-artifact parity across
 # wheel, sdist, and Nix package. The local distribution gate now
 # builds wheel/sdist artifacts, rebuilds from unpacked sdist without
-# .git, smokes installed runtime entrypoints, and verifies that the
-# source-checkout-only devtools surface is not shipped in user wheels.
+# .git, and smokes installed runtime entrypoints.
 #
 # Updated 2026-05-02 from realized codebase state.
 
@@ -28,8 +27,8 @@ artifacts:
       pyproject.toml uses [build-system] with hatchling.
       The source-checkout distribution gate builds the wheel,
       installs it in a fresh environment, smokes polylogue,
-      polylogued, polylogue-mcp, python -m polylogue, and asserts
-      devtools is not installed. The gate is not yet scheduled in CI.
+      polylogued, polylogue-mcp, and python -m polylogue. The
+      gate is not yet scheduled in CI.
 
   sdist:
     description: Python source distribution (sdist)
@@ -94,8 +93,7 @@ artifacts:
     ci_present: true
     notes: >
       Devtools are intentionally source-checkout-only. They are
-      exposed in the devshell by the devtools wrapper in flake.nix,
-      not as a user-wheel console script or installed wheel package.
+      exposed in the devshell by the devtools wrapper in flake.nix.
 
   pip_dependencies:
     count: null

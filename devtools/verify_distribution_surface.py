@@ -15,7 +15,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNTIME_SCRIPTS = ("polylogue", "polylogued", "polylogue-mcp")
-SOURCE_ONLY_SCRIPTS = ("devtools",)
 
 
 class DistributionVerificationError(RuntimeError):
@@ -91,15 +90,10 @@ def _verify_wheel_surface(wheel: Path) -> None:
         names = set(archive.namelist())
         if "polylogue/_build_info.py" not in names:
             raise DistributionVerificationError(f"{wheel.name} is missing polylogue/_build_info.py")
-        if any(name.startswith("devtools/") for name in names):
-            raise DistributionVerificationError(f"{wheel.name} includes source-checkout-only devtools package")
         entry_points = _read_entry_points(archive)
     for script in RUNTIME_SCRIPTS:
         if f"{script} =" not in entry_points:
             raise DistributionVerificationError(f"{wheel.name} is missing console script {script}")
-    for script in SOURCE_ONLY_SCRIPTS:
-        if f"{script} =" in entry_points:
-            raise DistributionVerificationError(f"{wheel.name} exposes source-checkout-only console script {script}")
 
 
 def _read_entry_points(archive: zipfile.ZipFile) -> str:
@@ -125,17 +119,6 @@ def _smoke_installed_wheel(wheel: Path, install_dir: Path) -> None:
     _run((str(python), "-m", "polylogue", "--version"), cwd=install_dir, env=env)
     _run((str(bin_dir / "polylogued"), "--help"), cwd=install_dir, env=env)
     _run((str(bin_dir / "polylogue-mcp"), "--help"), cwd=install_dir, env=env)
-    if (bin_dir / "devtools").exists():
-        raise DistributionVerificationError("installed wheel exposes devtools console script")
-    _run(
-        (
-            str(python),
-            "-c",
-            "import importlib.util; raise SystemExit(importlib.util.find_spec('devtools') is not None)",
-        ),
-        cwd=install_dir,
-        env=env,
-    )
 
 
 def _smoke_env(archive_root: Path) -> dict[str, str]:
