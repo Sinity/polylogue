@@ -271,12 +271,16 @@ def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 return hooks.error_json(f"Conversation not found: {conversation_id}")
             canonical_id = str(summary.id)
             from polylogue.archive.message.roles import normalize_message_roles
+            from polylogue.archive.message.types import validate_message_type_filter
 
             roles = normalize_message_roles(message_role) if message_role else ()
+            normalized_message_type = (
+                validate_message_type_filter(message_type).value if message_type is not None else None
+            )
             paginated, total = await ops.get_messages_paginated(
                 canonical_id,
                 message_role=roles,
-                message_type=cast("MessageTypeName | None", message_type),
+                message_type=cast("MessageTypeName | None", normalized_message_type),
                 limit=hooks.clamp_limit(limit),
                 offset=max(0, offset),
                 content_projection=projection,

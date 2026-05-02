@@ -8,11 +8,11 @@ from typing import Literal
 import aiosqlite
 
 from polylogue.archive.message.roles import MessageRoleFilter, Role, message_role_sql_values
-from polylogue.archive.message.types import MessageType
+from polylogue.archive.message.types import validate_message_type_filter
 from polylogue.storage.backends.queries.mappers import _row_to_message
 from polylogue.storage.runtime import MessageRecord
 
-MessageTypeName = Literal["summary", "tool_use", "tool_result", "thinking"]
+MessageTypeName = Literal["message", "summary", "tool_use", "tool_result", "thinking"]
 
 
 async def get_messages(
@@ -79,7 +79,7 @@ async def get_messages_paginated(
         params.extend(role_values)
 
     if message_type:
-        normalized_type = MessageType.normalize(message_type).value
+        normalized_type = validate_message_type_filter(message_type).value
         query += " AND message_type = ?"
         count_query += " AND message_type = ?"
         params.append(normalized_type)

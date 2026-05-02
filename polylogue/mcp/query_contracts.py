@@ -8,6 +8,7 @@ from typing import Annotated, TypeAlias
 
 from pydantic import Field
 
+from polylogue.archive.message.types import validate_message_type_filter
 from polylogue.archive.query.spec import ConversationQuerySpec
 from polylogue.archive.semantic.content_projection import ContentProjectionSpec
 
@@ -31,7 +32,10 @@ def normalize_query_params(params: Mapping[str, object]) -> dict[str, object]:
 
 def build_query_spec(**params: object) -> ConversationQuerySpec:
     """Build a ConversationQuerySpec from MCP-facing query kwargs."""
-    return ConversationQuerySpec.from_params(normalize_query_params(params))
+    normalized = normalize_query_params(params)
+    if normalized.get("message_type") is not None:
+        normalized["message_type"] = validate_message_type_filter(normalized["message_type"]).value
+    return ConversationQuerySpec.from_params(normalized)
 
 
 @dataclass(frozen=True, slots=True)
