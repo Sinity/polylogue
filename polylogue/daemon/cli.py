@@ -8,6 +8,7 @@ from pathlib import Path
 import click
 
 from polylogue.api import Polylogue
+from polylogue.daemon.browser_capture import browser_capture_command
 from polylogue.sources.live import LiveWatcher, WatchSource
 from polylogue.sources.live.watcher import default_sources
 
@@ -28,6 +29,9 @@ async def run_live_watcher(
 @click.group(help="Run long-lived Polylogue local services.")
 def main() -> None:
     pass
+
+
+main.add_command(browser_capture_command)
 
 
 @main.command("watch", help="Watch source directories and ingest new sessions live.")

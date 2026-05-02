@@ -3,7 +3,6 @@
   "removed_public_commands": ["audit", "qa", "showcase"],
   "required_root_commands": [
     "run",
-    "browser-capture",
     "doctor",
     "schema",
     "messages",
