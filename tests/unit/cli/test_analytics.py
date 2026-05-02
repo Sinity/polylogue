@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import TypeAlias
 
 from polylogue.insights.archive import ProviderAnalyticsInsight
-from polylogue.operations.archive import list_provider_analytics_products
+from polylogue.operations.archive import list_provider_analytics_insights
 from polylogue.storage.repository import ConversationRepository
 from tests.infra.storage_records import make_conversation, make_message
 
@@ -101,12 +101,12 @@ class TestProviderAnalyticsInsight:
 
 
 class TestListProviderAnalyticsInsights:
-    """Test list_provider_analytics_products function."""
+    """Test list_provider_analytics_insights function."""
 
     async def test_empty_database(self: object, workspace_env: dict[str, Path]) -> None:
         """Empty database returns empty list."""
         db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
-        result = await list_provider_analytics_products(db_path=db_path)
+        result = await list_provider_analytics_insights(db_path=db_path)
         assert result == []
 
     async def test_single_provider(
@@ -124,7 +124,7 @@ class TestListProviderAnalyticsInsights:
         ]
         await storage_repository.save_conversation(conversation=conv, messages=msgs, attachments=[])
 
-        result = await list_provider_analytics_products(db_path=db_path)
+        result = await list_provider_analytics_insights(db_path=db_path)
 
         assert len(result) == 1
         assert result[0].provider_name == "claude-ai"
@@ -155,7 +155,7 @@ class TestListProviderAnalyticsInsights:
             msgs = [make_message(f"gmsg-{i}", f"chatgpt-{i}", text="Hi")]
             await storage_repository.save_conversation(conversation=conv, messages=msgs, attachments=[])
 
-        result = await list_provider_analytics_products(db_path=db_path)
+        result = await list_provider_analytics_insights(db_path=db_path)
 
         assert len(result) == 2
         # ChatGPT has more conversations, should be first
@@ -179,7 +179,7 @@ class TestListProviderAnalyticsInsights:
         ]
         await storage_repository.save_conversation(conversation=conv, messages=msgs, attachments=[])
 
-        result = await list_provider_analytics_products(db_path=db_path)
+        result = await list_provider_analytics_insights(db_path=db_path)
 
         assert len(result) == 1
         assert result[0].user_message_count == 2
@@ -210,7 +210,7 @@ class TestListProviderAnalyticsInsights:
         ]
         await storage_repository.save_conversation(conversation=conv2, messages=msgs2, attachments=[])
 
-        result = await list_provider_analytics_products(db_path=db_path)
+        result = await list_provider_analytics_insights(db_path=db_path)
 
         assert len(result) == 1
         # Total 6 messages across 2 conversations = 3.0 average
@@ -236,7 +236,7 @@ class TestListProviderAnalyticsInsights:
         ]
         await storage_repository.save_conversation(conversation=conv, messages=msgs, attachments=[])
 
-        result = await list_provider_analytics_products(db_path=db_path)
+        result = await list_provider_analytics_insights(db_path=db_path)
 
         assert len(result) == 1
         assert result[0].tool_use_count == 1
@@ -263,7 +263,7 @@ class TestListProviderAnalyticsInsights:
         ]
         await storage_repository.save_conversation(conversation=conv, messages=msgs, attachments=[])
 
-        result = await list_provider_analytics_products(db_path=db_path)
+        result = await list_provider_analytics_insights(db_path=db_path)
 
         assert len(result) == 1
         assert result[0].thinking_count == 1
@@ -297,7 +297,7 @@ class TestListProviderAnalyticsInsights:
         ]
         await storage_repository.save_conversation(conversation=conv, messages=msgs, attachments=[])
 
-        result = await list_provider_analytics_products(db_path=db_path)
+        result = await list_provider_analytics_insights(db_path=db_path)
 
         assert len(result) == 1
         assert result[0].tool_use_count == 2  # Two tool use messages
@@ -315,7 +315,7 @@ class TestListProviderAnalyticsInsights:
         msgs = [make_message("zero-msg-1", "zero-div", role="system", text="System message")]
         await storage_repository.save_conversation(conversation=conv, messages=msgs, attachments=[])
 
-        result = await list_provider_analytics_products(db_path=db_path)
+        result = await list_provider_analytics_insights(db_path=db_path)
 
         assert len(result) == 1
         # Should not raise division by zero
@@ -399,7 +399,7 @@ class TestWordCountEdgeCases:
                 ("test", "user", "     ", None),
             ],
         )
-        results = await list_provider_analytics_products(db_path=db)
+        results = await list_provider_analytics_insights(db_path=db)
         assert len(results) == 1
         assert results[0].avg_user_words == 0.0
 
@@ -416,7 +416,7 @@ class TestWordCountEdgeCases:
                 ("test", "user", "\t\t", None),
             ],
         )
-        results = await list_provider_analytics_products(db_path=db)
+        results = await list_provider_analytics_insights(db_path=db)
         assert results[0].avg_user_words == 0.0
 
     async def test_single_word_counts_one(self: object, tmp_path: Path) -> None:
@@ -427,7 +427,7 @@ class TestWordCountEdgeCases:
                 ("test", "user", "Hello", None),
             ],
         )
-        results = await list_provider_analytics_products(db_path=db)
+        results = await list_provider_analytics_insights(db_path=db)
         assert results[0].avg_user_words == 1.0
 
     async def test_multiple_spaces_between_words(self: object, tmp_path: Path) -> None:
@@ -442,7 +442,7 @@ class TestWordCountEdgeCases:
                 ("test", "user", "hello  world", None),  # 2 spaces
             ],
         )
-        results = await list_provider_analytics_products(db_path=db)
+        results = await list_provider_analytics_insights(db_path=db)
         assert results[0].avg_user_words == 2.0
 
     async def test_empty_text_counts_zero(self: object, tmp_path: Path) -> None:
@@ -453,7 +453,7 @@ class TestWordCountEdgeCases:
                 ("test", "user", "", None),
             ],
         )
-        results = await list_provider_analytics_products(db_path=db)
+        results = await list_provider_analytics_insights(db_path=db)
         assert results[0].avg_user_words == 0.0
 
     async def test_none_text_counts_zero(self: object, tmp_path: Path) -> None:
@@ -464,7 +464,7 @@ class TestWordCountEdgeCases:
                 ("test", "user", None, None),
             ],
         )
-        results = await list_provider_analytics_products(db_path=db)
+        results = await list_provider_analytics_insights(db_path=db)
         assert results[0].avg_user_words == 0.0
 
 
@@ -485,7 +485,7 @@ class TestLikePatternResistance:
                 ("test", "assistant", 'I used "type":"tool_use" in my message', None),
             ],
         )
-        results = await list_provider_analytics_products(db_path=db)
+        results = await list_provider_analytics_insights(db_path=db)
         # tool_use_count should be 0 — the LIKE is on provider_meta, not text
         assert results[0].tool_use_count == 0
 
@@ -497,7 +497,7 @@ class TestLikePatternResistance:
                 ("test", "assistant", 'I was thinking about "type":"thinking" blocks', None),
             ],
         )
-        results = await list_provider_analytics_products(db_path=db)
+        results = await list_provider_analytics_insights(db_path=db)
         assert results[0].thinking_count == 0
 
     async def test_tool_role_fallback_detected(self: object, tmp_path: Path) -> None:
@@ -508,7 +508,7 @@ class TestLikePatternResistance:
                 ("test", "tool", "Tool result here", None),
             ],
         )
-        results = await list_provider_analytics_products(db_path=db)
+        results = await list_provider_analytics_insights(db_path=db)
         assert results[0].tool_use_count == 1
 
     async def test_tool_use_in_provider_meta_detected(self: object, tmp_path: Path) -> None:
@@ -520,7 +520,7 @@ class TestLikePatternResistance:
                 ("test", "assistant", "Using a tool", meta),
             ],
         )
-        results = await list_provider_analytics_products(db_path=db)
+        results = await list_provider_analytics_insights(db_path=db)
         assert results[0].tool_use_count == 1
         assert results[0].total_conversations_with_tools == 1
 
@@ -533,7 +533,7 @@ class TestLikePatternResistance:
                 ("test", "assistant", "Here's my answer", meta),
             ],
         )
-        results = await list_provider_analytics_products(db_path=db)
+        results = await list_provider_analytics_insights(db_path=db)
         assert results[0].thinking_count == 1
         assert results[0].total_conversations_with_thinking == 1
 
@@ -552,7 +552,7 @@ class TestLikePatternResistance:
                 ("test", "assistant", "Result from tool", meta),
             ],
         )
-        results = await list_provider_analytics_products(db_path=db)
+        results = await list_provider_analytics_insights(db_path=db)
         assert results[0].tool_use_count == 1
         assert results[0].thinking_count == 1
 
@@ -579,7 +579,7 @@ class TestCrossProviderConsistency:
                 ("claude-ai", "user", "Thanks", None),
             ],
         )
-        results = await list_provider_analytics_products(db_path=db)
+        results = await list_provider_analytics_insights(db_path=db)
 
         by_provider = {r.provider_name: r for r in results}
         assert by_provider["chatgpt"].tool_use_count == 1

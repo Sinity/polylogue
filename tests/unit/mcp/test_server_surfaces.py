@@ -160,7 +160,7 @@ class TestServerSurfaceRegistration:
         assert "add_tag" not in tools
         assert "set_metadata" not in tools
         assert "rebuild_index" not in tools
-        assert "rebuild_session_products" not in tools
+        assert "rebuild_session_insights" not in tools
 
     def test_write_role_omits_admin_maintenance_tools(self: object) -> None:
         from polylogue.mcp.server import build_server
@@ -171,7 +171,7 @@ class TestServerSurfaceRegistration:
         assert "add_tag" in tools
         assert "set_metadata" in tools
         assert "rebuild_index" not in tools
-        assert "rebuild_session_products" not in tools
+        assert "rebuild_session_insights" not in tools
 
 
 class TestResourceSurfaces:

@@ -13,7 +13,7 @@ from polylogue.storage.embeddings.embedding_stats import read_embedding_stats_sy
 from polylogue.storage.embeddings.models import EmbeddingStatsSnapshot
 from polylogue.storage.fts.fts_lifecycle import message_fts_readiness_sync
 from polylogue.storage.insights.session.runtime import SessionInsightStatusSnapshot
-from polylogue.storage.insights.session.status import session_product_status_sync
+from polylogue.storage.insights.session.status import session_insight_status_sync
 
 MetricValue: TypeAlias = int | bool
 Metrics: TypeAlias = dict[str, MetricValue]
@@ -156,7 +156,7 @@ def collect_derived_model_statuses_sync(
 
     fts_status = message_fts_readiness_sync(conn, verify_total_rows=verify_full)
     action_status = action_event_read_model_status_sync(conn, verify_source_alignment=verify_full)
-    session_status = session_product_status_sync(conn, verify_freshness=verify_full)
+    session_status = session_insight_status_sync(conn, verify_freshness=verify_full)
     embedding_stats = read_embedding_stats_sync(conn, include_retrieval_bands=False)
 
     metrics: Metrics = {

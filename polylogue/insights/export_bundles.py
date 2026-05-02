@@ -1,4 +1,4 @@
-"""Versioned archive-product export bundle contracts and writer."""
+"""Versioned archive-insight export bundle contracts and writer."""
 
 from __future__ import annotations
 
@@ -63,7 +63,7 @@ _INSIGHT_ALIASES = {
 
 
 class InsightExportBundleError(RuntimeError):
-    """Raised when a product export bundle cannot be written."""
+    """Raised when an insight export bundle cannot be written."""
 
 
 class InsightExportBundleRequest(ArchiveInsightModel):
@@ -110,7 +110,7 @@ class InsightExportBundleResult(ArchiveInsightModel):
 
 
 class InsightExportOperations(Protocol):
-    async def get_product_readiness_report(
+    async def get_insight_readiness_report(
         self,
         query: InsightReadinessQuery | None = None,
     ) -> InsightReadinessReport: ...
@@ -123,21 +123,21 @@ def normalize_export_insight_name(value: str) -> str:
     alias = _INSIGHT_ALIASES.get(value.strip()) or _INSIGHT_ALIASES.get(value.strip().replace("_", "-"))
     if alias is not None:
         return alias
-    raise InsightExportBundleError(f"Unknown export product: {value}")
+    raise InsightExportBundleError(f"Unknown export insight: {value}")
 
 
 def _selected_insight_names(insights: Sequence[str]) -> tuple[str, ...]:
     if not insights:
         return DEFAULT_EXPORT_INSIGHTS
     selected: list[str] = []
-    for product in insights:
-        name = normalize_export_insight_name(product)
+    for insight in insights:
+        name = normalize_export_insight_name(insight)
         if name not in selected:
             selected.append(name)
     return tuple(selected)
 
 
-def _product_path(insight_name: str) -> str:
+def _insight_path(insight_name: str) -> str:
     return f"insights/{insight_name}.jsonl"
 
 
@@ -183,7 +183,7 @@ def _write_json(path: Path, payload: object) -> None:
     path.write_text(dumps(payload) + "\n", encoding="utf-8")
 
 
-def _write_product_jsonl(path: Path, items: Sequence[ArchiveInsightModel]) -> None:
+def _write_insight_jsonl(path: Path, items: Sequence[ArchiveInsightModel]) -> None:
     lines = [item.model_dump_json(exclude_none=True) for item in items]
     path.write_text(("\n".join(lines) + "\n") if lines else "", encoding="utf-8")
 
@@ -200,9 +200,9 @@ def _write_readme(path: Path, manifest: InsightExportBundleManifest) -> None:
         "| Insight | Rows | Readiness | File |",
         "| --- | ---: | --- | --- |",
     ]
-    for product in manifest.insights:
+    for insight in manifest.insights:
         lines.append(
-            f"| `{product.insight_name}` | {product.row_count} | `{product.readiness_verdict or '-'}` | `{product.file}` |"
+            f"| `{insight.insight_name}` | {insight.row_count} | `{insight.readiness_verdict or '-'}` | `{insight.file}` |"
         )
     if manifest.warnings:
         lines.extend(["", "## Warnings", ""])
@@ -232,15 +232,15 @@ def _publish_target(tmp_target: Path, request: InsightExportBundleRequest) -> No
     tmp_target.replace(target)
 
 
-async def export_product_bundle(
+async def export_insight_bundle(
     operations: InsightExportOperations,
     config: Config,
     request: InsightExportBundleRequest,
 ) -> InsightExportBundleResult:
-    selected_products = _selected_insight_names(request.insights)
-    readiness = await operations.get_product_readiness_report(
+    selected_insights = _selected_insight_names(request.insights)
+    readiness = await operations.get_insight_readiness_report(
         InsightReadinessQuery(
-            insights=selected_products,
+            insights=selected_insights,
             provider=request.provider,
             since=request.since,
             until=request.until,
@@ -251,9 +251,9 @@ async def export_product_bundle(
     summaries: list[InsightExportFileSummary] = []
     bundle_warnings: list[str] = []
     try:
-        for insight_name in selected_products:
+        for insight_name in selected_insights:
             insight_type = INSIGHT_REGISTRY[insight_name]
-            product_file = _product_path(insight_name)
+            insight_file = _insight_path(insight_name)
             schema_file = _schema_path(insight_name)
             kwargs, warnings = _query_kwargs(insight_type, request)
             errors: list[str] = []
@@ -262,13 +262,13 @@ async def export_product_bundle(
                 items = await fetch_insights_async(insight_type, operations, **kwargs)
             except (ArchiveInsightUnavailableError, InsightQueryError) as exc:
                 errors.append(str(exc))
-            _write_product_jsonl(tmp_target / product_file, items)
+            _write_insight_jsonl(tmp_target / insight_file, items)
             _write_json(tmp_target / schema_file, _json_schema_document(insight_name))
             readiness_entry = readiness_by_name.get(insight_name)
             summaries.append(
                 InsightExportFileSummary(
                     insight_name=insight_name,
-                    file=product_file,
+                    file=insight_file,
                     schema_file=schema_file,
                     row_count=len(items),
                     readiness_verdict=readiness_entry.verdict if readiness_entry is not None else None,
@@ -288,7 +288,7 @@ async def export_product_bundle(
             database_path=str(config.db_path),
             output_format=request.output_format,
             query={
-                "insights": selected_products,
+                "insights": selected_insights,
                 "provider": request.provider,
                 "since": request.since,
                 "until": request.until,
@@ -322,6 +322,6 @@ __all__ = [
     "InsightExportBundleResult",
     "InsightExportFileSummary",
     "InsightExportFormat",
-    "export_product_bundle",
+    "export_insight_bundle",
     "normalize_export_insight_name",
 ]

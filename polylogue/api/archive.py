@@ -76,33 +76,33 @@ if TYPE_CHECKING:
             since: str | None = None,
         ) -> SearchResult: ...
 
-        async def get_session_product_status(self) -> SessionInsightStatusSnapshot: ...
+        async def get_session_insight_status(self) -> SessionInsightStatusSnapshot: ...
 
-        async def get_session_profile_product(
+        async def get_session_profile_insight(
             self,
             conversation_id: str,
             *,
             tier: str = "merged",
         ) -> SessionProfileInsight | None: ...
 
-        async def list_session_profile_products(
+        async def list_session_profile_insights(
             self,
             query: SessionProfileInsightQuery | None = None,
         ) -> list[SessionProfileInsight]: ...
 
-        async def get_session_enrichment_product(
+        async def get_session_enrichment_insight(
             self,
             conversation_id: str,
         ) -> SessionEnrichmentInsight | None: ...
 
-        async def list_session_enrichment_products(
+        async def list_session_enrichment_insights(
             self,
             query: SessionEnrichmentInsightQuery | None = None,
         ) -> list[SessionEnrichmentInsight]: ...
 
         async def summary_stats(self) -> ArchiveStats: ...
 
-        async def rebuild_session_products(
+        async def rebuild_session_insights(
             self,
             conversation_ids: Sequence[str] | None = None,
         ) -> SessionInsightCounts: ...
@@ -114,12 +114,12 @@ if TYPE_CHECKING:
             related_limit: int = 6,
         ) -> ResumeBrief | None: ...
 
-        async def get_product_readiness_report(
+        async def get_insight_readiness_report(
             self,
             query: InsightReadinessQuery | None = None,
         ) -> InsightReadinessReport: ...
 
-        async def export_product_bundle(
+        async def export_insight_bundle(
             self,
             request: InsightExportBundleRequest,
         ) -> InsightExportBundleResult: ...
@@ -180,34 +180,34 @@ class PolylogueArchiveMixin:
             since=since,
         )
 
-    async def get_session_product_status(self) -> SessionInsightStatusSnapshot:
-        return await self.operations.get_session_product_status()
+    async def get_session_insight_status(self) -> SessionInsightStatusSnapshot:
+        return await self.operations.get_session_insight_status()
 
-    async def get_session_profile_product(
+    async def get_session_profile_insight(
         self,
         conversation_id: str,
         *,
         tier: str = "merged",
     ) -> SessionProfileInsight | None:
-        return await self.operations.get_session_profile_product(conversation_id, tier=tier)
+        return await self.operations.get_session_profile_insight(conversation_id, tier=tier)
 
-    async def list_session_profile_products(
+    async def list_session_profile_insights(
         self,
         query: SessionProfileInsightQuery | None = None,
     ) -> list[SessionProfileInsight]:
-        return await self.operations.list_session_profile_products(query)
+        return await self.operations.list_session_profile_insights(query)
 
-    async def get_session_enrichment_product(
+    async def get_session_enrichment_insight(
         self,
         conversation_id: str,
     ) -> SessionEnrichmentInsight | None:
-        return await self.operations.get_session_enrichment_product(conversation_id)
+        return await self.operations.get_session_enrichment_insight(conversation_id)
 
-    async def list_session_enrichment_products(
+    async def list_session_enrichment_insights(
         self,
         query: SessionEnrichmentInsightQuery | None = None,
     ) -> list[SessionEnrichmentInsight]:
-        return await self.operations.list_session_enrichment_products(query)
+        return await self.operations.list_session_enrichment_insights(query)
 
     def filter(self) -> ConversationFilter:
         from polylogue.archive.filter.filters import ConversationFilter
@@ -232,12 +232,12 @@ class PolylogueArchiveMixin:
 
         return get_readiness(self.config)
 
-    async def rebuild_products(
+    async def rebuild_insights(
         self,
         conversation_ids: Sequence[str] | None = None,
     ) -> SessionInsightCounts:
-        """Rebuild durable session-product read models."""
-        return await self.operations.rebuild_session_products(conversation_ids=conversation_ids)
+        """Rebuild durable session-insight read models."""
+        return await self.operations.rebuild_session_insights(conversation_ids=conversation_ids)
 
     async def resume_brief(
         self,
@@ -248,12 +248,12 @@ class PolylogueArchiveMixin:
         """Build a compact handoff brief for an archived session."""
         return await self.operations.build_resume_brief(session_id, related_limit=related_limit)
 
-    async def product_readiness_report(
+    async def insight_readiness_report(
         self,
         query: InsightReadinessQuery | None = None,
     ) -> InsightReadinessReport:
-        """Return product materialization readiness for downstream consumers."""
-        return await self.operations.get_product_readiness_report(query)
+        """Return insight materialization readiness for downstream consumers."""
+        return await self.operations.get_insight_readiness_report(query)
 
     async def get_messages_paginated(
         self,
@@ -329,9 +329,9 @@ class PolylogueArchiveMixin:
                 )
             return result, total
 
-    async def export_product_bundle(
+    async def export_insight_bundle(
         self,
         request: InsightExportBundleRequest,
     ) -> InsightExportBundleResult:
-        """Write a versioned archive-product export bundle."""
-        return await self.operations.export_product_bundle(request)
+        """Write a versioned archive-insight export bundle."""
+        return await self.operations.export_insight_bundle(request)

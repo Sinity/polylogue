@@ -221,7 +221,7 @@ def insights_status_command(
             since=filters["since"] if isinstance(filters["since"], str) else None,
             until=filters["until"] if isinstance(filters["until"], str) else None,
         )
-        report = run_coroutine_sync(env.operations.get_product_readiness_report(query))
+        report = run_coroutine_sync(env.operations.get_insight_readiness_report(query))
     except (InsightCommandInputError, ValueError) as exc:
         valid = ", ".join(known_insight_readiness_names())
         fail("insights status", f"{exc}. Known insights: {valid}")
@@ -280,7 +280,7 @@ def insights_export_command(
             output_format=export_format,
             overwrite=overwrite,
         )
-        result = run_coroutine_sync(env.operations.export_product_bundle(request))
+        result = run_coroutine_sync(env.operations.export_insight_bundle(request))
     except (InsightCommandInputError, InsightExportBundleError) as exc:
         fail("insights export", str(exc))
     if output_format == "json" or ctx.find_root().params.get("output_format") == "json":

@@ -811,7 +811,7 @@ class TestMaintenanceSelection:
         assert by_name["empty_conversations"].repaired_count == 5
 
     def test_run_selected_maintenance_can_scope_to_session_products(self, cli_workspace: CliWorkspace) -> None:
-        """Scoped maintenance should repair only the durable session-product layer."""
+        """Scoped maintenance should repair only the durable session-insight layer."""
         from polylogue.config import get_config
         from polylogue.storage.backends.connection import connection_context
         from polylogue.storage.repair import run_selected_maintenance

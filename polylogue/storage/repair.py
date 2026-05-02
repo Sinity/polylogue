@@ -446,7 +446,7 @@ def collect_archive_debt_statuses_sync(
             issue_count=session_products,
             detail="Session-product read models ready"
             if session_products == 0
-            else f"{session_products:,} pending/stale/orphaned session-product rows",
+            else f"{session_products:,} pending/stale/orphaned session-insight rows",
         ),
         "action_event_read_model": _archive_debt_status(
             "action_event_read_model",
@@ -703,11 +703,11 @@ def repair_session_products(
 ) -> RepairResult:
     from polylogue.storage.backends.connection import connection_context
     from polylogue.storage.insights.session.rebuild import rebuild_session_products_sync
-    from polylogue.storage.insights.session.status import session_product_status_sync
+    from polylogue.storage.insights.session.status import session_insight_status_sync
 
     try:
         with connection_context(None) as conn:
-            status = session_product_status_sync(conn)
+            status = session_insight_status_sync(conn)
             assessment = _assess_session_product_repairs(status)
 
             if dry_run:
@@ -726,7 +726,7 @@ def repair_session_products(
                 progress_total=progress_total,
             )
             conn.commit()
-            refreshed = session_product_status_sync(conn)
+            refreshed = session_insight_status_sync(conn)
             success = _session_product_status_ready(refreshed)
             return _repair_result(
                 "session_products",
@@ -750,7 +750,7 @@ def preview_session_products(*, count: int) -> RepairResult:
         success=True,
         detail="Would: session insights already ready"
         if count == 0
-        else f"Would: rebuild session-product rows/fts for {count:,} pending items",
+        else f"Would: rebuild session-insight rows/fts for {count:,} pending items",
     )
 
 
@@ -969,8 +969,8 @@ def run_safe_repairs(
     *,
     preview_counts: dict[str, int] | None = None,
     targets: tuple[str, ...] = (),
-    session_product_progress_callback: ProgressCallback | None = None,
-    session_product_progress_total: int | None = None,
+    session_insight_progress_callback: ProgressCallback | None = None,
+    session_insight_progress_total: int | None = None,
 ) -> list[RepairResult]:
     preview_counts = preview_counts or {}
     selected = set(targets) if targets else set(SAFE_REPAIR_TARGETS)
@@ -989,8 +989,8 @@ def run_safe_repairs(
                 repair(
                     config,
                     dry_run=dry_run,
-                    progress_callback=session_product_progress_callback,
-                    progress_total=session_product_progress_total,
+                    progress_callback=session_insight_progress_callback,
+                    progress_total=session_insight_progress_total,
                 )
             )
             continue
@@ -1026,8 +1026,8 @@ def run_selected_maintenance(
     dry_run: bool = False,
     preview_counts: dict[str, int] | None = None,
     targets: tuple[str, ...] = (),
-    session_product_progress_callback: ProgressCallback | None = None,
-    session_product_progress_total: int | None = None,
+    session_insight_progress_callback: ProgressCallback | None = None,
+    session_insight_progress_total: int | None = None,
 ) -> list[RepairResult]:
     results: list[RepairResult] = []
     repair_targets = tuple(name for name in targets if name in SAFE_REPAIR_TARGETS)
@@ -1039,8 +1039,8 @@ def run_selected_maintenance(
                 dry_run=dry_run,
                 preview_counts=preview_counts,
                 targets=repair_targets,
-                session_product_progress_callback=session_product_progress_callback,
-                session_product_progress_total=session_product_progress_total,
+                session_insight_progress_callback=session_insight_progress_callback,
+                session_insight_progress_total=session_insight_progress_total,
             )
         )
     if cleanup:

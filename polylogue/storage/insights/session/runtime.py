@@ -1,4 +1,4 @@
-"""Shared runtime contracts for session-product rebuild and refresh flows."""
+"""Shared runtime contracts for session-insight rebuild and refresh flows."""
 
 from __future__ import annotations
 

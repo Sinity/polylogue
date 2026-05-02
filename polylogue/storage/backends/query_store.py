@@ -63,11 +63,11 @@ class SQLiteQueryStore(
         async with self._connection_factory() as conn:
             return await action_event_artifact_state_async(conn)
 
-    async def get_session_product_status(self) -> SessionInsightStatusSnapshot:
-        from polylogue.storage.insights.session.status import session_product_status_async
+    async def get_session_insight_status(self) -> SessionInsightStatusSnapshot:
+        from polylogue.storage.insights.session.status import session_insight_status_async
 
         async with self._connection_factory() as conn:
-            return await session_product_status_async(conn)
+            return await session_insight_status_async(conn)
 
     # -- Action events (formerly query_store_insight_actions.py) ------------
 

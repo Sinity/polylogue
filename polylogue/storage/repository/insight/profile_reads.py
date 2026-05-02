@@ -1,4 +1,4 @@
-"""Hydrated session-profile durable product reads for the repository."""
+"""Hydrated session-profile durable insight reads for the repository."""
 
 from __future__ import annotations
 

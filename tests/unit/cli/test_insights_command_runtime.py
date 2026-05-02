@@ -213,7 +213,7 @@ def test_insights_status_command_emits_json_and_inherits_root_filters(tmp_path: 
         captured["query"] = query
         return _status_report()
 
-    env = SimpleNamespace(operations=SimpleNamespace(get_product_readiness_report=get_report))
+    env = SimpleNamespace(operations=SimpleNamespace(get_insight_readiness_report=get_report))
     raw_callback = _command_callback(insights_module.insights_status_command)
     with patch("polylogue.cli.commands.insights.run_coroutine_sync", side_effect=lambda coro: asyncio.run(coro)):
         with patch("polylogue.cli.commands.insights.emit_success") as emit_success:
@@ -235,7 +235,7 @@ def test_insights_status_command_emits_json_and_inherits_root_filters(tmp_path: 
 
 
 def test_insights_status_command_rejects_inherited_provider_csv() -> None:
-    env = SimpleNamespace(operations=SimpleNamespace(get_product_readiness_report=MagicMock()))
+    env = SimpleNamespace(operations=SimpleNamespace(get_insight_readiness_report=MagicMock()))
     raw_callback = _command_callback(insights_module.insights_status_command)
 
     with pytest.raises(SystemExit, match="insights commands accept one provider"):
@@ -250,7 +250,7 @@ def test_insights_status_command_rejects_inherited_provider_csv() -> None:
 
 
 def test_insights_status_command_reports_invalid_insight_names() -> None:
-    env = SimpleNamespace(operations=SimpleNamespace(get_product_readiness_report=MagicMock()))
+    env = SimpleNamespace(operations=SimpleNamespace(get_insight_readiness_report=MagicMock()))
     raw_callback = _command_callback(insights_module.insights_status_command)
 
     with patch("polylogue.cli.commands.insights.run_coroutine_sync", side_effect=ValueError("Unknown insight")):
@@ -272,7 +272,7 @@ def test_insights_export_command_covers_json_plain_and_error_paths(tmp_path: Pat
         captured["request"] = request
         return _export_result(tmp_path)
 
-    env = SimpleNamespace(operations=SimpleNamespace(export_product_bundle=export_bundle))
+    env = SimpleNamespace(operations=SimpleNamespace(export_insight_bundle=export_bundle))
     raw_callback = _command_callback(insights_module.insights_export_command)
 
     with pytest.raises(SystemExit, match="insights export: unsupported export format: csv"):
@@ -315,7 +315,7 @@ def test_insights_export_command_covers_json_plain_and_error_paths(tmp_path: Pat
         del request
         raise InsightExportBundleError("cannot write bundle")
 
-    env = SimpleNamespace(operations=SimpleNamespace(export_product_bundle=broken_export))
+    env = SimpleNamespace(operations=SimpleNamespace(export_insight_bundle=broken_export))
     with patch("polylogue.cli.commands.insights.run_coroutine_sync", side_effect=lambda coro: asyncio.run(coro)):
         with pytest.raises(SystemExit, match="insights export: cannot write bundle"):
             raw_callback(

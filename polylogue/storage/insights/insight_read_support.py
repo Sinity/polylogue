@@ -1,4 +1,4 @@
-"""Typed hydration helpers for durable product reads."""
+"""Typed hydration helpers for durable insight reads."""
 
 from __future__ import annotations
 

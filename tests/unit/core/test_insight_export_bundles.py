@@ -1,4 +1,4 @@
-"""Tests for versioned product export bundle contracts."""
+"""Tests for versioned insight export bundle contracts."""
 
 from __future__ import annotations
 
@@ -29,14 +29,14 @@ def _jsonl_file(path: Path) -> list[dict[str, object]]:
     return rows
 
 
-def _seed_export_products(db_path: Path) -> None:
+def _seed_export_insights(db_path: Path) -> None:
     (
         ConversationBuilder(db_path, "codex-export")
         .provider("codex")
         .title("Codex Export")
         .created_at("2026-03-02T09:00:00+00:00")
         .updated_at("2026-03-02T09:15:00+00:00")
-        .add_message("u1", role="user", text="Inspect product export code.", timestamp="2026-03-02T09:00:00+00:00")
+        .add_message("u1", role="user", text="Inspect insight export code.", timestamp="2026-03-02T09:00:00+00:00")
         .add_message(
             "a1",
             role="assistant",
@@ -69,13 +69,13 @@ def _seed_export_products(db_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_insight_export_bundle_writes_bounded_products(cli_workspace: dict[str, Path]) -> None:
+async def test_insight_export_bundle_writes_bounded_insights(cli_workspace: dict[str, Path]) -> None:
     db_path = cli_workspace["db_path"]
-    _seed_export_products(db_path)
+    _seed_export_insights(db_path)
     archive = Polylogue(archive_root=cli_workspace["archive_root"], db_path=db_path)
     target = cli_workspace["archive_root"] / "exports" / "bundle"
 
-    result = await archive.export_product_bundle(
+    result = await archive.export_insight_bundle(
         InsightExportBundleRequest(
             output_path=target,
             insights=("profiles", "work-events"),
@@ -114,7 +114,7 @@ async def test_insight_export_bundle_writes_bounded_products(cli_workspace: dict
 @pytest.mark.asyncio
 async def test_insight_export_bundle_protects_existing_targets(cli_workspace: dict[str, Path]) -> None:
     db_path = cli_workspace["db_path"]
-    _seed_export_products(db_path)
+    _seed_export_insights(db_path)
     archive = Polylogue(archive_root=cli_workspace["archive_root"], db_path=db_path)
     target = cli_workspace["archive_root"] / "exports" / "existing"
     target.mkdir(parents=True)
@@ -122,7 +122,7 @@ async def test_insight_export_bundle_protects_existing_targets(cli_workspace: di
     marker.write_text("keep", encoding="utf-8")
 
     with pytest.raises(InsightExportBundleError, match="already exists"):
-        await archive.export_product_bundle(InsightExportBundleRequest(output_path=target, insights=("profiles",)))
+        await archive.export_insight_bundle(InsightExportBundleRequest(output_path=target, insights=("profiles",)))
 
     assert marker.read_text(encoding="utf-8") == "keep"
 
@@ -130,14 +130,14 @@ async def test_insight_export_bundle_protects_existing_targets(cli_workspace: di
 @pytest.mark.asyncio
 async def test_insight_export_bundle_records_stale_readiness(cli_workspace: dict[str, Path]) -> None:
     db_path = cli_workspace["db_path"]
-    _seed_export_products(db_path)
+    _seed_export_insights(db_path)
     with open_connection(db_path) as conn:
         conn.execute("UPDATE conversations SET sort_key = sort_key + 1 WHERE conversation_id = ?", ("codex-export",))
         conn.commit()
     archive = Polylogue(archive_root=cli_workspace["archive_root"], db_path=db_path)
     target = cli_workspace["archive_root"] / "exports" / "stale-bundle"
 
-    await archive.export_product_bundle(InsightExportBundleRequest(output_path=target, insights=("profiles",)))
+    await archive.export_insight_bundle(InsightExportBundleRequest(output_path=target, insights=("profiles",)))
 
     coverage = _json_file(target / "coverage.json")
     coverage_products = coverage["insights"]

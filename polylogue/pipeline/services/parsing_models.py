@@ -109,7 +109,7 @@ class ParseResult:
         self.parse_failures: int = 0
         self._lock = asyncio.Lock()
         # Tracks conversation IDs whose content changed so downstream
-        # materialization can refresh derived session-product rows explicitly.
+        # materialization can refresh derived session-insight rows explicitly.
         self._changed_conversation_ids: list[str] = []
         self.batch_observations: list[ParseBatchObservation] = []
 

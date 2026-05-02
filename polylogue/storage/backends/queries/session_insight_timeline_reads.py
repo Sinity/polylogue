@@ -1,4 +1,4 @@
-"""Timeline-oriented durable session-product read queries."""
+"""Timeline-oriented durable session-insight read queries."""
 
 from __future__ import annotations
 

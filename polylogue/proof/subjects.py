@@ -176,7 +176,7 @@ def operation_spec_subjects() -> tuple[SubjectRef, ...]:
 
 
 def product_surface_subjects() -> tuple[SubjectRef, ...]:
-    """Compile registered product types into proof subjects."""
+    """Compile registered insight types into proof subjects."""
     subjects = [
         SubjectRef(
             kind="product.surface",

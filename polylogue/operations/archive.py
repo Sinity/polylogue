@@ -47,16 +47,16 @@ from polylogue.insights.archive import (
     WorkThreadInsight,
     WorkThreadInsightQuery,
 )
-from polylogue.insights.archive_rollups import aggregate_session_tag_rollup_products
+from polylogue.insights.archive_rollups import aggregate_session_tag_rollup_insights
 from polylogue.insights.archive_summaries import (
-    aggregate_day_session_summary_products,
-    aggregate_week_session_summary_products,
+    aggregate_day_session_summary_insights,
+    aggregate_week_session_summary_insights,
 )
 from polylogue.insights.export_bundles import (
     InsightExportBundleRequest,
     InsightExportBundleResult,
     InsightExportOperations,
-    export_product_bundle,
+    export_insight_bundle,
 )
 from polylogue.insights.readiness import (
     InsightReadinessQuery,
@@ -188,7 +188,7 @@ def _query_wants_search(query: object) -> bool:
     return bool(getattr(query, "query", None))
 
 
-def _slice_products(
+def _slice_insights(
     insights: list[_ResultT],
     *,
     offset: int,
@@ -201,7 +201,7 @@ def _slice_products(
     return insights
 
 
-def provider_analytics_product(row: ProviderMetricsRow) -> ProviderAnalyticsInsight:
+def provider_analytics_insight(row: ProviderMetricsRow) -> ProviderAnalyticsInsight:
     conversation_count = row["conversation_count"]
     user_message_count = row["user_message_count"]
     assistant_message_count = row["assistant_message_count"]
@@ -232,7 +232,7 @@ def provider_analytics_product(row: ProviderMetricsRow) -> ProviderAnalyticsInsi
     )
 
 
-def _session_cost_product(conversation: Conversation, *, materialized_at: str) -> SessionCostInsight:
+def _session_cost_insight(conversation: Conversation, *, materialized_at: str) -> SessionCostInsight:
     estimate = estimate_conversation_cost(conversation)
     source_updated = conversation.updated_at or conversation.created_at
     return SessionCostInsight(
@@ -251,15 +251,15 @@ def _session_cost_product(conversation: Conversation, *, materialized_at: str) -
     )
 
 
-def _cost_model_matches(product: SessionCostInsight, model_filter: str | None) -> bool:
+def _cost_model_matches(insight: SessionCostInsight, model_filter: str | None) -> bool:
     if not model_filter:
         return True
     normalized_filter = _normalize_model(model_filter)
-    return product.estimate.model_name == model_filter or product.estimate.normalized_model == normalized_filter
+    return insight.estimate.model_name == model_filter or insight.estimate.normalized_model == normalized_filter
 
 
-def _cost_status_matches(product: SessionCostInsight, status_filter: str | None) -> bool:
-    return not status_filter or product.estimate.status == status_filter
+def _cost_status_matches(insight: SessionCostInsight, status_filter: str | None) -> bool:
+    return not status_filter or insight.estimate.status == status_filter
 
 
 def _require_ready_flag(
@@ -272,8 +272,8 @@ def _require_ready_flag(
     raise ArchiveInsightUnavailableError(f"{detail} {_SESSION_INSIGHT_REPAIR_HINT}")
 
 
-async def _read_session_product_status(backend: SQLiteBackend) -> SessionInsightStatusSnapshot:
-    return await backend.get_session_product_status()
+async def _read_session_insight_status(backend: SQLiteBackend) -> SessionInsightStatusSnapshot:
+    return await backend.get_session_insight_status()
 
 
 class ArchiveSearchMixin:
@@ -532,8 +532,8 @@ class ArchiveStatsMixin:
         rows = await self.backend.get_provider_conversation_counts()
         return [(row["provider_name"] or "unknown", row["conversation_count"]) for row in rows]
 
-    async def get_session_product_status(self) -> SessionInsightStatusSnapshot:
-        return await self.backend.get_session_product_status()
+    async def get_session_insight_status(self) -> SessionInsightStatusSnapshot:
+        return await self.backend.get_session_insight_status()
 
 
 class ArchiveInsightSessionMixin:
@@ -545,26 +545,26 @@ class ArchiveInsightSessionMixin:
         @property
         def backend(self) -> SQLiteBackend: ...
 
-    async def _session_product_status(self) -> SessionInsightStatusSnapshot:
-        return await _read_session_product_status(self.backend)
+    async def _session_insight_status(self) -> SessionInsightStatusSnapshot:
+        return await _read_session_insight_status(self.backend)
 
-    async def get_session_profile_product(
+    async def get_session_profile_insight(
         self,
         conversation_id: str,
         *,
         tier: str = "merged",
     ) -> SessionProfileInsight | None:
-        status = await self._session_product_status()
+        status = await self._session_insight_status()
         _require_ready_flag(status, "profile_rows_ready", "Session-profile rows are incomplete.")
         record = await self.repository.get_session_profile_record(conversation_id)
         return SessionProfileInsight.from_record(record, tier=tier) if record is not None else None
 
-    async def list_session_profile_products(
+    async def list_session_profile_insights(
         self,
         query: SessionProfileInsightQuery | None = None,
     ) -> list[SessionProfileInsight]:
         request = _default_query(query, SessionProfileInsightQuery)
-        status = await self._session_product_status()
+        status = await self._session_insight_status()
         _require_ready_flag(status, "profile_rows_ready", "Session-profile rows are incomplete.")
         if _query_wants_search(request):
             _require_ready_flag(
@@ -590,21 +590,21 @@ class ArchiveInsightSessionMixin:
         )
         return [SessionProfileInsight.from_record(record, tier=request.tier) for record in records]
 
-    async def get_session_enrichment_product(
+    async def get_session_enrichment_insight(
         self,
         conversation_id: str,
     ) -> SessionEnrichmentInsight | None:
-        status = await self._session_product_status()
+        status = await self._session_insight_status()
         _require_ready_flag(status, "profile_rows_ready", "Session-profile rows are incomplete.")
         record = await self.repository.get_session_enrichment_record(conversation_id)
         return SessionEnrichmentInsight.from_record(record) if record is not None else None
 
-    async def list_session_enrichment_products(
+    async def list_session_enrichment_insights(
         self,
         query: SessionEnrichmentInsightQuery | None = None,
     ) -> list[SessionEnrichmentInsight]:
         request = _default_query(query, SessionEnrichmentInsightQuery)
-        status = await self._session_product_status()
+        status = await self._session_insight_status()
         _require_ready_flag(status, "profile_rows_ready", "Session-profile rows are incomplete.")
         if _query_wants_search(request):
             _require_ready_flag(
@@ -629,21 +629,21 @@ class ArchiveInsightSessionMixin:
         )
         return [SessionEnrichmentInsight.from_record(record) for record in records]
 
-    async def get_session_work_event_products(
+    async def get_session_work_event_insights(
         self,
         conversation_id: str,
     ) -> list[SessionWorkEventInsight]:
-        status = await self._session_product_status()
+        status = await self._session_insight_status()
         _require_ready_flag(status, "work_event_inference_rows_ready", "Session work-event rows are incomplete.")
         records = await self.repository.get_session_work_event_records(conversation_id)
         return [SessionWorkEventInsight.from_record(record) for record in records]
 
-    async def list_session_work_event_products(
+    async def list_session_work_event_insights(
         self,
         query: SessionWorkEventInsightQuery | None = None,
     ) -> list[SessionWorkEventInsight]:
         request = _default_query(query, SessionWorkEventInsightQuery)
-        status = await self._session_product_status()
+        status = await self._session_insight_status()
         _require_ready_flag(status, "work_event_inference_rows_ready", "Session work-event rows are incomplete.")
         if _query_wants_search(request):
             _require_ready_flag(
@@ -663,21 +663,21 @@ class ArchiveInsightSessionMixin:
         )
         return [SessionWorkEventInsight.from_record(record) for record in records]
 
-    async def get_session_phase_products(
+    async def get_session_phase_insights(
         self,
         conversation_id: str,
     ) -> list[SessionPhaseInsight]:
-        status = await self._session_product_status()
+        status = await self._session_insight_status()
         _require_ready_flag(status, "phase_inference_rows_ready", "Session phase rows are incomplete.")
         records = await self.repository.get_session_phase_records(conversation_id)
         return [SessionPhaseInsight.from_record(record) for record in records]
 
-    async def list_session_phase_products(
+    async def list_session_phase_insights(
         self,
         query: SessionPhaseInsightQuery | None = None,
     ) -> list[SessionPhaseInsight]:
         request = _default_query(query, SessionPhaseInsightQuery)
-        status = await self._session_product_status()
+        status = await self._session_insight_status()
         _require_ready_flag(status, "phase_inference_rows_ready", "Session phase rows are incomplete.")
         records = await self.repository.list_session_phase_records(
             conversation_id=request.conversation_id,
@@ -690,18 +690,18 @@ class ArchiveInsightSessionMixin:
         )
         return [SessionPhaseInsight.from_record(record) for record in records]
 
-    async def get_work_thread_product(self, thread_id: str) -> WorkThreadInsight | None:
-        status = await self._session_product_status()
+    async def get_work_thread_insight(self, thread_id: str) -> WorkThreadInsight | None:
+        status = await self._session_insight_status()
         _require_ready_flag(status, "threads_ready", "Work-thread rows are incomplete.")
         record = await self.repository.get_work_thread_record(thread_id)
         return WorkThreadInsight.from_record(record) if record is not None else None
 
-    async def list_work_thread_products(
+    async def list_work_thread_insights(
         self,
         query: WorkThreadInsightQuery | None = None,
     ) -> list[WorkThreadInsight]:
         request = _default_query(query, WorkThreadInsightQuery)
-        status = await self._session_product_status()
+        status = await self._session_insight_status()
         _require_ready_flag(status, "threads_ready", "Work-thread rows are incomplete.")
         if _query_wants_search(request):
             _require_ready_flag(status, "threads_fts_ready", "Work-thread search index is incomplete.")
@@ -727,12 +727,12 @@ class ArchiveInsightAggregateMixin:
         @property
         def config(self) -> Config: ...
 
-    async def list_session_tag_rollup_products(
+    async def list_session_tag_rollup_insights(
         self,
         query: SessionTagRollupQuery | None = None,
     ) -> list[SessionTagRollupInsight]:
         request = _default_query(query, SessionTagRollupQuery)
-        status = await _read_session_product_status(self.backend)
+        status = await _read_session_insight_status(self.backend)
         _require_ready_flag(status, "tag_rollups_ready", "Session tag rollups are incomplete.")
         rows = await self.repository.list_session_tag_rollup_records(
             provider=request.provider,
@@ -740,51 +740,51 @@ class ArchiveInsightAggregateMixin:
             until=request.until,
             query=request.query,
         )
-        insights = aggregate_session_tag_rollup_products(rows)
-        return _slice_products(insights, offset=request.offset, limit=request.limit)
+        insights = aggregate_session_tag_rollup_insights(rows)
+        return _slice_insights(insights, offset=request.offset, limit=request.limit)
 
-    async def list_day_session_summary_products(
+    async def list_day_session_summary_insights(
         self,
         query: DaySessionSummaryInsightQuery | None = None,
     ) -> list[DaySessionSummaryInsight]:
         request = _default_query(query, DaySessionSummaryInsightQuery)
-        status = await _read_session_product_status(self.backend)
+        status = await _read_session_insight_status(self.backend)
         _require_ready_flag(status, "day_summaries_ready", "Day session summaries are incomplete.")
         rows = await self.repository.list_day_session_summary_records(
             provider=request.provider,
             since=request.since,
             until=request.until,
         )
-        insights = aggregate_day_session_summary_products(rows)
-        return _slice_products(insights, offset=request.offset, limit=request.limit)
+        insights = aggregate_day_session_summary_insights(rows)
+        return _slice_insights(insights, offset=request.offset, limit=request.limit)
 
-    async def list_week_session_summary_products(
+    async def list_week_session_summary_insights(
         self,
         query: WeekSessionSummaryInsightQuery | None = None,
     ) -> list[WeekSessionSummaryInsight]:
         request = _default_query(query, WeekSessionSummaryInsightQuery)
-        status = await _read_session_product_status(self.backend)
+        status = await _read_session_insight_status(self.backend)
         _require_ready_flag(status, "week_summaries_ready", "Week session summaries are incomplete.")
         rows = await self.repository.list_day_session_summary_records(
             provider=request.provider,
             since=request.since,
             until=request.until,
         )
-        insights = aggregate_week_session_summary_products(rows)
-        return _slice_products(insights, offset=request.offset, limit=request.limit)
+        insights = aggregate_week_session_summary_insights(rows)
+        return _slice_insights(insights, offset=request.offset, limit=request.limit)
 
-    async def list_provider_analytics_products(
+    async def list_provider_analytics_insights(
         self,
         query: ProviderAnalyticsInsightQuery | None = None,
     ) -> list[ProviderAnalyticsInsight]:
         rows = await self.backend.get_provider_metrics_rows()
-        insights = [provider_analytics_product(row) for row in rows]
+        insights = [provider_analytics_insight(row) for row in rows]
         request = _default_query(query, ProviderAnalyticsInsightQuery)
         if request.provider:
-            insights = [product for product in insights if product.provider_name == request.provider]
-        return _slice_products(insights, offset=request.offset, limit=request.limit)
+            insights = [insight for insight in insights if insight.provider_name == request.provider]
+        return _slice_insights(insights, offset=request.offset, limit=request.limit)
 
-    async def list_session_cost_products(
+    async def list_session_cost_insights(
         self,
         query: SessionCostInsightQuery | None = None,
     ) -> list[SessionCostInsight]:
@@ -797,21 +797,21 @@ class ArchiveInsightAggregateMixin:
         )
         materialized_at = generated_at()
         insights = [
-            _session_cost_product(conversation, materialized_at=materialized_at) for conversation in conversations
+            _session_cost_insight(conversation, materialized_at=materialized_at) for conversation in conversations
         ]
         if request.conversation_id:
-            insights = [product for product in insights if product.conversation_id == request.conversation_id]
-        insights = [product for product in insights if _cost_model_matches(product, request.model)]
-        insights = [product for product in insights if _cost_status_matches(product, request.status)]
-        insights.sort(key=lambda product: product.provenance.source_sort_key or 0.0, reverse=True)
-        return _slice_products(insights, offset=request.offset, limit=request.limit)
+            insights = [insight for insight in insights if insight.conversation_id == request.conversation_id]
+        insights = [insight for insight in insights if _cost_model_matches(insight, request.model)]
+        insights = [insight for insight in insights if _cost_status_matches(insight, request.status)]
+        insights.sort(key=lambda insight: insight.provenance.source_sort_key or 0.0, reverse=True)
+        return _slice_insights(insights, offset=request.offset, limit=request.limit)
 
-    async def list_cost_rollup_products(
+    async def list_cost_rollup_insights(
         self,
         query: CostRollupInsightQuery | None = None,
     ) -> list[CostRollupInsight]:
         request = _default_query(query, CostRollupInsightQuery)
-        session_products = await self.list_session_cost_products(
+        session_costs = await self.list_session_cost_insights(
             SessionCostInsightQuery(
                 provider=request.provider,
                 since=request.since,
@@ -821,9 +821,9 @@ class ArchiveInsightAggregateMixin:
             )
         )
         grouped: dict[tuple[str, str | None], list[SessionCostInsight]] = {}
-        for product in session_products:
-            key = (product.provider_name, product.estimate.normalized_model or product.estimate.model_name)
-            grouped.setdefault(key, []).append(product)
+        for insight in session_costs:
+            key = (insight.provider_name, insight.estimate.normalized_model or insight.estimate.model_name)
+            grouped.setdefault(key, []).append(insight)
 
         rollups: list[CostRollupInsight] = []
         for (provider_name, normalized_model), insights in sorted(
@@ -837,23 +837,23 @@ class ArchiveInsightAggregateMixin:
             confidence_total = 0.0
             source_updated_at = max(
                 (
-                    product.provenance.source_updated_at
-                    for product in insights
-                    if product.provenance.source_updated_at is not None
+                    insight.provenance.source_updated_at
+                    for insight in insights
+                    if insight.provenance.source_updated_at is not None
                 ),
                 default=None,
             )
             source_sort_key = max(
                 (
-                    product.provenance.source_sort_key
-                    for product in insights
-                    if product.provenance.source_sort_key is not None
+                    insight.provenance.source_sort_key
+                    for insight in insights
+                    if insight.provenance.source_sort_key is not None
                 ),
                 default=None,
             )
-            model_names = Counter(product.estimate.model_name for product in insights if product.estimate.model_name)
-            for product in insights:
-                estimate = product.estimate
+            model_names = Counter(insight.estimate.model_name for insight in insights if insight.estimate.model_name)
+            for insight in insights:
+                estimate = insight.estimate
                 usage = usage.plus(estimate.usage)
                 status_counts[estimate.status] += 1
                 total_usd += estimate.total_usd
@@ -880,22 +880,22 @@ class ArchiveInsightAggregateMixin:
                     ),
                 )
             )
-        rollups.sort(key=lambda product: product.total_usd, reverse=True)
-        return _slice_products(rollups, offset=request.offset, limit=request.limit)
+        rollups.sort(key=lambda insight: insight.total_usd, reverse=True)
+        return _slice_insights(rollups, offset=request.offset, limit=request.limit)
 
-    async def get_product_readiness_report(
+    async def get_insight_readiness_report(
         self,
         query: InsightReadinessQuery | None = None,
     ) -> InsightReadinessReport:
-        status = await _read_session_product_status(self.backend)
+        status = await _read_session_insight_status(self.backend)
         async with self.backend.connection() as conn:
             return await build_insight_readiness_report(conn, status, query)
 
-    async def export_product_bundle(
+    async def export_insight_bundle(
         self,
         request: InsightExportBundleRequest,
     ) -> InsightExportBundleResult:
-        return await export_product_bundle(cast(InsightExportOperations, self), self.config, request)
+        return await export_insight_bundle(cast(InsightExportOperations, self), self.config, request)
 
 
 class ArchiveInsightDebtMixin:
@@ -904,7 +904,7 @@ class ArchiveInsightDebtMixin:
         @property
         def config(self) -> Config: ...
 
-    async def list_archive_debt_products(
+    async def list_archive_debt_insights(
         self,
         query: ArchiveDebtInsightQuery | None = None,
     ) -> list[ArchiveDebtInsight]:
@@ -912,12 +912,12 @@ class ArchiveInsightDebtMixin:
         with connection_context(self.config.db_path) as conn:
             statuses = collect_archive_debt_statuses_sync(conn)
         insights = [ArchiveDebtInsight.from_status(status) for status in statuses.values()]
-        insights.sort(key=lambda product: (product.category, product.debt_name))
+        insights.sort(key=lambda insight: (insight.category, insight.debt_name))
         if request.category:
-            insights = [product for product in insights if product.category == request.category]
+            insights = [insight for insight in insights if insight.category == request.category]
         if request.only_actionable:
-            insights = [product for product in insights if not product.healthy]
-        return _slice_products(insights, offset=request.offset, limit=request.limit)
+            insights = [insight for insight in insights if not insight.healthy]
+        return _slice_insights(insights, offset=request.offset, limit=request.limit)
 
 
 class ArchiveInsightMixin(
@@ -925,7 +925,7 @@ class ArchiveInsightMixin(
     ArchiveInsightAggregateMixin,
     ArchiveInsightDebtMixin,
 ):
-    """Versioned archive-product retrieval methods."""
+    """Versioned archive-insight retrieval methods."""
 
 
 class ArchiveMaintenanceMixin:
@@ -934,11 +934,11 @@ class ArchiveMaintenanceMixin:
         @property
         def backend(self) -> SQLiteBackend: ...
 
-    async def rebuild_session_products(
+    async def rebuild_session_insights(
         self,
         conversation_ids: Sequence[str] | None = None,
     ) -> SessionInsightCounts:
-        """Rebuild durable session-product read models."""
+        """Rebuild durable session-insight read models."""
         from polylogue.storage.insights.session.rebuild import rebuild_session_products_async
 
         async with self.backend.bulk_connection(), self.backend.connection() as conn:
@@ -1041,7 +1041,7 @@ async def get_provider_counts(
     return await _with_operations(_action, services=services, db_path=db_path)
 
 
-async def list_provider_analytics_products(
+async def list_provider_analytics_insights(
     *,
     services: RuntimeServices | None = None,
     db_path: Path | None = None,
@@ -1049,7 +1049,7 @@ async def list_provider_analytics_products(
     """Return provider-level analytics insights for archive summaries."""
 
     async def _action(operations: ArchiveOperations) -> list[ProviderAnalyticsInsight]:
-        return await operations.list_provider_analytics_products()
+        return await operations.list_provider_analytics_insights()
 
     return await _with_operations(_action, services=services, db_path=db_path)
 
@@ -1059,5 +1059,5 @@ __all__ = [
     "ArchiveOperations",
     "ArchiveStats",
     "get_provider_counts",
-    "list_provider_analytics_products",
+    "list_provider_analytics_insights",
 ]

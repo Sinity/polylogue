@@ -21,7 +21,7 @@ Options:
                                   Sort by source recency, first message time,
                                   last message time, or wallclock span
                                   [default: source]
-  --query TEXT                    FTS query against product search text
+  --query TEXT                    FTS query against insight search text
   --limit INTEGER                 Maximum rows  [default: 50]
   --offset INTEGER                Start offset  [default: 0]
   --format [json]                 Output format

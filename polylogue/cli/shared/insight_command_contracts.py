@@ -1,4 +1,4 @@
-"""Typed request helpers for archive-product CLI commands."""
+"""Typed request helpers for archive-insight CLI commands."""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ def find_root_params(ctx: click.Context) -> Mapping[str, object]:
 
 
 def query_model_field_names(insight_type: InsightType) -> frozenset[str]:
-    """Return the accepted query-model fields for a product type."""
+    """Return the accepted query-model fields for an insight type."""
     query_model = insight_type.query_model
     if query_model is None:
         return frozenset()
@@ -30,7 +30,7 @@ def query_model_field_names(insight_type: InsightType) -> frozenset[str]:
 
 
 class InsightCommandInputError(ValueError):
-    """Invalid product-command filter input."""
+    """Invalid insight-command filter input."""
 
 
 def _normalize_product_provider(value: object) -> str | None:
@@ -54,7 +54,7 @@ def _normalize_product_date(field: str, value: object) -> str | None:
 
 
 def normalize_insight_query_kwargs(kwargs: Mapping[str, object]) -> dict[str, object]:
-    """Normalize product query filters shared by generic/status/export commands."""
+    """Normalize insight query filters shared by generic/status/export commands."""
     normalized = dict(kwargs)
     if "provider" in normalized:
         normalized["provider"] = _normalize_product_provider(normalized.get("provider"))
@@ -66,7 +66,7 @@ def normalize_insight_query_kwargs(kwargs: Mapping[str, object]) -> dict[str, ob
 
 @dataclass(frozen=True, slots=True)
 class InsightCommandRequest:
-    """Normalized product command request shared by all product subcommands."""
+    """Normalized insight command request shared by all insight subcommands."""
 
     query_kwargs: dict[str, object]
     output_format: str | None

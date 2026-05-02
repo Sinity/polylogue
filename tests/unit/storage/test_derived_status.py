@@ -81,7 +81,7 @@ def test_collect_derived_statuses_skips_retrieval_band_recomputation(
         )
         monkeypatch.setattr(
             derived_status_mod,
-            "session_product_status_sync",
+            "session_insight_status_sync",
             fake_session_status,
         )
 

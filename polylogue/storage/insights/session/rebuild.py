@@ -1,4 +1,4 @@
-"""Batch loading, hydration, and full rebuild flows for durable session-product read models."""
+"""Batch loading, hydration, and full rebuild flows for durable session-insight read models."""
 
 from __future__ import annotations
 

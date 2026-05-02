@@ -90,47 +90,47 @@ def test_sync_conversation_queries_forward_through_sync_bridge() -> None:
 
 def test_sync_product_queries_forward_through_sync_bridge() -> None:
     facade = SimpleNamespace(
-        get_session_product_status=lambda: "status-coro",
-        get_session_profile_product=lambda conversation_id, **kwargs: ("profile", conversation_id, kwargs),
-        list_session_profile_products=lambda query=None: ("profiles", query),
-        get_session_enrichment_product=lambda conversation_id: ("enrichment", conversation_id),
-        list_session_enrichment_products=lambda query=None: ("enrichments", query),
-        list_session_tag_rollup_products=lambda query=None: ("tags", query),
-        get_session_work_event_products=lambda conversation_id: ("events", conversation_id),
-        list_session_work_event_products=lambda query=None: ("events-list", query),
-        get_session_phase_products=lambda conversation_id: ("phases", conversation_id),
-        list_session_phase_products=lambda query=None: ("phases-list", query),
-        get_work_thread_product=lambda thread_id: ("thread", thread_id),
-        list_work_thread_products=lambda query=None: ("threads", query),
-        list_day_session_summary_products=lambda query=None: ("days", query),
-        list_week_session_summary_products=lambda query=None: ("weeks", query),
-        list_provider_analytics_products=lambda query=None: ("analytics", query),
-        list_archive_debt_products=lambda query=None: ("debt", query),
+        get_session_insight_status=lambda: "status-coro",
+        get_session_profile_insight=lambda conversation_id, **kwargs: ("profile", conversation_id, kwargs),
+        list_session_profile_insights=lambda query=None: ("profiles", query),
+        get_session_enrichment_insight=lambda conversation_id: ("enrichment", conversation_id),
+        list_session_enrichment_insights=lambda query=None: ("enrichments", query),
+        list_session_tag_rollup_insights=lambda query=None: ("tags", query),
+        get_session_work_event_insights=lambda conversation_id: ("events", conversation_id),
+        list_session_work_event_insights=lambda query=None: ("events-list", query),
+        get_session_phase_insights=lambda conversation_id: ("phases", conversation_id),
+        list_session_phase_insights=lambda query=None: ("phases-list", query),
+        get_work_thread_insight=lambda thread_id: ("thread", thread_id),
+        list_work_thread_insights=lambda query=None: ("threads", query),
+        list_day_session_summary_insights=lambda query=None: ("days", query),
+        list_week_session_summary_insights=lambda query=None: ("weeks", query),
+        list_provider_analytics_insights=lambda query=None: ("analytics", query),
+        list_archive_debt_insights=lambda query=None: ("debt", query),
     )
     archive = _SyncHarness()
     archive._facade = facade
 
     with patch("polylogue.api.sync.insights.run_coroutine_sync", side_effect=lambda coro: coro) as mock_run:
-        assert archive.get_session_product_status() == "status-coro"
-        assert archive.get_session_profile_product("conv-1", tier="evidence") == (
+        assert archive.get_session_insight_status() == "status-coro"
+        assert archive.get_session_profile_insight("conv-1", tier="evidence") == (
             "profile",
             "conv-1",
             {"tier": "evidence"},
         )
-        assert archive.list_session_profile_products("query") == ("profiles", "query")
-        assert archive.get_session_enrichment_product("conv-1") == ("enrichment", "conv-1")
-        assert archive.list_session_enrichment_products("query") == ("enrichments", "query")
-        assert archive.list_session_tag_rollup_products("query") == ("tags", "query")
-        assert archive.get_session_work_event_products("conv-1") == ("events", "conv-1")
-        assert archive.list_session_work_event_products("query") == ("events-list", "query")
-        assert archive.get_session_phase_products("conv-1") == ("phases", "conv-1")
-        assert archive.list_session_phase_products("query") == ("phases-list", "query")
-        assert archive.get_work_thread_product("thread-1") == ("thread", "thread-1")
-        assert archive.list_work_thread_products("query") == ("threads", "query")
-        assert archive.list_day_session_summary_products("query") == ("days", "query")
-        assert archive.list_week_session_summary_products("query") == ("weeks", "query")
-        assert archive.list_provider_analytics_products("query") == ("analytics", "query")
-        assert archive.list_archive_debt_products("query") == ("debt", "query")
+        assert archive.list_session_profile_insights("query") == ("profiles", "query")
+        assert archive.get_session_enrichment_insight("conv-1") == ("enrichment", "conv-1")
+        assert archive.list_session_enrichment_insights("query") == ("enrichments", "query")
+        assert archive.list_session_tag_rollup_insights("query") == ("tags", "query")
+        assert archive.get_session_work_event_insights("conv-1") == ("events", "conv-1")
+        assert archive.list_session_work_event_insights("query") == ("events-list", "query")
+        assert archive.get_session_phase_insights("conv-1") == ("phases", "conv-1")
+        assert archive.list_session_phase_insights("query") == ("phases-list", "query")
+        assert archive.get_work_thread_insight("thread-1") == ("thread", "thread-1")
+        assert archive.list_work_thread_insights("query") == ("threads", "query")
+        assert archive.list_day_session_summary_insights("query") == ("days", "query")
+        assert archive.list_week_session_summary_insights("query") == ("weeks", "query")
+        assert archive.list_provider_analytics_insights("query") == ("analytics", "query")
+        assert archive.list_archive_debt_insights("query") == ("debt", "query")
 
     assert mock_run.call_count == 16
 
@@ -158,17 +158,17 @@ def test_sync_polylogue_wraps_async_facade_and_context_manager() -> None:
 @pytest.mark.asyncio
 async def test_polylogue_products_mixin_forwards_all_product_calls() -> None:
     operations = SimpleNamespace(
-        list_session_tag_rollup_products=AsyncMock(return_value=["tags"]),
-        get_session_work_event_products=AsyncMock(return_value=["events"]),
-        list_session_work_event_products=AsyncMock(return_value=["events-list"]),
-        get_session_phase_products=AsyncMock(return_value=["phases"]),
-        list_session_phase_products=AsyncMock(return_value=["phases-list"]),
-        get_work_thread_product=AsyncMock(return_value="thread"),
-        list_work_thread_products=AsyncMock(return_value=["threads"]),
-        list_day_session_summary_products=AsyncMock(return_value=["days"]),
-        list_week_session_summary_products=AsyncMock(return_value=["weeks"]),
-        list_provider_analytics_products=AsyncMock(return_value=["analytics"]),
-        list_archive_debt_products=AsyncMock(return_value=["debt"]),
+        list_session_tag_rollup_insights=AsyncMock(return_value=["tags"]),
+        get_session_work_event_insights=AsyncMock(return_value=["events"]),
+        list_session_work_event_insights=AsyncMock(return_value=["events-list"]),
+        get_session_phase_insights=AsyncMock(return_value=["phases"]),
+        list_session_phase_insights=AsyncMock(return_value=["phases-list"]),
+        get_work_thread_insight=AsyncMock(return_value="thread"),
+        list_work_thread_insights=AsyncMock(return_value=["threads"]),
+        list_day_session_summary_insights=AsyncMock(return_value=["days"]),
+        list_week_session_summary_insights=AsyncMock(return_value=["weeks"]),
+        list_provider_analytics_insights=AsyncMock(return_value=["analytics"]),
+        list_archive_debt_insights=AsyncMock(return_value=["debt"]),
     )
 
     class _Harness(PolylogueInsightsMixin):
@@ -181,26 +181,26 @@ async def test_polylogue_products_mixin_forwards_all_product_calls() -> None:
 
     archive = _Harness(operations)
 
-    assert await archive.list_session_tag_rollup_products("query") == ["tags"]
-    assert await archive.get_session_work_event_products("conv-1") == ["events"]
-    assert await archive.list_session_work_event_products("query") == ["events-list"]
-    assert await archive.get_session_phase_products("conv-1") == ["phases"]
-    assert await archive.list_session_phase_products("query") == ["phases-list"]
-    assert await archive.get_work_thread_product("thread-1") == "thread"
-    assert await archive.list_work_thread_products("query") == ["threads"]
-    assert await archive.list_day_session_summary_products("query") == ["days"]
-    assert await archive.list_week_session_summary_products("query") == ["weeks"]
-    assert await archive.list_provider_analytics_products("query") == ["analytics"]
-    assert await archive.list_archive_debt_products("query") == ["debt"]
+    assert await archive.list_session_tag_rollup_insights("query") == ["tags"]
+    assert await archive.get_session_work_event_insights("conv-1") == ["events"]
+    assert await archive.list_session_work_event_insights("query") == ["events-list"]
+    assert await archive.get_session_phase_insights("conv-1") == ["phases"]
+    assert await archive.list_session_phase_insights("query") == ["phases-list"]
+    assert await archive.get_work_thread_insight("thread-1") == "thread"
+    assert await archive.list_work_thread_insights("query") == ["threads"]
+    assert await archive.list_day_session_summary_insights("query") == ["days"]
+    assert await archive.list_week_session_summary_insights("query") == ["weeks"]
+    assert await archive.list_provider_analytics_insights("query") == ["analytics"]
+    assert await archive.list_archive_debt_insights("query") == ["debt"]
 
-    operations.list_session_tag_rollup_products.assert_awaited_once_with("query")
-    operations.get_session_work_event_products.assert_awaited_once_with("conv-1")
-    operations.list_session_work_event_products.assert_awaited_once_with("query")
-    operations.get_session_phase_products.assert_awaited_once_with("conv-1")
-    operations.list_session_phase_products.assert_awaited_once_with("query")
-    operations.get_work_thread_product.assert_awaited_once_with("thread-1")
-    operations.list_work_thread_products.assert_awaited_once_with("query")
-    operations.list_day_session_summary_products.assert_awaited_once_with("query")
-    operations.list_week_session_summary_products.assert_awaited_once_with("query")
-    operations.list_provider_analytics_products.assert_awaited_once_with("query")
-    operations.list_archive_debt_products.assert_awaited_once_with("query")
+    operations.list_session_tag_rollup_insights.assert_awaited_once_with("query")
+    operations.get_session_work_event_insights.assert_awaited_once_with("conv-1")
+    operations.list_session_work_event_insights.assert_awaited_once_with("query")
+    operations.get_session_phase_insights.assert_awaited_once_with("conv-1")
+    operations.list_session_phase_insights.assert_awaited_once_with("query")
+    operations.get_work_thread_insight.assert_awaited_once_with("thread-1")
+    operations.list_work_thread_insights.assert_awaited_once_with("query")
+    operations.list_day_session_summary_insights.assert_awaited_once_with("query")
+    operations.list_week_session_summary_insights.assert_awaited_once_with("query")
+    operations.list_provider_analytics_insights.assert_awaited_once_with("query")
+    operations.list_archive_debt_insights.assert_awaited_once_with("query")

@@ -44,18 +44,6 @@ KERNEL_ROOT_FILES = frozenset(
     }
 )
 
-# polylogue/ root product-domain modules.
-INSIGHT_ROOT_MOVES = {
-    "archive_products.py": "polylogue/insights/archive.py",
-    "archive_product_models.py": "polylogue/insights/archive_models.py",
-    "archive_product_summaries.py": "polylogue/insights/archive_summaries.py",
-    "archive_product_rollups.py": "polylogue/insights/archive_rollups.py",
-    "archive_resume.py": "polylogue/insights/resume.py",
-    "product_export_bundles.py": "polylogue/insights/export_bundles.py",
-    "product_readiness.py": "polylogue/insights/readiness.py",
-    "authored_payloads.py": "polylogue/insights/authored_payloads.py",
-}
-
 # polylogue/ root facade/sync surfaces.
 FACADE_ROOT_MOVES = {
     "facade.py": "polylogue/api/__init__.py",
@@ -130,7 +118,7 @@ STORAGE_ROOT_KEEP = frozenset(
 )
 
 # polylogue/showcase/ is now declared as verification-lab substrate. The
-# public product CLI no longer exposes audit/qa/showcase vocabulary; lab
+# public archive CLI no longer exposes audit/qa/showcase vocabulary; lab
 # scenarios remain here until a future package split is useful.
 
 # Placement owner per target prefix.
@@ -272,9 +260,6 @@ def classify(path: Path) -> dict[str, Any]:
             target = rel
             owner = "kernel"
             reason = "kernel root rule"
-        elif name in INSIGHT_ROOT_MOVES:
-            target = INSIGHT_ROOT_MOVES[name]
-            owner = "product-domain"
         elif name in FACADE_ROOT_MOVES:
             target = FACADE_ROOT_MOVES[name]
             owner = "api-surface"

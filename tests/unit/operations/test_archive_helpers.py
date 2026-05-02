@@ -12,7 +12,7 @@ from polylogue.operations.archive import (
     _query_wants_search,
     _row_int,
     _row_str,
-    _slice_products,
+    _slice_insights,
 )
 
 
@@ -35,8 +35,8 @@ def test_archive_helper_snippets_rows_queries_and_slices() -> None:
     assert _query_wants_search(SimpleNamespace(wants_search=False, query=("needle",))) is False
     assert _query_wants_search(SimpleNamespace(query=("needle",))) is True
     assert _query_wants_search(SimpleNamespace(query=())) is False
-    assert _slice_products([1, 2, 3, 4], offset=1, limit=2) == [2, 3]
-    assert _slice_products([1, 2, 3], offset=0, limit=None) == [1, 2, 3]
+    assert _slice_insights([1, 2, 3, 4], offset=1, limit=2) == [2, 3]
+    assert _slice_insights([1, 2, 3], offset=0, limit=None) == [1, 2, 3]
 
 
 def test_archive_cost_product_filters() -> None:

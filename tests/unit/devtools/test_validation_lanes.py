@@ -106,9 +106,9 @@ class TestLaneParsing:
     def test_live_products_status_lane_infers_status_query_metadata(self) -> None:
         lane = LANES["live-insights-status"]
 
-        assert lane.path_targets == ("session-product-status-query-loop",)
-        assert lane.artifact_targets == ("session_product_readiness", "session_product_status_results")
-        assert lane.operation_targets == ("query-session-product-status",)
+        assert lane.path_targets == ("session-insight-status-query-loop",)
+        assert lane.artifact_targets == ("session_insight_readiness", "session_insight_status_results")
+        assert lane.operation_targets == ("query-session-insight-status",)
 
     def test_live_products_debt_lane_infers_archive_debt_metadata(self) -> None:
         lane = LANES["live-insights-debt"]
@@ -116,7 +116,7 @@ class TestLaneParsing:
         assert lane.path_targets == ("archive-debt-query-loop",)
         assert lane.artifact_targets == (
             "action_event_readiness",
-            "session_product_readiness",
+            "session_insight_readiness",
             "archive_readiness",
             "archive_debt_results",
         )
@@ -131,7 +131,7 @@ class TestLaneParsing:
             "embedding_status_rows",
             "message_embedding_vectors",
             "action_event_readiness",
-            "session_product_readiness",
+            "session_insight_readiness",
             "retrieval_band_readiness",
             "embedding_status_results",
         )
@@ -274,7 +274,7 @@ class TestCommandConstruction:
         assert "tests/integration/test_health.py" in cmd
 
     def test_semantic_product_normalization_lane_uses_normalization_toolchain_suite(self) -> None:
-        cmd = build_lane_command(LANES["semantic-product-normalization"])
+        cmd = build_lane_command(LANES["semantic-insight-normalization"])
         assert cmd[0] == "pytest"
         assert "tests/unit/core/test_repo_identity.py" in cmd
         assert "tests/unit/cli/test_insights.py" in cmd
@@ -530,7 +530,7 @@ class TestLaneAssertions:
         assert "json" in cmd
 
     def test_live_session_product_repair_lane_uses_doctor_repair_target(self) -> None:
-        cmd = build_lane_command(LANES["live-session-product-repair"])
+        cmd = build_lane_command(LANES["live-session-insight-repair"])
         assert cmd[:1] == ["polylogue"]
         assert "doctor" in cmd
         assert "--repair" in cmd
@@ -666,7 +666,7 @@ class TestLaneAssertions:
         self,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
-        exit_code = main(["--lane", "semantic-product-live", "--dry-run"])
+        exit_code = main(["--lane", "semantic-insight-live", "--dry-run"])
         captured = capsys.readouterr()
 
         assert exit_code == 0
@@ -679,12 +679,12 @@ class TestLaneAssertions:
         self,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
-        exit_code = main(["--lane", "semantic-product-hardening", "--dry-run"])
+        exit_code = main(["--lane", "semantic-insight-hardening", "--dry-run"])
         captured = capsys.readouterr()
 
         assert exit_code == 0
-        assert "semantic-product-normalization" in captured.out
-        assert "semantic-product-live" in captured.out
+        assert "semantic-insight-normalization" in captured.out
+        assert "semantic-insight-live" in captured.out
 
     def test_evidence_contracts_dry_run_includes_tier_and_retrieval_lanes(
         self,
@@ -711,7 +711,7 @@ class TestLaneAssertions:
         assert "live-insights-profiles-inference" in captured.out
         assert "live-insights-work-events" in captured.out
         assert "live-insights-phases" in captured.out
-        assert "live-session-product-repair" in captured.out
+        assert "live-session-insight-repair" in captured.out
         assert "maintenance-memory-budget" in captured.out
 
     def test_evidence_hardening_dry_run_expands_both_subtrees(

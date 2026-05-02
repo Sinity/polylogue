@@ -11,7 +11,7 @@
     "generator": "polylogue.cli.command_inventory.iter_command_paths"
   },
   "preserved_semantic_facts": [
-    "product CLI root commands remain discoverable",
+    "archive CLI root commands remain discoverable",
     "retired audit/qa/showcase vocabulary stays out of public product help",
     "query/read filters keep cwd-prefix and referenced-path semantically distinct"
   ],

@@ -155,9 +155,9 @@ MAINTENANCE_TARGET_SPECS: tuple[MaintenanceTargetSpec, ...] = (
         mode=MaintenanceTargetMode.REPAIR,
         category=MaintenanceCategory.DERIVED_REPAIR,
         destructive=False,
-        description="Repair or rebuild the derived session-product read models.",
+        description="Repair or rebuild the derived session-insight read models.",
         include_preview_when_ready=True,
-        doctor_readiness_operation="project-session-product-readiness",
+        doctor_readiness_operation="project-session-insight-readiness",
         doctor_repair_operation="materialize-session-insights",
     ),
     MaintenanceTargetSpec(

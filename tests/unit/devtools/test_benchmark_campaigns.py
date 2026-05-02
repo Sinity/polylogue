@@ -40,8 +40,8 @@ def test_synthetic_benchmark_registry_is_compiled_from_authored_scenarios() -> N
         == "Benchmark action-event read-model rebuild over synthetic tool-use transcripts"
     )
     assert (
-        SYNTHETIC_BENCHMARK_REGISTRY["session-product-materialization"].description
-        == "Benchmark durable session-product rebuild over synthetic archive conversations"
+        SYNTHETIC_BENCHMARK_REGISTRY["session-insight-materialization"].description
+        == "Benchmark durable session-insight rebuild over synthetic archive conversations"
     )
 
 
@@ -234,7 +234,7 @@ def test_session_product_materialization_campaign_reports_rebuild_counts(
     result = run_session_product_materialization_campaign(tmp_path / "benchmark.db")
 
     assert committed == ["commit"]
-    assert result.campaign_name == "session-product-materialization"
+    assert result.campaign_name == "session-insight-materialization"
     assert result.metrics["profiles_rebuilt"] == 5
     assert result.metrics["threads_rebuilt"] == 2
     assert result.db_stats == {

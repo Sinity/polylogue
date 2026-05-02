@@ -1,4 +1,4 @@
-"""Versioned archive data product contracts."""
+"""Versioned archive insight contracts."""
 
 from __future__ import annotations
 
@@ -38,7 +38,7 @@ if TYPE_CHECKING:
 
 
 class ArchiveInsightUnavailableError(RuntimeError):
-    """Raised when a durable archive-product surface is not ready to read."""
+    """Raised when a durable archive-insight surface is not ready to read."""
 
 
 class PaginatedInsightQuery(ArchiveInsightModel):
@@ -194,7 +194,7 @@ def _record_enrichment_provenance(record: _InsightRecordWithEnrichment) -> Archi
 
 class SessionProfileInsight(ArchiveInsightModel):
     contract_version: int = ARCHIVE_INSIGHT_CONTRACT_VERSION
-    product_kind: str = "session_profile"
+    insight_kind: str = "session_profile"
     semantic_tier: str = "merged"
     conversation_id: str
     provider_name: str
@@ -227,7 +227,7 @@ class SessionProfileInsight(ArchiveInsightModel):
 
 class SessionEnrichmentInsight(ArchiveInsightModel):
     contract_version: int = ARCHIVE_INSIGHT_CONTRACT_VERSION
-    product_kind: str = "session_enrichment"
+    insight_kind: str = "session_enrichment"
     semantic_tier: str = "enrichment"
     conversation_id: str
     provider_name: str
@@ -250,7 +250,7 @@ class SessionEnrichmentInsight(ArchiveInsightModel):
 
 class SessionWorkEventInsight(ArchiveInsightModel):
     contract_version: int = ARCHIVE_INSIGHT_CONTRACT_VERSION
-    product_kind: str = "session_work_event"
+    insight_kind: str = "session_work_event"
     semantic_tier: str = "inference"
     event_id: str
     conversation_id: str
@@ -277,7 +277,7 @@ class SessionWorkEventInsight(ArchiveInsightModel):
 
 class SessionPhaseInsight(ArchiveInsightModel):
     contract_version: int = ARCHIVE_INSIGHT_CONTRACT_VERSION
-    product_kind: str = "session_phase"
+    insight_kind: str = "session_phase"
     semantic_tier: str = "inference"
     phase_id: str
     conversation_id: str
@@ -304,7 +304,7 @@ class SessionPhaseInsight(ArchiveInsightModel):
 
 class WorkThreadInsight(ArchiveInsightModel):
     contract_version: int = ARCHIVE_INSIGHT_CONTRACT_VERSION
-    product_kind: str = "work_thread"
+    insight_kind: str = "work_thread"
     thread_id: str
     root_id: str
     dominant_repo: str | None = None
@@ -329,7 +329,7 @@ class WorkThreadInsight(ArchiveInsightModel):
 
 class SessionTagRollupInsight(ArchiveInsightModel):
     contract_version: int = ARCHIVE_INSIGHT_CONTRACT_VERSION
-    product_kind: str = "session_tag_rollup"
+    insight_kind: str = "session_tag_rollup"
     tag: str
     conversation_count: int
     explicit_count: int
@@ -341,7 +341,7 @@ class SessionTagRollupInsight(ArchiveInsightModel):
 
 class DaySessionSummaryInsight(ArchiveInsightModel):
     contract_version: int = ARCHIVE_INSIGHT_CONTRACT_VERSION
-    product_kind: str = "day_session_summary"
+    insight_kind: str = "day_session_summary"
     date: str
     provenance: ArchiveInsightProvenance
     summary: DaySessionSummaryPayload
@@ -349,7 +349,7 @@ class DaySessionSummaryInsight(ArchiveInsightModel):
 
 class WeekSessionSummaryInsight(ArchiveInsightModel):
     contract_version: int = ARCHIVE_INSIGHT_CONTRACT_VERSION
-    product_kind: str = "week_session_summary"
+    insight_kind: str = "week_session_summary"
     iso_week: str
     provenance: ArchiveInsightProvenance
     summary: WeekSessionSummaryPayload
@@ -357,7 +357,7 @@ class WeekSessionSummaryInsight(ArchiveInsightModel):
 
 class ProviderAnalyticsInsight(ArchiveInsightModel):
     contract_version: int = ARCHIVE_INSIGHT_CONTRACT_VERSION
-    product_kind: str = "provider_analytics"
+    insight_kind: str = "provider_analytics"
     provider_name: str
     conversation_count: int
     message_count: int
@@ -376,7 +376,7 @@ class ProviderAnalyticsInsight(ArchiveInsightModel):
 
 class SessionCostInsight(ArchiveInsightModel):
     contract_version: int = ARCHIVE_INSIGHT_CONTRACT_VERSION
-    product_kind: str = "session_cost"
+    insight_kind: str = "session_cost"
     semantic_tier: str = "estimate"
     conversation_id: str
     provider_name: str
@@ -389,7 +389,7 @@ class SessionCostInsight(ArchiveInsightModel):
 
 class CostRollupInsight(ArchiveInsightModel):
     contract_version: int = ARCHIVE_INSIGHT_CONTRACT_VERSION
-    product_kind: str = "cost_rollup"
+    insight_kind: str = "cost_rollup"
     semantic_tier: str = "estimate"
     provider_name: str
     model_name: str | None = None
@@ -406,7 +406,7 @@ class CostRollupInsight(ArchiveInsightModel):
 
 class ArchiveDebtInsight(ArchiveInsightModel):
     contract_version: int = ARCHIVE_INSIGHT_CONTRACT_VERSION
-    product_kind: str = "archive_debt"
+    insight_kind: str = "archive_debt"
     debt_name: str
     category: str
     maintenance_target: str

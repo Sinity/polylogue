@@ -1,4 +1,4 @@
-"""Profile-oriented durable session-product read queries."""
+"""Profile-oriented durable session-insight read queries."""
 
 from __future__ import annotations
 

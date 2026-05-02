@@ -1,4 +1,4 @@
-"""Row mappers for timeline-oriented session-product records."""
+"""Row mappers for timeline-oriented session-insight records."""
 
 from __future__ import annotations
 

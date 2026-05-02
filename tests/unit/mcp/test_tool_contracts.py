@@ -554,8 +554,8 @@ class TestGetConversationTool:
 
 class TestInsightTools:
     @pytest.mark.asyncio
-    async def test_session_profile_tool_uses_archive_product_contract(self, mcp_server: MCPServerUnderTest) -> None:
-        product = SessionProfileInsight(
+    async def test_session_profile_tool_uses_archive_insight_contract(self, mcp_server: MCPServerUnderTest) -> None:
+        insight = SessionProfileInsight(
             conversation_id="conv-1",
             provider_name="claude-code",
             title="Profiled Session",
@@ -567,7 +567,7 @@ class TestInsightTools:
         )
         with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
             mock_ops = MagicMock()
-            mock_ops.get_session_profile_product = AsyncMock(return_value=product)
+            mock_ops.get_session_profile_insight = AsyncMock(return_value=insight)
             mock_get_archive_ops.return_value = mock_ops
 
             raw = await invoke_surface_async(
@@ -576,7 +576,7 @@ class TestInsightTools:
             )
 
         payload = json.loads(raw)
-        assert payload["product_kind"] == "session_profile"
+        assert payload["insight_kind"] == "session_profile"
         assert payload["conversation_id"] == "conv-1"
 
     @pytest.mark.asyncio
@@ -720,22 +720,22 @@ class TestInsightTools:
             destructive=False,
             issue_count=1,
             healthy=False,
-            detail="1 pending session-product row",
+            detail="1 pending session-insight row",
         )
         with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
             mock_ops = MagicMock()
-            mock_ops.list_session_profile_products = AsyncMock(return_value=[profile])
-            mock_ops.list_session_enrichment_products = AsyncMock(return_value=[enrichment])
-            mock_ops.list_session_work_event_products = AsyncMock(return_value=[work_event])
-            mock_ops.list_session_phase_products = AsyncMock(return_value=[phase])
-            mock_ops.list_session_tag_rollup_products = AsyncMock(return_value=[tag_rollup])
-            mock_ops.list_work_thread_products = AsyncMock(return_value=[thread])
-            mock_ops.list_day_session_summary_products = AsyncMock(return_value=[day_summary])
-            mock_ops.list_week_session_summary_products = AsyncMock(return_value=[week_summary])
-            mock_ops.list_provider_analytics_products = AsyncMock(return_value=[analytics])
-            mock_ops.list_session_cost_products = AsyncMock(return_value=[session_cost])
-            mock_ops.list_cost_rollup_products = AsyncMock(return_value=[cost_rollup])
-            mock_ops.list_archive_debt_products = AsyncMock(return_value=[debt])
+            mock_ops.list_session_profile_insights = AsyncMock(return_value=[profile])
+            mock_ops.list_session_enrichment_insights = AsyncMock(return_value=[enrichment])
+            mock_ops.list_session_work_event_insights = AsyncMock(return_value=[work_event])
+            mock_ops.list_session_phase_insights = AsyncMock(return_value=[phase])
+            mock_ops.list_session_tag_rollup_insights = AsyncMock(return_value=[tag_rollup])
+            mock_ops.list_work_thread_insights = AsyncMock(return_value=[thread])
+            mock_ops.list_day_session_summary_insights = AsyncMock(return_value=[day_summary])
+            mock_ops.list_week_session_summary_insights = AsyncMock(return_value=[week_summary])
+            mock_ops.list_provider_analytics_insights = AsyncMock(return_value=[analytics])
+            mock_ops.list_session_cost_insights = AsyncMock(return_value=[session_cost])
+            mock_ops.list_cost_rollup_insights = AsyncMock(return_value=[cost_rollup])
+            mock_ops.list_archive_debt_insights = AsyncMock(return_value=[debt])
             mock_get_archive_ops.return_value = mock_ops
 
             profiles_raw = await invoke_surface_async(
@@ -820,23 +820,23 @@ class TestInsightTools:
         debt_payload = json.loads(debt_raw)
 
         assert profiles_payload["count"] == 1
-        assert profiles_payload["items"][0]["product_kind"] == "session_profile"
-        assert enrichments_payload["items"][0]["product_kind"] == "session_enrichment"
-        assert events_payload["items"][0]["product_kind"] == "session_work_event"
-        assert phases_payload["items"][0]["product_kind"] == "session_phase"
-        assert tags_payload["items"][0]["product_kind"] == "session_tag_rollup"
-        assert threads_payload["items"][0]["product_kind"] == "work_thread"
+        assert profiles_payload["items"][0]["insight_kind"] == "session_profile"
+        assert enrichments_payload["items"][0]["insight_kind"] == "session_enrichment"
+        assert events_payload["items"][0]["insight_kind"] == "session_work_event"
+        assert phases_payload["items"][0]["insight_kind"] == "session_phase"
+        assert tags_payload["items"][0]["insight_kind"] == "session_tag_rollup"
+        assert threads_payload["items"][0]["insight_kind"] == "work_thread"
         assert threads_payload["items"][0]["thread"]["support_level"] == "strong"
         assert threads_payload["items"][0]["thread"]["member_evidence"][0]["role"] == "root"
-        assert day_payload["items"][0]["product_kind"] == "day_session_summary"
-        assert week_payload["items"][0]["product_kind"] == "week_session_summary"
-        assert analytics_payload["items"][0]["product_kind"] == "provider_analytics"
-        assert costs_payload["items"][0]["product_kind"] == "session_cost"
+        assert day_payload["items"][0]["insight_kind"] == "day_session_summary"
+        assert week_payload["items"][0]["insight_kind"] == "week_session_summary"
+        assert analytics_payload["items"][0]["insight_kind"] == "provider_analytics"
+        assert costs_payload["items"][0]["insight_kind"] == "session_cost"
         assert costs_payload["items"][0]["estimate"]["status"] == "exact"
-        assert cost_rollups_payload["items"][0]["product_kind"] == "cost_rollup"
+        assert cost_rollups_payload["items"][0]["insight_kind"] == "cost_rollup"
         assert cost_rollups_payload["items"][0]["total_usd"] == 1.25
-        assert debt_payload["items"][0]["product_kind"] == "archive_debt"
-        debt_query = mock_ops.list_archive_debt_products.await_args.args[0]
+        assert debt_payload["items"][0]["insight_kind"] == "archive_debt"
+        debt_query = mock_ops.list_archive_debt_insights.await_args.args[0]
         assert debt_query.category == "insights"
         assert debt_query.only_actionable is True
 
@@ -844,7 +844,7 @@ class TestInsightTools:
     async def test_session_enrichments_tool_rejects_unknown_query_fields(self, mcp_server: MCPServerUnderTest) -> None:
         with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
             mock_ops = MagicMock()
-            mock_ops.list_session_enrichment_products = AsyncMock(return_value=[])
+            mock_ops.list_session_enrichment_insights = AsyncMock(return_value=[])
             mock_get_archive_ops.return_value = mock_ops
 
             raw = await invoke_surface_async(
@@ -859,7 +859,7 @@ class TestInsightTools:
         assert payload["error"] == "internal MCP tool error"
         assert payload["code"] == "internal_error"
         assert payload["detail"] == "InsightQueryError"
-        mock_ops.list_session_enrichment_products.assert_not_awaited()
+        mock_ops.list_session_enrichment_insights.assert_not_awaited()
 
 
 class TestStatsTool:
@@ -1292,16 +1292,16 @@ class TestMutationTools:
         assert parsed["status"] == "ok"
         assert parsed["conversation_count"] == 2
 
-    def test_rebuild_session_products_success(self, mcp_server: MCPServerUnderTest) -> None:
+    def test_rebuild_session_insights_success(self, mcp_server: MCPServerUnderTest) -> None:
         with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
             mock_ops = MagicMock()
-            mock_ops.rebuild_session_products = AsyncMock(
+            mock_ops.rebuild_session_insights = AsyncMock(
                 return_value=SessionInsightCounts(profiles=2, work_events=3, phases=1)
             )
             mock_get_archive_ops.return_value = mock_ops
 
             result = invoke_surface(
-                mcp_server._tool_manager._tools["rebuild_session_products"].fn,
+                mcp_server._tool_manager._tools["rebuild_session_insights"].fn,
                 conversation_ids=["conv-1", "conv-2"],
             )
 
@@ -1310,7 +1310,7 @@ class TestMutationTools:
         assert parsed["conversation_count"] == 2
         assert parsed["counts"]["profiles"] == 2
         assert parsed["total"] == 6
-        mock_ops.rebuild_session_products.assert_awaited_once_with(conversation_ids=["conv-1", "conv-2"])
+        mock_ops.rebuild_session_insights.assert_awaited_once_with(conversation_ids=["conv-1", "conv-2"])
 
     def test_export_query_results_uses_shared_query_contract(
         self,

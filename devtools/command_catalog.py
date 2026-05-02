@@ -370,7 +370,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
         examples=(
             "devtools semantic-axis-evidence --campaign fts-rebuild --axis messages --scales small medium",
-            "devtools semantic-axis-evidence --campaign session-product-materialization --axis conversations --scales small medium",
+            "devtools semantic-axis-evidence --campaign session-insight-materialization --axis conversations --scales small medium",
         ),
     ),
     CommandSpec(
@@ -390,7 +390,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "verification",
         "Run verification-lab showcase scenario sets and baseline checks.",
         "devtools.lab_scenario",
-        use_when="Run showcase exercise smoke scenarios and committed baseline checks outside the product CLI.",
+        use_when="Run showcase exercise smoke scenarios and committed baseline checks outside the archive CLI.",
         examples=(
             "devtools lab-scenario list",
             "devtools lab-scenario run archive-smoke --tier 0",
@@ -402,7 +402,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "verification",
         "Generate provider schema packages and optional evidence clusters.",
         "devtools.schema_generate",
-        use_when="Refresh provider schema package artifacts from archive observations outside the product CLI.",
+        use_when="Refresh provider schema package artifacts from archive observations outside the archive CLI.",
         examples=("devtools schema-generate --provider chatgpt --cluster",),
     ),
     CommandSpec(

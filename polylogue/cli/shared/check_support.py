@@ -65,8 +65,8 @@ def make_schema_progress_callback() -> ProgressCallback:
     return make_count_progress_callback(label="Verifying schemas", unit="raw records")
 
 
-def make_session_product_progress_callback() -> ProgressCallback:
-    """Return a stderr progress reporter for session-product repairs."""
+def make_session_insight_progress_callback() -> ProgressCallback:
+    """Return a stderr progress reporter for session-insight repairs."""
     return make_count_progress_callback(label="Repairing session insights", unit="conversations")
 
 

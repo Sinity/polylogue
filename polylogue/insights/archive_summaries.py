@@ -134,7 +134,7 @@ def _aggregate_day_summaries(
     return summaries
 
 
-def aggregate_day_session_summary_products(
+def aggregate_day_session_summary_insights(
     rows: Sequence[DaySessionSummaryRecord],
 ) -> list[DaySessionSummaryInsight]:
     return [
@@ -147,7 +147,7 @@ def aggregate_day_session_summary_products(
     ]
 
 
-def aggregate_week_session_summary_products(
+def aggregate_week_session_summary_insights(
     rows: Sequence[DaySessionSummaryRecord],
 ) -> list[WeekSessionSummaryInsight]:
     day_entries = _aggregate_day_summaries(rows)
@@ -173,7 +173,7 @@ def aggregate_week_session_summary_products(
 
 
 __all__ = [
-    "aggregate_day_session_summary_products",
-    "aggregate_week_session_summary_products",
+    "aggregate_day_session_summary_insights",
+    "aggregate_week_session_summary_insights",
     "build_day_session_summary_records",
 ]

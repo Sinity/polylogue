@@ -204,7 +204,7 @@ async def execute_materialize_stage(
         if not conversation_ids:
             return MaterializeStageOutcome(item_count=0, rebuilt=False)
 
-        status = await backend.get_session_product_status()
+        status = await backend.get_session_insight_status()
         total_conversations = status.total_conversations
         profile_row_count = status.profile_row_count
         use_bounded_rebuild = profile_row_count == 0 and total_conversations == len(conversation_ids)

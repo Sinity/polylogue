@@ -244,9 +244,9 @@ GENERATED_SCENARIO_FAMILIES: tuple[GeneratedScenarioFamily, ...] = (
                 mapping_note="mapped to synthetic tool-use materialization workload",
             ),
             _claim(
-                "session product rebuild convergence",
+                "session insight rebuild convergence",
                 "mapped",
-                mapping_note="mapped to session product materialization workload",
+                mapping_note="mapped to session insight materialization workload",
             ),
         ),
         operation_targets=("materialize-action-events",),

@@ -450,7 +450,7 @@ def _run_summary(
         patch("polylogue.cli.shared.helpers.quick_readiness_summary", return_value=quick_health) as mock_quick,
         patch("polylogue.cli.shared.helpers.get_readiness", return_value=health) as mock_get_readiness,
         patch("polylogue.cli.shared.helpers.format_sources_summary", return_value="inbox"),
-        patch("polylogue.cli.shared.helpers.list_provider_analytics_products", metrics_mock),
+        patch("polylogue.cli.shared.helpers.list_provider_analytics_insights", metrics_mock),
         patch("polylogue.cli.shared.helpers.get_provider_counts", counts_mock),
     ):
         print_summary(env, verbose=verbose)

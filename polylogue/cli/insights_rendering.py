@@ -1,7 +1,7 @@
-"""Rendering helpers for archive-product CLI commands.
+"""Rendering helpers for archive-insight CLI commands.
 
-All per-product-type renderers are replaced by the generic
-``render_insight_items()`` in the product registry. This module retains
+All per-insight-type renderers are replaced by the generic
+``render_insight_items()`` in the insight registry. This module retains
 the ``summarize_archive_debt`` helper.
 """
 

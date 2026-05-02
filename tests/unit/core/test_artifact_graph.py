@@ -34,7 +34,7 @@ def test_artifact_graph_contains_the_current_runtime_paths() -> None:
         "action_event_rows",
         "action_event_fts",
         "action_event_readiness",
-        "session_product_source_conversations",
+        "session_insight_source_conversations",
         "session_profile_rows",
         "session_profile_merged_fts",
         "session_profile_evidence_fts",
@@ -47,9 +47,9 @@ def test_artifact_graph_contains_the_current_runtime_paths() -> None:
         "work_thread_fts",
         "session_tag_rollup_rows",
         "day_session_summary_rows",
-        "session_product_rows",
-        "session_product_fts",
-        "session_product_readiness",
+        "session_insight_rows",
+        "session_insight_fts",
+        "session_insight_readiness",
         "retrieval_band_readiness",
         "embedding_status_results",
         "session_profile_results",
@@ -61,7 +61,7 @@ def test_artifact_graph_contains_the_current_runtime_paths() -> None:
         "day_session_summary_results",
         "week_session_summary_results",
         "provider_analytics_results",
-        "session_product_status_results",
+        "session_insight_status_results",
         "archive_debt_results",
         "conversation_render_projection",
         "rendered_conversation_artifacts",
@@ -98,15 +98,15 @@ def test_artifact_graph_contains_the_current_runtime_paths() -> None:
     assert nodes["session_profile_merged_fts"].depends_on == ("session_profile_rows",)
     assert nodes["session_work_event_fts"].depends_on == ("session_work_event_rows",)
     assert nodes["work_thread_fts"].depends_on == ("work_thread_rows",)
-    assert nodes["session_product_fts"].layer is ArtifactLayer.INDEX
-    assert "session_profile_merged_fts" in nodes["session_product_fts"].depends_on
-    assert nodes["session_product_readiness"].depends_on == ("session_product_rows", "session_product_fts")
+    assert nodes["session_insight_fts"].layer is ArtifactLayer.INDEX
+    assert "session_profile_merged_fts" in nodes["session_insight_fts"].depends_on
+    assert nodes["session_insight_readiness"].depends_on == ("session_insight_rows", "session_insight_fts")
     assert nodes["retrieval_band_readiness"].depends_on == (
         "embedding_metadata_rows",
         "embedding_status_rows",
         "message_embedding_vectors",
         "action_event_readiness",
-        "session_product_readiness",
+        "session_insight_readiness",
     )
     assert nodes["embedding_status_results"].depends_on == (
         "embedding_metadata_rows",
@@ -115,7 +115,7 @@ def test_artifact_graph_contains_the_current_runtime_paths() -> None:
         "retrieval_band_readiness",
     )
     assert nodes["parse_quarantine"].depends_on == ("raw_validation_state",)
-    assert nodes["session_product_source_conversations"].depends_on == ("archive_conversation_rows",)
+    assert nodes["session_insight_source_conversations"].depends_on == ("archive_conversation_rows",)
     assert nodes["conversation_query_results"].depends_on == ("message_fts",)
     assert nodes["conversation_render_projection"].depends_on == ("archive_conversation_rows",)
     assert nodes["rendered_conversation_artifacts"].depends_on == ("conversation_render_projection",)
@@ -124,7 +124,7 @@ def test_artifact_graph_contains_the_current_runtime_paths() -> None:
     assert nodes["publication_records"].depends_on == ("site_publication_manifest",)
     assert nodes["session_profile_results"].depends_on == ("session_profile_rows", "session_profile_merged_fts")
     assert nodes["week_session_summary_results"].depends_on == ("day_session_summary_rows",)
-    assert nodes["provider_analytics_results"].depends_on == ("session_product_rows",)
+    assert nodes["provider_analytics_results"].depends_on == ("session_insight_rows",)
     assert nodes["inferred_corpus_specs"].depends_on == ("schema_packages", "schema_cluster_manifests")
     assert nodes["inferred_corpus_scenarios"].depends_on == ("inferred_corpus_specs",)
     assert nodes["schema_list_results"].depends_on == (
@@ -137,7 +137,7 @@ def test_artifact_graph_contains_the_current_runtime_paths() -> None:
     assert nodes["archive_readiness"].depends_on == (
         "message_fts",
         "action_event_readiness",
-        "session_product_readiness",
+        "session_insight_readiness",
         "retrieval_band_readiness",
     )
     assert nodes["archive_readiness"].repair_targets == (
@@ -166,10 +166,10 @@ def test_artifact_graph_contains_the_current_runtime_paths() -> None:
         "publication_records",
     )
     assert operations["project-action-event-readiness"].consumes == ("action_event_rows", "action_event_fts")
-    assert "session_product_rows" in operations["materialize-session-insights"].produces
+    assert "session_insight_rows" in operations["materialize-session-insights"].produces
     assert "session_profile_rows" in operations["materialize-session-insights"].produces
     assert "work_thread_fts" in operations["materialize-session-insights"].produces
-    assert operations["project-session-product-readiness"].consumes == ("session_product_rows", "session_product_fts")
+    assert operations["project-session-insight-readiness"].consumes == ("session_insight_rows", "session_insight_fts")
     assert operations["query-session-profiles"].produces == ("session_profile_results",)
     assert operations["query-session-enrichments"].produces == ("session_enrichment_results",)
     assert operations["query-session-work-events"].produces == ("session_work_event_results",)
@@ -179,7 +179,7 @@ def test_artifact_graph_contains_the_current_runtime_paths() -> None:
     assert operations["query-day-session-summaries"].produces == ("day_session_summary_results",)
     assert operations["query-week-session-summaries"].produces == ("week_session_summary_results",)
     assert operations["query-provider-analytics"].produces == ("provider_analytics_results",)
-    assert operations["query-session-product-status"].produces == ("session_product_status_results",)
+    assert operations["query-session-insight-status"].produces == ("session_insight_status_results",)
     assert operations["query-archive-debt"].produces == ("archive_debt_results",)
     assert operations["compile-inferred-corpus-specs"].produces == ("inferred_corpus_specs",)
     assert operations["compile-inferred-corpus-scenarios"].produces == ("inferred_corpus_scenarios",)
@@ -188,7 +188,7 @@ def test_artifact_graph_contains_the_current_runtime_paths() -> None:
     assert operations["project-archive-readiness"].consumes == (
         "message_fts",
         "action_event_readiness",
-        "session_product_readiness",
+        "session_insight_readiness",
         "retrieval_band_readiness",
     )
     assert operations["plan-validation-backlog"].kind is OperationKind.PLANNING
@@ -206,9 +206,9 @@ def test_artifact_graph_contains_the_current_runtime_paths() -> None:
         "work_thread_fts",
         "session_tag_rollup_rows",
         "day_session_summary_rows",
-        "session_product_rows",
-        "session_product_fts",
-        "session_product_readiness",
+        "session_insight_rows",
+        "session_insight_fts",
+        "session_insight_readiness",
         "archive_readiness",
     }
     assert tuple(
@@ -239,8 +239,8 @@ def test_artifact_graph_paths_reference_only_declared_nodes() -> None:
         "embedding-status-query-loop",
         "conversation-query-loop",
         "action-event-repair-loop",
-        "session-product-repair-loop",
-        "raw-session-product-repair-loop",
+        "session-insight-repair-loop",
+        "raw-session-insight-repair-loop",
         "session-profile-query-loop",
         "session-enrichment-query-loop",
         "session-work-event-query-loop",
@@ -250,7 +250,7 @@ def test_artifact_graph_paths_reference_only_declared_nodes() -> None:
         "day-summary-query-loop",
         "week-summary-query-loop",
         "provider-analytics-query-loop",
-        "session-product-status-query-loop",
+        "session-insight-status-query-loop",
         "archive-debt-query-loop",
         "conversation-render-loop",
         "site-publication-loop",
@@ -349,9 +349,9 @@ def test_artifact_graph_lists_operations_for_each_runtime_path() -> None:
         "materialize-action-events",
         "project-action-event-readiness",
     )
-    assert tuple(operation.name for operation in graph.operations_for_path("session-product-repair-loop")) == (
+    assert tuple(operation.name for operation in graph.operations_for_path("session-insight-repair-loop")) == (
         "materialize-session-insights",
-        "project-session-product-readiness",
+        "project-session-insight-readiness",
     )
     assert tuple(operation.name for operation in graph.operations_for_path("session-profile-query-loop")) == (
         "query-session-profiles",
@@ -368,8 +368,8 @@ def test_artifact_graph_lists_operations_for_each_runtime_path() -> None:
     assert tuple(operation.name for operation in graph.operations_for_path("work-thread-query-loop")) == (
         "query-work-threads",
     )
-    assert tuple(operation.name for operation in graph.operations_for_path("session-product-status-query-loop")) == (
-        "query-session-product-status",
+    assert tuple(operation.name for operation in graph.operations_for_path("session-insight-status-query-loop")) == (
+        "query-session-insight-status",
     )
     assert tuple(operation.name for operation in graph.operations_for_path("archive-debt-query-loop")) == (
         "query-archive-debt",

@@ -25,7 +25,7 @@ def test_runtime_operation_catalog_covers_the_current_runtime_paths() -> None:
         "materialize-session-insights",
         "project-retrieval-band-readiness",
         "query-embedding-status",
-        "project-session-product-readiness",
+        "project-session-insight-readiness",
         "project-archive-readiness",
         "query-session-profiles",
         "query-session-work-events",
@@ -36,7 +36,7 @@ def test_runtime_operation_catalog_covers_the_current_runtime_paths() -> None:
         "query-week-session-summaries",
         "query-provider-analytics",
         "query-session-enrichments",
-        "query-session-product-status",
+        "query-session-insight-status",
         "query-archive-debt",
         "compile-inferred-corpus-specs",
         "compile-inferred-corpus-scenarios",
@@ -79,20 +79,20 @@ def test_runtime_operation_catalog_covers_the_current_runtime_paths() -> None:
     assert specs["publish-site"].path_targets == ("site-publication-loop",)
     assert specs["materialize-session-insights"].kind is OperationKind.MATERIALIZATION
     assert specs["materialize-session-insights"].mutates_state is True
-    assert "session_product_rows" in specs["materialize-session-insights"].produces
-    assert "session_product_fts" in specs["materialize-session-insights"].produces
+    assert "session_insight_rows" in specs["materialize-session-insights"].produces
+    assert "session_insight_fts" in specs["materialize-session-insights"].produces
     assert "session_profile_rows" in specs["materialize-session-insights"].produces
     assert "work_thread_fts" in specs["materialize-session-insights"].produces
-    assert specs["materialize-session-insights"].path_targets == ("session-product-repair-loop",)
+    assert specs["materialize-session-insights"].path_targets == ("session-insight-repair-loop",)
     assert specs["project-action-event-readiness"].previewable is True
     assert specs["project-retrieval-band-readiness"].previewable is True
     assert specs["project-retrieval-band-readiness"].path_targets == ("retrieval-band-readiness-loop",)
     assert specs["query-embedding-status"].path_targets == ("embedding-status-query-loop",)
-    assert specs["project-session-product-readiness"].previewable is True
+    assert specs["project-session-insight-readiness"].previewable is True
     assert specs["query-session-profiles"].path_targets == ("session-profile-query-loop",)
     assert specs["query-session-enrichments"].path_targets == ("session-enrichment-query-loop",)
     assert specs["query-session-work-events"].path_targets == ("session-work-event-query-loop",)
-    assert specs["query-session-product-status"].path_targets == ("session-product-status-query-loop",)
+    assert specs["query-session-insight-status"].path_targets == ("session-insight-status-query-loop",)
     assert specs["query-archive-debt"].path_targets == ("archive-debt-query-loop",)
     assert specs["query-provider-analytics"].path_targets == ("provider-analytics-query-loop",)
     assert specs["compile-inferred-corpus-specs"].path_targets == ("inferred-corpus-compilation-loop",)

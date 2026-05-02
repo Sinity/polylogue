@@ -44,7 +44,7 @@ def _backend(
 ) -> object:
     connection = conn if conn is not None else SimpleNamespace()
     return SimpleNamespace(
-        get_session_product_status=AsyncMock(return_value=status),
+        get_session_insight_status=AsyncMock(return_value=status),
         count_conversation_ids=AsyncMock(return_value=count),
         iter_conversation_ids=lambda **kwargs: _aiter(*iter_values),
         connection=lambda: _AsyncContext(connection),

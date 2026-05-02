@@ -1,4 +1,4 @@
-"""Hydrated session timeline durable product reads for the repository."""
+"""Hydrated session timeline durable insight reads for the repository."""
 
 from __future__ import annotations
 

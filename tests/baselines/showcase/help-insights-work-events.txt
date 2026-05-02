@@ -5,7 +5,7 @@ Usage: polylogue insights work-events [OPTIONS]
 Options:
   --conversation-id TEXT  Only events from one conversation
   --kind TEXT             Only this work-event kind
-  --query TEXT            FTS query against product search text
+  --query TEXT            FTS query against insight search text
   --limit INTEGER         Maximum rows  [default: 50]
   --offset INTEGER        Start offset  [default: 0]
   --format [json]         Output format

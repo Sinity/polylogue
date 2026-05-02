@@ -1,8 +1,8 @@
-"""Data-driven derived product system.
+"""Data-driven derived insight system.
 
 Insight types are registered descriptors. CLI rendering, MCP exposure,
-and library API are generic — they take a product type name and produce
-appropriate output. No per-product-type rendering/workflow/command files.
+and library API are generic: they take an insight type name and produce
+appropriate output. No per-insight-type rendering/workflow/command files.
 """
 
 from polylogue.insights.registry import (

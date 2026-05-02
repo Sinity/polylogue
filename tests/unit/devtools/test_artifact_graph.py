@@ -18,7 +18,7 @@ def test_render_artifact_graph_text_mentions_the_current_runtime_paths() -> None
     assert "message-fts-readiness-loop" in rendered
     assert "conversation-query-loop" in rendered
     assert "action-event-repair-loop" in rendered
-    assert "session-product-repair-loop" in rendered
+    assert "session-insight-repair-loop" in rendered
     assert "session-profile-query-loop" in rendered
     assert "session-work-event-query-loop" in rendered
     assert "work-thread-query-loop" in rendered
@@ -37,10 +37,10 @@ def test_render_artifact_graph_text_mentions_the_current_runtime_paths() -> None
     assert "query-session-enrichments" in rendered
     assert "query-session-work-events" in rendered
     assert "query-work-threads" in rendered
-    assert "query-session-product-status" in rendered
+    assert "query-session-insight-status" in rendered
     assert "query-archive-debt" in rendered
     assert "project-action-event-readiness" in rendered
-    assert "project-session-product-readiness" in rendered
+    assert "project-session-insight-readiness" in rendered
     assert "project-archive-readiness" in rendered
     assert "json-doctor-action-event-preview" in rendered
     assert "json-doctor-session-insights-preview" in rendered
@@ -48,7 +48,7 @@ def test_render_artifact_graph_text_mentions_the_current_runtime_paths() -> None
     assert "startup-readiness" in rendered
     assert "retrieval-checks" in rendered
     assert "synthetic-benchmark:action-event-materialization" in rendered
-    assert "synthetic-benchmark:session-product-materialization" in rendered
+    assert "synthetic-benchmark:session-insight-materialization" in rendered
     assert "exercise:json-insights-profiles" in rendered
     assert "exercise:json-insights-work-events" in rendered
     assert "validation-lane:live-insights-status" in rendered
@@ -73,7 +73,7 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
         "message-fts-readiness-loop",
         "conversation-query-loop",
         "action-event-repair-loop",
-        "session-product-repair-loop",
+        "session-insight-repair-loop",
         "session-profile-query-loop",
         "session-enrichment-query-loop",
         "session-work-event-query-loop",
@@ -83,7 +83,7 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
         "day-summary-query-loop",
         "week-summary-query-loop",
         "provider-analytics-query-loop",
-        "session-product-status-query-loop",
+        "session-insight-status-query-loop",
         "archive-debt-query-loop",
     }
     assert any(node["name"] == "raw_validation_state" for node in payload["nodes"])
@@ -123,10 +123,10 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
     }
     assert {
         (ref["source"], ref["name"], ref["origin"])
-        for ref in payload["scenario_coverage"]["artifacts"]["session_product_rows"]
+        for ref in payload["scenario_coverage"]["artifacts"]["session_insight_rows"]
     } >= {
         ("exercise", "json-doctor-session-insights-preview", "generated.json-contract"),
-        ("synthetic-benchmark", "session-product-materialization", "authored.synthetic-benchmark"),
+        ("synthetic-benchmark", "session-insight-materialization", "authored.synthetic-benchmark"),
     }
     assert (
         "exercise",
@@ -134,7 +134,7 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
         "generated.json-contract",
     ) in {
         (ref["source"], ref["name"], ref["origin"])
-        for ref in payload["scenario_coverage"]["operations"]["project-session-product-readiness"]
+        for ref in payload["scenario_coverage"]["operations"]["project-session-insight-readiness"]
     }
     assert (
         "exercise",
@@ -223,15 +223,15 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
     }
     assert (
         "synthetic-benchmark",
-        "session-product-materialization",
+        "session-insight-materialization",
         "authored.synthetic-benchmark",
     ) in {
         (ref["source"], ref["name"], ref["origin"])
-        for ref in payload["scenario_coverage"]["artifacts"]["session_product_source_conversations"]
+        for ref in payload["scenario_coverage"]["artifacts"]["session_insight_source_conversations"]
     }
     assert (
         "synthetic-benchmark",
-        "session-product-materialization",
+        "session-insight-materialization",
         "authored.synthetic-benchmark",
     ) in {
         (ref["source"], ref["name"], ref["origin"])
@@ -275,7 +275,7 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
         "authored.validation-lane",
     ) in {
         (ref["source"], ref["name"], ref["origin"])
-        for ref in payload["scenario_coverage"]["operations"]["query-session-product-status"]
+        for ref in payload["scenario_coverage"]["operations"]["query-session-insight-status"]
     }
     assert (
         "validation-lane",
@@ -301,13 +301,13 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
     ]
     assert payload["scenario_coverage"]["paths"]["week-summary-query-loop"]["complete"] is True
     assert payload["scenario_coverage"]["paths"]["provider-analytics-query-loop"]["complete"] is True
-    assert payload["scenario_coverage"]["paths"]["session-product-status-query-loop"]["complete"] is True
+    assert payload["scenario_coverage"]["paths"]["session-insight-status-query-loop"]["complete"] is True
     assert payload["scenario_coverage"]["paths"]["archive-debt-query-loop"]["complete"] is True
     assert payload["scenario_coverage"]["paths"]["action-event-repair-loop"]["complete"] is True
     assert payload["scenario_coverage"]["paths"]["message-fts-readiness-loop"]["complete"] is True
     assert payload["scenario_coverage"]["paths"]["conversation-query-loop"]["complete"] is True
     assert payload["scenario_coverage"]["paths"]["raw-reparse-loop"]["complete"] is True
     assert payload["scenario_coverage"]["paths"]["raw-archive-ingest-loop"]["complete"] is True
-    assert payload["scenario_coverage"]["paths"]["session-product-repair-loop"]["complete"] is True
+    assert payload["scenario_coverage"]["paths"]["session-insight-repair-loop"]["complete"] is True
     assert payload["scenario_coverage"]["uncovered_artifacts"] == []
     assert payload["scenario_coverage"]["uncovered_operations"] == []

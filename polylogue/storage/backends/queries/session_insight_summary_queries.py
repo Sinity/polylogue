@@ -1,4 +1,4 @@
-"""Summary/rollup durable session-product queries."""
+"""Summary/rollup durable session-insight queries."""
 
 from __future__ import annotations
 

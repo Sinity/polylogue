@@ -40,7 +40,7 @@ from polylogue.storage.repair import run_selected_maintenance
 
 from .check_support import (
     make_schema_progress_callback,
-    make_session_product_progress_callback,
+    make_session_insight_progress_callback,
     parse_schema_samples,
     vacuum_database,
 )
@@ -169,7 +169,7 @@ def _run_schema_verification(options: CheckCommandOptions, config: Config) -> Sc
     return report
 
 
-def _session_product_progress_callback(
+def _session_insight_progress_callback(
     options: CheckCommandOptions,
     selected_targets: tuple[str, ...],
 ) -> ProgressCallback | None:
@@ -179,7 +179,7 @@ def _session_product_progress_callback(
         and not options.json_output
         and (not selected_targets or "session_products" in selected_targets)
     ):
-        return make_session_product_progress_callback()
+        return make_session_insight_progress_callback()
     return None
 
 
@@ -204,7 +204,7 @@ def _run_maintenance(
         dry_run=options.preview,
         preview_counts=inputs.preview_counts,
         targets=inputs.selected_targets,
-        session_product_progress_callback=_session_product_progress_callback(options, inputs.selected_targets),
+        session_insight_progress_callback=_session_insight_progress_callback(options, inputs.selected_targets),
     )
 
 

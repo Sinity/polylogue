@@ -1,7 +1,7 @@
-"""Registry-driven MCP archive-product tool registration.
+"""Registry-driven MCP archive-insight tool registration.
 
 Iterates INSIGHT_REGISTRY and registers a ``list_<name>`` MCP tool for
-each product type. Special one-off tools (archive_coverage, single-item
+each insight type. Special one-off tools (archive_coverage, single-item
 lookups) are registered directly.
 """
 
@@ -30,7 +30,7 @@ def _register_list_tool(
     hooks: ServerCallbacks,
     pt: InsightType,
 ) -> None:
-    """Register one list-style MCP tool for a product type."""
+    """Register one list-style MCP tool for an insight type."""
     spec = InsightListToolSpec.from_insight_type(pt)
 
     async def tool_fn(**kwargs: object) -> str:
@@ -60,7 +60,7 @@ def _register_list_tool(
 
 
 def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
-    """Register all product-type list tools plus special tools."""
+    """Register all insight-type list tools plus special tools."""
 
     # Register generic list tools from the registry
     for pt in INSIGHT_REGISTRY.values():
@@ -74,13 +74,13 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         """Get a single session profile by conversation ID."""
 
         async def run() -> str:
-            product = await hooks.get_archive_ops().get_session_profile_product(
+            insight = await hooks.get_archive_ops().get_session_profile_insight(
                 conversation_id,
                 tier=tier,
             )
-            if product is None:
+            if insight is None:
                 return hooks.error_json("Conversation not found", conversation_id=conversation_id)
-            return hooks.json_payload(product, exclude_none=True)
+            return hooks.json_payload(insight, exclude_none=True)
 
         return await hooks.async_safe_call("session_profile", run)
 

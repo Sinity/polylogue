@@ -1,6 +1,6 @@
-"""Insight type registry — typed descriptors for durable product surfaces.
+"""Insight type registry — typed descriptors for durable insight surfaces.
 
-Each product type is a ``InsightType`` descriptor that defines:
+Each insight type is an ``InsightType`` descriptor that defines:
 - how to display items in plain text (via ``fields``)
 - what the JSON key is for API responses
 - what display name to use in CLI output
@@ -43,7 +43,7 @@ InsightAccessor: TypeAlias = Callable[[ArchiveInsightModel], str]
 
 @dataclass(frozen=True, slots=True)
 class InsightField:
-    """Describes one displayable field of a product item."""
+    """Describes one displayable field of an insight item."""
 
     label: str
     accessor: InsightAccessor
@@ -52,7 +52,7 @@ class InsightField:
 
 @dataclass(frozen=True, slots=True)
 class CliOption:
-    """Describes one Click option for a product command."""
+    """Describes one Click option for an insight command."""
 
     param_name: str
     flags: tuple[str, ...]
@@ -66,7 +66,7 @@ class CliOption:
 
 @dataclass(frozen=True, slots=True)
 class InsightType:
-    """Descriptor for one kind of derived product."""
+    """Descriptor for one kind of derived insight."""
 
     name: str
     display_name: str
@@ -86,7 +86,7 @@ class InsightType:
 
 
 def _model_payload(item: ArchiveInsightModel) -> dict[str, object]:
-    """Convert a product item to a JSON-serializable payload."""
+    """Convert an insight item to a JSON-serializable payload."""
 
     return item.model_dump(mode="json")
 
@@ -97,7 +97,7 @@ def insight_items_payload(
     *,
     item_key: str | None = None,
 ) -> dict[str, object]:
-    """Return the shared machine payload for a product list surface."""
+    """Return the shared machine payload for an insight list surface."""
 
     return {
         "count": len(items),
@@ -119,7 +119,7 @@ def render_insight_items(
     *,
     json_mode: bool = False,
 ) -> None:
-    """Render product items using the product type descriptor."""
+    """Render insight items using the insight type descriptor."""
 
     if json_mode:
         from polylogue.cli.shared.machine_errors import emit_success
@@ -238,23 +238,23 @@ INSIGHT_REGISTRY: dict[str, InsightType] = {}
 
 
 def register(insight_type: InsightType) -> InsightType:
-    """Register a product type and return it."""
+    """Register an insight type and return it."""
 
     INSIGHT_REGISTRY[insight_type.name] = insight_type
     return insight_type
 
 
 def get_insight_type(name: str) -> InsightType:
-    """Look up a registered product type by name."""
+    """Look up a registered insight type by name."""
 
     insight_type = INSIGHT_REGISTRY.get(name)
     if insight_type is None:
-        raise KeyError(f"Unknown product type: {name!r}. Available: {sorted(INSIGHT_REGISTRY)}")
+        raise KeyError(f"Unknown insight type: {name!r}. Available: {sorted(INSIGHT_REGISTRY)}")
     return insight_type
 
 
 def list_insight_types() -> list[str]:
-    """Return the sorted registered product type names."""
+    """Return the sorted registered insight type names."""
 
     return sorted(INSIGHT_REGISTRY)
 
@@ -294,7 +294,7 @@ _SESSION_TIME_OPTIONS = (
     ),
 )
 
-_QUERY_OPTION = CliOption("query", ("--query",), help="FTS query against product search text")
+_QUERY_OPTION = CliOption("query", ("--query",), help="FTS query against insight search text")
 _SESSION_TIME_SORT_OPTION = CliOption(
     "sort",
     ("--sort",),
@@ -312,7 +312,7 @@ register(
         json_key="session_profiles",
         empty_message="No session profiles matched.",
         query_model=SessionProfileInsightQuery,
-        operations_method_name="list_session_profile_products",
+        operations_method_name="list_session_profile_insights",
         cli_command_name="profiles",
         cli_help="List durable session-profile insights.",
         cli_options=(
@@ -350,7 +350,7 @@ register(
         json_key="session_enrichments",
         empty_message="No session enrichments matched.",
         query_model=SessionEnrichmentInsightQuery,
-        operations_method_name="list_session_enrichment_products",
+        operations_method_name="list_session_enrichment_insights",
         cli_command_name="enrichments",
         cli_help="List durable probabilistic session-enrichment insights.",
         cli_options=(
@@ -374,7 +374,7 @@ register(
         json_key="session_work_events",
         empty_message="No work events matched.",
         query_model=SessionWorkEventInsightQuery,
-        operations_method_name="list_session_work_event_products",
+        operations_method_name="list_session_work_event_insights",
         cli_command_name="work-events",
         cli_help="List durable work-event insights.",
         cli_options=(
@@ -400,7 +400,7 @@ register(
         json_key="session_phases",
         empty_message="No session phases matched.",
         query_model=SessionPhaseInsightQuery,
-        operations_method_name="list_session_phase_products",
+        operations_method_name="list_session_phase_insights",
         cli_command_name="phases",
         cli_help="List durable session-phase insights.",
         cli_options=(
@@ -424,7 +424,7 @@ register(
         json_key="work_threads",
         empty_message="No work threads matched.",
         query_model=WorkThreadInsightQuery,
-        operations_method_name="list_work_thread_products",
+        operations_method_name="list_work_thread_insights",
         cli_command_name="threads",
         cli_help="List durable work-thread insights.",
         cli_options=(_QUERY_OPTION,),
@@ -445,7 +445,7 @@ register(
         json_key="session_tag_rollups",
         empty_message="No session tag rollups matched.",
         query_model=SessionTagRollupQuery,
-        operations_method_name="list_session_tag_rollup_products",
+        operations_method_name="list_session_tag_rollup_insights",
         cli_command_name="tags",
         cli_help="List durable session-tag rollup insights.",
         cli_options=(CliOption("query", ("--query",), help="Substring match against the tag name"),),
@@ -466,7 +466,7 @@ register(
         json_key="day_session_summaries",
         empty_message="No day summaries matched.",
         query_model=DaySessionSummaryInsightQuery,
-        operations_method_name="list_day_session_summary_products",
+        operations_method_name="list_day_session_summary_insights",
         cli_command_name="day-summaries",
         cli_help="List durable day-level session summary insights.",
         mcp_default_limit=90,
@@ -485,7 +485,7 @@ register(
         json_key="week_session_summaries",
         empty_message="No week summaries matched.",
         query_model=WeekSessionSummaryInsightQuery,
-        operations_method_name="list_week_session_summary_products",
+        operations_method_name="list_week_session_summary_insights",
         cli_command_name="week-summaries",
         cli_help="List durable week-level session summary insights.",
         mcp_default_limit=52,
@@ -504,7 +504,7 @@ register(
         json_key="provider_analytics",
         empty_message="No provider analytics matched.",
         query_model=ProviderAnalyticsInsightQuery,
-        operations_method_name="list_provider_analytics_products",
+        operations_method_name="list_provider_analytics_insights",
         cli_command_name="analytics",
         cli_help="List provider-level analytics insights.",
         fields=(
@@ -525,7 +525,7 @@ register(
         json_key="session_costs",
         empty_message="No session cost estimates matched.",
         query_model=SessionCostInsightQuery,
-        operations_method_name="list_session_cost_products",
+        operations_method_name="list_session_cost_insights",
         cli_command_name="costs",
         cli_help="List session-level cost estimates.",
         cli_options=(
@@ -550,7 +550,7 @@ register(
         json_key="cost_rollups",
         empty_message="No cost rollups matched.",
         query_model=CostRollupInsightQuery,
-        operations_method_name="list_cost_rollup_products",
+        operations_method_name="list_cost_rollup_insights",
         cli_command_name="cost-rollups",
         cli_help="List provider/model cost rollups.",
         cli_options=(CliOption("model", ("--model",), help="Only this model or normalized model"),),
@@ -573,7 +573,7 @@ register(
         json_key="archive_debt",
         empty_message="No archive debt entries matched.",
         query_model=ArchiveDebtInsightQuery,
-        operations_method_name="list_archive_debt_products",
+        operations_method_name="list_archive_debt_insights",
         cli_command_name="debt",
         cli_help="List archive debt and maintenance readiness insights.",
         cli_options=(
@@ -600,14 +600,14 @@ register(
 
 
 class InsightQueryError(ValueError):
-    """Raised when a registry-backed product query is invalid."""
+    """Raised when a registry-backed insight query is invalid."""
 
 
 def _build_query(
     insight_type: InsightType,
     **kwargs: object,
 ) -> ArchiveInsightModel:
-    """Build and validate the typed query object for a product fetch."""
+    """Build and validate the typed query object for an insight fetch."""
 
     query_model = insight_type.query_model
     if query_model is None:
@@ -628,7 +628,7 @@ def fetch_insights(
     operations: object,
     **kwargs: object,
 ) -> list[ArchiveInsightModel]:
-    """Fetch product items using the registry dispatch metadata."""
+    """Fetch insight items using the registry dispatch metadata."""
 
     from polylogue.api.sync.bridge import run_coroutine_sync
 

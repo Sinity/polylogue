@@ -1,4 +1,4 @@
-"""Work-thread durable session-product queries."""
+"""Work-thread durable session-insight queries."""
 
 from __future__ import annotations
 

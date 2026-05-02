@@ -1,4 +1,4 @@
-"""Shared archive product base and typed payload contracts."""
+"""Shared archive insight base and typed payload contracts."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ ARCHIVE_INSIGHT_CONTRACT_VERSION = 5
 
 
 class ArchiveInsightModel(BaseModel):
-    """Shared base for public archive data product payloads."""
+    """Shared base for public archive insight payloads."""
 
     # extra="ignore" tolerates legacy fields from older materialized records
     # (e.g. primary_work_kind, decisions removed in the March 2026 cleanup)

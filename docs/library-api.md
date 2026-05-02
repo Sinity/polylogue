@@ -44,50 +44,50 @@ Durable archive insights are public too:
 
 ```python
 from polylogue import Polylogue
-from polylogue.archive_products import (
-    ArchiveDebtProductQuery,
-    DaySessionSummaryProductQuery,
-    ProviderAnalyticsProductQuery,
-    SessionEnrichmentProductQuery,
-    SessionPhaseProductQuery,
-    SessionProfileProductQuery,
+from polylogue.insights.archive import (
+    ArchiveDebtInsightQuery,
+    DaySessionSummaryInsightQuery,
+    ProviderAnalyticsInsightQuery,
+    SessionEnrichmentInsightQuery,
+    SessionPhaseInsightQuery,
+    SessionProfileInsightQuery,
     SessionTagRollupQuery,
 )
 
 async with Polylogue() as archive:
-    status = await archive.get_session_product_status()
-    profiles = await archive.list_session_profile_products(
-        SessionProfileProductQuery(
+    status = await archive.get_session_insight_status()
+    profiles = await archive.list_session_profile_insights(
+        SessionProfileInsightQuery(
             provider="claude-code",
             session_date_since="2026-03-16",
             session_date_until="2026-03-16",
             limit=25,
         )
     )
-    phases = await archive.list_session_phase_products(
-        SessionPhaseProductQuery(provider="claude-code", kind="execution", limit=25)
+    phases = await archive.list_session_phase_insights(
+        SessionPhaseInsightQuery(provider="claude-code", kind="execution", limit=25)
     )
-    enrichments = await archive.list_session_enrichment_products(
-        SessionEnrichmentProductQuery(
+    enrichments = await archive.list_session_enrichment_insights(
+        SessionEnrichmentInsightQuery(
             provider="claude-code",
             limit=25,
         )
     )
-    tags = await archive.list_session_tag_rollup_products(
+    tags = await archive.list_session_tag_rollup_insights(
         SessionTagRollupQuery(provider="claude-code", since="2026-01-01")
     )
-    days = await archive.list_day_session_summary_products(
-        DaySessionSummaryProductQuery(provider="claude-code", since="2026-01-01")
+    days = await archive.list_day_session_summary_insights(
+        DaySessionSummaryInsightQuery(provider="claude-code", since="2026-01-01")
     )
-    analytics = await archive.list_provider_analytics_products(
-        ProviderAnalyticsProductQuery(provider="claude-code")
+    analytics = await archive.list_provider_analytics_insights(
+        ProviderAnalyticsInsightQuery(provider="claude-code")
     )
-    debt = await archive.list_archive_debt_products(
-        ArchiveDebtProductQuery(only_actionable=True)
+    debt = await archive.list_archive_debt_insights(
+        ArchiveDebtInsightQuery(only_actionable=True)
     )
 ```
 
-`SessionProfileProduct` exposes stable session semantics directly:
+`SessionProfileInsight` exposes stable session semantics directly:
 
 - `first_message_at`
 - `canonical_session_date`
@@ -96,10 +96,10 @@ async with Polylogue() as archive:
 - `repo_names`
 - `repo_paths`
 
-`SessionWorkEventProduct` and `SessionPhaseProduct` expose timestamped timeline
+`SessionWorkEventInsight` and `SessionPhaseInsight` expose timestamped timeline
 rows that can be queried directly.
 
-`SessionEnrichmentProduct` exposes the separate enrichment tier directly:
+`SessionEnrichmentInsight` exposes the separate enrichment tier directly:
 
 - `intent_summary`
 - `outcome_summary`
@@ -111,8 +111,8 @@ rows that can be queried directly.
 
 Provider analytics and archive debt are public insights too:
 
-- `ProviderAnalyticsProduct`: provider-level conversation/message/tool/thinking metrics
-- `ArchiveDebtProduct`: governed cleanup/repair debt with maintenance targets plus preview/apply/validation lineage
+- `ProviderAnalyticsInsight`: provider-level conversation/message/tool/thinking metrics
+- `ArchiveDebtInsight`: governed cleanup/repair debt with maintenance targets plus preview/apply/validation lineage
 
 ## Filter Chain API
 
@@ -276,17 +276,16 @@ asyncio.run(main())
 | `rebuild_index()` | Rebuild FTS5 search index |
 | `stats()` | Archive statistics (returns `ArchiveStats`) |
 | `filter()` | Fluent filter builder (sync, reuses `ConversationFilter`) |
-| `get_session_product_status()` | Durable product readiness/freshness summary |
-| `get_session_profile_product(id)` | Get one durable session-profile product |
-| `list_session_profile_products(query)` | List durable session-profile insights |
-| `list_session_work_event_products(query)` | List durable work-event insights |
-| `list_work_thread_products(query)` | List durable work-thread insights |
-| `list_session_tag_rollup_products(query)` | List durable tag-rollup insights |
-| `list_day_session_summary_products(query)` | List durable day-summary insights |
-| `list_week_session_summary_products(query)` | List durable week-summary insights |
-| `list_maintenance_run_products(query)` | List durable maintenance lineage insights |
-| `list_provider_analytics_products(query)` | List provider-level analytics insights |
-| `list_archive_debt_products(query)` | List governed archive-debt insights |
+| `get_session_insight_status()` | Durable insight readiness/freshness summary |
+| `get_session_profile_insight(id)` | Get one durable session-profile insight |
+| `list_session_profile_insights(query)` | List durable session-profile insights |
+| `list_session_work_event_insights(query)` | List durable work-event insights |
+| `list_work_thread_insights(query)` | List durable work-thread insights |
+| `list_session_tag_rollup_insights(query)` | List durable tag-rollup insights |
+| `list_day_session_summary_insights(query)` | List durable day-summary insights |
+| `list_week_session_summary_insights(query)` | List durable week-summary insights |
+| `list_provider_analytics_insights(query)` | List provider-level analytics insights |
+| `list_archive_debt_insights(query)` | List governed archive-debt insights |
 
 ---
 
