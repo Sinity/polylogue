@@ -229,6 +229,56 @@ def check_coverage_references(plans_dir: Path) -> list[str]:
     return errors
 
 
+def check_coverage_status_claims(plans_dir: Path) -> list[str]:
+    """Validate internally contradictory coverage status claims."""
+    errors: list[str] = []
+    for path in sorted(plans_dir.glob("*coverage*.yaml")):
+        try:
+            data = load_manifest(path)
+        except ValueError as exc:
+            errors.append(str(exc))
+            continue
+        for ref_path, payload in _iter_manifest_mappings(data):
+            label = f"{path}: {'.'.join(ref_path)}"
+            implemented = payload.get("implemented")
+            if implemented is True:
+                if not _non_empty_list(payload.get("controls")):
+                    errors.append(f"{label} implemented=true but controls are missing or empty")
+                if not _has_test_coverage_location(payload.get("test_coverage")):
+                    errors.append(f"{label} implemented=true but test_coverage.location is missing")
+            elif implemented is False:
+                if _non_empty_list(payload.get("controls")):
+                    errors.append(f"{label} implemented=false but controls are declared")
+                if _has_test_coverage_location(payload.get("test_coverage")):
+                    errors.append(f"{label} implemented=false but test_coverage.location is declared")
+    return errors
+
+
+def _iter_manifest_mappings(
+    value: object, prefix: tuple[str, ...] = ()
+) -> list[tuple[tuple[str, ...], dict[object, object]]]:
+    mappings: list[tuple[tuple[str, ...], dict[object, object]]] = []
+    if isinstance(value, dict):
+        mappings.append((prefix, value))
+        for raw_key, child in value.items():
+            mappings.extend(_iter_manifest_mappings(child, (*prefix, str(raw_key))))
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            mappings.extend(_iter_manifest_mappings(child, (*prefix, str(index))))
+    return mappings
+
+
+def _non_empty_list(value: object) -> bool:
+    return isinstance(value, list) and bool(value)
+
+
+def _has_test_coverage_location(value: object) -> bool:
+    if not isinstance(value, dict):
+        return False
+    location = value.get("location")
+    return isinstance(location, str) and bool(_manifest_path_token(location))
+
+
 def _iter_manifest_fields(value: object, prefix: tuple[str, ...] = ()) -> list[tuple[tuple[str, ...], str, object]]:
     fields: list[tuple[tuple[str, ...], str, object]] = []
     if isinstance(value, dict):
@@ -330,6 +380,7 @@ def main(argv: list[str] | None = None) -> int:
         check_assurance_domains,
         check_coverage_gaps,
         check_coverage_references,
+        check_coverage_status_claims,
     ):
         try:
             all_errors.extend(check(plans_dir))
