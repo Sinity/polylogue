@@ -245,7 +245,6 @@
     show             Show matched conversations with default full-content...
     stats            Show statistics for matched conversations.
     tags             List all tags with conversation counts.
-    watch            Watch source directories and ingest new sessions live.
   '''
 # ---
 # name: TestTerminalDimensions.test_help_at_narrow_width
@@ -462,8 +461,6 @@
     stats            Show statistics for matched conversations
   .
     tags             List all tags with conversation counts.
-    watch            Watch source directories and ingest new s
-  essions live.
   '''
 # ---
 # name: TestTerminalDimensions.test_help_at_wide_width
@@ -611,6 +608,5 @@
     show             Show matched conversations with default full-content...
     stats            Show statistics for matched conversations.
     tags             List all tags with conversation counts.
-    watch            Watch source directories and ingest new sessions live.
   '''
 # ---

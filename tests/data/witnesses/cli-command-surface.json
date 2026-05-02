@@ -3,7 +3,6 @@
   "removed_public_commands": ["audit", "qa", "showcase"],
   "required_root_commands": [
     "run",
-    "watch",
     "browser-capture",
     "doctor",
     "schema",
@@ -12,7 +11,7 @@
     "bulk-export",
     "diagnostics"
   ],
-  "required_console_scripts": ["polylogue", "polylogue-mcp"],
+  "required_console_scripts": ["polylogue", "polylogued", "polylogue-mcp"],
   "required_query_verbs": ["list", "show", "search", "stats", "count", "export"],
   "machine_output_aliases": ["--format json"],
   "semantic_filters": ["--provider", "--repo", "--cwd-prefix", "--referenced-path", "--message-role", "--message-type"]

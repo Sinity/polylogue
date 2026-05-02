@@ -1,10 +1,4 @@
-"""Long-running ``polylogue watch`` command.
-
-Starts the live filesystem watcher against ``~/.claude/projects/`` and
-``~/.codex/sessions/`` (or user-specified roots). On every modify-and-quiet
-event, the affected JSONL is re-parsed through the regular ingest pipeline
-(idempotent via content-hash).
-"""
+"""Command line entrypoint for long-running Polylogue services."""
 
 from __future__ import annotations
 
@@ -14,12 +8,11 @@ from pathlib import Path
 import click
 
 from polylogue.api import Polylogue
-from polylogue.cli.shared.types import AppEnv
 from polylogue.sources.live import LiveWatcher, WatchSource
 from polylogue.sources.live.watcher import default_sources
 
 
-async def _run(
+async def run_live_watcher(
     *,
     sources: tuple[WatchSource, ...],
     debounce_s: float,
@@ -32,7 +25,12 @@ async def _run(
             watcher.stop()
 
 
-@click.command("watch", help="Watch source directories and ingest new sessions live.")
+@click.group(help="Run long-lived Polylogue local services.")
+def main() -> None:
+    pass
+
+
+@main.command("watch", help="Watch source directories and ingest new sessions live.")
 @click.option(
     "--root",
     "roots",
@@ -47,15 +45,14 @@ async def _run(
     show_default=True,
     help="Quiet-period (seconds) before parsing a modified file.",
 )
-@click.pass_obj
-def watch_command(env: AppEnv, roots: tuple[Path, ...], debounce_s: float) -> None:
+def watch_command(roots: tuple[Path, ...], debounce_s: float) -> None:
     sources = tuple(WatchSource(name=p.name, root=p) for p in roots) if roots else default_sources()
 
     click.echo(
         f"Watching {len(sources)} source(s); debounce={debounce_s}s. Ctrl-C to stop.",
         err=True,
     )
-    asyncio.run(_run(sources=sources, debounce_s=debounce_s))
+    asyncio.run(run_live_watcher(sources=sources, debounce_s=debounce_s))
 
 
-__all__ = ["watch_command"]
+__all__ = ["main", "run_live_watcher", "watch_command"]

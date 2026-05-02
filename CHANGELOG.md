@@ -27,6 +27,8 @@ documentation polish do not require an entry.
 
 ### Added
 
+- `polylogued` as the daemon/service executable; live source watching now runs
+  as `polylogued watch`.
 - `dependabot.yml` for weekly Python and GitHub Actions updates with
   patch grouping.
 - `actionlint` workflow validating workflow YAML on PRs that touch
@@ -56,6 +58,9 @@ documentation polish do not require an entry.
   `--format json` output while retaining `--json` as a strict alias.
 - `polylogue audit` was removed from the product CLI; verification-lab audit
   workflows live under `devtools`.
+- Standalone live ingestion is no longer a root `polylogue watch` command; use
+  `polylogued watch` for the long-running source watcher. `polylogue run
+  --watch` remains the continuous pipeline-run mode.
 - `Config` rejects relative `archive_root`, `render_root`, or `db_path`
   with `ConfigError` at construction.
 - `_privacy_level_value` raises `ValueError` on unknown level strings

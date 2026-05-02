@@ -510,6 +510,7 @@ class TestCliMetadata:
         for command in ("run", "doctor", "tags", "list", "count", "stats"):
             assert command in result.output
         assert "mcp" not in click_cli.commands
+        assert "watch" not in click_cli.commands
         assert result.output.count("Commands:") == 1
 
     def test_all_subcommands_registered(self) -> None:
@@ -529,7 +530,6 @@ class TestCliMetadata:
             "insights",
             "schema",
             "tags",
-            "watch",
             "diagnostics",
             # Query verbs
             "list",

@@ -520,7 +520,7 @@ files:
     target: polylogue/cli/click_app.py
     owner: stable
   - path: polylogue/cli/click_command_registration.py
-    loc: 55
+    loc: 53
     target: polylogue/cli/click_command_registration.py
     owner: stable
   - path: polylogue/cli/click_option_groups.py
@@ -590,10 +590,6 @@ files:
   - path: polylogue/cli/commands/tags.py
     loc: 60
     target: polylogue/cli/commands/tags.py
-    owner: stable
-  - path: polylogue/cli/commands/watch.py
-    loc: 61
-    target: polylogue/cli/commands/watch.py
     owner: stable
   - path: polylogue/cli/filter_picker.py
     loc: 57
@@ -844,6 +840,14 @@ files:
     target: polylogue/core/timestamps.py
     owner: core-primitive
     reason: core primitive
+  - path: polylogue/daemon/__init__.py
+    loc: 7
+    target: polylogue/daemon/__init__.py
+    owner: stable
+  - path: polylogue/daemon/cli.py
+    loc: 58
+    target: polylogue/daemon/cli.py
+    owner: stable
   - path: polylogue/errors.py
     loc: 29
     target: polylogue/errors.py
@@ -912,7 +916,7 @@ files:
     target: polylogue/mcp/__init__.py
     owner: stable
   - path: polylogue/mcp/cli.py
-    loc: 32
+    loc: 34
     target: polylogue/mcp/cli.py
     owner: stable
   - path: polylogue/mcp/insight_tool_contracts.py
