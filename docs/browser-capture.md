@@ -9,6 +9,9 @@ Start the receiver:
 polylogued browser-capture serve
 ```
 
+For normal long-running local service use, `polylogued run` starts the browser
+capture receiver together with live source watching.
+
 The receiver listens on `127.0.0.1:8765` by default and accepts:
 
 - `GET /v1/status`

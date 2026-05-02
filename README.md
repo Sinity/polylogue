@@ -88,6 +88,7 @@ Pipeline and maintenance verbs are explicit:
 ```bash
 polylogue run acquire parse materialize render index
 polylogue doctor --daemon
+polylogued run
 polylogued status
 polylogued watch
 polylogued browser-capture serve --host 127.0.0.1 --port 8765
@@ -119,6 +120,7 @@ Products are materialized from the archive and updated incrementally.
 ### Browser capture
 
 ```bash
+polylogued run
 polylogued browser-capture serve --host 127.0.0.1 --port 8765
 polylogued browser-capture status
 polylogued status
