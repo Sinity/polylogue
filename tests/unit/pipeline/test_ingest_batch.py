@@ -21,6 +21,7 @@ from polylogue.pipeline.services.ingest_batch import (
     _IngestWorkerRequest,
     _iter_ingest_results_sync,
     _persist_batch_raw_state_updates,
+    _process_ingest_batch_sync,
     _RawIngestOutcome,
     _select_ingest_worker_count,
     _successful_raw_state_update,
@@ -30,6 +31,7 @@ from polylogue.pipeline.services.ingest_batch import (
     refresh_session_insights_bulk,
 )
 from polylogue.pipeline.services.ingest_worker import (
+    ActionEventTuple,
     AttachmentRefTuple,
     AttachmentTuple,
     ContentBlockTuple,
@@ -44,6 +46,8 @@ from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.insights.session.refresh import SessionInsightRefreshChunkObservation
 from polylogue.storage.raw.models import RawConversationStateUpdate
 from polylogue.storage.runtime import RawConversationRecord
+from polylogue.storage.search.cache import get_cache_stats
+from polylogue.storage.search.runtime import search_messages
 from polylogue.types import AttachmentId, ContentBlockType, ContentHash, ConversationId, MessageId
 
 
@@ -102,6 +106,7 @@ def _conversation_data(
     parent_conversation_id: str | None = None,
     message_tuples: list[MessageTuple] | None = None,
     block_tuples: list[ContentBlockTuple] | None = None,
+    action_event_tuples: list[ActionEventTuple] | None = None,
     stats_tuple: StatsTuple | None = None,
     attachment_tuples: list[AttachmentTuple] | None = None,
     attachment_ref_tuples: list[AttachmentRefTuple] | None = None,
@@ -130,6 +135,7 @@ def _conversation_data(
         conversation_tuple=conversation_tuple,
         message_tuples=list(message_tuples or []),
         block_tuples=list(block_tuples or []),
+        action_event_tuples=list(action_event_tuples or []),
         stats_tuple=stats_tuple or (),
         attachment_tuples=list(attachment_tuples or []),
         attachment_ref_tuples=list(attachment_ref_tuples or []),
@@ -186,6 +192,38 @@ def _block_tuple(
         None,
         None,
         None,
+    )
+
+
+def _action_event_tuple(
+    *,
+    event_id: str,
+    conversation_id: str,
+    message_id: str,
+    search_text: str,
+) -> ActionEventTuple:
+    return (
+        event_id,
+        conversation_id,
+        message_id,
+        1,
+        None,
+        "2026-04-02T00:00:00Z",
+        0.0,
+        0,
+        "codex",
+        "tool_call",
+        "Bash",
+        "bash",
+        "tool-sync",
+        None,
+        None,
+        None,
+        "pytest -q",
+        None,
+        None,
+        None,
+        search_text,
     )
 
 
@@ -462,6 +500,128 @@ def test_iter_ingest_results_sync_runs_inline_for_single_worker(
 
     assert seen == ["raw-1", "raw-2"]
     assert [result.raw_id for result in results] == ["raw-1", "raw-2"]
+
+
+def test_process_ingest_batch_sync_commits_fts_repair_and_invalidates_search_cache(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "polylogue.db"
+    archive_root = tmp_path / "archive"
+    blob_root = tmp_path / "blob"
+    source_path = tmp_path / "raw.jsonl"
+    source_path.write_text("{}", encoding="utf-8")
+    raw_id = "raw-sync-side-effects"
+    conversation_id = "codex:sync-side-effects"
+    message_id = "msg-sync-side-effects"
+    needle = "syncsideeffectneedle"
+
+    raw_record = RawConversationRecord(
+        raw_id=raw_id,
+        provider_name="codex",
+        source_name="codex",
+        source_path=str(source_path),
+        blob_size=source_path.stat().st_size,
+        acquired_at="2026-04-02T00:00:00Z",
+    )
+    conversation = _conversation_data(
+        conversation_id,
+        content_hash="hash-sync-side-effects",
+        message_tuples=[
+            _message_tuple(
+                message_id,
+                conversation_id,
+                role="user",
+                text=f"cached search should see {needle}",
+                content_hash="hash-sync-message",
+                sort_key=0.0,
+            )
+        ],
+        action_event_tuples=[
+            _action_event_tuple(
+                event_id="event-sync-side-effects",
+                conversation_id=conversation_id,
+                message_id=message_id,
+                search_text=f"action event should also be repaired {needle}",
+            )
+        ],
+    )
+
+    with open_connection(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO raw_conversations
+                (raw_id, provider_name, source_name, source_path, blob_size, acquired_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                raw_record.raw_id,
+                raw_record.provider_name,
+                raw_record.source_name,
+                raw_record.source_path,
+                raw_record.blob_size,
+                raw_record.acquired_at,
+            ),
+        )
+        conn.commit()
+
+    first_result = search_messages(needle, archive_root=archive_root, db_path=db_path, limit=10)
+    cache_version_before = get_cache_stats()["cache_version"]
+    assert first_result.hits == []
+
+    def fake_ingest_record(
+        record: RawConversationRecord,
+        archive_root_str: str,
+        validation_mode: str,
+        measure_ingest_result_size: bool,
+        *,
+        blob_root_str: str | None,
+    ) -> IngestRecordResult:
+        del archive_root_str, validation_mode, measure_ingest_result_size, blob_root_str
+        assert record.raw_id == raw_id
+        return IngestRecordResult(raw_id=record.raw_id, conversations=[conversation])
+
+    monkeypatch.setattr("polylogue.pipeline.services.ingest_batch.ingest_record", fake_ingest_record)
+
+    summary = _process_ingest_batch_sync(
+        [raw_record],
+        db_path=db_path,
+        archive_root_str=str(archive_root),
+        blob_root_str=str(blob_root),
+        validation_mode="off",
+        ingest_workers=1,
+        measure_ingest_result_size=False,
+    )
+
+    assert summary.changed_conversation_ids == [conversation_id]
+    assert get_cache_stats()["cache_version"] == cache_version_before + 1
+
+    with open_connection(db_path) as conn:
+        trigger_names = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE '%_fts_%'"
+            ).fetchall()
+        }
+        assert {"messages_fts_ai", "messages_fts_ad", "messages_fts_au"}.issubset(trigger_names)
+        assert {"action_events_fts_ai", "action_events_fts_ad", "action_events_fts_au"}.issubset(trigger_names)
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM messages_fts WHERE conversation_id = ?",
+                (conversation_id,),
+            ).fetchone()[0]
+            == 1
+        )
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM action_events_fts WHERE conversation_id = ?",
+                (conversation_id,),
+            ).fetchone()[0]
+            == 1
+        )
+
+    second_result = search_messages(needle, archive_root=archive_root, db_path=db_path, limit=10)
+    assert [hit.conversation_id for hit in second_result.hits] == [conversation_id]
 
 
 def test_select_ingest_worker_count_throttles_large_batches(monkeypatch: pytest.MonkeyPatch) -> None:
