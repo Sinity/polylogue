@@ -260,15 +260,15 @@ def test_schema_verification_and_maintenance_helpers_cover_runtime_paths() -> No
     builtins_print.assert_called_once()
 
     with patch(
-        "polylogue.cli.shared.check_workflow.make_session_product_progress_callback",
+        "polylogue.cli.shared.check_workflow.make_session_insight_progress_callback",
         return_value=session_progress_callback,
     ):
         assert (
-            check_workflow._session_product_progress_callback(options, ("session_products",))
+            check_workflow._session_insight_progress_callback(options, ("session_products",))
             is session_progress_callback
         )
-    assert check_workflow._session_product_progress_callback(_options(repair=True, preview=True), ()) is None
-    assert check_workflow._session_product_progress_callback(_options(repair=True, json_output=True), ()) is None
+    assert check_workflow._session_insight_progress_callback(_options(repair=True, preview=True), ()) is None
+    assert check_workflow._session_insight_progress_callback(_options(repair=True, json_output=True), ()) is None
 
     with (
         patch(
@@ -332,7 +332,7 @@ def test_run_check_workflow_covers_runtime_blob_vacuum_and_persist_paths() -> No
             ),
         ),
         patch("polylogue.cli.shared.check_workflow.run_selected_maintenance", return_value=[repair_result]),
-        patch("polylogue.cli.shared.check_workflow.make_session_product_progress_callback", return_value="progress"),
+        patch("polylogue.cli.shared.check_workflow.make_session_insight_progress_callback", return_value="progress"),
         patch(
             "polylogue.cli.shared.check_workflow.vacuum_database", return_value=VacuumResult(ok=True, detail="vacuumed")
         ),

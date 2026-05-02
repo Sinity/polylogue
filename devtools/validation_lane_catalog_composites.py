@@ -84,10 +84,10 @@ VALIDATION_FAMILIES: tuple[ValidationLaneFamily, ...] = (
             ),
             ValidationLaneStageSpec(
                 suffix="live",
-                description="Bounded live archive lane for tiered product views, live migration, health, and retrieval-band budgets",
+                description="Bounded live archive lane for tiered insight views, live migration, health, and retrieval-band budgets",
                 timeout_s=2400,
                 members=(
-                    "live-session-product-repair",
+                    "live-session-insight-repair",
                     "live-insights-status",
                     "live-insights-profiles-evidence",
                     "live-insights-profiles-inference",
@@ -107,8 +107,8 @@ VALIDATION_FAMILIES: tuple[ValidationLaneFamily, ...] = (
         ),
     ),
     ValidationLaneFamily.from_stages(
-        name="semantic-product",
-        description="Validation family for semantic-product live and hardening lanes.",
+        name="semantic-insight",
+        description="Validation family for semantic-insight live and hardening lanes.",
         stages=(
             ValidationLaneStageSpec(
                 suffix="live",
@@ -124,9 +124,9 @@ VALIDATION_FAMILIES: tuple[ValidationLaneFamily, ...] = (
             ),
             ValidationLaneStageSpec(
                 suffix="hardening",
-                description="Full semantic-product normalization and toolchain convergence lane",
+                description="Full semantic-insight normalization and toolchain convergence lane",
                 timeout_s=3600,
-                members=("semantic-product-normalization", "semantic-product-live"),
+                members=("semantic-insight-normalization", "semantic-insight-live"),
             ),
         ),
     ),
@@ -139,7 +139,7 @@ VALIDATION_FAMILIES: tuple[ValidationLaneFamily, ...] = (
                 description="Bounded live archive lane for enrichment insights, retrieval bands, and readiness surfaces",
                 timeout_s=2400,
                 members=(
-                    "live-session-product-repair",
+                    "live-session-insight-repair",
                     "live-insights-status",
                     "live-insights-profiles-inference",
                     "live-insights-enrichments",
@@ -190,7 +190,7 @@ STANDALONE_COMPOSITE_LANES = {
     ),
     "live-insights-small": composite_lane(
         "live-insights-small",
-        "Bounded live archive product and grouped-stats lane",
+        "Bounded live archive insight and grouped-stats lane",
         480,
         "live-insights-status",
         "live-insights-tags",
@@ -212,7 +212,7 @@ STANDALONE_COMPOSITE_LANES = {
     ),
     "archive-data-insights-live": composite_lane(
         "archive-data-insights-live",
-        "Local product-contract lane plus bounded live archive product checks",
+        "Local insight-contract lane plus bounded live archive insight checks",
         1800,
         "archive-data-insights",
         "live-insights-small",

@@ -34,7 +34,7 @@ EXPECTED_TOOL_NAMES = {
     "update_index",
     "export_conversation",
     "export_query_results",
-    "rebuild_session_products",
+    "rebuild_session_insights",
     "session_profile",
     "archive_debt",
     "session_profiles",

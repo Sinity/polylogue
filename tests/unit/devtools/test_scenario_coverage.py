@@ -16,8 +16,8 @@ def test_build_runtime_scenario_coverage_tracks_the_current_authored_map() -> No
         "embedding-status-query-loop",
         "conversation-query-loop",
         "action-event-repair-loop",
-        "session-product-repair-loop",
-        "raw-session-product-repair-loop",
+        "session-insight-repair-loop",
+        "raw-session-insight-repair-loop",
         "session-profile-query-loop",
         "session-enrichment-query-loop",
         "session-work-event-query-loop",
@@ -27,7 +27,7 @@ def test_build_runtime_scenario_coverage_tracks_the_current_authored_map() -> No
         "day-summary-query-loop",
         "week-summary-query-loop",
         "provider-analytics-query-loop",
-        "session-product-status-query-loop",
+        "session-insight-status-query-loop",
         "archive-debt-query-loop",
         "conversation-render-loop",
         "site-publication-loop",
@@ -56,7 +56,7 @@ def test_build_runtime_scenario_coverage_tracks_the_current_authored_map() -> No
     assert "site_conversation_pages" in coverage.artifacts
     assert "site_publication_manifest" in coverage.artifacts
     assert "publication_records" in coverage.artifacts
-    assert "session_product_source_conversations" in coverage.artifacts
+    assert "session_insight_source_conversations" in coverage.artifacts
     assert "inferred_corpus_specs" in coverage.artifacts
     assert "inferred_corpus_scenarios" in coverage.artifacts
     assert "schema_list_results" in coverage.artifacts

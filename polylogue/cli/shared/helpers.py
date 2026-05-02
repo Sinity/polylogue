@@ -15,7 +15,7 @@ from polylogue.cli.shared.helper_source_state import load_last_source, save_last
 from polylogue.cli.shared.helper_summary import print_summary_impl
 from polylogue.cli.shared.helper_support import fail, load_effective_config
 from polylogue.cli.shared.types import AppEnv
-from polylogue.operations import get_provider_counts, list_provider_analytics_products
+from polylogue.operations import get_provider_counts, list_provider_analytics_insights
 from polylogue.pipeline.runner import latest_run
 from polylogue.readiness import get_readiness, quick_readiness_summary
 
@@ -46,7 +46,7 @@ def print_summary(env: AppEnv, *, verbose: bool = False) -> None:
         quick_readiness_summary_fn=quick_readiness_summary,
         get_readiness_fn=get_readiness,
         get_provider_counts_fn=get_provider_counts,
-        list_provider_analytics_products_fn=list_provider_analytics_products,
+        list_provider_analytics_insights_fn=list_provider_analytics_insights,
     )
 
 
@@ -59,7 +59,7 @@ __all__ = [
     "get_provider_counts",
     "latest_render_path",
     "latest_run",
-    "list_provider_analytics_products",
+    "list_provider_analytics_insights",
     "load_effective_config",
     "load_last_source",
     "maybe_prompt_sources",

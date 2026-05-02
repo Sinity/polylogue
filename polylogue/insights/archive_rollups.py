@@ -91,7 +91,7 @@ def build_session_tag_rollup_records(
     return rows
 
 
-def aggregate_session_tag_rollup_products(
+def aggregate_session_tag_rollup_insights(
     rows: Sequence[SessionTagRollupRecord],
 ) -> list[SessionTagRollupInsight]:
     grouped: dict[str, _TagAggregateBucket] = {}
@@ -121,6 +121,6 @@ def aggregate_session_tag_rollup_products(
 
 
 __all__ = [
-    "aggregate_session_tag_rollup_products",
+    "aggregate_session_tag_rollup_insights",
     "build_session_tag_rollup_records",
 ]

@@ -29,7 +29,7 @@ def _seed_resume_sessions(db_path: Path) -> None:
         .add_message(
             "root-a1",
             role="assistant",
-            text="I will inspect command wiring and product surfaces.",
+            text="I will inspect command wiring and insight surfaces.",
             timestamp="2026-04-20T10:05:00+00:00",
             provider_meta={
                 "content_blocks": [
@@ -79,7 +79,7 @@ def _seed_resume_sessions(db_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_resume_brief_composes_products_and_related_sessions(cli_workspace: dict[str, Path]) -> None:
+async def test_resume_brief_composes_insights_and_related_sessions(cli_workspace: dict[str, Path]) -> None:
     db_path = cli_workspace["db_path"]
     _seed_resume_sessions(db_path)
     with open_connection(db_path) as conn:
@@ -104,7 +104,7 @@ async def test_resume_brief_composes_products_and_related_sessions(cli_workspace
 
 
 @pytest.mark.asyncio
-async def test_resume_brief_degrades_when_products_are_unavailable(cli_workspace: dict[str, Path]) -> None:
+async def test_resume_brief_degrades_when_insights_are_unavailable(cli_workspace: dict[str, Path]) -> None:
     db_path = cli_workspace["db_path"]
     _seed_resume_sessions(db_path)
 

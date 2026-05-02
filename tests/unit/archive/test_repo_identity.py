@@ -22,7 +22,7 @@ from polylogue.archive.session.session_profile import SessionProfile, build_sess
 from polylogue.archive.session.session_summaries import summarize_day
 from polylogue.archive.viewport.viewports import ToolCategory
 from polylogue.insights.archive_models import DaySessionSummaryPayload
-from polylogue.insights.archive_summaries import aggregate_day_session_summary_products
+from polylogue.insights.archive_summaries import aggregate_day_session_summary_insights
 from polylogue.storage.runtime import DaySessionSummaryRecord
 from polylogue.types import ConversationId, Provider
 
@@ -342,7 +342,7 @@ def test_day_summary_and_aggregate_products_preserve_repo_names() -> None:
     summary = summarize_day([profile], date(2026, 3, 24))
     assert summary.repos_active == ("polylogue",)
 
-    product = aggregate_day_session_summary_products(
+    product = aggregate_day_session_summary_insights(
         [
             DaySessionSummaryRecord(
                 day="2026-03-24",

@@ -43,17 +43,17 @@ def _obligation(claim_id: str, *, subject_id: str | None = None) -> ProofObligat
 def test_artifact_path_runner_emits_structural_closure_evidence() -> None:
     obligation = _obligation(
         "artifact.path.dependency_closure",
-        subject_id="artifact.path.raw-session-product-repair-loop",
+        subject_id="artifact.path.raw-session-insight-repair-loop",
     )
 
     envelope = run_artifact_path_evidence(obligation)
 
     assert envelope.status is OutcomeStatus.OK
-    assert envelope.evidence["path_name"] == "raw-session-product-repair-loop"
+    assert envelope.evidence["path_name"] == "raw-session-insight-repair-loop"
     assert envelope.evidence["missing_dependencies"] == []
     nodes = envelope.evidence["nodes"]
     assert isinstance(nodes, list)
-    assert {"raw_validation_state", "archive_conversation_rows", "session_product_rows"}.issubset(nodes)
+    assert {"raw_validation_state", "archive_conversation_rows", "session_insight_rows"}.issubset(nodes)
     layers = envelope.evidence["layers"]
     assert isinstance(layers, dict)
     assert "source" in set(layers.values())

@@ -49,8 +49,8 @@ repo proof obligations and evidence records, not end-user archive workflows.
 | `devtools affected-obligations` | Find the proof obligations and inner-loop checks affected by local changes before escalating to full PR gates. |
 | `devtools semantic-axis-evidence` | Produce comparative performance evidence that describes growth shape over semantic axes instead of machine-specific absolute budgets. |
 | `devtools lab-corpus` | Seed synthetic corpus files or complete demo workspaces for lab exercises. |
-| `devtools lab-scenario` | Run showcase exercise smoke scenarios and committed baseline checks outside the product CLI. |
-| `devtools schema-generate` | Refresh provider schema package artifacts from archive observations outside the product CLI. |
+| `devtools lab-scenario` | Run showcase exercise smoke scenarios and committed baseline checks outside the archive CLI. |
+| `devtools schema-generate` | Refresh provider schema package artifacts from archive observations outside the archive CLI. |
 | `devtools schema-promote` | Turn reviewed schema evidence clusters into committed provider schema packages. |
 | `devtools schema-audit` | Check committed schema package quality gates without presenting them as normal archive usage. |
 | `devtools verify-schema-roundtrip` | Close the schema inference-validation loop: package manifests must roundtrip through typed models, and every supported element schema must be reachable from the runtime registry. |

@@ -34,8 +34,8 @@ from polylogue.storage.embeddings.support import (
     optional_rows_sync,
 )
 from polylogue.storage.insights.session.status import (
-    session_product_status_async,
-    session_product_status_sync,
+    session_insight_status_async,
+    session_insight_status_sync,
 )
 
 
@@ -171,7 +171,7 @@ def _retrieval_bands_sync(
     if not parts.conversations_exist or not include_retrieval_bands:
         return {}
     action_status = action_event_read_model_status_sync(conn)
-    session_status = session_product_status_sync(conn)
+    session_status = session_insight_status_sync(conn)
     return build_retrieval_bands_from_status(
         total_conversations=parts.total_conversations,
         embedded_conversations=parts.embedded_conversations,
@@ -193,7 +193,7 @@ async def _retrieval_bands_async(
     if not parts.conversations_exist or not include_retrieval_bands:
         return {}
     action_status = await action_event_read_model_status_async(conn)
-    session_status = await session_product_status_async(conn)
+    session_status = await session_insight_status_async(conn)
     return build_retrieval_bands_from_status(
         total_conversations=parts.total_conversations,
         embedded_conversations=parts.embedded_conversations,
@@ -249,6 +249,6 @@ __all__ = [
     "action_event_read_model_status_sync",
     "read_embedding_stats_async",
     "read_embedding_stats_sync",
-    "session_product_status_async",
-    "session_product_status_sync",
+    "session_insight_status_async",
+    "session_insight_status_sync",
 ]

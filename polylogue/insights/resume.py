@@ -117,20 +117,20 @@ class ResumeOperations(Protocol):
 
     async def get_session_tree(self, conversation_id: str) -> list[Conversation]: ...
 
-    async def get_session_profile_product(
+    async def get_session_profile_insight(
         self,
         conversation_id: str,
         *,
         tier: str = "merged",
     ) -> SessionProfileInsight | None: ...
 
-    async def get_session_enrichment_product(self, conversation_id: str) -> SessionEnrichmentInsight | None: ...
+    async def get_session_enrichment_insight(self, conversation_id: str) -> SessionEnrichmentInsight | None: ...
 
-    async def get_session_work_event_products(self, conversation_id: str) -> list[SessionWorkEventInsight]: ...
+    async def get_session_work_event_insights(self, conversation_id: str) -> list[SessionWorkEventInsight]: ...
 
-    async def get_session_phase_products(self, conversation_id: str) -> list[SessionPhaseInsight]: ...
+    async def get_session_phase_insights(self, conversation_id: str) -> list[SessionPhaseInsight]: ...
 
-    async def list_work_thread_products(
+    async def list_work_thread_insights(
         self,
         query: WorkThreadInsightQuery | None = None,
     ) -> list[WorkThreadInsight]: ...
@@ -329,7 +329,7 @@ async def _find_work_thread(
     fts_query = normalize_fts5_query(conversation_id)
     if fts_query is not None:
         try:
-            for candidate in await operations.list_work_thread_products(
+            for candidate in await operations.list_work_thread_insights(
                 WorkThreadInsightQuery(query=fts_query, limit=10)
             ):
                 if conversation_id in candidate.thread.session_ids:
@@ -338,7 +338,7 @@ async def _find_work_thread(
             pass
 
     try:
-        candidates = await operations.list_work_thread_products(WorkThreadInsightQuery(limit=None))
+        candidates = await operations.list_work_thread_insights(WorkThreadInsightQuery(limit=None))
     except ArchiveInsightUnavailableError as exc:
         uncertainties.append(ResumeUncertainty(source="work_thread", detail=str(exc)))
         return None
@@ -391,25 +391,25 @@ async def build_resume_brief(
 
     profile: SessionProfileInsight | None = None
     try:
-        profile = await operations.get_session_profile_product(conversation_id)
+        profile = await operations.get_session_profile_insight(conversation_id)
     except ArchiveInsightUnavailableError as exc:
         uncertainties.append(ResumeUncertainty(source="session_profile", detail=str(exc)))
 
     enrichment: SessionEnrichmentInsight | None = None
     try:
-        enrichment = await operations.get_session_enrichment_product(conversation_id)
+        enrichment = await operations.get_session_enrichment_insight(conversation_id)
     except ArchiveInsightUnavailableError as exc:
         uncertainties.append(ResumeUncertainty(source="session_enrichment", detail=str(exc)))
 
     events: list[SessionWorkEventInsight] = []
     try:
-        events = await operations.get_session_work_event_products(conversation_id)
+        events = await operations.get_session_work_event_insights(conversation_id)
     except ArchiveInsightUnavailableError as exc:
         uncertainties.append(ResumeUncertainty(source="work_events", detail=str(exc)))
 
     phases: list[SessionPhaseInsight] = []
     try:
-        phases = await operations.get_session_phase_products(conversation_id)
+        phases = await operations.get_session_phase_insights(conversation_id)
     except ArchiveInsightUnavailableError as exc:
         uncertainties.append(ResumeUncertainty(source="phases", detail=str(exc)))
 

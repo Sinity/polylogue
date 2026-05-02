@@ -86,9 +86,9 @@ def register_maintenance_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         return await hooks.async_safe_call("export_conversation", run)
 
     @mcp.tool()
-    async def rebuild_session_products(conversation_ids: list[str] | None = None) -> str:
+    async def rebuild_session_insights(conversation_ids: list[str] | None = None) -> str:
         async def run() -> str:
-            counts = await hooks.get_archive_ops().rebuild_session_products(conversation_ids=conversation_ids)
+            counts = await hooks.get_archive_ops().rebuild_session_insights(conversation_ids=conversation_ids)
             return hooks.json_payload(
                 MCPRootPayload(
                     root={
@@ -101,7 +101,7 @@ def register_maintenance_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 exclude_none=True,
             )
 
-        return await hooks.async_safe_call("rebuild_session_products", run)
+        return await hooks.async_safe_call("rebuild_session_insights", run)
 
     @mcp.tool()
     async def export_query_results(

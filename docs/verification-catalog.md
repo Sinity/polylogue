@@ -141,7 +141,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `generated.scenario_family.pathological-raw-rerun` | `implemented` | repo-local malformed raw payload fixtures | raw validation and parser quarantine | `parser crashlessness and explicit quarantine semantics`<br>`wrong-provider rejection without silent adoption` |
 | `generated.scenario_family.giant-grouped-jsonl-ingest` | `migration_task` | large grouped JSONL fixture | batch ingest fanout | `parser crashlessness and explicit quarantine semantics`<br>`pipeline batch fanout accounting` |
 | `generated.scenario_family.repair-convergence-broken-generated` | `implemented` | seeded archive with orphaned message rows | maintenance repair convergence | `repair convergence and explicit state effects`<br>`destructive-preview safety` |
-| `generated.scenario_family.action-event-rebuild-convergence` | `migration_task` | synthetic tool-use transcript archive | action-event materialization | `action-event rebuild convergence`<br>`session product rebuild convergence` |
+| `generated.scenario_family.action-event-rebuild-convergence` | `migration_task` | synthetic tool-use transcript archive | action-event materialization | `action-event rebuild convergence`<br>`session insight rebuild convergence` |
 | `generated.scenario_family.destructive-preview-safety` | `implemented` | seeded archive with previewable orphan cleanup | dry-run versus destructive repair | `destructive-preview safety`<br>`error machine/user context` |
 | `generated.scenario_family.archive-substrate-laws` | `implemented` | unit-generated conversation and text fixtures | archive substrate laws | `content hash stability`<br>`idempotent upsert and NFC normalization` |
 

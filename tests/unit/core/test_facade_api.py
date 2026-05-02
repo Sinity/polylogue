@@ -390,7 +390,7 @@ class TestPolylogueReadSurfaces:
 
 class TestPolylogueArchiveInsights:
     @pytest.mark.asyncio
-    async def test_durable_session_products_are_publicly_queryable(
+    async def test_durable_session_insights_are_publicly_queryable(
         self: object,
         cli_workspace: dict[str, Path],
     ) -> None:
@@ -447,8 +447,8 @@ class TestPolylogueArchiveInsights:
             rebuild_session_products_sync(conn)
 
         archive = Polylogue(archive_root=cli_workspace["archive_root"], db_path=db_path)
-        profile = await archive.get_session_profile_product("conv-root")
-        profiles = await archive.list_session_profile_products(
+        profile = await archive.get_session_profile_insight("conv-root")
+        profiles = await archive.list_session_profile_insights(
             SessionProfileInsightQuery(
                 provider="claude-code",
                 first_message_since="2026-03-01T00:00:00+00:00",
@@ -456,26 +456,26 @@ class TestPolylogueArchiveInsights:
                 limit=10,
             )
         )
-        enrichments = await archive.list_session_enrichment_products(
+        enrichments = await archive.list_session_enrichment_insights(
             SessionEnrichmentInsightQuery(
                 provider="claude-code",
                 session_date_since="2026-03-01",
                 limit=10,
             )
         )
-        phases = await archive.list_session_phase_products(SessionPhaseInsightQuery(provider="claude-code", limit=10))
-        threads = await archive.list_work_thread_products(WorkThreadInsightQuery(limit=10))
+        phases = await archive.list_session_phase_insights(SessionPhaseInsightQuery(provider="claude-code", limit=10))
+        threads = await archive.list_work_thread_insights(WorkThreadInsightQuery(limit=10))
 
         assert profile is not None
-        assert profile.product_kind == "session_profile"
+        assert profile.insight_kind == "session_profile"
         assert profile.title == "Root Thread"
         assert profile.evidence is not None
         assert profile.evidence.canonical_session_date == "2026-03-01"
         assert profile.inference is not None
         assert profile.inference.engaged_duration_ms >= 0
 
-        evidence_only = await archive.get_session_profile_product("conv-root", tier="evidence")
-        inference_only = await archive.get_session_profile_product("conv-root", tier="inference")
+        evidence_only = await archive.get_session_profile_insight("conv-root", tier="evidence")
+        inference_only = await archive.get_session_profile_insight("conv-root", tier="inference")
         assert evidence_only is not None
         assert evidence_only.semantic_tier == "evidence"
         assert evidence_only.evidence is not None
@@ -495,30 +495,30 @@ class TestPolylogueArchiveInsights:
         assert threads[0].thread.member_evidence[1].role == "parent_continuation"
         assert threads[0].thread.member_evidence[1].parent_id == "conv-root"
 
-        tag_rollups = await archive.list_session_tag_rollup_products(SessionTagRollupQuery(provider="claude-code"))
-        day_summaries = await archive.list_day_session_summary_products(
+        tag_rollups = await archive.list_session_tag_rollup_insights(SessionTagRollupQuery(provider="claude-code"))
+        day_summaries = await archive.list_day_session_summary_insights(
             DaySessionSummaryInsightQuery(provider="claude-code", limit=10)
         )
-        week_summaries = await archive.list_week_session_summary_products(
+        week_summaries = await archive.list_week_session_summary_insights(
             WeekSessionSummaryInsightQuery(provider="claude-code", limit=10)
         )
-        archive_debt = await archive.list_archive_debt_products(ArchiveDebtInsightQuery(limit=10))
-        session_costs = await archive.list_session_cost_products(
+        archive_debt = await archive.list_archive_debt_insights(ArchiveDebtInsightQuery(limit=10))
+        session_costs = await archive.list_session_cost_insights(
             SessionCostInsightQuery(provider="claude-code", limit=10)
         )
-        cost_rollups = await archive.list_cost_rollup_products(CostRollupInsightQuery(provider="claude-code"))
+        cost_rollups = await archive.list_cost_rollup_insights(CostRollupInsightQuery(provider="claude-code"))
 
         assert any(item.tag == "provider:claude-code" for item in tag_rollups)
         assert len(day_summaries) == 1
         assert day_summaries[0].summary.session_count == 2
         assert len(week_summaries) == 1
         assert week_summaries[0].summary.session_count == 2
-        assert any(item.product_kind == "archive_debt" for item in archive_debt)
+        assert any(item.insight_kind == "archive_debt" for item in archive_debt)
         assert any(item.conversation_id == "conv-root" and item.estimate.status == "exact" for item in session_costs)
         assert cost_rollups[0].total_usd == pytest.approx(1.25)
 
     @pytest.mark.asyncio
-    async def test_archive_stats_health_and_rebuild_products_are_public(
+    async def test_archive_stats_health_and_rebuild_insights_are_public(
         self: object,
         cli_workspace: dict[str, Path],
     ) -> None:
@@ -534,7 +534,7 @@ class TestPolylogueArchiveInsights:
         archive = Polylogue(archive_root=cli_workspace["archive_root"], db_path=db_path)
         stats = await archive.get_archive_stats()
         health = await archive.health_check()
-        counts = await archive.rebuild_products(["conv-public"])
+        counts = await archive.rebuild_insights(["conv-public"])
 
         assert stats.conversation_count == 1
         assert health.summary

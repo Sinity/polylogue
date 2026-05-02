@@ -1,4 +1,4 @@
-"""Tests for the durable archive data insights CLI surfaces."""
+"""Tests for the durable archive datan insights CLI surfaces."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ from polylogue.insights.registry import get_insight_type, insight_items_payload
 from polylogue.storage.action_events.rebuild_runtime import rebuild_action_event_read_model_sync
 from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.insights.session.rebuild import rebuild_session_products_sync
-from polylogue.storage.insights.session.status import session_product_status_sync
+from polylogue.storage.insights.session.status import session_insight_status_sync
 from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZER_VERSION
 from tests.infra.json_contracts import (
     extract_json_result,
@@ -61,7 +61,7 @@ def test_insight_items_payload_can_render_cli_and_mcp_keys() -> None:
     mcp_payload = insight_items_payload([product], insight_type, item_key="items")
 
     assert cli_payload["count"] == 1
-    assert json_object_list(cli_payload["provider_analytics"])[0]["product_kind"] == "provider_analytics"
+    assert json_object_list(cli_payload["provider_analytics"])[0]["insight_kind"] == "provider_analytics"
     assert mcp_payload["count"] == 1
     assert json_object_list(mcp_payload["items"])[0]["provider_name"] == "claude-code"
 
@@ -185,7 +185,7 @@ def test_insights_profiles_json(cli_workspace: CliWorkspace) -> None:
     evidence = json_object(first["evidence"])
     inference = json_object(first["inference"])
     assert json_int(first["contract_version"]) == ARCHIVE_INSIGHT_CONTRACT_VERSION
-    assert first["product_kind"] == "session_profile"
+    assert first["insight_kind"] == "session_profile"
     assert first["semantic_tier"] == "merged"
     assert evidence["canonical_session_date"] == "2026-03-01"
     assert evidence["first_message_at"] == "2026-03-01T10:00:00+00:00"
@@ -215,7 +215,7 @@ def test_insights_costs_json(cli_workspace: CliWorkspace) -> None:
     exact_estimate = json_object(exact["estimate"])
     priced_estimate = json_object(priced["estimate"])
     unavailable_estimate = json_object(unavailable["estimate"])
-    assert exact["product_kind"] == "session_cost"
+    assert exact["insight_kind"] == "session_cost"
     assert exact_estimate["status"] == "exact"
     assert json_number(exact_estimate["total_usd"]) == pytest.approx(1.25)
     assert priced_estimate["status"] == "priced"
@@ -237,7 +237,7 @@ def test_insights_cost_rollups_json(cli_workspace: CliWorkspace) -> None:
     claude = next(item for item in rollups if item["provider_name"] == "claude-code")
     gpt = next(item for item in rollups if item["normalized_model"] == "gpt-4o")
     unknown = next(item for item in rollups if item["provider_name"] == "chatgpt" and item["normalized_model"] is None)
-    assert claude["product_kind"] == "cost_rollup"
+    assert claude["insight_kind"] == "cost_rollup"
     assert json_number(claude["total_usd"]) == pytest.approx(1.25)
     assert json_int(claude["priced_session_count"]) == 1
     assert json_number(gpt["total_usd"]) == pytest.approx(0.0075)
@@ -421,7 +421,7 @@ def test_insights_enrichments_json(cli_workspace: CliWorkspace) -> None:
     enrichment_provenance = json_object(first["enrichment_provenance"])
     enrichment = json_object(first["enrichment"])
     assert json_int(first["contract_version"]) == ARCHIVE_INSIGHT_CONTRACT_VERSION
-    assert first["product_kind"] == "session_enrichment"
+    assert first["insight_kind"] == "session_enrichment"
     assert first["semantic_tier"] == "enrichment"
     assert enrichment_provenance["enrichment_family"] == "scored_session_enrichment"
     assert enrichment["support_level"] in {"weak", "moderate", "strong"}
@@ -572,7 +572,7 @@ def test_insights_profile_date_filters_and_phases_json(cli_workspace: CliWorkspa
     phase_payload = extract_json_result(phases.output)
     assert json_int(profile_payload["count"]) == 2
     assert json_int(phase_payload["count"]) >= 1
-    assert json_object_list(phase_payload["session_phases"])[0]["product_kind"] == "session_phase"
+    assert json_object_list(phase_payload["session_phases"])[0]["insight_kind"] == "session_phase"
 
 
 def test_session_product_rebuild_supports_legacy_payload_columns(cli_workspace: CliWorkspace) -> None:
@@ -584,7 +584,7 @@ def test_session_product_rebuild_supports_legacy_payload_columns(cli_workspace: 
         conn.execute("ALTER TABLE session_phases ADD COLUMN payload_json TEXT NOT NULL DEFAULT '{}'")
         conn.commit()
         rebuild_session_products_sync(conn)
-        status = session_product_status_sync(conn)
+        status = session_insight_status_sync(conn)
 
     assert status.profile_row_count == 2
     assert status.profile_rows_ready is True
@@ -597,7 +597,7 @@ def test_session_product_rebuild_pages_full_rebuild(cli_workspace: CliWorkspace)
 
     with open_connection(cli_workspace["db_path"]) as conn:
         counts = rebuild_session_products_sync(conn, page_size=1)
-        status = session_product_status_sync(conn)
+        status = session_insight_status_sync(conn)
 
     assert counts.profiles == 2
     assert counts.work_events >= 1
@@ -690,7 +690,7 @@ def test_insights_threads_json(cli_workspace: CliWorkspace) -> None:
     threads_payload = extract_json_result(threads.output)
     assert json_int(threads_payload["count"]) == 1
     thread = json_object_list(threads_payload["work_threads"])[0]
-    assert thread["product_kind"] == "work_thread"
+    assert thread["insight_kind"] == "work_thread"
     thread_payload = json_object(thread["thread"])
     assert thread_payload["support_level"] == "strong"
     assert "explicit_lineage" in json_array(thread_payload["support_signals"])
@@ -718,9 +718,9 @@ def test_insights_tag_and_summary_rollups_json(cli_workspace: CliWorkspace) -> N
     week_payload = extract_json_result(weeks.output)
     assert any(item["tag"] == "provider:claude-code" for item in json_object_list(tag_payload["session_tag_rollups"]))
     assert json_int(day_payload["count"]) == 1
-    assert json_object_list(day_payload["day_session_summaries"])[0]["product_kind"] == "day_session_summary"
+    assert json_object_list(day_payload["day_session_summaries"])[0]["insight_kind"] == "day_session_summary"
     assert json_int(week_payload["count"]) == 1
-    assert json_object_list(week_payload["week_session_summaries"])[0]["product_kind"] == "week_session_summary"
+    assert json_object_list(week_payload["week_session_summaries"])[0]["insight_kind"] == "week_session_summary"
 
 
 def test_insights_analytics_json(cli_workspace: CliWorkspace) -> None:
@@ -737,7 +737,7 @@ def test_insights_analytics_json(cli_workspace: CliWorkspace) -> None:
     payload = extract_json_result(result.output)
     assert json_int(payload["count"]) == 1
     item = json_object_list(payload["provider_analytics"])[0]
-    assert item["product_kind"] == "provider_analytics"
+    assert item["insight_kind"] == "provider_analytics"
     assert item["provider_name"] == "claude-code"
     assert json_int(item["conversation_count"]) == 2
     assert json_int(item["tool_use_count"]) == 2
@@ -751,7 +751,7 @@ def test_insights_debt_json(cli_workspace: CliWorkspace) -> None:
     payload = extract_json_result(result.output)
     assert json_int(payload["count"]) >= 1
     first = json_object_list(payload["archive_debt"])[0]
-    assert first["product_kind"] == "archive_debt"
+    assert first["insight_kind"] == "archive_debt"
     assert "maintenance_target" in first
 
 
@@ -784,7 +784,7 @@ def test_session_product_status_accepts_epoch_backed_conversation_timestamps(cli
 
     with open_connection(db_path) as conn:
         rebuild_session_products_sync(conn)
-        status = session_product_status_sync(conn)
+        status = session_insight_status_sync(conn)
 
     assert status.profile_row_count == 1
     assert status.stale_profile_row_count == 0
@@ -801,7 +801,7 @@ def test_targeted_session_product_rebuild_does_not_duplicate_profile_fts(cli_wor
 
     with open_connection(cli_workspace["db_path"]) as conn:
         rebuild_session_products_sync(conn, conversation_ids=["conv-root"])
-        status = session_product_status_sync(conn)
+        status = session_insight_status_sync(conn)
 
     assert status.profile_row_count == 2
     assert status.profile_merged_fts_count == 2
@@ -819,7 +819,7 @@ def test_session_product_status_marks_older_materializer_versions_stale(cli_work
             (SESSION_INSIGHT_MATERIALIZER_VERSION - 1,),
         )
         conn.commit()
-        status = session_product_status_sync(conn)
+        status = session_insight_status_sync(conn)
 
     assert status.profile_row_count == 2
     assert status.stale_profile_row_count == 2
