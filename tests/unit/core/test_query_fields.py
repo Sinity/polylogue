@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import fields
 from datetime import datetime, timezone
 
 import pytest
@@ -37,6 +38,8 @@ def test_query_field_catalog_drives_spec_presence_and_descriptions() -> None:
         filter_has_tool_use=True,
         min_messages=3,
         since="2024-01-01",
+        since_session_id="conv-anchor",
+        offset=10,
     )
 
     assert spec.has_filters() is True
@@ -48,6 +51,8 @@ def test_query_field_catalog_drives_spec_presence_and_descriptions() -> None:
         "has: tool_use (sql)",
         "min_messages: 3",
         "since: 2024-01-01",
+        "offset: 10",
+        "since-session: conv-anchor",
     ]
 
 
@@ -63,6 +68,8 @@ def test_query_field_catalog_drives_plan_presence_descriptions_and_pushdown() ->
         since=since,
         filter_has_tool_use=True,
         min_messages=3,
+        since_session_id="conv-anchor",
+        offset=10,
     )
 
     assert active_plan_field_names(plan) == (
@@ -75,6 +82,8 @@ def test_query_field_catalog_drives_plan_presence_descriptions_and_pushdown() ->
         "filter_has_tool_use",
         "min_messages",
         "since",
+        "offset",
+        "since_session_id",
     )
     assert plan.has_filters() is True
     assert plan.describe() == [
@@ -87,6 +96,8 @@ def test_query_field_catalog_drives_plan_presence_descriptions_and_pushdown() ->
         "has_tool_use",
         "min_messages: 3",
         "since: 2024-01-01T00:00:00+00:00",
+        "offset: 10",
+        "since-session: conv-anchor",
     ]
 
     assert plan.sql_pushdown_params() == {
@@ -114,6 +125,15 @@ def test_query_field_catalog_drives_plan_presence_descriptions_and_pushdown() ->
     assert record_query.has_tool_use is True
     assert record_query.min_messages == 3
     assert record_query.since == "2024-01-01T00:00:00+00:00"
+    assert record_query.offset == 10
+    assert record_query.since_session_id == "conv-anchor"
+
+
+def test_query_field_catalog_covers_public_spec_fields() -> None:
+    descriptor_spec_attrs = {descriptor.spec_attr for descriptor in QUERY_FIELD_DESCRIPTORS if descriptor.spec_attr}
+    spec_fields = {field.name for field in fields(ConversationQuerySpec)}
+
+    assert spec_fields - descriptor_spec_attrs == set()
 
 
 def test_query_field_catalog_marks_storage_stats_join_fields() -> None:
