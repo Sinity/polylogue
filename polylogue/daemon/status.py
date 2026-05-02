@@ -58,8 +58,30 @@ def daemon_status_payload(
     )
 
 
+def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
+    """Render daemon component status as plain text lines."""
+    lines = ["Polylogue daemon"]
+    live = payload.get("live")
+    if isinstance(live, dict):
+        lines.append(f"Live sources: {live.get('existing_source_count', 0)}/{live.get('source_count', 0)} available")
+        sources = live.get("sources", [])
+        if isinstance(sources, list):
+            for source in sources:
+                if isinstance(source, dict):
+                    state = "available" if source.get("exists") else "missing"
+                    lines.append(f"  {source.get('name')}: {source.get('root')} ({state})")
+    browser_capture = payload.get("browser_capture")
+    if isinstance(browser_capture, dict):
+        lines.append(f"Browser capture spool: {browser_capture.get('spool_path')}")
+        origins = browser_capture.get("allowed_origins", [])
+        origin_text = ", ".join(str(item) for item in origins) if isinstance(origins, list) else str(origins)
+        lines.append(f"Browser capture origins: {origin_text}")
+    return lines
+
+
 __all__ = [
     "browser_capture_status_payload",
     "daemon_status_payload",
+    "format_daemon_status_lines",
     "live_source_status_payload",
 ]

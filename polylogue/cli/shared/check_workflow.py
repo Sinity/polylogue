@@ -20,6 +20,7 @@ from polylogue.cli.shared.helpers import load_effective_config
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
 from polylogue.core.json import JSONDocument, json_document
+from polylogue.daemon.status import daemon_status_payload
 from polylogue.protocols import ProgressCallback
 from polylogue.readiness import ReadinessReport, get_readiness, run_runtime_readiness
 from polylogue.schemas.operator.workflow import (
@@ -55,6 +56,7 @@ class CheckCommandOptions:
     vacuum: bool
     deep: bool
     runtime: bool
+    check_daemon: bool
     check_blob: bool
     check_schemas: bool
     check_proof: bool
@@ -91,6 +93,7 @@ def _runtime_only_requested(options: CheckCommandOptions) -> bool:
             options.preview,
             options.vacuum,
             options.deep,
+            options.check_daemon,
             options.check_blob,
             options.check_schemas,
             options.check_proof,
@@ -239,6 +242,9 @@ def run_check_workflow(env: AppEnv, options: CheckCommandOptions) -> CheckComman
 
     if options.runtime:
         result.runtime_report = run_runtime_readiness(config)
+
+    if options.check_daemon:
+        result.daemon_report = daemon_status_payload()
 
     if options.check_blob:
         result.blob_report = _run_blob_store_check(env, config, json_output=options.json_output)
