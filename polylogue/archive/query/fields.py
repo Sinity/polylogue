@@ -159,6 +159,7 @@ class QueryFieldDescriptor:
     completion_source: CompletionSource | None = None
     completion_label: str | None = None
     mcp_names: tuple[str, ...] = ()
+    api_names: tuple[str, ...] = ()
 
     def spec_value(self, spec: object) -> object:
         if self.spec_attr is None:
@@ -209,6 +210,7 @@ QUERY_FIELD_DESCRIPTORS: tuple[QueryFieldDescriptor, ...] = (
         blocks_sql_count=True,
         blocks_action_event_stats=True,
         mcp_names=("query",),
+        api_names=("query",),
     ),
     QueryFieldDescriptor(
         name="contains_terms",
@@ -379,6 +381,7 @@ QUERY_FIELD_DESCRIPTORS: tuple[QueryFieldDescriptor, ...] = (
         completion_source="provider",
         completion_label="provider",
         mcp_names=("provider",),
+        api_names=("provider", "source"),
     ),
     QueryFieldDescriptor(
         name="excluded_providers",
@@ -579,6 +582,7 @@ QUERY_FIELD_DESCRIPTORS: tuple[QueryFieldDescriptor, ...] = (
         sql_param="since",
         storage_value=_iso_value,
         mcp_names=("since",),
+        api_names=("since",),
     ),
     QueryFieldDescriptor(
         name="until",
@@ -645,6 +649,7 @@ QUERY_FIELD_DESCRIPTORS: tuple[QueryFieldDescriptor, ...] = (
         plan_description=_label("limit"),
         selection_filter=False,
         mcp_names=("limit",),
+        api_names=("limit",),
     ),
     QueryFieldDescriptor(
         name="parent_id",
@@ -867,6 +872,13 @@ def mcp_query_field_names() -> frozenset[str]:
     return frozenset(names)
 
 
+def api_query_field_names() -> frozenset[str]:
+    names: set[str] = set()
+    for descriptor in QUERY_FIELD_DESCRIPTORS:
+        names.update(descriptor.api_names)
+    return frozenset(names)
+
+
 __all__ = [
     "CompletionSource",
     "QUERY_FIELD_DESCRIPTORS",
@@ -874,6 +886,7 @@ __all__ = [
     "SqlPushdownParams",
     "SqlPushdownValue",
     "active_plan_field_names",
+    "api_query_field_names",
     "conversation_record_query_for_plan",
     "describe_plan_fields",
     "describe_spec_fields",

@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from inspect import signature
 
 import click
 
+from polylogue.api.archive import PolylogueArchiveMixin
 from polylogue.archive.query.read_fields import (
     READ_FIELD_DESCRIPTORS,
     read_field_descriptor_map,
@@ -78,3 +80,19 @@ def test_read_field_surface_name_sets_are_intentional() -> None:
     assert {"content_projection", "conversation_id", "limit", "offset", "group_by"}.issubset(
         read_field_names_for_surface("api")
     )
+
+
+def test_api_point_read_method_parameters_have_read_descriptors() -> None:
+    covered = read_field_names_for_surface("api")
+    method_names = (
+        "get_conversation",
+        "get_conversations",
+        "get_messages_paginated",
+        "get_raw_artifacts_for_conversation",
+        "resume_brief",
+    )
+
+    for method_name in method_names:
+        params = set(signature(getattr(PolylogueArchiveMixin, method_name)).parameters)
+        params.discard("self")
+        assert params - covered == set()
