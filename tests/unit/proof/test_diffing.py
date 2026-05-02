@@ -135,7 +135,7 @@ def test_obligation_diff_buckets_new_dropped_stale_and_suppressed() -> None:
 
     assert diff.new == ("new",)
     assert diff.dropped == ("dropped",)
-    assert diff.stale_evidence == ("stable",)
+    assert diff.stable_affected == ("stable",)
     assert diff.now_failing == ()
     assert diff.now_passing == ()
     assert diff.suppressed == ("test:tests/unit/example.py",)

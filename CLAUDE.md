@@ -30,6 +30,27 @@ on push, but the full baseline must pass before the PR is opened.
 Do not treat CI as the first verification pass. Anticipate failures
 locally.
 
+### Proof Pack workflow
+
+Every PR gets a `Polylogue Proof Pack` comment. Treat it as a verification
+impact report, not as decorative CI output and not as a complete proof.
+
+Use it this way:
+
+- Read the `Required Gates` before choosing verification. Run the gates that
+  match the touched files, or state in the PR why a suggested gate is only an
+  optional confidence gate for that change.
+- Use nonzero affected domains and claims to decide which focused tests or
+  proof-law suites to run. Ignore zero-claim domain noise unless the changed
+  files genuinely belong to that domain.
+- Treat `Known Gaps` as actionable only when they are in a changed or directly
+  affected domain. Broad repo-wide gap dumps should not block unrelated PRs, but
+  recurring noise should be folded back into #594.
+- Read `stable affected obligations` as unchanged obligations touched by the
+  current diff, not as real freshness/SLA evidence.
+- If the Proof Pack is noisy, misleading, or misses a relevant gate, comment on
+  the PR or #594 with the concrete mismatch. Do not silently ignore it.
+
 ### PR body discipline
 
 The PR template requires sections: Summary, Problem, Solution,

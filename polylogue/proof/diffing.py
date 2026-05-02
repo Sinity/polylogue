@@ -33,7 +33,7 @@ ChangeKind = Literal[
     "unknown",
 ]
 CheckScope = Literal["inner_loop", "pr_gate", "deployment_gate"]
-DiffStatus = Literal["new", "dropped", "now_failing", "now_passing", "stale_evidence", "suppressed"]
+DiffStatus = Literal["new", "dropped", "now_failing", "now_passing", "stable_affected", "suppressed"]
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _ALL_COMMAND_KINDS = {"cli.command", "cli.json_command"}
@@ -76,7 +76,7 @@ _DIFF_STATUSES: tuple[DiffStatus, ...] = (
     "dropped",
     "now_failing",
     "now_passing",
-    "stale_evidence",
+    "stable_affected",
     "suppressed",
 )
 
@@ -157,7 +157,7 @@ class ObligationDiff:
     dropped: tuple[str, ...] = ()
     now_failing: tuple[str, ...] = ()
     now_passing: tuple[str, ...] = ()
-    stale_evidence: tuple[str, ...] = ()
+    stable_affected: tuple[str, ...] = ()
     suppressed: tuple[str, ...] = ()
 
     def bucket(self, status: DiffStatus) -> tuple[str, ...]:
@@ -169,8 +169,8 @@ class ObligationDiff:
             return self.now_failing
         if status == "now_passing":
             return self.now_passing
-        if status == "stale_evidence":
-            return self.stale_evidence
+        if status == "stable_affected":
+            return self.stable_affected
         return self.suppressed
 
     def to_payload(self) -> JSONDocument:
@@ -179,7 +179,7 @@ class ObligationDiff:
             "dropped": list(self.dropped),
             "now_failing": list(self.now_failing),
             "now_passing": list(self.now_passing),
-            "stale_evidence": list(self.stale_evidence),
+            "stable_affected": list(self.stable_affected),
             "suppressed": list(self.suppressed),
         }
 
@@ -362,7 +362,7 @@ def diff_obligation_ids(
     return ObligationDiff(
         new=tuple(sorted(new)),
         dropped=tuple(sorted(dropped)),
-        stale_evidence=tuple(sorted(stable_affected - new)),
+        stable_affected=tuple(sorted(stable_affected - new)),
         suppressed=tuple(sorted(dict.fromkeys(suppressed))),
     )
 

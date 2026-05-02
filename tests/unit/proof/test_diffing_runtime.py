@@ -77,7 +77,7 @@ def test_diff_obligation_ids_without_base_marks_every_affected_id_as_stale() -> 
 
     assert diff.new == ()
     assert diff.dropped == ()
-    assert diff.stale_evidence == ("a", "b")
+    assert diff.stable_affected == ("a", "b")
 
 
 def test_obligation_ids_for_ref_uses_current_catalog_for_head_aliases() -> None:
