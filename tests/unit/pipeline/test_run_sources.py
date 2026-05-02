@@ -662,7 +662,7 @@ class TestRunSourcesIntegration:
         )
 
         with patch(
-            "polylogue.storage.insights.session.rebuild.rebuild_session_products_async",
+            "polylogue.storage.insights.session.rebuild.rebuild_session_insights_async",
             new_callable=AsyncMock,
         ) as mock_rebuild:
             mock_rebuild.return_value = SessionInsightCounts(

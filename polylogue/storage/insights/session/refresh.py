@@ -15,7 +15,7 @@ from polylogue.storage.insights.session.aggregates import (
 )
 from polylogue.storage.insights.session.rebuild import (
     SessionInsightRecordBundle,
-    build_session_product_records,
+    build_session_insight_records,
     hydrate_conversations,
     load_async_batch,
 )
@@ -148,7 +148,7 @@ async def refresh_thread_after_conversation_delete_async(
     )
 
 
-async def delete_session_products_for_conversation_async(
+async def delete_session_insights_for_conversation_async(
     conn: aiosqlite.Connection,
     conversation_id: str,
     *,
@@ -192,13 +192,13 @@ async def delete_session_products_for_conversation_async(
     return counts
 
 
-async def refresh_session_products_for_conversation_async(
+async def refresh_session_insights_for_conversation_async(
     conn: aiosqlite.Connection,
     conversation_id: str,
     *,
     transaction_depth: int = 0,
 ) -> SessionInsightCounts:
-    update = await _apply_session_product_conversation_update_async(
+    update = await _apply_session_insight_conversation_update_async(
         conn,
         conversation_id,
         transaction_depth=transaction_depth,
@@ -221,7 +221,7 @@ async def refresh_session_products_for_conversation_async(
     return update.counts
 
 
-async def _apply_session_product_conversation_update_async(
+async def _apply_session_insight_conversation_update_async(
     conn: aiosqlite.Connection,
     conversation_id: str,
     *,
@@ -256,7 +256,7 @@ async def _apply_session_product_conversation_update_async(
             affected_groups={old_group} if old_group is not None else set(),
         )
 
-    record_bundle = build_session_product_records(hydrated[0])
+    record_bundle = build_session_insight_records(hydrated[0])
     await replace_session_profile(conn, record_bundle.profile_record, transaction_depth)
     await replace_session_work_events(
         conn,
@@ -411,7 +411,7 @@ def _refresh_chunk_observation(
     )
 
 
-async def _apply_session_product_conversation_updates_async(
+async def _apply_session_insight_conversation_updates_async(
     conn: aiosqlite.Connection,
     conversation_ids: Sequence[str],
     *,
@@ -461,7 +461,7 @@ async def _apply_session_product_conversation_updates_async(
                     affected_groups.add(old_group)
                 continue
 
-            record_bundle = build_session_product_records(hydrated_conversation)
+            record_bundle = build_session_insight_records(hydrated_conversation)
             record_bundles.append(record_bundle)
 
             counts.add(
@@ -531,8 +531,8 @@ async def _apply_session_product_conversation_updates_async(
 
 __all__ = [
     "SessionInsightRefreshChunkObservation",
-    "delete_session_products_for_conversation_async",
+    "delete_session_insights_for_conversation_async",
     "refresh_async_provider_day_aggregates",
-    "refresh_session_products_for_conversation_async",
+    "refresh_session_insights_for_conversation_async",
     "refresh_thread_after_conversation_delete_async",
 ]

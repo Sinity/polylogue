@@ -21,7 +21,7 @@ from devtools.synthetic_benchmark_runtime import (
     CampaignResult,
     resolve_synthetic_benchmark_runner,
     run_action_event_materialization_campaign,
-    run_session_product_materialization_campaign,
+    run_session_insight_materialization_campaign,
 )
 from polylogue.scenarios import ExecutionKind
 from polylogue.storage.insights.session.runtime import SessionInsightCounts
@@ -180,7 +180,7 @@ def test_action_event_materialization_campaign_reports_action_row_counts(
     }
 
 
-def test_session_product_materialization_campaign_reports_rebuild_counts(
+def test_session_insight_materialization_campaign_reports_rebuild_counts(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     before = {
@@ -216,11 +216,11 @@ def test_session_product_materialization_campaign_reports_rebuild_counts(
             return False
 
     monkeypatch.setattr(
-        "devtools.synthetic_benchmark_runtime._session_product_table_counts", lambda _db_path: next(table_counts)
+        "devtools.synthetic_benchmark_runtime._session_insight_table_counts", lambda _db_path: next(table_counts)
     )
     monkeypatch.setattr("polylogue.storage.backends.connection.open_connection", lambda _db_path: FakeContext())
     monkeypatch.setattr(
-        "polylogue.storage.insights.session.rebuild.rebuild_session_products_sync",
+        "polylogue.storage.insights.session.rebuild.rebuild_session_insights_sync",
         lambda conn: SessionInsightCounts(
             profiles=5,
             work_events=8,
@@ -231,7 +231,7 @@ def test_session_product_materialization_campaign_reports_rebuild_counts(
         ),
     )
 
-    result = run_session_product_materialization_campaign(tmp_path / "benchmark.db")
+    result = run_session_insight_materialization_campaign(tmp_path / "benchmark.db")
 
     assert committed == ["commit"]
     assert result.campaign_name == "session-insight-materialization"

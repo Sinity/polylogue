@@ -76,7 +76,7 @@ def _options(**overrides: object) -> CheckCommandOptions:
     [
         ({"vacuum": True}, "--vacuum requires --repair or --cleanup"),
         ({"preview": True}, "--preview requires --repair or --cleanup"),
-        ({"maintenance_targets": ("session_products",)}, "--target requires --repair or --cleanup"),
+        ({"maintenance_targets": ("session_insights",)}, "--target requires --repair or --cleanup"),
         ({"schema_providers": ("claude-code",)}, "--schema-provider requires --schemas"),
         ({"schema_samples": "10"}, "--schema-samples requires --schemas"),
         ({"schema_record_limit": 5}, "--schema-record-limit requires --schemas"),
@@ -264,7 +264,7 @@ def test_schema_verification_and_maintenance_helpers_cover_runtime_paths() -> No
         return_value=session_progress_callback,
     ):
         assert (
-            check_workflow._session_insight_progress_callback(options, ("session_products",))
+            check_workflow._session_insight_progress_callback(options, ("session_insights",))
             is session_progress_callback
         )
     assert check_workflow._session_insight_progress_callback(_options(repair=True, preview=True), ()) is None
@@ -273,24 +273,24 @@ def test_schema_verification_and_maintenance_helpers_cover_runtime_paths() -> No
     with (
         patch(
             "polylogue.cli.shared.check_workflow._resolve_selected_maintenance_targets",
-            return_value=("session_products",),
+            return_value=("session_insights",),
         ),
-        patch("polylogue.cli.shared.check_workflow._build_preview_counts", return_value={"session_products": 2}),
+        patch("polylogue.cli.shared.check_workflow._build_preview_counts", return_value={"session_insights": 2}),
     ):
         preview_inputs = check_workflow._maintenance_run_inputs(_options(repair=True, preview=True), report)
-        assert preview_inputs.selected_targets == ("session_products",)
-        assert preview_inputs.preview_counts == {"session_products": 2}
+        assert preview_inputs.selected_targets == ("session_insights",)
+        assert preview_inputs.preview_counts == {"session_insights": 2}
 
     result = CheckCommandResult(report=report)
-    inputs = check_workflow._MaintenanceRunInputs(selected_targets=("session_products",), preview_counts={"x": 1})
+    inputs = check_workflow._MaintenanceRunInputs(selected_targets=("session_insights",), preview_counts={"x": 1})
     repair_result = cast(RepairResult, SimpleNamespace())
     with patch(
         "polylogue.cli.shared.check_workflow.run_selected_maintenance", return_value=[repair_result]
     ) as run_selected:
         check_workflow._run_maintenance(config, result, _options(repair=True), inputs)
-    assert result.maintenance_targets == ("session_products",)
+    assert result.maintenance_targets == ("session_insights",)
     assert result.maintenance_results == [repair_result]
-    assert run_selected.call_args.kwargs["targets"] == ("session_products",)
+    assert run_selected.call_args.kwargs["targets"] == ("session_insights",)
 
     env = _env()
     result.vacuum_result = VacuumResult(ok=True, detail="done")
@@ -328,7 +328,7 @@ def test_run_check_workflow_covers_runtime_blob_vacuum_and_persist_paths() -> No
         patch(
             "polylogue.cli.shared.check_workflow._maintenance_run_inputs",
             return_value=check_workflow._MaintenanceRunInputs(
-                selected_targets=("session_products",), preview_counts=None
+                selected_targets=("session_insights",), preview_counts=None
             ),
         ),
         patch("polylogue.cli.shared.check_workflow.run_selected_maintenance", return_value=[repair_result]),

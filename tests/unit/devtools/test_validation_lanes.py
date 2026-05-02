@@ -529,13 +529,13 @@ class TestLaneAssertions:
         assert "--format" in cmd
         assert "json" in cmd
 
-    def test_live_session_product_repair_lane_uses_doctor_repair_target(self) -> None:
+    def test_live_session_insight_repair_lane_uses_doctor_repair_target(self) -> None:
         cmd = build_lane_command(LANES["live-session-insight-repair"])
         assert cmd[:1] == ["polylogue"]
         assert "doctor" in cmd
         assert "--repair" in cmd
         assert "--target" in cmd
-        assert "session_products" in cmd
+        assert "session_insights" in cmd
 
     def test_composite_lane_has_no_direct_command(self) -> None:
         with pytest.raises(ValueError, match="composite"):

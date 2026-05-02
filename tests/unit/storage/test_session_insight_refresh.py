@@ -8,7 +8,7 @@ from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.insights.session.aggregates import refresh_async_provider_day_aggregates
 from polylogue.storage.insights.session.refresh import (
-    _apply_session_product_conversation_updates_async,
+    _apply_session_insight_conversation_updates_async,
     _refresh_thread_roots_async,
 )
 from tests.infra.storage_records import make_conversation, make_message, store_records
@@ -21,7 +21,7 @@ def _chunk_metric(chunk_observation: object, key: str) -> float:
 
 
 @pytest.mark.asyncio
-async def test_apply_session_product_conversation_updates_async_batches_hydrated_conversations(
+async def test_apply_session_insight_conversation_updates_async_batches_hydrated_conversations(
     tmp_path: Path,
 ) -> None:
     db_path = tmp_path / "refresh.db"
@@ -44,7 +44,7 @@ async def test_apply_session_product_conversation_updates_async_batches_hydrated
 
     backend = SQLiteBackend(db_path=db_path)
     async with backend.connection() as conn:
-        update = await _apply_session_product_conversation_updates_async(
+        update = await _apply_session_insight_conversation_updates_async(
             conn,
             ["conv-refresh"],
             transaction_depth=1,
@@ -62,7 +62,7 @@ async def test_apply_session_product_conversation_updates_async_batches_hydrated
 
 
 @pytest.mark.asyncio
-async def test_apply_session_product_conversation_updates_async_preserves_thread_roots_for_children(
+async def test_apply_session_insight_conversation_updates_async_preserves_thread_roots_for_children(
     tmp_path: Path,
 ) -> None:
     db_path = tmp_path / "refresh-thread.db"
@@ -87,7 +87,7 @@ async def test_apply_session_product_conversation_updates_async_preserves_thread
 
     backend = SQLiteBackend(db_path=db_path)
     async with backend.connection() as conn:
-        update = await _apply_session_product_conversation_updates_async(
+        update = await _apply_session_insight_conversation_updates_async(
             conn,
             ["conv-root", "conv-child"],
             transaction_depth=1,
@@ -100,7 +100,7 @@ async def test_apply_session_product_conversation_updates_async_preserves_thread
 
 
 @pytest.mark.asyncio
-async def test_apply_session_product_conversation_updates_async_uses_small_default_chunks(
+async def test_apply_session_insight_conversation_updates_async_uses_small_default_chunks(
     tmp_path: Path,
 ) -> None:
     db_path = tmp_path / "refresh-default-chunks.db"
@@ -125,7 +125,7 @@ async def test_apply_session_product_conversation_updates_async_uses_small_defau
 
     backend = SQLiteBackend(db_path=db_path)
     async with backend.connection() as conn:
-        update = await _apply_session_product_conversation_updates_async(
+        update = await _apply_session_insight_conversation_updates_async(
             conn,
             conversation_ids,
             transaction_depth=1,
@@ -140,7 +140,7 @@ async def test_apply_session_product_conversation_updates_async_uses_small_defau
 
 
 @pytest.mark.asyncio
-async def test_apply_session_product_conversation_updates_async_splits_large_message_batches(
+async def test_apply_session_insight_conversation_updates_async_splits_large_message_batches(
     tmp_path: Path,
 ) -> None:
     db_path = tmp_path / "refresh-message-budget.db"
@@ -182,7 +182,7 @@ async def test_apply_session_product_conversation_updates_async_splits_large_mes
 
     backend = SQLiteBackend(db_path=db_path)
     async with backend.connection() as conn:
-        update = await _apply_session_product_conversation_updates_async(
+        update = await _apply_session_insight_conversation_updates_async(
             conn,
             conversation_ids,
             transaction_depth=1,
@@ -197,7 +197,7 @@ async def test_apply_session_product_conversation_updates_async_splits_large_mes
 
 
 @pytest.mark.asyncio
-async def test_apply_session_product_conversation_updates_async_clears_deleted_conversations(
+async def test_apply_session_insight_conversation_updates_async_clears_deleted_conversations(
     tmp_path: Path,
 ) -> None:
     db_path = tmp_path / "refresh-delete.db"
@@ -212,7 +212,7 @@ async def test_apply_session_product_conversation_updates_async_clears_deleted_c
 
     backend = SQLiteBackend(db_path=db_path)
     async with backend.connection() as conn:
-        first_update = await _apply_session_product_conversation_updates_async(
+        first_update = await _apply_session_insight_conversation_updates_async(
             conn,
             ["conv-stale"],
             transaction_depth=1,
@@ -228,7 +228,7 @@ async def test_apply_session_product_conversation_updates_async_clears_deleted_c
         conn.commit()
 
     async with backend.connection() as conn:
-        second_update = await _apply_session_product_conversation_updates_async(
+        second_update = await _apply_session_insight_conversation_updates_async(
             conn,
             ["conv-stale"],
             transaction_depth=1,
@@ -300,7 +300,7 @@ async def test_refresh_thread_roots_async_batches_root_rebuilds(
 
     backend = SQLiteBackend(db_path=db_path)
     async with backend.connection() as conn:
-        update = await _apply_session_product_conversation_updates_async(
+        update = await _apply_session_insight_conversation_updates_async(
             conn,
             ["conv-root-a", "conv-child-a", "conv-root-b", "conv-child-b"],
             transaction_depth=1,
@@ -397,7 +397,7 @@ async def test_refresh_async_provider_day_aggregates_batches_multiple_groups(
 
     backend = SQLiteBackend(db_path=db_path)
     async with backend.connection() as conn:
-        update = await _apply_session_product_conversation_updates_async(
+        update = await _apply_session_insight_conversation_updates_async(
             conn,
             ["conv-chatgpt-a", "conv-chatgpt-b", "conv-claude-a"],
             transaction_depth=1,

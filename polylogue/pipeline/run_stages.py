@@ -196,8 +196,8 @@ async def execute_materialize_stage(
     backend: SQLiteBackend,
     progress_callback: ProgressCallback | None = None,
 ) -> MaterializeStageOutcome:
-    from polylogue.pipeline.services.ingest_batch import refresh_session_products_bulk
-    from polylogue.storage.insights.session.rebuild import rebuild_session_products_async
+    from polylogue.pipeline.services.ingest_batch import refresh_session_insights_bulk
+    from polylogue.storage.insights.session.rebuild import rebuild_session_insights_async
 
     if stage in {"all", "reprocess"}:
         conversation_ids = sorted(processed_ids)
@@ -213,7 +213,7 @@ async def execute_materialize_stage(
 
         if use_bounded_rebuild:
             async with backend.connection() as conn:
-                counts = await rebuild_session_products_async(
+                counts = await rebuild_session_insights_async(
                     conn,
                     conversation_ids=conversation_ids,
                     progress_callback=progress_callback,
@@ -226,7 +226,7 @@ async def execute_materialize_stage(
                 observation=_materialize_rebuild_observation(mode="rebuild-from-empty", counts=counts),
             )
 
-        observation = await refresh_session_products_bulk(backend, conversation_ids)
+        observation = await refresh_session_insights_bulk(backend, conversation_ids)
         return MaterializeStageOutcome(
             item_count=len(conversation_ids),
             rebuilt=False,
@@ -246,7 +246,7 @@ async def execute_materialize_stage(
         ]
         if progress_callback is not None:
             progress_callback(0, desc=f"Materializing: 0/{materialize_total}")
-        observation = await refresh_session_products_bulk(backend, conversation_ids)
+        observation = await refresh_session_insights_bulk(backend, conversation_ids)
         return MaterializeStageOutcome(
             item_count=materialize_total,
             rebuilt=False,
@@ -258,7 +258,7 @@ async def execute_materialize_stage(
         total_conversations = int(total_row[0]) if total_row is not None else 0
         if progress_callback is not None:
             progress_callback(0, desc=f"Materializing: 0/{total_conversations}")
-        counts = await rebuild_session_products_async(
+        counts = await rebuild_session_insights_async(
             conn,
             progress_callback=progress_callback,
             progress_total=total_conversations,

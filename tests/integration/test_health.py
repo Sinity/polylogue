@@ -10,7 +10,7 @@ from typing import TypeAlias
 CliWorkspace: TypeAlias = dict[str, Path]
 
 RUN_ALL_REPAIRS_EXPECTED = {
-    "session_products",
+    "session_insights",
     "orphaned_messages",
     "orphaned_content_blocks",
     "empty_conversations",
@@ -740,7 +740,7 @@ class TestMaintenanceSelection:
 
         assert isinstance(results, list)
         assert {r.name for r in results} == {
-            "session_products",
+            "session_insights",
             "action_event_read_model",
             "dangling_fts",
             "wal_checkpoint",
@@ -793,7 +793,7 @@ class TestMaintenanceSelection:
             cleanup=True,
             dry_run=True,
             preview_counts={
-                "session_products": 13,
+                "session_insights": 13,
                 "action_event_read_model": 7,
                 "dangling_fts": 3,
                 "orphaned_messages": 2,
@@ -803,14 +803,14 @@ class TestMaintenanceSelection:
         )
 
         by_name = {result.name: result for result in results}
-        assert by_name["session_products"].repaired_count == 13
+        assert by_name["session_insights"].repaired_count == 13
         assert by_name["action_event_read_model"].repaired_count == 7
         assert by_name["dangling_fts"].repaired_count == 3
         assert by_name["orphaned_messages"].repaired_count == 2
         assert by_name["orphaned_content_blocks"].repaired_count == 11
         assert by_name["empty_conversations"].repaired_count == 5
 
-    def test_run_selected_maintenance_can_scope_to_session_products(self, cli_workspace: CliWorkspace) -> None:
+    def test_run_selected_maintenance_can_scope_to_session_insights(self, cli_workspace: CliWorkspace) -> None:
         """Scoped maintenance should repair only the durable session-insight layer."""
         from polylogue.config import get_config
         from polylogue.storage.backends.connection import connection_context
@@ -832,10 +832,10 @@ class TestMaintenanceSelection:
             repair=True,
             cleanup=False,
             dry_run=False,
-            targets=("session_products",),
+            targets=("session_insights",),
         )
 
-        assert [result.name for result in results] == ["session_products"]
+        assert [result.name for result in results] == ["session_insights"]
         with connection_context(None) as conn:
             profile_count = conn.execute("SELECT COUNT(*) FROM session_profiles").fetchone()[0]
             thread_count = conn.execute("SELECT COUNT(*) FROM work_threads").fetchone()[0]

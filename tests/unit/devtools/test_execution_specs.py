@@ -46,7 +46,7 @@ def test_polylogue_doctor_targeted_execution_uses_maintenance_target_catalog_met
         "--target",
         "action_event_read_model",
         "--target",
-        "session_products",
+        "session_insights",
     )
 
     assert execution.metadata.operation_targets == (
@@ -57,7 +57,7 @@ def test_polylogue_doctor_targeted_execution_uses_maintenance_target_catalog_met
     )
     assert execution.metadata.maintenance_targets == (
         "action_event_read_model",
-        "session_products",
+        "session_insights",
     )
 
 

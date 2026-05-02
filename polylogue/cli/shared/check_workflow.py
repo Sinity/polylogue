@@ -177,7 +177,7 @@ def _session_insight_progress_callback(
         options.repair
         and not options.preview
         and not options.json_output
-        and (not selected_targets or "session_products" in selected_targets)
+        and (not selected_targets or "session_insights" in selected_targets)
     ):
         return make_session_insight_progress_callback()
     return None

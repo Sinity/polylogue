@@ -24,7 +24,7 @@ def test_insight_read_support_hydrates_optional_sequence_and_mapping() -> None:
 
 
 @pytest.mark.asyncio
-async def test_repository_product_profile_reads_build_typed_queries() -> None:
+async def test_repository_insight_profile_reads_build_typed_queries() -> None:
     queries = SimpleNamespace(
         get_session_profile=AsyncMock(return_value="record"),
         get_session_profiles_batch=AsyncMock(return_value={"conv-1": "record-a"}),
@@ -82,7 +82,7 @@ async def test_repository_product_profile_reads_build_typed_queries() -> None:
 
 
 @pytest.mark.asyncio
-async def test_repository_product_thread_and_timeline_reads_build_typed_queries() -> None:
+async def test_repository_insight_thread_and_timeline_reads_build_typed_queries() -> None:
     queries = SimpleNamespace(
         get_work_thread=AsyncMock(return_value="thread-record"),
         _list_work_threads_query=AsyncMock(return_value=["thread-record"]),
@@ -158,7 +158,7 @@ async def test_repository_product_thread_and_timeline_reads_build_typed_queries(
 
 
 @pytest.mark.asyncio
-async def test_repository_product_summary_reads_build_typed_queries() -> None:
+async def test_repository_insight_summary_reads_build_typed_queries() -> None:
     queries = SimpleNamespace(
         _list_session_tag_rollup_rows_query=AsyncMock(return_value=["tag-row"]),
         _list_day_session_summaries_query=AsyncMock(return_value=["day-row"]),

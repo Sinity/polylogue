@@ -105,7 +105,7 @@ async def test_execute_materialize_stage_covers_noop_and_rebuild_from_empty_path
         day_summaries=7,
     )
     with patch(
-        "polylogue.storage.insights.session.rebuild.rebuild_session_products_async", new=AsyncMock(return_value=counts)
+        "polylogue.storage.insights.session.rebuild.rebuild_session_insights_async", new=AsyncMock(return_value=counts)
     ) as rebuild:
         outcome = await run_stages.execute_materialize_stage(
             stage="all",
@@ -138,7 +138,7 @@ async def test_execute_materialize_stage_covers_refresh_scoped_and_unscoped_path
         status=SimpleNamespace(total_conversations=3, profile_row_count=2),
     )
     with patch(
-        "polylogue.pipeline.services.ingest_batch.refresh_session_products_bulk",
+        "polylogue.pipeline.services.ingest_batch.refresh_session_insights_bulk",
         new=AsyncMock(return_value={"mode": "refresh"}),
     ) as refresh:
         all_outcome = await run_stages.execute_materialize_stage(
@@ -163,7 +163,7 @@ async def test_execute_materialize_stage_covers_refresh_scoped_and_unscoped_path
 
     scoped_backend = _backend(count=2, iter_values=("conv-1", "conv-2"))
     with patch(
-        "polylogue.pipeline.services.ingest_batch.refresh_session_products_bulk",
+        "polylogue.pipeline.services.ingest_batch.refresh_session_insights_bulk",
         new=AsyncMock(return_value={"conversations": 2}),
     ) as refresh:
         scoped = await run_stages.execute_materialize_stage(
@@ -190,7 +190,7 @@ async def test_execute_materialize_stage_covers_refresh_scoped_and_unscoped_path
         day_summaries=0,
     )
     with patch(
-        "polylogue.storage.insights.session.rebuild.rebuild_session_products_async", new=AsyncMock(return_value=counts)
+        "polylogue.storage.insights.session.rebuild.rebuild_session_insights_async", new=AsyncMock(return_value=counts)
     ):
         unscoped = await run_stages.execute_materialize_stage(
             stage="materialize",

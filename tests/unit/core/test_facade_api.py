@@ -395,7 +395,7 @@ class TestPolylogueArchiveInsights:
         cli_workspace: dict[str, Path],
     ) -> None:
         from polylogue.storage.backends.connection import open_connection
-        from polylogue.storage.insights.session.rebuild import rebuild_session_products_sync
+        from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
 
         db_path = cli_workspace["db_path"]
         (
@@ -444,7 +444,7 @@ class TestPolylogueArchiveInsights:
             .save()
         )
         with open_connection(db_path) as conn:
-            rebuild_session_products_sync(conn)
+            rebuild_session_insights_sync(conn)
 
         archive = Polylogue(archive_root=cli_workspace["archive_root"], db_path=db_path)
         profile = await archive.get_session_profile_insight("conv-root")
