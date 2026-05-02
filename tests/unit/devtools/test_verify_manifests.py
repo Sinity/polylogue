@@ -125,3 +125,41 @@ def test_coverage_gap_manifest_rejects_proof_subject_slug_collision(tmp_path: Pa
         f"{plans / 'example-coverage.yaml'}: coverage_gaps[1] 'docs-media.generated-proof' "
         "duplicate proof subject slug 'docs-media-generated-proof'"
     ]
+
+
+def test_coverage_reference_manifest_accepts_existing_commands_and_paths(tmp_path: Path) -> None:
+    plans = tmp_path
+    (plans / "tests").mkdir()
+    (plans / "tests" / "test_example.py").write_text("def test_example(): pass\n", encoding="utf-8")
+    (plans / "example-coverage.yaml").write_text(
+        """items:
+  example:
+    location: tests/test_example.py (unit coverage)
+    verified_by: devtools verify-manifests
+    tests:
+      - tests/test_example.py
+""",
+        encoding="utf-8",
+    )
+
+    assert verify_manifests.check_coverage_references(plans) == []
+
+
+def test_coverage_reference_manifest_rejects_missing_command_and_path(tmp_path: Path) -> None:
+    plans = tmp_path
+    (plans / "example-coverage.yaml").write_text(
+        """items:
+  example:
+    location: tests/missing.py
+    verified_by: devtools missing-command
+""",
+        encoding="utf-8",
+    )
+
+    errors = verify_manifests.check_coverage_references(plans)
+
+    assert errors == [
+        f"{plans / 'example-coverage.yaml'}: items.example.location path does not exist: 'tests/missing.py'",
+        f"{plans / 'example-coverage.yaml'}: items.example.verified_by command does not resolve: "
+        "'devtools missing-command'",
+    ]
