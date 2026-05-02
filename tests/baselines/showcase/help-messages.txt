@@ -4,7 +4,7 @@ Usage: polylogue messages [OPTIONS] [CONVERSATION_ID]
 
 Options:
   -r, --message-role TEXT         Filter by message role
-  --message-type [summary|tool_use|tool_result|thinking]
+  --message-type [message|summary|tool_use|tool_result|thinking]
                                   Filter by message content type
   -n, --limit INTEGER             Max messages to return
   --offset INTEGER                Offset for pagination
