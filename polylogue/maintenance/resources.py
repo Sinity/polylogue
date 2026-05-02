@@ -197,10 +197,14 @@ def _run_in_systemd_scope(
         *argv,
     ]
     try:
-        completed = subprocess.run(command, env=dict(env), check=False)
+        completed = subprocess.run(command, env=dict(env), check=False, capture_output=True, text=True)
     except OSError as exc:
         raise ScopeLaunchUnavailableError(f"could not launch systemd transient scope: {type(exc).__name__}") from exc
-    raise SystemExit(completed.returncode)
+    if completed.returncode == 0:
+        raise SystemExit(0)
+    raise ScopeLaunchUnavailableError(
+        f"systemd-run exited {completed.returncode}: " + (completed.stderr or completed.stdout or "").strip()[:200]
+    )
 
 
 def _apply_process_demotion(request: ResourceBoundaryRequest) -> ResourceBoundaryReport:
