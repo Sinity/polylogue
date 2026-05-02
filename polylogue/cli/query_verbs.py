@@ -13,11 +13,13 @@ import click
 from polylogue.archive.message.types import MessageType
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
-from polylogue.cli.shell_completion_values import complete_conversation_ids, complete_open_targets
+from polylogue.cli.shell_completion_values import complete_open_targets, complete_query_source
 
 VERB_NAMES = frozenset({"list", "count", "stats", "open", "show", "bulk-export", "delete", "messages", "raw"})
 
 _BULK_EXPORT_FORMATS = ("jsonl", "json", "markdown", "yaml", "plaintext", "html", "obsidian", "org")
+_complete_conversation_id = complete_query_source("conversation_id")
+_complete_message_type = complete_query_source("message_type")
 
 
 @click.command("list")
@@ -178,12 +180,13 @@ def _execute_query_verb(
 
 
 @click.command("messages")
-@click.argument("conversation_id", required=False, shell_complete=complete_conversation_ids)
+@click.argument("conversation_id", required=False, shell_complete=_complete_conversation_id)
 @click.option("--message-role", "-r", "message_role", multiple=True, help="Filter by message role")
 @click.option(
     "--message-type",
     "message_type",
     type=click.Choice([message_type.value for message_type in MessageType]),
+    shell_complete=_complete_message_type,
     help="Filter by message content type",
 )
 @click.option("--limit", "-n", type=int, default=50, help="Max messages to return")
@@ -242,7 +245,7 @@ def messages_verb(
 
 
 @click.command("raw")
-@click.argument("conversation_id", required=False, shell_complete=complete_conversation_ids)
+@click.argument("conversation_id", required=False, shell_complete=_complete_conversation_id)
 @click.option("--limit", "-n", type=int, default=50, help="Max raw artifacts to return")
 @click.option("--offset", type=int, default=0, help="Offset for pagination")
 @click.option(
