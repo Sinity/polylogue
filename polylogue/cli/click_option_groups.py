@@ -12,7 +12,9 @@ from polylogue.archive.query.spec import QUERY_ACTION_TYPES, QUERY_RETRIEVAL_LAN
 from polylogue.cli.query_contracts import normalize_message_role_option
 from polylogue.cli.shell_completion_values import (
     complete_conversation_ids,
+    complete_cwd_prefix_values,
     complete_provider_values,
+    complete_repo_values,
     complete_tag_values,
     complete_tool_values,
 )
@@ -93,7 +95,7 @@ FILTER_OPTION_DECORATORS: tuple[Callable[[ClickCallable], ClickCallable], ...] =
         "--repo",
         "-r",
         help="Filter by repository name (comma = OR)",
-        shell_complete=complete_tag_values,
+        shell_complete=complete_repo_values,
     ),
     click.option(
         "--tag", "-t", help="Include tags (comma = OR, supports key:value)", shell_complete=complete_tag_values
@@ -111,6 +113,7 @@ FILTER_OPTION_DECORATORS: tuple[Callable[[ClickCallable], ClickCallable], ...] =
         "cwd_prefix",
         default=None,
         help="Filter conversations whose recorded working directory starts with this prefix",
+        shell_complete=complete_cwd_prefix_values,
     ),
     click.option(
         "--action",

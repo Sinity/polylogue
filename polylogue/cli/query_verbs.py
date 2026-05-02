@@ -10,9 +10,10 @@ from typing import cast
 
 import click
 
+from polylogue.archive.message.types import MessageType
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
-from polylogue.cli.shell_completion_values import complete_open_targets
+from polylogue.cli.shell_completion_values import complete_conversation_ids, complete_open_targets
 
 VERB_NAMES = frozenset({"list", "count", "stats", "open", "show", "bulk-export", "delete", "messages", "raw"})
 
@@ -177,12 +178,12 @@ def _execute_query_verb(
 
 
 @click.command("messages")
-@click.argument("conversation_id", required=False)
+@click.argument("conversation_id", required=False, shell_complete=complete_conversation_ids)
 @click.option("--message-role", "-r", "message_role", multiple=True, help="Filter by message role")
 @click.option(
     "--message-type",
     "message_type",
-    type=click.Choice(["summary", "tool_use", "tool_result", "thinking"]),
+    type=click.Choice([message_type.value for message_type in MessageType]),
     help="Filter by message content type",
 )
 @click.option("--limit", "-n", type=int, default=50, help="Max messages to return")
@@ -241,7 +242,7 @@ def messages_verb(
 
 
 @click.command("raw")
-@click.argument("conversation_id", required=False)
+@click.argument("conversation_id", required=False, shell_complete=complete_conversation_ids)
 @click.option("--limit", "-n", type=int, default=50, help="Max raw artifacts to return")
 @click.option("--offset", type=int, default=0, help="Offset for pagination")
 @click.option(

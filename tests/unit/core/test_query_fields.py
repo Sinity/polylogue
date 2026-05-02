@@ -134,6 +134,22 @@ def test_query_field_catalog_marks_storage_stats_join_fields() -> None:
     assert _needs_stats_join() is False
 
 
+def test_query_field_catalog_marks_completion_sources() -> None:
+    descriptors = {descriptor.name: descriptor for descriptor in QUERY_FIELD_DESCRIPTORS}
+
+    assert descriptors["conversation_id"].completion_source == "conversation_id"
+    assert descriptors["since_session_id"].completion_source == "conversation_id"
+    assert descriptors["providers"].completion_source == "provider"
+    assert descriptors["excluded_providers"].completion_source == "provider"
+    assert descriptors["repo_names"].completion_source == "repo"
+    assert descriptors["cwd_prefix"].completion_source == "cwd_prefix"
+    assert descriptors["tags"].completion_source == "tag"
+    assert descriptors["excluded_tags"].completion_source == "tag"
+    assert descriptors["tool_terms"].completion_source == "tool"
+    assert descriptors["excluded_tool_terms"].completion_source == "tool"
+    assert descriptors["message_type"].completion_source == "message_type"
+
+
 def test_query_spec_normalizers_cover_scalar_iterable_and_error_paths() -> None:
     assert split_csv(None) == ()
     assert split_csv("file_read, shell") == ("file_read", "shell")

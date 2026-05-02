@@ -61,11 +61,11 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | --- | --- |
 | `polylogue` | `polylogue/cli/click_app.py:50` `polylogue.cli.click_app.cli` |
 | `polylogue auth` | `polylogue/cli/commands/auth.py:16` `polylogue.cli.commands.auth.auth_command` |
-| `polylogue bulk-export` | `polylogue/cli/query_verbs.py:109` `polylogue.cli.query_verbs.bulk_export_verb` |
+| `polylogue bulk-export` | `polylogue/cli/query_verbs.py:110` `polylogue.cli.query_verbs.bulk_export_verb` |
 | `polylogue completions` | `polylogue/cli/commands/completions.py:9` `polylogue.cli.commands.completions.completions_command` |
-| `polylogue count` | `polylogue/cli/query_verbs.py:45` `polylogue.cli.query_verbs.count_verb` |
+| `polylogue count` | `polylogue/cli/query_verbs.py:46` `polylogue.cli.query_verbs.count_verb` |
 | `polylogue dashboard` | `polylogue/cli/commands/dashboard.py:10` `polylogue.cli.commands.dashboard.dashboard_command` |
-| `polylogue delete` | `polylogue/cli/query_verbs.py:137` `polylogue.cli.query_verbs.delete_verb` |
+| `polylogue delete` | `polylogue/cli/query_verbs.py:138` `polylogue.cli.query_verbs.delete_verb` |
 | `polylogue diagnostics` | `polylogue/cli/commands/diagnostics.py:15` `polylogue.cli.commands.diagnostics.diagnostics_group` |
 | `polylogue diagnostics pace` | `polylogue/cli/commands/diagnostics.py:20` `polylogue.cli.commands.diagnostics.pace_command` |
 | `polylogue diagnostics tools` | `polylogue/cli/commands/diagnostics.py:139` `polylogue.cli.commands.diagnostics.tools_command` |
@@ -87,11 +87,11 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `polylogue insights threads` | `polylogue/cli/commands/insights.py:100` `polylogue.cli.commands.insights._make_callback.<locals>.callback` |
 | `polylogue insights week-summaries` | `polylogue/cli/commands/insights.py:100` `polylogue.cli.commands.insights._make_callback.<locals>.callback` |
 | `polylogue insights work-events` | `polylogue/cli/commands/insights.py:100` `polylogue.cli.commands.insights._make_callback.<locals>.callback` |
-| `polylogue list` | `polylogue/cli/query_verbs.py:22` `polylogue.cli.query_verbs.list_verb` |
-| `polylogue messages` | `polylogue/cli/query_verbs.py:179` `polylogue.cli.query_verbs.messages_verb` |
+| `polylogue list` | `polylogue/cli/query_verbs.py:23` `polylogue.cli.query_verbs.list_verb` |
+| `polylogue messages` | `polylogue/cli/query_verbs.py:180` `polylogue.cli.query_verbs.messages_verb` |
 | `polylogue neighbors` | `polylogue/cli/commands/neighbors.py:42` `polylogue.cli.commands.neighbors.neighbors_command` |
-| `polylogue open` | `polylogue/cli/query_verbs.py:94` `polylogue.cli.query_verbs.open_verb` |
-| `polylogue raw` | `polylogue/cli/query_verbs.py:243` `polylogue.cli.query_verbs.raw_verb` |
+| `polylogue open` | `polylogue/cli/query_verbs.py:95` `polylogue.cli.query_verbs.open_verb` |
+| `polylogue raw` | `polylogue/cli/query_verbs.py:244` `polylogue.cli.query_verbs.raw_verb` |
 | `polylogue reset` | `polylogue/cli/commands/reset.py:23` `polylogue.cli.commands.reset.reset_command` |
 | `polylogue resume` | `polylogue/cli/commands/resume.py:22` `polylogue.cli.commands.resume.resume_command` |
 | `polylogue run` | `polylogue/cli/commands/run.py:178` `polylogue.cli.commands.run.run_command` |
@@ -110,8 +110,8 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `polylogue schema compare` | `polylogue/cli/commands/schema.py:56` `polylogue.cli.commands.schema.schema_compare` |
 | `polylogue schema explain` | `polylogue/cli/commands/schema.py:94` `polylogue.cli.commands.schema.schema_explain` |
 | `polylogue schema list` | `polylogue/cli/commands/schema.py:45` `polylogue.cli.commands.schema.schema_list` |
-| `polylogue show` | `polylogue/cli/query_verbs.py:80` `polylogue.cli.query_verbs.show_verb` |
-| `polylogue stats` | `polylogue/cli/query_verbs.py:52` `polylogue.cli.query_verbs.stats_verb` |
+| `polylogue show` | `polylogue/cli/query_verbs.py:81` `polylogue.cli.query_verbs.show_verb` |
+| `polylogue stats` | `polylogue/cli/query_verbs.py:53` `polylogue.cli.query_verbs.stats_verb` |
 | `polylogue tags` | `polylogue/cli/commands/tags.py:12` `polylogue.cli.commands.tags.tags_command` |
 
 ## Schema Annotation Subjects
