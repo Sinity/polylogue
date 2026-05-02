@@ -10,6 +10,7 @@ import pytest
 from polylogue.archive.query.fields import (
     QUERY_FIELD_DESCRIPTORS,
     active_plan_field_names,
+    api_query_field_names,
     mcp_query_field_names,
     query_completion_sources,
     storage_filters_require_stats_join,
@@ -143,6 +144,21 @@ def test_query_field_catalog_covers_mcp_query_request_fields() -> None:
     mcp_fields = {field.name for field in fields(MCPConversationQueryRequest)}
 
     assert mcp_fields - mcp_query_field_names() == set()
+
+
+def test_query_field_catalog_covers_api_query_method_names() -> None:
+    from inspect import signature
+
+    from polylogue.api.archive import PolylogueArchiveMixin
+    from polylogue.archive.query.read_fields import read_field_names_for_surface
+
+    covered = api_query_field_names() | read_field_names_for_surface("api")
+    method_names = ("search", "list_conversations")
+
+    for method_name in method_names:
+        params = set(signature(getattr(PolylogueArchiveMixin, method_name)).parameters)
+        params.discard("self")
+        assert params - covered == set()
 
 
 def test_query_field_catalog_marks_storage_stats_join_fields() -> None:
