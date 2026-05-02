@@ -9,6 +9,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, TypeVar
 
 from polylogue.archive.filter.types import SortField
+from polylogue.archive.message.types import validate_message_type_filter
 from polylogue.archive.query.fields import describe_spec_fields, query_spec_has_selection_filters
 from polylogue.archive.query.plan import ConversationQueryPlan
 from polylogue.archive.viewport.viewports import ToolCategory
@@ -116,6 +117,15 @@ def optional_text(value: object) -> str | None:
     return str(value)
 
 
+def optional_message_type(value: object) -> str | None:
+    if not value:
+        return None
+    try:
+        return validate_message_type_filter(value).value
+    except ValueError as exc:
+        raise QuerySpecError("message_type", str(value)) from exc
+
+
 def optional_int(value: object) -> int | None:
     if not value:
         return None
@@ -200,7 +210,7 @@ def build_query_spec_from_params(
         min_words=optional_int(params.get("min_words")),
         similar_text=optional_text(params.get("similar_text")),
         since_session_id=optional_text(params.get("since_session_id") or params.get("since_session")),
-        message_type=optional_text(params.get("message_type")),
+        message_type=optional_message_type(params.get("message_type")),
         offset=optional_int(params.get("offset")) or 0,
     )
 
