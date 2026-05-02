@@ -9,7 +9,7 @@ The package root intentionally exposes the archive-facing contract:
 
 Higher-order semantic-analysis helpers remain public, but they live behind
 their precise modules under ``polylogue.archive`` and related packages rather
-than being implied as part of the same root-level product surface.
+than being implied as part of the same root-level insight surface.
 """
 
 from __future__ import annotations
