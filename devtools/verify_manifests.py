@@ -10,9 +10,11 @@ import shlex
 import sys
 from datetime import date
 from pathlib import Path
+from typing import Any
 
 import yaml
 
+from devtools.authored_scenario_catalog import get_authored_scenario_catalog
 from devtools.command_catalog import COMMANDS
 
 _COVERAGE_AXIS_KEYS = ("domain", "subject", "area", "dimension", "artifact", "platform", "concern")
@@ -20,7 +22,7 @@ _COVERAGE_GAP_SEVERITIES = {"info", "minor", "major", "serious"}
 _EVIDENCE_COMMANDS = {"pytest", "ruff", "mypy", "nix", "polylogue", "polylogued", "polylogue-mcp"}
 _COVERAGE_COMMAND_FIELDS = {"generated_by", "verified_by", "verification_command"}
 _COVERAGE_PATH_FIELDS = {"config_location", "location", "path", "strategies_location"}
-_COVERAGE_PATH_LIST_FIELDS = {"locations", "tests"}
+_COVERAGE_PATH_LIST_FIELDS = {"locations", "paths_to_mutate", "tests"}
 
 
 def load_manifest(path: Path) -> dict[str, object]:
@@ -254,6 +256,116 @@ def check_coverage_status_claims(plans_dir: Path) -> list[str]:
     return errors
 
 
+def check_campaign_coverage_catalog(plans_dir: Path) -> list[str]:
+    """Validate campaign-coverage.yaml against the authored campaign catalog."""
+    errors: list[str] = []
+    path = plans_dir / "campaign-coverage.yaml"
+    if not path.exists():
+        return errors
+    try:
+        data = load_manifest(path)
+    except ValueError as exc:
+        return [str(exc)]
+
+    catalog = get_authored_scenario_catalog()
+    errors.extend(
+        _compare_campaign_section(
+            path=path,
+            section="mutation_campaigns",
+            actual=data.get("mutation_campaigns"),
+            expected={
+                entry.name: {
+                    "paths_to_mutate": tuple(entry.paths_to_mutate),
+                    "tests": tuple(entry.tests),
+                    "status": "active",
+                }
+                for entry in catalog.mutation_campaigns
+            },
+        )
+    )
+    errors.extend(
+        _compare_campaign_section(
+            path=path,
+            section="benchmark_campaigns",
+            actual=data.get("benchmark_campaigns"),
+            expected={
+                entry.name: {
+                    "tests": tuple(entry.tests),
+                    "status": "active",
+                }
+                for entry in catalog.benchmark_campaigns
+            },
+        )
+    )
+    return errors
+
+
+def _compare_campaign_section(
+    *,
+    path: Path,
+    section: str,
+    actual: object,
+    expected: dict[str, dict[str, Any]],
+) -> list[str]:
+    errors: list[str] = []
+    actual_by_name = _manifest_named_entries(path, section, actual, errors)
+    if actual_by_name is None:
+        return errors
+
+    actual_names = set(actual_by_name)
+    expected_names = set(expected)
+    for name in sorted(expected_names - actual_names):
+        errors.append(f"{path}: {section} missing catalog campaign {name!r}")
+    for name in sorted(actual_names - expected_names):
+        errors.append(f"{path}: {section} declares unknown campaign {name!r}")
+
+    for name in sorted(actual_names & expected_names):
+        payload = actual_by_name[name]
+        for field, expected_value in expected[name].items():
+            actual_value: object
+            if isinstance(expected_value, tuple):
+                actual_value = _string_tuple(payload.get(field))
+            else:
+                actual_value = payload.get(field)
+            if actual_value != expected_value:
+                errors.append(
+                    f"{path}: {section}[{name!r}] {field} does not match authored catalog "
+                    f"(expected {expected_value!r}, got {actual_value!r})"
+                )
+    return errors
+
+
+def _manifest_named_entries(
+    path: Path,
+    section: str,
+    value: object,
+    errors: list[str],
+) -> dict[str, dict[object, object]] | None:
+    if not isinstance(value, list):
+        errors.append(f"{path}: {section!r} must be a list")
+        return None
+    entries: dict[str, dict[object, object]] = {}
+    for index, item in enumerate(value):
+        if not isinstance(item, dict):
+            errors.append(f"{path}: {section}[{index}] must be a mapping")
+            continue
+        name = item.get("name")
+        if not isinstance(name, str) or not name.strip():
+            errors.append(f"{path}: {section}[{index}] missing name")
+            continue
+        if name in entries:
+            errors.append(f"{path}: {section}[{index}] duplicate campaign name {name!r}")
+            continue
+        entries[name] = item
+    return entries
+
+
+def _string_tuple(value: object) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        return ()
+    return tuple(item for item in value if isinstance(item, str))
+
+
 def _iter_manifest_mappings(
     value: object, prefix: tuple[str, ...] = ()
 ) -> list[tuple[tuple[str, ...], dict[object, object]]]:
@@ -381,6 +493,7 @@ def main(argv: list[str] | None = None) -> int:
         check_coverage_gaps,
         check_coverage_references,
         check_coverage_status_claims,
+        check_campaign_coverage_catalog,
     ):
         try:
             all_errors.extend(check(plans_dir))
