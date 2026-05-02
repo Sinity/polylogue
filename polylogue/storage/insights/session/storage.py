@@ -1,4 +1,4 @@
-"""Session-product storage writes (profiles, timelines, aggregates)."""
+"""Session insight storage writes (profiles, timelines, aggregates)."""
 
 from __future__ import annotations
 

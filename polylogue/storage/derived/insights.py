@@ -191,7 +191,7 @@ def build_profile_statuses(metrics: Metrics) -> dict[str, DerivedModelStatus]:
 
 
 # ---------------------------------------------------------------------------
-# Timeline/work-product statuses
+# Timeline/work insight statuses
 # ---------------------------------------------------------------------------
 
 
@@ -381,7 +381,7 @@ def build_aggregate_statuses(metrics: Metrics) -> dict[str, DerivedModelStatus]:
 # ---------------------------------------------------------------------------
 
 
-def build_archive_product_statuses(metrics: Metrics) -> dict[str, DerivedModelStatus]:
+def build_archive_insight_statuses(metrics: Metrics) -> dict[str, DerivedModelStatus]:
     return {
         **build_action_statuses(metrics),
         **build_profile_statuses(metrics),
@@ -390,4 +390,4 @@ def build_archive_product_statuses(metrics: Metrics) -> dict[str, DerivedModelSt
     }
 
 
-__all__ = ["build_archive_product_statuses"]
+__all__ = ["build_archive_insight_statuses"]

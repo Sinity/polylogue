@@ -94,7 +94,7 @@ def test_collect_derived_statuses_skips_retrieval_band_recomputation(
             return EmbeddingStatsSnapshot()
 
         monkeypatch.setattr(derived_status_mod, "read_embedding_stats_sync", fake_embedding_stats)
-        monkeypatch.setattr(derived_status_mod, "build_archive_product_statuses", lambda _metrics: {})
+        monkeypatch.setattr(derived_status_mod, "build_archive_insight_statuses", lambda _metrics: {})
         monkeypatch.setattr(derived_status_mod, "build_retrieval_statuses", lambda _metrics: {})
 
         assert derived_status_mod.collect_derived_model_statuses_sync(conn, verify_full=False) == {}

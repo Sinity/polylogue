@@ -19,7 +19,7 @@ CountEquality: TypeAlias = tuple[str, str]
 
 @dataclass(frozen=True)
 class SessionInsightTableDescriptor:
-    """Table presence and optional row-count query for product status."""
+    """Table presence and optional row-count query for insight status."""
 
     key: str
     table_name: str
@@ -146,7 +146,7 @@ class SessionInsightCountDescriptor:
 
 @dataclass(frozen=True)
 class SessionInsightReadyDescriptor:
-    """Readiness predicate over a product table and named status counts."""
+    """Readiness predicate over an insight table and named status counts."""
 
     ready_key: SessionInsightReadyFlag
     table_key: str

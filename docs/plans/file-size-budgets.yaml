@@ -35,7 +35,7 @@ exceptions:
 
   - path: tests/unit/storage/test_store_ops.py
     ceiling: 2000
-    reason: "tracked split into CRUD/FTS/hybrid/product-persistence contracts"
+    reason: "tracked split into CRUD/FTS/hybrid/insight-persistence contracts"
 
   - path: tests/unit/sources/test_models.py
     ceiling: 1700
@@ -51,7 +51,7 @@ exceptions:
 
   - path: tests/unit/mcp/test_tool_contracts.py
     ceiling: 1400
-    reason: "tracked split into archive-query vs product-tool contracts"
+    reason: "tracked split into archive-query vs insight-tool contracts"
 
   - path: tests/unit/pipeline/test_run_sources.py
     ceiling: 1400
