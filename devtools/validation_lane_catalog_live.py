@@ -23,7 +23,7 @@ polylogue_lane = partial(_polylogue_lane, category="live")
 devtools_lane = partial(_devtools_lane, category="live")
 
 
-def _live_product_lanes() -> dict[str, LaneEntry]:
+def _live_insight_lanes() -> dict[str, LaneEntry]:
     return {
         spec.name: polylogue_lane(
             spec.name,
@@ -88,7 +88,7 @@ LIVE_LANES: dict[str, LaneEntry] = {
         "--json",
     ),
     **_live_operational_lanes(),
-    **_live_product_lanes(),
+    **_live_insight_lanes(),
     **_memory_budget_operational_lanes(),
 }
 

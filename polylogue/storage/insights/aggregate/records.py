@@ -1,4 +1,4 @@
-"""Aggregate derived product storage models."""
+"""Aggregate derived insight storage models."""
 
 from __future__ import annotations
 

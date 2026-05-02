@@ -116,16 +116,16 @@ def _first_non_option(argv: tuple[str, ...]) -> str | None:
     return None
 
 
-def _metadata_for_polylogue_products(argv: tuple[str, ...]) -> ScenarioMetadata:
+def _metadata_for_polylogue_insights(argv: tuple[str, ...]) -> ScenarioMetadata:
     from polylogue.insights.registry import INSIGHT_REGISTRY
 
     try:
-        products_index = argv.index("insights")
+        insights_index = argv.index("insights")
     except ValueError:
         return ScenarioMetadata()
-    if products_index + 1 >= len(argv):
+    if insights_index + 1 >= len(argv):
         return ScenarioMetadata()
-    subcommand = argv[products_index + 1]
+    subcommand = argv[insights_index + 1]
     direct_operation = _INSIGHT_SUBCOMMAND_OPERATION_NAMES.get(subcommand)
     if direct_operation:
         return _metadata_for_operations(direct_operation)
@@ -213,7 +213,7 @@ def _default_metadata_for_polylogue(argv: tuple[str, ...]) -> ScenarioMetadata:
     if "schema" in argv:
         return _metadata_for_polylogue_schema(argv)
     if "insights" in argv:
-        return _metadata_for_polylogue_products(argv)
+        return _metadata_for_polylogue_insights(argv)
     if "doctor" in argv:
         return _metadata_for_polylogue_doctor(argv)
     if "embed" in argv:

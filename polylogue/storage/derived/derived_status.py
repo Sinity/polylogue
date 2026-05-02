@@ -8,7 +8,7 @@ from typing import TypeAlias
 
 from polylogue.maintenance.models import DerivedModelStatus
 from polylogue.storage.action_events.status import action_event_read_model_status_sync
-from polylogue.storage.derived.insights import build_archive_product_statuses, pending_docs, pending_rows
+from polylogue.storage.derived.insights import build_archive_insight_statuses, pending_docs, pending_rows
 from polylogue.storage.embeddings.embedding_stats import read_embedding_stats_sync
 from polylogue.storage.embeddings.models import EmbeddingStatsSnapshot
 from polylogue.storage.fts.fts_lifecycle import message_fts_readiness_sync
@@ -175,7 +175,7 @@ def collect_derived_model_statuses_sync(
     )
 
     return {
-        **build_archive_product_statuses(metrics),
+        **build_archive_insight_statuses(metrics),
         **build_retrieval_statuses(metrics),
     }
 

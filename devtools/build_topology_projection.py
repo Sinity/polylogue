@@ -118,7 +118,7 @@ STORAGE_ROOT_KEEP = frozenset(
 
 # Placement owner per target prefix.
 TARGET_TO_OWNER = [
-    ("polylogue/insights/", "product-domain"),
+    ("polylogue/insights/", "insight-domain"),
     ("polylogue/api/", "api-surface"),
     ("polylogue/artifacts/", "artifact-domain"),
     ("polylogue/readiness/", "readiness-domain"),

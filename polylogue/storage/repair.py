@@ -444,7 +444,7 @@ def collect_archive_debt_statuses_sync(
         "session_insights": _archive_debt_status(
             "session_insights",
             issue_count=session_insights,
-            detail="Session-product read models ready"
+            detail="Session insight read models ready"
             if session_insights == 0
             else f"{session_insights:,} pending/stale/orphaned session-insight rows",
         ),

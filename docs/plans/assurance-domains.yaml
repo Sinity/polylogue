@@ -183,8 +183,8 @@ domains:
     oracle_present: false
     oracle: null
     notes: >
-      Scenario specs exist (scenarios/) for CLI surfaces, product
-      surfaces, operational surfaces, corpus scenarios. No oracle
+      Scenario specs exist (scenarios/) for CLI, insight,
+      operational, and corpus surfaces. No oracle
       verifying spec-to-behavior correspondence.
 
   migration_safety:
@@ -244,7 +244,7 @@ domains:
     oracle_present: true
     oracle: construction_sanity
     notes: >
-      Scenario surface families: CLI, product, operational, corpus.
+      Scenario surface families: CLI, insight, operational, corpus.
       ScenarioSpec base class with assertions, projections,
       metadata. No systematic coverage audit of which subjects
       have scenarios.

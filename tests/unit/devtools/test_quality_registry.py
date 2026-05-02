@@ -113,22 +113,22 @@ def test_build_quality_registry_exposes_live_catalogs() -> None:
     assert "session_insight_fts" in session_insights.artifact_targets
     assert session_insights.operation_targets == ("materialize-session-insights",)
     assert session_insights.tags == ("benchmark", "synthetic", "session-insights")
-    product_profiles = next(
+    insight_profiles = next(
         entry for entry in registry.catalog.exercise_scenarios if entry.name == "json-insights-profiles"
     )
-    assert product_profiles.path_targets == ("session-profile-query-loop",)
-    assert product_profiles.artifact_targets == (
+    assert insight_profiles.path_targets == ("session-profile-query-loop",)
+    assert insight_profiles.artifact_targets == (
         "session_profile_rows",
         "session_profile_merged_fts",
         "session_profile_results",
     )
-    assert product_profiles.operation_targets == ("cli.json-contract", "query-session-profiles")
-    product_threads = next(
+    assert insight_profiles.operation_targets == ("cli.json-contract", "query-session-profiles")
+    insight_threads = next(
         entry for entry in registry.catalog.exercise_scenarios if entry.name == "json-insights-threads"
     )
-    assert product_threads.path_targets == ("work-thread-query-loop",)
-    assert product_threads.artifact_targets == ("work_thread_rows", "work_thread_fts", "work_thread_results")
-    assert product_threads.operation_targets == ("cli.json-contract", "query-work-threads")
+    assert insight_threads.path_targets == ("work-thread-query-loop",)
+    assert insight_threads.artifact_targets == ("work_thread_rows", "work_thread_fts", "work_thread_results")
+    assert insight_threads.operation_targets == ("cli.json-contract", "query-work-threads")
     action_event_preview = next(
         entry for entry in registry.scenario_projections if entry.name == "json-doctor-action-event-preview"
     )

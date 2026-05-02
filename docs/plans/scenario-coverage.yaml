@@ -24,12 +24,12 @@ families:
       commands via help-output and exit-code assertions.
 
   - name: insight_surfaces
-    description: Product command surface exercises
+    description: Insight command surface exercises
     subject: cli_surface
     scenario_count: dynamic
     location: polylogue/scenarios/insight_surfaces.py
     notes: >
-      Covers product commands (resume, insights) and their
+      Covers insight commands (resume, insights) and their
       rendering contracts. Includes live and contract variants.
 
   - name: operational_surfaces

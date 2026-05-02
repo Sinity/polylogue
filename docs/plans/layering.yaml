@@ -2,7 +2,7 @@
 #
 # Each rule declares forbidden imports for a package ring. The current
 # enforced baseline is intentionally the no-backward-import contract: substrate
-# rings must not reach into product/lab/surface adapters. Aspirational surface
+# rings must not reach into insight/lab/surface adapters. Aspirational surface
 # slimming belongs in coverage manifests until call sites are moved.
 #
 # Semantics:

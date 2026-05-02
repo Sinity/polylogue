@@ -22,10 +22,10 @@ Selected vertical slices:
 
 This surface is intentionally a repo operator surface. It works over proof
 subjects, generated docs, changed files, evidence envelopes, and local
-verification artifacts. Product/archive-facing checks remain in the archive CLI
+verification artifacts. Archive-facing checks remain in the archive CLI
 where they already belong, such as `polylogue doctor --proof` and schema proof
 rendering. Schema package auditing moved to `devtools schema-audit` so
-repository QA does not pollute first-contact product help.
+repository QA does not pollute first-contact archive help.
 
 ## Catalog Grounding
 
@@ -56,7 +56,7 @@ settled.
 the archive CLI. That blurs the boundary between archive workflows and
 repository proof obligations.
 
-`polylogue audit` overloaded product help with repository QA. Keeping the lab
+`polylogue audit` overloaded archive help with repository QA. Keeping the lab
 surface in `devtools` avoids turning archive usage into source-tree ceremony.
 
 Exposing only `devtools render-verification-catalog` is now too narrow. The

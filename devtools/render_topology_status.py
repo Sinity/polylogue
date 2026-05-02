@@ -24,7 +24,7 @@ GENERATED_END = "<!-- END GENERATED: topology-status -->"
 
 OWNER_TITLES = {
     "api-surface": "library API and sync adapters",
-    "product-domain": "derived product modules",
+    "insight-domain": "derived insight modules",
     "archive-filter": "archive filter semantics",
     "archive-query": "archive query semantics",
     "storage-repository": "repository persistence adapters",
