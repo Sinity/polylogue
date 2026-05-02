@@ -29,6 +29,8 @@ documentation polish do not require an entry.
 
 - `polylogued` as the daemon/service executable; live source watching now runs
   as `polylogued watch`.
+- `polylogued run` to run live watching and the browser-capture receiver
+  together as daemon-owned components.
 - `dependabot.yml` for weekly Python and GitHub Actions updates with
   patch grouping.
 - `actionlint` workflow validating workflow YAML on PRs that touch
