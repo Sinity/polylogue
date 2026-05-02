@@ -28,17 +28,17 @@ dependencies = [
   "google-auth-httplib2",
   "httpx[http2]>=0.27.0,<1.0",
   "rich>=13.0.0",
-  "textual>=0.47.0",
+  "textual>=8.2.5",
   "jinja2",
   "markdown-it-py",
   "pygments>=2.20",
   "ijson",
-  "sqlite-vec>=0.1.6",  # Self-contained vector search
+  "sqlite-vec>=0.1.9",  # Self-contained vector search
   "questionary>=2.0.0",
-  "click>=8.1.0,<9.0",
+  "click>=8.3.3,<9.0",
   "tenacity>=8.0.0",
   "dateparser>=1.1.0",
-  "orjson>=3.9.0",
+  "orjson>=3.11.8",
   "structlog>=24.1.0",
   "pydantic>=2.0,<3.0",
   "aiosqlite>=0.19.0",  # Async SQLite support
@@ -50,7 +50,7 @@ dependencies = [
   "watchfiles>=0.21",  # Rust-backed filesystem watcher for live ingestion
   # Transitive constraints to avoid known CVEs surfaced by pip-audit:
   "cryptography>=46.0.7",  # CVE-2026-39892 (transitive via google-auth)
-  "python-multipart>=0.0.26",  # CVE-2026-40347 (transitive via mcp)
+  "python-multipart>=0.0.27",  # CVE-2026-40347 (transitive via mcp)
 ]
 
 [project.optional-dependencies]
@@ -72,7 +72,7 @@ dev = [
   "mypy>=1.17,<1.21",
   "types-dateparser>=1.2.0",  # dateparser library stubs for mypy
   "types-PyYAML>=6.0",  # yaml library stubs for mypy
-  "ruff>=0.1.0",
+  "ruff>=0.15.12",
   "pre-commit>=3.5.0",
   "pip-audit>=2.7",  # OSV-backed CVE scanning over the locked dev environment
 ]
@@ -92,7 +92,7 @@ tree-sitter = [
   "tree-sitter-rust>=0.21.0",
   "tree-sitter-go>=0.21.0",
   "tree-sitter-java>=0.21.0",
-  "tree-sitter-c>=0.21.0",
+  "tree-sitter-c>=0.24.2",
   "tree-sitter-cpp>=0.22.0",
   "tree-sitter-bash>=0.21.0",
   "tree-sitter-html>=0.21.0",
