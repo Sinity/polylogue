@@ -8,10 +8,10 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 
 ## Snapshot
 
-- subjects: `500`
+- subjects: `501`
 - claims: `44`
 - runner bindings: `44`
-- proof obligations: `564`
+- proof obligations: `565`
 
 ## Quality Checks
 
@@ -38,7 +38,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `archive.query_law` | 1 |
 | `artifact.path` | 27 |
 | `assurance.coverage_gap` | 23 |
-| `assurance.coverage_item` | 91 |
+| `assurance.coverage_item` | 92 |
 | `assurance.coverage_manifest` | 9 |
 | `cli.command` | 54 |
 | `cli.json_command` | 5 |
@@ -152,7 +152,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `benchmark_coverage` | `assurance.coverage_item` | 3 |
 | `cli_surface` | `assurance.coverage_item` | 2 |
 | `distribution` | `assurance.coverage_gap` | 7 |
-| `distribution` | `assurance.coverage_item` | 7 |
+| `distribution` | `assurance.coverage_item` | 8 |
 | `distribution` | `assurance.coverage_manifest` | 1 |
 | `docs_media` | `assurance.coverage_gap` | 3 |
 | `docs_media` | `assurance.coverage_item` | 17 |
@@ -289,7 +289,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `archive.query.provider_filter_consistency` | 1 |
 | `artifact.path.dependency_closure` | 11 |
 | `assurance.coverage.gap_has_closure_path` | 23 |
-| `assurance.coverage.item_declared` | 91 |
+| `assurance.coverage.item_declared` | 92 |
 | `assurance.coverage.manifest_structured` | 9 |
 | `cli.command.help` | 54 |
 | `cli.command.json_envelope` | 5 |
