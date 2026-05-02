@@ -54,6 +54,9 @@ documentation polish do not require an entry.
 
 ### Changed
 
+- `--resource-mode` and Polylogue CLI self-demotion were removed from
+  foreground maintenance commands; workstation resource policy belongs in the
+  host environment and daemon supervision, not in product-level CLI flags.
 - Query/file-reference filters now use `referenced_path` / `--referenced-path`
   consistently, and MCP conversation reads return headers while message bodies
   live behind paginated `get_messages` / `messages` reads.

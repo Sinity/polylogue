@@ -150,7 +150,7 @@ class TestParsingServiceParseSources:
         # In the unified ingest flow, validation backlog is collected as part of parse candidates
         mock_collect_validate.assert_awaited_once()
         mock_collect_parse.assert_awaited_once()
-        mock_parse.assert_awaited_once_with(raw_ids=["raw-1", "raw-2"], progress_callback=None)
+        mock_parse.assert_awaited_once_with(raw_ids=["raw-1", "raw-2"], progress_callback=None, force_write=False)
         assert result.counts["conversations"] == 2
         assert result.counts["messages"] == 5
         assert result.processed_ids == {"conv-1", "conv-2"}
@@ -245,6 +245,7 @@ class TestParsingServiceParseSources:
         mock_parse.assert_awaited_once_with(
             raw_ids=["raw-1", "raw-2", "raw-3", "raw-4"],
             progress_callback=None,
+            force_write=False,
         )
 
     async def test_ingest_skips_parse_when_nothing_acquired(self) -> None:
@@ -315,7 +316,7 @@ class TestParsingServiceParseSources:
             drive_config=mock_config.drive_config,
         )
         # In unified ingest, validation is inline — callback passed to parse_from_raw
-        mock_parse.assert_awaited_once_with(raw_ids=["raw-1"], progress_callback=callback)
+        mock_parse.assert_awaited_once_with(raw_ids=["raw-1"], progress_callback=callback, force_write=False)
 
     async def test_backend_not_initialized_raises(self) -> None:
         mock_repository = MagicMock()

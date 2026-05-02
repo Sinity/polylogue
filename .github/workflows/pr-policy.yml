@@ -1,63 +1,12 @@
 name: Pull Request Policy
 
 on:
-  pull_request:
-    branches: [master]
-    types: [opened, edited, reopened, synchronize, ready_for_review]
-
-permissions:
-  contents: read
-  pull-requests: read
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  workflow_dispatch:
 
 jobs:
-  validate:
-    name: Validate PR metadata
-    # Skip dependabot — it generates its own conventional title via the
-    # `chore(deps):` prefix but doesn't fill the human PR template, and the
-    # branch name follows `dependabot/<ecosystem>/<dep>-<version>`. The
-    # changes are mechanical version bumps that don't need the same review
-    # framing.
-    if: github.event.pull_request.user.login != 'dependabot[bot]'
+  disabled:
+    name: Disabled during CI outage
     runs-on: ubuntu-latest
-    timeout-minutes: 1
     steps:
-      - name: Check branch name, title, and body sections
-        env:
-          HEAD_REF: ${{ github.head_ref }}
-          PR_TITLE: ${{ github.event.pull_request.title }}
-          PR_BODY: ${{ github.event.pull_request.body || '' }}
-        run: |
-          python3 - <<'PY'
-          import os, re, sys
-
-          branch = os.environ["HEAD_REF"]
-          title = os.environ["PR_TITLE"]
-          body = os.environ["PR_BODY"]
-          errors: list[str] = []
-
-          # Branch: feature/<category>/<kebab-description>
-          if not re.match(r"^feature/(feat|fix|refactor|perf|test|docs|chore)/[a-z0-9][a-z0-9-]*$", branch):
-              errors.append("Branch must match `feature/<category>/<description>` (categories: feat|fix|refactor|perf|test|docs|chore)")
-
-          # Title: conventional commit prefix
-          if not re.match(r"^(feat|fix|refactor|test|docs|chore|perf)(\([^)]+\))?: .+", title):
-              errors.append("Title must use conventional form: `feat: add X`, `fix(cli): correct Y`")
-
-          # Body: required sections (ignore content inside fenced code blocks)
-          body_without_fences = re.sub(r"```.*?```", "", body, flags=re.DOTALL)
-          for section in ("## Summary", "## Problem", "## Solution", "## Verification"):
-              if section not in body_without_fences:
-                  errors.append(f"Missing required section: `{section}`")
-
-          if errors:
-              print("PR policy check failed:\n")
-              for e in errors:
-                  print(f"  - {e}")
-              sys.exit(1)
-
-          print("PR policy check passed.")
-          PY
+      - run: |
+          echo "Pull Request Policy is disabled during the May 2026 CI outage."

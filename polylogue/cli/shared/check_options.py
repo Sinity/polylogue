@@ -33,13 +33,6 @@ CHECK_COMMAND_OPTION_DECORATORS: tuple[CheckCommandDecorator, ...] = (
         "--vacuum", is_flag=True, help="Reclaim unused space after maintenance (requires --repair or --cleanup)"
     ),
     click.option(
-        "--resource-mode",
-        type=click.Choice(["auto", "scope", "process", "off"]),
-        default="auto",
-        show_default=True,
-        help="Resource isolation for mutating maintenance: systemd scope, process demotion, or off.",
-    ),
-    click.option(
         "--deep",
         is_flag=True,
         help="Run SQLite integrity and expensive orphan scans (slow on large databases)",

@@ -44,8 +44,6 @@ def emit_json_output(result: CheckCommandResult, options: CheckCommandOptions) -
             "targets": list(result.maintenance_targets),
             "items": [repair.to_dict() for repair in result.maintenance_results],
         }
-        if result.resource_boundary is not None:
-            maintenance_payload["resource_mode"] = result.resource_boundary.to_dict()
         out["maintenance"] = json_document(maintenance_payload)
     if result.vacuum_result is not None:
         out["vacuum"] = result.vacuum_result.to_dict()

@@ -921,10 +921,6 @@ files:
     loc: 55
     target: polylogue/maintenance/models.py
     owner: stable
-  - path: polylogue/maintenance/resources.py
-    loc: 271
-    target: polylogue/maintenance/resources.py
-    owner: stable
   - path: polylogue/maintenance/targets.py
     loc: 249
     target: polylogue/maintenance/targets.py

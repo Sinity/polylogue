@@ -2,15 +2,6 @@ name: CI
 
 on:
   workflow_dispatch:
-  push:
-    branches: [master]
-  pull_request:
-    branches: [master]
-    types:
-      - opened
-      - reopened
-      - synchronize
-      - ready_for_review
 
 permissions:
   contents: read

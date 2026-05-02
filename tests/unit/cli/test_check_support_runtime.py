@@ -47,7 +47,6 @@ def _options(**overrides: object) -> CheckCommandOptions:
         "cleanup": False,
         "preview": False,
         "vacuum": False,
-        "resource_mode": "auto",
         "deep": False,
         "runtime": False,
         "check_daemon": False,
@@ -291,8 +290,6 @@ def test_schema_verification_and_maintenance_helpers_cover_runtime_paths() -> No
         check_workflow._run_maintenance(config, result, _options(repair=True), inputs)
     assert result.maintenance_targets == ("session_insights",)
     assert result.maintenance_results == [repair_result]
-    assert result.resource_boundary is not None
-    assert result.resource_boundary.workload == "doctor-maintenance"
     assert run_selected.call_args.kwargs["targets"] == ("session_insights",)
 
     env = _env()
