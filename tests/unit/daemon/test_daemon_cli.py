@@ -15,8 +15,17 @@ def test_polylogued_help_lists_watch_command() -> None:
     result = CliRunner().invoke(main, ["--help"])
 
     assert result.exit_code == 0
+    assert "browser-capture" in result.output
     assert "watch" in result.output
     assert "long-lived Polylogue local services" in result.output
+
+
+def test_polylogued_browser_capture_help_lists_service_commands() -> None:
+    result = CliRunner().invoke(main, ["browser-capture", "--help"])
+
+    assert result.exit_code == 0
+    assert "serve" in result.output
+    assert "status" in result.output
 
 
 def test_polylogued_watch_uses_default_sources() -> None:

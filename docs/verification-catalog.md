@@ -8,10 +8,10 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 
 ## Snapshot
 
-- subjects: `503`
+- subjects: `500`
 - claims: `44`
 - runner bindings: `44`
-- proof obligations: `573`
+- proof obligations: `564`
 
 ## Quality Checks
 
@@ -40,7 +40,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `assurance.coverage_gap` | 23 |
 | `assurance.coverage_item` | 91 |
 | `assurance.coverage_manifest` | 9 |
-| `cli.command` | 57 |
+| `cli.command` | 54 |
 | `cli.json_command` | 5 |
 | `diagnostic.observable` | 1 |
 | `error.surface` | 2 |
@@ -61,9 +61,6 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | --- | --- |
 | `polylogue` | `polylogue/cli/click_app.py:50` `polylogue.cli.click_app.cli` |
 | `polylogue auth` | `polylogue/cli/commands/auth.py:16` `polylogue.cli.commands.auth.auth_command` |
-| `polylogue browser-capture` | `polylogue/cli/commands/browser_capture.py:14` `polylogue.cli.commands.browser_capture.browser_capture_command` |
-| `polylogue browser-capture serve` | `polylogue/cli/commands/browser_capture.py:38` `polylogue.cli.commands.browser_capture.serve_command` |
-| `polylogue browser-capture status` | `polylogue/cli/commands/browser_capture.py:19` `polylogue.cli.commands.browser_capture.status_command` |
 | `polylogue bulk-export` | `polylogue/cli/query_verbs.py:109` `polylogue.cli.query_verbs.bulk_export_verb` |
 | `polylogue completions` | `polylogue/cli/commands/completions.py:9` `polylogue.cli.commands.completions.completions_command` |
 | `polylogue count` | `polylogue/cli/query_verbs.py:45` `polylogue.cli.query_verbs.count_verb` |
@@ -294,10 +291,10 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `assurance.coverage.gap_has_closure_path` | 23 |
 | `assurance.coverage.item_declared` | 91 |
 | `assurance.coverage.manifest_structured` | 9 |
-| `cli.command.help` | 57 |
+| `cli.command.help` | 54 |
 | `cli.command.json_envelope` | 5 |
-| `cli.command.no_traceback` | 57 |
-| `cli.command.plain_mode` | 57 |
+| `cli.command.no_traceback` | 54 |
+| `cli.command.plain_mode` | 54 |
 | `diagnostic.observable_trace_mapping` | 1 |
 | `error.machine_user_context` | 2 |
 | `generated.scenario.family_registered` | 9 |

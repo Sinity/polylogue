@@ -61,6 +61,8 @@ documentation polish do not require an entry.
 - Standalone live ingestion is no longer a root `polylogue watch` command; use
   `polylogued watch` for the long-running source watcher. `polylogue run
   --watch` remains the continuous pipeline-run mode.
+- Browser-capture receiver serving/status moved from root `polylogue
+  browser-capture` to `polylogued browser-capture`.
 - `Config` rejects relative `archive_root`, `render_root`, or `db_path`
   with `ConfigError` at construction.
 - `_privacy_level_value` raises `ValueError` on unknown level strings

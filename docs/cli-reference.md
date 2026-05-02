@@ -137,29 +137,28 @@ Options:
   -h, --help                      Show this message and exit.
 
 Commands:
-  auth             Authenticate with external services (Google Drive for...
-  browser-capture  Receive browser-extension captures into the capture...
-  bulk-export      Bulk export every matched conversation in one process.
-  completions      Generate shell completion scripts.
-  count            Print count of matched conversations.
-  dashboard        Launch the dashboard TUI.
-  delete           Delete matched conversations.
-  diagnostics      Temporal session diagnostics
-  doctor           Health check with optional maintenance and cleanup...
-  export           Export one known conversation by ID.
-  insights         Inspect durable archive insights.
-  list             List matched conversations.
-  messages         Show paginated messages for a conversation.
-  neighbors        Show explainable neighboring or near-duplicate...
-  open             Open matched conversation in browser/editor.
-  raw              Show raw archive artifacts for a conversation.
-  reset            Reset database, blob store, assets, rendered outputs,...
-  resume           Reconstruct work-state context for a fresh agent session.
-  run              Run pipeline stages on configured sources and/or...
-  schema           Inspect schema packages, versions, and evidence.
-  show             Show matched conversations with default full-content...
-  stats            Show statistics for matched conversations.
-  tags             List all tags with conversation counts.
+  auth         Authenticate with external services (Google Drive for...
+  bulk-export  Bulk export every matched conversation in one process.
+  completions  Generate shell completion scripts.
+  count        Print count of matched conversations.
+  dashboard    Launch the dashboard TUI.
+  delete       Delete matched conversations.
+  diagnostics  Temporal session diagnostics
+  doctor       Health check with optional maintenance and cleanup previews.
+  export       Export one known conversation by ID.
+  insights     Inspect durable archive insights.
+  list         List matched conversations.
+  messages     Show paginated messages for a conversation.
+  neighbors    Show explainable neighboring or near-duplicate candidates.
+  open         Open matched conversation in browser/editor.
+  raw          Show raw archive artifacts for a conversation.
+  reset        Reset database, blob store, assets, rendered outputs, or...
+  resume       Reconstruct work-state context for a fresh agent session.
+  run          Run pipeline stages on configured sources and/or transient...
+  schema       Inspect schema packages, versions, and evidence.
+  show         Show matched conversations with default full-content output.
+  stats        Show statistics for matched conversations.
+  tags         List all tags with conversation counts.
 ```
 
 ## List Verb

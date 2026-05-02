@@ -88,7 +88,7 @@ Pipeline and maintenance verbs are explicit:
 ```bash
 polylogue run acquire parse materialize render index
 polylogued watch
-polylogue browser-capture serve --host 127.0.0.1 --port 8765
+polylogued browser-capture serve --host 127.0.0.1 --port 8765
 polylogue-mcp --role read
 ```
 
@@ -117,8 +117,8 @@ Products are materialized from the archive and updated incrementally.
 ### Browser capture
 
 ```bash
-polylogue browser-capture serve --host 127.0.0.1 --port 8765
-polylogue browser-capture status
+polylogued browser-capture serve --host 127.0.0.1 --port 8765
+polylogued browser-capture status
 ```
 
 Captures ChatGPT and Claude.ai browser sessions through a local receiver and

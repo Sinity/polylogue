@@ -1,4 +1,4 @@
-"""Browser-capture receiver CLI commands."""
+"""Daemon commands for the local browser-capture receiver."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from polylogue.core.json import dumps
 
 @click.group("browser-capture")
 def browser_capture_command() -> None:
-    """Receive browser-extension captures into the capture spool."""
+    """Run and inspect the browser-capture receiver."""
 
 
 @browser_capture_command.command("status")
@@ -52,4 +52,4 @@ def serve_command(host: str, port: int, spool_path: Path | None) -> None:
         server.server_close()
 
 
-__all__ = ["browser_capture_command"]
+__all__ = ["browser_capture_command", "serve_command", "status_command"]

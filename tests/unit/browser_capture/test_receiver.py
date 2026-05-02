@@ -16,7 +16,7 @@ from polylogue.browser_capture.receiver import (
     write_capture_envelope,
 )
 from polylogue.browser_capture.server import make_server
-from polylogue.cli.click_app import cli
+from polylogue.daemon.cli import main as daemon_cli
 
 
 def _payload(provider: str = "chatgpt", session_id: str = "conv-123") -> dict[str, object]:
@@ -71,10 +71,10 @@ def test_existing_capture_state_reports_written_artifact(tmp_path: Path) -> None
     assert state["provider"] == "chatgpt"
 
 
-def test_browser_capture_status_cli_json(cli_workspace: dict[str, Path]) -> None:
+def test_browser_capture_status_daemon_cli_json(cli_workspace: dict[str, Path]) -> None:
     runner = CliRunner()
 
-    result = runner.invoke(cli, ["browser-capture", "status", "--format", "json"], catch_exceptions=False)
+    result = runner.invoke(daemon_cli, ["browser-capture", "status", "--format", "json"], catch_exceptions=False)
 
     assert result.exit_code == 0
     payload = json.loads(result.output)

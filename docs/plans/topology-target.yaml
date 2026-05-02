@@ -520,7 +520,7 @@ files:
     target: polylogue/cli/click_app.py
     owner: stable
   - path: polylogue/cli/click_command_registration.py
-    loc: 53
+    loc: 51
     target: polylogue/cli/click_command_registration.py
     owner: stable
   - path: polylogue/cli/click_option_groups.py
@@ -538,10 +538,6 @@ files:
   - path: polylogue/cli/commands/auth.py
     loc: 124
     target: polylogue/cli/commands/auth.py
-    owner: stable
-  - path: polylogue/cli/commands/browser_capture.py
-    loc: 55
-    target: polylogue/cli/commands/browser_capture.py
     owner: stable
   - path: polylogue/cli/commands/check.py
     loc: 112
@@ -844,8 +840,12 @@ files:
     loc: 7
     target: polylogue/daemon/__init__.py
     owner: stable
+  - path: polylogue/daemon/browser_capture.py
+    loc: 55
+    target: polylogue/daemon/browser_capture.py
+    owner: stable
   - path: polylogue/daemon/cli.py
-    loc: 58
+    loc: 62
     target: polylogue/daemon/cli.py
     owner: stable
   - path: polylogue/errors.py
