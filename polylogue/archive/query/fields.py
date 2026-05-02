@@ -16,6 +16,7 @@ StorageValue = Callable[[object], object]
 _ReplaceRecordQuery: Callable[..., ConversationRecordQuery] = replace
 SqlPushdownValue: TypeAlias = str | int | bool | list[str]
 SqlPushdownParams: TypeAlias = dict[str, SqlPushdownValue]
+CompletionSource: TypeAlias = str
 
 
 class _ProviderScopedPlan(Protocol):
@@ -136,6 +137,8 @@ class QueryFieldDescriptor:
     blocks_sql_count: bool = False
     blocks_action_event_stats: bool = False
     blocks_simple_message_hit: bool = False
+    completion_source: CompletionSource | None = None
+    completion_label: str | None = None
 
     def spec_value(self, spec: object) -> object:
         if self.spec_attr is None:
@@ -238,6 +241,8 @@ QUERY_FIELD_DESCRIPTORS: tuple[QueryFieldDescriptor, ...] = (
         record_attr="cwd_prefix",
         sql_param="cwd_prefix",
         blocks_simple_message_hit=True,
+        completion_source="cwd_prefix",
+        completion_label="working directory",
     ),
     QueryFieldDescriptor(
         name="action_terms",
@@ -308,6 +313,8 @@ QUERY_FIELD_DESCRIPTORS: tuple[QueryFieldDescriptor, ...] = (
         requires_content_loading=True,
         blocks_sql_count=True,
         blocks_simple_message_hit=True,
+        completion_source="tool",
+        completion_label="tool",
     ),
     QueryFieldDescriptor(
         name="excluded_tool_terms",
@@ -322,6 +329,8 @@ QUERY_FIELD_DESCRIPTORS: tuple[QueryFieldDescriptor, ...] = (
         requires_content_loading=True,
         blocks_sql_count=True,
         blocks_simple_message_hit=True,
+        completion_source="tool",
+        completion_label="tool",
     ),
     QueryFieldDescriptor(
         name="providers",
@@ -329,6 +338,8 @@ QUERY_FIELD_DESCRIPTORS: tuple[QueryFieldDescriptor, ...] = (
         plan_attr="providers",
         spec_description=_label("provider", _join_providers),
         plan_description=_label("provider", _join_providers),
+        completion_source="provider",
+        completion_label="provider",
     ),
     QueryFieldDescriptor(
         name="excluded_providers",
@@ -340,6 +351,8 @@ QUERY_FIELD_DESCRIPTORS: tuple[QueryFieldDescriptor, ...] = (
         blocks_sql_count=True,
         blocks_action_event_stats=True,
         blocks_simple_message_hit=True,
+        completion_source="provider",
+        completion_label="provider",
     ),
     QueryFieldDescriptor(
         name="repo_names",
@@ -350,6 +363,8 @@ QUERY_FIELD_DESCRIPTORS: tuple[QueryFieldDescriptor, ...] = (
         record_attr="repo_names",
         sql_param="repo_names",
         sql_value=_list_value,
+        completion_source="repo",
+        completion_label="repository",
     ),
     QueryFieldDescriptor(
         name="tags",
@@ -361,6 +376,8 @@ QUERY_FIELD_DESCRIPTORS: tuple[QueryFieldDescriptor, ...] = (
         blocks_sql_count=True,
         blocks_action_event_stats=True,
         blocks_simple_message_hit=True,
+        completion_source="tag",
+        completion_label="tag",
     ),
     QueryFieldDescriptor(
         name="excluded_tags",
@@ -372,6 +389,8 @@ QUERY_FIELD_DESCRIPTORS: tuple[QueryFieldDescriptor, ...] = (
         blocks_sql_count=True,
         blocks_action_event_stats=True,
         blocks_simple_message_hit=True,
+        completion_source="tag",
+        completion_label="tag",
     ),
     QueryFieldDescriptor(
         name="title",
@@ -535,6 +554,8 @@ QUERY_FIELD_DESCRIPTORS: tuple[QueryFieldDescriptor, ...] = (
         plan_description=_label("id"),
         blocks_sql_count=True,
         blocks_simple_message_hit=True,
+        completion_source="conversation_id",
+        completion_label="conversation",
     ),
     QueryFieldDescriptor(
         name="latest",
@@ -620,6 +641,8 @@ QUERY_FIELD_DESCRIPTORS: tuple[QueryFieldDescriptor, ...] = (
         selection_filter=True,
         requires_post_filter=True,
         blocks_sql_count=True,
+        completion_source="conversation_id",
+        completion_label="conversation",
     ),
     QueryFieldDescriptor(
         name="message_type",
@@ -633,6 +656,8 @@ QUERY_FIELD_DESCRIPTORS: tuple[QueryFieldDescriptor, ...] = (
         sql_param="message_type",
         storage_value=lambda v: str(v) if v else None,
         selection_filter=True,
+        completion_source="message_type",
+        completion_label="message type",
     ),
 )
 
