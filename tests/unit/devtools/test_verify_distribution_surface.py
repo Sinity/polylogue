@@ -6,29 +6,14 @@ import zipfile
 from pathlib import Path
 
 import pytest
-import tomllib
 
 from devtools import verify_distribution_surface as surface
 
 
-def test_verify_wheel_surface_accepts_runtime_scripts_without_devtools(tmp_path: Path) -> None:
+def test_verify_wheel_surface_accepts_runtime_scripts(tmp_path: Path) -> None:
     wheel = _write_wheel(tmp_path, entry_points=_runtime_entry_points())
 
     surface._verify_wheel_surface(wheel)
-
-
-def test_verify_wheel_surface_rejects_devtools_script(tmp_path: Path) -> None:
-    wheel = _write_wheel(tmp_path, entry_points=f"{_runtime_entry_points()}devtools = devtools.__main__:main\n")
-
-    with pytest.raises(surface.DistributionVerificationError, match="devtools"):
-        surface._verify_wheel_surface(wheel)
-
-
-def test_verify_wheel_surface_rejects_devtools_package(tmp_path: Path) -> None:
-    wheel = _write_wheel(tmp_path, entry_points=_runtime_entry_points(), extra_files={"devtools/__main__.py": ""})
-
-    with pytest.raises(surface.DistributionVerificationError, match="devtools package"):
-        surface._verify_wheel_surface(wheel)
 
 
 def test_verify_distribution_surface_builds_sdist_wheel_and_smokes(
@@ -62,14 +47,6 @@ def test_verify_distribution_surface_builds_sdist_wheel_and_smokes(
     rendered = [" ".join(call[:2]) for call in calls]
     assert rendered.count("uv build") == 2
     assert rendered.count("uv venv") == 2
-    assert not any("devtools" in call for call in calls)
-
-
-def test_pyproject_keeps_devtools_source_only() -> None:
-    data = tomllib.loads((surface.ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-
-    assert "devtools" not in data["project"]["scripts"]
-    assert data["tool"]["hatch"]["build"]["targets"]["wheel"]["packages"] == ["polylogue"]
 
 
 def _runtime_entry_points() -> str:

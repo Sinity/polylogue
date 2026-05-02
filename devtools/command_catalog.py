@@ -348,7 +348,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "devtools.verify_distribution_surface",
         use_when=(
             "Build wheel and sdist artifacts, rebuild a wheel from an unpacked sdist without .git, "
-            "smoke installed runtime console scripts, and ensure source-checkout devtools are not shipped."
+            "and smoke installed runtime console scripts."
         ),
         examples=("devtools verify-distribution-surface",),
     ),

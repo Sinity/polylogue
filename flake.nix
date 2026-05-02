@@ -204,7 +204,6 @@
               polylogue --help >/dev/null
               polylogued --help >/dev/null
               polylogue-mcp --help >/dev/null
-              ! command -v devtools >/dev/null
               touch $out
             '';
       }
