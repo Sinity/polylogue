@@ -128,7 +128,7 @@ def evaluate_check_policy(report: dict[str, Any]) -> dict[str, Any]:
     serious_judgment_cells = [
         cell
         for cell in report.get("agent_judgment_cells", [])
-        if isinstance(cell, dict) and cell.get("severity") == "serious" and not cell.get("tracked_exception")
+        if isinstance(cell, dict) and cell.get("severity") == "serious" and not _judgment_cell_satisfied(cell)
     ]
     for cell in serious_judgment_cells:
         errors.append(
@@ -138,7 +138,7 @@ def evaluate_check_policy(report: dict[str, Any]) -> dict[str, Any]:
 
     suppressed = _suppressed_change_subjects(report)
     if suppressed:
-        warnings.append("changed paths were suppressed from obligation routing: " + ", ".join(suppressed[:10]))
+        warnings.append("change-subject IDs were suppressed from obligation routing: " + ", ".join(suppressed[:10]))
     known_gaps = report.get("known_gaps", [])
     if known_gaps:
         warnings.append(f"known coverage gaps intersect affected domains: {len(known_gaps)} domain(s)")
@@ -150,6 +150,15 @@ def evaluate_check_policy(report: dict[str, Any]) -> dict[str, Any]:
         "errors": errors,
         "warnings": warnings,
     }
+
+
+def _judgment_cell_satisfied(cell: dict[str, Any]) -> bool:
+    if cell.get("tracked_exception"):
+        return True
+    result = str(cell.get("result") or "").strip().lower()
+    if result not in {"accepted", "passed", "pass", "ok"}:
+        return False
+    return all(str(cell.get(field) or "").strip() for field in ("artifact", "reviewer", "produced_at", "freshness"))
 
 
 def _suppressed_change_subjects(report: dict[str, Any]) -> list[str]:

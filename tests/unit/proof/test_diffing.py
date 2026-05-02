@@ -138,7 +138,25 @@ def test_proof_report_tool_change_routes_to_catalog_obligations() -> None:
     assert report.change_subjects[0].kind == "proof_catalog"
     assert report.obligation_diff.suppressed == ()
     assert report.affected_obligations
-    assert "pytest tests/unit/proof" in [check.rendered_command for check in report.inner_loop_checks]
+    commands = [check.rendered_command for check in report.inner_loop_checks]
+    assert "pytest tests/unit/proof" in commands
+    assert "pytest tests/unit/devtools/test_proof_pack.py" in commands
+    assert "devtools proof-pack --check" in commands
+
+
+def test_proof_pack_test_change_routes_to_catalog_obligations() -> None:
+    catalog = build_verification_catalog()
+
+    report = build_affected_obligation_report(
+        ("tests/unit/devtools/test_proof_pack.py",),
+        catalog=catalog,
+        base_obligation_ids=(obligation.id for obligation in catalog.obligations),
+        head_obligation_ids=(obligation.id for obligation in catalog.obligations),
+    )
+
+    assert report.change_subjects[0].kind == "proof_catalog"
+    assert report.obligation_diff.suppressed == ()
+    assert "devtools proof-pack --check" in [check.rendered_command for check in report.inner_loop_checks]
 
 
 def test_obligation_diff_buckets_new_dropped_stale_and_suppressed() -> None:

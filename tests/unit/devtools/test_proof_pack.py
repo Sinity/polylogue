@@ -171,6 +171,33 @@ def test_proof_pack_check_policy_allows_tracked_judgment_cells() -> None:
     assert result["status"] == "ok"
 
 
+def test_proof_pack_check_policy_allows_completed_judgment_artifact() -> None:
+    report = build_proof_pack(
+        Path.cwd(),
+        base_ref="origin/master",
+        head_ref="HEAD",
+        changed_paths=["docs/plans/layering.yaml"],
+    )
+    report["agent_judgment_cells"] = [
+        {
+            "claim_id": "claim.reviewed",
+            "oracle": "manual_review",
+            "independence_level": "independent",
+            "severity": "serious",
+            "tracked_exception": None,
+            "artifact": "docs/reviews/proof-pack-claim-reviewed.md",
+            "reviewer": "codex",
+            "produced_at": "2026-05-02T00:00:00+00:00",
+            "freshness": "current PR",
+            "result": "accepted",
+        }
+    ]
+
+    result = evaluate_check_policy(report)
+
+    assert result["status"] == "ok"
+
+
 def test_proof_pack_check_flag_returns_nonzero_on_policy_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     report = build_proof_pack(
         Path.cwd(),

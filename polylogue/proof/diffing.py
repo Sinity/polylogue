@@ -590,6 +590,7 @@ def _classify_path(path: str) -> ChangeKind:
         "devtools/affected_obligations.py",
         "devtools/obligation_diff.py",
         "devtools/proof_pack.py",
+        "tests/unit/devtools/test_proof_pack.py",
     }:
         return "proof_catalog"
     if path == "polylogue/operations/specs.py":
@@ -686,7 +687,9 @@ def _checks_for_change(kind: ChangeKind, *, path: str) -> tuple[RecommendedCheck
     if kind == "proof_catalog":
         return (
             _check(("pytest", "tests/unit/proof"), "proof kernel or catalog changed"),
+            _check(("pytest", "tests/unit/devtools/test_proof_pack.py"), "proof-pack policy or CLI changed"),
             _check(("pytest", "tests/unit/devtools/test_render_verification_catalog.py"), "catalog renderer changed"),
+            _check(("devtools", "proof-pack", "--check"), "proof-pack policy gate changed"),
             _check(("devtools", "render-verification-catalog", "--check"), "verification catalog must stay current"),
         )
     if kind == "operation.spec":
