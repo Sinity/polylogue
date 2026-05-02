@@ -281,7 +281,7 @@ files:
     owner: archive-query
     reason: archive-domain query semantics
   - path: polylogue/archive/query/fields.py
-    loc: 743
+    loc: 853
     target: polylogue/archive/query/fields.py
     owner: archive-query
     reason: archive-domain query semantics
@@ -308,6 +308,11 @@ files:
   - path: polylogue/archive/query/plan_execution.py
     loc: 106
     target: polylogue/archive/query/plan_execution.py
+    owner: archive-query
+    reason: archive-domain query semantics
+  - path: polylogue/archive/query/read_fields.py
+    loc: 160
+    target: polylogue/archive/query/read_fields.py
     owner: archive-query
     reason: archive-domain query semantics
   - path: polylogue/archive/query/retrieval.py
@@ -356,7 +361,7 @@ files:
     owner: archive-query
     reason: archive-domain query semantics
   - path: polylogue/archive/query/spec.py
-    loc: 381
+    loc: 391
     target: polylogue/archive/query/spec.py
     owner: archive-query
     reason: archive-domain query semantics
@@ -529,7 +534,7 @@ files:
     target: polylogue/cli/click_command_registration.py
     owner: stable
   - path: polylogue/cli/click_option_groups.py
-    loc: 291
+    loc: 292
     target: polylogue/cli/click_option_groups.py
     owner: stable
   - path: polylogue/cli/command_inventory.py
@@ -645,7 +650,7 @@ files:
     target: polylogue/cli/query_stats.py
     owner: stable
   - path: polylogue/cli/query_verbs.py
-    loc: 304
+    loc: 308
     target: polylogue/cli/query_verbs.py
     owner: stable
   - path: polylogue/cli/root_request.py
@@ -783,7 +788,7 @@ files:
     target: polylogue/cli/shared/types.py
     owner: stable
   - path: polylogue/cli/shell_completion_values.py
-    loc: 222
+    loc: 365
     target: polylogue/cli/shell_completion_values.py
     owner: stable
   - path: polylogue/config.py
