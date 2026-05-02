@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from devtools import proof_pack
 from devtools.proof_pack import build_proof_pack, evaluate_check_policy, render_markdown
 
@@ -75,6 +77,21 @@ def test_proof_pack_markdown_collapses_zero_claim_domains() -> None:
     assert "stale evidence" not in rendered
 
 
+def test_proof_pack_markdown_lists_agent_judgment_cells() -> None:
+    report = build_proof_pack(
+        Path.cwd(),
+        base_ref="origin/master",
+        head_ref="HEAD",
+        changed_paths=["polylogue/proof/catalog.py"],
+    )
+
+    rendered = render_markdown(report)
+
+    assert "### Agent Judgment Cells" in rendered
+    assert "operation.effect.privacy_safe_evidence" in rendered
+    assert "artifact `missing`" in rendered
+
+
 def test_proof_pack_check_policy_blocks_catalog_quality_errors() -> None:
     report = build_proof_pack(
         Path.cwd(),
@@ -113,6 +130,11 @@ def test_proof_pack_check_policy_blocks_serious_judgment_cells() -> None:
             "independence_level": "independent",
             "severity": "serious",
             "tracked_exception": None,
+            "artifact": None,
+            "reviewer": None,
+            "produced_at": None,
+            "freshness": None,
+            "result": "missing",
         }
     ]
 
@@ -136,6 +158,11 @@ def test_proof_pack_check_policy_allows_tracked_judgment_cells() -> None:
             "independence_level": "independent",
             "severity": "serious",
             "tracked_exception": "tracked by #594",
+            "artifact": None,
+            "reviewer": None,
+            "produced_at": None,
+            "freshness": None,
+            "result": "tracked_exception",
         }
     ]
 
@@ -144,7 +171,7 @@ def test_proof_pack_check_policy_allows_tracked_judgment_cells() -> None:
     assert result["status"] == "ok"
 
 
-def test_proof_pack_check_flag_returns_nonzero_on_policy_failure(monkeypatch) -> None:
+def test_proof_pack_check_flag_returns_nonzero_on_policy_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     report = build_proof_pack(
         Path.cwd(),
         base_ref="origin/master",

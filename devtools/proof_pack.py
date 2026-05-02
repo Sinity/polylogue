@@ -224,6 +224,11 @@ def _agent_judgment_cells(claims: list[Any]) -> list[dict[str, Any]]:
                     "independence_level": claim.independence_level,
                     "severity": claim.severity,
                     "tracked_exception": claim.tracked_exception,
+                    "artifact": None,
+                    "reviewer": None,
+                    "produced_at": None,
+                    "freshness": None,
+                    "result": "tracked_exception" if claim.tracked_exception else "missing",
                     "reason": "requires agent judgment artifact or independent evidence upgrade",
                 }
             )
@@ -387,7 +392,18 @@ def render_markdown(report: dict[str, Any]) -> str:
     lines.append(f"- oracle mix: `{json.dumps(report.get('oracle_mix', {}), sort_keys=True)}`")
     lines.append(f"- cost tier: `{json.dumps(report.get('cost_tier', {}), sort_keys=True)}`")
     lines.append(f"- stable affected obligations: {len(report.get('stable_affected_obligations', []))}")
-    lines.append(f"- agent judgment cells: {len(report.get('agent_judgment_cells', []))}")
+    agent_judgment_cells = report.get("agent_judgment_cells", [])
+    lines.append(f"- agent judgment cells: {len(agent_judgment_cells)}")
+    if agent_judgment_cells:
+        lines.extend(["", "### Agent Judgment Cells"])
+        for cell in agent_judgment_cells:
+            lines.append(
+                f"- `{cell['claim_id']}` — result `{cell['result']}`; "
+                f"artifact `{cell['artifact'] or 'missing'}`; "
+                f"reviewer `{cell['reviewer'] or 'missing'}`; "
+                f"produced_at `{cell['produced_at'] or 'missing'}`; "
+                f"freshness `{cell['freshness'] or 'missing'}`"
+            )
     return "\n".join(lines)
 
 
