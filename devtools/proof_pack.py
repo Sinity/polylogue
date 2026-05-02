@@ -100,7 +100,7 @@ def build_proof_pack(
         "domain_coverage": _domain_coverage(domains_data, catalog),
         "gate_groups": gate_groups,
         "required_gates": _checks_payload((*affected.inner_loop_checks, *affected.pr_gates)),
-        "manual_review_cells": _manual_review_cells(affected_claims),
+        "agent_judgment_cells": _agent_judgment_cells(affected_claims),
         "stable_affected_obligations": list(affected.obligation_diff.stable_affected),
         "known_gaps": known_gaps,
         "additional_known_gaps": additional_known_gaps,
@@ -125,14 +125,14 @@ def evaluate_check_policy(report: dict[str, Any]) -> dict[str, Any]:
         elif status == OutcomeStatus.WARNING.value:
             warnings.append(line)
 
-    serious_manual_cells = [
+    serious_judgment_cells = [
         cell
-        for cell in report.get("manual_review_cells", [])
+        for cell in report.get("agent_judgment_cells", [])
         if isinstance(cell, dict) and cell.get("severity") == "serious" and not cell.get("tracked_exception")
     ]
-    for cell in serious_manual_cells:
+    for cell in serious_judgment_cells:
         errors.append(
-            "affected serious claim needs manual/same-source review: "
+            "affected serious claim needs agent judgment artifact: "
             f"{cell.get('claim_id')} ({cell.get('oracle')}, {cell.get('independence_level')})"
         )
 
@@ -213,7 +213,7 @@ def _checks_payload(checks: tuple[RecommendedCheck, ...]) -> list[dict[str, Any]
     return payload
 
 
-def _manual_review_cells(claims: list[Any]) -> list[dict[str, Any]]:
+def _agent_judgment_cells(claims: list[Any]) -> list[dict[str, Any]]:
     cells: list[dict[str, Any]] = []
     for claim in claims:
         if claim.oracle == "manual_review" or claim.independence_level in {"same_source", "self_attesting"}:
@@ -224,7 +224,7 @@ def _manual_review_cells(claims: list[Any]) -> list[dict[str, Any]]:
                     "independence_level": claim.independence_level,
                     "severity": claim.severity,
                     "tracked_exception": claim.tracked_exception,
-                    "reason": "requires human confirmation or independent evidence upgrade",
+                    "reason": "requires agent judgment artifact or independent evidence upgrade",
                 }
             )
     return cells
@@ -387,7 +387,7 @@ def render_markdown(report: dict[str, Any]) -> str:
     lines.append(f"- oracle mix: `{json.dumps(report.get('oracle_mix', {}), sort_keys=True)}`")
     lines.append(f"- cost tier: `{json.dumps(report.get('cost_tier', {}), sort_keys=True)}`")
     lines.append(f"- stable affected obligations: {len(report.get('stable_affected_obligations', []))}")
-    lines.append(f"- manual review cells: {len(report.get('manual_review_cells', []))}")
+    lines.append(f"- agent judgment cells: {len(report.get('agent_judgment_cells', []))}")
     return "\n".join(lines)
 
 
@@ -427,7 +427,7 @@ def _print_human_report(report: dict[str, Any]) -> None:
     for gate in gate_groups.get("optional_confidence", []):
         print(f"  {' '.join(gate['command'])} — {gate['reason']}")
     print()
-    print(f"Manual review cells: {len(report.get('manual_review_cells', []))}")
+    print(f"Agent judgment cells: {len(report.get('agent_judgment_cells', []))}")
     print(f"Stable affected obligations: {len(report.get('stable_affected_obligations', []))}")
     print(f"Known gaps: {len(report.get('known_gaps', []))}")
     check_result = report.get("check")

@@ -22,7 +22,7 @@ def test_proof_pack_reports_diff_shaped_fields() -> None:
     assert report["gate_groups"]["optional_confidence"]
     assert "oracle_mix" in report
     assert "cost_tier" in report
-    assert "manual_review_cells" in report
+    assert "agent_judgment_cells" in report
     assert "known_gaps" in report
     assert "additional_known_gaps" in report
     assert "stable_affected_obligations" in report
@@ -99,14 +99,14 @@ def test_proof_pack_check_policy_blocks_catalog_quality_errors() -> None:
     assert "catalog.serious_claim_oracle_independence" in result["errors"][0]
 
 
-def test_proof_pack_check_policy_blocks_serious_manual_cells() -> None:
+def test_proof_pack_check_policy_blocks_serious_judgment_cells() -> None:
     report = build_proof_pack(
         Path.cwd(),
         base_ref="origin/master",
         head_ref="HEAD",
         changed_paths=["docs/plans/layering.yaml"],
     )
-    report["manual_review_cells"] = [
+    report["agent_judgment_cells"] = [
         {
             "claim_id": "claim.needs.review",
             "oracle": "manual_review",
@@ -122,14 +122,14 @@ def test_proof_pack_check_policy_blocks_serious_manual_cells() -> None:
     assert "claim.needs.review" in result["errors"][0]
 
 
-def test_proof_pack_check_policy_allows_tracked_manual_cells() -> None:
+def test_proof_pack_check_policy_allows_tracked_judgment_cells() -> None:
     report = build_proof_pack(
         Path.cwd(),
         base_ref="origin/master",
         head_ref="HEAD",
         changed_paths=["docs/plans/layering.yaml"],
     )
-    report["manual_review_cells"] = [
+    report["agent_judgment_cells"] = [
         {
             "claim_id": "claim.tracked.review",
             "oracle": "manual_review",
