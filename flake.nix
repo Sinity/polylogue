@@ -82,7 +82,6 @@
           doCheck = false;
           pythonImportsCheck = [
             "polylogue"
-            "devtools"
           ];
           dontCheckRuntimeDeps = true;
 
@@ -203,6 +202,9 @@
             ''
               export HOME=$TMPDIR
               polylogue --help >/dev/null
+              polylogued --help >/dev/null
+              polylogue-mcp --help >/dev/null
+              ! command -v devtools >/dev/null
               touch $out
             '';
       }

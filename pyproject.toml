@@ -111,10 +111,9 @@ Documentation = "https://github.com/sinity/polylogue#readme"
 polylogue = "polylogue.cli:main"
 polylogued = "polylogue.daemon.cli:main"
 polylogue-mcp = "polylogue.mcp.cli:main"
-devtools = "devtools.__main__:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["polylogue", "devtools"]
+packages = ["polylogue"]
 
 [tool.hatch.build.hooks.custom]
 path = "hatch_build.py"

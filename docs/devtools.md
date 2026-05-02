@@ -114,6 +114,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools verify` | Run the local verification baseline before pushing or creating a PR. |
 | `devtools verify-cluster-cohesion` | Validate proposed clusters from the topology projection using the import graph. |
 | `devtools verify-cross-cuts` | Verify cross-cut tags in the topology projection match module-name conventions. |
+| `devtools verify-distribution-surface` | Verify wheel/sdist installed artifacts expose only supported runtime entrypoints. |
 | `devtools verify-file-budgets` | Enforce per-file LOC budgets declared in docs/plans/file-size-budgets.yaml. |
 | `devtools verify-layering` | Check inter-package imports against declared layering rules from docs/plans/layering.yaml. |
 | `devtools verify-manifests` | Verify internal consistency across all docs/plans/*.yaml manifest files. |

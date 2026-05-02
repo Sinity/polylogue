@@ -342,6 +342,17 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools verify-witness-lifecycle", "devtools verify-witness-lifecycle --json"),
     ),
     CommandSpec(
+        "verify-distribution-surface",
+        "verification",
+        "Verify wheel/sdist installed artifacts expose only supported runtime entrypoints.",
+        "devtools.verify_distribution_surface",
+        use_when=(
+            "Build wheel and sdist artifacts, rebuild a wheel from an unpacked sdist without .git, "
+            "smoke installed runtime console scripts, and ensure source-checkout devtools are not shipped."
+        ),
+        examples=("devtools verify-distribution-surface",),
+    ),
+    CommandSpec(
         "pipeline-probe",
         "verification",
         "Run typed pipeline probes against synthetic, staged, or archive-subset inputs.",

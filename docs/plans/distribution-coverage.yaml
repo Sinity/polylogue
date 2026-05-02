@@ -1,11 +1,12 @@
 # Distribution-coverage manifest.
 #
 # Documents the current state of install-artifact parity across
-# wheel, sdist, and Nix package. Seed state: each artifact builds
-# independently but there is no automated cross-artifact
-# equivalence verification.
+# wheel, sdist, and Nix package. The local distribution gate now
+# builds wheel/sdist artifacts, rebuilds from unpacked sdist without
+# .git, smokes installed runtime entrypoints, and verifies that the
+# source-checkout-only devtools surface is not shipped in user wheels.
 #
-# Updated 2026-04-29 from realized codebase state.
+# Updated 2026-05-02 from realized codebase state.
 
 description: >
   Wheel/sdist/Nix install parity for polylogue. Documents build
@@ -17,28 +18,34 @@ artifacts:
     description: Python wheel distribution (bdist_wheel)
     build_system: hatchling
     config_location: pyproject.toml
-    build_command: pip wheel --no-deps .
+    build_command: uv build --wheel .
     install_command: pip install polylogue-*.whl
+    verification_command: devtools verify-distribution-surface
     ci_build: false
     ci_test: false
     freshness_days: null
     notes: >
       pyproject.toml uses [build-system] with hatchling.
-      Wheel is buildable but not built in CI. No automated
-      smoke test after wheel install.
+      The source-checkout distribution gate builds the wheel,
+      installs it in a fresh environment, smokes polylogue,
+      polylogued, polylogue-mcp, python -m polylogue, and asserts
+      devtools is not installed. The gate is not yet scheduled in CI.
 
   sdist:
     description: Python source distribution (sdist)
     build_system: hatchling
     config_location: pyproject.toml
-    build_command: pip wheel --no-binary polylogue .
+    build_command: uv build --sdist .
     install_command: pip install polylogue-*.tar.gz
+    verification_command: devtools verify-distribution-surface
     ci_build: false
     ci_test: false
     freshness_days: null
     notes: >
-      Source distribution buildable via hatchling but not
-      built in CI. No automated sdist-install verification.
+      Source distribution embeds polylogue/_build_info.py. The
+      distribution gate unpacks the sdist outside .git, rebuilds
+      a wheel from it, installs that wheel, and runs the same
+      runtime smoke surface. The gate is not yet scheduled in CI.
 
   nix_package:
     description: Nix flake package derivation
@@ -79,6 +86,17 @@ artifacts:
       via direnv. Installs all dependencies and git hooks.
       Verified by nix flake check in CI.
 
+  devtools:
+    description: Source-checkout repository control plane
+    build_system: source checkout / Nix devshell wrapper
+    config_location: flake.nix
+    install_command: nix develop
+    ci_present: true
+    notes: >
+      Devtools are intentionally source-checkout-only. They are
+      exposed in the devshell by the devtools wrapper in flake.nix,
+      not as a user-wheel console script or installed wheel package.
+
   pip_dependencies:
     count: null
     resolved_by: flake.nix (overrides pyproject.toml)
@@ -93,13 +111,13 @@ artifacts:
 
 coverage_gaps:
   - artifact: wheel
-    gap: Not built or tested in CI
+    gap: Distribution gate exists locally but is not scheduled in CI
     owner: distribution
-    next_evidence: Add package/build or cross-artifact CI gate
+    next_evidence: Add CI job for devtools verify-distribution-surface
   - artifact: sdist
-    gap: Not built or tested in CI
+    gap: Distribution gate exists locally but is not scheduled in CI
     owner: distribution
-    next_evidence: Add package/build or cross-artifact CI gate
+    next_evidence: Add CI job for devtools verify-distribution-surface
   - artifact: dev_install
     gap: Not verified in CI; devshell is canonical environment
     owner: distribution
@@ -113,6 +131,6 @@ coverage_gaps:
     owner: distribution
     next_evidence: Add package/build or cross-artifact CI gate
   - concern: install_parity
-    gap: No cross-artifact equivalence verification (wheel vs sdist vs Nix)
+    gap: Local gate smokes wheel and sdist-built wheel, but exact Nix/devshell parity is not yet compared in CI
     owner: distribution
-    next_evidence: Add package/build or cross-artifact CI gate
+    next_evidence: Add CI job comparing devtools verify-distribution-surface with nix flake check smoke output
