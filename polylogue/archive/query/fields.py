@@ -46,8 +46,16 @@ def _is_true(value: object) -> bool:
     return value is True
 
 
+def _positive_int(value: object) -> bool:
+    return isinstance(value, int) and value > 0
+
+
 def _not_auto(value: object) -> bool:
     return value != "auto"
+
+
+def _not_date_sort(value: object) -> bool:
+    return value is not None and value != "date"
 
 
 def _as_tuple(value: object) -> tuple[object, ...]:
@@ -583,6 +591,38 @@ QUERY_FIELD_DESCRIPTORS: tuple[QueryFieldDescriptor, ...] = (
         selection_filter=True,
     ),
     QueryFieldDescriptor(
+        name="sort",
+        spec_attr="sort",
+        plan_attr="sort",
+        spec_active=_not_none,
+        plan_active=_not_date_sort,
+        spec_description=_label("sort"),
+        plan_description=_label("sort"),
+        selection_filter=False,
+        blocks_simple_message_hit=True,
+    ),
+    QueryFieldDescriptor(
+        name="reverse",
+        spec_attr="reverse",
+        plan_attr="reverse",
+        spec_active=_is_true,
+        plan_active=_is_true,
+        spec_description=_literal("reverse"),
+        plan_description=_literal("reverse"),
+        selection_filter=False,
+        blocks_simple_message_hit=True,
+    ),
+    QueryFieldDescriptor(
+        name="limit",
+        spec_attr="limit",
+        plan_attr="limit",
+        spec_active=_not_none,
+        plan_active=_not_none,
+        spec_description=_label("limit"),
+        plan_description=_label("limit"),
+        selection_filter=False,
+    ),
+    QueryFieldDescriptor(
         name="parent_id",
         plan_attr="parent_id",
         plan_active=_not_none,
@@ -638,23 +678,35 @@ QUERY_FIELD_DESCRIPTORS: tuple[QueryFieldDescriptor, ...] = (
     ),
     QueryFieldDescriptor(
         name="sample",
+        spec_attr="sample",
         plan_attr="sample",
         plan_active=_not_none,
+        spec_active=_not_none,
+        spec_description=_label("sample"),
+        plan_description=_label("sample"),
         selection_filter=False,
         blocks_simple_message_hit=True,
     ),
     QueryFieldDescriptor(
         name="offset",
+        spec_attr="offset",
         plan_attr="offset",
-        plan_active=lambda v: int(cast(int, v)) > 0,
+        spec_active=_positive_int,
+        plan_active=_positive_int,
+        spec_description=_label("offset"),
+        plan_description=_label("offset"),
         record_attr="offset",
         storage_value=lambda v: int(cast(int, v)) if v else 0,
         selection_filter=False,
     ),
     QueryFieldDescriptor(
         name="since_session_id",
+        spec_attr="since_session_id",
         plan_attr="since_session_id",
+        spec_active=_not_none,
         plan_active=_not_none,
+        spec_description=_label("since-session"),
+        plan_description=_label("since-session"),
         record_attr="since_session_id",
         storage_value=lambda v: str(v) if v else None,
         selection_filter=True,
