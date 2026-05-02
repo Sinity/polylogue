@@ -20,6 +20,7 @@ from polylogue.cli.query_verbs import (
     messages_verb,
     open_verb,
     raw_verb,
+    select_verb,
     show_verb,
     stats_verb,
 )
@@ -53,6 +54,7 @@ def test_cli_query_verb_parameters_have_read_descriptors() -> None:
         "delete": frozenset(),
         "messages": frozenset(),
         "raw": frozenset(),
+        "select": frozenset(),
     }
 
     for command in (
@@ -64,6 +66,7 @@ def test_cli_query_verb_parameters_have_read_descriptors() -> None:
         delete_verb,
         messages_verb,
         raw_verb,
+        select_verb,
     ):
         missing = _click_parameter_names(command) - covered
         assert command.name is not None

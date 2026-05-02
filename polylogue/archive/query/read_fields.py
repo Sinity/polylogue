@@ -97,6 +97,18 @@ READ_FIELD_DESCRIPTORS: tuple[ReadFieldDescriptor, ...] = (
         cli_names=("fields",),
     ),
     ReadFieldDescriptor(
+        name="selector_kind",
+        kind="selection_display",
+        description="Selector target kind for query-backed fuzzy selection.",
+        cli_names=("selector_kind",),
+    ),
+    ReadFieldDescriptor(
+        name="select_print_field",
+        kind="format",
+        description="Field printed after selecting a conversation.",
+        cli_names=("print_field",),
+    ),
+    ReadFieldDescriptor(
         name="stats_by",
         kind="aggregation",
         description="Stats aggregation dimension.",
