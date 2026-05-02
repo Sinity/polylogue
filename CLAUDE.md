@@ -46,8 +46,8 @@ Use it this way:
 - Treat `Known Gaps` as actionable only when they are in a changed or directly
   affected domain. Broad repo-wide gap dumps should not block unrelated PRs, but
   recurring noise should be folded back into #594.
-- Until #594 fixes the label, read `stale evidence` as stable affected
-  obligations, not as real freshness/SLA evidence.
+- Read `stable affected obligations` as unchanged obligations touched by the
+  current diff, not as real freshness/SLA evidence.
 - If the Proof Pack is noisy, misleading, or misses a relevant gate, comment on
   the PR or #594 with the concrete mismatch. Do not silently ignore it.
 
