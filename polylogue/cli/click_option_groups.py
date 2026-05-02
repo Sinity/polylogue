@@ -7,6 +7,7 @@ from typing import TypeAlias
 
 import click
 
+from polylogue.archive.message.types import MessageType
 from polylogue.archive.query.spec import QUERY_ACTION_TYPES, QUERY_RETRIEVAL_LANES
 from polylogue.cli.query_contracts import normalize_message_role_option
 from polylogue.cli.shell_completion_values import (
@@ -181,8 +182,8 @@ FILTER_OPTION_DECORATORS: tuple[Callable[[ClickCallable], ClickCallable], ...] =
     click.option(
         "--message-type",
         "message_type",
-        type=click.Choice(["summary", "tool_use", "tool_result", "thinking"]),
-        help="Filter by message content type (summary, tool_use, tool_result, thinking)",
+        type=click.Choice([message_type.value for message_type in MessageType]),
+        help="Filter by message content type (message, summary, tool_use, tool_result, thinking)",
     ),
     click.option(
         "--since-session",

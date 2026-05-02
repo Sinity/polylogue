@@ -19,6 +19,7 @@ from polylogue.archive.query.spec import (
     normalize_action_sequence,
     normalize_action_terms,
     optional_int,
+    optional_message_type,
     optional_sort_field,
     split_csv,
 )
@@ -148,11 +149,15 @@ def test_query_spec_normalizers_cover_scalar_iterable_and_error_paths() -> None:
     assert optional_sort_field("words") == "words"
     assert optional_sort_field("longest") == "longest"
     assert optional_sort_field("random") == "random"
+    assert optional_message_type("tool-use") == "tool_use"
+    assert optional_message_type("message") == "message"
     assert normalize_action_terms("action", "shell") == ("shell",)
     assert normalize_action_sequence("action_sequence", "file_read,file_edit") == ("file_read", "file_edit")
 
     for call in (
         lambda: optional_sort_field("bogus"),
+        lambda: optional_message_type("summmary"),
+        lambda: ConversationQuerySpec.from_params({"message_type": "summmary"}),
         lambda: normalize_action_terms("action", "bogus"),
         lambda: normalize_action_sequence("action_sequence", "bogus"),
     ):

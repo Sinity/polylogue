@@ -217,7 +217,7 @@ files:
     owner: archive-message
     reason: archive-domain semantics
   - path: polylogue/archive/message/types.py
-    loc: 48
+    loc: 79
     target: polylogue/archive/message/types.py
     owner: archive-message
     reason: archive-domain semantics
@@ -290,6 +290,11 @@ files:
     target: polylogue/archive/query/miss_diagnostics.py
     owner: archive-query
     reason: archive-domain query semantics
+  - path: polylogue/archive/query/path_prefix.py
+    loc: 38
+    target: polylogue/archive/query/path_prefix.py
+    owner: archive-query
+    reason: archive-domain query semantics
   - path: polylogue/archive/query/plan.py
     loc: 265
     target: polylogue/archive/query/plan.py
@@ -326,7 +331,7 @@ files:
     owner: archive-query
     reason: archive-domain query semantics
   - path: polylogue/archive/query/runtime_filters.py
-    loc: 238
+    loc: 254
     target: polylogue/archive/query/runtime_filters.py
     owner: archive-query
     reason: archive-domain query semantics
@@ -524,7 +529,7 @@ files:
     target: polylogue/cli/click_command_registration.py
     owner: stable
   - path: polylogue/cli/click_option_groups.py
-    loc: 290
+    loc: 291
     target: polylogue/cli/click_option_groups.py
     owner: stable
   - path: polylogue/cli/command_inventory.py
@@ -540,7 +545,7 @@ files:
     target: polylogue/cli/commands/auth.py
     owner: stable
   - path: polylogue/cli/commands/check.py
-    loc: 112
+    loc: 114
     target: polylogue/cli/commands/check.py
     owner: stable
   - path: polylogue/cli/commands/completions.py
@@ -652,20 +657,20 @@ files:
     target: polylogue/cli/shared/check_maintenance.py
     owner: stable
   - path: polylogue/cli/shared/check_models.py
-    loc: 46
+    loc: 47
     target: polylogue/cli/shared/check_models.py
     owner: stable
     cross_cut: { lifecycle: model }
   - path: polylogue/cli/shared/check_options.py
-    loc: 113
+    loc: 114
     target: polylogue/cli/shared/check_options.py
     owner: stable
   - path: polylogue/cli/shared/check_rendering_json.py
-    loc: 49
+    loc: 51
     target: polylogue/cli/shared/check_rendering_json.py
     owner: stable
   - path: polylogue/cli/shared/check_rendering_plain.py
-    loc: 263
+    loc: 273
     target: polylogue/cli/shared/check_rendering_plain.py
     owner: stable
   - path: polylogue/cli/shared/check_support.py
@@ -677,7 +682,7 @@ files:
     target: polylogue/cli/shared/check_validation.py
     owner: stable
   - path: polylogue/cli/shared/check_workflow.py
-    loc: 290
+    loc: 296
     target: polylogue/cli/shared/check_workflow.py
     owner: stable
   - path: polylogue/cli/shared/embed_runtime.py
@@ -845,11 +850,11 @@ files:
     target: polylogue/daemon/browser_capture.py
     owner: stable
   - path: polylogue/daemon/cli.py
-    loc: 90
+    loc: 184
     target: polylogue/daemon/cli.py
     owner: stable
   - path: polylogue/daemon/status.py
-    loc: 65
+    loc: 87
     target: polylogue/daemon/status.py
     owner: stable
   - path: polylogue/errors.py
@@ -932,7 +937,7 @@ files:
     target: polylogue/mcp/payloads.py
     owner: stable
   - path: polylogue/mcp/query_contracts.py
-    loc: 129
+    loc: 133
     target: polylogue/mcp/query_contracts.py
     owner: stable
   - path: polylogue/mcp/server.py
@@ -964,7 +969,7 @@ files:
     target: polylogue/mcp/server_support.py
     owner: stable
   - path: polylogue/mcp/server_tools.py
-    loc: 355
+    loc: 359
     target: polylogue/mcp/server_tools.py
     owner: stable
   - path: polylogue/operations/__init__.py
@@ -1191,7 +1196,7 @@ files:
     target: polylogue/proof/coverage_manifests.py
     owner: stable
   - path: polylogue/proof/diffing.py
-    loc: 793
+    loc: 800
     target: polylogue/proof/diffing.py
     owner: stable
   - path: polylogue/proof/generated_scenarios.py
@@ -2375,7 +2380,7 @@ files:
     owner: stable
     cross_cut: { layer: write }
   - path: polylogue/storage/backends/queries/filter_builder.py
-    loc: 213
+    loc: 215
     target: polylogue/storage/backends/queries/filter_builder.py
     owner: stable
   - path: polylogue/storage/backends/queries/mappers.py

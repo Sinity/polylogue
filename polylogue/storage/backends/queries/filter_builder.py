@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from polylogue.archive.message.types import MessageType
+from polylogue.archive.message.types import validate_message_type_filter
 from polylogue.archive.query.fields import storage_filters_require_stats_join
+from polylogue.archive.query.path_prefix import escaped_sql_path_prefix_patterns
 from polylogue.archive.viewport.viewports import ToolCategory
 from polylogue.storage.backends.connection import _build_provider_scope_filter
 
@@ -122,12 +123,13 @@ def _build_conversation_filters(
             params.append(f"%{escaped}%")
     if cwd_prefix:
         provider_meta_col = "c.provider_meta" if needs_stats_join else "provider_meta"
-        escaped_prefix = cwd_prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        exact_prefix, child_prefix = escaped_sql_path_prefix_patterns(cwd_prefix)
         where_clauses.append(
             f"EXISTS (SELECT 1 FROM json_each(COALESCE(json_extract({provider_meta_col}, '$.working_directories'), '[]')) cwd "
-            f"WHERE cwd.value LIKE ? ESCAPE '\\')"
+            f"WHERE REPLACE(cwd.value, char(92), '/') = ? "
+            f"OR REPLACE(cwd.value, char(92), '/') LIKE ? ESCAPE '\\')"
         )
-        params.append(f"{escaped_prefix}%")
+        params.extend([exact_prefix, child_prefix])
     if action_terms:
         for term in action_terms:
             if str(term) == "none":
@@ -194,7 +196,7 @@ def _build_conversation_filters(
         where_clauses.append(
             f"EXISTS (SELECT 1 FROM messages mt WHERE mt.conversation_id = {conv_id_col} AND mt.message_type = ?)"
         )
-        params.append(MessageType.normalize(message_type).value)
+        params.append(validate_message_type_filter(message_type).value)
     where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
     return where_sql, params
 

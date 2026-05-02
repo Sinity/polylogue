@@ -6,7 +6,8 @@ from collections.abc import Sequence
 from datetime import datetime
 from typing import TYPE_CHECKING, Protocol, TypeVar
 
-from polylogue.archive.message.types import MessageType
+from polylogue.archive.message.types import MessageType, validate_message_type_filter
+from polylogue.archive.query.path_prefix import path_matches_prefix
 from polylogue.archive.query.runtime_matching import (
     matches_action_sequence,
     matches_action_terms,
@@ -152,7 +153,7 @@ def apply_full_filters(
         results = [conversation for conversation in results if str(conversation.id) in scoped_ids]
 
     if plan.message_type is not None:
-        wanted_type = MessageType.normalize(plan.message_type)
+        wanted_type = validate_message_type_filter(plan.message_type)
         results = [
             c
             for c in results
@@ -160,6 +161,11 @@ def apply_full_filters(
                 MessageType.normalize(getattr(m, "message_type", MessageType.MESSAGE)) == wanted_type
                 for m in c.messages
             )
+        ]
+
+    if plan.cwd_prefix:
+        results = [
+            conversation for conversation in results if _conversation_matches_cwd_prefix(conversation, plan.cwd_prefix)
         ]
 
     if plan.negative_terms:
@@ -200,7 +206,7 @@ def _apply_since_session(
             break
 
     if reference_conv is None:
-        return conversations
+        return []
 
     ref_cwds: list[str] = []
     ref_meta = getattr(reference_conv, "provider_meta", None) or {}
@@ -228,11 +234,21 @@ def _apply_since_session(
             if isinstance(c_meta, dict):
                 c_wds = c_meta.get("working_directories") or []
                 c_wd_strs = [str(wd) for wd in c_wds if isinstance(wd, str) and wd]
-                if c_wd_strs and not any(str(cwd).startswith(ref_cwd) for cwd in c_wd_strs for ref_cwd in ref_cwds):
+                if not c_wd_strs:
+                    continue
+                if not any(path_matches_prefix(cwd, ref_cwd) for cwd in c_wd_strs for ref_cwd in ref_cwds):
                     continue
         results.append(c)
 
     return results
+
+
+def _conversation_matches_cwd_prefix(conversation: Conversation, cwd_prefix: str) -> bool:
+    meta = getattr(conversation, "provider_meta", None) or {}
+    if not isinstance(meta, dict):
+        return False
+    cwd_values = meta.get("working_directories") or []
+    return any(path_matches_prefix(cwd, cwd_prefix) for cwd in cwd_values if isinstance(cwd, str) and cwd)
 
 
 __all__ = ["FilterableConversationLike", "apply_common_filters", "apply_full_filters"]

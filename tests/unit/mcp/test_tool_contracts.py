@@ -413,6 +413,26 @@ class TestQueryTools:
         mock_ops.diagnose_query_miss.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_query_tools_reject_unknown_message_type(self, mcp_server: MCPServerUnderTest) -> None:
+        with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
+            mock_ops = MagicMock()
+            mock_ops.query_conversations = AsyncMock(return_value=[])
+            mock_ops.search_conversation_hits = AsyncMock(return_value=[])
+            mock_get_archive_ops.return_value = mock_ops
+
+            result = await invoke_surface_async(
+                mcp_server._tool_manager._tools["search"].fn,
+                query="hello",
+                message_type="summmary",
+            )
+
+        payload = json.loads(result)
+        assert payload["error"] == "internal MCP tool error"
+        assert payload["detail"] == "ValueError"
+        mock_ops.search_conversation_hits.assert_not_called()
+        mock_ops.query_conversations.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_list_conversations_uses_provider_display_label(self, mcp_server: MCPServerUnderTest) -> None:
         gemini_conversation = make_conv(
             id="gemini:gemini-20250422-1234",
@@ -537,6 +557,24 @@ class TestGetConversationTool:
             result = invoke_surface(mcp_server._tool_manager._tools["get_messages"].fn, conversation_id="test:long")
 
         assert json.loads(result)["messages"][0]["text"] == long_text
+
+    def test_get_messages_rejects_unknown_message_type(self, mcp_server: MCPServerUnderTest) -> None:
+        with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
+            mock_ops = MagicMock()
+            mock_ops.get_conversation_summary = AsyncMock(return_value=_make_summary("test:long"))
+            mock_ops.get_messages_paginated = AsyncMock(return_value=([], 0))
+            mock_get_archive_ops.return_value = mock_ops
+
+            result = invoke_surface(
+                mcp_server._tool_manager._tools["get_messages"].fn,
+                conversation_id="test:long",
+                message_type="summmary",
+            )
+
+        payload = json.loads(result)
+        assert payload["error"] == "internal MCP tool error"
+        assert payload["detail"] == "ValueError"
+        mock_ops.get_messages_paginated.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_get_with_nonexistent_id(self, mcp_server: MCPServerUnderTest) -> None:
