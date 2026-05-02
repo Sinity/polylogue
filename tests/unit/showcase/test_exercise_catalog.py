@@ -107,7 +107,7 @@ class TestExercisesByGroup:
             "--repair",
             "--preview",
             "--target",
-            "session_products",
+            "session_insights",
         ]
         assert observed["json-run-embed"].args == ["run", "embed", "--stats", "--format", "json"]
         assert "json-schema-compare" not in observed

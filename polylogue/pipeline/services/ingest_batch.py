@@ -1012,7 +1012,7 @@ async def process_ingest_batch(
 
     1. Submit all records to ProcessPool (decode + validate + parse + transform)
     2. Consume results via as_completed — write to DB as each worker finishes
-    3. Defer session product refresh to caller (done once after all batches)
+    3. Defer session insight refresh to caller (done once after all batches)
     """
     import asyncio
 
@@ -1168,11 +1168,11 @@ async def _persist_batch_raw_state_updates(
     return time.perf_counter() - raw_state_update_started
 
 
-async def refresh_session_products_bulk(
+async def refresh_session_insights_bulk(
     backend: _ConnectionBackendLike,
     changed_conversation_ids: list[str],
 ) -> MaterializeStageObservation | None:
-    """Bulk session product refresh — once after all batches, not per-batch."""
+    """Bulk session insight refresh — once after all batches, not per-batch."""
     if not changed_conversation_ids:
         return None
 
@@ -1182,14 +1182,14 @@ async def refresh_session_products_bulk(
     aggregate_elapsed = 0.0
     try:
         from polylogue.storage.insights.session.refresh import (
-            _apply_session_product_conversation_updates_async,
+            _apply_session_insight_conversation_updates_async,
             _refresh_thread_roots_async,
             refresh_async_provider_day_aggregates,
         )
 
         async with backend.connection() as conn:
             t_updates = time.perf_counter()
-            update = await _apply_session_product_conversation_updates_async(
+            update = await _apply_session_insight_conversation_updates_async(
                 conn,
                 changed_conversation_ids,
                 transaction_depth=1,
@@ -1246,7 +1246,7 @@ async def refresh_session_products_bulk(
             observation["update_chunks"] = [chunk.to_observation() for chunk in chunk_observations]
         if elapsed > 2.0:
             logger.info(
-                "session_product_refresh",
+                "session_insight_refresh",
                 conversations=len(changed_conversation_ids),
                 unique_thread_roots=len(thread_root_ids),
                 unique_provider_days=len(affected_groups),
@@ -1266,4 +1266,4 @@ async def refresh_session_products_bulk(
         }
 
 
-__all__ = ["process_ingest_batch", "refresh_session_products_bulk"]
+__all__ = ["process_ingest_batch", "refresh_session_insights_bulk"]

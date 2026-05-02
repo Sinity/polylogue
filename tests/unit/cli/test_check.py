@@ -148,7 +148,7 @@ class TestReadinessReportConstruction:
 
 
 def test_check_records_scoped_maintenance_preview(cli_workspace: WorkspacePaths, cli_runner: CliRunner) -> None:
-    from polylogue.storage.insights.session.rebuild import rebuild_session_products_sync
+    from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
 
     db_path = cli_workspace["db_path"]
     (
@@ -159,7 +159,7 @@ def test_check_records_scoped_maintenance_preview(cli_workspace: WorkspacePaths,
         .save()
     )
     with open_connection(db_path) as conn:
-        rebuild_session_products_sync(conn)
+        rebuild_session_insights_sync(conn)
         conn.execute("DELETE FROM session_profiles")
         conn.commit()
 
@@ -172,7 +172,7 @@ def test_check_records_scoped_maintenance_preview(cli_workspace: WorkspacePaths,
             "--repair",
             "--preview",
             "--target",
-            "session_products",
+            "session_insights",
         ],
         catch_exceptions=False,
     )
@@ -180,16 +180,16 @@ def test_check_records_scoped_maintenance_preview(cli_workspace: WorkspacePaths,
     assert result.exit_code == 0
     payload = _extract_json(result.output)
     maintenance = json_object_field(payload, "maintenance", context="check payload")
-    assert maintenance.get("targets") == ["session_products"]
+    assert maintenance.get("targets") == ["session_insights"]
     maintenance_item = json_array_item(
         json_array_field(maintenance, "items", context="maintenance"), 0, context="maintenance.items"
     )
-    assert maintenance_item.get("name") == "session_products"
+    assert maintenance_item.get("name") == "session_insights"
     assert maintenance_item.get("repaired_count") == 1
 
 
 def test_check_records_scoped_maintenance_apply(cli_workspace: WorkspacePaths, cli_runner: CliRunner) -> None:
-    from polylogue.storage.insights.session.rebuild import rebuild_session_products_sync
+    from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
 
     db_path = cli_workspace["db_path"]
     (
@@ -200,7 +200,7 @@ def test_check_records_scoped_maintenance_apply(cli_workspace: WorkspacePaths, c
         .save()
     )
     with open_connection(db_path) as conn:
-        rebuild_session_products_sync(conn)
+        rebuild_session_insights_sync(conn)
         conn.execute("DELETE FROM session_profiles")
         conn.commit()
 
@@ -213,7 +213,7 @@ def test_check_records_scoped_maintenance_apply(cli_workspace: WorkspacePaths, c
             "json",
             "--repair",
             "--target",
-            "session_products",
+            "session_insights",
         ],
         catch_exceptions=False,
     )
@@ -221,11 +221,11 @@ def test_check_records_scoped_maintenance_apply(cli_workspace: WorkspacePaths, c
     assert result.exit_code == 0
     payload = _extract_json(result.output)
     maintenance = json_object_field(payload, "maintenance", context="check payload")
-    assert maintenance.get("targets") == ["session_products"]
+    assert maintenance.get("targets") == ["session_insights"]
     maintenance_item = json_array_item(
         json_array_field(maintenance, "items", context="maintenance"), 0, context="maintenance.items"
     )
-    assert maintenance_item.get("name") == "session_products"
+    assert maintenance_item.get("name") == "session_insights"
     assert maintenance_item.get("success") is True
 
 
@@ -273,7 +273,7 @@ def test_check_daemon_plain_renders_component_status(cli_runner: CliRunner) -> N
 def test_check_plain_preview_summarizes_changes_not_issues(
     cli_workspace: WorkspacePaths, cli_runner: CliRunner
 ) -> None:
-    from polylogue.storage.insights.session.rebuild import rebuild_session_products_sync
+    from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
 
     db_path = cli_workspace["db_path"]
     (
@@ -284,7 +284,7 @@ def test_check_plain_preview_summarizes_changes_not_issues(
         .save()
     )
     with open_connection(db_path) as conn:
-        rebuild_session_products_sync(conn)
+        rebuild_session_insights_sync(conn)
         conn.execute("DELETE FROM session_profiles")
         conn.commit()
 
@@ -296,7 +296,7 @@ def test_check_plain_preview_summarizes_changes_not_issues(
             "--repair",
             "--preview",
             "--target",
-            "session_products",
+            "session_insights",
         ],
         catch_exceptions=False,
     )

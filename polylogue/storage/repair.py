@@ -164,7 +164,7 @@ def count_orphaned_attachments_sync(conn: sqlite3.Connection) -> int:
 # ---------------------------------------------------------------------------
 
 
-def session_product_repair_count(derived_statuses: dict[str, DerivedModelStatus]) -> int:
+def session_insight_repair_count(derived_statuses: dict[str, DerivedModelStatus]) -> int:
     keys = [
         "session_profile_rows",
         "session_profile_merged_fts",
@@ -201,7 +201,7 @@ def _fts_repair_count(*, source_rows: int, indexed_rows: int, duplicates: int) -
     return _positive_count(source_rows - indexed_rows) + _positive_count(duplicates)
 
 
-def _session_product_row_repair_count(status: SessionInsightStatusSnapshot) -> int:
+def _session_insight_row_repair_count(status: SessionInsightStatusSnapshot) -> int:
     return (
         status.missing_profile_row_count
         + status.stale_profile_row_count
@@ -217,7 +217,7 @@ def _session_product_row_repair_count(status: SessionInsightStatusSnapshot) -> i
     )
 
 
-def _session_product_fts_repair_count(status: SessionInsightStatusSnapshot) -> int:
+def _session_insight_fts_repair_count(status: SessionInsightStatusSnapshot) -> int:
     return sum(
         (
             _fts_repair_count(
@@ -254,14 +254,14 @@ def _session_product_fts_repair_count(status: SessionInsightStatusSnapshot) -> i
     )
 
 
-def _assess_session_product_repairs(status: SessionInsightStatusSnapshot) -> _SessionInsightRepairAssessment:
+def _assess_session_insight_repairs(status: SessionInsightStatusSnapshot) -> _SessionInsightRepairAssessment:
     return _SessionInsightRepairAssessment(
-        row_debt=_session_product_row_repair_count(status),
-        fts_debt=_session_product_fts_repair_count(status),
+        row_debt=_session_insight_row_repair_count(status),
+        fts_debt=_session_insight_fts_repair_count(status),
     )
 
 
-def _session_product_status_ready(status: SessionInsightStatusSnapshot) -> bool:
+def _session_insight_status_ready(status: SessionInsightStatusSnapshot) -> bool:
     return all(status.ready_flag(flag) for flag in _SESSION_INSIGHT_READY_FLAGS)
 
 
@@ -409,7 +409,7 @@ def collect_archive_debt_statuses_sync(
     )
     empty_conversations = count_empty_conversations_sync(conn)
     orphaned_attachments = count_orphaned_attachments_sync(conn)
-    session_products = session_product_repair_count(statuses)
+    session_insights = session_insight_repair_count(statuses)
     action_events = action_event_repair_count(statuses)
     dangling_fts = dangling_fts_repair_count(statuses)
 
@@ -441,12 +441,12 @@ def collect_archive_debt_statuses_sync(
             if orphaned_attachments == 0
             else f"{orphaned_attachments:,} orphaned attachment rows",
         ),
-        "session_products": _archive_debt_status(
-            "session_products",
-            issue_count=session_products,
+        "session_insights": _archive_debt_status(
+            "session_insights",
+            issue_count=session_insights,
             detail="Session-product read models ready"
-            if session_products == 0
-            else f"{session_products:,} pending/stale/orphaned session-insight rows",
+            if session_insights == 0
+            else f"{session_insights:,} pending/stale/orphaned session-insight rows",
         ),
         "action_event_read_model": _archive_debt_status(
             "action_event_read_model",
@@ -694,7 +694,7 @@ def preview_orphaned_attachments(*, count: int) -> RepairResult:
 # ---------------------------------------------------------------------------
 
 
-def repair_session_products(
+def repair_session_insights(
     config: Config,
     dry_run: bool = False,
     *,
@@ -702,17 +702,17 @@ def repair_session_products(
     progress_total: int | None = None,
 ) -> RepairResult:
     from polylogue.storage.backends.connection import connection_context
-    from polylogue.storage.insights.session.rebuild import rebuild_session_products_sync
+    from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
     from polylogue.storage.insights.session.status import session_insight_status_sync
 
     try:
         with connection_context(None) as conn:
             status = session_insight_status_sync(conn)
-            assessment = _assess_session_product_repairs(status)
+            assessment = _assess_session_insight_repairs(status)
 
             if dry_run:
                 return _repair_result(
-                    "session_products",
+                    "session_insights",
                     repaired_count=assessment.pending,
                     success=True,
                     detail="Would: session insights already ready"
@@ -720,32 +720,32 @@ def repair_session_products(
                     else f"Would: rebuild session insights ({assessment.pending:,} pending items)",
                 )
 
-            rebuilt = rebuild_session_products_sync(
+            rebuilt = rebuild_session_insights_sync(
                 conn,
                 progress_callback=progress_callback,
                 progress_total=progress_total,
             )
             conn.commit()
             refreshed = session_insight_status_sync(conn)
-            success = _session_product_status_ready(refreshed)
+            success = _session_insight_status_ready(refreshed)
             return _repair_result(
-                "session_products",
+                "session_insights",
                 repaired_count=rebuilt.total(),
                 success=success,
                 detail="Session insights ready" if success else "Session insights still incomplete",
             )
     except Exception as exc:
         return _repair_result(
-            "session_products",
+            "session_insights",
             repaired_count=0,
             success=False,
             detail=f"Failed to repair session insights: {exc}",
         )
 
 
-def preview_session_products(*, count: int) -> RepairResult:
+def preview_session_insights(*, count: int) -> RepairResult:
     return _repair_result(
-        "session_products",
+        "session_insights",
         repaired_count=count,
         success=True,
         detail="Would: session insights already ready"
@@ -937,7 +937,7 @@ def repair_wal_checkpoint(config: Config, dry_run: bool = False) -> RepairResult
 
 
 _PREVIEW_HANDLERS: dict[str, Callable[..., RepairResult]] = {
-    "session_products": preview_session_products,
+    "session_insights": preview_session_insights,
     "action_event_read_model": preview_action_event_read_model,
     "dangling_fts": preview_dangling_fts,
     "orphaned_messages": preview_orphaned_messages,
@@ -947,7 +947,7 @@ _PREVIEW_HANDLERS: dict[str, Callable[..., RepairResult]] = {
 }
 
 _REPAIR_HANDLERS: dict[str, Callable[..., RepairResult]] = {
-    "session_products": repair_session_products,
+    "session_insights": repair_session_insights,
     "action_event_read_model": repair_action_event_read_model,
     "dangling_fts": repair_dangling_fts,
     "wal_checkpoint": repair_wal_checkpoint,
@@ -984,7 +984,7 @@ def run_safe_repairs(
                 results.append(preview(count=preview_counts[target_name]))
                 continue
         repair = _REPAIR_HANDLERS[target_name]
-        if target_name == "session_products":
+        if target_name == "session_insights":
             results.append(
                 repair(
                     config,
@@ -1067,17 +1067,17 @@ __all__ = [
     "preview_orphaned_attachments",
     "preview_orphaned_content_blocks",
     "preview_orphaned_messages",
-    "preview_session_products",
+    "preview_session_insights",
     "repair_action_event_read_model",
     "repair_dangling_fts",
     "repair_empty_conversations",
     "repair_orphaned_attachments",
     "repair_orphaned_content_blocks",
     "repair_orphaned_messages",
-    "repair_session_products",
+    "repair_session_insights",
     "repair_wal_checkpoint",
     "run_archive_cleanup",
     "run_safe_repairs",
     "run_selected_maintenance",
-    "session_product_repair_count",
+    "session_insight_repair_count",
 ]

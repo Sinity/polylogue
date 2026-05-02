@@ -714,9 +714,9 @@ class TestInsightTools:
             provenance=_provenance(),
         )
         debt = ArchiveDebtInsight(
-            debt_name="session_products",
+            debt_name="session_insights",
             category="insights",
-            maintenance_target="session_products",
+            maintenance_target="session_insights",
             destructive=False,
             issue_count=1,
             healthy=False,

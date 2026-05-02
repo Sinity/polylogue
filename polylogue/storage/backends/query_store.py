@@ -10,7 +10,7 @@ import aiosqlite
 
 from polylogue.storage.backends.queries import action_events as action_events_q
 from polylogue.storage.backends.queries import (
-    session_insight_summary_queries as session_product_summaries_q,
+    session_insight_summary_queries as session_insight_summaries_q,
 )
 from polylogue.storage.backends.queries import (
     session_insight_thread_queries as session_insight_threads_q,
@@ -121,7 +121,7 @@ class SQLiteQueryStore(
         query: SessionTagRollupListQuery,
     ) -> list[SessionTagRollupRecord]:
         async with self._connection_factory() as conn:
-            return await session_product_summaries_q.list_session_tag_rollup_rows(conn, query)
+            return await session_insight_summaries_q.list_session_tag_rollup_rows(conn, query)
 
     async def list_session_tag_rollup_rows(
         self,
@@ -145,7 +145,7 @@ class SQLiteQueryStore(
         query: DaySessionSummaryListQuery,
     ) -> list[DaySessionSummaryRecord]:
         async with self._connection_factory() as conn:
-            return await session_product_summaries_q.list_day_session_summaries(conn, query)
+            return await session_insight_summaries_q.list_day_session_summaries(conn, query)
 
     async def list_day_session_summaries(
         self,

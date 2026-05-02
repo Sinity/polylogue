@@ -1063,7 +1063,7 @@ async def test_save_conversation_replaces_runtime_rows_on_content_change(tmp_pat
 async def test_backend_delete_contracts(tmp_path: Path) -> None:
     """Deleting a conversation must remove rows, attachments, and FTS entries exactly once."""
     from polylogue.storage.index import ensure_index, update_index_for_conversations
-    from polylogue.storage.insights.session.rebuild import rebuild_session_products_sync
+    from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
 
     backend = SQLiteBackend(db_path=tmp_path / "delete.db")
     repo = ConversationRepository(backend=backend)
@@ -1080,7 +1080,7 @@ async def test_backend_delete_contracts(tmp_path: Path) -> None:
     with open_connection(backend.db_path) as conn:
         ensure_index(conn)
         update_index_for_conversations(["conv-delete"], conn)
-        rebuild_session_products_sync(conn)
+        rebuild_session_insights_sync(conn)
         conn.commit()
         assert (
             conn.execute(

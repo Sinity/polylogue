@@ -34,12 +34,12 @@ def test_maintenance_target_catalog_reports_preview_and_help_semantics() -> None
     catalog = build_maintenance_target_catalog()
 
     assert catalog.preview_target_names() == (
-        "session_products",
+        "session_insights",
         "action_event_read_model",
         "dangling_fts",
     )
     assert catalog.help_text() == (
-        "Limit maintenance to named targets such as session_products, action_event_read_model, "
+        "Limit maintenance to named targets such as session_insights, action_event_read_model, "
         "dangling_fts, wal_checkpoint, orphaned_messages, orphaned_content_blocks, "
         "empty_conversations, or orphaned_attachments"
     )
@@ -64,8 +64,8 @@ def test_maintenance_target_catalog_exposes_archive_readiness_specs() -> None:
 def test_maintenance_target_catalog_renders_repair_hints_from_canonical_targets() -> None:
     catalog = build_maintenance_target_catalog()
 
-    assert catalog.repair_hint(("session_products",), include_run_all=True) == (
-        "Run `polylogue doctor --repair --target session_products`, or `polylogue run all`."
+    assert catalog.repair_hint(("session_insights",), include_run_all=True) == (
+        "Run `polylogue doctor --repair --target session_insights`, or `polylogue run all`."
     )
     assert catalog.repair_hint(("action_events",), include_run_all=False) == (
         "Run `polylogue doctor --repair --target action_event_read_model`."

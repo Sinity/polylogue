@@ -80,7 +80,7 @@ from polylogue.types import Provider
 
 logger = structlog.get_logger(__name__)
 _MAINTENANCE_TARGET_CATALOG = build_maintenance_target_catalog()
-_SESSION_INSIGHT_REPAIR_HINT = _MAINTENANCE_TARGET_CATALOG.repair_hint(("session_products",), include_run_all=True)
+_SESSION_INSIGHT_REPAIR_HINT = _MAINTENANCE_TARGET_CATALOG.repair_hint(("session_insights",), include_run_all=True)
 _PROFILE_FTS_STATUS_BY_TIER: dict[str, SessionInsightReadyFlag] = {
     "merged": "profile_merged_fts_ready",
     "evidence": "profile_evidence_fts_ready",
@@ -939,10 +939,10 @@ class ArchiveMaintenanceMixin:
         conversation_ids: Sequence[str] | None = None,
     ) -> SessionInsightCounts:
         """Rebuild durable session-insight read models."""
-        from polylogue.storage.insights.session.rebuild import rebuild_session_products_async
+        from polylogue.storage.insights.session.rebuild import rebuild_session_insights_async
 
         async with self.backend.bulk_connection(), self.backend.connection() as conn:
-            return await rebuild_session_products_async(
+            return await rebuild_session_insights_async(
                 conn,
                 conversation_ids=conversation_ids,
                 transaction_depth=self.backend.transaction_depth,

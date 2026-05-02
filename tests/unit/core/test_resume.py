@@ -8,7 +8,7 @@ import pytest
 
 from polylogue.api import Polylogue
 from polylogue.storage.backends.connection import open_connection
-from polylogue.storage.insights.session.rebuild import rebuild_session_products_sync
+from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
 from tests.infra.storage_records import ConversationBuilder
 
 
@@ -83,7 +83,7 @@ async def test_resume_brief_composes_insights_and_related_sessions(cli_workspace
     db_path = cli_workspace["db_path"]
     _seed_resume_sessions(db_path)
     with open_connection(db_path) as conn:
-        rebuild_session_products_sync(conn)
+        rebuild_session_insights_sync(conn)
 
     archive = Polylogue(archive_root=cli_workspace["archive_root"], db_path=db_path)
     brief = await archive.resume_brief("resume-child")
@@ -119,4 +119,4 @@ async def test_resume_brief_degrades_when_insights_are_unavailable(cli_workspace
         "session_enrichment",
         "work_thread",
     }
-    assert all("session_products" in uncertainty.detail for uncertainty in brief.uncertainties)
+    assert all("session_insights" in uncertainty.detail for uncertainty in brief.uncertainties)

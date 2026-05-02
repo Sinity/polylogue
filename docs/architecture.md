@@ -38,8 +38,8 @@ Stored insights computed over the archive:
 Primary modules:
 
 - `polylogue/insights/`
-- `polylogue/storage/session_product_*.py`
-- `polylogue/storage/repository_product_*.py`
+- `polylogue/storage/insights/session/`
+- `polylogue/storage/repository/insight/`
 
 ### 3. Surfaces
 
@@ -76,7 +76,7 @@ source files (JSON/JSONL/ZIP)
   → provider parser            # parsers/{chatgpt,claude,codex,drive}.py
   → content hash (NFC)         # pipeline/ids.py — SHA-256 over normalized payload
   → store (upsert-if-changed)  # storage/ — idempotent by content hash
-  → session insights           # session_product_*.py — profiles, work events, phases, threads
+  → session insights           # storage/insights/session/ — profiles, work events, phases, threads
   → FTS index                  # search_providers/fts5.py — unicode61 tokenizer
 
            CLI / MCP / Python API
@@ -107,7 +107,7 @@ The `all` pipeline stage runs: acquire → parse → materialize → render → 
 | `ConversationRepository` | `storage/repository.py` | Mixin-composed async repository (10 mixins for reads, writes, insights, vectors, raw). |
 | `SearchProvider` protocol | `protocols.py` | FTS5 and Hybrid (RRF fusion) implementations. |
 | `ConversationFilter` | `archive/filter/filters.py` | Fluent filter chain used by CLI, MCP, and facade. |
-| `Session Products` | `storage/session_product_*.py` | Materialized read models: profiles, work events, phases, threads, aggregates. |
+| `Session Insights` | `storage/insights/session/` | Materialized read models: profiles, work events, phases, threads, aggregates. |
 | `ContentHash` | `pipeline/ids.py` | SHA-256 over NFC-normalized conversation payload. Title, timestamps, messages, attachments are hashed. User metadata (tags, summaries) is excluded — editable metadata doesn't trigger re-import. |
 | `Provider` enum | `types.py` | 6 known providers + UNKNOWN. All provider identity flows through this enum. |
 

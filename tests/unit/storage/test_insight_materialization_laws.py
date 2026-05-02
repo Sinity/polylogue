@@ -17,7 +17,7 @@ from tests.infra.storage_records import ConversationBuilder, db_setup
 
 @pytest.fixture()
 def materialized_db(workspace_env: Mapping[str, Path]) -> Path:
-    """Create a DB with conversations and run session product materialization."""
+    """Create a DB with conversations and run session insight materialization."""
     db_path = db_setup(workspace_env)
 
     ConversationBuilder(db_path, "mat-gpt-1").provider("chatgpt").title("GPT session").add_message(
@@ -35,10 +35,10 @@ def materialized_db(workspace_env: Mapping[str, Path]) -> Path:
     ).add_message(role="assistant", text="Here are the tests").add_message(role="user", text="Add edge cases").save()
 
     from polylogue.storage.backends.connection import open_connection
-    from polylogue.storage.insights.session.rebuild import rebuild_session_products_sync
+    from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
 
     with open_connection(db_path) as conn:
-        rebuild_session_products_sync(conn)
+        rebuild_session_insights_sync(conn)
         conn.commit()
 
     return db_path
@@ -102,7 +102,7 @@ class TestInsightMaterializationIdempotence:
 
     def test_rebuild_is_idempotent(self, materialized_db: Path) -> None:
         from polylogue.storage.backends.connection import open_connection
-        from polylogue.storage.insights.session.rebuild import rebuild_session_products_sync
+        from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
 
         with open_connection(materialized_db) as conn:
             has_profiles = conn.execute(
@@ -115,7 +115,7 @@ class TestInsightMaterializationIdempotence:
                 r["conversation_id"] for r in conn.execute("SELECT conversation_id FROM session_profiles").fetchall()
             }
 
-            rebuild_session_products_sync(conn)
+            rebuild_session_insights_sync(conn)
             conn.commit()
 
             ids_after = {

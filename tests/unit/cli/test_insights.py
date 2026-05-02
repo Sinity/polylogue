@@ -18,7 +18,7 @@ from polylogue.insights.archive_models import ARCHIVE_INSIGHT_CONTRACT_VERSION
 from polylogue.insights.registry import get_insight_type, insight_items_payload
 from polylogue.storage.action_events.rebuild_runtime import rebuild_action_event_read_model_sync
 from polylogue.storage.backends.connection import open_connection
-from polylogue.storage.insights.session.rebuild import rebuild_session_products_sync
+from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
 from polylogue.storage.insights.session.status import session_insight_status_sync
 from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZER_VERSION
 from tests.infra.json_contracts import (
@@ -137,7 +137,7 @@ def _seed_products(cli_workspace: CliWorkspace) -> None:
         .save()
     )
     with open_connection(db_path) as conn:
-        rebuild_session_products_sync(conn)
+        rebuild_session_insights_sync(conn)
         rebuild_action_event_read_model_sync(conn)
 
 
@@ -575,7 +575,7 @@ def test_insights_profile_date_filters_and_phases_json(cli_workspace: CliWorkspa
     assert json_object_list(phase_payload["session_phases"])[0]["insight_kind"] == "session_phase"
 
 
-def test_session_product_rebuild_supports_legacy_payload_columns(cli_workspace: CliWorkspace) -> None:
+def test_session_insight_rebuild_supports_legacy_payload_columns(cli_workspace: CliWorkspace) -> None:
     _seed_products(cli_workspace)
 
     with open_connection(cli_workspace["db_path"]) as conn:
@@ -583,7 +583,7 @@ def test_session_product_rebuild_supports_legacy_payload_columns(cli_workspace: 
         conn.execute("ALTER TABLE session_work_events ADD COLUMN payload_json TEXT NOT NULL DEFAULT '{}'")
         conn.execute("ALTER TABLE session_phases ADD COLUMN payload_json TEXT NOT NULL DEFAULT '{}'")
         conn.commit()
-        rebuild_session_products_sync(conn)
+        rebuild_session_insights_sync(conn)
         status = session_insight_status_sync(conn)
 
     assert status.profile_row_count == 2
@@ -592,11 +592,11 @@ def test_session_product_rebuild_supports_legacy_payload_columns(cli_workspace: 
     assert status.phase_inference_rows_ready is True
 
 
-def test_session_product_rebuild_pages_full_rebuild(cli_workspace: CliWorkspace) -> None:
+def test_session_insight_rebuild_pages_full_rebuild(cli_workspace: CliWorkspace) -> None:
     _seed_products(cli_workspace)
 
     with open_connection(cli_workspace["db_path"]) as conn:
-        counts = rebuild_session_products_sync(conn, page_size=1)
+        counts = rebuild_session_insights_sync(conn, page_size=1)
         status = session_insight_status_sync(conn)
 
     assert counts.profiles == 2
@@ -608,13 +608,13 @@ def test_session_product_rebuild_pages_full_rebuild(cli_workspace: CliWorkspace)
     assert status.phase_inference_rows_ready is True
 
 
-def test_session_product_rebuild_sync_reports_progress(cli_workspace: CliWorkspace) -> None:
+def test_session_insight_rebuild_sync_reports_progress(cli_workspace: CliWorkspace) -> None:
     _seed_products(cli_workspace)
 
     observed: list[tuple[int, str | None]] = []
 
     with open_connection(cli_workspace["db_path"]) as conn:
-        rebuild_session_products_sync(
+        rebuild_session_insights_sync(
             conn,
             page_size=1,
             progress_callback=lambda amount, desc=None: observed.append((json_int(amount), desc)),
@@ -627,7 +627,7 @@ def test_session_product_rebuild_sync_reports_progress(cli_workspace: CliWorkspa
     ]
 
 
-def test_session_product_rebuild_preserves_profile_semantics_without_loading_full_provider_meta(
+def test_session_insight_rebuild_preserves_profile_semantics_without_loading_full_provider_meta(
     cli_workspace: CliWorkspace,
 ) -> None:
     db_path = cli_workspace["db_path"]
@@ -665,7 +665,7 @@ def test_session_product_rebuild_preserves_profile_semantics_without_loading_ful
             "UPDATE conversations SET provider_meta = ? WHERE conversation_id = ?",
             (json.dumps(huge_provider_meta), "conv-heavy"),
         )
-        counts = rebuild_session_products_sync(conn, page_size=1)
+        counts = rebuild_session_insights_sync(conn, page_size=1)
         row = conn.execute(
             "SELECT repo_names_json, evidence_payload_json FROM session_profiles WHERE conversation_id = ?",
             ("conv-heavy",),
@@ -755,7 +755,7 @@ def test_insights_debt_json(cli_workspace: CliWorkspace) -> None:
     assert "maintenance_target" in first
 
 
-def test_session_product_status_accepts_epoch_backed_conversation_timestamps(cli_workspace: CliWorkspace) -> None:
+def test_session_insight_status_accepts_epoch_backed_conversation_timestamps(cli_workspace: CliWorkspace) -> None:
     db_path = cli_workspace["db_path"]
     (
         ConversationBuilder(db_path, "conv-epoch")
@@ -783,7 +783,7 @@ def test_session_product_status_accepts_epoch_backed_conversation_timestamps(cli
     )
 
     with open_connection(db_path) as conn:
-        rebuild_session_products_sync(conn)
+        rebuild_session_insights_sync(conn)
         status = session_insight_status_sync(conn)
 
     assert status.profile_row_count == 1
@@ -796,11 +796,11 @@ def test_session_product_status_accepts_epoch_backed_conversation_timestamps(cli
     assert status.profile_merged_fts_duplicate_count == 0
 
 
-def test_targeted_session_product_rebuild_does_not_duplicate_profile_fts(cli_workspace: CliWorkspace) -> None:
+def test_targeted_session_insight_rebuild_does_not_duplicate_profile_fts(cli_workspace: CliWorkspace) -> None:
     _seed_products(cli_workspace)
 
     with open_connection(cli_workspace["db_path"]) as conn:
-        rebuild_session_products_sync(conn, conversation_ids=["conv-root"])
+        rebuild_session_insights_sync(conn, conversation_ids=["conv-root"])
         status = session_insight_status_sync(conn)
 
     assert status.profile_row_count == 2
@@ -809,11 +809,11 @@ def test_targeted_session_product_rebuild_does_not_duplicate_profile_fts(cli_wor
     assert status.profile_merged_fts_ready is True
 
 
-def test_session_product_status_marks_older_materializer_versions_stale(cli_workspace: CliWorkspace) -> None:
+def test_session_insight_status_marks_older_materializer_versions_stale(cli_workspace: CliWorkspace) -> None:
     _seed_products(cli_workspace)
 
     with open_connection(cli_workspace["db_path"]) as conn:
-        rebuild_session_products_sync(conn)
+        rebuild_session_insights_sync(conn)
         conn.execute(
             "UPDATE session_profiles SET materializer_version = ?",
             (SESSION_INSIGHT_MATERIALIZER_VERSION - 1,),
@@ -881,7 +881,7 @@ def test_insights_reject_stale_session_insight_surfaces(
     assert result.exit_code == 1
     message = _exception_message(result)
     assert expected in message
-    assert "polylogue doctor --repair --target session_products" in message
+    assert "polylogue doctor --repair --target session_insights" in message
 
 
 def test_insights_profiles_reject_incomplete_profile_search_index(cli_workspace: CliWorkspace) -> None:
@@ -901,4 +901,4 @@ def test_insights_profiles_reject_incomplete_profile_search_index(cli_workspace:
     assert result.exit_code == 1
     message = _exception_message(result)
     assert "Session-profile merged search index is incomplete." in message
-    assert "polylogue doctor --repair --target session_products" in message
+    assert "polylogue doctor --repair --target session_insights" in message

@@ -16,7 +16,7 @@ from polylogue.insights.readiness import (
     build_insight_readiness_report,
 )
 from polylogue.storage.backends.connection import open_connection
-from polylogue.storage.insights.session.rebuild import rebuild_session_products_sync
+from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
 from polylogue.storage.insights.session.status import session_insight_status_sync
 from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZER_VERSION
 from tests.infra.storage_records import ConversationBuilder
@@ -54,7 +54,7 @@ async def test_insight_readiness_report_marks_rebuilt_insights_ready(cli_workspa
     db_path = cli_workspace["db_path"]
     _seed_readiness_conversations(db_path)
     with open_connection(db_path) as conn:
-        rebuild_session_products_sync(conn)
+        rebuild_session_insights_sync(conn)
 
     archive = Polylogue(archive_root=cli_workspace["archive_root"], db_path=db_path)
     report = await archive.insight_readiness_report()
@@ -105,7 +105,7 @@ async def test_insight_readiness_report_marks_partial_and_legacy_insights(cli_wo
         .save()
     )
     with open_connection(db_path) as conn:
-        rebuild_session_products_sync(conn)
+        rebuild_session_insights_sync(conn)
         conn.execute("DELETE FROM session_profiles WHERE conversation_id = ?", ("ready-second",))
         conn.commit()
 
@@ -114,7 +114,7 @@ async def test_insight_readiness_report_marks_partial_and_legacy_insights(cli_wo
     assert _entry_by_name(partial, "session_profiles").verdict == "partial"
 
     with open_connection(db_path) as conn:
-        rebuild_session_products_sync(conn)
+        rebuild_session_insights_sync(conn)
         conn.execute(
             "UPDATE session_profiles SET materializer_version = ?", (SESSION_INSIGHT_MATERIALIZER_VERSION - 1,)
         )
@@ -131,7 +131,7 @@ async def test_insight_readiness_report_marks_stale_insights(cli_workspace: dict
     db_path = cli_workspace["db_path"]
     _seed_readiness_conversations(db_path)
     with open_connection(db_path) as conn:
-        rebuild_session_products_sync(conn)
+        rebuild_session_insights_sync(conn)
         conn.execute("UPDATE conversations SET sort_key = sort_key + 1 WHERE conversation_id = ?", ("ready-root",))
         conn.commit()
 

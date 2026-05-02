@@ -375,7 +375,7 @@ def _work_event_payload(payload: WorkEventDocument | dict[str, object]) -> WorkE
 
 
 # ---------------------------------------------------------------------------
-# Signal/support helpers (merged from session_product_row_signal_support)
+# Signal/support helpers (merged from session_insight_row_signal_support)
 # ---------------------------------------------------------------------------
 
 
@@ -468,7 +468,7 @@ def profile_support_level(profile: SessionProfile) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Text extraction helpers (merged from session_product_row_text_support)
+# Text extraction helpers (merged from session_insight_row_text_support)
 # ---------------------------------------------------------------------------
 
 

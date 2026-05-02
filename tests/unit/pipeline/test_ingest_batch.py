@@ -27,7 +27,7 @@ from polylogue.pipeline.services.ingest_batch import (
     _topo_sort_conversation_entries,
     _unattributed_batch_elapsed_s,
     _write_conversation,
-    refresh_session_products_bulk,
+    refresh_session_insights_bulk,
 )
 from polylogue.pipeline.services.ingest_worker import (
     AttachmentRefTuple,
@@ -524,7 +524,7 @@ def test_drain_ready_conversation_entries_preserves_late_parent_fk(tmp_path: Pat
 
 
 @pytest.mark.asyncio
-async def test_refresh_session_products_bulk_dedupes_related_refreshes(
+async def test_refresh_session_insights_bulk_dedupes_related_refreshes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     fake_conn = _FakeRefreshConnection()
@@ -574,7 +574,7 @@ async def test_refresh_session_products_bulk_dedupes_related_refreshes(
     refresh_aggregates = AsyncMock()
 
     monkeypatch.setattr(
-        "polylogue.storage.insights.session.refresh._apply_session_product_conversation_updates_async",
+        "polylogue.storage.insights.session.refresh._apply_session_insight_conversation_updates_async",
         _fake_apply,
     )
     monkeypatch.setattr(
@@ -586,7 +586,7 @@ async def test_refresh_session_products_bulk_dedupes_related_refreshes(
         refresh_aggregates,
     )
 
-    observation = await refresh_session_products_bulk(
+    observation = await refresh_session_insights_bulk(
         fake_backend,
         ["conv-1", "conv-2", "conv-3"],
     )

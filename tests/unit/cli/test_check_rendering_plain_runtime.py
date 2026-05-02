@@ -224,7 +224,7 @@ def test_emit_maintenance_output_handles_preview_empty_selection_and_vacuum_mode
                 detail="failed",
             ),
         ],
-        maintenance_targets=("session_products",),
+        maintenance_targets=("session_insights",),
     )
     with patch("polylogue.cli.shared.check_rendering_plain.run_vacuum") as run_vacuum:
         emit_maintenance_output(env, result, _options(repair=True, preview=True, vacuum=True))
