@@ -18,6 +18,9 @@ from devtools.command_catalog import COMMANDS
 _COVERAGE_AXIS_KEYS = ("domain", "subject", "area", "dimension", "artifact", "platform", "concern")
 _COVERAGE_GAP_SEVERITIES = {"info", "minor", "major", "serious"}
 _EVIDENCE_COMMANDS = {"pytest", "ruff", "mypy", "nix", "polylogue", "polylogued", "polylogue-mcp"}
+_COVERAGE_COMMAND_FIELDS = {"generated_by", "verified_by", "verification_command"}
+_COVERAGE_PATH_FIELDS = {"config_location", "location", "path", "strategies_location"}
+_COVERAGE_PATH_LIST_FIELDS = {"locations", "tests"}
 
 
 def load_manifest(path: Path) -> dict[str, object]:
@@ -193,6 +196,71 @@ def check_coverage_gaps(plans_dir: Path) -> list[str]:
     return errors
 
 
+def check_coverage_references(plans_dir: Path) -> list[str]:
+    """Validate locally checkable command and path references in coverage manifests."""
+    errors: list[str] = []
+    repo_root = _repo_root_for_plans(plans_dir)
+    for path in sorted(plans_dir.glob("*coverage*.yaml")):
+        try:
+            data = load_manifest(path)
+        except ValueError as exc:
+            errors.append(str(exc))
+            continue
+        for ref_path, key, value in _iter_manifest_fields(data):
+            label = f"{path}: {'.'.join(ref_path)}"
+            if (
+                key in _COVERAGE_COMMAND_FIELDS
+                and isinstance(value, str)
+                and value.strip()
+                and not _resolvable_command(value)
+            ):
+                errors.append(f"{label} command does not resolve: {value!r}")
+            if key in _COVERAGE_PATH_FIELDS and isinstance(value, str) and value.strip():
+                candidate = _manifest_path_token(value)
+                if candidate and not _manifest_path_exists(repo_root, candidate):
+                    errors.append(f"{label} path does not exist: {candidate!r}")
+            if key in _COVERAGE_PATH_LIST_FIELDS and isinstance(value, list):
+                for item_index, item in enumerate(value):
+                    if not isinstance(item, str) or not item.strip():
+                        continue
+                    candidate = _manifest_path_token(item)
+                    if candidate and not _manifest_path_exists(repo_root, candidate):
+                        errors.append(f"{label}[{item_index}] path does not exist: {candidate!r}")
+    return errors
+
+
+def _iter_manifest_fields(value: object, prefix: tuple[str, ...] = ()) -> list[tuple[tuple[str, ...], str, object]]:
+    fields: list[tuple[tuple[str, ...], str, object]] = []
+    if isinstance(value, dict):
+        for raw_key, child in value.items():
+            key = str(raw_key)
+            child_path = (*prefix, key)
+            fields.append((child_path, key, child))
+            fields.extend(_iter_manifest_fields(child, child_path))
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            fields.extend(_iter_manifest_fields(child, (*prefix, str(index))))
+    return fields
+
+
+def _repo_root_for_plans(plans_dir: Path) -> Path:
+    if plans_dir.name == "plans" and plans_dir.parent.name == "docs":
+        return plans_dir.parent.parent
+    return plans_dir
+
+
+def _manifest_path_token(value: str) -> str:
+    token = value.strip().split(maxsplit=1)[0].strip()
+    return "" if token in {"", "null", "dynamic", "unknown"} else token
+
+
+def _manifest_path_exists(repo_root: Path, token: str) -> bool:
+    path = Path(token)
+    if path.is_absolute():
+        return path.exists()
+    return (repo_root / path).exists()
+
+
 def _coverage_gap_label(path: Path, index: int, gap: dict[object, object]) -> str:
     gap_id = gap.get("id")
     if isinstance(gap_id, str) and gap_id.strip():
@@ -226,6 +294,10 @@ def _valid_suppression_ref(value: object) -> bool:
 
 
 def _resolvable_next_evidence(value: str) -> bool:
+    return _resolvable_command(value)
+
+
+def _resolvable_command(value: str) -> bool:
     try:
         tokens = shlex.split(value)
     except ValueError:
@@ -252,7 +324,13 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     all_errors: list[str] = []
-    for check in (check_lint_escalation, check_suppressions, check_assurance_domains, check_coverage_gaps):
+    for check in (
+        check_lint_escalation,
+        check_suppressions,
+        check_assurance_domains,
+        check_coverage_gaps,
+        check_coverage_references,
+    ):
         try:
             all_errors.extend(check(plans_dir))
         except Exception as exc:
