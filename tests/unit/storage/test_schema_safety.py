@@ -413,6 +413,20 @@ class TestConversationFilterSQL:
         # The special chars should be in params, not embedded in SQL
         assert len(params) > 0
 
+    def test_build_filters_rejects_invalid_since_filter(self) -> None:
+        """Invalid date filters should not silently broaden to epoch zero."""
+        from polylogue.storage.backends.queries.filter_builder import _build_conversation_filters
+
+        with pytest.raises(ValueError, match="Invalid date filter value"):
+            _build_conversation_filters(since="not-a-date")
+
+    def test_build_filters_rejects_invalid_until_filter(self) -> None:
+        """Invalid date filters should not silently broaden to epoch zero."""
+        from polylogue.storage.backends.queries.filter_builder import _build_conversation_filters
+
+        with pytest.raises(ValueError, match="Invalid date filter value"):
+            _build_conversation_filters(until="not-a-date")
+
 
 # =============================================================================
 # SQL: fetch_limit pagination correctness (f6896a9)
