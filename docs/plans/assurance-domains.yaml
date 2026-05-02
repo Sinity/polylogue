@@ -193,7 +193,8 @@ domains:
     oracle_present: false
     oracle: null
     notes: >
-      Schema is fresh-only (no migration chain). Wipe-on-mismatch.
+      Schema is fresh-only (no migration chain). Mismatch blocks with a
+      reset/re-import diagnostic rather than attempting in-place migration.
       Active transition checks can use docs/plans/migrations.yaml while
       work is in flight, but completed retirements are not durable proof.
 

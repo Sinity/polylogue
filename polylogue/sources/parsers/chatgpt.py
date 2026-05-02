@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from polylogue.archive.message.roles import Role
+from polylogue.core.timestamps import parse_timestamp
 from polylogue.types import ContentBlockType, Provider
 
 from .base import ParsedAttachment, ParsedContentBlock, ParsedConversation, ParsedMessage
@@ -17,8 +18,11 @@ def _coerce_float(value: object) -> float | None:
     if isinstance(value, str):
         try:
             return float(value)
-        except ValueError:
-            return None
+        except (ValueError, TypeError):
+            pass
+        parsed = parse_timestamp(value)
+        if parsed is not None:
+            return parsed.timestamp()
     return None
 
 

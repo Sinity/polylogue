@@ -69,6 +69,7 @@ COERCE_FLOAT_CASES: list[CoerceFloatCase] = [
     (42, 42.0, "int"),
     (3.14, 3.14, "float"),
     ("2.5", 2.5, "string number"),
+    ("2024-01-15T10:30:00Z", 1705314600.0, "ISO datetime string"),
     ("invalid", None, "invalid string"),
     (None, None, "None"),
 ]
@@ -79,6 +80,33 @@ def test_coerce_float(input_val: object, expected: float | None, desc: str) -> N
     """Test _coerce_float conversion."""
     result = _coerce_float(input_val)
     assert result == expected, f"Failed {desc}"
+
+
+def test_chatgpt_message_extraction_sorts_iso_timestamps() -> None:
+    mapping = {
+        "late": {
+            "id": "late",
+            "message": {
+                "id": "late",
+                "author": {"role": "assistant"},
+                "content": {"parts": ["later"]},
+                "create_time": "2024-01-15T10:31:00Z",
+            },
+        },
+        "early": {
+            "id": "early",
+            "message": {
+                "id": "early",
+                "author": {"role": "user"},
+                "content": {"parts": ["earlier"]},
+                "create_time": "2024-01-15T10:30:00Z",
+            },
+        },
+    }
+
+    messages, _attachments = extract_messages_from_mapping(mapping)
+
+    assert [message.provider_message_id for message in messages] == ["early", "late"]
 
 
 # MESSAGE EXTRACTION - PARAMETRIZED (1 test replacing 17)
