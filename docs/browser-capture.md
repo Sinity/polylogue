@@ -6,7 +6,7 @@ Manifest V3 extension.
 Start the receiver:
 
 ```bash
-polylogue browser-capture serve
+polylogued browser-capture serve
 ```
 
 The receiver listens on `127.0.0.1:8765` by default and accepts:

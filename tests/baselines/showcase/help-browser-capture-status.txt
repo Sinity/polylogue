@@ -1,8 +1,0 @@
-Usage: polylogue browser-capture status [OPTIONS]
-
-  Show receiver configuration and capture-spool target.
-
-Options:
-  --spool PATH
-  --format [json]  Output format.
-  -h, --help       Show this message and exit.
