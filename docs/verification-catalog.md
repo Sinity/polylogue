@@ -8,10 +8,10 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 
 ## Snapshot
 
-- subjects: `504`
+- subjects: `503`
 - claims: `44`
 - runner bindings: `44`
-- proof obligations: `576`
+- proof obligations: `573`
 
 ## Quality Checks
 
@@ -40,7 +40,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `assurance.coverage_gap` | 23 |
 | `assurance.coverage_item` | 91 |
 | `assurance.coverage_manifest` | 9 |
-| `cli.command` | 58 |
+| `cli.command` | 57 |
 | `cli.json_command` | 5 |
 | `diagnostic.observable` | 1 |
 | `error.surface` | 2 |
@@ -116,7 +116,6 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `polylogue show` | `polylogue/cli/query_verbs.py:80` `polylogue.cli.query_verbs.show_verb` |
 | `polylogue stats` | `polylogue/cli/query_verbs.py:52` `polylogue.cli.query_verbs.stats_verb` |
 | `polylogue tags` | `polylogue/cli/commands/tags.py:12` `polylogue.cli.commands.tags.tags_command` |
-| `polylogue watch` | `polylogue/cli/commands/watch.py:35` `polylogue.cli.commands.watch.watch_command` |
 
 ## Schema Annotation Subjects
 
@@ -295,10 +294,10 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `assurance.coverage.gap_has_closure_path` | 23 |
 | `assurance.coverage.item_declared` | 91 |
 | `assurance.coverage.manifest_structured` | 9 |
-| `cli.command.help` | 58 |
+| `cli.command.help` | 57 |
 | `cli.command.json_envelope` | 5 |
-| `cli.command.no_traceback` | 58 |
-| `cli.command.plain_mode` | 58 |
+| `cli.command.no_traceback` | 57 |
+| `cli.command.plain_mode` | 57 |
 | `diagnostic.observable_trace_mapping` | 1 |
 | `error.machine_user_context` | 2 |
 | `generated.scenario.family_registered` | 9 |
