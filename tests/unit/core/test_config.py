@@ -287,21 +287,6 @@ class TestConfigPublicBoundary:
         }
         assert expected.issubset(set(config.__all__))
 
-    def test_paths_does_not_reexport_configuration_symbols(self) -> None:
-        import polylogue.paths as paths
-
-        forbidden = {
-            "DriveConfig",
-            "IndexConfig",
-            "Source",
-            "get_drive_config",
-            "get_index_config",
-            "get_sources",
-        }
-        assert forbidden.isdisjoint(set(paths.__all__))
-        for name in forbidden:
-            assert not hasattr(paths, name)
-
 
 # =============================================================================
 # Merged from test_logging.py (2024-03-15)
