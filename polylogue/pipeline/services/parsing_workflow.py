@@ -158,6 +158,7 @@ async def ingest_sources(
     progress_callback: ProgressCallback | None = None,
     parse_records: bool = True,
     skip_acquire: bool = False,
+    force_write: bool = False,
 ) -> IngestResult:
     """Canonical ingestion orchestration.
 
@@ -248,6 +249,7 @@ async def ingest_sources(
             parse_result = await service.parse_from_raw(
                 raw_ids=parse_raw_ids,
                 progress_callback=progress_callback,
+                force_write=force_write,
             )
         ingest_state.record_parse_completed()
         parse_raw_ids = ingest_state.parse_raw_ids
@@ -286,6 +288,7 @@ async def parse_from_raw(
     raw_ids: list[str] | None = None,
     provider: str | None = None,
     progress_callback: ProgressCallback | None = None,
+    force_write: bool = False,
 ) -> ParseResult:
     """Parse raw_conversations from DB into conversations.
 
@@ -318,6 +321,7 @@ async def parse_from_raw(
                 batch_ids,
                 result,
                 progress_callback,
+                force_write=force_write,
             )
             batches_processed += 1
             batch_elapsed = time.perf_counter() - t_batch
@@ -354,6 +358,7 @@ async def parse_from_raw(
                 batch_ids,
                 result,
                 progress_callback,
+                force_write=force_write,
             )
             batches_processed += 1
             total_raw += len(batch_ids)

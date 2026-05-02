@@ -79,6 +79,7 @@ class ParsingService:
         progress_callback: ProgressCallback | None = None,
         parse_records: bool = True,
         skip_acquire: bool = False,
+        force_write: bool = False,
     ) -> IngestResult:
         return await ingest_sources(
             self,
@@ -88,6 +89,7 @@ class ParsingService:
             progress_callback=progress_callback,
             parse_records=parse_records,
             skip_acquire=skip_acquire,
+            force_write=force_write,
         )
 
     @property
@@ -112,12 +114,14 @@ class ParsingService:
         raw_ids: list[str] | None = None,
         provider: str | None = None,
         progress_callback: ProgressCallback | None = None,
+        force_write: bool = False,
     ) -> ParseResult:
         return await parse_from_raw(
             self,
             raw_ids=raw_ids,
             provider=provider,
             progress_callback=progress_callback,
+            force_write=force_write,
         )
 
 

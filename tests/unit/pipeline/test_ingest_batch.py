@@ -443,6 +443,55 @@ def test_write_conversation_replaces_runtime_rows_on_content_change(tmp_path: Pa
         assert stats_row[0] == 1
 
 
+def test_write_conversation_force_write_replaces_same_hash_rows(tmp_path: Path) -> None:
+    with open_connection(tmp_path / "ingest.db") as conn:
+        v1 = _conversation_data(
+            "codex:force",
+            content_hash="same-hash",
+            message_tuples=[
+                _message_tuple(
+                    "msg-old",
+                    "codex:force",
+                    role="user",
+                    text="old",
+                    content_hash="msg-old",
+                    sort_key=1.0,
+                )
+            ],
+        )
+        changed, _ = _write_conversation(conn, v1)
+        assert changed is True
+
+        v2 = _conversation_data(
+            "codex:force",
+            content_hash="same-hash",
+            message_tuples=[
+                _message_tuple(
+                    "msg-new",
+                    "codex:force",
+                    role="assistant",
+                    text="new",
+                    content_hash="msg-new",
+                    sort_key=1.0,
+                )
+            ],
+        )
+        unchanged, counts = _write_conversation(conn, v2)
+        assert unchanged is False
+        assert counts["skipped_conversations"] == 1
+
+        forced, counts = _write_conversation(conn, v2, force_write=True)
+        assert forced is True
+        assert counts["messages"] == 1
+        conn.commit()
+
+        rows = conn.execute(
+            "SELECT message_id, role, text FROM messages WHERE conversation_id = ?",
+            ("codex:force",),
+        ).fetchall()
+        assert [(row["message_id"], row["role"], row["text"]) for row in rows] == [("msg-new", "assistant", "new")]
+
+
 def test_iter_ingest_results_sync_runs_inline_for_single_worker(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

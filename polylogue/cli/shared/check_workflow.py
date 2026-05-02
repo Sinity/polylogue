@@ -21,6 +21,7 @@ from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.daemon.status import daemon_status_payload
+from polylogue.maintenance.resources import apply_resource_boundary, doctor_resource_request, normalize_resource_mode
 from polylogue.protocols import ProgressCallback
 from polylogue.readiness import ReadinessReport, get_readiness, run_runtime_readiness
 from polylogue.schemas.operator.workflow import (
@@ -54,6 +55,7 @@ class CheckCommandOptions:
     cleanup: bool
     preview: bool
     vacuum: bool
+    resource_mode: str
     deep: bool
     runtime: bool
     check_daemon: bool
@@ -83,6 +85,7 @@ class _MaintenanceRunInputs:
 
 def validate_check_options(options: CheckCommandOptions) -> None:
     _validate_check_options(options)
+    normalize_resource_mode(options.resource_mode)
 
 
 def _runtime_only_requested(options: CheckCommandOptions) -> bool:
@@ -197,6 +200,14 @@ def _run_maintenance(
     inputs: _MaintenanceRunInputs,
 ) -> None:
     result.maintenance_targets = inputs.selected_targets
+    result.resource_boundary = apply_resource_boundary(
+        doctor_resource_request(
+            repair=options.repair,
+            cleanup=options.cleanup,
+            preview=options.preview,
+            resource_mode=normalize_resource_mode(options.resource_mode),
+        )
+    )
     result.maintenance_results = run_selected_maintenance(
         config,
         repair=options.repair,

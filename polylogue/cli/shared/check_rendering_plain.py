@@ -226,6 +226,9 @@ def emit_maintenance_output(
         click.echo(f"{mode_label}...")
         if result.maintenance_targets:
             click.echo(f"  Targets: {', '.join(result.maintenance_targets)}")
+        if result.resource_boundary is not None:
+            boundary = result.resource_boundary
+            click.echo(f"  Resource mode: {boundary.effective_mode} ({boundary.status})")
         total_repaired = 0
         for repair in result.maintenance_results:
             if repair.repaired_count > 0 or not repair.success:

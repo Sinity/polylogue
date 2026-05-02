@@ -124,6 +124,9 @@ Polylogue writes run metadata to disk and keeps a SQLite history so automation c
 - `polylogue doctor --repair` runs safe derived-data and database maintenance.
 - `polylogue doctor --cleanup` runs destructive archive cleanup; preview it first.
 - `polylogue doctor --repair --vacuum` compacts the database after maintenance.
+- Mutating `doctor` maintenance and heavy foreground `run` stages use resource isolation by default.
+  On Linux/systemd hosts Polylogue prefers a user transient scope with low CPU/I/O weight; otherwise it falls back to process-local nice/ionice where available.
+  Use `--resource-mode off` for benchmarks or debugging.
 
 ### Path Inspection
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from polylogue.core.json import JSONDocument, json_document
+from polylogue.maintenance.resources import ResourceBoundaryReport
 from polylogue.readiness import ReadinessReport
 from polylogue.schemas.validation.models import ArtifactProofReport, SchemaVerificationReport
 from polylogue.storage.artifacts.views import ArtifactCohortSummary
@@ -41,6 +42,7 @@ class CheckCommandResult:
     blob_report: JSONDocument | None = None
     maintenance_results: list[RepairResult] | None = None
     maintenance_targets: tuple[str, ...] = ()
+    resource_boundary: ResourceBoundaryReport | None = None
     vacuum_result: VacuumResult | None = None
 
 

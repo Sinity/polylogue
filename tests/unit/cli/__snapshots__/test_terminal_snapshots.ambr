@@ -22,6 +22,10 @@
                                     (requires --repair or --cleanup)
     --vacuum                        Reclaim unused space after maintenance
                                     (requires --repair or --cleanup)
+    --resource-mode [auto|scope|process|off]
+                                    Resource isolation for mutating maintenance:
+                                    systemd scope, process demotion, or off.
+                                    [default: auto]
     --deep                          Run SQLite integrity and expensive orphan
                                     scans (slow on large databases)
     --runtime                       Run environment and runtime verification
@@ -63,19 +67,26 @@
   Usage: polylogue run [OPTIONS] COMMAND1 [ARGS]... [COMMAND2 [ARGS]...]...
     Run pipeline stages on configured sources and<PATH> transient input paths.
   Options:
-    --preview       Preview work without writing
-    --source TEXT   Configured source name (repeatable). Accepts 'last' for the
-                    previously synced source.
-    --input PATH    Transient file, directory, or archive path (repeatable).
-                    Accepts .json, .jsonl, .ndjson, .zip.
-    --watch         Watch sources for changes and run continuously
-    --notify        Desktop notification on conversation changes (requires
-                    --watch)
-    --exec TEXT     Execute command on conversation changes (requires --watch)
-    --webhook TEXT  Call webhook URL on conversation changes (requires --watch)
-    --reparse       Force re-parsing of all raw conversations (clears parse
-                    tracking)
-    -h, --help      Show this message and exit.
+    --preview                       Preview work without writing
+    --source TEXT                   Configured source name (repeatable). Accepts
+                                    'last' for the previously synced source.
+    --input PATH                    Transient file, directory, or archive path
+                                    (repeatable). Accepts .json, .jsonl,
+                                    .ndjson, .zip.
+    --watch                         Watch sources for changes and run
+                                    continuously
+    --notify                        Desktop notification on conversation changes
+                                    (requires --watch)
+    --exec TEXT                     Execute command on conversation changes
+                                    (requires --watch)
+    --webhook TEXT                  Call webhook URL on conversation changes
+                                    (requires --watch)
+    --reparse                       Force re-parsing of all raw conversations
+                                    (clears parse tracking)
+    --resource-mode [auto|scope|process|off]
+                                    Resource isolation for heavy foreground
+                                    runs.  [default: auto]
+    -h, --help                      Show this message and exit.
   Commands:
     acquire      Capture raw payloads only.
     all          Run the full pipeline.
