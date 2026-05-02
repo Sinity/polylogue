@@ -6,9 +6,9 @@ from pathlib import Path
 
 import click
 
-from polylogue.browser_capture.receiver import BrowserCaptureReceiverConfig, receiver_status_payload
 from polylogue.browser_capture.server import make_server
 from polylogue.core.json import dumps
+from polylogue.daemon.status import browser_capture_status_payload
 
 
 @click.group("browser-capture")
@@ -21,10 +21,7 @@ def browser_capture_command() -> None:
 @click.option("--format", "output_format", type=click.Choice(["json"]), default=None, help="Output format.")
 def status_command(spool_path: Path | None, output_format: str | None) -> None:
     """Show receiver configuration and capture-spool target."""
-    config = BrowserCaptureReceiverConfig.default()
-    if spool_path is not None:
-        config = BrowserCaptureReceiverConfig(spool_path=spool_path, allowed_origins=config.allowed_origins)
-    payload = receiver_status_payload(config)
+    payload = browser_capture_status_payload(spool_path)
     if output_format == "json":
         click.echo(dumps(payload))
         return
