@@ -24,7 +24,7 @@ from polylogue.storage.backends.connection_profile import (
     WRITE_CONNECTION_PRAGMA_STATEMENTS,
     WRITE_MMAP_SIZE_BYTES,
 )
-from polylogue.storage.backends.schema import _ensure_schema
+from polylogue.storage.backends.schema import _ensure_schema, assert_readable_archive_layout
 from polylogue.storage.backends.sqlite_vec_extension import try_load_sqlite_vec
 
 if TYPE_CHECKING:
@@ -165,6 +165,7 @@ def open_read_connection(db_path: Path | str | None = None) -> Iterator[sqlite3.
     conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=READ_DB_TIMEOUT)
     _configure_read_connection(conn)
     try:
+        assert_readable_archive_layout(conn)
         yield conn
     finally:
         conn.close()

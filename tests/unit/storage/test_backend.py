@@ -16,6 +16,7 @@ import pytest
 
 import polylogue.paths
 from polylogue.archive.message.roles import Role
+from polylogue.errors import DatabaseError
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.backends.connection import connection_context, open_connection, open_read_connection
 from polylogue.storage.backends.connection_profile import (
@@ -98,20 +99,30 @@ def test_ensure_schema_contract(tmp_path: Path) -> None:
     conn.close()
 
 
-def test_ensure_schema_upgrades_version_with_metadata_preservation(tmp_path: Path) -> None:
-    """Version mismatch preserves user metadata and upgrades the schema."""
+def test_ensure_schema_rejects_version_mismatch_without_mutating(tmp_path: Path) -> None:
+    """Version mismatch fails clearly instead of partially patching old layouts."""
     db_path = tmp_path / "test.db"
     conn = sqlite3.connect(db_path)
-    conn.execute("PRAGMA user_version = 999")
+    conn.executescript(
+        """
+        CREATE TABLE raw_conversations (
+            raw_id TEXT PRIMARY KEY,
+            provider_name TEXT NOT NULL,
+            source_path TEXT NOT NULL,
+            blob_size INTEGER NOT NULL,
+            acquired_at TEXT NOT NULL
+        );
+        PRAGMA user_version = 2;
+        """
+    )
     conn.commit()
 
-    _ensure_schema(conn)
+    with pytest.raises(DatabaseError) as exc_info:
+        _ensure_schema(conn)
 
-    version = conn.execute("PRAGMA user_version").fetchone()[0]
-    assert version == SCHEMA_VERSION
-    assert (
-        conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='conversations'").fetchone() is not None
-    )
+    assert "does not migrate older archive schemas in place" in str(exc_info.value)
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+    assert conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='messages'").fetchone() is None
     conn.close()
 
 
@@ -234,8 +245,8 @@ def test_schema_extension_plan_expands_catalog_descriptors() -> None:
     assert len(plan.scripts) == 5
 
 
-def test_ensure_schema_adds_blob_size_to_legacy_v1_raw_table(tmp_path: Path) -> None:
-    """Legacy v1 databases without blob_size should be extended in place."""
+def test_ensure_schema_rejects_old_raw_table_version_without_mutating(tmp_path: Path) -> None:
+    """Old-version raw tables are blocked instead of being partially patched."""
     db_path = tmp_path / "legacy-v1.db"
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
@@ -265,10 +276,12 @@ def test_ensure_schema_adds_blob_size_to_legacy_v1_raw_table(tmp_path: Path) -> 
     )
     conn.commit()
 
-    _ensure_schema(conn)
+    with pytest.raises(DatabaseError) as exc_info:
+        _ensure_schema(conn)
 
-    raw_columns = {row[1] for row in conn.execute("PRAGMA table_info(raw_conversations)").fetchall()}
-    assert "blob_size" in raw_columns
+    assert "does not migrate older archive schemas in place" in str(exc_info.value)
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+    assert conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='messages'").fetchone() is None
     conn.close()
 
 
@@ -369,6 +382,37 @@ def test_open_read_connection_contract(tmp_path: Path) -> None:
         with pytest.raises(sqlite3.OperationalError):
             conn.execute("INSERT INTO sentinel(value) VALUES (2)")
             conn.commit()
+
+
+def test_open_read_connection_rejects_old_schema_without_mutating(tmp_path: Path) -> None:
+    """Read-only opens should report incompatible schemas before later SQL fails."""
+    db_path = tmp_path / "old-readonly.db"
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        """
+        CREATE TABLE raw_conversations (
+            raw_id TEXT PRIMARY KEY,
+            provider_name TEXT NOT NULL,
+            source_path TEXT NOT NULL,
+            blob_size INTEGER NOT NULL,
+            acquired_at TEXT NOT NULL
+        );
+        PRAGMA user_version = 2;
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    with pytest.raises(DatabaseError) as exc_info:
+        with open_read_connection(db_path):
+            pass
+
+    assert "does not migrate older archive schemas in place" in str(exc_info.value)
+    with sqlite3.connect(db_path) as verify_conn:
+        assert verify_conn.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert (
+            verify_conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='messages'").fetchone() is None
+        )
 
 
 @pytest.mark.slow
@@ -515,8 +559,8 @@ async def test_async_backend_schema_and_lock_contracts(tmp_path: Path) -> None:
     assert all(result is None for result in results)
 
 
-async def test_async_backend_extends_legacy_v1_raw_table(tmp_path: Path) -> None:
-    """Async backend init should repair legacy v1 raw tables before writes."""
+async def test_async_backend_rejects_old_raw_table_version(tmp_path: Path) -> None:
+    """Async backend init should not silently patch old-version raw tables."""
     db_path = tmp_path / "legacy-v1-async.db"
     conn = sqlite3.connect(db_path)
     conn.executescript(
@@ -547,32 +591,22 @@ async def test_async_backend_extends_legacy_v1_raw_table(tmp_path: Path) -> None
     conn.close()
 
     backend = SQLiteBackend(db_path=db_path)
-    await backend.save_raw_conversation(
-        make_raw_conversation(
-            raw_id="raw-legacy",
-            provider_name="chatgpt",
-            source_path="/tmp/legacy.json",
-            blob_size=123,
-            acquired_at=datetime.now(timezone.utc).isoformat(),
+    with pytest.raises(DatabaseError) as exc_info:
+        await backend.save_raw_conversation(
+            make_raw_conversation(
+                raw_id="raw-legacy",
+                provider_name="chatgpt",
+                source_path="/tmp/legacy.json",
+                blob_size=123,
+                acquired_at=datetime.now(timezone.utc).isoformat(),
+            )
         )
-    )
+
+    assert "does not migrate older archive schemas in place" in str(exc_info.value)
 
     with sqlite3.connect(db_path) as verify_conn:
-        columns = {row[1] for row in verify_conn.execute("PRAGMA table_info(raw_conversations)").fetchall()}
-        row = verify_conn.execute(
-            "SELECT blob_size FROM raw_conversations WHERE raw_id = ?",
-            ("raw-legacy",),
-        ).fetchone()
-        index_row = verify_conn.execute(
-            "SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_raw_conv_source_mtime'"
-        ).fetchone()
-
-    assert "blob_size" in columns
-    assert row is not None
-    assert row[0] == 123
-    assert index_row is not None
-    assert index_row[0] is not None
-    assert "WHERE file_mtime IS NOT NULL" in index_row[0]
+        assert verify_conn.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert verify_conn.execute("SELECT COUNT(*) FROM raw_conversations").fetchone()[0] == 0
     await backend.close()
 
 
