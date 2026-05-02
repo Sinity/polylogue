@@ -3,10 +3,12 @@ from __future__ import annotations
 import asyncio
 import inspect
 from pathlib import Path
+from typing import cast
 from unittest.mock import patch
 
 from click.testing import CliRunner
 
+from polylogue.core.json import JSONDocument, loads
 from polylogue.daemon.cli import main
 from polylogue.sources.live import WatchSource
 
@@ -16,8 +18,51 @@ def test_polylogued_help_lists_watch_command() -> None:
 
     assert result.exit_code == 0
     assert "browser-capture" in result.output
+    assert "status" in result.output
     assert "watch" in result.output
     assert "long-lived Polylogue local services" in result.output
+
+
+def test_polylogued_status_json_reports_daemon_components(tmp_path: Path) -> None:
+    sources = (
+        WatchSource(name="exists", root=tmp_path),
+        WatchSource(name="missing", root=tmp_path / "missing"),
+    )
+
+    with patch("polylogue.daemon.status.default_sources", return_value=sources):
+        result = CliRunner().invoke(
+            main,
+            [
+                "status",
+                "--spool",
+                str(tmp_path / "captures"),
+                "--format",
+                "json",
+            ],
+        )
+
+    assert result.exit_code == 0
+    payload = loads(result.output)
+    assert isinstance(payload, dict)
+    live = cast(JSONDocument, payload["live"])
+    browser_capture = cast(JSONDocument, payload["browser_capture"])
+    assert payload["daemon"] == "polylogued"
+    assert live["source_count"] == 2
+    assert live["existing_source_count"] == 1
+    assert browser_capture["spool_path"] == str(tmp_path / "captures")
+
+
+def test_polylogued_status_plain_reports_daemon_components(tmp_path: Path) -> None:
+    sources = (WatchSource(name="exists", root=tmp_path),)
+
+    with patch("polylogue.daemon.status.default_sources", return_value=sources):
+        result = CliRunner().invoke(main, ["status"])
+
+    assert result.exit_code == 0
+    assert "Polylogue daemon" in result.output
+    assert "Live sources: 1/1 available" in result.output
+    assert f"exists: {tmp_path} (available)" in result.output
+    assert "Browser capture spool:" in result.output
 
 
 def test_polylogued_browser_capture_help_lists_service_commands() -> None:

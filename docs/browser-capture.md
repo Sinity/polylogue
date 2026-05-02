@@ -15,6 +15,9 @@ The receiver listens on `127.0.0.1:8765` by default and accepts:
 - `GET /v1/archive-state?provider=chatgpt&provider_session_id=...`
 - `POST /v1/browser-captures`
 
+Inspect the receiver target directly with `polylogued browser-capture status`,
+or include it in the daemon component summary with `polylogued status`.
+
 Accepted captures are typed browser-capture envelopes and are written
 atomically under the configured capture spool at `<provider>/...json`.
 The filename is deterministic from provider and provider session id, so repeated

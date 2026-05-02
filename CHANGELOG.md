@@ -63,6 +63,8 @@ documentation polish do not require an entry.
   --watch` remains the continuous pipeline-run mode.
 - Browser-capture receiver serving/status moved from root `polylogue
   browser-capture` to `polylogued browser-capture`.
+- `polylogued status` now reports configured daemon components, including live
+  watch roots and the browser-capture receiver target.
 - `Config` rejects relative `archive_root`, `render_root`, or `db_path`
   with `ConfigError` at construction.
 - `_privacy_level_value` raises `ValueError` on unknown level strings

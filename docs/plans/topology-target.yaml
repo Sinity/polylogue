@@ -841,12 +841,16 @@ files:
     target: polylogue/daemon/__init__.py
     owner: stable
   - path: polylogue/daemon/browser_capture.py
-    loc: 55
+    loc: 52
     target: polylogue/daemon/browser_capture.py
     owner: stable
   - path: polylogue/daemon/cli.py
-    loc: 62
+    loc: 90
     target: polylogue/daemon/cli.py
+    owner: stable
+  - path: polylogue/daemon/status.py
+    loc: 65
+    target: polylogue/daemon/status.py
     owner: stable
   - path: polylogue/errors.py
     loc: 29
