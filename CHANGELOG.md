@@ -27,6 +27,9 @@ documentation polish do not require an entry.
 
 ### Added
 
+- `polylogue select` as a query-backed selector that prints one matched
+  conversation field for shell pipelines, with interactive `fzf`/prompt
+  selection when attached to a terminal.
 - `polylogued` as the daemon/service executable; live source watching now runs
   as `polylogued watch`.
 - `polylogued run` to run live watching and the browser-capture receiver

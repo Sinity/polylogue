@@ -541,6 +541,7 @@ class TestCliMetadata:
             "delete",
             "messages",
             "raw",
+            "select",
         }
         assert set(cli.commands.keys()) == expected
 

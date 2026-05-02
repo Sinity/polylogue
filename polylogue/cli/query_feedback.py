@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from polylogue.archive.query.fields import describe_spec_selection_fields
 from polylogue.cli.shared.machine_errors import error_no_results
 
 if TYPE_CHECKING:
@@ -23,7 +24,7 @@ def emit_no_results(
     exit_code: int | None = 2,
 ) -> None:
     """Render a canonical no-results message for human and machine surfaces."""
-    filters = selection.describe() if selection is not None else []
+    filters = describe_spec_selection_fields(selection) if selection is not None else []
     resolved_message = message or ("No conversations matched filters." if filters else "No conversations matched.")
     if output_format == "json":
         error_no_results(

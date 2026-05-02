@@ -281,7 +281,7 @@ files:
     owner: archive-query
     reason: archive-domain query semantics
   - path: polylogue/archive/query/fields.py
-    loc: 853
+    loc: 901
     target: polylogue/archive/query/fields.py
     owner: archive-query
     reason: archive-domain query semantics
@@ -311,7 +311,7 @@ files:
     owner: archive-query
     reason: archive-domain query semantics
   - path: polylogue/archive/query/read_fields.py
-    loc: 160
+    loc: 172
     target: polylogue/archive/query/read_fields.py
     owner: archive-query
     reason: archive-domain query semantics
@@ -650,12 +650,16 @@ files:
     target: polylogue/cli/query_stats.py
     owner: stable
   - path: polylogue/cli/query_verbs.py
-    loc: 308
+    loc: 334
     target: polylogue/cli/query_verbs.py
     owner: stable
   - path: polylogue/cli/root_request.py
     loc: 87
     target: polylogue/cli/root_request.py
+    owner: stable
+  - path: polylogue/cli/select.py
+    loc: 174
+    target: polylogue/cli/select.py
     owner: stable
   - path: polylogue/cli/shared/check_maintenance.py
     loc: 52

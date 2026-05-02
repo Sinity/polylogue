@@ -773,6 +773,14 @@ def describe_spec_fields(spec: object) -> list[str]:
     ]
 
 
+def describe_spec_selection_fields(spec: object) -> list[str]:
+    return [
+        description
+        for descriptor in QUERY_FIELD_DESCRIPTORS
+        if descriptor.selection_filter and (description := descriptor.describe_spec(spec)) is not None
+    ]
+
+
 def describe_plan_fields(plan: object) -> list[str]:
     return [
         description
@@ -890,6 +898,7 @@ __all__ = [
     "conversation_record_query_for_plan",
     "describe_plan_fields",
     "describe_spec_fields",
+    "describe_spec_selection_fields",
     "has_message_content_type_filter",
     "mcp_query_field_names",
     "plan_has_fields_matching",
