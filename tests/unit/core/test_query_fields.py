@@ -10,6 +10,7 @@ import pytest
 from polylogue.archive.query.fields import (
     QUERY_FIELD_DESCRIPTORS,
     active_plan_field_names,
+    mcp_query_field_names,
     query_completion_sources,
     storage_filters_require_stats_join,
 )
@@ -134,6 +135,14 @@ def test_query_field_catalog_covers_public_spec_fields() -> None:
     spec_fields = {field.name for field in fields(ConversationQuerySpec)}
 
     assert spec_fields - descriptor_spec_attrs == set()
+
+
+def test_query_field_catalog_covers_mcp_query_request_fields() -> None:
+    from polylogue.mcp.query_contracts import MCPConversationQueryRequest
+
+    mcp_fields = {field.name for field in fields(MCPConversationQueryRequest)}
+
+    assert mcp_fields - mcp_query_field_names() == set()
 
 
 def test_query_field_catalog_marks_storage_stats_join_fields() -> None:
