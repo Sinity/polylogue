@@ -29,10 +29,17 @@ class BrowserCaptureReceiverConfig:
             "https://claude.ai",
         }
     )
+    allow_remote: bool = False
+    auth_token: str | None = None
 
     @classmethod
     def default(cls) -> BrowserCaptureReceiverConfig:
         return cls(spool_path=browser_capture_spool_root())
+
+    def validate(self) -> None:
+        """Validate configuration invariants."""
+        if self.allow_remote and not self.auth_token:
+            raise ValueError("--browser-capture-auth-token is required when --insecure-allow-remote is set")
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,6 +100,8 @@ def receiver_status_payload(config: BrowserCaptureReceiverConfig) -> dict[str, o
         "schema_version": 1,
         "spool_path": str(config.spool_path),
         "allowed_origins": sorted(config.allowed_origins),
+        "allow_remote": config.allow_remote,
+        "active": True,
         "checked_at": datetime.now(UTC).isoformat(),
     }
 
