@@ -245,6 +245,19 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools render-topology-status", "devtools render-topology-status --check"),
     ),
     CommandSpec(
+        "render-readme-media",
+        "generated surfaces",
+        "Generate README media assets (architecture diagrams, flowcharts) under docs/media/.",
+        "devtools.generate_readme_media",
+        use_when="Refresh architecture diagrams, data-flow charts, and provider-detection flowcharts for the README.",
+        examples=(
+            "devtools render-readme-media",
+            "devtools render-readme-media --list",
+            "devtools render-readme-media --name data-flow",
+            "devtools render-readme-media --check",
+        ),
+    ),
+    CommandSpec(
         "verify-file-budgets",
         "verification",
         "Enforce per-file LOC budgets declared in docs/plans/file-size-budgets.yaml.",
@@ -558,6 +571,20 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "campaigns",
         "Run synthetic benchmark campaigns over generated archives.",
         "devtools.run_campaign",
+    ),
+    CommandSpec(
+        "xtask",
+        "maintenance",
+        "Record and query agent task execution history (.agent/xtask/tasks.jsonl).",
+        "devtools.xtask",
+        use_when="Log, view recent, or summarize agent task execution history during development sessions.",
+        examples=(
+            "devtools xtask log --command 'devtools render-all' --duration-ms 3200 --exit-code 0",
+            "devtools xtask recent",
+            "devtools xtask recent --count 20",
+            "devtools xtask stats",
+            "devtools xtask stats --json",
+        ),
     ),
 )
 

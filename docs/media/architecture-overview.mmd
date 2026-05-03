@@ -1,0 +1,40 @@
+---
+title: Polylogue Architecture
+---
+graph TB
+    subgraph Ring1["1. Archive Substrate"]
+        A1["Source Acquisition"]
+        A2["Provider Parsing"]
+        A3["SQLite Persistence"]
+        A4["Search Indexes"]
+    end
+
+    subgraph Ring2["2. Derived Read Models"]
+        B1["Session Profiles"]
+        B2["Work Events / Phases"]
+        B3["Day / Week Summaries"]
+        B4["Provider Analytics"]
+    end
+
+    subgraph Ring3["3. Surfaces"]
+        C1["CLI"]
+        C2["Python API"]
+        C3["MCP Server"]
+        C4["Static Site"]
+        C5["Dashboard / TUI"]
+        C6["Renderers"]
+    end
+
+    subgraph Ring4["4. Verification"]
+        D1["Schema Inference"]
+        D2["Synthetic Corpora"]
+        D3["Showcase / QA"]
+        D4["DevTools"]
+        D5["Validation Lanes"]
+    end
+
+    Ring1 -->|"feeds"| Ring2
+    Ring2 -->|"exposes"| Ring3
+    Ring1 -->|"verified by"| Ring4
+    Ring2 -->|"verified by"| Ring4
+    Ring3 -->|"verified by"| Ring4
