@@ -172,6 +172,40 @@ def make_archive_ops_mock() -> MagicMock:
     return operations
 
 
+def make_polylogue_mock() -> MagicMock:
+    """Create a Polylogue facade mock matching the current MCP tool surface."""
+    poly = MagicMock()
+    poly.add_tag = AsyncMock()
+    poly.remove_tag = AsyncMock()
+    poly.list_tags = AsyncMock(return_value={})
+    poly.get_metadata = AsyncMock(return_value={})
+    poly.update_metadata = AsyncMock()
+    poly.delete_conversation = AsyncMock(return_value=False)
+    poly.get_conversation_summary = AsyncMock(return_value=None)
+    poly.get_conversation_stats = AsyncMock(return_value={})
+    poly.get_session_tree = AsyncMock(return_value=[])
+    poly.get_messages_paginated = AsyncMock(return_value=([], 0))
+    poly.get_conversation = AsyncMock(return_value=None)
+    poly.get_session_profile_insight = AsyncMock(return_value=None)
+    poly.neighbor_candidates = AsyncMock(return_value=[])
+    poly.rebuild_insights = AsyncMock(
+        return_value=MagicMock(to_dict=MagicMock(return_value={}), total=MagicMock(return_value=0))
+    )
+    poly.list_session_profile_insights = AsyncMock(return_value=[])
+    poly.list_session_enrichment_insights = AsyncMock(return_value=[])
+    poly.list_session_work_event_insights = AsyncMock(return_value=[])
+    poly.list_session_phase_insights = AsyncMock(return_value=[])
+    poly.list_session_tag_rollup_insights = AsyncMock(return_value=[])
+    poly.list_work_thread_insights = AsyncMock(return_value=[])
+    poly.list_day_session_summary_insights = AsyncMock(return_value=[])
+    poly.list_week_session_summary_insights = AsyncMock(return_value=[])
+    poly.list_provider_analytics_insights = AsyncMock(return_value=[])
+    poly.list_session_cost_insights = AsyncMock(return_value=[])
+    poly.list_cost_rollup_insights = AsyncMock(return_value=[])
+    poly.list_archive_debt_insights = AsyncMock(return_value=[])
+    return poly
+
+
 def make_mock_filter(results: Sequence[object] | None = None, **method_overrides: object) -> MagicMock:
     """Create a chaining-capable ConversationFilter mock."""
     filt = MagicMock()

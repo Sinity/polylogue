@@ -16,6 +16,7 @@ from polylogue.services import RuntimeServices, build_runtime_services
 from polylogue.surfaces.payloads import serialize_surface_payload
 
 if TYPE_CHECKING:
+    from polylogue.api import Polylogue
     from polylogue.config import Config
     from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
@@ -49,6 +50,7 @@ class ServerCallbacks:
     get_backend: Callable[[], SQLiteBackend]
     get_config: Callable[[], Config]
     get_archive_ops: Callable[[], ArchiveOperations]
+    get_polylogue: Callable[[], Polylogue]
     extract_fenced_code: FencedCodeExtractor
     role: MCPRole
 
@@ -194,6 +196,14 @@ def _get_config() -> Config:
     return _get_runtime_services().get_config()
 
 
+def _get_polylogue() -> Polylogue:
+    """Return a ``Polylogue`` facade bound to the configured archive/database."""
+    from polylogue.api import Polylogue
+
+    cfg = _get_config()
+    return Polylogue(archive_root=cfg.archive_root, db_path=cfg.db_path)
+
+
 __all__ = [
     "MCPRole",
     "ServerCallbacks",
@@ -203,6 +213,7 @@ __all__ = [
     "_extract_fenced_code",
     "_get_backend",
     "_get_config",
+    "_get_polylogue",
     "_get_query_store",
     "_get_runtime_services",
     "_get_tag_store",

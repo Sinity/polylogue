@@ -24,6 +24,7 @@ from tests.infra.mcp import (
     invoke_surface,
     invoke_surface_async,
     make_mock_filter,
+    make_polylogue_mock,
     make_query_store_mock,
     make_simple_conversation,
     make_tag_store_mock,
@@ -469,14 +470,13 @@ class TestExportConversationTool:
             ],
         )
 
-        with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
-            mock_ops = MagicMock()
-            mock_ops.get_conversation_summary = AsyncMock(return_value=_summary_for(projected_input))
+        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+            mock_poly = make_polylogue_mock()
             projected = projected_input.with_content_projection(ContentProjectionSpec(include_code=False))
-            mock_ops.get_messages_paginated = AsyncMock(
+            mock_poly.get_messages_paginated = AsyncMock(
                 return_value=(list(projected.messages), len(projected.messages))
             )
-            mock_get_archive_ops.return_value = mock_ops
+            mock_get_polylogue.return_value = mock_poly
 
             result = invoke_surface(
                 mcp_server._tool_manager._tools["get_messages"].fn,
@@ -486,17 +486,17 @@ class TestExportConversationTool:
 
         payload = json.loads(result)
         assert payload["messages"][0]["text"] == "Alpha\n\nOmega"
-        projection = mock_ops.get_messages_paginated.await_args.kwargs["content_projection"]
+        projection = mock_poly.get_messages_paginated.await_args.kwargs["content_projection"]
         assert projection.include_code is False
 
     def test_export_markdown(self: object, simple_conversation: Conversation, mcp_server: MCPServerUnderTest) -> None:
         with (
-            patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops,
+            patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue,
             patch("polylogue.rendering.formatting.format_conversation") as mock_format,
         ):
-            mock_ops = MagicMock()
-            mock_ops.get_conversation = AsyncMock(return_value=simple_conversation)
-            mock_get_archive_ops.return_value = mock_ops
+            mock_poly = make_polylogue_mock()
+            mock_poly.get_conversation = AsyncMock(return_value=simple_conversation)
+            mock_get_polylogue.return_value = mock_poly
             mock_format.return_value = "# Test Conversation\n\nFormatted content"
 
             result = invoke_surface(
@@ -512,10 +512,10 @@ class TestExportConversationTool:
         assert call_args[0][1] == "markdown"
 
     def test_export_not_found(self: object, mcp_server: MCPServerUnderTest) -> None:
-        with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
-            mock_ops = MagicMock()
-            mock_ops.get_conversation = AsyncMock(return_value=None)
-            mock_get_archive_ops.return_value = mock_ops
+        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+            mock_poly = make_polylogue_mock()
+            mock_poly.get_conversation = AsyncMock(return_value=None)
+            mock_get_polylogue.return_value = mock_poly
 
             result = invoke_surface(mcp_server._tool_manager._tools["export_conversation"].fn, id="nonexistent")
 
@@ -529,12 +529,12 @@ class TestExportConversationTool:
         mcp_server: MCPServerUnderTest,
     ) -> None:
         with (
-            patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops,
+            patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue,
             patch("polylogue.rendering.formatting.format_conversation") as mock_format,
         ):
-            mock_ops = MagicMock()
-            mock_ops.get_conversation = AsyncMock(return_value=simple_conversation)
-            mock_get_archive_ops.return_value = mock_ops
+            mock_poly = make_polylogue_mock()
+            mock_poly.get_conversation = AsyncMock(return_value=simple_conversation)
+            mock_get_polylogue.return_value = mock_poly
             mock_format.return_value = "# Content"
 
             invoke_surface(

@@ -20,6 +20,7 @@ from polylogue.storage.sqlite.queries.message_query_reads import MessageTypeName
 
 if TYPE_CHECKING:
     from polylogue.archive.conversation.models import Conversation, ConversationSummary
+    from polylogue.archive.conversation.neighbor_candidates import ConversationNeighborCandidate
     from polylogue.archive.filter.filters import ConversationFilter
     from polylogue.archive.message.models import Message
     from polylogue.config import Config
@@ -124,6 +125,26 @@ if TYPE_CHECKING:
             self,
             request: InsightExportBundleRequest,
         ) -> InsightExportBundleResult: ...
+
+        async def neighbor_candidates(
+            self,
+            *,
+            conversation_id: str | None = None,
+            query: str | None = None,
+            provider: str | None = None,
+            limit: int = 10,
+            window_hours: int = 24,
+        ) -> list[ConversationNeighborCandidate]: ...
+
+        async def get_session_tree(self, conversation_id: str) -> list[Conversation]: ...
+
+        async def list_tags(self, *, provider: str | None = None) -> dict[str, int]: ...
+
+        async def get_conversation_stats(self, conversation_id: str) -> dict[str, int]: ...
+
+
+class ConversationNotFoundError(ValueError):
+    """Raised when a requested conversation does not exist in the archive."""
 
 
 class PolylogueArchiveMixin:
@@ -265,14 +286,17 @@ class PolylogueArchiveMixin:
         limit: int = 50,
         offset: int = 0,
         content_projection: ContentProjectionSpec | None = None,
-    ) -> tuple[list[dict[str, object]], int]:
-        """Return paginated messages for a conversation."""
+    ) -> tuple[list[Message], int]:
+        """Return paginated ``Message`` objects for a conversation.
+
+        Raises ``ConversationNotFoundError`` if the conversation does not exist.
+        """
         summary = await self.operations.get_conversation_summary(conversation_id)
         if summary is None:
-            return [], 0
+            raise ConversationNotFoundError(conversation_id)
         full_id = str(summary.id)
 
-        messages, total = await self.operations.get_messages_paginated(
+        return await self.operations.get_messages_paginated(
             full_id,
             message_role=message_role,
             message_type=message_type,
@@ -280,22 +304,6 @@ class PolylogueArchiveMixin:
             offset=offset,
             content_projection=content_projection,
         )
-
-        result = []
-        for m in messages:
-            result.append(
-                {
-                    "id": str(getattr(m, "id", "")),
-                    "role": str(getattr(m, "role", "")),
-                    "text": getattr(m, "text", None) or "",
-                    "sort_key": getattr(m, "sort_key", None),
-                    "has_tool_use": getattr(m, "is_tool_use", False),
-                    "has_thinking": getattr(m, "is_thinking", False),
-                    "message_type": getattr(getattr(m, "message_type", "message"), "value", "message"),
-                }
-            )
-
-        return result, total
 
     async def get_raw_artifacts_for_conversation(
         self,
@@ -414,3 +422,96 @@ class PolylogueArchiveMixin:
     ) -> InsightExportBundleResult:
         """Write a versioned archive-insight export bundle."""
         return await self.operations.export_insight_bundle(request)
+
+    async def get_conversation_summary(self, conversation_id: str) -> ConversationSummary | None:
+        """Return a summary record for a single conversation, or ``None`` if not found."""
+        return await self.operations.get_conversation_summary(conversation_id)
+
+    async def get_conversation_stats(self, conversation_id: str) -> dict[str, int]:
+        """Return message-count and word-count stats for a single conversation."""
+        return await self.operations.get_conversation_stats(conversation_id)
+
+    async def neighbor_candidates(
+        self,
+        *,
+        conversation_id: str | None = None,
+        query: str | None = None,
+        provider: str | None = None,
+        limit: int = 10,
+        window_hours: int = 24,
+    ) -> list[ConversationNeighborCandidate]:
+        """Discover explainable neighboring or near-duplicate candidates.
+
+        At least one of ``conversation_id`` or ``query`` must be provided.
+        """
+        return await self.operations.neighbor_candidates(
+            conversation_id=conversation_id,
+            query=query,
+            provider=provider,
+            limit=limit,
+            window_hours=window_hours,
+        )
+
+    async def get_session_tree(self, conversation_id: str) -> list[Conversation]:
+        """Return the full session tree (parent + children) for a conversation."""
+        return await self.operations.get_session_tree(conversation_id)
+
+    async def list_tags(self, *, provider: str | None = None) -> dict[str, int]:
+        """List all tags with conversation counts, optionally filtered by provider."""
+        return await self.operations.list_tags(provider=provider)
+
+    async def delete_conversation(self, conversation_id: str) -> bool:
+        """Permanently delete a conversation and all associated data.
+
+        Returns ``True`` if something was deleted, ``False`` if the conversation
+        was not found.
+        """
+        deleted_count = await self.filter().id(conversation_id).delete()
+        return deleted_count > 0
+
+    async def add_tag(self, conversation_id: str, tag: str) -> bool:
+        """Add a tag to a conversation. Returns ``True`` if the tag was newly added."""
+        resolved = await self.repository.resolve_id(conversation_id, strict=True)
+        if resolved is None:
+            raise ConversationNotFoundError(conversation_id)
+        from polylogue.storage.repository.archive.repository_writes import RepositoryWriteMixin
+
+        store: RepositoryWriteMixin = self.repository  # type: ignore[assignment]
+        existing = await store.list_tags()
+        await store.add_tag(str(resolved), tag)
+        after = await store.list_tags()
+        return after.get(tag, 0) > existing.get(tag, 0)
+
+    async def remove_tag(self, conversation_id: str, tag: str) -> bool:
+        """Remove a tag from a conversation. Returns ``True`` if the tag was removed."""
+        resolved = await self.repository.resolve_id(conversation_id, strict=True)
+        if resolved is None:
+            raise ConversationNotFoundError(conversation_id)
+        from polylogue.storage.repository.archive.repository_writes import RepositoryWriteMixin
+
+        store: RepositoryWriteMixin = self.repository  # type: ignore[assignment]
+        existing = await store.list_tags()
+        await store.remove_tag(str(resolved), tag)
+        after = await store.list_tags()
+        return after.get(tag, 0) < existing.get(tag, 0)
+
+    async def get_metadata(self, conversation_id: str) -> dict[str, str]:
+        """Return all metadata key-value pairs for a conversation."""
+        from polylogue.storage.repository.archive.repository_writes import RepositoryWriteMixin
+
+        store: RepositoryWriteMixin = self.repository  # type: ignore[assignment]
+        result: dict[str, str] = {}
+        doc = await store.get_metadata(conversation_id)
+        for k, v in doc.items():
+            result[str(k)] = str(v) if not isinstance(v, str) else v
+        return result
+
+    async def update_metadata(self, conversation_id: str, key: str, value: str) -> None:
+        """Set a metadata key on a conversation. Creates or updates the key."""
+        resolved = await self.repository.resolve_id(conversation_id, strict=True)
+        if resolved is None:
+            raise ConversationNotFoundError(conversation_id)
+        from polylogue.storage.repository.archive.repository_writes import RepositoryWriteMixin
+
+        store: RepositoryWriteMixin = self.repository  # type: ignore[assignment]
+        await store.update_metadata(str(resolved), key, value)

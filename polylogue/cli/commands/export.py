@@ -42,7 +42,7 @@ def _root_message_roles(ctx: click.Context) -> tuple[object, ...]:
 def export_command(ctx: click.Context, conversation_id: str, output_format: str, fields: str | None) -> None:
     """Export one known conversation by ID. IDs can use the provider:id-prefix form (e.g. claude-ai:abc123)."""
     env: AppEnv = ctx.obj
-    conversation = run_coroutine_sync(env.operations.get_conversation(conversation_id))
+    conversation = run_coroutine_sync(env.polylogue.get_conversation(conversation_id))
     if conversation is None:
         fail("export", f"Conversation not found: {conversation_id}")
     roles = _root_message_roles(ctx)

@@ -485,10 +485,10 @@ class TestQueryTools:
 
     @pytest.mark.asyncio
     async def test_neighbor_candidates_exposes_candidate_reasons(self, mcp_server: MCPServerUnderTest) -> None:
-        with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
-            mock_ops = MagicMock()
-            mock_ops.neighbor_candidates = AsyncMock(return_value=[_make_neighbor_candidate()])
-            mock_get_archive_ops.return_value = mock_ops
+        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+            mock_poly = make_polylogue_mock()
+            mock_poly.neighbor_candidates = AsyncMock(return_value=[_make_neighbor_candidate()])
+            mock_get_polylogue.return_value = mock_poly
 
             raw = await invoke_surface_async(
                 mcp_server._tool_manager._tools["neighbor_candidates"].fn,
@@ -500,7 +500,7 @@ class TestQueryTools:
         assert payload[0]["conversation"]["id"] == "candidate"
         assert payload[0]["reasons"][0]["kind"] == "nearby_time"
         assert payload[0]["source_conversation_id"] == "target"
-        mock_ops.neighbor_candidates.assert_awaited_once_with(
+        mock_poly.neighbor_candidates.assert_awaited_once_with(
             conversation_id="target",
             query=None,
             provider=None,
@@ -511,19 +511,19 @@ class TestQueryTools:
 
 class TestGetConversationTool:
     def test_get_returns_conversation(self, simple_conversation: Conversation, mcp_server: MCPServerUnderTest) -> None:
-        with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
-            mock_ops = MagicMock()
-            mock_ops.get_conversation_summary = AsyncMock(
+        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+            mock_poly = make_polylogue_mock()
+            mock_poly.get_conversation_summary = AsyncMock(
                 return_value=_make_summary(
                     str(simple_conversation.id),
                     provider=Provider.from_string(str(simple_conversation.provider)),
                     title=simple_conversation.display_title,
                 )
             )
-            mock_ops.get_conversation_stats = AsyncMock(
+            mock_poly.get_conversation_stats = AsyncMock(
                 return_value={"total_messages": len(simple_conversation.messages)}
             )
-            mock_get_archive_ops.return_value = mock_ops
+            mock_get_polylogue.return_value = mock_poly
 
             result = invoke_surface(mcp_server._tool_manager._tools["get_conversation"].fn, id="test:conv-123")
 
@@ -533,10 +533,10 @@ class TestGetConversationTool:
         assert "messages" not in conv
 
     def test_get_not_found(self, mcp_server: MCPServerUnderTest) -> None:
-        with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
-            mock_ops = MagicMock()
-            mock_ops.get_conversation_summary = AsyncMock(return_value=None)
-            mock_get_archive_ops.return_value = mock_ops
+        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+            mock_poly = make_polylogue_mock()
+            mock_poly.get_conversation_summary = AsyncMock(return_value=None)
+            mock_get_polylogue.return_value = mock_poly
 
             result = invoke_surface(mcp_server._tool_manager._tools["get_conversation"].fn, id="nonexistent")
 
@@ -548,22 +548,19 @@ class TestGetConversationTool:
         long_text = "A" * 2000
         message = make_msg(id="m1", role="assistant", text=long_text)
 
-        with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
-            mock_ops = MagicMock()
-            mock_ops.get_conversation_summary = AsyncMock(return_value=_make_summary("test:long"))
-            mock_ops.get_messages_paginated = AsyncMock(return_value=([message], 1))
-            mock_get_archive_ops.return_value = mock_ops
+        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+            mock_poly = make_polylogue_mock()
+            mock_poly.get_messages_paginated = AsyncMock(return_value=([message], 1))
+            mock_get_polylogue.return_value = mock_poly
 
             result = invoke_surface(mcp_server._tool_manager._tools["get_messages"].fn, conversation_id="test:long")
 
         assert json.loads(result)["messages"][0]["text"] == long_text
 
     def test_get_messages_rejects_unknown_message_type(self, mcp_server: MCPServerUnderTest) -> None:
-        with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
-            mock_ops = MagicMock()
-            mock_ops.get_conversation_summary = AsyncMock(return_value=_make_summary("test:long"))
-            mock_ops.get_messages_paginated = AsyncMock(return_value=([], 0))
-            mock_get_archive_ops.return_value = mock_ops
+        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+            mock_poly = make_polylogue_mock()
+            mock_get_polylogue.return_value = mock_poly
 
             result = invoke_surface(
                 mcp_server._tool_manager._tools["get_messages"].fn,
@@ -574,14 +571,13 @@ class TestGetConversationTool:
         payload = json.loads(result)
         assert payload["error"] == "internal MCP tool error"
         assert payload["detail"] == "ValueError"
-        mock_ops.get_messages_paginated.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_get_with_nonexistent_id(self, mcp_server: MCPServerUnderTest) -> None:
-        with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
-            mock_ops = MagicMock()
-            mock_ops.get_conversation_summary = AsyncMock(return_value=None)
-            mock_get_archive_ops.return_value = mock_ops
+        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+            mock_poly = make_polylogue_mock()
+            mock_poly.get_conversation_summary = AsyncMock(return_value=None)
+            mock_get_polylogue.return_value = mock_poly
 
             result = await invoke_surface_async(
                 mcp_server._tool_manager._tools["get_conversation"].fn, id="nonexistent-id-xyz"
@@ -603,10 +599,10 @@ class TestInsightTools:
             inference_provenance=_inference_provenance(),
             inference=SessionInferencePayload(engaged_duration_ms=120000),
         )
-        with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
-            mock_ops = MagicMock()
-            mock_ops.get_session_profile_insight = AsyncMock(return_value=insight)
-            mock_get_archive_ops.return_value = mock_ops
+        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+            mock_poly = make_polylogue_mock()
+            mock_poly.get_session_profile_insight = AsyncMock(return_value=insight)
+            mock_get_polylogue.return_value = mock_poly
 
             raw = await invoke_surface_async(
                 mcp_server._tool_manager._tools["session_profile"].fn,
@@ -760,21 +756,21 @@ class TestInsightTools:
             healthy=False,
             detail="1 pending session-insight row",
         )
-        with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
-            mock_ops = MagicMock()
-            mock_ops.list_session_profile_insights = AsyncMock(return_value=[profile])
-            mock_ops.list_session_enrichment_insights = AsyncMock(return_value=[enrichment])
-            mock_ops.list_session_work_event_insights = AsyncMock(return_value=[work_event])
-            mock_ops.list_session_phase_insights = AsyncMock(return_value=[phase])
-            mock_ops.list_session_tag_rollup_insights = AsyncMock(return_value=[tag_rollup])
-            mock_ops.list_work_thread_insights = AsyncMock(return_value=[thread])
-            mock_ops.list_day_session_summary_insights = AsyncMock(return_value=[day_summary])
-            mock_ops.list_week_session_summary_insights = AsyncMock(return_value=[week_summary])
-            mock_ops.list_provider_analytics_insights = AsyncMock(return_value=[analytics])
-            mock_ops.list_session_cost_insights = AsyncMock(return_value=[session_cost])
-            mock_ops.list_cost_rollup_insights = AsyncMock(return_value=[cost_rollup])
-            mock_ops.list_archive_debt_insights = AsyncMock(return_value=[debt])
-            mock_get_archive_ops.return_value = mock_ops
+        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+            mock_poly = make_polylogue_mock()
+            mock_poly.list_session_profile_insights = AsyncMock(return_value=[profile])
+            mock_poly.list_session_enrichment_insights = AsyncMock(return_value=[enrichment])
+            mock_poly.list_session_work_event_insights = AsyncMock(return_value=[work_event])
+            mock_poly.list_session_phase_insights = AsyncMock(return_value=[phase])
+            mock_poly.list_session_tag_rollup_insights = AsyncMock(return_value=[tag_rollup])
+            mock_poly.list_work_thread_insights = AsyncMock(return_value=[thread])
+            mock_poly.list_day_session_summary_insights = AsyncMock(return_value=[day_summary])
+            mock_poly.list_week_session_summary_insights = AsyncMock(return_value=[week_summary])
+            mock_poly.list_provider_analytics_insights = AsyncMock(return_value=[analytics])
+            mock_poly.list_session_cost_insights = AsyncMock(return_value=[session_cost])
+            mock_poly.list_cost_rollup_insights = AsyncMock(return_value=[cost_rollup])
+            mock_poly.list_archive_debt_insights = AsyncMock(return_value=[debt])
+            mock_get_polylogue.return_value = mock_poly
 
             profiles_raw = await invoke_surface_async(
                 mcp_server._tool_manager._tools["session_profiles"].fn,
@@ -955,14 +951,9 @@ class TestStatsTool:
 
 class TestMutationTools:
     def test_add_tag_success(self, mcp_server: MCPServerUnderTest) -> None:
-        with (
-            patch("polylogue.mcp.server._get_query_store") as mock_get_query_store,
-            patch("polylogue.mcp.server._get_tag_store") as mock_get_tag_store,
-        ):
-            mock_get_query_store.return_value = make_query_store_mock(resolved_id="test:conv-123")
-            mock_tag_store = make_tag_store_mock()
-            mock_tag_store.add_tag.return_value = None
-            mock_get_tag_store.return_value = mock_tag_store
+        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+            mock_poly = make_polylogue_mock()
+            mock_get_polylogue.return_value = mock_poly
 
             result = invoke_surface(
                 mcp_server._tool_manager._tools["add_tag"].fn, conversation_id="test:conv-123", tag="important"
@@ -970,17 +961,13 @@ class TestMutationTools:
 
         parsed = json.loads(result)
         assert parsed == {"status": "ok", "conversation_id": "test:conv-123", "tag": "important"}
-        mock_tag_store.add_tag.assert_called_once_with("test:conv-123", "important")
+        mock_poly.add_tag.assert_called_once_with("test:conv-123", "important")
 
     def test_add_tag_error(self, mcp_server: MCPServerUnderTest) -> None:
-        with (
-            patch("polylogue.mcp.server._get_query_store") as mock_get_query_store,
-            patch("polylogue.mcp.server._get_tag_store") as mock_get_tag_store,
-        ):
-            mock_get_query_store.return_value = make_query_store_mock(resolved_id="test:conv-123")
-            mock_tag_store = make_tag_store_mock()
-            mock_tag_store.add_tag.side_effect = ValueError("Invalid tag")
-            mock_get_tag_store.return_value = mock_tag_store
+        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+            mock_poly = make_polylogue_mock()
+            mock_poly.add_tag.side_effect = ValueError("Invalid tag")
+            mock_get_polylogue.return_value = mock_poly
 
             result = invoke_surface(
                 mcp_server._tool_manager._tools["add_tag"].fn, conversation_id="test:conv-123", tag="invalid"
@@ -992,14 +979,9 @@ class TestMutationTools:
         assert parsed["detail"] == "ValueError"
 
     def test_remove_tag_success(self, mcp_server: MCPServerUnderTest) -> None:
-        with (
-            patch("polylogue.mcp.server._get_query_store") as mock_get_query_store,
-            patch("polylogue.mcp.server._get_tag_store") as mock_get_tag_store,
-        ):
-            mock_get_query_store.return_value = make_query_store_mock(resolved_id="test:conv-123")
-            mock_tag_store = make_tag_store_mock()
-            mock_tag_store.remove_tag.return_value = None
-            mock_get_tag_store.return_value = mock_tag_store
+        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+            mock_poly = make_polylogue_mock()
+            mock_get_polylogue.return_value = mock_poly
 
             result = invoke_surface(
                 mcp_server._tool_manager._tools["remove_tag"].fn, conversation_id="test:conv-123", tag="important"
@@ -1007,17 +989,13 @@ class TestMutationTools:
 
         parsed = json.loads(result)
         assert parsed == {"status": "ok", "conversation_id": "test:conv-123", "tag": "important"}
-        mock_tag_store.remove_tag.assert_called_once_with("test:conv-123", "important")
+        mock_poly.remove_tag.assert_called_once_with("test:conv-123", "important")
 
     def test_remove_tag_error(self, mcp_server: MCPServerUnderTest) -> None:
-        with (
-            patch("polylogue.mcp.server._get_query_store") as mock_get_query_store,
-            patch("polylogue.mcp.server._get_tag_store") as mock_get_tag_store,
-        ):
-            mock_get_query_store.return_value = make_query_store_mock(resolved_id="test:conv-123")
-            mock_tag_store = make_tag_store_mock()
-            mock_tag_store.remove_tag.side_effect = RuntimeError("Backend error")
-            mock_get_tag_store.return_value = mock_tag_store
+        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+            mock_poly = make_polylogue_mock()
+            mock_poly.remove_tag.side_effect = RuntimeError("Backend error")
+            mock_get_polylogue.return_value = mock_poly
 
             result = invoke_surface(
                 mcp_server._tool_manager._tools["remove_tag"].fn, conversation_id="test:conv-123", tag="important"
@@ -1062,45 +1040,40 @@ class TestMutationTools:
         assert "requires at least one conversation_id" in json.loads(result)["error"]
 
     def test_list_tags_returns_counts(self, mcp_server: MCPServerUnderTest) -> None:
-        with patch("polylogue.mcp.server._get_tag_store") as mock_get_tag_store:
-            mock_tag_store = make_tag_store_mock()
-            mock_tag_store.list_tags.return_value = {"bug": 3, "feature": 5, "urgent": 1}
-            mock_get_tag_store.return_value = mock_tag_store
+        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+            mock_poly = make_polylogue_mock()
+            mock_poly.list_tags = AsyncMock(return_value={"bug": 3, "feature": 5, "urgent": 1})
+            mock_get_polylogue.return_value = mock_poly
 
             result = invoke_surface(mcp_server._tool_manager._tools["list_tags"].fn)
 
         assert json.loads(result) == {"bug": 3, "feature": 5, "urgent": 1}
 
     def test_list_tags_with_provider(self, mcp_server: MCPServerUnderTest) -> None:
-        with patch("polylogue.mcp.server._get_tag_store") as mock_get_tag_store:
-            mock_tag_store = make_tag_store_mock()
-            mock_tag_store.list_tags.return_value = {"claude-ai": 2}
-            mock_get_tag_store.return_value = mock_tag_store
+        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+            mock_poly = make_polylogue_mock()
+            mock_poly.list_tags = AsyncMock(return_value={"claude-ai": 2})
+            mock_get_polylogue.return_value = mock_poly
 
             result = invoke_surface(mcp_server._tool_manager._tools["list_tags"].fn, provider="claude-ai")
 
         assert json.loads(result) == {"claude-ai": 2}
-        mock_tag_store.list_tags.assert_called_once_with(provider="claude-ai")
+        mock_poly.list_tags.assert_called_once_with(provider="claude-ai")
 
     def test_get_metadata_success(self, mcp_server: MCPServerUnderTest) -> None:
-        with patch("polylogue.mcp.server._get_tag_store") as mock_get_tag_store:
-            mock_tag_store = make_tag_store_mock()
-            mock_tag_store.get_metadata.return_value = {"key": "value", "count": 42}
-            mock_get_tag_store.return_value = mock_tag_store
+        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+            mock_poly = make_polylogue_mock()
+            mock_poly.get_metadata = AsyncMock(return_value={"key": "value", "count": 42})
+            mock_get_polylogue.return_value = mock_poly
 
             result = invoke_surface(mcp_server._tool_manager._tools["get_metadata"].fn, conversation_id="test:conv-123")
 
         assert json.loads(result) == {"key": "value", "count": 42}
 
     def test_set_metadata_string_value(self, mcp_server: MCPServerUnderTest) -> None:
-        with (
-            patch("polylogue.mcp.server._get_query_store") as mock_get_query_store,
-            patch("polylogue.mcp.server._get_tag_store") as mock_get_tag_store,
-        ):
-            mock_get_query_store.return_value = make_query_store_mock(resolved_id="test:conv-123")
-            mock_tag_store = make_tag_store_mock()
-            mock_tag_store.update_metadata.return_value = None
-            mock_get_tag_store.return_value = mock_tag_store
+        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+            mock_poly = make_polylogue_mock()
+            mock_get_polylogue.return_value = mock_poly
 
             result = invoke_surface(
                 mcp_server._tool_manager._tools["set_metadata"].fn,
@@ -1110,17 +1083,12 @@ class TestMutationTools:
             )
 
         assert json.loads(result)["status"] == "ok"
-        mock_tag_store.update_metadata.assert_called_once_with("test:conv-123", "author", "john")
+        mock_poly.update_metadata.assert_called_once_with("test:conv-123", "author", "john")
 
     def test_set_metadata_json_value(self, mcp_server: MCPServerUnderTest) -> None:
-        with (
-            patch("polylogue.mcp.server._get_query_store") as mock_get_query_store,
-            patch("polylogue.mcp.server._get_tag_store") as mock_get_tag_store,
-        ):
-            mock_get_query_store.return_value = make_query_store_mock(resolved_id="test:conv-123")
-            mock_tag_store = make_tag_store_mock()
-            mock_tag_store.update_metadata.return_value = None
-            mock_get_tag_store.return_value = mock_tag_store
+        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+            mock_poly = make_polylogue_mock()
+            mock_get_polylogue.return_value = mock_poly
 
             result = invoke_surface(
                 mcp_server._tool_manager._tools["set_metadata"].fn,
@@ -1130,7 +1098,7 @@ class TestMutationTools:
             )
 
         assert json.loads(result)["status"] == "ok"
-        mock_tag_store.update_metadata.assert_called_once_with("test:conv-123", "config", {"nested": True})
+        mock_poly.update_metadata.assert_called_once_with("test:conv-123", "config", "{'nested': True}")
 
     def test_delete_metadata_success(self, mcp_server: MCPServerUnderTest) -> None:
         with (
@@ -1169,10 +1137,10 @@ class TestMutationTools:
         mock_query_store.delete_conversation.assert_not_called()
 
     def test_delete_with_confirm(self, mcp_server: MCPServerUnderTest) -> None:
-        with patch("polylogue.mcp.server._get_query_store") as mock_get_query_store:
-            mock_query_store = make_query_store_mock(resolved_id="test:conv-123")
-            mock_query_store.delete_conversation.return_value = True
-            mock_get_query_store.return_value = mock_query_store
+        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+            mock_poly = make_polylogue_mock()
+            mock_poly.delete_conversation = AsyncMock(return_value=True)
+            mock_get_polylogue.return_value = mock_poly
 
             result = invoke_surface(
                 mcp_server._tool_manager._tools["delete_conversation"].fn,
@@ -1181,7 +1149,7 @@ class TestMutationTools:
             )
 
         assert json.loads(result)["status"] == "deleted"
-        mock_query_store.delete_conversation.assert_called_once_with("test:conv-123")
+        mock_poly.delete_conversation.assert_called_once_with("test:conv-123")
 
     def test_delete_not_found(self, mcp_server: MCPServerUnderTest) -> None:
         # Two not-found shapes: resolve_id returns None (id never existed) vs.
@@ -1202,8 +1170,8 @@ class TestMutationTools:
         assert json.loads(result)["status"] == "not_found"
 
     def test_summary_returns_metadata(self, mcp_server: MCPServerUnderTest) -> None:
-        with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
-            mock_ops = MagicMock()
+        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+            mock_poly = make_polylogue_mock()
             mock_summary = _make_summary(
                 "test:conv-123",
                 provider=Provider.CHATGPT,
@@ -1211,9 +1179,9 @@ class TestMutationTools:
                 created_at=datetime(2024, 1, 15, tzinfo=timezone.utc),
                 updated_at=datetime(2024, 1, 15, 11, 0, 0, tzinfo=timezone.utc),
             )
-            mock_ops.get_conversation_summary = AsyncMock(return_value=mock_summary)
-            mock_ops.get_conversation_stats = AsyncMock(return_value={"total_messages": 5})
-            mock_get_archive_ops.return_value = mock_ops
+            mock_poly.get_conversation_summary = AsyncMock(return_value=mock_summary)
+            mock_poly.get_conversation_stats = AsyncMock(return_value={"total_messages": 5})
+            mock_get_polylogue.return_value = mock_poly
 
             result = invoke_surface(mcp_server._tool_manager._tools["get_conversation_summary"].fn, id="test:conv-123")
 
@@ -1224,20 +1192,20 @@ class TestMutationTools:
         assert parsed["message_count"] == 5
 
     def test_summary_not_found(self, mcp_server: MCPServerUnderTest) -> None:
-        with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
-            mock_ops = MagicMock()
-            mock_ops.get_conversation_summary = AsyncMock(return_value=None)
-            mock_get_archive_ops.return_value = mock_ops
+        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+            mock_poly = make_polylogue_mock()
+            mock_poly.get_conversation_summary = AsyncMock(return_value=None)
+            mock_get_polylogue.return_value = mock_poly
 
             result = invoke_surface(mcp_server._tool_manager._tools["get_conversation_summary"].fn, id="nonexistent")
 
         assert "not found" in json.loads(result)["error"].lower()
 
     def test_session_tree_returns_list(self, simple_conversation: Conversation, mcp_server: MCPServerUnderTest) -> None:
-        with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
-            mock_ops = MagicMock()
-            mock_ops.get_session_tree = AsyncMock(return_value=[simple_conversation])
-            mock_get_archive_ops.return_value = mock_ops
+        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+            mock_poly = make_polylogue_mock()
+            mock_poly.get_session_tree = AsyncMock(return_value=[simple_conversation])
+            mock_get_polylogue.return_value = mock_poly
 
             result = invoke_surface(
                 mcp_server._tool_manager._tools["get_session_tree"].fn, conversation_id="test:conv-123"
@@ -1331,12 +1299,15 @@ class TestMutationTools:
         assert parsed["conversation_count"] == 2
 
     def test_rebuild_session_insights_success(self, mcp_server: MCPServerUnderTest) -> None:
-        with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
-            mock_ops = MagicMock()
-            mock_ops.rebuild_session_insights = AsyncMock(
-                return_value=SessionInsightCounts(profiles=2, work_events=3, phases=1)
+        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+            mock_poly = make_polylogue_mock()
+            mock_poly.rebuild_insights = AsyncMock(
+                return_value=MagicMock(
+                    to_dict=MagicMock(return_value={"profiles": 2, "work_events": 3, "phases": 1}),
+                    total=MagicMock(return_value=6),
+                )
             )
-            mock_get_archive_ops.return_value = mock_ops
+            mock_get_polylogue.return_value = mock_poly
 
             result = invoke_surface(
                 mcp_server._tool_manager._tools["rebuild_session_insights"].fn,
@@ -1348,7 +1319,7 @@ class TestMutationTools:
         assert parsed["conversation_count"] == 2
         assert parsed["counts"]["profiles"] == 2
         assert parsed["total"] == 6
-        mock_ops.rebuild_session_insights.assert_awaited_once_with(conversation_ids=["conv-1", "conv-2"])
+        mock_poly.rebuild_insights.assert_awaited_once_with(conversation_ids=["conv-1", "conv-2"])
 
     def test_export_query_results_uses_shared_query_contract(
         self,

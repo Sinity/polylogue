@@ -68,7 +68,7 @@ def neighbors_command(
 
     try:
         candidates = run_coroutine_sync(
-            env.operations.neighbor_candidates(
+            env.polylogue.neighbor_candidates(
                 conversation_id=conversation_id,
                 query=query,
                 provider=provider,

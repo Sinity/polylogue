@@ -334,7 +334,15 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 HTTPStatus.OK,
                 {
                     "ok": True,
-                    "messages": messages,
+                    "messages": [
+                        {
+                            "id": m.id,
+                            "role": str(m.role),
+                            "text": m.text or "",
+                            "message_type": m.message_type.value,
+                        }
+                        for m in messages
+                    ],
                     "total": total,
                     "limit": limit,
                     "offset": offset,

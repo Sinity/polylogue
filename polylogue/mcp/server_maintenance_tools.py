@@ -77,7 +77,9 @@ def register_maintenance_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 no_file_reads=no_file_reads,
                 prose_only=prose_only,
             ).build_projection()
-            conv = await hooks.get_archive_ops().get_conversation(id, content_projection=projection)
+
+            poly = hooks.get_polylogue()
+            conv = await poly.get_conversation(id, content_projection=projection)
             if conv is None:
                 return hooks.error_json(f"Conversation not found: {id}")
             fmt = normalize_conversation_output_format(format)
@@ -88,7 +90,8 @@ def register_maintenance_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     @mcp.tool()
     async def rebuild_session_insights(conversation_ids: list[str] | None = None) -> str:
         async def run() -> str:
-            counts = await hooks.get_archive_ops().rebuild_session_insights(conversation_ids=conversation_ids)
+            poly = hooks.get_polylogue()
+            counts = await poly.rebuild_insights(conversation_ids=conversation_ids)
             return hooks.json_payload(
                 MCPRootPayload(
                     root={

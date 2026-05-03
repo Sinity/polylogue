@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import cast
 
+from polylogue.api.archive import ConversationNotFoundError
 from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.archive.message.roles import MessageRoleFilter, normalize_message_roles
 from polylogue.archive.semantic.content_projection import ContentProjectionSpec
@@ -45,20 +46,19 @@ def run_messages(
                 }
             )
 
-            result = await api.get_messages_paginated(
-                conversation_id,
-                message_role=roles,
-                message_type=cast(MessageTypeName, message_type),
-                limit=limit,
-                offset=offset,
-                content_projection=projection,
-            )
-
-            if result is None:
+            try:
+                messages, total = await api.get_messages_paginated(
+                    conversation_id,
+                    message_role=roles,
+                    message_type=cast(MessageTypeName, message_type),
+                    limit=limit,
+                    offset=offset,
+                    content_projection=projection,
+                )
+            except ConversationNotFoundError:
                 env.ui.error(f"Conversation not found: {conversation_id}")
                 return
 
-            messages, total = result
             fmt = output_format or "markdown"
 
             if fmt == "json":
@@ -68,10 +68,10 @@ def run_messages(
                     "conversation_id": conversation_id,
                     "messages": [
                         {
-                            "id": m.get("id", ""),
-                            "role": m.get("role", ""),
-                            "message_type": m.get("message_type", "message"),
-                            "text": m.get("text", ""),
+                            "id": str(m.id),
+                            "role": str(m.role),
+                            "message_type": str(m.message_type.value),
+                            "text": m.text or "",
                         }
                         for m in messages
                     ],
@@ -82,9 +82,9 @@ def run_messages(
                 env.ui.print(_json.dumps(payload, indent=2))
             else:
                 for msg in messages:
-                    role = str(msg.get("role", "unknown"))
-                    message_type_label = str(msg.get("message_type", "message"))
-                    text = str(msg.get("text", ""))
+                    role = str(msg.role)
+                    message_type_label = str(msg.message_type.value)
+                    text = msg.text or ""
                     if text:
                         env.ui.print(f"[{role} {message_type_label}] {text[:500]}{'...' if len(text) > 500 else ''}")
                         env.ui.print("---")

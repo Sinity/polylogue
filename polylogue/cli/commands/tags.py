@@ -29,7 +29,7 @@ def tags_command(
         polylogue tags --format json    # Machine-readable output
         polylogue tags -n 10            # Top 10 tags
     """
-    tags = run_coroutine_sync(env.repository.list_tags(provider=provider))
+    tags = run_coroutine_sync(env.polylogue.list_tags(provider=provider))
 
     if count is not None:
         # Truncate to top N (already sorted by count desc from SQL)
