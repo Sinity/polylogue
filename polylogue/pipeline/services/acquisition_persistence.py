@@ -33,6 +33,7 @@ async def persist_raw_record(
             source=record.source_name,
             path=record.source_path,
             error=str(exc),
+            exc_info=True,
         )
         result.errors += 1
 

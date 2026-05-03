@@ -1289,7 +1289,7 @@ async def refresh_session_insights_bulk(
             )
         return observation
     except Exception as exc:
-        logger.warning("Session product refresh failed (non-fatal): %s", exc)
+        logger.warning("Session product refresh failed (non-fatal): %s", exc, exc_info=True)
         return {
             "conversations": len(changed_conversation_ids),
             "failed": True,

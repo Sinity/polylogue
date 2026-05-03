@@ -288,7 +288,7 @@ def _create_query_vector_provider(config: Config, *, db_path: Path | None = None
     except (ValueError, ImportError):
         return None
     except Exception as exc:
-        logger.warning("Vector search setup failed: %s", exc)
+        logger.warning("Vector search setup failed: %s", exc, exc_info=True)
         return None
 
 
