@@ -14,14 +14,17 @@ from pathlib import Path
 from typing import Any
 
 from polylogue.core.outcomes import OutcomeStatus
-from polylogue.proof.catalog import build_verification_catalog
+from polylogue.proof.catalog import (
+    VerificationCatalog,
+    build_verification_catalog,
+)
 from polylogue.proof.diffing import (
-    AffectedObligationReport,
     RecommendedCheck,
     build_affected_obligation_report,
     changed_paths_between_refs,
     obligation_ids_for_ref,
 )
+from polylogue.proof.models import RunnerBinding, SubjectRef
 
 
 def _load_assurance_domains(root: Path) -> dict[str, dict[str, Any]]:
@@ -292,7 +295,250 @@ def _subject_assurance_domain(subject: Any) -> str | None:
     return domain if isinstance(domain, str) and domain.strip() else None
 
 
-def _cost_tier_counts(report: AffectedObligationReport, catalog: Any) -> dict[str, int]:
+def build_slop_dashboard(catalog: VerificationCatalog) -> dict[str, Any]:
+    """Analyze the catalog for anti-vacuity violations — "slop" claims.
+
+    A claim is slop if ANY of:
+    - No breaker defined and no tracked exception
+    - No runner binding (no executable check)
+    - Zero subjects matched (no compiled obligations)
+    - Its runner bindings have stale or missing freshness
+    - Its assertion source is the same as the manifest (self-referential)
+    """
+    from datetime import datetime, timezone
+
+    now = datetime.now(tz=timezone.utc)
+    runners_by_claim: dict[str, list[RunnerBinding]] = defaultdict(list)
+    for runner in catalog.runner_bindings:
+        runners_by_claim[runner.claim_id].append(runner)
+
+    obligations_by_claim: dict[str, int] = defaultdict(int)
+    for obligation in catalog.obligations:
+        obligations_by_claim[obligation.claim.id] += 1
+
+    rows: list[dict[str, Any]] = []
+    for claim in sorted(catalog.claims, key=lambda c: c.id):
+        claim_runners = runners_by_claim.get(claim.id, [])
+        obligation_count = obligations_by_claim.get(claim.id, 0)
+
+        missing_breaker = claim.breaker is None and claim.tracked_exception is None
+        missing_runner = len(claim_runners) == 0
+        zero_subjects = obligation_count == 0 and not claim.abstract
+        # Self-referential: evidence source is the same manifest
+        self_referential = claim.assertion_source in {
+            "same_source_manifest",
+            "same_source",
+        }
+
+        stale_evidence: list[str] = []
+        for runner in claim_runners:
+            freshness = runner.trust.freshness
+            if freshness is None or not freshness.strip():
+                stale_evidence.append(f"{runner.id}: no freshness")
+            elif freshness in (
+                "static review refreshed with generated catalog",
+                "catalog-reviewed",
+            ):
+                pass  # static freshness is by design for structural claims
+            elif freshness.startswith("ci:") or freshness.startswith("local:"):
+                try:
+                    ts_str = freshness.split(":", 1)[1]
+                    ts = datetime.fromisoformat(ts_str)
+                    if (now - ts).days > 30:
+                        stale_evidence.append(f"{runner.id}: freshness >30d old")
+                except (ValueError, IndexError):
+                    stale_evidence.append(f"{runner.id}: unparseable freshness {freshness!r}")
+
+        reasons: dict[str, bool] = {
+            "missing_breaker": missing_breaker,
+            "missing_runner": missing_runner,
+            "zero_subjects": zero_subjects,
+            "self_referential": self_referential,
+            "stale_evidence": bool(stale_evidence),
+        }
+        is_slop = any(reasons.values())
+        if is_slop:
+            rows.append(
+                {
+                    "claim_id": claim.id,
+                    "assurance_domain": str(claim.assurance_domain),
+                    "severity": str(claim.severity),
+                    "missing_breaker": missing_breaker,
+                    "missing_runner": missing_runner,
+                    "zero_subjects": zero_subjects,
+                    "self_referential": self_referential,
+                    "stale_evidence": bool(stale_evidence),
+                    "stale_evidence_details": stale_evidence,
+                    "runner_count": len(claim_runners),
+                    "obligation_count": obligation_count,
+                    "abstract": claim.abstract,
+                }
+            )
+
+    return {
+        "total_claims": len(catalog.claims),
+        "slop_count": len(rows),
+        "rows": sorted(rows, key=lambda r: r["claim_id"]),
+        "by_reason": {
+            "missing_breaker": sum(1 for r in rows if r["missing_breaker"]),
+            "missing_runner": sum(1 for r in rows if r["missing_runner"]),
+            "zero_subjects": sum(1 for r in rows if r["zero_subjects"]),
+            "self_referential": sum(1 for r in rows if r["self_referential"]),
+            "stale_evidence": sum(1 for r in rows if r["stale_evidence"]),
+        },
+    }
+
+
+def render_slop_markdown(dashboard: dict[str, Any]) -> str:
+    """Render the slop dashboard as markdown."""
+    lines = [
+        "## Anti-Vacuity Slop Dashboard",
+        "",
+        f"**Claims analyzed:** {dashboard['total_claims']}  **Slop claims:** {dashboard['slop_count']}",
+        "",
+        "### By Reason",
+        "",
+    ]
+    by_reason = dashboard["by_reason"]
+    for reason in ("missing_breaker", "missing_runner", "zero_subjects", "self_referential", "stale_evidence"):
+        count = by_reason.get(reason, 0)
+        lines.append(f"- **{reason}:** {count}")
+    lines.append("")
+
+    rows = dashboard["rows"]
+    if not rows:
+        lines.append("_No slop claims found._")
+        return "\n".join(lines)
+
+    lines.extend(
+        [
+            "| Claim ID | Domain | Severity | Missing Breaker | Missing Runner | Zero Subjects | Self-Referential | Stale Evidence",
+            "| --- | --- | --- | --- | --- | --- | --- | --- |",
+        ]
+    )
+    for row in rows:
+        lines.append(
+            f"| {row['claim_id']} "
+            f"| {row['assurance_domain']} "
+            f"| {row['severity']} "
+            f"| {'X' if row['missing_breaker'] else ''} "
+            f"| {'X' if row['missing_runner'] else ''} "
+            f"| {'X' if row['zero_subjects'] else ''} "
+            f"| {'X' if row['self_referential'] else ''} "
+            f"| {'X' if row['stale_evidence'] else ''} |"
+        )
+
+    lines.append("")
+    lines.append("### X = slop condition detected. Empty = OK.")
+    return "\n".join(lines)
+
+
+def discover_click_json_subjects(
+    cli_group: Any = None,
+) -> list[SubjectRef]:
+    """Discover CLI commands with ``--format json`` and generate proof subjects.
+
+    Each command that accepts ``--format json`` (or ``--json``) produces a
+    ``SubjectRef`` with kind ``cli.json_command``.  The subject's attrs
+    carry the command path and help text so downstream claims can match
+    on ``Kind("cli.json_command")``.
+    """
+
+    try:
+        from polylogue.cli.click_app import cli as click_group
+    except ImportError:
+        return []
+
+    subjects: list[SubjectRef] = []
+    _walk_json_commands(click_group, (), subjects)
+    return subjects
+
+
+def _walk_json_commands(
+    group: Any,
+    parent_path: tuple[str, ...],
+    subjects: list[SubjectRef],
+) -> None:
+    """Recursively walk a Click group and collect JSON-format commands."""
+    for cmd_name in getattr(group, "commands", {}):
+        cmd = group.commands[cmd_name]
+        cmd_path = (*parent_path, cmd_name)
+        full_name = " ".join(cmd_path)
+
+        has_json = _click_has_json_flag(cmd)
+        is_group = hasattr(cmd, "commands")
+        if is_group:
+            _walk_json_commands(cmd, cmd_path, subjects)
+        if has_json:
+            subjects.append(
+                SubjectRef(
+                    kind="cli.json_command",
+                    id=full_name,
+                    attrs={
+                        "command_path": full_name,
+                        "help": (cmd.help or "").strip(),
+                    },
+                )
+            )
+
+
+def _click_has_json_flag(cmd: Any) -> bool:
+    """Check if a Click command has a --json or --format json option."""
+    if not hasattr(cmd, "params"):
+        return False
+    for param in cmd.params:
+        if not hasattr(param, "opts"):
+            continue
+        opts = [str(o).lstrip("-") for o in param.opts]
+        if "json" in opts:
+            return True
+        if (
+            "format" in opts
+            and hasattr(param, "type")
+            and hasattr(param.type, "choices")
+            and "json" in [str(c).lower() for c in param.type.choices]
+        ):
+            return True
+    return False
+
+
+def _print_slop_dashboard(dashboard: dict[str, Any]) -> None:
+    """Print a human-readable slop dashboard to stdout."""
+    print("Anti-Vacuity Slop Dashboard")
+    print(f"{'=' * 40}")
+    print(f"Claims analyzed: {dashboard['total_claims']}")
+    print(f"Slop claims:     {dashboard['slop_count']}")
+    print()
+    print("By reason:")
+    by_reason = dashboard["by_reason"]
+    for reason in ("missing_breaker", "missing_runner", "zero_subjects", "self_referential", "stale_evidence"):
+        count = by_reason.get(reason, 0)
+        print(f"  {reason:<25} {count}")
+    print()
+
+    rows = dashboard["rows"]
+    if not rows:
+        print("No slop claims found.")
+        return
+
+    print(f"{'Claim ID':<55} {'Domain':<25} {'Brk':>3} {'Run':>3} {'Sub':>3} {'Slf':>3} {'Stl':>3}")
+    print("-" * 120)
+    for row in rows:
+        print(
+            f"{row['claim_id']:<55} "
+            f"{row['assurance_domain']:<25} "
+            f"{'X' if row['missing_breaker'] else '.':>3} "
+            f"{'X' if row['missing_runner'] else '.':>3} "
+            f"{'X' if row['zero_subjects'] else '.':>3} "
+            f"{'X' if row['self_referential'] else '.':>3} "
+            f"{'X' if row['stale_evidence'] else '.':>3}"
+        )
+    print()
+    print("Brk=missing_breaker  Run=missing_runner  Sub=zero_subjects")
+    print("Slf=self_referential  Stl=stale_evidence")
+
+
+def _cost_tier_counts(report: Any, catalog: VerificationCatalog) -> dict[str, int]:
     counts: Counter[str] = Counter()
     tiers_by_obligation = {obligation.id: obligation.runner.cost_tier for obligation in catalog.obligations}
     for item in report.affected_obligations:
@@ -308,9 +554,44 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON.")
     parser.add_argument("--markdown", action="store_true", help="Emit PR-comment-ready Markdown.")
     parser.add_argument("--check", action="store_true", help="Exit non-zero when proof-pack blocking policy fails.")
+    parser.add_argument(
+        "--slop",
+        action="store_true",
+        help="Emit anti-vacuity slop dashboard (claims lacking breakers, runners, subjects, or with stale evidence).",
+    )
+    parser.add_argument(
+        "--discover-subjects",
+        action="store_true",
+        help="Discover and print subjects from Click introspection (CLI commands with --format json).",
+    )
     args = parser.parse_args(argv)
 
     root = Path(__file__).resolve().parents[1]
+
+    if args.slop:
+        catalog = build_verification_catalog()
+        dashboard = build_slop_dashboard(catalog)
+        if args.json:
+            json.dump(dashboard, sys.stdout, indent=2, sort_keys=True)
+            sys.stdout.write("\n")
+        elif args.markdown:
+            sys.stdout.write(render_slop_markdown(dashboard))
+            sys.stdout.write("\n")
+        else:
+            _print_slop_dashboard(dashboard)
+        return 1 if dashboard["slop_count"] > 0 and args.check else 0
+
+    if args.discover_subjects:
+        subjects = discover_click_json_subjects()
+        if args.json:
+            payload = [s.to_payload() for s in subjects]
+            json.dump(payload, sys.stdout, indent=2, sort_keys=True)
+        else:
+            print(f"Discovered {len(subjects)} JSON-capable CLI subjects:")
+            for s in subjects:
+                print(f"  {s.id:50} {str(s.attrs.get('help', ''))[:60]}")
+        return 0
+
     report = build_proof_pack(
         root,
         base_ref=args.base_ref,
