@@ -140,6 +140,7 @@ class LiveWatcher:
             await self._polylogue.parse_file(path, source_name=source_name)
         except Exception as exc:
             logger.warning("live.watcher: parse failed for %s: %s", path, exc)
+            self._cursor.mark_failed(path)
             return
         self._cursor.set(
             path,
@@ -149,7 +150,11 @@ class LiveWatcher:
             parser_fingerprint=_PARSER_FINGERPRINT,
             content_fingerprint=fingerprint,
             source_name=source_name,
+            st_dev=getattr(stat, "st_dev", None),
+            st_ino=getattr(stat, "st_ino", None),
+            mtime_ns=getattr(stat, "st_mtime_ns", None),
         )
+        self._cursor.reset_failures(path)
         logger.debug("live.watcher: ingested %s (size=%d, source=%s)", path, size, source_name)
 
     def _source_name_for(self, path: Path) -> str:
