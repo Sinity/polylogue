@@ -79,6 +79,9 @@ class InsightType:
     cli_help: str = ""
     cli_options: tuple[CliOption, ...] = ()
     mcp_default_limit: int = 50
+    export_eligible: bool = True
+    reader_panel: str | None = None
+    readiness_exempt: bool = False
 
     @property
     def resolved_cli_command_name(self) -> str:
@@ -528,6 +531,7 @@ register(
         operations_method_name="list_session_cost_insights",
         cli_command_name="costs",
         cli_help="List session-level cost estimates.",
+        readiness_exempt=True,
         cli_options=(
             CliOption("conversation_id", ("--conversation-id",), help="Only one conversation"),
             CliOption("model", ("--model",), help="Only this model or normalized model"),
@@ -553,6 +557,7 @@ register(
         operations_method_name="list_cost_rollup_insights",
         cli_command_name="cost-rollups",
         cli_help="List provider/model cost rollups.",
+        readiness_exempt=True,
         cli_options=(CliOption("model", ("--model",), help="Only this model or normalized model"),),
         fields=(
             InsightField("", _attr("provider_name"), group=0),
@@ -576,6 +581,7 @@ register(
         operations_method_name="list_archive_debt_insights",
         cli_command_name="debt",
         cli_help="List archive debt and maintenance readiness insights.",
+        readiness_exempt=True,
         cli_options=(
             CliOption("category", ("--category",), help="Only this maintenance category"),
             CliOption(

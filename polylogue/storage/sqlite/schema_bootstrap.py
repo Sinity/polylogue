@@ -11,7 +11,7 @@ import aiosqlite
 
 from polylogue.errors import DatabaseError
 from polylogue.logging import get_logger
-from polylogue.storage.backends.schema_ddl import (
+from polylogue.storage.sqlite.schema_ddl import (
     _ACTION_EVENT_DDL,
     _ACTION_FTS_DDL,
     _ARTIFACT_OBSERVATION_DDL,

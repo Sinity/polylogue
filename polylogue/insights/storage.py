@@ -23,13 +23,13 @@ import logging
 import sqlite3
 from pathlib import Path
 
-from polylogue.storage.backends.schema_ddl_insight_aggregates import (
+from polylogue.storage.sqlite.schema_ddl_insight_aggregates import (
     SESSION_INSIGHT_AGGREGATE_DDL,
 )
-from polylogue.storage.backends.schema_ddl_insight_profiles import (
+from polylogue.storage.sqlite.schema_ddl_insight_profiles import (
     SESSION_INSIGHT_PROFILE_DDL,
 )
-from polylogue.storage.backends.schema_ddl_insight_timelines import (
+from polylogue.storage.sqlite.schema_ddl_insight_timelines import (
     SESSION_INSIGHT_TIMELINE_DDL,
 )
 
