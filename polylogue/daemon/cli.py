@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 import click
@@ -38,8 +39,16 @@ async def run_daemon_services(
     browser_capture_host: str,
     browser_capture_port: int,
     browser_capture_spool_path: Path | None,
+    browser_capture_allow_remote: bool = False,
+    browser_capture_auth_token: str | None = None,
+    browser_capture_extra_origins: tuple[str, ...] = (),
+    enable_api: bool = False,
+    api_host: str = "127.0.0.1",
+    api_port: int = 8766,
 ) -> None:
     """Run configured daemon components until interrupted."""
+    api_server: ThreadingHTTPServer | None = None
+    api_server_task: asyncio.Task[None] | None = None
     server: BrowserCaptureHTTPServer | None = None
     server_task: asyncio.Task[None] | None = None
     watcher: LiveWatcher | None = None
@@ -48,9 +57,23 @@ async def run_daemon_services(
 
     try:
         if enable_browser_capture:
-            server = make_server(browser_capture_host, browser_capture_port, spool_path=browser_capture_spool_path)
+            server = make_server(
+                browser_capture_host,
+                browser_capture_port,
+                spool_path=browser_capture_spool_path,
+                allow_remote=browser_capture_allow_remote,
+                auth_token=browser_capture_auth_token,
+                extra_origins=browser_capture_extra_origins,
+            )
             server_task = asyncio.create_task(asyncio.to_thread(server.serve_forever, 0.5))
             tasks.append(server_task)
+
+        if enable_api:
+            from polylogue.daemon.http import make_daemon_api_server
+
+            api_server = make_daemon_api_server(api_host, api_port)
+            api_server_task = asyncio.create_task(asyncio.to_thread(api_server.serve_forever, 0.5))
+            tasks.append(api_server_task)
 
         if enable_watch:
             async with Polylogue() as polylogue:
@@ -65,12 +88,16 @@ async def run_daemon_services(
             watcher.stop()
         if server is not None:
             server.shutdown()
+        if api_server is not None:
+            api_server.shutdown()
         for task in tasks:
             if not task.done():
                 task.cancel()
         await _drain_tasks(tasks)
         if server is not None:
             server.server_close()
+        if api_server is not None:
+            api_server.server_close()
 
 
 async def _drain_tasks(tasks: list[asyncio.Task[None]]) -> None:
@@ -118,6 +145,43 @@ def status_command(spool_path: Path | None, output_format: str | None) -> None:
 @click.option("--spool", "spool_path", type=click.Path(path_type=Path), default=None)
 @click.option("--no-watch", is_flag=True, help="Do not run the live source watcher.")
 @click.option("--no-browser-capture", is_flag=True, help="Do not run the browser-capture receiver.")
+@click.option(
+    "--insecure-allow-remote",
+    is_flag=True,
+    default=False,
+    help="Allow binding non-loopback addresses for browser-capture (requires --browser-capture-auth-token).",
+)
+@click.option(
+    "--browser-capture-auth-token",
+    default=None,
+    help="Auth token for non-loopback browser-capture requests.",
+)
+@click.option(
+    "--browser-capture-origin",
+    "browser_capture_origins",
+    multiple=True,
+    default=(),
+    help="Additional allowed browser-capture origin (repeatable).",
+)
+@click.option(
+    "--enable-api",
+    is_flag=True,
+    default=False,
+    help="Run the daemon HTTP API server.",
+)
+@click.option(
+    "--api-host",
+    default="127.0.0.1",
+    show_default=True,
+    help="Daemon API server host.",
+)
+@click.option(
+    "--api-port",
+    default=8766,
+    show_default=True,
+    type=int,
+    help="Daemon API server port.",
+)
 def run_command(
     roots: tuple[Path, ...],
     debounce_s: float,
@@ -126,10 +190,16 @@ def run_command(
     spool_path: Path | None,
     no_watch: bool,
     no_browser_capture: bool,
+    insecure_allow_remote: bool,
+    browser_capture_auth_token: str | None,
+    browser_capture_origins: tuple[str, ...],
+    enable_api: bool,
+    api_host: str,
+    api_port: int,
 ) -> None:
     enable_watch = not no_watch
     enable_browser_capture = not no_browser_capture
-    if not enable_watch and not enable_browser_capture:
+    if not enable_watch and not enable_browser_capture and not enable_api:
         raise click.UsageError("at least one daemon component must be enabled")
 
     sources = tuple(WatchSource(name=p.name, root=p) for p in roots) if roots else default_sources()
@@ -138,6 +208,8 @@ def run_command(
         components.append(f"watch={len(sources)} source(s)")
     if enable_browser_capture:
         components.append(f"browser-capture=http://{host}:{port}")
+    if enable_api:
+        components.append(f"api=http://{api_host}:{api_port}")
     click.echo(f"Starting polylogued ({', '.join(components)}). Ctrl-C to stop.", err=True)
 
     try:
@@ -150,6 +222,12 @@ def run_command(
                 browser_capture_host=host,
                 browser_capture_port=port,
                 browser_capture_spool_path=spool_path,
+                browser_capture_allow_remote=insecure_allow_remote,
+                browser_capture_auth_token=browser_capture_auth_token,
+                browser_capture_extra_origins=browser_capture_origins,
+                enable_api=enable_api,
+                api_host=api_host,
+                api_port=api_port,
             )
         )
     except KeyboardInterrupt:
