@@ -294,6 +294,17 @@ async def test_execute_index_stage_covers_parse_index_reprocess_and_error_paths(
         )
         assert index_ids == IndexStageOutcome(indexed=True, item_count=2)
 
+        update_calls_before_explicit_index = index_service.update_index.await_count
+        explicit_index_delta = await run_stages.execute_index_stage(
+            config=SimpleNamespace(),
+            stage="index",
+            source_names=None,
+            processed_ids={"conv-delta"},
+            backend=_backend(),
+        )
+        assert explicit_index_delta == IndexStageOutcome(indexed=True, item_count=1)
+        assert index_service.update_index.await_count == update_calls_before_explicit_index + 1
+
         rebuild_backend = _backend(count=4)
         rebuild = await run_stages.execute_index_stage(
             config=SimpleNamespace(),

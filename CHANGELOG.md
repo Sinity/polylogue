@@ -100,6 +100,9 @@ documentation polish do not require an entry.
 - Schema v3 archives now upgrade to v4 by rebuilding action-event FTS rows
   with base-table rowids, enabling targeted incremental FTS repairs instead
   of archive-wide FTS scans.
+- Explicit `polylogue run ... index` sequences now repair only conversations
+  processed earlier in the same run when the FTS index already exists, avoiding
+  a full archive index rebuild after ordinary catch-up runs.
 - `sanitize_path` symlink probe narrowed to `OSError` and treats
   uncertainty as suspicious (previously a `PermissionError` on an
   unreadable directory could mask a traversal attempt).
