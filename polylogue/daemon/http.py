@@ -404,7 +404,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
     # ------------------------------------------------------------------
 
     def _handle_reset(self) -> None:
-        """Soft-delete or reset archive data based on request body."""
+        """Reset archive data, then trigger daemon re-convergence."""
         try:
             length = int(self.headers.get("Content-Length", "0"))
             body = {}
@@ -418,14 +418,29 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
                 return
 
-            # Emit a reset event and delegate to CLI reset logic
-            emit_daemon_event(
-                "reset",
-                operation_id=f"reset-{scope}-{conv_id[:16] if conv_id else 'all'}",
-                payload={"scope": scope, "id": conv_id},
-            )
+            op_id = f"reset-{scope}-{conv_id[:16] if conv_id else 'all'}"
 
-            self._send_json(HTTPStatus.OK, {"ok": True, "reset": {"scope": scope, "id": conv_id}})
+            # Actually perform the reset via the Polylogue facade
+            def _do_reset() -> dict:
+                poly = _get_or_create_polylogue()
+                if scope == "conversation" and conv_id:
+                    deleted = poly.delete_conversation(conv_id)
+                    return {"deleted": deleted, "conversation_id": conv_id}
+                elif scope == "source":
+                    from polylogue.cli.commands.reset import _tombstone_conversations
+
+                    poly._ensure_archive()
+                    _tombstone_conversations(poly.repository, source_path=conv_id)
+                    return {"tombstoned": True, "source": conv_id}
+                return {"ok": True}
+
+            result = self._sync_run(lambda p: _do_reset())
+
+            emit_daemon_event("reset", operation_id=op_id, payload={"scope": scope, "id": conv_id, "result": result})
+
+            # Trigger re-convergence: the daemon watcher will detect missing
+            # derived state on next scan and re-ingest from raw blobs.
+            self._send_json(HTTPStatus.OK, {"ok": True, "reset": {"scope": scope, "id": conv_id, "convergence": "scheduled"}})
         except (json.JSONDecodeError, ValueError):
             self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
         except Exception:
