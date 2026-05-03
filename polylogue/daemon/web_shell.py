@@ -1,291 +1,262 @@
-"""Single-page web shell for the Polylogue daemon.
-
-Served at ``GET /`` by the daemon API server. Vanilla JS, dark theme,
-monospace font. No external dependencies.
-"""
+"""Polylogue MK2 web reader — single-page interactive archive cockpit."""
 
 from __future__ import annotations
 
-WEB_SHELL_HTML: str = r"""<!DOCTYPE html>
+WEB_SHELL_HTML = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Polylogue</title>
 <style>
-  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-  body {
-    background: #0d1117;
-    color: #c9d1d9;
-    font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
-    font-size: 14px;
-    line-height: 1.5;
-    min-height: 100vh;
-    display: flex;
-    flex-direction: column;
-  }
-  header {
-    background: #161b22;
-    border-bottom: 1px solid #30363d;
-    padding: 12px 20px;
-    display: flex;
-    align-items: center;
-    gap: 16px;
-    flex-wrap: wrap;
-  }
-  header h1 { font-size: 18px; font-weight: 600; color: #58a6ff; }
-  .stat-badge {
-    font-size: 12px;
-    background: #21262d;
-    border: 1px solid #30363d;
-    border-radius: 6px;
-    padding: 2px 8px;
-    color: #8b949e;
-  }
-  .stat-badge strong { color: #c9d1d9; }
-  #search-box {
-    margin-left: auto;
-    background: #0d1117;
-    border: 1px solid #30363d;
-    border-radius: 6px;
-    padding: 6px 12px;
-    color: #c9d1d9;
-    font-family: inherit;
-    font-size: 13px;
-    width: 240px;
-  }
-  #search-box:focus { outline: none; border-color: #58a6ff; }
-  main { flex: 1; overflow-y: auto; padding: 16px 20px; }
-  .conv-list { list-style: none; }
-  .conv-item {
-    background: #161b22;
-    border: 1px solid #30363d;
-    border-radius: 6px;
-    margin-bottom: 8px;
-    padding: 10px 14px;
-    cursor: pointer;
-    transition: border-color 0.15s;
-  }
-  .conv-item:hover { border-color: #58a6ff; }
-  .conv-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: baseline;
-    gap: 12px;
-  }
-  .conv-title { font-weight: 500; color: #e6edf3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .conv-meta { font-size: 12px; color: #8b949e; white-space: nowrap; }
-  .conv-meta span { margin-left: 8px; }
-  .conv-messages { display: none; margin-top: 10px; border-top: 1px solid #30363d; padding-top: 10px; }
-  .conv-messages.open { display: block; }
-  .message {
-    padding: 6px 0;
-    border-bottom: 1px solid #21262d;
-  }
-  .message:last-child { border-bottom: none; }
-  .message-role {
-    font-size: 11px;
-    font-weight: 600;
-    text-transform: uppercase;
-    color: #58a6ff;
-    margin-bottom: 2px;
-  }
-  .message-text {
-    white-space: pre-wrap;
-    word-break: break-word;
-    color: #c9d1d9;
-    font-size: 13px;
-    max-height: 300px;
-    overflow-y: auto;
-  }
-  .loading {
-    text-align: center;
-    padding: 40px;
-    color: #8b949e;
-  }
-  .error-state {
-    text-align: center;
-    padding: 40px;
-    color: #f85149;
-  }
-  .empty-state {
-    text-align: center;
-    padding: 40px;
-    color: #8b949e;
-  }
-  #status-bar {
-    background: #161b22;
-    border-top: 1px solid #30363d;
-    padding: 6px 20px;
-    font-size: 12px;
-    color: #8b949e;
-    display: flex;
-    gap: 16px;
-  }
-  #status-bar .ok { color: #3fb950; }
-  #status-bar .warn { color: #d29922; }
-  #status-bar .err { color: #f85149; }
+:root {
+  --bg: #070B10; --bg-raised: #0B1118; --panel: #0E151D;
+  --panel-elevated: #111C26; --panel-subtle: #0A1016;
+  --border: #22303D; --border-strong: #344657;
+  --text: #D6E2EA; --text-muted: #8C9AA8; --text-dim: #5F6F7E;
+  --accent: #5AB8D6; --accent-soft: #2B6E84; --ok: #5FD7AE;
+  --ok-bg: #0C2A24; --warn: #E6B450; --warn-bg: #2C220B;
+  --err: #E86671; --err-bg: #2A1015; --active: #76A9FF;
+  --role-user: #78B7FF; --role-assistant: #D6E2EA;
+  --role-tool: #B7A6FF; --role-system: #A4B0BE;
+  --role-thinking: #8F98A5;
+  --provider-claude-code: #72D6A3; --provider-codex: #7EA7FF;
+  --provider-chatgpt: #67D8C7; --provider-claude-ai: #D6A36B;
+  --font-ui: Inter, ui-sans-serif, system-ui, sans-serif;
+  --font-mono: JetBrains Mono, Fira Code, ui-monospace, monospace;
+  --base: 13px; --small: 12px; --code: 12px; --lh: 1.45;
+}
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; background: var(--bg); color: var(--text);
+  font-family: var(--font-ui); font-size: var(--base); line-height: var(--lh); overflow: hidden; }
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: var(--bg); }
+::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 3px; }
+
+#app { display: grid; grid-template-columns: 320px 1fr 340px; grid-template-rows: 44px 1fr 28px; height: 100vh; }
+#header { grid-column: 1/-1; grid-row: 1; display: flex; align-items: center;
+  gap: 12px; padding: 0 16px; background: var(--bg-raised); border-bottom: 1px solid var(--border); }
+#header h1 { font-size: 15px; font-weight: 600; color: var(--accent); letter-spacing: -0.3px; }
+#header .stats { color: var(--text-muted); font-size: var(--small); }
+#header .health { margin-left: auto; display: flex; align-items: center; gap: 6px; }
+#header .health-dot { width: 6px; height: 6px; border-radius: 50%; }
+#header .health-dot.ok { background: var(--ok); } #header .health-dot.err { background: var(--err); }
+
+#sidebar { grid-column: 1; grid-row: 2; display: flex; flex-direction: column;
+  background: var(--panel); border-right: 1px solid var(--border); overflow: hidden; }
+#search-box { padding: 10px 12px; border-bottom: 1px solid var(--border); }
+#search-box input { width: 100%; background: var(--panel-elevated); border: 1px solid var(--border);
+  color: var(--text); padding: 6px 10px; border-radius: 4px; font-size: var(--base); outline: none; }
+#search-box input:focus { border-color: var(--accent); }
+#filter-bar { display: flex; gap: 2px; padding: 6px 12px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+#filter-bar button { background: var(--panel-elevated); border: 1px solid var(--border);
+  color: var(--text-muted); padding: 3px 8px; border-radius: 3px; cursor: pointer; font-size: var(--small); }
+#filter-bar button.active { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
+#conv-list { flex: 1; overflow-y: auto; }
+.conv-item { padding: 8px 12px; border-bottom: 1px solid var(--border); cursor: pointer; transition: background 0.1s; }
+.conv-item:hover { background: var(--panel-elevated); }
+.conv-item.selected { background: var(--panel-elevated); border-left: 2px solid var(--accent); }
+.conv-item .conv-title { font-size: var(--base); color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.conv-item .conv-meta { display: flex; gap: 8px; font-size: var(--small); color: var(--text-muted); margin-top: 2px; }
+.provider-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 4px; }
+
+#main { grid-column: 2; grid-row: 2; display: flex; flex-direction: column; overflow: hidden; background: var(--bg); }
+#conv-header { padding: 12px 16px; border-bottom: 1px solid var(--border); background: var(--bg-raised); }
+#conv-header h2 { font-size: 15px; font-weight: 500; }
+#conv-header .conv-stats { font-size: var(--small); color: var(--text-muted); margin-top: 4px; }
+#msg-list { flex: 1; overflow-y: auto; }
+.msg-block { padding: 8px 16px; border-bottom: 1px solid var(--border); }
+.msg-block .msg-header { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; font-size: var(--small); }
+.msg-block .msg-role { font-weight: 600; text-transform: uppercase; font-size: 11px; letter-spacing: 0.5px; }
+.msg-role.user { color: var(--role-user); } .msg-role.assistant { color: var(--role-assistant); }
+.msg-role.tool { color: var(--role-tool); } .msg-role.system { color: var(--role-system); }
+.msg-role.thinking { color: var(--role-thinking); }
+.msg-block .msg-type { color: var(--text-dim); font-size: 11px; }
+.msg-block .msg-text { font-family: var(--font-mono); font-size: var(--code); white-space: pre-wrap; word-break: break-word; max-height: 400px; overflow-y: auto; }
+.msg-block .msg-text.collapsed { max-height: 120px; overflow: hidden; position: relative; }
+.msg-block .msg-text.collapsed::after { content: ''; position: absolute; bottom: 0; left: 0; right: 0; height: 40px; background: linear-gradient(transparent, var(--bg)); }
+.msg-block .msg-expand { color: var(--accent); cursor: pointer; font-size: var(--small); margin-top: 4px; }
+.msg-block .msg-text:not(.collapsed) + .msg-expand { display: none; }
+
+#inspector { grid-column: 3; grid-row: 2; background: var(--panel); border-left: 1px solid var(--border); overflow-y: auto; padding: 12px; }
+#inspector h3 { font-size: 13px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 8px; }
+.inspector-empty { color: var(--text-dim); font-size: var(--small); }
+.inspector-field { display: flex; justify-content: space-between; padding: 4px 0; font-size: var(--small); border-bottom: 1px solid var(--border); }
+.inspector-field .label { color: var(--text-muted); }
+.inspector-field .value { color: var(--text); font-family: var(--font-mono); font-size: var(--code); }
+
+#statusbar { grid-column: 1/-1; grid-row: 3; display: flex; align-items: center; gap: 16px;
+  padding: 0 12px; background: var(--bg-raised); border-top: 1px solid var(--border); font-size: var(--small); color: var(--text-muted); }
+#statusbar span { white-space: nowrap; }
+#loading { display: flex; align-items: center; justify-content: center; height: 100%; color: var(--text-muted); }
 </style>
 </head>
 <body>
-<header>
-  <h1>Polylogue</h1>
-  <span class="stat-badge" id="stat-convs">conversations: <strong>?</strong></span>
-  <span class="stat-badge" id="stat-msgs">messages: <strong>?</strong></span>
-  <span class="stat-badge" id="stat-providers">providers: <strong>?</strong></span>
-  <input type="text" id="search-box" placeholder="Search conversations..." />
-</header>
-<main>
-  <div id="conv-list" class="conv-list"></div>
-</main>
-<div id="status-bar"></div>
+<div id="app">
+  <div id="header"><h1>Polylogue</h1><span class="stats" id="header-stats"></span>
+    <div class="health"><span class="health-dot ok" id="health-dot"></span><span id="health-text"></span></div>
+  </div>
+  <div id="sidebar">
+    <div id="search-box"><input type="text" id="search" placeholder="Search conversations..." autofocus></div>
+    <div id="filter-bar"></div>
+    <div id="conv-list"><div id="loading">Loading...</div></div>
+  </div>
+  <div id="main">
+    <div id="conv-header"><h2>Select a conversation</h2><div class="conv-stats"></div></div>
+    <div id="msg-list"></div>
+  </div>
+  <div id="inspector"><h3>Inspector</h3><div class="inspector-empty">Select a conversation to view details</div></div>
+  <div id="statusbar"><span id="sb-convs"></span><span id="sb-msgs"></span><span id="sb-db"></span></div>
+</div>
+
 <script>
-"use strict";
+const API = '';
+let state = { conversations: [], selected: null, provider: '', query: '', stats: {} };
 
-const API_BASE = '';
-
-async function apiFetch(path, opts) {
-  const r = await fetch(API_BASE + path, opts);
-  if (!r.ok) throw new Error(r.status + ' ' + r.statusText);
+async function fetchJSON(url) {
+  const r = await fetch(API + url);
+  if (!r.ok) throw new Error(r.status);
   return r.json();
 }
 
-// ---- State ----
-let conversations = [];
-let currentQuery = '';
-
-// ---- Render helpers ----
-function escapeHtml(s) {
-  const d = document.createElement('div');
-  d.textContent = s;
-  return d.innerHTML;
+async function loadConversations() {
+  const params = new URLSearchParams({ limit: '100' });
+  if (state.provider) params.set('provider', state.provider);
+  if (state.query) params.set('query', state.query);
+  const data = await fetchJSON('/api/conversations?' + params);
+  state.conversations = data.conversations || [];
+  renderConversations();
 }
 
-function renderConvs(convs) {
-  const list = document.getElementById('conv-list');
-  list.innerHTML = '';
-  if (!convs || convs.length === 0) {
-    list.innerHTML = '<div class="empty-state">No conversations found.</div>';
+async function loadConversation(id) {
+  const data = await fetchJSON('/api/conversations/' + id);
+  state.selected = data;
+  renderMain();
+  renderInspector();
+}
+
+async function loadStatus() {
+  try {
+    const [health, stats] = await Promise.all([
+      fetchJSON('/api/health'), fetchJSON('/api/status')
+    ]);
+    document.getElementById('health-dot').className = 'health-dot ' + (health.ok ? 'ok' : 'err');
+    document.getElementById('health-text').textContent = health.ok ? 'healthy' : health.quick_check || 'issues';
+    const dbGB = (health.db_size_bytes / 1024 / 1024 / 1024).toFixed(0);
+    document.getElementById('sb-db').textContent = 'DB: ' + dbGB + ' GB';
+  } catch(e) {}
+}
+
+function renderConversations() {
+  const el = document.getElementById('conv-list');
+  if (!state.conversations.length) {
+    el.innerHTML = '<div style="padding:12px;color:var(--text-dim)">No conversations found</div>';
     return;
   }
-  for (const c of convs) {
-    const item = document.createElement('div');
-    item.className = 'conv-item';
-    item.dataset.id = c.id;
-    item.innerHTML = `
-      <div class="conv-header">
-        <span class="conv-title">${escapeHtml(c.title || '(untitled)')}</span>
-        <span class="conv-meta">
-          <span>${escapeHtml(c.provider || '?')}</span>
-          <span>${c.message_count || 0} msgs</span>
-          <span>${c.created_at ? new Date(c.created_at).toLocaleDateString() : ''}</span>
-        </span>
-      </div>
-      <div class="conv-messages" id="msgs-${escapeHtml(c.id)}"></div>
-    `;
-    item.addEventListener('click', () => toggleMessages(c.id, item));
-    list.appendChild(item);
-  }
+  el.innerHTML = state.conversations.map(c => {
+    const sel = state.selected && state.selected.id === c.id ? ' selected' : '';
+    const title = esc((c.title || 'Untitled').substring(0, 80));
+    const date = c.created_at ? new Date(c.created_at).toLocaleDateString() : '';
+    const p = c.provider || '';
+    const color = 'var(--provider-' + p.replace(/_/g, '-') + ')';
+    return '<div class="conv-item' + sel + '" data-id="' + escAttr(c.id) + '" onclick="selectConversation(\'' + escAttr(c.id) + '\')">' +
+      '<div class="conv-title">' + title + '</div>' +
+      '<div class="conv-meta"><span><span class="provider-dot" style="background:' + color + '"></span>' + esc(p) + '</span>' +
+      '<span>' + date + '</span><span>' + (c.message_count || 0) + ' msgs</span></div></div>';
+  }).join('');
 }
 
-async function toggleMessages(convId, item) {
-  const div = document.getElementById('msgs-' + convId);
-  if (!div) return;
-  if (div.classList.contains('open')) {
-    div.classList.remove('open');
-    div.innerHTML = '';
+function renderMain() {
+  if (!state.selected) {
+    document.getElementById('conv-header').innerHTML = '<h2>Select a conversation</h2><div class="conv-stats"></div>';
+    document.getElementById('msg-list').innerHTML = '';
     return;
   }
-  div.innerHTML = '<div class="loading">Loading messages...</div>';
-  div.classList.add('open');
-  try {
-    const data = await apiFetch('/api/conversations/' + encodeURIComponent(convId) + '/messages?limit=50');
-    div.innerHTML = '';
-    if (!data.messages || data.messages.length === 0) {
-      div.innerHTML = '<div class="empty-state">No messages.</div>';
-      return;
-    }
-    for (const m of data.messages) {
-      const msg = document.createElement('div');
-      msg.className = 'message';
-      const role = escapeHtml(m.role || 'unknown');
-      const text = m.text || '';
-      msg.innerHTML = `<div class="message-role">${role}</div><div class="message-text"></div>`;
-      msg.querySelector('.message-text').textContent = text;
-      div.appendChild(msg);
-    }
-    if (data.total > 50) {
-      const more = document.createElement('div');
-      more.className = 'loading';
-      more.textContent = `... and ${data.total - 50} more messages`;
-      div.appendChild(more);
-    }
-  } catch (err) {
-    div.innerHTML = '<div class="error-state">Failed to load messages.</div>';
+  const c = state.selected;
+  document.getElementById('conv-header').innerHTML =
+    '<h2>' + esc(c.title || 'Untitled') + '</h2><div class="conv-stats">' +
+    esc(c.provider || '') + ' &middot; ' + (c.message_count || 0) + ' messages &middot; ' +
+    (c.word_count || 0).toLocaleString() + ' words</div>';
+  if (!c.messages) {
+    document.getElementById('msg-list').innerHTML = '<div id="loading">Loading messages...</div>';
+    return;
   }
+  document.getElementById('msg-list').innerHTML = c.messages.map(function(m) {
+    var role = (m.role || '').toLowerCase();
+    var text = m.text || '';
+    var collapsed = text.length > 2000;
+    var typeTag = m.message_type ? '<span class="msg-type">' + esc(m.message_type) + '</span>' : '';
+    return '<div class="msg-block"><div class="msg-header">' +
+      '<span class="msg-role ' + role + '">' + esc(role) + '</span>' + typeTag + '</div>' +
+      '<div class="msg-text' + (collapsed ? ' collapsed' : '') + '">' + esc(text) + '</div>' +
+      (collapsed ? '<div class="msg-expand" onclick="var t=this.previousElementSibling;t.classList.remove(\'collapsed\');this.remove()">Show all (' + text.length.toLocaleString() + ' chars)</div>' : '') +
+      '</div>';
+  }).join('');
 }
 
-async function loadConvs(query) {
-  const list = document.getElementById('conv-list');
-  list.innerHTML = '<div class="loading">Loading...</div>';
-  try {
-    let url = '/api/conversations?limit=50';
-    if (query) url += '&query=' + encodeURIComponent(query);
-    const data = await apiFetch(url);
-    conversations = data.conversations || [];
-    renderConvs(conversations);
-  } catch (err) {
-    list.innerHTML = '<div class="error-state">Failed to load conversations.</div>';
+function renderInspector() {
+  var el = document.getElementById('inspector');
+  if (!state.selected) {
+    el.innerHTML = '<h3>Inspector</h3><div class="inspector-empty">Select a conversation to view details</div>';
+    return;
   }
+  var c = state.selected;
+  var fields = [
+    ['ID', c.id], ['Provider', c.provider],
+    ['Created', c.created_at ? new Date(c.created_at).toLocaleString() : ''],
+    ['Updated', c.updated_at ? new Date(c.updated_at).toLocaleString() : ''],
+    ['Messages', c.message_count], ['Words', (c.word_count||0).toLocaleString()],
+  ];
+  el.innerHTML = '<h3>Inspector</h3>' + fields.map(function(f) {
+    return '<div class="inspector-field"><span class="label">' + f[0] + '</span><span class="value">' + esc(String(f[1]||'')) + '</span></div>';
+  }).join('');
 }
 
-async function loadStats() {
-  try {
-    const data = await apiFetch('/api/facets');
-    const f = data.facets || {};
-    document.getElementById('stat-convs').innerHTML = 'conversations: <strong>' + (f.total_conversations || 0) + '</strong>';
-    document.getElementById('stat-msgs').innerHTML = 'messages: <strong>' + (f.total_messages || 0) + '</strong>';
-    const provs = f.providers ? Object.keys(f.providers).join(', ') : 'none';
-    document.getElementById('stat-providers').innerHTML = 'providers: <strong>' + escapeHtml(provs) + '</strong>';
-  } catch (_) {}
+async function selectConversation(id) {
+  document.getElementById('msg-list').innerHTML = '<div id="loading">Loading...</div>';
+  await loadConversation(id);
+  renderConversations();
 }
 
-async function loadHealth() {
-  const bar = document.getElementById('status-bar');
-  try {
-    const h = await apiFetch('/api/health');
-    const ok = h.ok;
-    const db = (h.db_size_bytes || 0) / 1024 / 1024;
-    bar.innerHTML = `
-      <span class="${ok ? 'ok' : 'err'}">${ok ? 'healthy' : 'degraded'}</span>
-      <span>db: ${db.toFixed(1)} MB</span>
-      <span>wal: ${((h.wal_size_bytes || 0) / 1024).toFixed(0)} KB</span>
-      <span>disk free: ${((h.disk_free_bytes || 0) / 1024 / 1024 / 1024).toFixed(1)} GB</span>
-    `;
-  } catch (_) {
-    bar.innerHTML = '<span class="err">daemon unreachable</span>';
+function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function escAttr(s) { return String(s).replace(/'/g,"\\'").replace(/"/g,'&quot;'); }
+
+// Filter bar
+var FILTERS = ['', 'claude-code', 'codex', 'chatgpt', 'claude-ai', 'gemini'];
+document.getElementById('filter-bar').innerHTML = FILTERS.map(function(f) {
+  return '<button class="' + (state.provider===f?'active':'') + '" data-p="' + f + '">' + (f||'All') + '</button>';
+}).join('');
+document.getElementById('filter-bar').addEventListener('click', function(e) {
+  if (e.target.tagName === 'BUTTON') {
+    state.provider = e.target.dataset.p;
+    document.querySelectorAll('#filter-bar button').forEach(function(b) { b.classList.remove('active'); });
+    e.target.classList.add('active');
+    loadConversations();
   }
-}
-
-// ---- Search ----
-let searchTimer = null;
-document.getElementById('search-box').addEventListener('input', function() {
-  clearTimeout(searchTimer);
-  searchTimer = setTimeout(() => {
-    const q = this.value.trim();
-    currentQuery = q;
-    loadConvs(q);
-  }, 300);
 });
 
-// ---- Init ----
-loadConvs('');
-loadStats();
-loadHealth();
-setInterval(loadHealth, 30000);
+// Search with debounce
+var searchTimer;
+document.getElementById('search').addEventListener('input', function(e) {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(function() { state.query = e.target.value; loadConversations(); }, 300);
+});
+
+// Keyboard: j/k to navigate, / to focus search
+document.addEventListener('keydown', function(e) {
+  if (e.key === '/' && !e.target.closest('input')) { e.preventDefault(); document.getElementById('search').focus(); }
+  if ((e.key === 'j' || e.key === 'k') && !e.target.closest('input')) {
+    var items = document.querySelectorAll('.conv-item');
+    var sel = document.querySelector('.conv-item.selected');
+    var idx = sel ? Array.from(items).indexOf(sel) : (e.key === 'j' ? -1 : items.length);
+    var next = e.key === 'j' ? idx + 1 : idx - 1;
+    if (next >= 0 && next < items.length) items[next].click();
+  }
+});
+
+loadConversations();
+loadStatus();
+setInterval(loadStatus, 30000);
 </script>
 </body>
-</html>
-"""
-
-__all__ = ["WEB_SHELL_HTML"]
+</html>"""
