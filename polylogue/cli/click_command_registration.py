@@ -14,10 +14,12 @@ from polylogue.cli.commands.insights import insights_command
 from polylogue.cli.commands.neighbors import neighbors_command
 from polylogue.cli.commands.reset import reset_command
 from polylogue.cli.commands.resume import resume_command
+from polylogue.cli.commands.run import run_command
 from polylogue.cli.commands.schema import schema_command
 from polylogue.cli.commands.tags import tags_command
 
 ROOT_COMMANDS: tuple[click.Command, ...] = (
+    run_command,  # timer-driven maintenance: polylogue run index, polylogue run site
     check_command,
     reset_command,
     auth_command,
