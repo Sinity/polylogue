@@ -1138,7 +1138,7 @@ class TestMutationTools:
         mock_query_store.delete_conversation.assert_not_called()
 
     def test_delete_with_confirm(self, mcp_server: MCPServerUnderTest) -> None:
-        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+        with patch("polylogue.mcp.server_support._get_polylogue") as mock_get_polylogue:
             mock_poly = make_polylogue_mock()
             mock_poly.delete_conversation = AsyncMock(return_value=True)
             mock_get_polylogue.return_value = mock_poly

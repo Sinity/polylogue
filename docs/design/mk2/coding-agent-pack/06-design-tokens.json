@@ -1,0 +1,82 @@
+{
+  "schema_version": "1.0.0",
+  "name": "Polylogue MK2 cold cockpit tokens",
+  "principles": [
+    "dense",
+    "local-first",
+    "terminal-adjacent",
+    "status-semantic",
+    "not SaaS"
+  ],
+  "colors": {
+    "bg": "#070B10",
+    "bg_raised": "#0B1118",
+    "panel": "#0E151D",
+    "panel_elevated": "#111C26",
+    "panel_subtle": "#0A1016",
+    "border": "#22303D",
+    "border_strong": "#344657",
+    "text": "#D6E2EA",
+    "text_muted": "#8C9AA8",
+    "text_dim": "#5F6F7E",
+    "accent": "#5AB8D6",
+    "accent_soft": "#2B6E84",
+    "ok": "#5FD7AE",
+    "ok_bg": "#0C2A24",
+    "warn": "#E6B450",
+    "warn_bg": "#2C220B",
+    "err": "#E86671",
+    "err_bg": "#2A1015",
+    "active": "#76A9FF",
+    "idle": "#6F7F8F",
+    "privacy": "#B48CFF",
+    "provider_claude_code": "#72D6A3",
+    "provider_codex": "#7EA7FF",
+    "provider_chatgpt": "#67D8C7",
+    "provider_claude_ai": "#D6A36B",
+    "role_user": "#78B7FF",
+    "role_assistant": "#D6E2EA",
+    "role_tool": "#B7A6FF",
+    "role_system": "#A4B0BE",
+    "role_thinking": "#8F98A5"
+  },
+  "typography": {
+    "ui_stack": "Inter, ui-sans-serif, system-ui, sans-serif",
+    "mono_stack": "JetBrains Mono, Fira Code, ui-monospace, SFMono-Regular, Menlo, monospace",
+    "base_px": 13,
+    "small_px": 12,
+    "code_px": 12,
+    "line_height": 1.45
+  },
+  "spacing": {
+    "xs": 4,
+    "sm": 8,
+    "md": 12,
+    "lg": 16,
+    "xl": 24
+  },
+  "radii": {
+    "sm": 4,
+    "md": 6,
+    "lg": 9
+  },
+  "density": {
+    "row_height_compact": 28,
+    "row_height_default": 34,
+    "panel_padding": 12,
+    "status_chip_height": 24
+  },
+  "status_icons": {
+    "ok": "\u25cf",
+    "warn": "\u25b2",
+    "err": "\u25c6",
+    "idle": "\u25cb",
+    "stale": "\u25d0"
+  },
+  "terminal": {
+    "prompt": "~/src/polylogue \u276f",
+    "table_border": "thin",
+    "default_width": 112,
+    "plain_mode_env": "POLYLOGUE_FORCE_PLAIN"
+  }
+}

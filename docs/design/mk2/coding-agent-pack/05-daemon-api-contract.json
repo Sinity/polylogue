@@ -1,0 +1,230 @@
+{
+  "schema_version": "1.0.0",
+  "title": "Polylogue MK2 surface contracts",
+  "executables": {
+    "polylogue": {
+      "role": "query-first archive CLI",
+      "grammar": "polylogue [query] [filters] [verb]",
+      "must_keep": [
+        "list",
+        "count",
+        "stats",
+        "show",
+        "open",
+        "messages",
+        "raw",
+        "bulk-export",
+        "delete",
+        "select"
+      ],
+      "must_not_expose": [
+        "mcp",
+        "watch after polylogued live replacement",
+        "browser-capture serve after daemon receiver migration",
+        "products after derived replacement"
+      ]
+    },
+    "polylogued": {
+      "role": "long-running local daemon",
+      "components": [
+        "local_api",
+        "web_reader",
+        "live_ingestion",
+        "browser_capture_receiver",
+        "status_stream",
+        "bounded_maintenance"
+      ],
+      "default_bind": "127.0.0.1",
+      "security": [
+        "loopback_only_by_default",
+        "token_required_for_non_loopback",
+        "sanitized_errors",
+        "no_absolute_paths_to_browser_clients"
+      ]
+    },
+    "polylogue-mcp": {
+      "role": "MCP stdio adapter",
+      "args": [
+        "--role read",
+        "--role write",
+        "--role admin"
+      ],
+      "daemon_policy": "use polylogued if running; fallback to direct archive access unless future issue chooses daemon-only"
+    },
+    "devtools": {
+      "role": "source-checkout repo control plane",
+      "packaging_policy": "source-checkout-only unless deliberately shipped and distribution-smoked"
+    }
+  },
+  "api": {
+    "base": "http://127.0.0.1:<port>",
+    "endpoints": [
+      {
+        "method": "GET",
+        "path": "/api/health",
+        "model": "DaemonHealth"
+      },
+      {
+        "method": "GET",
+        "path": "/api/status",
+        "model": "DaemonStatus"
+      },
+      {
+        "method": "GET",
+        "path": "/api/conversations",
+        "model": "ConversationListResponse",
+        "backed_by": "ConversationQuerySpec"
+      },
+      {
+        "method": "GET",
+        "path": "/api/conversations/{id}",
+        "model": "ConversationHeaderResponse"
+      },
+      {
+        "method": "GET",
+        "path": "/api/conversations/{id}/messages",
+        "model": "MessagePageResponse"
+      },
+      {
+        "method": "GET",
+        "path": "/api/conversations/{id}/raw",
+        "model": "RawArtifactPageResponse"
+      },
+      {
+        "method": "GET",
+        "path": "/api/facets",
+        "model": "FacetSet",
+        "backed_by": "query/completion descriptors"
+      },
+      {
+        "method": "GET",
+        "path": "/api/doctor",
+        "model": "DoctorStatus"
+      },
+      {
+        "method": "GET",
+        "path": "/api/live",
+        "model": "LiveStatus"
+      },
+      {
+        "method": "GET",
+        "path": "/api/capture",
+        "model": "CaptureStatus"
+      }
+    ],
+    "future_endpoints": [
+      "/api/marks",
+      "/api/annotations",
+      "/api/saved-views",
+      "/api/recall-packs"
+    ]
+  },
+  "models": {
+    "ComponentHealth": {
+      "fields": {
+        "name": "string",
+        "state": "ok|warn|stale|err|idle|disabled",
+        "lag_ms": "number|null",
+        "summary": "string",
+        "detail": "string|null",
+        "updated_at": "datetime|null"
+      }
+    },
+    "DaemonStatus": {
+      "fields": {
+        "overall": "ok|warn|err|idle",
+        "pid": "integer|null",
+        "uptime_s": "number|null",
+        "components": "ComponentHealth[]",
+        "archive_display_path": "string",
+        "local_url": "string",
+        "version": "string|null"
+      }
+    },
+    "ConversationListRequest": {
+      "source": "query descriptors",
+      "fields": [
+        "q",
+        "provider",
+        "repo",
+        "cwd_prefix",
+        "referenced_path",
+        "since",
+        "until",
+        "since_session",
+        "message_type",
+        "has",
+        "typed_only",
+        "sort",
+        "limit",
+        "offset"
+      ]
+    },
+    "CaptureStatus": {
+      "fields": [
+        "receiver_health",
+        "extension_state",
+        "page_support",
+        "capture_mode",
+        "last_capture",
+        "archive_ingestion_state",
+        "trust_policy",
+        "sanitized_error_summary"
+      ]
+    },
+    "LiveStatus": {
+      "fields": [
+        "source_id",
+        "provider",
+        "root_display",
+        "lag_ms",
+        "cursor_offset",
+        "partial_line_state",
+        "parser_fingerprint",
+        "failure_count",
+        "last_event",
+        "last_error_class"
+      ]
+    }
+  },
+  "web_routes": [
+    "/search",
+    "/c/{id}",
+    "/live",
+    "/capture",
+    "/doctor"
+  ],
+  "cli_enhancements": {
+    "completion_targets": [
+      "providers",
+      "repos",
+      "cwd_prefixes",
+      "tags",
+      "tools",
+      "message_types",
+      "conversation_ids",
+      "doctor_scopes",
+      "saved_views",
+      "sources",
+      "derived_views"
+    ],
+    "select_targets": [
+      "conversation",
+      "repo",
+      "cwd",
+      "provider",
+      "tag",
+      "tool",
+      "source",
+      "saved-view",
+      "doctor-target"
+    ]
+  },
+  "forbidden": [
+    "polylogue ui",
+    "new --json flags",
+    "deprecated aliases",
+    "frontend-only query semantics",
+    "runtime CDN frontend dependencies"
+  ]
+}

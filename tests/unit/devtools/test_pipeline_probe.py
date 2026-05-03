@@ -359,7 +359,7 @@ def test_write_probe_sources_threads_through_corpus_source(monkeypatch: pytest.M
 
     monkeypatch.setattr("polylogue.scenarios.corpus.CorpusRequest.resolve_scenarios", fake_resolve_scenarios)
     monkeypatch.setattr(
-        "devtools.pipeline_probe.SyntheticCorpus.write_specs_artifacts",
+        "devtools.pipeline_probe.staging.SyntheticCorpus.write_specs_artifacts",
         lambda *_args, **_kwargs: [_Written()],
     )
 
