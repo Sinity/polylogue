@@ -285,4 +285,51 @@ MESSAGE_FTS_DDL = """
 """
 
 
-__all__ = ["ARCHIVE_STORAGE_DDL", "MESSAGE_FTS_DDL", "RAW_ARCHIVE_DDL"]
+# ---------------------------------------------------------------------------
+# Tags many-to-many (replaces JSON metadata['tags'] field)
+# MIGRATION NOTE: When schema version is bumped, migrate old JSON tag field
+# on conversations.metadata -> conversation_tags + tags rows.
+# ---------------------------------------------------------------------------
+
+TAGS_M2M_DDL = """
+        CREATE TABLE IF NOT EXISTS tags (
+            id   INTEGER PRIMARY KEY,
+            name TEXT    UNIQUE NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS conversation_tags (
+            conversation_id TEXT    NOT NULL REFERENCES conversations(conversation_id) ON DELETE CASCADE,
+            tag_id          INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+            PRIMARY KEY (conversation_id, tag_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_conversation_tags_tag
+            ON conversation_tags(tag_id);
+"""
+
+# ---------------------------------------------------------------------------
+# Blob reference leases (prevents GC races with concurrent ingest)
+# ---------------------------------------------------------------------------
+
+BLOB_LEASE_DDL = """
+        CREATE TABLE IF NOT EXISTS pending_blob_refs (
+            blob_hash    TEXT    NOT NULL,
+            operation_id TEXT    NOT NULL,
+            acquired_at  INTEGER NOT NULL,
+            PRIMARY KEY (blob_hash, operation_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS gc_generations (
+            generation   INTEGER PRIMARY KEY,
+            completed_at INTEGER
+        );
+"""
+
+
+__all__ = [
+    "ARCHIVE_STORAGE_DDL",
+    "BLOB_LEASE_DDL",
+    "MESSAGE_FTS_DDL",
+    "RAW_ARCHIVE_DDL",
+    "TAGS_M2M_DDL",
+]
