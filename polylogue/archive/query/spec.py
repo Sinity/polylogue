@@ -132,6 +132,76 @@ def optional_int(value: object) -> int | None:
     return int(str(value))
 
 
+# Set of all recognized query-spec parameter names (drives strict-param mode).
+_RECOGNIZED_PARAMS: frozenset[str] = frozenset(
+    {
+        "query",
+        "contains",
+        "exclude_text",
+        "retrieval_lane",
+        "referenced_path",
+        "cwd_prefix",
+        "action",
+        "exclude_action",
+        "action_sequence",
+        "action_text",
+        "tool",
+        "exclude_tool",
+        "provider",
+        "exclude_provider",
+        "tag",
+        "exclude_tag",
+        "repo",
+        "has_type",
+        "title",
+        "conv_id",
+        "since",
+        "until",
+        "latest",
+        "sort",
+        "reverse",
+        "limit",
+        "sample",
+        "filter_has_tool_use",
+        "filter_has_thinking",
+        "filter_has_paste",
+        "typed_only",
+        "min_messages",
+        "max_messages",
+        "min_words",
+        "similar_text",
+        "since_session_id",
+        "since_session",
+        "message_type",
+        "offset",
+    }
+)
+
+
+_PATH_COMPONENT_RE = __import__("re").compile(r"^[^./][^/]*(?:/[^./][^/]*)*$")
+
+
+def _validate_path_component(field: str, value: str | None) -> None:
+    """Reject absolute paths, ../ escapes, and empty components."""
+    if value is None:
+        return
+    if value.startswith("/"):
+        raise QuerySpecError(field, value)
+    if ".." in value.split("/"):
+        raise QuerySpecError(field, value)
+    if value == "." or value == "":
+        raise QuerySpecError(field, value)
+
+
+def validate_params_known(params: Mapping[str, object], *, strict: bool = False) -> None:
+    """Raise on unrecognized param names when strict mode is active."""
+    if not strict:
+        return
+    for key in params:
+        if key not in _RECOGNIZED_PARAMS:
+            raise QuerySpecError(key, f"unknown query parameter: {key!r}")
+
+
 def optional_sort_field(value: object) -> SortField | None:
     candidate = optional_text(value)
     if candidate is None:
@@ -172,14 +242,22 @@ def query_spec_has_filters(spec: ConversationQuerySpec) -> bool:
 def build_query_spec_from_params(
     spec_cls: type[_SpecT],
     params: Mapping[str, object],
+    *,
+    strict_params: bool = False,
 ) -> _SpecT:
+    if strict_params:
+        validate_params_known(params, strict=True)
+    cwd_prefix = optional_text(params.get("cwd_prefix"))
+    _validate_path_component("cwd_prefix", cwd_prefix)
+    since_session_id = optional_text(params.get("since_session_id") or params.get("since_session"))
+    _validate_path_component("since_session_id", since_session_id)
     return spec_cls(
         query_terms=as_tuple(params.get("query")),
         contains_terms=as_tuple(params.get("contains")),
         exclude_text_terms=as_tuple(params.get("exclude_text")),
         retrieval_lane=str(params.get("retrieval_lane") or "auto"),
         referenced_path=as_tuple(params.get("referenced_path")),
-        cwd_prefix=optional_text(params.get("cwd_prefix")),
+        cwd_prefix=cwd_prefix,
         action_terms=normalize_action_terms("action", params.get("action")),
         excluded_action_terms=normalize_action_terms("exclude_action", params.get("exclude_action")),
         action_sequence=normalize_action_sequence("action_sequence", params.get("action_sequence")),
@@ -209,7 +287,7 @@ def build_query_spec_from_params(
         max_messages=optional_int(params.get("max_messages")),
         min_words=optional_int(params.get("min_words")),
         similar_text=optional_text(params.get("similar_text")),
-        since_session_id=optional_text(params.get("since_session_id") or params.get("since_session")),
+        since_session_id=since_session_id,
         message_type=optional_message_type(params.get("message_type")),
         offset=optional_int(params.get("offset")) or 0,
     )
@@ -315,9 +393,14 @@ class ConversationQuerySpec:
     offset: int = 0
 
     @classmethod
-    def from_params(cls, params: Mapping[str, object]) -> ConversationQuerySpec:
-        """Build a query spec from CLI-style parameter mapping."""
-        return build_query_spec_from_params(cls, params)
+    def from_params(cls, params: Mapping[str, object], *, strict: bool = False) -> ConversationQuerySpec:
+        """Build a query spec from CLI-style parameter mapping.
+
+        When *strict* is True, unknown parameter names and path-component
+        violations (cwd_prefix, since_session_id) are rejected with
+        ``QuerySpecError`` instead of being silently absorbed.
+        """
+        return build_query_spec_from_params(cls, params, strict_params=strict)
 
     def describe(self) -> list[str]:
         """Human-readable filter descriptions for UX/error output."""

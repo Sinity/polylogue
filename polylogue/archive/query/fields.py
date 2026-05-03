@@ -216,6 +216,7 @@ QUERY_FIELD_DESCRIPTORS: tuple[QueryFieldDescriptor, ...] = (
         name="contains_terms",
         spec_attr="contains_terms",
         spec_description=_label("contains", _join_comma),
+        api_names=("contains",),
     ),
     QueryFieldDescriptor(
         name="exclude_text_terms",

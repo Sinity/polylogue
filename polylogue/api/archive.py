@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import builtins
 from collections.abc import Sequence
 from contextlib import suppress
 from typing import TYPE_CHECKING, Protocol
@@ -328,6 +329,84 @@ class PolylogueArchiveMixin:
                     }
                 )
             return result, total
+
+    async def query_conversations(
+        self,
+        *,
+        provider: str | None = None,
+        tag: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        sort: str | None = None,
+        limit: int | None = None,
+        offset: int = 0,
+        has_tool_use: bool = False,
+        has_thinking: bool = False,
+        has_paste: bool = False,
+        typed_only: bool = False,
+        min_messages: int | None = None,
+        max_messages: int | None = None,
+        min_words: int | None = None,
+        **kwargs: object,
+    ) -> builtins.list[dict[str, object]]:
+        """Query conversations with full filter support.
+
+        Returns lightweight dicts suitable for the web reader and daemon API.
+        For full ``Conversation`` objects use ``list_conversations``.
+        """
+        from polylogue.archive.query.spec import ConversationQuerySpec
+
+        spec = ConversationQuerySpec.from_params(
+            {
+                "provider": provider,
+                "tag": tag,
+                "since": since,
+                "until": until,
+                "sort": sort,
+                "limit": limit,
+                "offset": offset,
+                "filter_has_tool_use": has_tool_use,
+                "filter_has_thinking": has_thinking,
+                "filter_has_paste": has_paste,
+                "typed_only": typed_only,
+                "min_messages": min_messages,
+                "max_messages": max_messages,
+                "min_words": min_words,
+                **kwargs,
+            },
+            strict=True,
+        )
+        filter_obj = spec.build_filter(self.repository)
+        summaries = await filter_obj.list_summaries()
+        return [
+            {
+                "id": str(s.id),
+                "title": s.title,
+                "provider": s.provider_name,
+                "created_at": s.created_at,
+                "updated_at": s.updated_at,
+                "message_count": getattr(s, "message_count", 0),
+                "word_count": getattr(s, "word_count", 0),
+            }
+            for s in summaries
+        ]
+
+    async def count_conversations(
+        self,
+        *,
+        provider: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        **kwargs: object,
+    ) -> int:
+        """Count conversations matching the given filters."""
+        from polylogue.archive.query.spec import ConversationQuerySpec
+
+        spec = ConversationQuerySpec.from_params(
+            {"provider": provider, "since": since, "until": until, **kwargs},
+            strict=True,
+        )
+        return await spec.count(self.repository)
 
     async def export_insight_bundle(
         self,
