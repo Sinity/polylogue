@@ -52,6 +52,7 @@ from tests.infra.mcp import (
     MCPServerUnderTest,
     invoke_surface,
     invoke_surface_async,
+    make_polylogue_mock,
     make_query_store_mock,
     make_simple_conversation,
     make_tag_store_mock,
@@ -870,7 +871,7 @@ class TestInsightTools:
         assert cost_rollups_payload["items"][0]["insight_kind"] == "cost_rollup"
         assert cost_rollups_payload["items"][0]["total_usd"] == 1.25
         assert debt_payload["items"][0]["insight_kind"] == "archive_debt"
-        debt_query = mock_ops.list_archive_debt_insights.await_args.args[0]
+        debt_query = mock_poly.list_archive_debt_insights.await_args.args[0]
         assert debt_query.category == "insights"
         assert debt_query.only_actionable is True
 
