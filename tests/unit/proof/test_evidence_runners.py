@@ -14,6 +14,7 @@ from polylogue.proof.runners import (
     run_cli_visual_evidence,
     run_semantic_query_evidence,
 )
+from polylogue.storage.backends.schema_ddl import SCHEMA_VERSION
 from tests.infra.archive_scenarios import ArchiveScenario, ScenarioMessage, seed_workspace_scenarios
 from tests.infra.query_cases import ArchiveQueryCase
 from tests.infra.surfaces import ArchiveSurfaceSet, build_archive_surface_set
@@ -41,7 +42,7 @@ def test_cli_help_runner_emits_ok_evidence() -> None:
     assert envelope.evidence["help_exit_code"] == 0
     assert envelope.trust.runner_version == "proof-runners.v1"
     assert envelope.trust.origin == "proof-runner"
-    assert envelope.trust.schema_version == 3
+    assert envelope.trust.schema_version == SCHEMA_VERSION
     assert envelope.trust.input_fingerprint is not None
     assert len(envelope.trust.input_fingerprint) == 64
     assert envelope.trust.environment_fingerprint is not None

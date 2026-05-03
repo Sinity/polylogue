@@ -228,8 +228,6 @@ def extract_command(argv: list[str]) -> list[str]:
         "--set",
         "--add-tag",
         "--source",
-        "--exec",
-        "--webhook",
         "--target",
         "--schema-provider",
         "--artifact-provider",

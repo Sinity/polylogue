@@ -206,27 +206,8 @@ async def execute_materialize_stage(
         if not conversation_ids:
             return MaterializeStageOutcome(item_count=0, rebuilt=False)
 
-        status = await backend.get_session_insight_status()
-        total_conversations = status.total_conversations
-        profile_row_count = status.profile_row_count
-        use_bounded_rebuild = profile_row_count == 0 and total_conversations == len(conversation_ids)
         if progress_callback is not None:
             progress_callback(0, desc=f"Materializing: 0/{len(conversation_ids)}")
-
-        if use_bounded_rebuild:
-            async with backend.connection() as conn:
-                counts = await rebuild_session_insights_async(
-                    conn,
-                    conversation_ids=conversation_ids,
-                    progress_callback=progress_callback,
-                    progress_total=len(conversation_ids),
-                )
-                await conn.commit()
-            return MaterializeStageOutcome(
-                item_count=len(conversation_ids),
-                rebuilt=True,
-                observation=_materialize_rebuild_observation(mode="rebuild-from-empty", counts=counts),
-            )
 
         observation = await refresh_session_insights_bulk(backend, conversation_ids)
         return MaterializeStageOutcome(

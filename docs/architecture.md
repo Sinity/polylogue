@@ -104,7 +104,7 @@ The `all` pipeline stage runs: acquire → parse → materialize → render → 
 | Abstraction | Location | Role |
 |-------------|----------|------|
 | `Polylogue` | `facade.py` | Async entry point. Wraps storage + search + pipeline. |
-| `ConversationRepository` | `storage/repository.py` | Mixin-composed async repository (10 mixins for reads, writes, insights, vectors, raw). |
+| `ConversationRepository` | `storage/repository/__init__.py` | Mixin-composed async repository (9 mixins: archive reads/writes, action reads, insight readers for profile/timeline/thread/summary, raw, vectors). |
 | `SearchProvider` protocol | `protocols.py` | FTS5 and Hybrid (RRF fusion) implementations. |
 | `ConversationFilter` | `archive/filter/filters.py` | Fluent filter chain used by CLI, MCP, and facade. |
 | `Session Insights` | `storage/insights/session/` | Materialized read models: profiles, work events, phases, threads, aggregates. |

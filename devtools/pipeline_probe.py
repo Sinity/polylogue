@@ -147,6 +147,8 @@ class BudgetReport(TypedDict):
     observed_total_ms: JSONValue
     max_peak_rss_mb: float | None
     observed_peak_rss_mb: JSONValue
+    observed_peak_rss_self_mb: JSONValue
+    observed_peak_rss_children_mb: JSONValue
     violations: list[str]
 
 
@@ -1143,6 +1145,18 @@ def _json_float_or_none(value: object | None) -> float | None:
     return None
 
 
+def _observed_peak_rss_mb(metrics: JSONDocument) -> tuple[JSONValue, JSONValue, JSONValue]:
+    peak_self = metrics.get("peak_rss_self_mb")
+    peak_children = metrics.get("peak_rss_children_mb")
+    peak_self_value = _json_float_or_none(peak_self)
+    peak_children_value = _json_float_or_none(peak_children)
+    if peak_self_value is None:
+        return peak_self, peak_self, peak_children
+    if peak_children_value is None:
+        return peak_self, peak_self, peak_children
+    return round(peak_self_value + peak_children_value, 1), peak_self, peak_children
+
+
 def _run_result_payload(result: RunResult) -> JSONDocument:
     return require_json_document(result.model_dump(mode="json"), context="pipeline probe result")
 
@@ -1380,7 +1394,7 @@ def _build_budget_report(summary: ProbeSummary, request: PipelineProbeRequest) -
     metrics = _json_object_or_empty(run_payload.get("metrics"))
     result_payload = _json_object_or_empty(summary.get("result"))
     observed_total_ms = metrics.get("total_duration_ms", result_payload.get("duration_ms"))
-    observed_peak_rss_mb = metrics.get("peak_rss_self_mb")
+    observed_peak_rss_mb, observed_peak_rss_self_mb, observed_peak_rss_children_mb = _observed_peak_rss_mb(metrics)
     violations: list[str] = []
 
     if request.max_total_ms is not None:
@@ -1409,6 +1423,8 @@ def _build_budget_report(summary: ProbeSummary, request: PipelineProbeRequest) -
         "observed_total_ms": observed_total_ms,
         "max_peak_rss_mb": request.max_peak_rss_mb,
         "observed_peak_rss_mb": observed_peak_rss_mb,
+        "observed_peak_rss_self_mb": observed_peak_rss_self_mb,
+        "observed_peak_rss_children_mb": observed_peak_rss_children_mb,
         "violations": violations,
     }
 
