@@ -154,7 +154,7 @@ class RenderService:
                 )
                 result.record_failure(convo_id, f"render timed out after {RENDER_TIMEOUT_S}s")
             except Exception as exc:
-                logger.warning("Failed to render conversation %s: %s", convo_id, exc)
+                logger.warning("Failed to render conversation %s: %s", convo_id, exc, exc_info=True)
                 result.record_failure(convo_id, str(exc))
 
             elapsed = time.perf_counter() - t0
