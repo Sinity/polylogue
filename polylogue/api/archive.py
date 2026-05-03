@@ -390,7 +390,7 @@ class PolylogueArchiveMixin:
             {
                 "id": str(s.id),
                 "title": s.title,
-                "provider": s.provider_name,
+                "provider": str(s.provider),
                 "created_at": s.created_at,
                 "updated_at": s.updated_at,
                 "message_count": getattr(s, "message_count", 0),
