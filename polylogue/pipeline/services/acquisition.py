@@ -104,6 +104,7 @@ class AcquisitionService:
                     "Failed to scan source",
                     source=source.name,
                     error=str(exc),
+                    exc_info=True,
                 )
                 result.counts["errors"] += 1
                 prior_errors = cursor_state.get("error_count", 0)

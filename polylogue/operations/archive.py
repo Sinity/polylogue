@@ -516,7 +516,7 @@ class ArchiveStatsMixin:
         try:
             last_sync = await self.backend.get_last_sync_timestamp()
         except Exception as exc:  # pragma: no cover - defensive debug path
-            logger.debug("failed to query last sync timestamp", error=str(exc))
+            logger.warning("failed to query last sync timestamp", error=str(exc), exc_info=True)
 
         return ArchiveStats(
             conversation_count=storage_snapshot.total_conversations,
