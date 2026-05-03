@@ -313,18 +313,15 @@ class TestPolylogueReadSurfaces:
 
         messages, total = result
         assert total == 1
-        assert messages == [
-            {
-                "id": "msg-user",
-                "role": "user",
-                "text": "visible user",
-                "sort_key": None,
-                "has_tool_use": False,
-                "has_thinking": False,
-                "message_type": "message",
-            }
-        ]
-        assert await archive.get_messages_paginated("missing-read-api") == ([], 0)
+        assert len(messages) == 1
+        assert str(messages[0].id) == "msg-user"
+        assert str(messages[0].role) == "user"
+        assert messages[0].text == "visible user"
+
+        from polylogue.api.archive import ConversationNotFoundError
+
+        with pytest.raises(ConversationNotFoundError):
+            await archive.get_messages_paginated("missing-read-api")
 
         with pytest.raises(ValueError, match="Unknown message type"):
             await archive.get_messages_paginated("conv-read-api", message_type="summmary")  # type: ignore[arg-type]
