@@ -193,10 +193,11 @@ domains:
     oracle_present: false
     oracle: null
     notes: >
-      Schema is fresh-only (no migration chain). Mismatch blocks with a
-      reset/re-import diagnostic rather than attempting in-place migration.
-      Active transition checks can use docs/plans/migrations.yaml while
-      work is in flight, but completed retirements are not durable proof.
+      Schema is fresh-first rather than migration-chain driven. Version
+      mismatch blocks with a reset/re-import diagnostic unless an explicit,
+      reviewed in-place upgrade exists for that exact transition. Active
+      transition checks can use docs/plans/migrations.yaml while work is in
+      flight, but completed retirements are not durable proof.
 
   provider_coverage:
     description: Known provider support breadth and depth

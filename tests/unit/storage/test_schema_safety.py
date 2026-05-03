@@ -223,6 +223,52 @@ class TestMigrationRollbackSafety:
             f"Only in fresh: {fresh_names - migrated_names}"
         )
 
+    def test_v2_to_v3_upgrade_rolls_back_on_failure(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The supported v2->v3 upgrade must not leave partial DDL behind."""
+        from polylogue.storage.backends import schema as schema_module
+
+        db_path = tmp_path / "v2-failing-upgrade.db"
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.executescript(
+                """
+                CREATE TABLE messages (
+                    message_id TEXT PRIMARY KEY,
+                    conversation_id TEXT NOT NULL,
+                    role TEXT,
+                    text TEXT,
+                    content_hash TEXT NOT NULL,
+                    version INTEGER NOT NULL,
+                    branch_index INTEGER NOT NULL DEFAULT 0,
+                    provider_name TEXT NOT NULL DEFAULT '',
+                    word_count INTEGER NOT NULL DEFAULT 0,
+                    has_tool_use INTEGER NOT NULL DEFAULT 0,
+                    has_thinking INTEGER NOT NULL DEFAULT 0,
+                    has_paste INTEGER NOT NULL DEFAULT 0
+                );
+                INSERT INTO messages (
+                    message_id, conversation_id, role, text, content_hash,
+                    version, provider_name, has_tool_use, has_thinking
+                ) VALUES ('tool-row', 'conv-1', 'tool', '', 'hash-tool', 1, 'codex', 1, 0);
+                PRAGMA user_version = 2;
+                """
+            )
+            conn.commit()
+
+            def fail_vec_probe(_conn: sqlite3.Connection) -> None:
+                raise sqlite3.OperationalError("forced upgrade failure")
+
+            monkeypatch.setattr(schema_module, "ensure_vec0_table", fail_vec_probe)
+
+            with pytest.raises(sqlite3.OperationalError, match="forced upgrade failure"):
+                schema_module._ensure_schema(conn)
+
+            assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(messages)").fetchall()}
+            assert "message_type" not in columns
+        finally:
+            conn.close()
+
 
 # =============================================================================
 # SQL edge cases: OFFSET without LIMIT (7ebfd71)

@@ -61,6 +61,69 @@ def _table_names(conn: sqlite3.Connection) -> set[str]:
     return {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
 
 
+def _message_types(conn: sqlite3.Connection) -> dict[str, str]:
+    return {row[0]: row[1] for row in conn.execute("SELECT message_id, message_type FROM messages").fetchall()}
+
+
+def _create_v2_message_type_fixture(conn: sqlite3.Connection, *, include_message_type: bool = False) -> None:
+    message_type_column = ", message_type TEXT NOT NULL DEFAULT 'message'" if include_message_type else ""
+    message_type_insert_column = ", message_type" if include_message_type else ""
+    explicit_value = ", 'summary'" if include_message_type else ""
+    conn.executescript(
+        f"""
+        CREATE TABLE messages (
+            message_id TEXT PRIMARY KEY,
+            conversation_id TEXT NOT NULL,
+            role TEXT,
+            text TEXT,
+            sort_key REAL,
+            content_hash TEXT NOT NULL,
+            version INTEGER NOT NULL,
+            branch_index INTEGER NOT NULL DEFAULT 0,
+            provider_name TEXT NOT NULL DEFAULT '',
+            word_count INTEGER NOT NULL DEFAULT 0,
+            has_tool_use INTEGER NOT NULL DEFAULT 0,
+            has_thinking INTEGER NOT NULL DEFAULT 0,
+            has_paste INTEGER NOT NULL DEFAULT 0
+            {message_type_column}
+        );
+        CREATE TABLE content_blocks (
+            block_id TEXT PRIMARY KEY,
+            message_id TEXT NOT NULL,
+            conversation_id TEXT NOT NULL,
+            block_index INTEGER NOT NULL,
+            type TEXT NOT NULL,
+            text TEXT,
+            tool_name TEXT,
+            tool_id TEXT,
+            tool_input TEXT,
+            media_type TEXT,
+            metadata TEXT,
+            semantic_type TEXT,
+            UNIQUE (message_id, block_index)
+        );
+        INSERT INTO messages (
+            message_id, conversation_id, role, text, sort_key, content_hash,
+            version, provider_name, has_tool_use, has_thinking{message_type_insert_column}
+        ) VALUES
+            ('normal', 'conv-1', 'user', 'hello', 1, 'h-normal', 1, 'codex', 0, 0{explicit_value}),
+            ('thinking-block', 'conv-1', 'assistant', '', 2, 'h-thinking', 1, 'codex', 0, 0{explicit_value}),
+            ('tool-result-block', 'conv-1', 'assistant', '', 3, 'h-tool-result', 1, 'codex', 1, 0{explicit_value}),
+            ('tool-role', 'conv-1', 'tool', '', 4, 'h-tool-role', 1, 'codex', 1, 0{explicit_value}),
+            ('tool-use-block', 'conv-1', 'assistant', '', 5, 'h-tool-use', 1, 'codex', 1, 0{explicit_value}),
+            ('tool-flag', 'conv-1', 'assistant', '', 6, 'h-tool-flag', 1, 'codex', 1, 0{explicit_value});
+        INSERT INTO content_blocks (
+            block_id, message_id, conversation_id, block_index, type
+        ) VALUES
+            ('block-thinking', 'thinking-block', 'conv-1', 0, 'thinking'),
+            ('block-tool-result', 'tool-result-block', 'conv-1', 0, 'tool_result'),
+            ('block-tool-use', 'tool-use-block', 'conv-1', 0, 'tool_use');
+        PRAGMA user_version = 2;
+        """
+    )
+    conn.commit()
+
+
 def _build_record(conversation_id: str = "conv-1") -> ConversationRecord:
     return make_conversation(
         conversation_id=conversation_id,
@@ -99,6 +162,51 @@ def test_ensure_schema_contract(tmp_path: Path) -> None:
     conn.close()
 
 
+def test_ensure_schema_upgrades_v2_message_types_without_reimport(tmp_path: Path) -> None:
+    """The supported v2->v3 path adds message_type without deleting archive rows."""
+    db_path = tmp_path / "v2.db"
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    _create_v2_message_type_fixture(conn)
+
+    before_count = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+
+    _ensure_schema(conn)
+
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+    assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == before_count
+    assert "message_type" in {row[1] for row in conn.execute("PRAGMA table_info(messages)").fetchall()}
+    assert (
+        conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_messages_conversation_message_type'"
+        ).fetchone()
+        is not None
+    )
+    assert _message_types(conn) == {
+        "normal": "message",
+        "thinking-block": "thinking",
+        "tool-result-block": "tool_result",
+        "tool-role": "tool_result",
+        "tool-use-block": "tool_use",
+        "tool-flag": "tool_use",
+    }
+    conn.close()
+
+
+def test_ensure_schema_upgrades_v2_already_extended_without_overwriting(tmp_path: Path) -> None:
+    """A v2 archive that already has message_type only needs the version marker."""
+    db_path = tmp_path / "v2-already-extended.db"
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    _create_v2_message_type_fixture(conn, include_message_type=True)
+
+    _ensure_schema(conn)
+
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+    assert set(_message_types(conn).values()) == {"summary"}
+    conn.close()
+
+
 def test_ensure_schema_rejects_version_mismatch_without_mutating(tmp_path: Path) -> None:
     """Version mismatch fails clearly instead of partially patching old layouts."""
     db_path = tmp_path / "test.db"
@@ -120,7 +228,7 @@ def test_ensure_schema_rejects_version_mismatch_without_mutating(tmp_path: Path)
     with pytest.raises(DatabaseError) as exc_info:
         _ensure_schema(conn)
 
-    assert "does not migrate older archive schemas in place" in str(exc_info.value)
+    assert "only supports explicitly declared in-place archive upgrades" in str(exc_info.value)
     assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
     assert conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='messages'").fetchone() is None
     conn.close()
@@ -201,6 +309,7 @@ def test_schema_extension_catalog_declares_snapshot_scope() -> None:
     assert len(index_names) == len(set(index_names))
     assert {"raw_conversations", "attachments", "session_profiles", "session_phases"}.issubset(table_names)
     assert {
+        "idx_messages_conversation_message_type",
         "idx_raw_conv_source_mtime",
         "idx_raw_conv_effective_provider",
         "idx_content_blocks_tool_use_conversation",
@@ -214,6 +323,7 @@ def test_schema_extension_plan_expands_catalog_descriptors() -> None:
     snapshot = SchemaSnapshot(
         current_version=SCHEMA_VERSION,
         table_columns={
+            "messages": frozenset({"message_id", "conversation_id"}),
             "raw_conversations": frozenset({"raw_id", "source_path", "file_mtime"}),
             "content_blocks": frozenset({"conversation_id", "type"}),
             "attachments": frozenset({"provider_meta"}),
@@ -224,6 +334,8 @@ def test_schema_extension_plan_expands_catalog_descriptors() -> None:
 
     plan = build_current_schema_extension_plan(snapshot)
 
+    assert "ALTER TABLE messages ADD COLUMN message_type TEXT NOT NULL DEFAULT 'message'" in plan.statements
+    assert any("idx_messages_conversation_message_type" in statement for statement in plan.statements)
     assert "ALTER TABLE raw_conversations ADD COLUMN blob_size INTEGER NOT NULL DEFAULT 0" in plan.statements
     assert any("idx_content_blocks_tool_use_conversation" in statement for statement in plan.statements)
     assert any("idx_attachments_provider_meta_id" in statement for statement in plan.statements)
@@ -279,7 +391,7 @@ def test_ensure_schema_rejects_old_raw_table_version_without_mutating(tmp_path: 
     with pytest.raises(DatabaseError) as exc_info:
         _ensure_schema(conn)
 
-    assert "does not migrate older archive schemas in place" in str(exc_info.value)
+    assert "only supports explicitly declared in-place archive upgrades" in str(exc_info.value)
     assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
     assert conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='messages'").fetchone() is None
     conn.close()
@@ -407,7 +519,7 @@ def test_open_read_connection_rejects_old_schema_without_mutating(tmp_path: Path
         with open_read_connection(db_path):
             pass
 
-    assert "does not migrate older archive schemas in place" in str(exc_info.value)
+    assert "only supports explicitly declared in-place archive upgrades" in str(exc_info.value)
     with sqlite3.connect(db_path) as verify_conn:
         assert verify_conn.execute("PRAGMA user_version").fetchone()[0] == 2
         assert (
@@ -559,6 +671,25 @@ async def test_async_backend_schema_and_lock_contracts(tmp_path: Path) -> None:
     assert all(result is None for result in results)
 
 
+async def test_async_backend_upgrades_v2_message_types_without_reimport(tmp_path: Path) -> None:
+    """Async schema initialization should use the same v2->v3 upgrade path."""
+    db_path = tmp_path / "v2-async.db"
+    conn = sqlite3.connect(db_path)
+    _create_v2_message_type_fixture(conn)
+    conn.close()
+
+    backend = SQLiteBackend(db_path=db_path)
+    async with backend.connection():
+        pass
+
+    with sqlite3.connect(db_path) as verify_conn:
+        assert verify_conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+        assert verify_conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 6
+        assert _message_types(verify_conn)["tool-result-block"] == "tool_result"
+        assert _message_types(verify_conn)["thinking-block"] == "thinking"
+    await backend.close()
+
+
 async def test_async_backend_rejects_old_raw_table_version(tmp_path: Path) -> None:
     """Async backend init should not silently patch old-version raw tables."""
     db_path = tmp_path / "legacy-v1-async.db"
@@ -602,7 +733,7 @@ async def test_async_backend_rejects_old_raw_table_version(tmp_path: Path) -> No
             )
         )
 
-    assert "does not migrate older archive schemas in place" in str(exc_info.value)
+    assert "only supports explicitly declared in-place archive upgrades" in str(exc_info.value)
 
     with sqlite3.connect(db_path) as verify_conn:
         assert verify_conn.execute("PRAGMA user_version").fetchone()[0] == 2
