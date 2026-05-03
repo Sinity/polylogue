@@ -36,6 +36,45 @@ def test_fts_descriptor_marks_duplicates_unready() -> None:
     assert descriptor.ready({"demo_fts": False}, {"source_rows": 0, "indexed_rows": 0, "duplicate_rows": 0}) is False
 
 
+async def test_fts_descriptor_async_can_skip_distinct_freshness_counts(tmp_path: Path) -> None:
+    db_path = tmp_path / "fts-status.db"
+    async with aiosqlite.connect(db_path) as conn:
+        await conn.executescript(
+            """
+            CREATE TABLE demo_fts (id TEXT NOT NULL);
+            INSERT INTO demo_fts (id) VALUES ('a'), ('a'), ('b');
+            """
+        )
+        await conn.commit()
+
+        descriptor = SessionInsightFtsDescriptor(
+            table_key="demo_fts",
+            table_name="demo_fts",
+            count_key="indexed_rows",
+            duplicate_count_key="duplicate_rows",
+            source_count_key="source_rows",
+            distinct_sql="SELECT COUNT(DISTINCT id) FROM demo_fts",
+            duplicate_sql="SELECT COUNT(*) - COUNT(DISTINCT id) FROM demo_fts",
+            ready_key="profile_merged_fts_ready",
+        )
+
+        fresh = await descriptor.counts_async(
+            conn,
+            {"demo_fts": True},
+            {"source_rows": 2},
+            verify_freshness=True,
+        )
+        lightweight = await descriptor.counts_async(
+            conn,
+            {"demo_fts": True},
+            {"source_rows": 2},
+            verify_freshness=False,
+        )
+
+    assert fresh == {"indexed_rows": 2, "duplicate_rows": 1}
+    assert lightweight == {"indexed_rows": 3, "duplicate_rows": 1}
+
+
 def test_count_descriptor_uses_fallback_when_freshness_is_disabled() -> None:
     descriptor = SessionInsightCountDescriptor(
         count_key="expected_rows",

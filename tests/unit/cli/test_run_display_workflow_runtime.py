@@ -11,7 +11,6 @@ from polylogue.cli.shared.run_display_workflow import (
     render_preview_summary,
     render_sources,
 )
-from polylogue.cli.shared.run_watch_workflow import WatchDisplayObserver, WatchStatusObserver
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
 from polylogue.sources import DriveError
@@ -197,51 +196,3 @@ def test_render_preview_summary_formats_plan_snapshot() -> None:
             "Snapshot: 2026-04-23 12:00:00",
         ],
     )
-
-
-def test_watch_display_observer_only_renders_when_activity_is_present() -> None:
-    env = _env()
-    cfg = _cfg()
-    result = _run_result()
-
-    observer = WatchDisplayObserver(env, cfg, "all", ["drive"], display_stage="render", stage_sequence=("render",))
-
-    with (
-        patch("polylogue.cli.shared.run_watch_workflow.conversation_activity_counts", return_value=(2, 0, 0)),
-        patch("polylogue.cli.shared.run_watch_workflow.display_result") as display,
-    ):
-        observer.on_completed(result)
-
-    display.assert_called_once_with(
-        env,
-        cfg,
-        result,
-        "all",
-        ["drive"],
-        display_stage="render",
-        stage_sequence=("render",),
-    )
-
-    with (
-        patch("polylogue.cli.shared.run_watch_workflow.conversation_activity_counts", return_value=(0, 0, 0)),
-        patch("polylogue.cli.shared.run_watch_workflow.display_result") as display,
-    ):
-        observer.on_completed(result)
-
-    display.assert_not_called()
-
-
-def test_watch_status_observer_renders_idle_drive_and_generic_errors() -> None:
-    observer = WatchStatusObserver()
-
-    with (
-        patch("time.strftime", return_value="12:34:56"),
-        patch("click.echo") as echo,
-    ):
-        observer.on_idle(_run_result())
-        observer.on_error(DriveError("drive failed"))
-        observer.on_error(RuntimeError("boom"))
-
-    echo.assert_any_call("No conversation changes at 12:34:56")
-    echo.assert_any_call("Sync error: drive failed", err=True)
-    echo.assert_any_call("Unexpected error during sync: boom", err=True)

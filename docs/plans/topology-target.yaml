@@ -759,10 +759,6 @@ files:
     loc: 170
     target: polylogue/cli/shared/run_observers.py
     owner: stable
-  - path: polylogue/cli/shared/run_watch_workflow.py
-    loc: 67
-    target: polylogue/cli/shared/run_watch_workflow.py
-    owner: stable
   - path: polylogue/cli/shared/run_workflow.py
     loc: 240
     target: polylogue/cli/shared/run_workflow.py

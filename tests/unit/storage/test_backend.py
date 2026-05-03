@@ -685,8 +685,14 @@ async def test_async_backend_schema_and_lock_contracts(tmp_path: Path) -> None:
     """Async schema guards and write locks must serialize correctly without blocking readers."""
     backend = SQLiteBackend(db_path=tmp_path / "async.db")
 
-    results = await asyncio.gather(*[backend.get_conversation(f"conv:{idx}") for idx in range(10)])
-    assert all(result is None for result in results)
+    try:
+        results = await asyncio.wait_for(
+            asyncio.gather(*[backend.get_conversation(f"conv:{idx}") for idx in range(10)]),
+            timeout=30,
+        )
+        assert all(result is None for result in results)
+    finally:
+        await backend.close()
 
 
 async def test_async_backend_upgrades_v2_message_types_without_reimport(tmp_path: Path) -> None:

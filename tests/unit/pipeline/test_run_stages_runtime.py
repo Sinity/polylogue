@@ -81,7 +81,7 @@ async def test_execute_schema_generation_stage_counts_successes_and_failures() -
 
 
 @pytest.mark.asyncio
-async def test_execute_materialize_stage_covers_noop_and_rebuild_from_empty_paths() -> None:
+async def test_execute_materialize_stage_covers_noop_and_incremental_refresh_paths() -> None:
     empty_outcome = await run_stages.execute_materialize_stage(
         stage="all",
         source_names=None,
@@ -90,23 +90,12 @@ async def test_execute_materialize_stage_covers_noop_and_rebuild_from_empty_path
     )
     assert empty_outcome == MaterializeStageOutcome(item_count=0, rebuilt=False)
 
-    conn = SimpleNamespace(commit=AsyncMock())
-    backend = _backend(
-        conn=conn,
-        status=SimpleNamespace(total_conversations=2, profile_row_count=0),
-    )
+    backend = _backend(status=SimpleNamespace(total_conversations=2, profile_row_count=0))
     progress = MagicMock()
-    counts = SimpleNamespace(
-        profiles=2,
-        work_events=3,
-        phases=4,
-        threads=5,
-        tag_rollups=6,
-        day_summaries=7,
-    )
     with patch(
-        "polylogue.storage.insights.session.rebuild.rebuild_session_insights_async", new=AsyncMock(return_value=counts)
-    ) as rebuild:
+        "polylogue.pipeline.services.ingest_batch.refresh_session_insights_bulk",
+        new=AsyncMock(return_value={"mode": "refresh"}),
+    ) as refresh:
         outcome = await run_stages.execute_materialize_stage(
             stage="all",
             source_names=None,
@@ -115,21 +104,13 @@ async def test_execute_materialize_stage_covers_noop_and_rebuild_from_empty_path
             progress_callback=progress,
         )
 
-    assert outcome.rebuilt is True
+    assert outcome.rebuilt is False
     assert outcome.item_count == 2
-    assert outcome.observation == {
-        "mode": "rebuild-from-empty",
-        "profiles": 2,
-        "work_events": 3,
-        "phases": 4,
-        "threads": 5,
-        "tag_rollups": 6,
-        "day_summaries": 7,
-    }
+    assert outcome.observation == {"mode": "refresh"}
     progress.assert_called_with(0, desc="Materializing: 0/2")
-    assert rebuild.await_args is not None
-    assert rebuild.await_args.kwargs["conversation_ids"] == ["conv-a", "conv-b"]
-    conn.commit.assert_awaited_once()
+    assert refresh.await_args is not None
+    assert refresh.await_args.args[1] == ["conv-a", "conv-b"]
+    backend.get_session_insight_status.assert_not_awaited()
 
 
 @pytest.mark.asyncio

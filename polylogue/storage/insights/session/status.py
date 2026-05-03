@@ -81,12 +81,19 @@ class SessionInsightFtsDescriptor:
         self,
         conn: aiosqlite.Connection,
         tables: TablePresence,
+        counts: StatusCounts,
+        *,
+        verify_freshness: bool,
     ) -> StatusCounts:
-        if not tables[self.table_key]:
-            return {self.count_key: 0, self.duplicate_count_key: 0}
+        if verify_freshness and tables[self.table_key]:
+            indexed_count = await _count_async(conn, self.distinct_sql)
+            duplicate_count = await _count_async(conn, self.duplicate_sql)
+        else:
+            indexed_count = await _table_count_async(conn, tables[self.table_key], self.table_name)
+            duplicate_count = max(0, indexed_count - counts[self.source_count_key])
         return {
-            self.count_key: await _count_async(conn, self.distinct_sql),
-            self.duplicate_count_key: await _count_async(conn, self.duplicate_sql),
+            self.count_key: indexed_count,
+            self.duplicate_count_key: duplicate_count,
         }
 
     def ready(self, tables: TablePresence, counts: StatusCounts) -> bool:
@@ -668,6 +675,10 @@ def _table_count_sync(conn: sqlite3.Connection, table_exists: bool, table_name: 
     return _to_int(conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()) if table_exists else 0
 
 
+async def _table_count_async(conn: aiosqlite.Connection, table_exists: bool, table_name: str) -> int:
+    return _to_int(await (await conn.execute(f"SELECT COUNT(*) FROM {table_name}")).fetchone()) if table_exists else 0
+
+
 def _table_row_counts_sync(conn: sqlite3.Connection, tables: TablePresence) -> StatusCounts:
     counts: StatusCounts = {}
     for descriptor in _TABLE_DESCRIPTORS:
@@ -699,10 +710,16 @@ def _fts_projection_counts_sync(
     return projection_counts
 
 
-async def _fts_projection_counts_async(conn: aiosqlite.Connection, tables: TablePresence) -> StatusCounts:
+async def _fts_projection_counts_async(
+    conn: aiosqlite.Connection,
+    tables: TablePresence,
+    *,
+    counts: StatusCounts,
+    verify_freshness: bool,
+) -> StatusCounts:
     projection_counts: StatusCounts = {}
     for descriptor in _FTS_DESCRIPTORS:
-        projection_counts.update(await descriptor.counts_async(conn, tables))
+        projection_counts.update(await descriptor.counts_async(conn, tables, counts, verify_freshness=verify_freshness))
     return projection_counts
 
 
@@ -802,13 +819,20 @@ def session_insight_status_sync(
     return _status_payload(tables, counts)
 
 
-async def _materialized_counts_async(conn: aiosqlite.Connection, tables: TablePresence) -> StatusCounts:
+async def _materialized_counts_async(
+    conn: aiosqlite.Connection,
+    tables: TablePresence,
+    *,
+    verify_freshness: bool,
+) -> StatusCounts:
     counts: StatusCounts = {
         "total_conversations": await _count_async(conn, TOTAL_CONVERSATIONS_SQL),
-        "root_threads": await _count_async(conn, ROOT_THREAD_COUNT_SQL),
     }
     counts.update(await _table_row_counts_async(conn, tables))
-    counts.update(await _fts_projection_counts_async(conn, tables))
+    counts["root_threads"] = (
+        await _count_async(conn, ROOT_THREAD_COUNT_SQL) if verify_freshness else counts["thread_count"]
+    )
+    counts.update(await _fts_projection_counts_async(conn, tables, counts=counts, verify_freshness=verify_freshness))
     return counts
 
 
@@ -816,6 +840,8 @@ async def _descriptor_counts_async(
     conn: aiosqlite.Connection,
     tables: TablePresence,
     counts: StatusCounts,
+    *,
+    verify_freshness: bool,
 ) -> StatusCounts:
     descriptor_counts: StatusCounts = {}
     for descriptor in _COUNT_DESCRIPTORS:
@@ -823,21 +849,30 @@ async def _descriptor_counts_async(
             conn,
             tables,
             {**counts, **descriptor_counts},
-            verify_freshness=True,
+            verify_freshness=verify_freshness,
         )
         descriptor_counts[key] = value
     return descriptor_counts
 
 
-async def _status_counts_async(conn: aiosqlite.Connection, tables: TablePresence) -> StatusCounts:
-    counts = await _materialized_counts_async(conn, tables)
-    counts.update(await _descriptor_counts_async(conn, tables, counts))
+async def _status_counts_async(
+    conn: aiosqlite.Connection,
+    tables: TablePresence,
+    *,
+    verify_freshness: bool,
+) -> StatusCounts:
+    counts = await _materialized_counts_async(conn, tables, verify_freshness=verify_freshness)
+    counts.update(await _descriptor_counts_async(conn, tables, counts, verify_freshness=verify_freshness))
     return counts
 
 
-async def session_insight_status_async(conn: aiosqlite.Connection) -> SessionInsightStatusSnapshot:
+async def session_insight_status_async(
+    conn: aiosqlite.Connection,
+    *,
+    verify_freshness: bool = True,
+) -> SessionInsightStatusSnapshot:
     tables = await _tables_async(conn)
-    counts = await _status_counts_async(conn, tables)
+    counts = await _status_counts_async(conn, tables, verify_freshness=verify_freshness)
     return _status_payload(tables, counts)
 
 

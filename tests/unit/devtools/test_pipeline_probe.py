@@ -8,7 +8,7 @@ from typing import TypeAlias
 
 import pytest
 
-from devtools.pipeline_probe import _build_budget_report, _write_probe_sources, main, run_probe
+from devtools.pipeline_probe import ProbeSummary, _build_budget_report, _write_probe_sources, main, run_probe
 from devtools.regression_cases import RegressionCase
 from polylogue.scenarios import CorpusRequest, CorpusScenario, CorpusSpec, PipelineProbeRequest
 from polylogue.schemas.synthetic import SyntheticCorpus
@@ -68,7 +68,7 @@ def _load_json_object(text: str) -> JsonObject:
 
 def test_build_budget_report_accounts_for_recorded_child_rss() -> None:
     request = PipelineProbeRequest(max_peak_rss_mb=100.0)
-    summary = {
+    summary: ProbeSummary = {
         "run_payload": {
             "metrics": {
                 "peak_rss_self_mb": 70.0,
@@ -76,6 +76,11 @@ def test_build_budget_report_accounts_for_recorded_child_rss() -> None:
             }
         },
         "result": {},
+        "probe": {},
+        "paths": {},
+        "provenance": {"git_commit": None, "worktree_dirty": None},
+        "db_stats": {},
+        "raw_fanout": [],
     }
 
     report = _build_budget_report(summary, request)

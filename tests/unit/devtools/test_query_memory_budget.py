@@ -42,4 +42,8 @@ def test_main_emits_json_summary(capsys: pytest.CaptureFixture[str]) -> None:
     assert payload["exit_code"] == 0
     assert payload["within_budget"] is True
     assert payload["max_rss_mb"] == 512
-    assert payload["peak_rss_mb"] >= payload["peak_parent_rss_mb"]
+    peak_rss_mb = payload["peak_rss_mb"]
+    peak_parent_rss_mb = payload["peak_parent_rss_mb"]
+    assert isinstance(peak_rss_mb, (int, float))
+    assert isinstance(peak_parent_rss_mb, (int, float))
+    assert peak_rss_mb >= peak_parent_rss_mb
