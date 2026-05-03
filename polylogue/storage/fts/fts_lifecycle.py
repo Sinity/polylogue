@@ -112,6 +112,7 @@ async def suspend_fts_triggers_async(conn: aiosqlite.Connection) -> None:
 
 async def restore_fts_triggers_async(conn: aiosqlite.Connection) -> None:
     """Re-create FTS triggers after bulk insert."""
+    await suspend_fts_triggers_async(conn)
     for ddl in _MESSAGE_FTS_TRIGGER_DDL + _ACTION_FTS_TRIGGER_DDL:
         await conn.execute(ddl)
 
@@ -140,8 +141,8 @@ _MESSAGE_FTS_TRIGGER_DDL = [
 _ACTION_FTS_TRIGGER_DDL = [
     """CREATE TRIGGER IF NOT EXISTS action_events_fts_ai
        AFTER INSERT ON action_events BEGIN
-           INSERT INTO action_events_fts(event_id, message_id, conversation_id, action_kind, tool_name, text)
-           VALUES (new.event_id, new.message_id, new.conversation_id, new.action_kind, new.normalized_tool_name, new.search_text);
+           INSERT INTO action_events_fts(rowid, event_id, message_id, conversation_id, action_kind, tool_name, text)
+           VALUES (new.rowid, new.event_id, new.message_id, new.conversation_id, new.action_kind, new.normalized_tool_name, new.search_text);
        END""",
     """CREATE TRIGGER IF NOT EXISTS action_events_fts_ad
        AFTER DELETE ON action_events BEGIN
@@ -150,8 +151,8 @@ _ACTION_FTS_TRIGGER_DDL = [
     """CREATE TRIGGER IF NOT EXISTS action_events_fts_au
        AFTER UPDATE ON action_events BEGIN
            DELETE FROM action_events_fts WHERE rowid = old.rowid;
-           INSERT INTO action_events_fts(event_id, message_id, conversation_id, action_kind, tool_name, text)
-           VALUES (new.event_id, new.message_id, new.conversation_id, new.action_kind, new.normalized_tool_name, new.search_text);
+           INSERT INTO action_events_fts(rowid, event_id, message_id, conversation_id, action_kind, tool_name, text)
+           VALUES (new.rowid, new.event_id, new.message_id, new.conversation_id, new.action_kind, new.normalized_tool_name, new.search_text);
        END""",
 ]
 
@@ -164,6 +165,7 @@ def suspend_fts_triggers_sync(conn: sqlite3.Connection) -> None:
 
 def restore_fts_triggers_sync(conn: sqlite3.Connection) -> None:
     """Re-create FTS triggers after bulk insert."""
+    suspend_fts_triggers_sync(conn)
     for ddl in _MESSAGE_FTS_TRIGGER_DDL + _ACTION_FTS_TRIGGER_DDL:
         conn.execute(ddl)
 

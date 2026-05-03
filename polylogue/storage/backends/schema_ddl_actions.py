@@ -57,8 +57,9 @@ ACTION_FTS_DDL = """
 
         CREATE TRIGGER IF NOT EXISTS action_events_fts_ai
         AFTER INSERT ON action_events BEGIN
-            INSERT INTO action_events_fts (event_id, message_id, conversation_id, action_kind, tool_name, text)
+            INSERT INTO action_events_fts (rowid, event_id, message_id, conversation_id, action_kind, tool_name, text)
             VALUES (
+                new.rowid,
                 new.event_id,
                 new.message_id,
                 new.conversation_id,
@@ -76,8 +77,9 @@ ACTION_FTS_DDL = """
         CREATE TRIGGER IF NOT EXISTS action_events_fts_au
         AFTER UPDATE ON action_events BEGIN
             DELETE FROM action_events_fts WHERE rowid = old.rowid;
-            INSERT INTO action_events_fts (event_id, message_id, conversation_id, action_kind, tool_name, text)
+            INSERT INTO action_events_fts (rowid, event_id, message_id, conversation_id, action_kind, tool_name, text)
             VALUES (
+                new.rowid,
                 new.event_id,
                 new.message_id,
                 new.conversation_id,
