@@ -354,6 +354,14 @@ async def execute_index_stage(
             return IndexStageOutcome(indexed=False, item_count=0)
 
         if stage == "index":
+            if processed_ids:
+                status = await index_service.get_index_status()
+                if status["exists"]:
+                    index_kwargs = {"progress_callback": progress_callback} if progress_callback is not None else {}
+                    return IndexStageOutcome(
+                        indexed=await index_service.update_index(processed_ids, **index_kwargs),
+                        item_count=len(processed_ids),
+                    )
             if source_names:
                 scoped_source_names = list(source_names)
                 total = await backend.count_conversation_ids(source_names=scoped_source_names)
