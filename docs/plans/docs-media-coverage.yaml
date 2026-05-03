@@ -104,13 +104,13 @@ surfaces:
       conversation markdown files.
 
   vhs_tapes:
-    path: .local/readme-demo/example.tape
-    count: 1
+    path: null
+    count: 0
     notes: >
-      Single VHS tape at .local/readme-demo/example.tape.
-      Produces example.gif output. Minimal tape: types
-      "echo 'Welcome to VHS!'". Not integrated into CI
-      or verification gates.
+      No VHS tapes are committed to the repository. Local README
+      demo experiments may live under .local/readme-demo/, but
+      .local is machine-local state and must not be required by
+      manifest verification.
 
   provider_docs:
     path: docs/providers/
