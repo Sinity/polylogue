@@ -372,7 +372,10 @@ def test_schema_extension_plan_expands_catalog_descriptors() -> None:
         index_position = next(i for i, s in enumerate(statements) if f"idx_session_profiles_{column}_unbackfilled" in s)
         update_position = next(i for i, s in enumerate(statements) if "UPDATE session_profiles" in s and column in s)
         assert index_position < update_position, f"{column}: index must be created before its backfill UPDATE"
-    assert len(plan.scripts) == 5
+    assert any("source_file_cursor" in statement for statement in plan.scripts), (
+        "Slice B: source_file_cursor table DDL must be in extension scripts"
+    )
+    assert len(plan.scripts) == 6
 
 
 def test_ensure_schema_rejects_old_raw_table_version_without_mutating(tmp_path: Path) -> None:

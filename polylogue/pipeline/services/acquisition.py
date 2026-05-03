@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from polylogue.core.json import JSONDocument
@@ -60,6 +62,48 @@ class AcquisitionService:
     ) -> None:
         await persist_raw_record(self.repository, record, result=result)
 
+    async def _persist_source_cursors(self, source: Source) -> None:
+        """Slize B: Populate source_file_cursor stats for all source paths."""
+        if source.path is None:
+            return
+        supported_extensions = frozenset({".json", ".jsonl", ".ndjson", ".zip"})
+        supported_double_extensions = frozenset({".jsonl.txt"})
+        skip_dirs = frozenset({"analysis", "__pycache__", ".git", "node_modules"})
+
+        def _has_supported_extension(path: Path) -> bool:
+            name_lower = path.name.lower()
+            for ext in supported_double_extensions:
+                if name_lower.endswith(ext):
+                    return True
+            return path.suffix.lower() in supported_extensions
+
+        base = source.path.expanduser()
+        paths: list[Path] = []
+        if base.is_dir():
+            for root, dirs, files in os.walk(base, followlinks=True):
+                dirs[:] = [d for d in dirs if d not in skip_dirs]
+                for filename in files:
+                    file_path = Path(root) / filename
+                    if _has_supported_extension(file_path):
+                        paths.append(file_path)
+        elif base.is_file():
+            paths.append(base)
+        else:
+            return
+
+        for file_path in paths:
+            try:
+                st = file_path.stat()
+                await self.repository.upsert_source_file_cursor(
+                    str(file_path),
+                    st_dev=st.st_dev,
+                    st_ino=st.st_ino,
+                    st_size=st.st_size,
+                    mtime_ns=st.st_mtime_ns,
+                )
+            except OSError:
+                continue
+
     async def visit_sources(
         self,
         sources: list[Source],
@@ -70,10 +114,20 @@ class AcquisitionService:
         progress_label: str = "Scanning",
         on_record: Callable[[RawConversationRecord], Awaitable[None]] | None = None,
         observation_callback: Callable[[JSONDocument], None] | None = None,
+        persist_cursors: bool = True,
     ) -> ScanResult:
-        """Visit source raw payloads incrementally without forcing list materialization."""
+        """Visit source raw payloads incrementally without forcing list materialization.
+
+        Args:
+            persist_cursors: When True (default), save cursor stat fields after
+                each source so subsequent runs can skip unchanged files. Set to
+                False when the caller only needs a preview scan (e.g. planning)
+                and does not want to influence later acquire passes.
+        """
         result = ScanResult()
         known_mtimes = await self.repository.get_known_source_mtimes()
+        # Slice B: load known cursors for the stat-based fast path.
+        known_cursors = await self.repository.get_known_source_cursors()
         if ui is not None and not isinstance(ui, DriveUILike):
             raise TypeError(f"Drive acquisition UI must satisfy DriveUILike, got {type(ui).__name__}")
         drive_ui = ui
@@ -90,6 +144,7 @@ class AcquisitionService:
                 async for record in iter_raw_record_stream(
                     source,
                     known_mtimes=known_mtimes,
+                    known_cursors=known_cursors,
                     ui=drive_ui,
                     cursor_state=cursor_state,
                     drive_config=drive_config,
@@ -110,6 +165,11 @@ class AcquisitionService:
                 prior_errors = cursor_state.get("error_count", 0)
                 cursor_state["error_count"] = (prior_errors if isinstance(prior_errors, int) else 0) + 1
                 cursor_state["latest_error"] = str(exc)
+
+            # Slice B: persist cursor stat fields for all source files after
+            # processing so the next run can skip unchanged files.
+            if persist_cursors and not source.is_drive:
+                await self._persist_source_cursors(source)
 
             if cursor_state:
                 result.cursors[source.name] = cursor_state
