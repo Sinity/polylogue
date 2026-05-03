@@ -95,17 +95,17 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `polylogue reset` | `polylogue/cli/commands/reset.py:23` `polylogue.cli.commands.reset.reset_command` |
 | `polylogue resume` | `polylogue/cli/commands/resume.py:22` `polylogue.cli.commands.resume.resume_command` |
 | `polylogue run` | `polylogue/cli/commands/run.py:161` `polylogue.cli.commands.run.run_command` |
-| `polylogue run acquire` | `polylogue/cli/commands/run.py:309` `polylogue.cli.commands.run.run_acquire_stage` |
-| `polylogue run all` | `polylogue/cli/commands/run.py:359` `polylogue.cli.commands.run.run_all_stage` |
-| `polylogue run embed` | `polylogue/cli/commands/run.py:463` `polylogue.cli.commands.run.run_embed_stage` |
-| `polylogue run index` | `polylogue/cli/commands/run.py:347` `polylogue.cli.commands.run.run_index_stage` |
-| `polylogue run materialize` | `polylogue/cli/commands/run.py:327` `polylogue.cli.commands.run.run_materialize_stage` |
-| `polylogue run parse` | `polylogue/cli/commands/run.py:321` `polylogue.cli.commands.run.run_parse_stage` |
-| `polylogue run publish` | `polylogue/cli/commands/run.py:365` `polylogue.cli.commands.run.run_publish_stage` |
-| `polylogue run render` | `polylogue/cli/commands/run.py:333` `polylogue.cli.commands.run.run_render_stage` |
-| `polylogue run reprocess` | `polylogue/cli/commands/run.py:353` `polylogue.cli.commands.run.run_reprocess_stage` |
-| `polylogue run schema` | `polylogue/cli/commands/run.py:315` `polylogue.cli.commands.run.run_schema_stage` |
-| `polylogue run site` | `polylogue/cli/commands/run.py:371` `polylogue.cli.commands.run.run_site_stage` |
+| `polylogue run acquire` | `polylogue/cli/commands/run.py:312` `polylogue.cli.commands.run.run_acquire_stage` |
+| `polylogue run all` | `polylogue/cli/commands/run.py:362` `polylogue.cli.commands.run.run_all_stage` |
+| `polylogue run embed` | `polylogue/cli/commands/run.py:466` `polylogue.cli.commands.run.run_embed_stage` |
+| `polylogue run index` | `polylogue/cli/commands/run.py:350` `polylogue.cli.commands.run.run_index_stage` |
+| `polylogue run materialize` | `polylogue/cli/commands/run.py:330` `polylogue.cli.commands.run.run_materialize_stage` |
+| `polylogue run parse` | `polylogue/cli/commands/run.py:324` `polylogue.cli.commands.run.run_parse_stage` |
+| `polylogue run publish` | `polylogue/cli/commands/run.py:368` `polylogue.cli.commands.run.run_publish_stage` |
+| `polylogue run render` | `polylogue/cli/commands/run.py:336` `polylogue.cli.commands.run.run_render_stage` |
+| `polylogue run reprocess` | `polylogue/cli/commands/run.py:356` `polylogue.cli.commands.run.run_reprocess_stage` |
+| `polylogue run schema` | `polylogue/cli/commands/run.py:318` `polylogue.cli.commands.run.run_schema_stage` |
+| `polylogue run site` | `polylogue/cli/commands/run.py:374` `polylogue.cli.commands.run.run_site_stage` |
 | `polylogue schema` | `polylogue/cli/commands/schema.py:38` `polylogue.cli.commands.schema.schema_command` |
 | `polylogue schema compare` | `polylogue/cli/commands/schema.py:56` `polylogue.cli.commands.schema.schema_compare` |
 | `polylogue schema explain` | `polylogue/cli/commands/schema.py:94` `polylogue.cli.commands.schema.schema_explain` |

@@ -37,6 +37,7 @@ async def iter_source_raw_stream(
     source: Source,
     *,
     known_mtimes: dict[str, str] | None = None,
+    known_cursors: dict[str, dict[str, object]] | None = None,
     observation_callback: ObservationCallback | None = None,
     progress_callback: Callable[[int, str | None], None] | None = None,
 ) -> AsyncIterator[RawConversationData]:
@@ -54,6 +55,7 @@ async def iter_source_raw_stream(
         acquisition_root.iter_source_raw_data(
             source,
             known_mtimes=known_mtimes,
+            known_cursors=known_cursors,
             observation_callback=observation_callback,
             status_callback=_status_callback if progress_callback is not None else None,
         )
@@ -123,6 +125,7 @@ async def iter_raw_record_stream(
     source: Source,
     *,
     known_mtimes: dict[str, str] | None = None,
+    known_cursors: dict[str, dict[str, object]] | None = None,
     ui: DriveUILike | None = None,
     cursor_state: CursorStatePayload | None = None,
     drive_config: DriveConfigLike | None = None,
@@ -145,6 +148,7 @@ async def iter_raw_record_stream(
         raw_stream = iter_source_raw_stream(
             source,
             known_mtimes=known_mtimes,
+            known_cursors=known_cursors,
             observation_callback=observation_callback,
             progress_callback=progress_callback,
         )

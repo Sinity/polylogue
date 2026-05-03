@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,6 +13,32 @@ from polylogue.storage.cursor_state import CursorFailurePayload, CursorStatePayl
 from polylogue.types import Provider
 
 logger = get_logger(__name__)
+
+# Slice B: stat fields used for cursor-based fast-path skipping.
+# Maps cursor column name (shorter, DB-friendly) to stat_result attribute.
+_CURSOR_STAT_MAP: dict[str, str] = {
+    "st_dev": "st_dev",
+    "st_ino": "st_ino",
+    "st_size": "st_size",
+    "mtime_ns": "st_mtime_ns",
+}
+
+
+def _stat_matches_cursor(st: os.stat_result, cursor_fields: dict[str, object]) -> bool:
+    """Return True when *all* cursor-stored stat fields match the live file stat.
+
+    The cursor dict may be sparse; only fields present in both sides are
+    compared. At minimum *st_dev*, *st_ino*, *st_size*, and *mtime_ns*
+    must match for the file to be considered unchanged.
+    """
+    for cursor_field, stat_attr in _CURSOR_STAT_MAP.items():
+        cursor_val = cursor_fields.get(cursor_field)
+        if cursor_val is None:
+            return False
+        stat_val = getattr(st, stat_attr, None)
+        if stat_val is None or stat_val != cursor_val:
+            return False
+    return True
 
 
 def _get_file_mtime(path: Path) -> str | None:
@@ -62,8 +89,14 @@ def _select_paths_for_processing(
     *,
     include_file_mtime: bool,
     known_mtimes: dict[str, str] | None = None,
+    known_cursors: dict[str, dict[str, object]] | None = None,
 ) -> tuple[list[tuple[Path, str | None]], int]:
-    """Filter unchanged files and return `(path, file_mtime)` tuples."""
+    """Filter unchanged files and return `(path, file_mtime)` tuples.
+
+    Slice B: When ``known_cursors`` is provided and all stat fields (dev,
+    ino, size, mtime_ns) match the live file, the file is skipped without
+    falling through to the mtime comparison or any full-file I/O.
+    """
     selected: list[tuple[Path, str | None]] = []
     skipped_mtime = 0
     zip_known_mtimes: dict[str, str] = {}
@@ -75,6 +108,27 @@ def _select_paths_for_processing(
                 zip_known_mtimes[zip_path] = mtime
 
     for path in paths:
+        # Slice B: fast-path against known cursor stat fields.
+        if known_cursors is not None:
+            try:
+                st = path.stat()
+                cursor_fields = known_cursors.get(str(path))
+                if cursor_fields is not None and _stat_matches_cursor(st, cursor_fields):
+                    skipped_mtime += 1
+                    logger.debug(
+                        "cursor match: %s (dev=%s ino=%s size=%s mtime=%s)",
+                        path,
+                        st.st_dev,
+                        st.st_ino,
+                        st.st_size,
+                        st.st_mtime_ns,
+                    )
+                    continue
+            except OSError:
+                pass
+            # Fall through to mtime-based comparison if cursor check is
+            # inconclusive (no cursor data or stat mismatch).
+
         file_mtime = _get_file_mtime(path) if include_file_mtime else None
         if known_mtimes and file_mtime:
             path_str = str(path)

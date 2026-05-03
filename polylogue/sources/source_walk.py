@@ -66,6 +66,7 @@ def _setup_source_walk(
     cursor_state: CursorStatePayload | None,
     include_mtime: bool,
     known_mtimes: dict[str, str] | None,
+    known_cursors: dict[str, dict[str, object]] | None = None,
     discover_sidecars: bool,
 ) -> _SourceWalkSetup | None:
     paths = _resolve_source_paths(source)
@@ -76,6 +77,7 @@ def _setup_source_walk(
         paths,
         include_file_mtime=include_mtime,
         known_mtimes=known_mtimes,
+        known_cursors=known_cursors,
     )
     sidecar_data = _empty_sidecar_data()
     if discover_sidecars:

@@ -319,6 +319,7 @@ async def build_ingest_plan(
         ui=ui,
         drive_config=service.config.drive_config,
         on_record=process_record,
+        persist_cursors=False,
     )
     await flush_pending_records()
 

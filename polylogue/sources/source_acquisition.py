@@ -57,6 +57,7 @@ def iter_source_raw_data(
     *,
     cursor_state: CursorState | None = None,
     known_mtimes: dict[str, str] | None = None,
+    known_cursors: dict[str, dict[str, object]] | None = None,
     observation_callback: ObservationCallback | None = None,
     status_callback: StatusCallback | None = None,
 ) -> Iterable[RawConversationData]:
@@ -74,6 +75,7 @@ def iter_source_raw_data(
         cursor_state=cursor_state,
         include_mtime=True,
         known_mtimes=known_mtimes,
+        known_cursors=known_cursors,
         discover_sidecars=False,
     )
     if walk is None:
