@@ -35,9 +35,9 @@ def _register_list_tool(
 
     async def tool_fn(**kwargs: object) -> str:
         async def run() -> str:
-            ops = hooks.get_archive_ops()
+            poly = hooks.get_polylogue()
             normalized_kwargs = spec.normalize_kwargs(hooks.clamp_limit, kwargs)
-            insights = await fetch_insights_async(pt, ops, **normalized_kwargs)
+            insights = await fetch_insights_async(pt, poly, **normalized_kwargs)
             return hooks.json_payload(MCPRootPayload(root=insight_items_payload(insights, pt, item_key="items")))
 
         return await hooks.async_safe_call(pt.name, run)
@@ -74,7 +74,8 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         """Get a single session profile by conversation ID."""
 
         async def run() -> str:
-            insight = await hooks.get_archive_ops().get_session_profile_insight(
+            poly = hooks.get_polylogue()
+            insight = await poly.get_session_profile_insight(
                 conversation_id,
                 tier=tier,
             )
