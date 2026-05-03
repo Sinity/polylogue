@@ -36,7 +36,7 @@ debugging landmarks. For the conceptual system shape, see
 | `storage/backends/schema.py` | Shared sync/async fresh-init, version guard, and extension application |
 | `storage/backends/schema_bootstrap.py` | Shared schema snapshot, bootstrap branching, and extension planning |
 | `storage/backends/connection_profile.py` | Canonical read/write SQLite timeouts, cache, mmap, and PRAGMA profiles |
-| `storage/repository.py` | Repository facade (10 mixin composition) |
+| `storage/repository/__init__.py` | Repository facade (9-mixin composition: archive reads/writes, action reads, four insight readers, raw, vectors) |
 | `storage/search_providers/fts5.py` | Lexical search |
 | `storage/search_providers/hybrid.py` | Hybrid retrieval (RRF fusion) |
 
@@ -55,7 +55,10 @@ debugging landmarks. For the conceptual system shape, see
 **Adding a provider**: Start at `sources/dispatch.py:detect_provider()`. Add a
 `looks_like()` function in a new parser under `sources/parsers/`. Add a
 `Provider` enum variant in `types.py`. Add a provider schema bundle under
-`schemas/providers/`.
+`schemas/providers/`. Dispatch order is strict-before-loose (Pydantic-validated
+shapes first, then weak dict-key probes, then structural probes); insert the
+new check at the tightness level it deserves or a looser parser will claim its
+records first.
 
 **Adding a filter**: Filter chain: `archive/filter/filters.py`. If the filter
 needs a stats-table join, update `_needs_stats_join()` in
