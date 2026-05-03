@@ -731,17 +731,49 @@ def decide_schema_bootstrap(snapshot: SchemaSnapshot) -> SchemaBootstrapDecision
 
     assert_supported_archive_layout_snapshot(snapshot)
 
-    if snapshot.current_version == 2 and SCHEMA_VERSION == 4 and snapshot.has_table("messages"):
+    if snapshot.current_version == 2 and SCHEMA_VERSION >= 4 and snapshot.has_table("messages"):
         return SchemaBootstrapDecision(
             action="upgrade_v2_to_current",
             extension_plan=build_v2_to_current_upgrade_plan(snapshot),
             current_version=snapshot.current_version,
         )
 
-    if snapshot.current_version == 3 and SCHEMA_VERSION == 4:
+    def _split_ddl_into_statements(*ddls: str) -> tuple[str, ...]:
+        stmts: list[str] = []
+        for ddl in ddls:
+            for s in ddl.split(";"):
+                s = s.strip()
+                if s and not s.startswith("--"):
+                    stmts.append(s)
+        return tuple(stmts)
+
+    if snapshot.current_version == 3 and SCHEMA_VERSION >= 4:
+        plan = build_v3_to_v4_upgrade_plan(snapshot)
+        if SCHEMA_VERSION >= 5:
+            from polylogue.storage.sqlite.schema_ddl_cursor import SOURCE_FILE_CURSOR_DDL
+            from polylogue.storage.sqlite.schema_ddl_archive import BLOB_LEASE_DDL, TAGS_M2M_DDL
+
+            plan = SchemaExtensionPlan(
+                statements=(*plan.statements, *_split_ddl_into_statements(SOURCE_FILE_CURSOR_DDL, TAGS_M2M_DDL, BLOB_LEASE_DDL)),
+                scripts=(),
+            )
         return SchemaBootstrapDecision(
             action="upgrade_v3_to_v4",
-            extension_plan=build_v3_to_v4_upgrade_plan(snapshot),
+            extension_plan=plan,
+            current_version=snapshot.current_version,
+        )
+
+    if snapshot.current_version == 4 and SCHEMA_VERSION >= 5:
+        from polylogue.storage.sqlite.schema_ddl_cursor import SOURCE_FILE_CURSOR_DDL
+        from polylogue.storage.sqlite.schema_ddl_archive import BLOB_LEASE_DDL, TAGS_M2M_DDL
+
+        plan = SchemaExtensionPlan(
+            statements=_split_ddl_into_statements(SOURCE_FILE_CURSOR_DDL, TAGS_M2M_DDL, BLOB_LEASE_DDL),
+            scripts=(),
+        )
+        return SchemaBootstrapDecision(
+            action="upgrade_v4_to_v5",
+            extension_plan=plan,
             current_version=snapshot.current_version,
         )
 
