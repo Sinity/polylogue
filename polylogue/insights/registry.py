@@ -22,6 +22,7 @@ from typing import TypeAlias
 
 import click
 
+from polylogue.errors import PolylogueError
 from polylogue.insights.archive import (
     ArchiveDebtInsightQuery,
     ArchiveInsightModel,
@@ -605,8 +606,10 @@ register(
 )
 
 
-class InsightQueryError(ValueError):
+class InsightQueryError(PolylogueError):
     """Raised when a registry-backed insight query is invalid."""
+
+    http_status_code = 400
 
 
 def _build_query(

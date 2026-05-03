@@ -310,11 +310,6 @@ files:
     target: polylogue/archive/query/plan_execution.py
     owner: archive-query
     reason: archive-domain query semantics
-  - path: polylogue/archive/query/read_fields.py
-    loc: 172
-    target: polylogue/archive/query/read_fields.py
-    owner: archive-query
-    reason: archive-domain query semantics
   - path: polylogue/archive/query/retrieval.py
     loc: 49
     target: polylogue/archive/query/retrieval.py

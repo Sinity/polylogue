@@ -88,6 +88,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools render-devtools-reference` | Render the command catalog inside docs/devtools.md. |
 | `devtools render-docs-surface` | Render docs/README.md and the README documentation table. |
 | `devtools render-quality-reference` | Render docs/test-quality-workflows.md from live validation, mutation, and benchmark registries. |
+| `devtools render-readme-media` | Generate README media assets (architecture diagrams, flowcharts) under docs/media/. |
 | `devtools render-topology-status` | Render docs/topology-status.md from the topology projection and realized tree. |
 | `devtools render-verification-catalog` | Render the verification-lab proof catalog from obligation registries. |
 
@@ -142,6 +143,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools witness-discover` | Save a failure-triggering input as a local witness in .local/witnesses/new/. |
 | `devtools witness-minimize` | Apply minimization heuristics to a local witness — shrink, redact, set privacy classification. |
 | `devtools witness-promote` | Promote a minimized local witness to tests/witnesses/ for durable commit. |
+| `devtools xtask` | Record and query agent task execution history (.agent/xtask/tasks.jsonl). |
 
 <!-- END GENERATED: devtools-command-catalog -->
 

@@ -7,11 +7,24 @@ import json
 import os
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import TYPE_CHECKING
 from urllib.parse import parse_qs, urlparse
 
 from polylogue.daemon.events import emit_daemon_event
 from polylogue.daemon.status import daemon_status_payload
+from polylogue.logging import get_logger
 from polylogue.paths import db_path
+
+if TYPE_CHECKING:
+    from polylogue.api import Polylogue
+
+logger = get_logger(__name__)
+
+
+def _get_or_create_polylogue() -> Polylogue:
+    from polylogue.api import Polylogue as _Polylogue
+
+    return _Polylogue()
 
 
 def _json_bytes(payload: object) -> bytes:
@@ -440,7 +453,9 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
             # Trigger re-convergence: the daemon watcher will detect missing
             # derived state on next scan and re-ingest from raw blobs.
-            self._send_json(HTTPStatus.OK, {"ok": True, "reset": {"scope": scope, "id": conv_id, "convergence": "scheduled"}})
+            self._send_json(
+                HTTPStatus.OK, {"ok": True, "reset": {"scope": scope, "id": conv_id, "convergence": "scheduled"}}
+            )
         except (json.JSONDecodeError, ValueError):
             self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
         except Exception:

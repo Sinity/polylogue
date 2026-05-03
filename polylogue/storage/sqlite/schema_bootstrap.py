@@ -11,6 +11,7 @@ import aiosqlite
 
 from polylogue.errors import DatabaseError
 from polylogue.logging import get_logger
+from polylogue.storage.fts.sql import ACTION_FTS_REBUILD_SQL, FTS_ACTIONS_TABLE_SQL
 from polylogue.storage.sqlite.schema_ddl import (
     _ACTION_EVENT_DDL,
     _ACTION_FTS_DDL,
@@ -22,7 +23,6 @@ from polylogue.storage.sqlite.schema_ddl import (
     SCHEMA_DDL,
     SCHEMA_VERSION,
 )
-from polylogue.storage.fts.sql import ACTION_FTS_REBUILD_SQL, FTS_ACTIONS_TABLE_SQL
 
 logger = get_logger(__name__)
 
@@ -72,6 +72,7 @@ class SchemaBootstrapDecision:
         "apply_current_extensions",
         "upgrade_v2_to_current",
         "upgrade_v3_to_v4",
+        "upgrade_v4_to_v5",
         "version_mismatch",
     ]
     extension_plan: SchemaExtensionPlan | None = None
@@ -750,11 +751,14 @@ def decide_schema_bootstrap(snapshot: SchemaSnapshot) -> SchemaBootstrapDecision
     if snapshot.current_version == 3 and SCHEMA_VERSION >= 4:
         plan = build_v3_to_v4_upgrade_plan(snapshot)
         if SCHEMA_VERSION >= 5:
-            from polylogue.storage.sqlite.schema_ddl_cursor import SOURCE_FILE_CURSOR_DDL
             from polylogue.storage.sqlite.schema_ddl_archive import BLOB_LEASE_DDL, TAGS_M2M_DDL
+            from polylogue.storage.sqlite.schema_ddl_cursor import SOURCE_FILE_CURSOR_DDL
 
             plan = SchemaExtensionPlan(
-                statements=(*plan.statements, *_split_ddl_into_statements(SOURCE_FILE_CURSOR_DDL, TAGS_M2M_DDL, BLOB_LEASE_DDL)),
+                statements=(
+                    *plan.statements,
+                    *_split_ddl_into_statements(SOURCE_FILE_CURSOR_DDL, TAGS_M2M_DDL, BLOB_LEASE_DDL),
+                ),
                 scripts=(),
             )
         return SchemaBootstrapDecision(
@@ -764,8 +768,8 @@ def decide_schema_bootstrap(snapshot: SchemaSnapshot) -> SchemaBootstrapDecision
         )
 
     if snapshot.current_version == 4 and SCHEMA_VERSION >= 5:
-        from polylogue.storage.sqlite.schema_ddl_cursor import SOURCE_FILE_CURSOR_DDL
         from polylogue.storage.sqlite.schema_ddl_archive import BLOB_LEASE_DDL, TAGS_M2M_DDL
+        from polylogue.storage.sqlite.schema_ddl_cursor import SOURCE_FILE_CURSOR_DDL
 
         plan = SchemaExtensionPlan(
             statements=_split_ddl_into_statements(SOURCE_FILE_CURSOR_DDL, TAGS_M2M_DDL, BLOB_LEASE_DDL),

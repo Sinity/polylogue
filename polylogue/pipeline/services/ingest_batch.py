@@ -22,6 +22,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
+from polylogue.archive.write_effects import commit_archive_write_effects
+from polylogue.archive.write_gateway import WriteOperation
 from polylogue.core.metrics import (
     read_current_rss_mb,
     read_peak_rss_children_mb,
@@ -44,8 +46,6 @@ from polylogue.storage.conversation_replacement import (
 )
 from polylogue.storage.raw.models import RawConversationStateUpdate
 from polylogue.storage.runtime import RawConversationRecord
-from polylogue.archive.write_effects import commit_archive_write_effects
-from polylogue.archive.write_gateway import WriteOperation
 from polylogue.storage.sqlite.connection import _load_sqlite_vec
 from polylogue.storage.sqlite.connection_profile import (
     DB_TIMEOUT,

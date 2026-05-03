@@ -63,10 +63,18 @@ def role_allows(role: MCPRole, required: MCPRole) -> bool:
 
 def _exception_error_payload(fn_name: str, exc: Exception) -> MCPErrorPayload:
     """Return a sanitized error payload for unexpected MCP failures."""
+    from polylogue.errors import PolylogueError
+
+    if isinstance(exc, PolylogueError):
+        code = exc.http_status_code
+        detail = type(exc).__name__
+    else:
+        code = -32603  # JSON-RPC internal error
+        detail = type(exc).__name__
     return MCPErrorPayload(
         error="internal MCP tool error",
-        code="internal_error",
-        detail=type(exc).__name__,
+        code=code,
+        detail=detail,
         tool=fn_name,
     )
 
@@ -119,7 +127,7 @@ def _safe_call(fn_name: str, fn: Callable[[], str]) -> str: ...
 
 
 @overload
-def _safe_call(fn_name: str, fn: Callable[[], None]) -> str: ...
+def _safe_call(fn_name: str, fn: Callable[[], None]) -> str | None: ...
 
 
 @overload
@@ -140,7 +148,7 @@ async def _async_safe_call(fn_name: str, fn: Callable[[], Awaitable[str]]) -> st
 
 
 @overload
-async def _async_safe_call(fn_name: str, fn: Callable[[], Awaitable[None]]) -> str: ...
+async def _async_safe_call(fn_name: str, fn: Callable[[], Awaitable[None]]) -> str | None: ...
 
 
 @overload
@@ -156,10 +164,10 @@ async def _async_safe_call(fn_name: str, fn: Callable[[], Awaitable[TResult]]) -
         return _json_payload(_exception_error_payload(fn_name, exc), exclude_none=True)
 
 
-def _error_json(message: str, **extra: str) -> str:
+def _error_json(message: str, **extra: object) -> str:
     """Return a JSON-encoded error dict."""
     code = extra.pop("code", None)
-    return _json_payload(MCPErrorPayload(error=message, code=code, **extra), exclude_none=True)
+    return _json_payload(MCPErrorPayload(error=message, code=code, **extra), exclude_none=True)  # type: ignore[arg-type]
 
 
 def _set_runtime_services(services: RuntimeServices | None) -> None:

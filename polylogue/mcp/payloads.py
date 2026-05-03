@@ -53,7 +53,7 @@ class MCPRootPayload(RootModel[TRoot], Generic[TRoot]):
 
 class MCPErrorPayload(SurfacePayloadModel):
     error: str
-    code: str | None = None
+    code: int | str | None = None
     detail: str | None = None
     tool: str | None = None
     conversation_id: str | None = None

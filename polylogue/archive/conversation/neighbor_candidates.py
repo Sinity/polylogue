@@ -9,6 +9,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
+from polylogue.errors import PolylogueError
 from polylogue.storage.query_models import ConversationRecordQuery
 from polylogue.types import Provider
 
@@ -53,8 +54,10 @@ _STOPWORDS = frozenset(
 )
 
 
-class NeighborDiscoveryError(ValueError):
+class NeighborDiscoveryError(PolylogueError):
     """Raised when a neighboring-candidate request cannot be executed."""
+
+    http_status_code = 400
 
 
 @dataclass(frozen=True, slots=True)
