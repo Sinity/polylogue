@@ -18,6 +18,60 @@ from polylogue.sources.live import LiveWatcher, WatchSource
 from polylogue.sources.live.watcher import default_sources
 
 
+async def _ensure_fts_startup_readiness() -> None:
+    """Check FTS coverage on daemon startup, rebuild if incomplete.
+
+    A gap can only exist from pre-daemon historical data. Once caught up,
+    the write path maintains FTS atomically via commit_archive_write_effects.
+    This check runs once at startup and never again.
+    """
+    import sqlite3
+    from pathlib import Path as _Path
+
+    from polylogue.paths import archive_root, db_path
+
+    db = db_path() or _Path(archive_root()) / "polylogue.db"
+    if not db.exists():
+        return
+
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = sqlite3.connect(str(db), timeout=10.0)
+        total = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+        if total == 0:
+            conn.close()
+            return
+        fts_count = conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0]
+        gap = total - fts_count
+        if gap <= 0:
+            conn.close()
+            return
+
+        import logging
+
+        logger = logging.getLogger(__name__)
+        logger.warning(
+            "daemon: FTS index incomplete (%d/%d messages, %.1f%% gap). Rebuilding once.",
+            fts_count,
+            total,
+            100 * gap / total,
+        )
+        from polylogue.storage.fts.fts_lifecycle import rebuild_fts_index_sync
+
+        rebuild_fts_index_sync(conn)
+        conn.commit()
+        new_count = conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0]
+        logger.info("daemon: FTS rebuild complete — %d messages indexed.", new_count)
+    except Exception:
+        import logging
+
+        logging.getLogger(__name__).warning("daemon: FTS startup check failed", exc_info=True)
+    finally:
+        if conn is not None:
+            with __import__("contextlib").suppress(Exception):
+                conn.close()
+
+
 async def run_live_watcher(
     *,
     sources: tuple[WatchSource, ...],
@@ -49,6 +103,11 @@ async def run_daemon_services(
 ) -> None:
     """Run configured daemon components until interrupted."""
     from polylogue.paths import archive_root
+
+    # Ensure FTS is consistent on startup. A gap can only exist from
+    # pre-daemon historical data; once caught up, the write path maintains
+    # FTS atomically via commit_archive_write_effects().
+    await _ensure_fts_startup_readiness()
 
     pidfile = Path(archive_root()) / "daemon.pid"
 
