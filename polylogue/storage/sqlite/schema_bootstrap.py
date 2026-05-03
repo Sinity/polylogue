@@ -11,19 +11,18 @@ import aiosqlite
 
 from polylogue.errors import DatabaseError
 from polylogue.logging import get_logger
-from polylogue.storage.fts.sql import ACTION_FTS_REBUILD_SQL, FTS_ACTIONS_TABLE_SQL
-from polylogue.storage.sqlite.schema_ddl import (
+from polylogue.storage.backends.schema_ddl import (
     _ACTION_EVENT_DDL,
     _ACTION_FTS_DDL,
     _ARTIFACT_OBSERVATION_DDL,
-    _BLOB_LEASE_DDL,
     _PUBLICATION_DDL,
     _SESSION_INSIGHT_DDL,
-    _TAGS_M2M_DDL,
+    _SOURCE_FILE_CURSOR_DDL,
     _VEC0_DDL,
     SCHEMA_DDL,
     SCHEMA_VERSION,
 )
+from polylogue.storage.fts.sql import ACTION_FTS_REBUILD_SQL, FTS_ACTIONS_TABLE_SQL
 
 logger = get_logger(__name__)
 
@@ -73,7 +72,6 @@ class SchemaBootstrapDecision:
         "apply_current_extensions",
         "upgrade_v2_to_current",
         "upgrade_v3_to_v4",
-        "upgrade_v4_to_v5",
         "version_mismatch",
     ]
     extension_plan: SchemaExtensionPlan | None = None
@@ -564,8 +562,9 @@ _SCHEMA_EXTENSION_DESCRIPTORS: tuple[SchemaExtensionDescriptor, ...] = (
         ),
     ),
     SchemaScriptExtensionDescriptor(_SESSION_INSIGHT_DDL),
-    SchemaScriptExtensionDescriptor(_TAGS_M2M_DDL),
-    SchemaScriptExtensionDescriptor(_BLOB_LEASE_DDL),
+    # Slice B: cursor expansion columns added. SCHEMA_VERSION bump deferred to
+    # slice E (storage v2 + write gateway).
+    SchemaScriptExtensionDescriptor(_SOURCE_FILE_CURSOR_DDL),
 )
 
 _V2_TO_V3_MESSAGE_TYPE_BACKFILL_SQL = """
@@ -715,40 +714,14 @@ def build_v3_to_v4_upgrade_plan(snapshot: SchemaSnapshot) -> SchemaExtensionPlan
     return SchemaExtensionPlan(statements=tuple(statements), scripts=())
 
 
-def build_v4_to_v5_upgrade_plan(snapshot: SchemaSnapshot) -> SchemaExtensionPlan:
-    """Add tags M2M tables and blob lease tables for schema v5.
-
-    Both table sets use CREATE TABLE IF NOT EXISTS so the upgrade is
-    idempotent. Safe to apply over any existing v4 archive.
-
-    Each DDL constant is a multi-statement string; version upgrade plans
-    require statement-level SQL, so the upgrade is a single script.
-    """
-    assert_supported_archive_layout_snapshot(snapshot)
-    return SchemaExtensionPlan(
-        statements=(),
-        # _apply_version_upgrade_plan rejects plans with non-empty scripts,
-        # but these are pure CREATE TABLE IF NOT EXISTS -- no data transforms
-        # or other state-modifying operations that would need transactional
-        # statement-level isolation. The extension-plan applier uses
-        # executescript which handles multi-statement DDL correctly.
-        scripts=(_TAGS_M2M_DDL, _BLOB_LEASE_DDL),
-    )
-
-
 def build_v2_to_current_upgrade_plan(snapshot: SchemaSnapshot) -> SchemaExtensionPlan:
     """Build the declared v2 upgrade path to the current archive version."""
-    plans: list[SchemaExtensionPlan] = [build_v2_to_v3_upgrade_plan(snapshot)]
-    if SCHEMA_VERSION >= 4:
-        plans.append(build_v3_to_v4_upgrade_plan(snapshot))
-    if SCHEMA_VERSION >= 5:
-        plans.append(build_v4_to_v5_upgrade_plan(snapshot))
-    statements: list[str] = []
-    scripts: list[str] = []
-    for plan in plans:
-        statements.extend(plan.statements)
-        scripts.extend(plan.scripts)
-    return SchemaExtensionPlan(statements=tuple(statements), scripts=tuple(scripts))
+    v2_to_v3 = build_v2_to_v3_upgrade_plan(snapshot)
+    v3_to_v4 = build_v3_to_v4_upgrade_plan(snapshot)
+    return SchemaExtensionPlan(
+        statements=(*v2_to_v3.statements, *v3_to_v4.statements),
+        scripts=(),
+    )
 
 
 def decide_schema_bootstrap(snapshot: SchemaSnapshot) -> SchemaBootstrapDecision:
@@ -758,35 +731,17 @@ def decide_schema_bootstrap(snapshot: SchemaSnapshot) -> SchemaBootstrapDecision
 
     assert_supported_archive_layout_snapshot(snapshot)
 
-    if snapshot.current_version == 2 and SCHEMA_VERSION >= 4 and snapshot.has_table("messages"):
+    if snapshot.current_version == 2 and SCHEMA_VERSION == 4 and snapshot.has_table("messages"):
         return SchemaBootstrapDecision(
             action="upgrade_v2_to_current",
             extension_plan=build_v2_to_current_upgrade_plan(snapshot),
             current_version=snapshot.current_version,
         )
 
-    if snapshot.current_version == 3 and SCHEMA_VERSION >= 4:
-        plans: list[SchemaExtensionPlan] = [build_v3_to_v4_upgrade_plan(snapshot)]
-        if SCHEMA_VERSION >= 5:
-            plans.append(build_v4_to_v5_upgrade_plan(snapshot))
-        v3_statements: list[str] = []
-        v3_scripts: list[str] = []
-        for p in plans:
-            v3_statements.extend(p.statements)
-            v3_scripts.extend(p.scripts)
+    if snapshot.current_version == 3 and SCHEMA_VERSION == 4:
         return SchemaBootstrapDecision(
             action="upgrade_v3_to_v4",
-            extension_plan=SchemaExtensionPlan(
-                statements=tuple(v3_statements),
-                scripts=tuple(v3_scripts),
-            ),
-            current_version=snapshot.current_version,
-        )
-
-    if snapshot.current_version == 4 and SCHEMA_VERSION >= 5:
-        return SchemaBootstrapDecision(
-            action="upgrade_v4_to_v5",
-            extension_plan=build_v4_to_v5_upgrade_plan(snapshot),
+            extension_plan=build_v3_to_v4_upgrade_plan(snapshot),
             current_version=snapshot.current_version,
         )
 
@@ -913,7 +868,6 @@ __all__ = [
     "build_v2_to_current_upgrade_plan",
     "build_v2_to_v3_upgrade_plan",
     "build_v3_to_v4_upgrade_plan",
-    "build_v4_to_v5_upgrade_plan",
     "capture_schema_snapshot",
     "capture_schema_snapshot_async",
     "decide_schema_bootstrap",

@@ -32,6 +32,9 @@ from polylogue.storage.sqlite.schema_ddl_aux import (
 from polylogue.storage.sqlite.schema_ddl_aux import (
     VEC0_DDL as _VEC0_DDL,
 )
+from polylogue.storage.sqlite.schema_ddl_cursor import (
+    SOURCE_FILE_CURSOR_DDL as _SOURCE_FILE_CURSOR_DDL,
+)
 from polylogue.storage.sqlite.schema_ddl_insight_aggregates import (
     SESSION_INSIGHT_AGGREGATE_DDL as _SESSION_INSIGHT_AGGREGATE_DDL,
 )
@@ -58,6 +61,7 @@ SCHEMA_DDL = (
     + _MESSAGE_FTS_DDL
 )
 
+SCHEMA_DDL += "\n\n" + _SOURCE_FILE_CURSOR_DDL
 SCHEMA_DDL += "\n\n" + _TAGS_M2M_DDL
 SCHEMA_DDL += "\n\n" + _BLOB_LEASE_DDL
 SCHEMA_DDL += "\n\n" + _ACTION_EVENT_DDL
@@ -79,6 +83,7 @@ __all__ = [
     "_PUBLICATION_DDL",
     "_RAW_ARCHIVE_DDL",
     "_SESSION_INSIGHT_DDL",
+    "_SOURCE_FILE_CURSOR_DDL",
     "_TAGS_M2M_DDL",
     "_VEC0_DDL",
 ]
