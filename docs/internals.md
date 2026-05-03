@@ -55,10 +55,10 @@ debugging landmarks. For the conceptual system shape, see
 **Adding a provider**: Start at `sources/dispatch.py:detect_provider()`. Add a
 `looks_like()` function in a new parser under `sources/parsers/`. Add a
 `Provider` enum variant in `types.py`. Add a provider schema bundle under
-`schemas/providers/`. Dispatch order is strict-before-loose (Pydantic-validated
-shapes first, then weak dict-key probes, then structural probes); insert the
-new check at the tightness level it deserves or a looser parser will claim its
-records first.
+`schemas/providers/`. Dispatch is generally strict-before-loose for record-path
+and Pydantic-validated checks, but `sources/dispatch.py` runs some structural
+sequence detectors before loose code/dict probes. Insert the new check at the
+tightness level it deserves or an earlier parser will claim its records first.
 
 **Adding a filter**: Filter chain: `archive/filter/filters.py`. If the filter
 needs a stats-table join, update `_needs_stats_join()` in

@@ -230,6 +230,9 @@ def _run_result_callback(
             return
         stage_sequence = remaining
 
+    if reparse and "parse" not in stage_sequence:
+        fail("run", "--reparse requires a stage sequence that includes parse")
+
     cfg = env.config
     selected_sources = resolve_sources(cfg, sources, "run")
     selected_sources = maybe_prompt_sources(env, cfg, selected_sources, "run")

@@ -112,6 +112,28 @@ async def test_execute_materialize_stage_covers_noop_and_incremental_refresh_pat
     assert refresh.await_args.args[1] == ["conv-a", "conv-b"]
     backend.get_session_insight_status.assert_not_awaited()
 
+    reprocess_backend = _backend(status=SimpleNamespace(total_conversations=2, profile_row_count=0))
+    reprocess_progress = MagicMock()
+    with patch(
+        "polylogue.pipeline.services.ingest_batch.refresh_session_insights_bulk",
+        new=AsyncMock(return_value={"mode": "refresh"}),
+    ) as refresh:
+        reprocess_outcome = await run_stages.execute_materialize_stage(
+            stage="reprocess",
+            source_names=None,
+            processed_ids={"conv-b", "conv-a"},
+            backend=reprocess_backend,
+            progress_callback=reprocess_progress,
+        )
+
+    assert reprocess_outcome.rebuilt is False
+    assert reprocess_outcome.item_count == 2
+    assert reprocess_outcome.observation == {"mode": "refresh"}
+    reprocess_progress.assert_called_with(0, desc="Materializing: 0/2")
+    assert refresh.await_args is not None
+    assert refresh.await_args.args[1] == ["conv-a", "conv-b"]
+    reprocess_backend.get_session_insight_status.assert_not_awaited()
+
 
 @pytest.mark.asyncio
 async def test_execute_materialize_stage_covers_refresh_scoped_and_unscoped_paths() -> None:

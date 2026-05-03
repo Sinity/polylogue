@@ -871,6 +871,14 @@ async def session_insight_status_async(
     *,
     verify_freshness: bool = True,
 ) -> SessionInsightStatusSnapshot:
+    """Return session-insight table/readiness status.
+
+    With `verify_freshness=False`, the result is a lightweight approximation:
+    `root_threads` falls back to `thread_count`, and readiness flags depending
+    on freshness-gated stale/orphan/expected counts can appear ready without
+    fresh verification. Use `verify_freshness=True` for full health checks.
+    """
+
     tables = await _tables_async(conn)
     counts = await _status_counts_async(conn, tables, verify_freshness=verify_freshness)
     return _status_payload(tables, counts)

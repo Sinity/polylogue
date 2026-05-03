@@ -140,3 +140,42 @@ async def test_status_sync_and_async_match_when_product_tables_are_absent(tmp_pa
     assert sync_status.stale_profile_row_count == 0
     assert sync_status.profile_rows_ready is False
     assert sync_status.threads_ready is False
+
+
+async def test_lightweight_status_sync_and_async_match_with_freshness_tables(tmp_path: Path) -> None:
+    db_path = tmp_path / "status-lightweight.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE conversations (
+                conversation_id TEXT PRIMARY KEY,
+                parent_conversation_id TEXT,
+                sort_key REAL,
+                updated_at TEXT
+            );
+            CREATE TABLE session_profiles (
+                conversation_id TEXT PRIMARY KEY,
+                work_event_count INTEGER NOT NULL,
+                phase_count INTEGER NOT NULL
+            );
+            CREATE TABLE session_profiles_fts (conversation_id TEXT NOT NULL);
+            CREATE TABLE work_threads (thread_id TEXT PRIMARY KEY);
+
+            INSERT INTO conversations (conversation_id, parent_conversation_id, sort_key, updated_at)
+            VALUES ('root', NULL, 1.0, '2026-04-01T00:00:00Z');
+            INSERT INTO session_profiles (conversation_id, work_event_count, phase_count)
+            VALUES ('root', 0, 0);
+            INSERT INTO session_profiles_fts (conversation_id) VALUES ('root'), ('root');
+            INSERT INTO work_threads (thread_id) VALUES ('root');
+            """
+        )
+        sync_status = session_insight_status_sync(conn, verify_freshness=False)
+
+    async with aiosqlite.connect(db_path) as conn:
+        async_status = await session_insight_status_async(conn, verify_freshness=False)
+
+    assert asdict(sync_status) == asdict(async_status)
+    assert sync_status.root_threads == sync_status.thread_count == 1
+    assert sync_status.stale_profile_row_count == 0
+    assert sync_status.profile_merged_fts_count == 2
+    assert sync_status.profile_merged_fts_duplicate_count == 1

@@ -232,6 +232,27 @@ def test_run_result_callback_forwards_reparse_as_force_write() -> None:
     assert run_sync_once.call_args.kwargs["force_write"] is True
 
 
+def test_run_result_callback_rejects_reparse_without_parse_stage() -> None:
+    env = _env(plain=True)
+    with (
+        patch("polylogue.cli.commands.run.run_coroutine_sync") as run_coroutine_sync,
+        patch("polylogue.cli.commands.run._run_sync_once") as run_sync_once,
+    ):
+        with pytest.raises(SystemExit) as excinfo:
+            _raw_callback()(
+                _ctx(env),
+                [_run_stage_request("materialize")],
+                False,
+                (),
+                (),
+                True,
+            )
+
+    assert "--reparse requires a stage sequence that includes parse" in str(excinfo.value)
+    run_coroutine_sync.assert_not_called()
+    run_sync_once.assert_not_called()
+
+
 def test_run_result_callback_can_cancel_nonwatch_execution_before_running() -> None:
     env = _env(plain=False, confirm=False)
     with patch("polylogue.cli.commands.run.resolve_sources", return_value=None):
