@@ -2,7 +2,7 @@
 
 The CLI uses a hybrid structure:
 - Positional args without subcommand prefix → query mode
-- Known subcommand prefixes (run, doctor, schema, etc.) → subcommand mode
+- Known subcommand prefixes (doctor, schema, check, etc.) → subcommand mode
 - No args → stats mode
 """
 
