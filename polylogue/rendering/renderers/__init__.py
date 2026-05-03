@@ -17,7 +17,7 @@ from .markdown import MarkdownRenderer
 from .plaintext import PlaintextRenderer
 
 if TYPE_CHECKING:
-    from polylogue.storage.backends.async_sqlite import SQLiteBackend
+    from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
 
 def _markdown_renderer(config: Config, backend: SQLiteBackend | None) -> OutputRenderer:

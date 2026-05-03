@@ -16,9 +16,9 @@ from polylogue.pipeline.prepare import prepare_records
 from polylogue.pipeline.prepare_models import PersistedConversationResult
 from polylogue.sources import iter_source_conversations
 from polylogue.sources.parsers.base import ParsedConversation, ParsedMessage
-from polylogue.storage.backends.async_sqlite import SQLiteBackend
-from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.repository import ConversationRepository
+from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
+from polylogue.storage.sqlite.connection import open_connection
 from polylogue.types import Provider
 from tests.infra.storage_records import ConversationBuilder, db_setup
 

@@ -11,8 +11,8 @@ from polylogue.site.scan import iter_conversation_indexes, scan_archive
 if TYPE_CHECKING:
     from polylogue.site.builder import SiteBuilder
     from polylogue.site.models import ArchiveIndexStats, ConversationIndex, ConversationPageBuildStats
-    from polylogue.storage.backends.async_sqlite import SQLiteBackend
     from polylogue.storage.repository import ConversationRepository
+    from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
 
 async def iter_conversation_indexes_for_builder(

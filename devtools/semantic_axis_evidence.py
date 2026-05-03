@@ -21,7 +21,7 @@ from polylogue.core.json import JSONDocument, require_json_value
 from polylogue.core.outcomes import OutcomeStatus
 from polylogue.proof.models import EvidenceEnvelope, TrustMetadata
 from polylogue.scenarios import CorpusSourceKind
-from polylogue.storage.backends.schema_ddl import SCHEMA_VERSION
+from polylogue.storage.sqlite.schema_ddl import SCHEMA_VERSION
 
 from .benchmark_campaigns import SYNTHETIC_CAMPAIGNS, run_synthetic_benchmark_campaign
 from .large_archive_generator import ScaleLevel, generate_archive, get_default_spec

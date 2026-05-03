@@ -67,8 +67,8 @@ def _make_raw_record(
 def _make_parsing_service(tmp_path: Path) -> ParsingService:
     from polylogue.config import Config
     from polylogue.pipeline.services.parsing import ParsingService
-    from polylogue.storage.backends.async_sqlite import SQLiteBackend
     from polylogue.storage.repository import ConversationRepository
+    from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
     db = SQLiteBackend(db_path=tmp_path / "test.db")
     config = Config(

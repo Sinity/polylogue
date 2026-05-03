@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.storage.backends.async_sqlite import SQLiteBackend
-from polylogue.storage.backends.queries.message_query_reads import (
+from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
+from polylogue.storage.sqlite.queries.message_query_reads import (
     get_messages,
     get_messages_batch,
     get_messages_paginated,

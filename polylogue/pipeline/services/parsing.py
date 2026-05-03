@@ -17,8 +17,8 @@ from polylogue.pipeline.services.parsing_workflow import ingest_sources, parse_f
 if TYPE_CHECKING:
     from polylogue.config import Config, Source
     from polylogue.protocols import ProgressCallback
-    from polylogue.storage.backends.async_sqlite import SQLiteBackend
     from polylogue.storage.repository import ConversationRepository
+    from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
 
 class ParsingService:

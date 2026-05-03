@@ -9,8 +9,8 @@ from unittest.mock import patch
 
 import pytest
 
-from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.repository import ConversationRepository
+from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from tests.infra.mcp import invoke_surface, invoke_surface_async
 from tests.infra.storage_records import make_conversation, make_message
 

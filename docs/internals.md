@@ -11,10 +11,10 @@ debugging landmarks. For the conceptual system shape, see
 | Archive writes are idempotent by content hash | `pipeline/ids.py`, `pipeline/prepare_enrichment.py` |
 | Content hash excludes user metadata (tags, summaries) | `pipeline/ids.py:conversation_content_hash()` |
 | Content hash uses NFC normalization | `core/hashing.py:hash_text()` |
-| Async SQLite is the primary runtime; sync SQLite exists for CLI, schema tooling, and batch-ingest write paths | `storage/backends/async_sqlite.py`, `storage/backends/connection.py`, `pipeline/services/ingest_batch.py` |
-| SQLite read/write tuning is profile-driven, not backend-local | `storage/backends/connection_profile.py` |
-| FTS tokenizer is `unicode61` (no porter stemmer) | `storage/backends/schema_ddl_archive.py` |
-| Schema bootstrap branching is shared across sync and async backends | `storage/backends/schema_bootstrap.py:decide_schema_bootstrap()` |
+| Async SQLite is the primary runtime; sync SQLite exists for CLI, schema tooling, and batch-ingest write paths | `storage/sqlite/async_sqlite.py`, `storage/sqlite/connection.py`, `pipeline/services/ingest_batch.py` |
+| SQLite read/write tuning is profile-driven, not backend-local | `storage/sqlite/connection_profile.py` |
+| FTS tokenizer is `unicode61` (no porter stemmer) | `storage/sqlite/schema_ddl_archive.py` |
+| Schema bootstrap branching is shared across sync and async backends | `storage/sqlite/schema_bootstrap.py:decide_schema_bootstrap()` |
 
 ## Hot Files
 
@@ -32,10 +32,10 @@ debugging landmarks. For the conceptual system shape, see
 
 | File | Purpose |
 | --- | --- |
-| `storage/backends/schema_ddl.py` | Schema definition and `SCHEMA_VERSION` |
-| `storage/backends/schema.py` | Shared sync/async fresh-init, version guard, and extension application |
-| `storage/backends/schema_bootstrap.py` | Shared schema snapshot, bootstrap branching, and extension planning |
-| `storage/backends/connection_profile.py` | Canonical read/write SQLite timeouts, cache, mmap, and PRAGMA profiles |
+| `storage/sqlite/schema_ddl.py` | Schema definition and `SCHEMA_VERSION` |
+| `storage/sqlite/schema.py` | Shared sync/async fresh-init, version guard, and extension application |
+| `storage/sqlite/schema_bootstrap.py` | Shared schema snapshot, bootstrap branching, and extension planning |
+| `storage/sqlite/connection_profile.py` | Canonical read/write SQLite timeouts, cache, mmap, and PRAGMA profiles |
 | `storage/repository/__init__.py` | Repository facade (9-mixin composition: archive reads/writes, action reads, four insight readers, raw, vectors) |
 | `storage/search_providers/fts5.py` | Lexical search |
 | `storage/search_providers/hybrid.py` | Hybrid retrieval (RRF fusion) |
@@ -62,7 +62,7 @@ tightness level it deserves or an earlier parser will claim its records first.
 
 **Adding a filter**: Filter chain: `archive/filter/filters.py`. If the filter
 needs a stats-table join, update `_needs_stats_join()` in
-`storage/backends/connection.py`. Add the corresponding CLI flag in
+`storage/sqlite/connection.py`. Add the corresponding CLI flag in
 `cli/query.py` and MCP parameter in `mcp/`.
 
 **Adding a CLI command**: Register in `cli/command_inventory.py`. Implementation

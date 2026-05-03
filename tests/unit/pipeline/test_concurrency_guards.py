@@ -26,8 +26,8 @@ import pytest
 from polylogue.archive.filter.filters import ConversationFilter
 from polylogue.archive.message.roles import Role
 from polylogue.archive.models import Conversation
-from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.repository import ConversationRepository
+from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from tests.infra.builders import make_conv, make_msg
 from tests.infra.storage_records import make_conversation, make_message
 

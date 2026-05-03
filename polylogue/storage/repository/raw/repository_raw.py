@@ -5,14 +5,14 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
-from polylogue.storage.backends.queries import artifacts as artifacts_q
-from polylogue.storage.backends.queries import raw as raw_queries
 from polylogue.storage.raw.models import RawConversationState, RawConversationStateUpdate
 from polylogue.storage.repository.repository_contracts import RepositoryBackendProtocol
 from polylogue.storage.runtime import (
     ArtifactObservationRecord,
     RawConversationRecord,
 )
+from polylogue.storage.sqlite.queries import artifacts as artifacts_q
+from polylogue.storage.sqlite.queries import raw as raw_queries
 from polylogue.types import Provider, ValidationMode, ValidationStatus
 
 

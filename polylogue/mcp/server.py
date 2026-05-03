@@ -23,8 +23,8 @@ from polylogue.mcp.server_tools import register_tools
 from polylogue.operations import ArchiveOperations
 from polylogue.protocols import ConversationQueryRuntimeStore, TagStore
 from polylogue.services import RuntimeServices
-from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.repository import ConversationRepository
+from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP

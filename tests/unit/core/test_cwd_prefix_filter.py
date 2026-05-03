@@ -7,9 +7,9 @@ from pathlib import Path
 import pytest
 
 from polylogue.archive.query.spec import ConversationQuerySpec
-from polylogue.storage.backends.async_sqlite import SQLiteBackend
-from polylogue.storage.backends.queries.conversations_reads import list_conversations
-from polylogue.storage.backends.queries.filter_builder import _build_conversation_filters
+from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
+from polylogue.storage.sqlite.queries.conversations_reads import list_conversations
+from polylogue.storage.sqlite.queries.filter_builder import _build_conversation_filters
 from tests.infra.storage_records import make_conversation
 
 

@@ -15,7 +15,7 @@ from polylogue.storage.query_models import SessionProfileListQuery
 from polylogue.storage.runtime import SessionProfileRecord
 
 if TYPE_CHECKING:
-    from polylogue.storage.backends.query_store import SQLiteQueryStore
+    from polylogue.storage.sqlite.query_store import SQLiteQueryStore
 
 
 class RepositoryInsightProfileReadMixin:

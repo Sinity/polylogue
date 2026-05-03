@@ -6,9 +6,9 @@ import sqlite3
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from polylogue.storage.backends.connection_profile import DB_TIMEOUT
-from polylogue.storage.backends.sqlite_vec_extension import try_load_sqlite_vec
 from polylogue.storage.search_providers.sqlite_vec_support import SqliteVecError, logger
+from polylogue.storage.sqlite.connection_profile import DB_TIMEOUT
+from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
 
 
 class SqliteVecRuntimeMixin:

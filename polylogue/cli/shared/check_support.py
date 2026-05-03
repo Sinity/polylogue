@@ -72,7 +72,7 @@ def make_session_insight_progress_callback() -> ProgressCallback:
 
 def vacuum_database(env: AppEnv) -> VacuumResult:
     """Run VACUUM and return a machine-readable result."""
-    from polylogue.storage.backends.connection import open_connection
+    from polylogue.storage.sqlite.connection import open_connection
 
     try:
         with open_connection(env.config.db_path) as conn:

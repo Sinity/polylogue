@@ -534,7 +534,7 @@ def _run_sql_repair(
 
 
 def repair_orphaned_messages(config: Config, dry_run: bool = False) -> RepairResult:
-    from polylogue.storage.backends.connection import connection_context
+    from polylogue.storage.sqlite.connection import connection_context
 
     with connection_context(None) as conn:
         count = count_orphaned_messages_sync(conn)
@@ -586,7 +586,7 @@ def preview_orphaned_messages(*, count: int) -> RepairResult:
 
 
 def repair_empty_conversations(config: Config, dry_run: bool = False) -> RepairResult:
-    from polylogue.storage.backends.connection import connection_context
+    from polylogue.storage.sqlite.connection import connection_context
 
     with connection_context(None) as conn:
         return _run_sql_repair(
@@ -608,7 +608,7 @@ def preview_empty_conversations(*, count: int) -> RepairResult:
 
 
 def repair_orphaned_content_blocks(config: Config, dry_run: bool = False) -> RepairResult:
-    from polylogue.storage.backends.connection import connection_context
+    from polylogue.storage.sqlite.connection import connection_context
 
     with connection_context(None) as conn:
         if dry_run:
@@ -641,7 +641,7 @@ def preview_orphaned_content_blocks(*, count: int) -> RepairResult:
 
 
 def repair_orphaned_attachments(config: Config, dry_run: bool = False) -> RepairResult:
-    from polylogue.storage.backends.connection import connection_context
+    from polylogue.storage.sqlite.connection import connection_context
 
     try:
         with connection_context(None) as conn:
@@ -701,9 +701,9 @@ def repair_session_insights(
     progress_callback: ProgressCallback | None = None,
     progress_total: int | None = None,
 ) -> RepairResult:
-    from polylogue.storage.backends.connection import connection_context
     from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
     from polylogue.storage.insights.session.status import session_insight_status_sync
+    from polylogue.storage.sqlite.connection import connection_context
 
     try:
         with connection_context(None) as conn:
@@ -761,8 +761,8 @@ def repair_action_event_read_model(config: Config, dry_run: bool = False) -> Rep
         valid_action_event_source_ids_sync,
     )
     from polylogue.storage.action_events.status import action_event_read_model_status_sync
-    from polylogue.storage.backends.connection import connection_context
     from polylogue.storage.fts.fts_lifecycle import repair_fts_index_sync
+    from polylogue.storage.sqlite.connection import connection_context
 
     try:
         with connection_context(None) as conn:
@@ -819,8 +819,8 @@ def preview_action_event_read_model(*, count: int) -> RepairResult:
 
 
 def repair_dangling_fts(config: Config, dry_run: bool = False) -> RepairResult:
-    from polylogue.storage.backends.connection import connection_context
     from polylogue.storage.fts.sql import FTS_INDEXABLE_MESSAGE_COUNT_SQL
+    from polylogue.storage.sqlite.connection import connection_context
 
     try:
         with connection_context(None) as conn:
@@ -890,7 +890,7 @@ def preview_dangling_fts(*, count: int) -> RepairResult:
 
 def repair_wal_checkpoint(config: Config, dry_run: bool = False) -> RepairResult:
     from polylogue.paths import db_path
-    from polylogue.storage.backends.connection import connection_context
+    from polylogue.storage.sqlite.connection import connection_context
 
     try:
         if dry_run:

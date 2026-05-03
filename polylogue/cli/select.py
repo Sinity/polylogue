@@ -30,7 +30,7 @@ from polylogue.pipeline.tail_overlay import TailOverlayUnavailableError, tail_ov
 if TYPE_CHECKING:
     from polylogue.config import Config
     from polylogue.protocols import ConversationQueryRuntimeStore
-    from polylogue.storage.backends.async_sqlite import SQLiteBackend
+    from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
 
 class _SelectQueryStore(Protocol):

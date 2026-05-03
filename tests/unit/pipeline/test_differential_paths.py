@@ -126,7 +126,7 @@ class TestHealthRepairConvergence:
     @pytest.fixture()
     def seeded_db(self: object, workspace_env: dict[str, Path]) -> Path:
         """Create a DB with some conversations and introduce orphaned messages."""
-        from polylogue.storage.backends.connection import open_connection
+        from polylogue.storage.sqlite.connection import open_connection
         from tests.infra.storage_records import ConversationBuilder, db_setup
 
         db_path = db_setup(workspace_env)
@@ -158,8 +158,8 @@ class TestHealthRepairConvergence:
         return db_path
 
     def test_orphaned_message_count_agrees(self: object, seeded_db: Path) -> None:
-        from polylogue.storage.backends.connection import open_connection
         from polylogue.storage.repair import count_orphaned_messages_sync
+        from polylogue.storage.sqlite.connection import open_connection
 
         with open_connection(seeded_db) as conn:
             count = count_orphaned_messages_sync(conn)
@@ -167,8 +167,8 @@ class TestHealthRepairConvergence:
         assert count >= 1, "Should detect at least 1 orphaned message"
 
     def test_empty_conversation_count_agrees(self: object, workspace_env: dict[str, Path]) -> None:
-        from polylogue.storage.backends.connection import open_connection
         from polylogue.storage.repair import count_empty_conversations_sync
+        from polylogue.storage.sqlite.connection import open_connection
         from tests.infra.storage_records import db_setup
 
         db_path = db_setup(workspace_env)
@@ -194,7 +194,7 @@ class TestRepairPreviewConvergence:
 
     @pytest.fixture()
     def db_with_orphans(self: object, workspace_env: dict[str, Path]) -> Config:
-        from polylogue.storage.backends.connection import open_connection
+        from polylogue.storage.sqlite.connection import open_connection
         from tests.infra.storage_records import ConversationBuilder, db_setup
 
         db_path = db_setup(workspace_env)
@@ -218,8 +218,8 @@ class TestRepairPreviewConvergence:
 
     def test_preview_matches_live_orphan_count(self: object, db_with_orphans: Config) -> None:
         """The count from health/debt should match what repair would find."""
-        from polylogue.storage.backends.connection import open_connection
         from polylogue.storage.repair import count_orphaned_messages_sync
+        from polylogue.storage.sqlite.connection import open_connection
 
         with open_connection(db_with_orphans.db_path) as conn:
             count1 = count_orphaned_messages_sync(conn)
@@ -230,11 +230,11 @@ class TestRepairPreviewConvergence:
 
     def test_repair_removes_exactly_previewed_count(self: object, db_with_orphans: Config) -> None:
         """After repair, orphan count should be zero."""
-        from polylogue.storage.backends.connection import open_connection
         from polylogue.storage.repair import (
             count_orphaned_messages_sync,
             repair_orphaned_messages,
         )
+        from polylogue.storage.sqlite.connection import open_connection
 
         with open_connection(db_with_orphans.db_path) as conn:
             before = count_orphaned_messages_sync(conn)

@@ -169,7 +169,7 @@ class TestOutputRendererConformance:
         self, cls: type[MarkdownRenderer] | type[HTMLRenderer], tmp_path: Path
     ) -> None:
         """render() must write a non-empty output file for a seeded conversation."""
-        from polylogue.storage.backends.connection import open_connection
+        from polylogue.storage.sqlite.connection import open_connection
 
         db_path = tmp_path / "test.db"
         conv_id = "smoke-conv-0001"
@@ -208,7 +208,7 @@ class TestOutputRendererConformance:
             conn.commit()
 
         output_dir = tmp_path / "out"
-        from polylogue.storage.backends.async_sqlite import SQLiteBackend
+        from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
         backend = SQLiteBackend(db_path=db_path)
 

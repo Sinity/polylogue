@@ -434,7 +434,7 @@ def test_cli_completion_repo_cwd_and_read_ids_are_archive_backed(tmp_path: Path)
     repo_csv_records = _run_completion(workspace, cwd=tmp_path, words="polylogue --repo old,po", cword=2)
     cwd_records = _run_completion(workspace, cwd=tmp_path, words="polylogue --cwd-prefix /realm/project/p", cword=2)
     messages_records = _run_completion(workspace, cwd=tmp_path, words="polylogue messages conv", cword=2)
-    raw_records = _run_completion(workspace, cwd=tmp_path, words="polylogue raw conv", cword=2)
+    raw_artifacts = _run_completion(workspace, cwd=tmp_path, words="polylogue raw conv", cword=2)
 
     repo = next(record for record in repo_records if record["value"] == "polylogue")
     repo_csv = next(record for record in repo_csv_records if record["value"] == "old,polylogue")
@@ -443,7 +443,7 @@ def test_cli_completion_repo_cwd_and_read_ids_are_archive_backed(tmp_path: Path)
     assert repo_csv["help"] == "1 sessions"
     assert cwd["help"] == "1 sessions"
     assert any(record["value"] == conv_id for record in messages_records)
-    assert any(record["value"] == conv_id for record in raw_records)
+    assert any(record["value"] == conv_id for record in raw_artifacts)
 
 
 def test_cli_completion_provider_values_keep_csv_prefix_and_descriptions(tmp_path: Path) -> None:

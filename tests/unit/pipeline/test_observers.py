@@ -12,7 +12,7 @@ from polylogue.pipeline.observers import (
     WebhookObserver,
 )
 from polylogue.pipeline.services.rendering import RenderService
-from polylogue.storage.backends.async_sqlite import SQLiteBackend
+from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
 
 def _make_result(count: int = 5) -> MagicMock:

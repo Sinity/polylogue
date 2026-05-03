@@ -9,8 +9,8 @@ from typing import Final
 
 from hypothesis import strategies as st
 
-from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.index import rebuild_index
+from polylogue.storage.sqlite.connection import open_connection
 from tests.infra.storage_records import ConversationBuilder
 
 _PROVIDERS: Final[tuple[str, ...]] = ("claude-ai", "chatgpt", "codex", "claude-code")

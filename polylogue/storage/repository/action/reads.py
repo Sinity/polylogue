@@ -10,7 +10,7 @@ from polylogue.storage.runtime import ActionEventRecord
 
 if TYPE_CHECKING:
     from polylogue.storage.action_events.artifacts import ActionEventArtifactState
-    from polylogue.storage.backends.query_store import SQLiteQueryStore
+    from polylogue.storage.sqlite.query_store import SQLiteQueryStore
 
 
 class RepositoryActionReadMixin:

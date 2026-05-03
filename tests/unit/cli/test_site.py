@@ -9,8 +9,8 @@ from pathlib import Path
 from click.testing import CliRunner
 
 from polylogue.cli import cli
-from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.runtime import RunRecord
+from polylogue.storage.sqlite.connection import open_connection
 from tests.infra.storage_records import ConversationBuilder, record_run
 
 

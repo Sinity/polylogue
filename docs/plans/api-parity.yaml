@@ -23,7 +23,7 @@ surfaces:
   sync_api:
     description: Synchronous SQLite access for CLI and tooling
     coverage: established
-    path: polylogue/storage/backends/connection.py
+    path: polylogue/storage/sqlite/connection.py
 
 operations:
   - name: list_conversations

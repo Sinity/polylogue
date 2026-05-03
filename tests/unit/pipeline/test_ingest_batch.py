@@ -42,12 +42,12 @@ from polylogue.pipeline.services.ingest_worker import (
     StatsTuple,
     _make_ref_id,
 )
-from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.insights.session.refresh import SessionInsightRefreshChunkObservation
 from polylogue.storage.raw.models import RawConversationStateUpdate
 from polylogue.storage.runtime import RawConversationRecord
 from polylogue.storage.search.cache import get_cache_stats
 from polylogue.storage.search.runtime import search_messages
+from polylogue.storage.sqlite.connection import open_connection
 from polylogue.types import AttachmentId, ContentBlockType, ContentHash, ConversationId, MessageId
 
 
@@ -500,7 +500,7 @@ def test_write_conversation_force_write_updates_sort_key_only(tmp_path: Path) ->
 def test_iter_ingest_results_sync_runs_inline_for_single_worker(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    raw_records = [
+    raw_artifacts = [
         RawConversationRecord(
             raw_id="raw-1",
             provider_name="codex",
@@ -541,7 +541,7 @@ def test_iter_ingest_results_sync_runs_inline_for_single_worker(
 
     results = list(
         _iter_ingest_results_sync(
-            raw_records,
+            raw_artifacts,
             request=_IngestWorkerRequest(
                 archive_root_str="/tmp/archive",
                 blob_root_str="/tmp/blob-store",
@@ -680,9 +680,9 @@ def test_process_ingest_batch_sync_commits_fts_repair_and_invalidates_search_cac
 
 def test_select_ingest_worker_count_throttles_large_batches(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("polylogue.pipeline.services.ingest_batch.os.cpu_count", lambda: 16)
-    raw_records = [SimpleNamespace(blob_size=60 * 1024 * 1024) for _ in range(2)]
+    raw_artifacts = [SimpleNamespace(blob_size=60 * 1024 * 1024) for _ in range(2)]
 
-    worker_count = _select_ingest_worker_count(raw_records, None)
+    worker_count = _select_ingest_worker_count(raw_artifacts, None)
 
     assert worker_count == 2
 
@@ -691,9 +691,9 @@ def test_select_ingest_worker_count_keeps_parallelism_for_small_batches(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr("polylogue.pipeline.services.ingest_batch.os.cpu_count", lambda: 16)
-    raw_records = [SimpleNamespace(blob_size=4 * 1024 * 1024) for _ in range(6)]
+    raw_artifacts = [SimpleNamespace(blob_size=4 * 1024 * 1024) for _ in range(6)]
 
-    worker_count = _select_ingest_worker_count(raw_records, None)
+    worker_count = _select_ingest_worker_count(raw_artifacts, None)
 
     assert worker_count == 6
 

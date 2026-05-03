@@ -24,8 +24,8 @@ if TYPE_CHECKING:
     from click.testing import CliRunner
 
     from polylogue.config import Source
-    from polylogue.storage.backends import SQLiteBackend
     from polylogue.storage.repository import ConversationRepository
+    from polylogue.storage.sqlite import SQLiteBackend
     from tests.infra.storage_records import ConversationBuilder
 
 # ---------------------------------------------------------------------------
@@ -66,7 +66,7 @@ settings.load_profile(os.environ.get("HYPOTHESIS_PROFILE", "default"))
 def _clear_polylogue_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     # Close any cached SQLite connections to prevent WAL sidecar corruption
     # when tests create/move/delete temp database files.
-    from polylogue.storage.backends.connection import _clear_connection_cache
+    from polylogue.storage.sqlite.connection import _clear_connection_cache
 
     _clear_connection_cache()
 
@@ -135,7 +135,7 @@ def workspace_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, 
 @pytest.fixture
 def db_without_fts(tmp_path: Path) -> Path:
     """Database with schema but WITHOUT the FTS table (simulates fresh install)."""
-    from polylogue.storage.backends.connection import open_connection
+    from polylogue.storage.sqlite.connection import open_connection
 
     db_path = tmp_path / "no_fts.db"
     with open_connection(db_path) as conn:
@@ -159,8 +159,8 @@ def storage_repository(workspace_env: dict[str, Path]) -> ConversationRepository
     Depends on workspace_env to ensure XDG_DATA_HOME is set before
     creating the default backend.
     """
-    from polylogue.storage.backends.connection import create_default_backend
     from polylogue.storage.repository import ConversationRepository
+    from polylogue.storage.sqlite.connection import create_default_backend
 
     backend = create_default_backend()
     return ConversationRepository(backend=backend)
@@ -201,8 +201,8 @@ def cli_workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, 
     monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")  # Plain output for tests
     monkeypatch.setenv("POLYLOGUE_SCHEMA_VALIDATION", "off")
 
-    from polylogue.storage.backends.connection import connection_context
-    from polylogue.storage.backends.schema import _ensure_schema
+    from polylogue.storage.sqlite.connection import connection_context
+    from polylogue.storage.sqlite.schema import _ensure_schema
 
     with connection_context(db_path) as conn:
         _ensure_schema(conn)
@@ -410,7 +410,7 @@ def test_db(tmp_path: Path) -> Path:
     Replaces duplicate fixtures in: test_store.py, test_pipeline.py, test_lib.py,
     test_repository_render.py, test_search_index.py
     """
-    from polylogue.storage.backends.connection import open_connection
+    from polylogue.storage.sqlite.connection import open_connection
 
     db_path = tmp_path / "test.db"
     with open_connection(db_path):
@@ -424,7 +424,7 @@ def test_conn(test_db: Path) -> Iterator[sqlite3.Connection]:
 
     Replaces duplicate fixtures in: test_store.py, test_pipeline.py, test_search_index.py
     """
-    from polylogue.storage.backends.connection import open_connection
+    from polylogue.storage.sqlite.connection import open_connection
 
     with open_connection(test_db) as conn:
         yield conn
@@ -434,7 +434,7 @@ def test_conn(test_db: Path) -> Iterator[sqlite3.Connection]:
 async def sqlite_backend(tmp_path: Path) -> AsyncIterator[SQLiteBackend]:
     """Create a SQLite backend for testing."""
 
-    from polylogue.storage.backends import SQLiteBackend
+    from polylogue.storage.sqlite import SQLiteBackend
 
     db_path = tmp_path / "test.db"
     backend = SQLiteBackend(db_path=db_path)
@@ -513,11 +513,11 @@ def seeded_db(tmp_path_factory: pytest.TempPathFactory) -> Path:
     from polylogue.pipeline.prepare import prepare_records
     from polylogue.schemas.synthetic import SyntheticCorpus
     from polylogue.sources import iter_source_conversations
-    from polylogue.storage.backends.async_sqlite import SQLiteBackend
-    from polylogue.storage.backends.connection import open_connection
     from polylogue.storage.blob_store import BlobStore
     from polylogue.storage.repository import ConversationRepository
     from polylogue.storage.runtime import RawConversationRecord
+    from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
+    from polylogue.storage.sqlite.connection import open_connection
 
     # Create session-scoped temp directory
     tmp_dir = tmp_path_factory.mktemp("seeded_db")
@@ -606,8 +606,8 @@ def seeded_repository(seeded_db: Path) -> ConversationRepository:
 
     Use this when tests need a ConversationRepository with real provider data.
     """
-    from polylogue.storage.backends.async_sqlite import SQLiteBackend
     from polylogue.storage.repository import ConversationRepository
+    from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
     backend = SQLiteBackend(db_path=seeded_db)
     return ConversationRepository(backend=backend)

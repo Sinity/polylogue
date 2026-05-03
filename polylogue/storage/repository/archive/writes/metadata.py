@@ -5,8 +5,8 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from polylogue.core.json import JSONDocument
-from polylogue.storage.backends.queries import conversations as conversations_q
 from polylogue.storage.repository.repository_contracts import RepositoryBackendProtocol
+from polylogue.storage.sqlite.queries import conversations as conversations_q
 
 
 async def metadata_read_modify_write(

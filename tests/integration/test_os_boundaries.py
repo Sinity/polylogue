@@ -65,9 +65,9 @@ class TestFileDescriptorPressure:
         del workspace_env
         import asyncio
 
-        from polylogue.storage.backends.async_sqlite import SQLiteBackend
-        from polylogue.storage.backends.connection import open_connection
         from polylogue.storage.query_models import ConversationRecordQuery
+        from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
+        from polylogue.storage.sqlite.connection import open_connection
 
         db_path = tmp_path / "fd_test.db"
         with open_connection(db_path):

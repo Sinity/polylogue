@@ -30,11 +30,11 @@ from polylogue.archive.conversation.models import Conversation
 from polylogue.archive.filter.filters import ConversationFilter
 from polylogue.archive.filter.types import SortField
 from polylogue.archive.models import ConversationSummary
-from polylogue.storage.backends.async_sqlite import SQLiteBackend
-from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.index import rebuild_index
 from polylogue.storage.repository import ConversationRepository
 from polylogue.storage.search_providers.hybrid import reciprocal_rank_fusion
+from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
+from polylogue.storage.sqlite.connection import open_connection
 from tests.infra.storage_records import ConversationBuilder
 from tests.infra.strategies.filters import (
     filter_chain_strategy,

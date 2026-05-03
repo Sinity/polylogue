@@ -14,8 +14,8 @@ from polylogue.insights.archive import (
     SessionProfileInsight,
     SessionProfileInsightQuery,
 )
-from polylogue.storage.backends.queries.message_query_reads import MessageTypeName
 from polylogue.storage.insights.session.runtime import SessionInsightStatusSnapshot
+from polylogue.storage.sqlite.queries.message_query_reads import MessageTypeName
 
 if TYPE_CHECKING:
     from polylogue.archive.conversation.models import Conversation, ConversationSummary
@@ -304,7 +304,7 @@ class PolylogueArchiveMixin:
         offset: int = 0,
     ) -> tuple[list[dict[str, object]], int]:
         """Return paginated raw archive artifact rows for a conversation."""
-        from polylogue.storage.backends.queries.raw import get_raw_records_for_conversation as _raw_query
+        from polylogue.storage.sqlite.queries.raw import get_raw_records_for_conversation as _raw_query
 
         summary = await self.operations.get_conversation_summary(conversation_id)
         if summary is None:

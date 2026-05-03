@@ -25,8 +25,8 @@ from polylogue.config import Config, Source
 from polylogue.core.json import JSONDocument
 from polylogue.pipeline.runner import run_sources
 from polylogue.pipeline.services.parsing import ParsingService
-from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.repository import ConversationRepository
+from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
 pytestmark = pytest.mark.slow
 
@@ -70,10 +70,10 @@ async def temp_config_and_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     )
 
     # Create backend and repositories
-    from polylogue.storage.backends.connection import open_connection
+    from polylogue.storage.sqlite.connection import open_connection
 
     with open_connection(db_path) as conn:
-        from polylogue.storage.backends.schema import _ensure_schema
+        from polylogue.storage.sqlite.schema import _ensure_schema
 
         _ensure_schema(conn)
 
@@ -119,8 +119,8 @@ async def test_full_workflow_per_provider(
     parse_result = await service.parse_sources([source])
 
     # Build FTS index for search tests (INDEX stage of pipeline)
-    from polylogue.storage.backends.connection import open_connection
     from polylogue.storage.index import update_index_for_conversations
+    from polylogue.storage.sqlite.connection import open_connection
 
     with open_connection(db_path) as conn:
         update_index_for_conversations(list(parse_result.processed_ids), conn)
@@ -594,8 +594,8 @@ async def test_search_accuracy_basic_terms(temp_config_and_repo: WorkflowRepos, 
     await service.parse_sources([chatgpt_sample_source])
 
     # Build search index
-    from polylogue.storage.backends.connection import open_connection
     from polylogue.storage.index import rebuild_index
+    from polylogue.storage.sqlite.connection import open_connection
 
     with open_connection(db_path) as conn:
         rebuild_index(conn)
@@ -666,8 +666,8 @@ async def test_search_with_special_characters(temp_config_and_repo: WorkflowRepo
         await service.parse_sources([Source(name="test", path=path)])
 
         # Build search index
-        from polylogue.storage.backends.connection import open_connection
         from polylogue.storage.index import rebuild_index
+        from polylogue.storage.sqlite.connection import open_connection
 
         with open_connection(db_path) as conn:
             rebuild_index(conn)

@@ -52,7 +52,7 @@ class TestFilterMonotonicity:
     """Adding a filter can only narrow or maintain the result set."""
 
     def test_provider_filter_narrows(self, filterable_db: Path) -> None:
-        from polylogue.storage.backends.connection import open_connection
+        from polylogue.storage.sqlite.connection import open_connection
 
         with open_connection(filterable_db) as conn:
             all_ids = _query_ids(conn)
@@ -62,7 +62,7 @@ class TestFilterMonotonicity:
             assert len(chatgpt_ids) < len(all_ids)
 
     def test_combined_filters_narrow_further(self, filterable_db: Path) -> None:
-        from polylogue.storage.backends.connection import open_connection
+        from polylogue.storage.sqlite.connection import open_connection
 
         with open_connection(filterable_db) as conn:
             all_ids = _query_ids(conn)
@@ -80,7 +80,7 @@ class TestFilterMonotonicity:
             assert chatgpt_ids.issubset(all_ids)
 
     def test_empty_provider_returns_empty(self, filterable_db: Path) -> None:
-        from polylogue.storage.backends.connection import open_connection
+        from polylogue.storage.sqlite.connection import open_connection
 
         with open_connection(filterable_db) as conn:
             nonexistent = _query_ids(conn, "provider_name = ?", ("nonexistent-provider",))
@@ -91,7 +91,7 @@ class TestFilterCommutativity:
     """Independent filters commute — order of application doesn't matter."""
 
     def test_provider_then_message_count_equals_reverse(self, filterable_db: Path) -> None:
-        from polylogue.storage.backends.connection import open_connection
+        from polylogue.storage.sqlite.connection import open_connection
 
         with open_connection(filterable_db) as conn:
             chatgpt_ids = _query_ids(conn, "provider_name = ?", ("chatgpt",))
@@ -116,7 +116,7 @@ class TestFilterIdempotence:
     """Applying the same filter twice yields the same result."""
 
     def test_double_provider_filter_is_idempotent(self, filterable_db: Path) -> None:
-        from polylogue.storage.backends.connection import open_connection
+        from polylogue.storage.sqlite.connection import open_connection
 
         with open_connection(filterable_db) as conn:
             once = _query_ids(conn, "provider_name = ?", ("chatgpt",))
@@ -128,7 +128,7 @@ class TestFilterPartition:
     """Provider filters partition the conversation space."""
 
     def test_providers_partition_total(self, filterable_db: Path) -> None:
-        from polylogue.storage.backends.connection import open_connection
+        from polylogue.storage.sqlite.connection import open_connection
 
         with open_connection(filterable_db) as conn:
             all_ids = _query_ids(conn)
@@ -141,7 +141,7 @@ class TestFilterPartition:
             assert union == all_ids
 
     def test_provider_partitions_are_disjoint(self, filterable_db: Path) -> None:
-        from polylogue.storage.backends.connection import open_connection
+        from polylogue.storage.sqlite.connection import open_connection
 
         with open_connection(filterable_db) as conn:
             providers = [r[0] for r in conn.execute("SELECT DISTINCT provider_name FROM conversations").fetchall()]

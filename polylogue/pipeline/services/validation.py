@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from polylogue.pipeline.services.validation_flow import (
-    evaluate_raw_records as _evaluate_raw_records,
+    evaluate_raw_artifacts as _evaluate_raw_artifacts,
 )
 from polylogue.pipeline.services.validation_flow import (
     schema_validation_mode,
@@ -20,8 +20,8 @@ from polylogue.storage.runtime import RawConversationRecord
 from polylogue.types import ValidationMode
 
 if TYPE_CHECKING:
-    from polylogue.storage.backends.async_sqlite import SQLiteBackend
     from polylogue.storage.repository import ConversationRepository
+    from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
 __all__ = ["ValidationService", "ValidateResult"]
 
@@ -67,19 +67,19 @@ class ValidationService:
             raw_batch_size=self.RAW_BATCH_SIZE,
         )
 
-    async def evaluate_raw_records(
+    async def evaluate_raw_artifacts(
         self,
         *,
-        raw_records: list[RawConversationRecord],
+        raw_artifacts: list[RawConversationRecord],
         progress_callback: ProgressCallback | None = None,
         persist: bool = False,
         mode: ValidationMode | None = None,
         progress_total: int | None = None,
         progress_offset: int = 0,
     ) -> ValidateResult:
-        return await _evaluate_raw_records(
+        return await _evaluate_raw_artifacts(
             repository=self.repository,
-            raw_records=raw_records,
+            raw_artifacts=raw_artifacts,
             progress_callback=progress_callback,
             persist=persist,
             mode=mode or self._schema_validation_mode(),

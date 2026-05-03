@@ -11,8 +11,8 @@ from polylogue.pipeline.prepare_models import (
 )
 from polylogue.sources.parsers.base import ParsedConversation
 from polylogue.storage.archive_views import ExistingConversation
-from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.runtime import AttachmentRecord, ContentBlockRecord, ConversationRecord, MessageRecord
+from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.types import ConversationId, MessageId
 
 

@@ -232,8 +232,8 @@ async def test_search_flow(
     conversation_builder("c1").add_message("m1", text="UniqueSearchTerm123").save()
 
     # Rebuild FTS index so search works
-    from polylogue.storage.backends.connection import open_connection
     from polylogue.storage.index import rebuild_index
+    from polylogue.storage.sqlite.connection import open_connection
 
     with open_connection(storage_repository.backend.db_path) as conn:
         rebuild_index(conn)
@@ -276,8 +276,8 @@ async def test_search_no_results(
     conversation_builder("c1").add_message("m1", text="Hello").save()
 
     # Rebuild FTS index
-    from polylogue.storage.backends.connection import open_connection
     from polylogue.storage.index import rebuild_index
+    from polylogue.storage.sqlite.connection import open_connection
 
     with open_connection(storage_repository.backend.db_path) as conn:
         rebuild_index(conn)
@@ -365,7 +365,7 @@ async def test_search_missing_index_shows_rebuild_hint(
     storage_repository: ConversationRepository, conversation_builder: ConversationBuilderFactory
 ) -> None:
     """Dropping FTS tables yields a direct rebuild hint instead of a crash."""
-    from polylogue.storage.backends.connection import open_connection
+    from polylogue.storage.sqlite.connection import open_connection
 
     conversation_builder("c1").add_message("m1", text="Reindex me").save()
 

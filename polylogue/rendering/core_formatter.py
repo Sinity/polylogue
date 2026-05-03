@@ -12,8 +12,8 @@ from polylogue.rendering.core_markdown import (
     _normalize_markdown_message,
     render_markdown_document,
 )
-from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.repository import ConversationRepository
+from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
 if TYPE_CHECKING:
     from polylogue.storage.archive_views import ConversationRenderProjection

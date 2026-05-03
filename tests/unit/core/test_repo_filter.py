@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from polylogue.archive.query.spec import ConversationQuerySpec
-from polylogue.storage.backends.queries.filter_builder import _build_conversation_filters
+from polylogue.storage.sqlite.queries.filter_builder import _build_conversation_filters
 
 
 def test_repo_param_lands_in_spec() -> None:

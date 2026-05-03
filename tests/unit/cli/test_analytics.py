@@ -341,8 +341,8 @@ async def _seed_db(tmp_path: Path, rows: AnalyticsRows) -> Path:
 
     Creates conversations and messages from rows, returns db_path.
     """
-    from polylogue.storage.backends.async_sqlite import SQLiteBackend
     from polylogue.storage.repository import ConversationRepository
+    from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
     db_path = tmp_path / "test.db"
     backend = SQLiteBackend(db_path=db_path)

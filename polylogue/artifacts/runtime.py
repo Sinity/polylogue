@@ -34,7 +34,7 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
         depends_on=("source_payload_stream",),
         code_refs=(
             "polylogue.storage.raw.artifacts.RawIngestArtifactState",
-            "polylogue.storage.backends.queries.raw_state",
+            "polylogue.storage.sqlite.queries.raw_state",
         ),
     ),
     ArtifactNode(
@@ -220,7 +220,7 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
         depends_on=("session_profile_rows",),
         code_refs=(
             "polylogue.storage.insights.session.status",
-            "polylogue.storage.backends.schema_ddl_insight_profiles",
+            "polylogue.storage.sqlite.schema_ddl_insight_profiles",
         ),
         repair_targets=("session_insights",),
         readiness_surfaces=("doctor", "archive_debt", "insights"),
@@ -232,7 +232,7 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
         depends_on=("session_profile_rows",),
         code_refs=(
             "polylogue.storage.insights.session.status",
-            "polylogue.storage.backends.schema_ddl_insight_profiles",
+            "polylogue.storage.sqlite.schema_ddl_insight_profiles",
         ),
         repair_targets=("session_insights",),
         readiness_surfaces=("doctor", "archive_debt", "insights"),
@@ -244,7 +244,7 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
         depends_on=("session_profile_rows",),
         code_refs=(
             "polylogue.storage.insights.session.status",
-            "polylogue.storage.backends.schema_ddl_insight_profiles",
+            "polylogue.storage.sqlite.schema_ddl_insight_profiles",
         ),
         repair_targets=("session_insights",),
         readiness_surfaces=("doctor", "archive_debt", "insights"),
@@ -256,7 +256,7 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
         depends_on=("session_profile_rows",),
         code_refs=(
             "polylogue.storage.insights.session.status",
-            "polylogue.storage.backends.schema_ddl_insight_profiles",
+            "polylogue.storage.sqlite.schema_ddl_insight_profiles",
         ),
         repair_targets=("session_insights",),
         readiness_surfaces=("doctor", "archive_debt", "insights"),
@@ -280,7 +280,7 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
         depends_on=("session_work_event_rows",),
         code_refs=(
             "polylogue.storage.insights.session.status",
-            "polylogue.storage.backends.schema_ddl_insight_timelines",
+            "polylogue.storage.sqlite.schema_ddl_insight_timelines",
         ),
         repair_targets=("session_insights",),
         readiness_surfaces=("doctor", "archive_debt", "insights"),
@@ -316,7 +316,7 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
         depends_on=("work_thread_rows",),
         code_refs=(
             "polylogue.storage.insights.session.status",
-            "polylogue.storage.backends.schema_ddl_insight_aggregates",
+            "polylogue.storage.sqlite.schema_ddl_insight_aggregates",
         ),
         repair_targets=("session_insights",),
         readiness_surfaces=("doctor", "archive_debt", "insights"),
@@ -617,7 +617,7 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
         code_refs=(
             "polylogue.storage.repository.archive.repository_writes.RepositoryWritesMixin.record_publication",
             "polylogue.storage.repository.archive.repository_writes.RepositoryWritesMixin.get_latest_publication",
-            "polylogue.storage.backends.queries.publications",
+            "polylogue.storage.sqlite.queries.publications",
         ),
         readiness_surfaces=("site", "maintenance"),
     ),

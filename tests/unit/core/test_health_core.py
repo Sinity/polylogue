@@ -257,7 +257,7 @@ def test_run_archive_readiness_reports_busy_archive_with_operator_message(tmp_pa
     config = Config(archive_root=archive_root, render_root=render_root, sources=[Source(name="test", path=tmp_path)])
 
     with patch(
-        "polylogue.storage.backends.connection.open_connection",
+        "polylogue.storage.sqlite.connection.open_connection",
         side_effect=sqlite3.OperationalError("database is locked"),
     ):
         report = run_archive_readiness(config)

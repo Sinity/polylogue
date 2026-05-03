@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.storage.backends.schema import SCHEMA_DDL, SCHEMA_VERSION
+from polylogue.storage.sqlite.schema import SCHEMA_DDL, SCHEMA_VERSION
 
 # =============================================================================
 # Schema DDL parity: sync and async must use the same DDL (f33ef29)
@@ -37,11 +37,11 @@ class TestSchemaDDLParity:
         """Async backend must import SCHEMA_DDL from schema.py, not define its own."""
         import inspect
 
-        from polylogue.storage.backends import async_sqlite
+        from polylogue.storage.sqlite import async_sqlite
 
         source = inspect.getsource(async_sqlite)
         # Must import SCHEMA_DDL, not define it
-        assert "from polylogue.storage.backends.schema import" in source
+        assert "from polylogue.storage.sqlite.schema import" in source
         assert "SCHEMA_DDL" in source
 
     def test_schema_ddl_has_all_required_tables(self) -> None:
@@ -180,7 +180,7 @@ class TestMigrationRollbackSafety:
         This catches drift between the DDL (for fresh installs) and the
         migration path (for upgrades).
         """
-        from polylogue.storage.backends.connection import open_connection
+        from polylogue.storage.sqlite.connection import open_connection
 
         # Create via open_connection (applies migrations)
         migrated_path = tmp_path / "migrated.db"
@@ -225,7 +225,7 @@ class TestMigrationRollbackSafety:
 
     def test_v2_to_v3_upgrade_rolls_back_on_failure(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """The supported v2->v3 upgrade must not leave partial DDL behind."""
-        from polylogue.storage.backends import schema as schema_module
+        from polylogue.storage.sqlite import schema as schema_module
 
         db_path = tmp_path / "v2-failing-upgrade.db"
         conn = sqlite3.connect(str(db_path))
@@ -378,7 +378,7 @@ class TestFTS5CountGuard:
 
     def test_count_on_regular_table_not_fts(self, test_db: Path) -> None:
         """Message count must come from the messages table, not messages_fts."""
-        from polylogue.storage.backends.connection import open_connection
+        from polylogue.storage.sqlite.connection import open_connection
 
         with open_connection(test_db) as conn:
             # Insert test data
@@ -422,7 +422,7 @@ class TestConversationFilterSQL:
         _build_conversation_filters returns (where_clause_str, params_list).
         It uses parameterized queries, so special chars in input are safe.
         """
-        from polylogue.storage.backends.queries.filter_builder import _build_conversation_filters
+        from polylogue.storage.sqlite.queries.filter_builder import _build_conversation_filters
 
         # Provider name with quotes
         where_clause, params = _build_conversation_filters(provider="test'provider")
@@ -435,7 +435,7 @@ class TestConversationFilterSQL:
 
     def test_build_filters_with_empty_provider(self) -> None:
         """Empty provider should still produce valid SQL."""
-        from polylogue.storage.backends.queries.filter_builder import _build_conversation_filters
+        from polylogue.storage.sqlite.queries.filter_builder import _build_conversation_filters
 
         where_clause, params = _build_conversation_filters(provider="")
         assert isinstance(where_clause, str)
@@ -443,7 +443,7 @@ class TestConversationFilterSQL:
 
     def test_build_filters_with_no_args(self) -> None:
         """No filters should produce empty/trivial WHERE clause."""
-        from polylogue.storage.backends.queries.filter_builder import _build_conversation_filters
+        from polylogue.storage.sqlite.queries.filter_builder import _build_conversation_filters
 
         where_clause, params = _build_conversation_filters()
         assert isinstance(where_clause, str)
@@ -452,7 +452,7 @@ class TestConversationFilterSQL:
 
     def test_build_filters_with_title_contains_special(self) -> None:
         """Title search with SQL LIKE special characters must be safe."""
-        from polylogue.storage.backends.queries.filter_builder import _build_conversation_filters
+        from polylogue.storage.sqlite.queries.filter_builder import _build_conversation_filters
 
         where_clause, params = _build_conversation_filters(title_contains="100% done")
         assert isinstance(where_clause, str)
@@ -461,14 +461,14 @@ class TestConversationFilterSQL:
 
     def test_build_filters_rejects_invalid_since_filter(self) -> None:
         """Invalid date filters should not silently broaden to epoch zero."""
-        from polylogue.storage.backends.queries.filter_builder import _build_conversation_filters
+        from polylogue.storage.sqlite.queries.filter_builder import _build_conversation_filters
 
         with pytest.raises(ValueError, match="Invalid date filter value"):
             _build_conversation_filters(since="not-a-date")
 
     def test_build_filters_rejects_invalid_until_filter(self) -> None:
         """Invalid date filters should not silently broaden to epoch zero."""
-        from polylogue.storage.backends.queries.filter_builder import _build_conversation_filters
+        from polylogue.storage.sqlite.queries.filter_builder import _build_conversation_filters
 
         with pytest.raises(ValueError, match="Invalid date filter value"):
             _build_conversation_filters(until="not-a-date")

@@ -23,7 +23,7 @@ from polylogue.core.json import JSONDocument, JSONValue, require_json_document, 
 from polylogue.core.outcomes import OutcomeStatus
 from polylogue.proof.models import EvidenceEnvelope, ProofObligation, SourceSpan, TrustMetadata
 from polylogue.proof.traces import ObservableDiagnosticMapping, ObservableTrace, trace_signature_hash
-from polylogue.storage.backends.schema_ddl import SCHEMA_VERSION
+from polylogue.storage.sqlite.schema_ddl import SCHEMA_VERSION
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]|\x1b\].*?\x07|\x1b\[.*?m")
 _TRACEBACK_MARKER = "Traceback (most recent call last)"

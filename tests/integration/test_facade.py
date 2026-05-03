@@ -178,7 +178,7 @@ class TestPolylogueParsing:
         db_path = workspace_env["data_root"] / "polylogue.db"
 
         # Initialize database with WAL mode before concurrent ingestion
-        from polylogue.storage.backends.connection import open_connection
+        from polylogue.storage.sqlite.connection import open_connection
 
         with open_connection(db_path) as conn:
             conn.execute("SELECT 1").fetchone()

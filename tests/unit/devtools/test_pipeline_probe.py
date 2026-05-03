@@ -12,11 +12,11 @@ from devtools.pipeline_probe import ProbeSummary, _build_budget_report, _write_p
 from devtools.regression_cases import RegressionCase
 from polylogue.scenarios import CorpusRequest, CorpusScenario, CorpusSpec, PipelineProbeRequest
 from polylogue.schemas.synthetic import SyntheticCorpus
-from polylogue.storage.backends import create_backend
-from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.repository import ConversationRepository
 from polylogue.storage.runtime import RawConversationRecord
+from polylogue.storage.sqlite import create_backend
+from polylogue.storage.sqlite.connection import open_connection
 from polylogue.types import Provider, ValidationStatus
 
 JsonScalar: TypeAlias = str | int | float | bool | None

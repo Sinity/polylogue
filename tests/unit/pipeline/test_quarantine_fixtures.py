@@ -237,7 +237,7 @@ async def test_quarantine_state_round_trip_through_mark_raw_parsed(tmp_path: Pat
     ``RawConversationState`` round-trips, and the derived artifact state
     classifies the row as quarantined.
     """
-    from polylogue.storage.backends.async_sqlite import SQLiteBackend
+    from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
     record = _make_raw_record(zero_length_bytes(), "codex", "/exports/codex.jsonl")
 
@@ -269,7 +269,7 @@ async def test_quarantine_state_round_trip_through_mark_raw_parsed(tmp_path: Pat
 
 async def test_validation_flow_persists_decode_quarantine_state(tmp_path: Path) -> None:
     """Validation persistence records both decode-failure shapes as quarantines."""
-    from polylogue.storage.backends.async_sqlite import SQLiteBackend
+    from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
     cases = [
         (

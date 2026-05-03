@@ -11,13 +11,6 @@ import aiosqlite
 from polylogue.insights.archive import date_from_iso
 from polylogue.insights.archive_rollups import build_session_tag_rollup_records
 from polylogue.insights.archive_summaries import build_day_session_summary_records
-from polylogue.storage.backends.queries.mappers import _row_to_session_profile_record
-from polylogue.storage.backends.queries.session_insight_summary_queries import (
-    replace_day_session_summaries as replace_day_session_summaries_async,
-)
-from polylogue.storage.backends.queries.session_insight_summary_queries import (
-    replace_session_tag_rollup_rows as replace_session_tag_rollup_rows_async,
-)
 from polylogue.storage.insights.session.profiles import hydrate_session_profile
 from polylogue.storage.insights.session.storage import (
     replace_day_session_summaries_sync,
@@ -27,6 +20,13 @@ from polylogue.storage.runtime import (
     DaySessionSummaryRecord,
     SessionProfileRecord,
     SessionTagRollupRecord,
+)
+from polylogue.storage.sqlite.queries.mappers import _row_to_session_profile_record
+from polylogue.storage.sqlite.queries.session_insight_summary_queries import (
+    replace_day_session_summaries as replace_day_session_summaries_async,
+)
+from polylogue.storage.sqlite.queries.session_insight_summary_queries import (
+    replace_session_tag_rollup_rows as replace_session_tag_rollup_rows_async,
 )
 
 _PROFILE_BUCKET_DAY_SQL = (

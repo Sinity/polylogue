@@ -8,12 +8,12 @@ from typing import TYPE_CHECKING
 
 from polylogue.archive.conversation.models import Conversation, ConversationSummary
 from polylogue.protocols import ConversationQueryRuntimeStore
-from polylogue.storage.backends.queries.stats import AggregateMessageStats
 from polylogue.storage.query_models import ConversationRecordQuery
+from polylogue.storage.sqlite.queries.stats import AggregateMessageStats
 
 if TYPE_CHECKING:
     from polylogue.archive.filter.filters import ConversationFilter
-    from polylogue.storage.backends.query_store import SQLiteQueryStore
+    from polylogue.storage.sqlite.query_store import SQLiteQueryStore
 
 
 class RepositoryArchiveQueryMixin:

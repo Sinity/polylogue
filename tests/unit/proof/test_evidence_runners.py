@@ -14,7 +14,7 @@ from polylogue.proof.runners import (
     run_cli_visual_evidence,
     run_semantic_query_evidence,
 )
-from polylogue.storage.backends.schema_ddl import SCHEMA_VERSION
+from polylogue.storage.sqlite.schema_ddl import SCHEMA_VERSION
 from tests.infra.archive_scenarios import ArchiveScenario, ScenarioMessage, seed_workspace_scenarios
 from tests.infra.query_cases import ArchiveQueryCase
 from tests.infra.surfaces import ArchiveSurfaceSet, build_archive_surface_set

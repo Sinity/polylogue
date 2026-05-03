@@ -21,8 +21,6 @@ from typing_extensions import TypedDict, Unpack
 
 from polylogue.archive.conversation.models import Conversation
 from polylogue.archive.message.messages import MessageCollection
-from polylogue.storage.backends.async_sqlite import SQLiteBackend
-from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.query_models import ConversationRecordQuery
 from polylogue.storage.repository import ConversationRepository
 from polylogue.storage.runtime import (
@@ -33,6 +31,8 @@ from polylogue.storage.runtime import (
     _json_or_none,
     _make_ref_id,
 )
+from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
+from polylogue.storage.sqlite.connection import open_connection
 from polylogue.types import (
     AttachmentId,
     ContentBlockType,
@@ -1009,8 +1009,8 @@ def test_store_records_without_connection_creates_own(
 ) -> None:
     """store_records() must honor the default DB path when no connection is supplied."""
     import polylogue.paths
-    import polylogue.storage.backends.connection as connection_module
-    from polylogue.storage.backends.connection import _clear_connection_cache
+    import polylogue.storage.sqlite.connection as connection_module
+    from polylogue.storage.sqlite.connection import _clear_connection_cache
 
     data_home = tmp_path / "data"
     data_home.mkdir()

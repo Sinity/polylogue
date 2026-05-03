@@ -7,8 +7,8 @@ from dataclasses import dataclass, field
 from polylogue.config import Config
 from polylogue.operations import ArchiveOperations
 from polylogue.services import RuntimeServices, build_runtime_services
-from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.repository import ConversationRepository
+from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.ui import UI
 
 

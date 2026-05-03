@@ -7,8 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from polylogue.core.json import JSONDocument, JSONValue
-from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.repository import ConversationRepository
+from polylogue.storage.sqlite.connection import open_connection
 from tests.infra.archive_scenarios import ArchiveScenario, repository_for_scenario_db
 from tests.infra.oracles import assert_archive_surfaces_agree, assert_conversation_surfaces_agree
 from tests.infra.semantic_facts import ArchiveFacts

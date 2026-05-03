@@ -1,4 +1,4 @@
-"""Durable product aggregate reads for the repository."""
+"""Durable insight aggregate reads for the repository."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from polylogue.storage.query_models import (
 from polylogue.storage.runtime import DaySessionSummaryRecord, SessionTagRollupRecord
 
 if TYPE_CHECKING:
-    from polylogue.storage.backends.query_store import SQLiteQueryStore
+    from polylogue.storage.sqlite.query_store import SQLiteQueryStore
 
 
 class RepositoryInsightSummaryReadMixin:

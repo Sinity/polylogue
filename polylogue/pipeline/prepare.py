@@ -34,7 +34,7 @@ from polylogue.storage.runtime import (
 
 if TYPE_CHECKING:
     from polylogue.sources.parsers.base import ParsedConversation
-    from polylogue.storage.backends.async_sqlite import SQLiteBackend
+    from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
 logger = get_logger(__name__)
 

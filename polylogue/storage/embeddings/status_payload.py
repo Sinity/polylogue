@@ -140,8 +140,8 @@ def _payload_from_stats(
 
 def embedding_status_payload(env: _HasConfig) -> EmbeddingStatusPayload:
     """Read canonical embedding-status statistics for operator surfaces."""
-    from polylogue.storage.backends.connection import open_read_connection
     from polylogue.storage.embeddings.embedding_stats import read_embedding_stats_sync
+    from polylogue.storage.sqlite.connection import open_read_connection
 
     with open_read_connection(env.config.db_path) as conn:
         total_conversations = _total_conversations(conn)

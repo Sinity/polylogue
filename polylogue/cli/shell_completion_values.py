@@ -13,7 +13,7 @@ from polylogue.archive.message.types import MessageType
 from polylogue.archive.query.fields import CompletionSource
 from polylogue.archive.query.spec import QUERY_ACTION_TYPES, QUERY_RETRIEVAL_LANES, QUERY_SEQUENCE_ACTION_TYPES
 from polylogue.paths import db_path
-from polylogue.storage.backends.connection import open_read_connection
+from polylogue.storage.sqlite.connection import open_read_connection
 
 _PROVIDER_DESCRIPTIONS: Final[dict[str, str]] = {
     "chatgpt": "OpenAI ChatGPT exports",

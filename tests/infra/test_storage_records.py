@@ -68,7 +68,7 @@ def test_store_records_commits_within_lock(monkeypatch: pytest.MonkeyPatch) -> N
 def test_concurrent_store_records_no_deadlock(workspace_env: Mapping[str, Path]) -> None:
     import concurrent.futures
 
-    from polylogue.storage.backends.connection import open_connection
+    from polylogue.storage.sqlite.connection import open_connection
 
     with open_connection(None):
         pass

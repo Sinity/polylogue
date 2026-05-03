@@ -35,8 +35,8 @@ from polylogue.schemas.validation.requests import (
     ArtifactProofRequest,
     SchemaVerificationRequest,
 )
-from polylogue.storage.backends.connection import connection_context
 from polylogue.storage.repair import run_selected_maintenance
+from polylogue.storage.sqlite.connection import connection_context
 
 from .check_support import (
     make_schema_progress_callback,

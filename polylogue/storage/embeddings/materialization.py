@@ -65,7 +65,7 @@ def iter_pending_conversations(
     With ``rebuild=True`` returns every conversation; otherwise returns
     rows missing from ``embedding_status`` or flagged ``needs_reindex``.
     """
-    from polylogue.storage.backends.connection import open_read_connection
+    from polylogue.storage.sqlite.connection import open_read_connection
 
     pending: list[PendingConversation] = []
     with open_read_connection(backend.db_path) as conn:

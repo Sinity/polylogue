@@ -9,9 +9,9 @@ from polylogue.errors import PolylogueError
 from polylogue.paths.sanitize import is_within_root
 from polylogue.pipeline.prepare import RecordBundle, save_bundle
 from polylogue.rendering.renderers import HTMLRenderer
-from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.repository import ConversationRepository
 from polylogue.storage.runtime import ConversationRecord
+from polylogue.storage.sqlite.connection import open_connection
 from tests.infra.storage_records import make_attachment, make_conversation, make_message
 
 

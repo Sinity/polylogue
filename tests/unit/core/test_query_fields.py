@@ -28,7 +28,7 @@ from polylogue.archive.query.spec import (
     optional_sort_field,
     split_csv,
 )
-from polylogue.storage.backends.queries.filter_builder import _needs_stats_join
+from polylogue.storage.sqlite.queries.filter_builder import _needs_stats_join
 from polylogue.types import Provider
 
 

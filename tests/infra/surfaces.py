@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Protocol
 
 from polylogue.api import Polylogue
-from polylogue.storage.backends.connection import open_connection
+from polylogue.storage.sqlite.connection import open_connection
 from tests.infra.archive_scenarios import ArchiveScenario, repository_for_scenario_db
 from tests.infra.query_cases import ArchiveQueryCase
 from tests.infra.semantic_facts import ArchiveFacts, ConversationFacts

@@ -9,7 +9,7 @@ from polylogue.browser_capture.receiver import write_capture_envelope
 from polylogue.config import Source, get_config
 from polylogue.pipeline.runner import run_sources
 from polylogue.sources.dispatch import detect_provider, parse_payload
-from polylogue.storage.backends.connection import open_connection
+from polylogue.storage.sqlite.connection import open_connection
 from polylogue.types import Provider
 
 

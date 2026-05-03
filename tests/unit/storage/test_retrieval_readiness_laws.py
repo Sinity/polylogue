@@ -189,7 +189,7 @@ class TestRetrievalIndexInvariants:
         self,
         retrieval_archive: tuple[Path, tuple[ArchiveScenario, ...]],
     ) -> None:
-        from polylogue.storage.backends.connection import open_connection
+        from polylogue.storage.sqlite.connection import open_connection
 
         db_path, _ = retrieval_archive
         with open_connection(db_path) as conn:
@@ -208,7 +208,7 @@ class TestRetrievalIndexInvariants:
         self,
         retrieval_archive: tuple[Path, tuple[ArchiveScenario, ...]],
     ) -> None:
-        from polylogue.storage.backends.connection import open_connection
+        from polylogue.storage.sqlite.connection import open_connection
         from tests.infra.archive_scenarios import repository_for_scenario_db
 
         db_path, scenarios = retrieval_archive

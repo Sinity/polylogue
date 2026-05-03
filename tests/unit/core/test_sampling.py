@@ -103,7 +103,7 @@ class TestLoadSamplesFromDb:
 
     def test_empty_db_returns_empty(self, tmp_path: Path) -> None:
         # Create a DB with schema but no data
-        from polylogue.storage.backends.connection import open_connection
+        from polylogue.storage.sqlite.connection import open_connection
 
         db = tmp_path / "empty.db"
         with open_connection(db):
@@ -121,7 +121,7 @@ class TestLoadSamplesFromDb:
             assert result == []
 
     def test_claude_ai_reads_db_rows_stored_under_claude(self, tmp_path: Path) -> None:
-        from polylogue.storage.backends.connection import open_connection
+        from polylogue.storage.sqlite.connection import open_connection
 
         db = tmp_path / "claude.db"
         raw_content = json.dumps(
@@ -173,7 +173,7 @@ class TestLoadSamplesFromDb:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        from polylogue.storage.backends.connection import open_connection
+        from polylogue.storage.sqlite.connection import open_connection
 
         db = tmp_path / "codex.db"
         raw_content = "\n".join(

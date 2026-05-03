@@ -77,7 +77,7 @@ PIPELINE_STAGE_SPECS: dict[str, PipelineStageSpec] = {
     "acquire": PipelineStageSpec(
         name="acquire",
         log_stage="acquire",
-        outputs=("raw_records",),
+        outputs=("raw_artifacts",),
     ),
     "schema": PipelineStageSpec(
         name="schema",
@@ -89,7 +89,7 @@ PIPELINE_STAGE_SPECS: dict[str, PipelineStageSpec] = {
         log_stage="ingest",
         context_policy="requested_or_leaf",
         suspend_fts_triggers=True,
-        inputs=(StageInput(name="raw_records", required=False),),
+        inputs=(StageInput(name="raw_artifacts", required=False),),
         outputs=("processed_ids",),
     ),
     "materialize": PipelineStageSpec(

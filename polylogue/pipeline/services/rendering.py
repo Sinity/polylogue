@@ -15,7 +15,7 @@ from polylogue.protocols import OutputRenderer, ProgressCallback
 from polylogue.storage.run_state import RenderFailurePayload
 
 if TYPE_CHECKING:
-    from polylogue.storage.backends.async_sqlite import SQLiteBackend
+    from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
 logger = get_logger(__name__)
 

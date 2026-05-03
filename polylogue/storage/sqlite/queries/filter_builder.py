@@ -1,0 +1,216 @@
+"""SQL filter builder for conversation queries."""
+
+from __future__ import annotations
+
+from polylogue.archive.message.types import validate_message_type_filter
+from polylogue.archive.query.fields import storage_filters_require_stats_join
+from polylogue.archive.query.path_prefix import escaped_sql_path_prefix_patterns
+from polylogue.archive.viewport.viewports import ToolCategory
+from polylogue.storage.sqlite.connection import _build_provider_scope_filter
+
+_SEMANTIC_ACTION_TYPES = tuple(category.value for category in ToolCategory)
+
+
+def _iso_to_epoch(iso_str: str) -> float:
+    """Convert an ISO date string to epoch seconds for SQL comparison."""
+    from datetime import datetime
+
+    try:
+        return datetime.fromisoformat(iso_str).timestamp()
+    except (ValueError, TypeError):
+        pass
+    try:
+        return float(iso_str)
+    except (ValueError, TypeError):
+        raise ValueError(f"Invalid date filter value {iso_str!r}. Use ISO 8601 format (e.g., 2026-01-01).") from None
+
+
+def _build_conversation_filters(
+    *,
+    source: str | None = None,
+    provider: str | None = None,
+    providers: list[str] | None = None,
+    parent_id: str | None = None,
+    since: str | None = None,
+    until: str | None = None,
+    title_contains: str | None = None,
+    referenced_path: list[str] | tuple[str, ...] | None = None,
+    cwd_prefix: str | None = None,
+    action_terms: list[str] | tuple[str, ...] | None = None,
+    excluded_action_terms: list[str] | tuple[str, ...] | None = None,
+    tool_terms: list[str] | tuple[str, ...] | None = None,
+    excluded_tool_terms: list[str] | tuple[str, ...] | None = None,
+    repo_names: list[str] | tuple[str, ...] | None = None,
+    has_tool_use: bool = False,
+    has_thinking: bool = False,
+    has_paste: bool = False,
+    typed_only: bool = False,
+    min_messages: int | None = None,
+    max_messages: int | None = None,
+    min_words: int | None = None,
+    message_type: str | None = None,
+) -> tuple[str, list[str | int | float]]:
+    """Build WHERE clause and params for conversation queries.
+
+    Stats-based filters (has_tool_use, has_thinking, min_messages, max_messages,
+    min_words) emit a LEFT JOIN on conversation_stats and filter on cs columns.
+    Path and semantic filters emit EXISTS subqueries against content_blocks.
+    Callers must prefix conversation columns with 'c.' when using stats filters.
+    """
+    where_clauses: list[str] = []
+    params: list[str | int | float] = []
+    needs_stats_join = storage_filters_require_stats_join(locals())
+
+    if source is not None:
+        where_clauses.append("c.source_name = ?" if needs_stats_join else "source_name = ?")
+        params.append(source)
+    if provider is not None:
+        where_clauses.append("c.provider_name = ?" if needs_stats_join else "provider_name = ?")
+        params.append(provider)
+    if providers:
+        source_scope_sql, source_scope_params = _build_provider_scope_filter(
+            providers,
+            provider_column="c.provider_name" if needs_stats_join else "provider_name",
+        )
+        where_clauses.append(source_scope_sql)
+        params.extend(source_scope_params)
+    if parent_id is not None:
+        where_clauses.append("c.parent_conversation_id = ?" if needs_stats_join else "parent_conversation_id = ?")
+        params.append(parent_id)
+    if since is not None:
+        where_clauses.append("c.sort_key >= ?" if needs_stats_join else "sort_key >= ?")
+        params.append(_iso_to_epoch(since))
+    if until is not None:
+        where_clauses.append("c.sort_key <= ?" if needs_stats_join else "sort_key <= ?")
+        params.append(_iso_to_epoch(until))
+    if title_contains is not None:
+        escaped = title_contains.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        where_clauses.append("c.title LIKE ? ESCAPE '\\'" if needs_stats_join else "title LIKE ? ESCAPE '\\'")
+        params.append(f"%{escaped}%")
+
+    # Stats-based filters (require conversation_stats JOIN)
+    if has_tool_use:
+        where_clauses.append("cs.tool_use_count > 0")
+    if has_thinking:
+        where_clauses.append("cs.thinking_count > 0")
+    if has_paste:
+        where_clauses.append("cs.paste_count > 0")
+    if typed_only:
+        where_clauses.append("cs.paste_count = 0")
+    if min_messages is not None:
+        where_clauses.append("cs.message_count >= ?")
+        params.append(min_messages)
+    if max_messages is not None:
+        where_clauses.append("cs.message_count <= ?")
+        params.append(max_messages)
+    if min_words is not None:
+        where_clauses.append("cs.word_count >= ?")
+        params.append(min_words)
+
+    # Semantic filters via EXISTS subquery on durable action_events.
+    # When using stats join, outer table is aliased as 'c'; otherwise use fully qualified
+    # table name to prevent ambiguity.
+    conv_id_col = "c.conversation_id" if needs_stats_join else "conversations.conversation_id"
+    if referenced_path:
+        for term in referenced_path:
+            normalized = str(term).replace("\\", "/").lower()
+            escaped = normalized.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            where_clauses.append(
+                f"EXISTS (SELECT 1 FROM action_events ae "
+                f"JOIN json_each(COALESCE(ae.affected_paths_json, '[]')) path "
+                f"WHERE ae.conversation_id = {conv_id_col} "
+                f"AND REPLACE(LOWER(path.value), char(92), '/') LIKE ? ESCAPE '\\')"
+            )
+            params.append(f"%{escaped}%")
+    if cwd_prefix:
+        provider_meta_col = "c.provider_meta" if needs_stats_join else "provider_meta"
+        exact_prefix, child_prefix = escaped_sql_path_prefix_patterns(cwd_prefix)
+        where_clauses.append(
+            f"EXISTS (SELECT 1 FROM json_each(COALESCE(json_extract({provider_meta_col}, '$.working_directories'), '[]')) cwd "
+            f"WHERE REPLACE(cwd.value, char(92), '/') = ? "
+            f"OR REPLACE(cwd.value, char(92), '/') LIKE ? ESCAPE '\\')"
+        )
+        params.extend([exact_prefix, child_prefix])
+    if action_terms:
+        for term in action_terms:
+            if str(term) == "none":
+                placeholders = ",".join("?" for _ in _SEMANTIC_ACTION_TYPES)
+                where_clauses.append(
+                    f"NOT EXISTS (SELECT 1 FROM action_events ae WHERE ae.conversation_id = {conv_id_col}"
+                    f" AND ae.action_kind IN ({placeholders}))"
+                )
+                params.extend(_SEMANTIC_ACTION_TYPES)
+            else:
+                where_clauses.append(
+                    f"EXISTS (SELECT 1 FROM action_events ae WHERE ae.conversation_id = {conv_id_col}"
+                    " AND ae.action_kind = ?)"
+                )
+                params.append(str(term))
+    if excluded_action_terms:
+        for term in excluded_action_terms:
+            if str(term) == "none":
+                placeholders = ",".join("?" for _ in _SEMANTIC_ACTION_TYPES)
+                where_clauses.append(
+                    f"EXISTS (SELECT 1 FROM action_events ae WHERE ae.conversation_id = {conv_id_col}"
+                    f" AND ae.action_kind IN ({placeholders}))"
+                )
+                params.extend(_SEMANTIC_ACTION_TYPES)
+            else:
+                where_clauses.append(
+                    f"NOT EXISTS (SELECT 1 FROM action_events ae WHERE ae.conversation_id = {conv_id_col}"
+                    " AND ae.action_kind = ?)"
+                )
+                params.append(str(term))
+    if tool_terms:
+        for term in tool_terms:
+            if str(term) == "none":
+                where_clauses.append(
+                    f"NOT EXISTS (SELECT 1 FROM action_events ae WHERE ae.conversation_id = {conv_id_col})"
+                )
+            else:
+                where_clauses.append(
+                    f"EXISTS (SELECT 1 FROM action_events ae WHERE ae.conversation_id = {conv_id_col}"
+                    " AND ae.normalized_tool_name = ?)"
+                )
+                params.append(str(term).lower())
+    if excluded_tool_terms:
+        for term in excluded_tool_terms:
+            if str(term) == "none":
+                where_clauses.append(
+                    f"EXISTS (SELECT 1 FROM action_events ae WHERE ae.conversation_id = {conv_id_col})"
+                )
+            else:
+                where_clauses.append(
+                    f"NOT EXISTS (SELECT 1 FROM action_events ae WHERE ae.conversation_id = {conv_id_col}"
+                    " AND ae.normalized_tool_name = ?)"
+                )
+                params.append(str(term).lower())
+    if repo_names:
+        placeholders = ",".join("?" for _ in repo_names)
+        where_clauses.append(
+            f"EXISTS (SELECT 1 FROM session_profiles sp "
+            f"JOIN json_each(COALESCE(sp.repo_names_json, '[]')) "
+            f"WHERE sp.conversation_id = {conv_id_col} AND value IN ({placeholders}))"
+        )
+        params.extend(repo_names)
+    if message_type:
+        where_clauses.append(
+            f"EXISTS (SELECT 1 FROM messages mt WHERE mt.conversation_id = {conv_id_col} AND mt.message_type = ?)"
+        )
+        params.append(validate_message_type_filter(message_type).value)
+    where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+    return where_sql, params
+
+
+def _needs_stats_join(
+    *,
+    has_tool_use: bool = False,
+    has_thinking: bool = False,
+    has_paste: bool = False,
+    typed_only: bool = False,
+    min_messages: int | None = None,
+    max_messages: int | None = None,
+    min_words: int | None = None,
+) -> bool:
+    """Return True when the query requires a JOIN on conversation_stats."""
+    return storage_filters_require_stats_join(locals())

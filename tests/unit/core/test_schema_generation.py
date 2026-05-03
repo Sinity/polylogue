@@ -125,7 +125,7 @@ class TestGetSampleCountFromDb:
         assert get_sample_count_from_db("chatgpt", db_path=tmp_path / "missing.db") == 0
 
     def test_empty_db_returns_zero(self, tmp_path: Path) -> None:
-        from polylogue.storage.backends.connection import open_connection
+        from polylogue.storage.sqlite.connection import open_connection
 
         db_path = tmp_path / "empty.db"
         with open_connection(db_path):
@@ -133,7 +133,7 @@ class TestGetSampleCountFromDb:
         assert get_sample_count_from_db("chatgpt", db_path=db_path) == 0
 
     def test_matching_provider_returns_count(self, tmp_path: Path) -> None:
-        from polylogue.storage.backends.connection import open_connection
+        from polylogue.storage.sqlite.connection import open_connection
 
         db_path = tmp_path / "test.db"
         with open_connection(db_path) as conn:
@@ -173,7 +173,7 @@ class TestGetSampleCountFromDb:
         assert get_sample_count_from_db("chatgpt", db_path=db_path) == 1
 
     def test_wrong_provider_returns_zero(self, tmp_path: Path) -> None:
-        from polylogue.storage.backends.connection import open_connection
+        from polylogue.storage.sqlite.connection import open_connection
 
         db_path = tmp_path / "test.db"
         with open_connection(db_path) as conn:

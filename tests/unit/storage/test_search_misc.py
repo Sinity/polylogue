@@ -26,9 +26,9 @@ from polylogue.sources.parsers.claude import (
     find_sessions_index,
     parse_sessions_index,
 )
-from polylogue.storage.backends.async_sqlite import SQLiteBackend
-from polylogue.storage.backends.connection import connection_context
-from polylogue.storage.backends.schema import _ensure_schema
+from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
+from polylogue.storage.sqlite.connection import connection_context
+from polylogue.storage.sqlite.schema import _ensure_schema
 from tests.infra.storage_records import make_conversation, make_hash
 
 

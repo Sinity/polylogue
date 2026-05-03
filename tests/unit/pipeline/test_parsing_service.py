@@ -22,9 +22,9 @@ from polylogue.pipeline.services.parsing import ParseResult, ParsingService
 from polylogue.pipeline.services.planning import PlanningService
 from polylogue.pipeline.services.validation import ValidationService  # used by TestPlanningService
 from polylogue.sources.parsers.base import RawConversationData
-from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.repository import ConversationRepository
 from polylogue.storage.runtime import RawConversationRecord
+from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.types import Provider
 
 WorkspacePaths = dict[str, Path]

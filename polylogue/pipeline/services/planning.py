@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from polylogue.config import Config, Source
 from polylogue.protocols import ProgressCallback
-from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.repository import ConversationRepository
+from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
 from .planning_backlog import collect_parse_backlog, collect_validation_backlog
 from .planning_models import IngestPlan

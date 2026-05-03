@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 
     from polylogue.archive.conversation.models import Conversation
     from polylogue.archive.stats import ArchiveStats
-    from polylogue.storage.backends.query_store import SQLiteQueryStore
+    from polylogue.storage.sqlite.query_store import SQLiteQueryStore
 
 
 def resolve_optional_vector_provider(

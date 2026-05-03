@@ -31,8 +31,8 @@ from polylogue.sources.parsers.base import (
     ParsedMessage,
     RawConversationData,
 )
-from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.runtime import RawConversationRecord
+from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.types import ContentBlockType, Provider, ValidationStatus
 from tests.infra.strategies import (
     AcquisitionInputSpec,
@@ -84,8 +84,8 @@ def _make_raw_record(
 def _make_parsing_service(tmp_path: Path) -> ParsingService:
     """Shared factory to avoid boilerplate in each test."""
     from polylogue.config import Config
-    from polylogue.storage.backends.async_sqlite import SQLiteBackend
     from polylogue.storage.repository import ConversationRepository
+    from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
     db = SQLiteBackend(db_path=tmp_path / "test.db")
     config = Config(

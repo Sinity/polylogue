@@ -6,7 +6,7 @@ import sqlite3
 
 import aiosqlite
 
-from polylogue.storage.backends.sqlite_vec_extension import try_load_sqlite_vec_async
+from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec_async
 
 
 def _table_exists_sync(conn: sqlite3.Connection, table_name: str) -> bool:

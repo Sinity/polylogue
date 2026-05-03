@@ -16,7 +16,7 @@ The public Python surface is split into:
 ```python
 from polylogue.archive.filter.filters import ConversationFilter
 from polylogue.storage.repository import ConversationRepository
-from polylogue.storage.backends.async_sqlite import SQLiteBackend
+from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
 backend = SQLiteBackend()
 repo = ConversationRepository(backend=backend)

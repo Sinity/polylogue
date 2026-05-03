@@ -4,13 +4,13 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.storage.backends.async_sqlite import SQLiteBackend
-from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.insights.session.aggregates import refresh_async_provider_day_aggregates
 from polylogue.storage.insights.session.refresh import (
     _apply_session_insight_conversation_updates_async,
     _refresh_thread_roots_async,
 )
+from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
+from polylogue.storage.sqlite.connection import open_connection
 from tests.infra.storage_records import make_conversation, make_message, store_records
 
 

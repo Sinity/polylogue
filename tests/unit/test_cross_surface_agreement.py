@@ -149,7 +149,7 @@ class TestSyntheticRoundtripFactAgreement:
         workspace_env: Mapping[str, Path],
     ) -> None:
         from polylogue.schemas.synthetic.core import SyntheticCorpus
-        from polylogue.storage.backends.connection import open_connection
+        from polylogue.storage.sqlite.connection import open_connection
         from tests.infra.pipeline_roundtrip import parse_and_transform_payload, save_transform_and_hydrate
         from tests.infra.storage_records import db_setup
 

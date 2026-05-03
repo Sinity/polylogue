@@ -20,13 +20,13 @@ from hypothesis import HealthCheck, given, settings
 
 from polylogue.config import Config, IndexConfig
 from polylogue.pipeline.prepare import RecordBundle, save_bundle
-from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.index import rebuild_index, update_index_for_conversations
 from polylogue.storage.repository import ConversationRepository
 from polylogue.storage.runtime import ACTION_EVENT_MATERIALIZER_VERSION
 from polylogue.storage.search import escape_fts5_query, search_messages
 from polylogue.storage.search_providers import create_vector_provider
 from polylogue.storage.search_providers.fts5 import FTS5Provider
+from polylogue.storage.sqlite.connection import open_connection
 from tests.infra.mutmut import preserved_mutmut_env
 from tests.infra.storage_records import (
     ConversationBuilder,
@@ -899,7 +899,7 @@ class TestFTS5Provider:
         fts_provider: FTS5Provider,
     ) -> None:
         """Ensure index creates FTS5 virtual table."""
-        from polylogue.storage.backends.async_sqlite import SQLiteBackend
+        from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
         db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
 
@@ -1376,7 +1376,7 @@ def test_search_with_empty_fts_rows_raises_descriptive_error(
     db_path: Path,
 ) -> None:
     """search() rejects archives whose FTS table exists but is not populated."""
-    from polylogue.storage.backends.connection import open_connection
+    from polylogue.storage.sqlite.connection import open_connection
 
     archive_root = workspace_env["archive_root"]
     factory = DbFactory(db_path)

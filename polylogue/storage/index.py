@@ -7,7 +7,6 @@ from polylogue.storage.action_events.rebuild_runtime import (
     action_event_repair_candidates_sync,
     rebuild_action_event_read_model_sync,
 )
-from polylogue.storage.backends.connection import connection_context, open_read_connection
 from polylogue.storage.fts.fts_lifecycle import (
     _chunked as _chunked,
 )
@@ -18,6 +17,7 @@ from polylogue.storage.fts.fts_lifecycle import (
     repair_fts_index_sync,
 )
 from polylogue.storage.search.cache import invalidate_search_cache
+from polylogue.storage.sqlite.connection import connection_context, open_read_connection
 
 
 def ensure_index(conn: sqlite3.Connection) -> None:

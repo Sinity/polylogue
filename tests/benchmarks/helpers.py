@@ -8,9 +8,9 @@ from pathlib import Path
 from sqlite3 import Connection
 from typing import Protocol, TypeVar
 
-from polylogue.storage.backends.async_sqlite import SQLiteBackend
-from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.repository import ConversationRepository
+from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
+from polylogue.storage.sqlite.connection import open_connection
 
 T = TypeVar("T")
 

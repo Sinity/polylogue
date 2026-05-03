@@ -17,9 +17,13 @@ import pytest
 import polylogue.paths
 from polylogue.archive.message.roles import Role
 from polylogue.errors import DatabaseError
-from polylogue.storage.backends.async_sqlite import SQLiteBackend
-from polylogue.storage.backends.connection import connection_context, open_connection, open_read_connection
-from polylogue.storage.backends.connection_profile import (
+from polylogue.storage.embeddings.models import EmbeddingStatsSnapshot
+from polylogue.storage.query_models import ConversationRecordQuery
+from polylogue.storage.repository import ConversationRepository
+from polylogue.storage.runtime import ConversationRecord
+from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
+from polylogue.storage.sqlite.connection import connection_context, open_connection, open_read_connection
+from polylogue.storage.sqlite.connection_profile import (
     READ_CACHE_SIZE_KIB,
     READ_CONNECTION_PRAGMA_STATEMENTS,
     READ_CONNECTION_PROFILE,
@@ -27,8 +31,8 @@ from polylogue.storage.backends.connection_profile import (
     WRITE_CONNECTION_PRAGMA_STATEMENTS,
     WRITE_CONNECTION_PROFILE,
 )
-from polylogue.storage.backends.schema import SCHEMA_VERSION, _ensure_schema
-from polylogue.storage.backends.schema_bootstrap import (
+from polylogue.storage.sqlite.schema import SCHEMA_VERSION, _ensure_schema
+from polylogue.storage.sqlite.schema_bootstrap import (
     SchemaColumnExtensionDescriptor,
     SchemaIndexExtensionDescriptor,
     SchemaSnapshot,
@@ -38,10 +42,6 @@ from polylogue.storage.backends.schema_bootstrap import (
     schema_extension_snapshot_indexes,
     schema_extension_snapshot_tables,
 )
-from polylogue.storage.embeddings.models import EmbeddingStatsSnapshot
-from polylogue.storage.query_models import ConversationRecordQuery
-from polylogue.storage.repository import ConversationRepository
-from polylogue.storage.runtime import ConversationRecord
 from tests.infra.storage_records import (
     make_attachment,
     make_content_block,
@@ -480,8 +480,8 @@ def test_open_connection_contract(tmp_path: Path) -> None:
 def test_connection_profiles_define_sqlite_tuning_once() -> None:
     """Read and write PRAGMA statements should be derived from the shared profiles."""
     import polylogue.pipeline.services.ingest_batch as ingest_batch_module
-    import polylogue.storage.backends.async_sqlite as async_sqlite_module
-    import polylogue.storage.backends.connection as connection_module
+    import polylogue.storage.sqlite.async_sqlite as async_sqlite_module
+    import polylogue.storage.sqlite.connection as connection_module
 
     assert WRITE_CONNECTION_PROFILE.pragma_statements == WRITE_CONNECTION_PRAGMA_STATEMENTS
     assert READ_CONNECTION_PROFILE.pragma_statements == READ_CONNECTION_PRAGMA_STATEMENTS
@@ -594,7 +594,7 @@ def test_connection_context_contract(tmp_path: Path, monkeypatch: pytest.MonkeyP
     data_home.mkdir()
     monkeypatch.setenv("XDG_DATA_HOME", str(data_home))
     import polylogue.paths
-    import polylogue.storage.backends.connection as connection_module
+    import polylogue.storage.sqlite.connection as connection_module
 
     importlib.reload(polylogue.paths)
     importlib.reload(connection_module)
@@ -616,7 +616,7 @@ def test_default_db_path_respects_xdg_data_home(tmp_path: Path, monkeypatch: pyt
     xdg_data.mkdir()
     monkeypatch.setenv("XDG_DATA_HOME", str(xdg_data))
 
-    import polylogue.storage.backends.connection as connection_module
+    import polylogue.storage.sqlite.connection as connection_module
 
     importlib.reload(connection_module)
     assert str(xdg_data) in str(polylogue.paths.db_path())

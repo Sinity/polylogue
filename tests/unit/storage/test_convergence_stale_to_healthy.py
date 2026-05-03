@@ -28,7 +28,7 @@ def archive_with_orphans(workspace_env: dict[str, Path]) -> Config:
         role="user", text="Another message"
     ).save()
 
-    from polylogue.storage.backends.connection import open_connection
+    from polylogue.storage.sqlite.connection import open_connection
 
     with open_connection(db_path) as conn:
         conn.execute("PRAGMA foreign_keys = OFF")
@@ -57,7 +57,7 @@ def archive_with_empty_conversations(workspace_env: dict[str, Path]) -> Config:
         role="user", text="Real message"
     ).save()
 
-    from polylogue.storage.backends.connection import open_connection
+    from polylogue.storage.sqlite.connection import open_connection
 
     with open_connection(db_path) as conn:
         conn.execute(
@@ -77,11 +77,11 @@ class TestOrphanMessageConvergence:
     """debt(orphaned messages) > 0 → repair → debt = 0 → queries exclude orphans."""
 
     def test_orphan_detected_then_repaired_to_zero(self, archive_with_orphans: Config) -> None:
-        from polylogue.storage.backends.connection import open_connection
         from polylogue.storage.repair import (
             count_orphaned_messages_sync,
             repair_orphaned_messages,
         )
+        from polylogue.storage.sqlite.connection import open_connection
 
         with open_connection(archive_with_orphans.db_path) as conn:
             before = count_orphaned_messages_sync(conn)
@@ -96,8 +96,8 @@ class TestOrphanMessageConvergence:
 
     def test_healthy_messages_survive_orphan_repair(self, archive_with_orphans: Config) -> None:
         """Repair must not touch non-orphaned messages."""
-        from polylogue.storage.backends.connection import open_connection
         from polylogue.storage.repair import repair_orphaned_messages
+        from polylogue.storage.sqlite.connection import open_connection
 
         with open_connection(archive_with_orphans.db_path) as conn:
             healthy_before = conn.execute(
@@ -128,11 +128,11 @@ class TestEmptyConversationConvergence:
     """debt(empty conversations) > 0 → repair → debt = 0."""
 
     def test_empty_detected_then_repaired_to_zero(self, archive_with_empty_conversations: Config) -> None:
-        from polylogue.storage.backends.connection import open_connection
         from polylogue.storage.repair import (
             count_empty_conversations_sync,
             repair_empty_conversations,
         )
+        from polylogue.storage.sqlite.connection import open_connection
 
         with open_connection(archive_with_empty_conversations.db_path) as conn:
             before = count_empty_conversations_sync(conn)
@@ -146,8 +146,8 @@ class TestEmptyConversationConvergence:
         assert after == 0
 
     def test_non_empty_conversations_survive(self, archive_with_empty_conversations: Config) -> None:
-        from polylogue.storage.backends.connection import open_connection
         from polylogue.storage.repair import repair_empty_conversations
+        from polylogue.storage.sqlite.connection import open_connection
 
         repair_empty_conversations(archive_with_empty_conversations, dry_run=False)
 
@@ -167,11 +167,11 @@ class TestDryRunSafety:
     """Dry-run must never mutate archive state."""
 
     def test_dry_run_orphan_repair_preserves_state(self, archive_with_orphans: Config) -> None:
-        from polylogue.storage.backends.connection import open_connection
         from polylogue.storage.repair import (
             count_orphaned_messages_sync,
             repair_orphaned_messages,
         )
+        from polylogue.storage.sqlite.connection import open_connection
 
         with open_connection(archive_with_orphans.db_path) as conn:
             before = count_orphaned_messages_sync(conn)
@@ -184,11 +184,11 @@ class TestDryRunSafety:
         assert after == before, "Dry-run mutated state"
 
     def test_dry_run_empty_repair_preserves_state(self, archive_with_empty_conversations: Config) -> None:
-        from polylogue.storage.backends.connection import open_connection
         from polylogue.storage.repair import (
             count_empty_conversations_sync,
             repair_empty_conversations,
         )
+        from polylogue.storage.sqlite.connection import open_connection
 
         with open_connection(archive_with_empty_conversations.db_path) as conn:
             before = count_empty_conversations_sync(conn)

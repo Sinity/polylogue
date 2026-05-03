@@ -34,8 +34,8 @@ def materialized_db(workspace_env: Mapping[str, Path]) -> Path:
         role="user", text="Generate tests"
     ).add_message(role="assistant", text="Here are the tests").add_message(role="user", text="Add edge cases").save()
 
-    from polylogue.storage.backends.connection import open_connection
     from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
+    from polylogue.storage.sqlite.connection import open_connection
 
     with open_connection(db_path) as conn:
         rebuild_session_insights_sync(conn)
@@ -48,7 +48,7 @@ class TestProfileConversationAgreement:
     """Every session profile must correspond to exactly one real conversation."""
 
     def test_profile_count_matches_conversation_count(self, materialized_db: Path) -> None:
-        from polylogue.storage.backends.connection import open_connection
+        from polylogue.storage.sqlite.connection import open_connection
 
         with open_connection(materialized_db) as conn:
             conv_count = conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0]
@@ -62,7 +62,7 @@ class TestProfileConversationAgreement:
 
     def test_no_phantom_profiles(self, materialized_db: Path) -> None:
         """No profile should reference a non-existent conversation."""
-        from polylogue.storage.backends.connection import open_connection
+        from polylogue.storage.sqlite.connection import open_connection
 
         with open_connection(materialized_db) as conn:
             has_profiles = conn.execute(
@@ -79,7 +79,7 @@ class TestProfileConversationAgreement:
 
     def test_profile_provider_matches_conversation(self, materialized_db: Path) -> None:
         """Profile provider_name must match source conversation provider_name."""
-        from polylogue.storage.backends.connection import open_connection
+        from polylogue.storage.sqlite.connection import open_connection
 
         with open_connection(materialized_db) as conn:
             has_profiles = conn.execute(
@@ -101,8 +101,8 @@ class TestInsightMaterializationIdempotence:
     """Running materialization twice produces the same profile set."""
 
     def test_rebuild_is_idempotent(self, materialized_db: Path) -> None:
-        from polylogue.storage.backends.connection import open_connection
         from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
+        from polylogue.storage.sqlite.connection import open_connection
 
         with open_connection(materialized_db) as conn:
             has_profiles = conn.execute(
@@ -129,7 +129,7 @@ class TestWorkEventAgreement:
     """Work events must reference valid profiles."""
 
     def test_no_orphan_work_events(self, materialized_db: Path) -> None:
-        from polylogue.storage.backends.connection import open_connection
+        from polylogue.storage.sqlite.connection import open_connection
 
         with open_connection(materialized_db) as conn:
             has_events = conn.execute(
@@ -149,7 +149,7 @@ class TestPhaseAgreement:
     """Phases must reference valid profiles."""
 
     def test_no_orphan_phases(self, materialized_db: Path) -> None:
-        from polylogue.storage.backends.connection import open_connection
+        from polylogue.storage.sqlite.connection import open_connection
 
         with open_connection(materialized_db) as conn:
             has_phases = conn.execute(

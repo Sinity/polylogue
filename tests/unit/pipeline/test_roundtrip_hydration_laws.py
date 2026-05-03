@@ -82,7 +82,7 @@ class TestMessageCountPreservation:
         provider_name, raw_bytes, unique_id = data
         db_path = db_setup(workspace_env)
 
-        from polylogue.storage.backends.connection import open_connection
+        from polylogue.storage.sqlite.connection import open_connection
 
         with open_connection(db_path) as conn:
             roundtrip = parse_and_transform_payload(provider_name, raw_bytes, workspace_env["archive_root"], unique_id)
@@ -109,7 +109,7 @@ class TestRolePreservation:
         provider_name, raw_bytes, unique_id = data
         db_path = db_setup(workspace_env)
 
-        from polylogue.storage.backends.connection import open_connection
+        from polylogue.storage.sqlite.connection import open_connection
 
         with open_connection(db_path) as conn:
             roundtrip = parse_and_transform_payload(provider_name, raw_bytes, workspace_env["archive_root"], unique_id)
@@ -136,7 +136,7 @@ class TestTitleStability:
         provider_name, raw_bytes, unique_id = data
         db_path = db_setup(workspace_env)
 
-        from polylogue.storage.backends.connection import open_connection
+        from polylogue.storage.sqlite.connection import open_connection
 
         with open_connection(db_path) as conn:
             roundtrip = parse_and_transform_payload(provider_name, raw_bytes, workspace_env["archive_root"], unique_id)
@@ -183,7 +183,7 @@ class TestIdempotentReimport:
         provider_name, raw_bytes, unique_id = data
         db_path = db_setup(workspace_env)
 
-        from polylogue.storage.backends.connection import open_connection
+        from polylogue.storage.sqlite.connection import open_connection
         from tests.infra.storage_records import store_records
 
         with open_connection(db_path) as conn:
@@ -226,7 +226,7 @@ class TestProviderIdentity:
         provider_name, raw_bytes, unique_id = data
         db_path = db_setup(workspace_env)
 
-        from polylogue.storage.backends.connection import open_connection
+        from polylogue.storage.sqlite.connection import open_connection
 
         with open_connection(db_path) as conn:
             roundtrip = parse_and_transform_payload(provider_name, raw_bytes, workspace_env["archive_root"], unique_id)
@@ -271,7 +271,7 @@ def test_provider_completes_full_roundtrip(provider_name: str, workspace_env: di
 
     db_path = db_setup(workspace_env)
 
-    from polylogue.storage.backends.connection import open_connection
+    from polylogue.storage.sqlite.connection import open_connection
 
     with open_connection(db_path) as conn:
         roundtrip = parse_and_transform_payload(

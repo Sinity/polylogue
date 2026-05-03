@@ -33,17 +33,17 @@ from polylogue.scenarios import (
 )
 from polylogue.schemas.synthetic import SyntheticCorpus
 from polylogue.showcase.workspace import VerificationWorkspace, create_verification_workspace
-from polylogue.storage.backends import SQLiteBackend, create_backend
-from polylogue.storage.backends.connection import (
-    _build_provider_scope_filter,
-    _build_source_scope_filter,
-    open_connection,
-)
-from polylogue.storage.backends.queries.raw_state import EFFECTIVE_RAW_PROVIDER_SQL
 from polylogue.storage.blob_store import BlobStore, reset_blob_store
 from polylogue.storage.repository import ConversationRepository
 from polylogue.storage.run_state import RunResult
 from polylogue.storage.runtime import RawConversationRecord
+from polylogue.storage.sqlite import SQLiteBackend, create_backend
+from polylogue.storage.sqlite.connection import (
+    _build_provider_scope_filter,
+    _build_source_scope_filter,
+    open_connection,
+)
+from polylogue.storage.sqlite.queries.raw_state import EFFECTIVE_RAW_PROVIDER_SQL
 from polylogue.types import Provider
 
 _EXT_MAP = {

@@ -41,8 +41,8 @@ if TYPE_CHECKING:
     from jinja2 import Template
 
     from polylogue.protocols import ProgressCallback
-    from polylogue.storage.backends.async_sqlite import SQLiteBackend
     from polylogue.storage.repository import ConversationRepository
+    from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
 
 class SiteBuilder:
@@ -75,7 +75,7 @@ class SiteBuilder:
     def _open_storage(self) -> tuple[SQLiteBackend, ConversationRepository]:
         """Return the canonical storage pair used by site generation."""
         if self._backend is None:
-            from polylogue.storage.backends.async_sqlite import SQLiteBackend
+            from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
             self._backend = SQLiteBackend()
         if self._repository is None:

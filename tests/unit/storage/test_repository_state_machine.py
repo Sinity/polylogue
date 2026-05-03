@@ -31,7 +31,7 @@ class ArchiveLifecycleStateMachine(RuleBasedStateMachine):
     def __init__(self) -> None:
         super().__init__()
 
-        from polylogue.storage.backends.schema import _ensure_schema
+        from polylogue.storage.sqlite.schema import _ensure_schema
 
         self._conn = sqlite3.connect(":memory:")
         self._conn.row_factory = sqlite3.Row

@@ -85,10 +85,10 @@ async def validate_raw_ids(
     result = ValidateResult()
     for batch_start in range(0, len(raw_ids), raw_batch_size):
         batch_ids = raw_ids[batch_start : batch_start + raw_batch_size]
-        raw_records = await repository.get_raw_conversations_batch(batch_ids)
-        batch_result = await evaluate_raw_records(
+        raw_artifacts = await repository.get_raw_conversations_batch(batch_ids)
+        batch_result = await evaluate_raw_artifacts(
             repository=repository,
-            raw_records=raw_records,
+            raw_artifacts=raw_artifacts,
             progress_callback=progress_callback,
             persist=persist,
             mode=validation_mode,
@@ -97,9 +97,9 @@ async def validate_raw_ids(
         )
         result.merge(batch_result)
 
-        raw_records_ids = {record.raw_id for record in raw_records}
-        missing = [raw_id for raw_id in batch_ids if raw_id not in raw_records_ids]
-        processed = batch_start + len(raw_records)
+        raw_artifacts_ids = {record.raw_id for record in raw_artifacts}
+        missing = [raw_id for raw_id in batch_ids if raw_id not in raw_artifacts_ids]
+        processed = batch_start + len(raw_artifacts)
         for missing_index, raw_id in enumerate(missing, start=1):
             result.errors += 1
             result.records.append(
@@ -122,10 +122,10 @@ async def validate_raw_ids(
     return result
 
 
-async def evaluate_raw_records(
+async def evaluate_raw_artifacts(
     *,
     repository: RawValidationStore,
-    raw_records: list[RawConversationRecord],
+    raw_artifacts: list[RawConversationRecord],
     progress_callback: ProgressCallback | None = None,
     persist: bool = False,
     mode: ValidationMode,
@@ -134,11 +134,11 @@ async def evaluate_raw_records(
 ) -> ValidateResult:
     """Evaluate raw records using the canonical validation logic."""
     result = ValidateResult()
-    if not raw_records:
+    if not raw_artifacts:
         return result
 
     if mode is ValidationMode.OFF:
-        for raw_record in raw_records:
+        for raw_record in raw_artifacts:
             if persist:
                 await repository.mark_raw_validated(
                     raw_record.raw_id,
@@ -159,7 +159,7 @@ async def evaluate_raw_records(
                 )
             )
             if progress_callback is not None:
-                total = progress_total or len(raw_records)
+                total = progress_total or len(raw_artifacts)
                 progress_callback(
                     1,
                     desc=validation_progress_desc(progress_offset + len(result.records), total),
@@ -168,11 +168,11 @@ async def evaluate_raw_records(
 
     import time as _time
 
-    total = progress_total or len(raw_records)
+    total = progress_total or len(raw_artifacts)
     # ProcessPoolExecutor bypasses the GIL: JSON decode (orjson C extension)
     # + Python wrapper code run truly parallel across processes.
     # Measured: Threads(24)=160 MB/s, Process(8)=605 MB/s (3.7x speedup).
-    worker_count = min(len(raw_records), os.cpu_count() or 4, 8)
+    worker_count = min(len(raw_artifacts), os.cpu_count() or 4, 8)
     blob_root_str = str(blob_store_root())
     t_batch = _time.perf_counter()
 
@@ -182,32 +182,32 @@ async def evaluate_raw_records(
                 return list(
                     executor.map(
                         _validate_record_sync,
-                        raw_records,
-                        [mode] * len(raw_records),
-                        [blob_root_str] * len(raw_records),
-                        chunksize=max(1, len(raw_records) // worker_count),
+                        raw_artifacts,
+                        [mode] * len(raw_artifacts),
+                        [blob_root_str] * len(raw_artifacts),
+                        chunksize=max(1, len(raw_artifacts) // worker_count),
                     )
                 )
         except (TypeError, _pickle.PicklingError):
             # Fallback for unpicklable records (e.g. MagicMock in tests)
-            return [_validate_record_sync(r, mode, blob_root_str) for r in raw_records]
+            return [_validate_record_sync(r, mode, blob_root_str) for r in raw_artifacts]
 
     import pickle as _pickle
 
     outcomes: list[_ValidationOutcome] = await asyncio.to_thread(_run_batch)
     batch_elapsed = _time.perf_counter() - t_batch
-    total_blob_mb = sum(r.blob_size for r in raw_records) / (1024 * 1024)
+    total_blob_mb = sum(r.blob_size for r in raw_artifacts) / (1024 * 1024)
     if batch_elapsed > 1.0:
         logger.info(
             "validate_batch",
             elapsed_s=round(batch_elapsed, 2),
-            records=len(raw_records),
+            records=len(raw_artifacts),
             blob_mb=round(total_blob_mb, 1),
-            rate=round(len(raw_records) / batch_elapsed, 1),
+            rate=round(len(raw_artifacts) / batch_elapsed, 1),
             workers=worker_count,
         )
 
-    for index, (raw_record, outcome) in enumerate(zip(raw_records, outcomes, strict=True), start=1):
+    for index, (raw_record, outcome) in enumerate(zip(raw_artifacts, outcomes, strict=True), start=1):
         result.validated += outcome.counts_delta["validated"]
         result.invalid += outcome.counts_delta["invalid"]
         result.drift += outcome.counts_delta["drift"]
@@ -256,7 +256,7 @@ async def evaluate_raw_records(
 
 
 __all__ = [
-    "evaluate_raw_records",
+    "evaluate_raw_artifacts",
     "schema_validation_mode",
     "validate_raw_ids",
     "validation_progress_desc",

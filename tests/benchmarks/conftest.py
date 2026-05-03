@@ -22,10 +22,10 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.storage.backends.async_sqlite import SQLiteBackend
-from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.index import rebuild_index
 from polylogue.storage.runtime import ContentBlockRecord, ConversationRecord, MessageRecord
+from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
+from polylogue.storage.sqlite.connection import open_connection
 from tests.infra.storage_records import make_content_block, make_conversation, make_message
 
 # ---------------------------------------------------------------------------

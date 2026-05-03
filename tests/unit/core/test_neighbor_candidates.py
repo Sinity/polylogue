@@ -7,8 +7,8 @@ from pathlib import Path
 import pytest
 
 from polylogue.archive.conversation.neighbor_candidates import NeighborDiscoveryRequest, discover_neighbor_candidates
-from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.repository import ConversationRepository
+from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from tests.infra.storage_records import ConversationBuilder
 
 
