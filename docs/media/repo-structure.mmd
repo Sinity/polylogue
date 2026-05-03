@@ -1,0 +1,21 @@
+---
+title: Repository Structure
+---
+flowchart TB
+    ROOT["polylogue/"] --> CORE["core/<br/>domain types, hashing, JSON"]
+    ROOT --> SOURCES["sources/<br/>provider detection, parsers"]
+    ROOT --> STORAGE["storage/<br/>SQLite backends, FTS, repos"]
+    ROOT --> PIPELINE["pipeline/<br/>ingestion, validation, rendering"]
+    ROOT --> SCHEMAS["schemas/<br/>synthetic corpus, inference"]
+    ROOT --> INSIGHTS["insights/<br/>session profiles, analytics"]
+    ROOT --> CLI["cli/<br/>Click commands, output"]
+    ROOT --> MCP["mcp/<br/>MCP server tools"]
+    ROOT --> API["api/<br/>async library API"]
+    ROOT --> SITE["site/<br/>static site generation"]
+    ROOT --> RENDERING["rendering/<br/>markdown / HTML"]
+    ROOT --> UI["ui/<br/>TUI / dashboard"]
+    ROOT --> SCENARIOS["scenarios/<br/>corpus specs, scenarios"]
+    ROOT --> PROOF["proof/<br/>obligations, claims, witnesses"]
+    ROOT --> SHOWCASE["showcase/<br/>QA exercises"]
+    ROOT --> DEVTOOLS["devtools/<br/>operator tooling"]
+    ROOT --> TESTS["tests/<br/>pytest suite"]

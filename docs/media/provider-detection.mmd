@@ -1,0 +1,11 @@
+---
+title: Provider Detection Flow
+---
+flowchart TD
+    INPUT["Input File"] --> CHECK{"looks_like()"}
+    CHECK -->|"ChatGPT"| CHATGPT["parsers/chatgpt.py<br/>mapping dict with message graph"]
+    CHECK -->|"Claude Web"| CLAUDE_WEB["parsers/claude.py<br/>chat_messages list"]
+    CHECK -->|"Claude Code"| CLAUDE_CODE["parsers/claude.py<br/>parentUuid / sessionId"]
+    CHECK -->|"Codex"| CODEX["parsers/codex.py<br/>session envelope"]
+    CHECK -->|"Gemini"| GEMINI["parsers/drive.py<br/>chunkedPrompt.chunks"]
+    CHECK -->|"Unknown"| UNKNOWN["Provider.UNKNOWN"]

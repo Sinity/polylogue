@@ -71,9 +71,11 @@ def test_global_json_flag_is_forwarded_to_command(monkeypatch: pytest.MonkeyPatc
     assert captured == [["--json"]]
 
 
-def test_help_uses_devtools_prog_name(capsys: pytest.CaptureFixture[str]) -> None:
-    with pytest.raises(SystemExit) as exc:
-        devtools_main.main(["--help"])
-    assert exc.value.code == 0
+def test_help_output_includes_devtools_prog_name(capsys: pytest.CaptureFixture[str]) -> None:
+    # main() catches the SystemExit that Click raises with standalone_mode=True
+    # and returns the exit code as an int.
+    assert devtools_main.main(["--help"]) == 0
     captured = capsys.readouterr()
-    assert captured.out.startswith("usage: devtools ")
+    # Click outputs "Usage: devtools ..." or "Usage: python -m devtools ..."
+    assert "devtools" in captured.out
+    assert "Options" in captured.out

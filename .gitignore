@@ -60,5 +60,8 @@ AGENTS.md
 # Agent scratch notes (local, not tracked)
 .agent/scratch/
 
+# Agent xtask history (local, not tracked)
+.agent/xtask/
+
 # Build metadata embedded into release artifacts
 polylogue/_build_info.py

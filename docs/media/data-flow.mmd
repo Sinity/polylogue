@@ -1,0 +1,13 @@
+---
+title: Polylogue Data Flow
+---
+flowchart LR
+    SRC["Source Files<br/>(JSON / JSONL / ZIP)"] --> PROV["Provider Detection<br/>dispatch.detect_provider()"]
+    PROV --> PARSE["Parse<br/>per-provider parsers"]
+    PARSE --> HASH["Content Hash<br/>SHA-256 (NFC)"]
+    HASH --> STORE["Store<br/>idempotent upsert"]
+    STORE --> INDEX["Index<br/>FTS5 (unicode61)"]
+    INDEX --> QUERY["Query<br/>CLI / MCP / API"]
+
+    PARSE --> INSIGHTS["Session Insights<br/>profiles, events, phases"]
+    INSIGHTS --> QUERY
