@@ -244,10 +244,6 @@ class PolylogueArchiveMixin:
     async def stats(self) -> ArchiveStats:
         return await self.operations.summary_stats()
 
-    async def get_archive_stats(self) -> ArchiveStats:
-        """Return archive summary statistics with an explicit API name."""
-        return await self.stats()
-
     async def health_check(self) -> ReadinessReport:
         """Return the canonical archive readiness report."""
         from polylogue.readiness import get_readiness

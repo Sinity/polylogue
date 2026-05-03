@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
@@ -47,6 +48,21 @@ async def run_daemon_services(
     api_port: int = 8766,
 ) -> None:
     """Run configured daemon components until interrupted."""
+    from polylogue.paths import archive_root
+
+    pidfile = Path(archive_root()) / "daemon.pid"
+
+    # Prevent concurrent daemon instances
+    if pidfile.exists():
+        try:
+            old_pid = int(pidfile.read_text().strip())
+            os.kill(old_pid, 0)  # signal 0 = check if process exists
+            raise RuntimeError(f"Daemon already running (PID {old_pid}). Stop it first or remove {pidfile}")
+        except (OSError, ValueError):
+            pidfile.unlink(missing_ok=True)
+
+    pidfile.write_text(str(os.getpid()))
+
     api_server: ThreadingHTTPServer | None = None
     api_server_task: asyncio.Task[None] | None = None
     server: BrowserCaptureHTTPServer | None = None
