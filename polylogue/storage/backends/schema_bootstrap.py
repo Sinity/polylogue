@@ -30,6 +30,10 @@ _RAW_SOURCE_MTIME_INDEX_SQL = (
     "WHERE file_mtime IS NOT NULL"
 )
 
+_MESSAGE_TYPE_INDEX_SQL = (
+    "CREATE INDEX IF NOT EXISTS idx_messages_conversation_message_type ON messages(conversation_id, message_type)"
+)
+
 
 @dataclass(frozen=True)
 class SchemaSnapshot:
@@ -61,7 +65,7 @@ class SchemaExtensionPlan:
 class SchemaBootstrapDecision:
     """Shared schema bootstrap branch chosen from a schema snapshot."""
 
-    action: Literal["create_fresh", "apply_current_extensions", "version_mismatch"]
+    action: Literal["create_fresh", "apply_current_extensions", "upgrade_v2_to_v3", "version_mismatch"]
     extension_plan: SchemaExtensionPlan | None = None
     current_version: int | None = None
 
@@ -178,7 +182,21 @@ def _normalize_sql(sql: str) -> str:
     return " ".join(normalized.split())
 
 
+_MESSAGE_TYPE_EXTENSION_DESCRIPTORS: tuple[SchemaExtensionDescriptor, ...] = (
+    SchemaColumnExtensionDescriptor(
+        table_name="messages",
+        column_name="message_type",
+        ddl="ALTER TABLE messages ADD COLUMN message_type TEXT NOT NULL DEFAULT 'message'",
+    ),
+    SchemaIndexExtensionDescriptor(
+        table_name="messages",
+        index_name="idx_messages_conversation_message_type",
+        ddl=_MESSAGE_TYPE_INDEX_SQL,
+    ),
+)
+
 _SCHEMA_EXTENSION_DESCRIPTORS: tuple[SchemaExtensionDescriptor, ...] = (
+    *_MESSAGE_TYPE_EXTENSION_DESCRIPTORS,
     SchemaColumnExtensionDescriptor(
         table_name="raw_conversations",
         column_name="blob_size",
@@ -517,6 +535,61 @@ _SCHEMA_EXTENSION_DESCRIPTORS: tuple[SchemaExtensionDescriptor, ...] = (
     SchemaScriptExtensionDescriptor(_SESSION_INSIGHT_DDL),
 )
 
+_V2_TO_V3_MESSAGE_TYPE_BACKFILL_SQL = """
+        UPDATE messages
+        SET message_type = CASE
+            WHEN has_thinking != 0 THEN 'thinking'
+            WHEN role = 'tool' THEN 'tool_result'
+            WHEN has_tool_use != 0 THEN 'tool_use'
+            ELSE 'message'
+        END
+        WHERE message_type = 'message'
+          AND (
+            has_thinking != 0
+            OR role = 'tool'
+            OR has_tool_use != 0
+          )
+        """
+
+_V2_TO_V3_MESSAGE_TYPE_BACKFILL_WITH_BLOCKS_SQL = """
+        UPDATE messages
+        SET message_type = CASE
+            WHEN has_thinking != 0
+              OR EXISTS (
+                SELECT 1 FROM content_blocks
+                WHERE content_blocks.message_id = messages.message_id
+                  AND content_blocks.type = 'thinking'
+              )
+            THEN 'thinking'
+            WHEN role = 'tool'
+              OR EXISTS (
+                SELECT 1 FROM content_blocks
+                WHERE content_blocks.message_id = messages.message_id
+                  AND content_blocks.type = 'tool_result'
+              )
+            THEN 'tool_result'
+            WHEN has_tool_use != 0
+              OR EXISTS (
+                SELECT 1 FROM content_blocks
+                WHERE content_blocks.message_id = messages.message_id
+                  AND content_blocks.type = 'tool_use'
+              )
+            THEN 'tool_use'
+            ELSE 'message'
+        END
+        WHERE message_type = 'message'
+          AND (
+            has_thinking != 0
+            OR has_tool_use != 0
+            OR role = 'tool'
+            OR EXISTS (
+              SELECT 1 FROM content_blocks
+              WHERE content_blocks.message_id = messages.message_id
+                AND content_blocks.type IN ('thinking', 'tool_result', 'tool_use')
+            )
+          )
+        """
+
 
 def schema_extension_snapshot_tables() -> tuple[str, ...]:
     """Tables that current-schema extension planning must inspect."""
@@ -539,8 +612,8 @@ def schema_extension_snapshot_indexes() -> tuple[str, ...]:
 def schema_version_mismatch_message(current_version: int) -> str:
     return (
         f"Database schema version {current_version} is incompatible with expected version {SCHEMA_VERSION}. "
-        "Polylogue does not migrate older archive schemas in place. Move the database aside or rebuild it with "
-        "`polylogue reset --database && polylogue run`."
+        "Polylogue only supports explicitly declared in-place archive upgrades. Move the database aside or rebuild "
+        "it with `polylogue reset --database && polylogue run`."
     )
 
 
@@ -570,12 +643,40 @@ def build_current_schema_extension_plan(snapshot: SchemaSnapshot) -> SchemaExten
     return SchemaExtensionPlan(statements=tuple(statements), scripts=tuple(scripts))
 
 
+def build_v2_to_v3_upgrade_plan(snapshot: SchemaSnapshot) -> SchemaExtensionPlan:
+    """Build the additive v2 -> v3 upgrade plan.
+
+    v3 only adds the stored message_type read-model column and its lookup
+    index. The rest of the product -> insight rename kept the physical table
+    names stable, so old v2 archives can be upgraded without rebuilding the
+    full archive.
+    """
+    assert_supported_archive_layout_snapshot(snapshot)
+
+    statements: list[str] = []
+    for descriptor in _MESSAGE_TYPE_EXTENSION_DESCRIPTORS:
+        statements.extend(descriptor.statements(snapshot))
+    if snapshot.has_table("messages"):
+        if snapshot.has_table("content_blocks"):
+            statements.append(_V2_TO_V3_MESSAGE_TYPE_BACKFILL_WITH_BLOCKS_SQL)
+        else:
+            statements.append(_V2_TO_V3_MESSAGE_TYPE_BACKFILL_SQL)
+    return SchemaExtensionPlan(statements=tuple(statements), scripts=())
+
+
 def decide_schema_bootstrap(snapshot: SchemaSnapshot) -> SchemaBootstrapDecision:
     """Choose the canonical schema bootstrap path for sync and async backends."""
     if snapshot.current_version == 0:
         return SchemaBootstrapDecision(action="create_fresh")
 
     assert_supported_archive_layout_snapshot(snapshot)
+
+    if snapshot.current_version == 2 and SCHEMA_VERSION == 3 and snapshot.has_table("messages"):
+        return SchemaBootstrapDecision(
+            action="upgrade_v2_to_v3",
+            extension_plan=build_v2_to_v3_upgrade_plan(snapshot),
+            current_version=snapshot.current_version,
+        )
 
     if snapshot.current_version != SCHEMA_VERSION:
         return SchemaBootstrapDecision(
@@ -697,6 +798,7 @@ __all__ = [
     "apply_schema_extension_plan_async",
     "assert_supported_archive_layout_snapshot",
     "build_current_schema_extension_plan",
+    "build_v2_to_v3_upgrade_plan",
     "capture_schema_snapshot",
     "capture_schema_snapshot_async",
     "decide_schema_bootstrap",
