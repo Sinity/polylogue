@@ -656,7 +656,7 @@ def build_v2_to_v3_upgrade_plan(snapshot: SchemaSnapshot) -> SchemaExtensionPlan
     statements: list[str] = []
     for descriptor in _MESSAGE_TYPE_EXTENSION_DESCRIPTORS:
         statements.extend(descriptor.statements(snapshot))
-    if snapshot.has_table("messages"):
+    if snapshot.has_table("messages") and "message_type" not in snapshot.columns("messages"):
         if snapshot.has_table("content_blocks"):
             statements.append(_V2_TO_V3_MESSAGE_TYPE_BACKFILL_WITH_BLOCKS_SQL)
         else:

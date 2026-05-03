@@ -33,6 +33,7 @@ from polylogue.storage.backends.schema_bootstrap import (
     SchemaIndexExtensionDescriptor,
     SchemaSnapshot,
     build_current_schema_extension_plan,
+    build_v2_to_v3_upgrade_plan,
     decide_schema_bootstrap,
     schema_extension_snapshot_indexes,
     schema_extension_snapshot_tables,
@@ -205,6 +206,23 @@ def test_ensure_schema_upgrades_v2_already_extended_without_overwriting(tmp_path
     assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
     assert set(_message_types(conn).values()) == {"summary"}
     conn.close()
+
+
+def test_v2_to_v3_upgrade_plan_skips_backfill_when_message_type_exists() -> None:
+    """Already-extended v2 archives should not pay for an archive-wide backfill."""
+    snapshot = SchemaSnapshot(
+        current_version=2,
+        table_columns={
+            "messages": frozenset({"message_id", "conversation_id", "message_type"}),
+            "content_blocks": frozenset({"message_id", "type"}),
+        },
+        index_sql={"idx_messages_conversation_message_type": None},
+    )
+
+    plan = build_v2_to_v3_upgrade_plan(snapshot)
+
+    assert any("idx_messages_conversation_message_type" in statement for statement in plan.statements)
+    assert not any(statement.lstrip().startswith("UPDATE messages") for statement in plan.statements)
 
 
 def test_ensure_schema_rejects_version_mismatch_without_mutating(tmp_path: Path) -> None:

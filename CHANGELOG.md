@@ -95,6 +95,8 @@ documentation polish do not require an entry.
   `messages.message_type` column/index, preserving existing archive rows
   instead of failing the next run after an older binary rewrites
   `PRAGMA user_version`.
+- Schema v2 archives that already have `messages.message_type` skip the
+  message-type backfill scan and only repair the missing version/index state.
 - `sanitize_path` symlink probe narrowed to `OSError` and treats
   uncertainty as suspicious (previously a `PermissionError` on an
   unreadable directory could mask a traversal attempt).
