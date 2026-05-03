@@ -1180,10 +1180,6 @@ files:
     loc: 139
     target: polylogue/pipeline/tail_overlay.py
     owner: stable
-  - path: polylogue/pipeline/watch.py
-    loc: 67
-    target: polylogue/pipeline/watch.py
-    owner: stable
   - path: polylogue/proof/__init__.py
     loc: 187
     target: polylogue/proof/__init__.py

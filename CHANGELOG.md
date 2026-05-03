@@ -66,9 +66,9 @@ documentation polish do not require an entry.
   `--format json` output while retaining `--json` as a strict alias.
 - `polylogue audit` was removed from the product CLI; verification-lab audit
   workflows live under `devtools`.
-- Standalone live ingestion is no longer a root `polylogue watch` command; use
-  `polylogued watch` for the long-running source watcher. `polylogue run
-  --watch` remains the continuous pipeline-run mode.
+- Live watching is no longer exposed through root `polylogue watch` or
+  `polylogue run --watch`; use `polylogued watch` for the long-running source
+  watcher.
 - Browser-capture receiver serving/status moved from root `polylogue
   browser-capture` to `polylogued browser-capture`.
 - `polylogued status` now reports configured daemon components, including live

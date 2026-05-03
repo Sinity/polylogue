@@ -15,12 +15,6 @@ from polylogue.cli.shared.helpers import (
     resolve_sources,
 )
 from polylogue.cli.shared.run_workflow import (
-    WatchDisplayObserver as _WatchDisplayObserver,
-)
-from polylogue.cli.shared.run_workflow import (
-    WatchStatusObserver as _WatchStatusObserver,
-)
-from polylogue.cli.shared.run_workflow import (
     display_result as _display_result,
 )
 from polylogue.cli.shared.run_workflow import (
@@ -30,23 +24,12 @@ from polylogue.cli.shared.run_workflow import (
 from polylogue.cli.shared.run_workflow import (
     run_sync_once as _run_sync_once,
 )
-from polylogue.cli.shared.run_workflow import (
-    run_with_progress as _run_with_progress,
-)
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Source
-from polylogue.pipeline.observers import (
-    CompositeObserver,
-    ExecObserver,
-    NotificationObserver,
-    RunObserver,
-    WebhookObserver,
-)
 from polylogue.pipeline.payload_types import SiteBuildOptions
 from polylogue.pipeline.run_support import RUN_STAGE_CHOICES, expand_requested_stage, normalize_stage_sequence
 from polylogue.pipeline.runner import plan_sources
 from polylogue.sources import DriveError
-from polylogue.storage.run_state import RunResult
 
 INTERACTIVE_RUN_STAGE_CHOICES: tuple[str, ...] = (
     "all",
@@ -191,10 +174,6 @@ def _build_transient_sources(paths: tuple[Path, ...]) -> list[Source]:
     type=click.Path(exists=True, resolve_path=True, path_type=Path),
     help="Transient file, directory, or archive path (repeatable). Accepts .json, .jsonl, .ndjson, .zip.",
 )
-@click.option("--watch", is_flag=True, help="Watch sources for changes and run continuously")
-@click.option("--notify", is_flag=True, help="Desktop notification on conversation changes (requires --watch)")
-@click.option("--exec", "exec_cmd", help="Execute command on conversation changes (requires --watch)")
-@click.option("--webhook", help="Call webhook URL on conversation changes (requires --watch)")
 @click.option("--reparse", is_flag=True, help="Force re-parsing of all raw conversations (clears parse tracking)")
 @click.pass_context
 def run_command(
@@ -202,10 +181,6 @@ def run_command(
     preview: bool,
     sources: tuple[str, ...],
     input_paths: tuple[Path, ...],
-    watch: bool,
-    notify: bool,
-    exec_cmd: str | None,
-    webhook: str | None,
     reparse: bool,
 ) -> None:
     """Run pipeline stages on configured sources and/or transient input paths."""
@@ -219,15 +194,9 @@ def _run_result_callback(
     preview: bool,
     sources: tuple[str, ...],
     input_paths: tuple[Path, ...],
-    watch: bool,
-    notify: bool,
-    exec_cmd: str | None,
-    webhook: str | None,
     reparse: bool,
 ) -> None:
     env: AppEnv = ctx.obj
-    if (notify or exec_cmd or webhook) and not watch:
-        fail("run", "--notify, --exec, and --webhook require --watch mode")
 
     if not stage_requests:
         prompted_stage = maybe_prompt_run_stage(
@@ -304,61 +273,13 @@ def _run_result_callback(
         if env.ui.plain or not env.ui.confirm("Sync now using this snapshot?", default=False):
             return
 
-    if not watch and not plan_snapshot and not env.ui.plain and not env.ui.confirm("Proceed?", default=True):
+    if not plan_snapshot and not env.ui.plain and not env.ui.confirm("Proceed?", default=True):
         env.ui.console.print("Cancelled.")
         return
 
     if reparse:
         reset_count = run_coroutine_sync(env.repository.reset_parse_status(source_names=selected_sources or None))
         click.echo(f"Reset parse status for {reset_count:,} raw records.", err=False)
-
-    if watch:
-        from polylogue.pipeline.watch import WatchRunner
-
-        observers: list[RunObserver] = [
-            _WatchDisplayObserver(
-                env,
-                cfg,
-                canonical_stage,
-                selected_sources,
-                display_stage=display_stage,
-                stage_sequence=stage_sequence,
-            ),
-            _WatchStatusObserver(),
-        ]
-
-        if notify:
-            observers.append(NotificationObserver())
-        if exec_cmd:
-            observers.append(ExecObserver(exec_cmd))
-        if webhook:
-            observers.append(WebhookObserver(webhook))
-
-        composite = CompositeObserver(observers)
-
-        def _sync_once() -> RunResult:
-            return _run_with_progress(
-                cfg,
-                env,
-                canonical_stage,
-                stage_sequence,
-                selected_sources,
-                render_format,
-                plan_snapshot=plan_snapshot,
-                observer=composite,
-                site_options=site_options,
-                force_write=reparse,
-            )
-
-        env.ui.console.print("Watch mode: syncing every 60 seconds. Press Ctrl+C to stop.")
-        runner = WatchRunner(
-            sync_fn=_sync_once,
-            observer=composite,
-            interval=60,
-        )
-        runner.run()
-        env.ui.console.print("\nWatch mode stopped.")
-        return
 
     try:
         result = _run_sync_once(
