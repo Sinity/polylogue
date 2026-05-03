@@ -36,7 +36,7 @@ from polylogue.storage.backends.schema_ddl_insight_timelines import (
     SESSION_INSIGHT_TIMELINE_DDL as _SESSION_INSIGHT_TIMELINE_DDL,
 )
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 # Complete target schema applied to fresh databases.

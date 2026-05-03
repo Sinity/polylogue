@@ -21,6 +21,7 @@ from polylogue.storage.backends.schema_ddl import (
     SCHEMA_DDL,
     SCHEMA_VERSION,
 )
+from polylogue.storage.fts.sql import ACTION_FTS_REBUILD_SQL, FTS_ACTIONS_TABLE_SQL
 
 logger = get_logger(__name__)
 
@@ -65,7 +66,13 @@ class SchemaExtensionPlan:
 class SchemaBootstrapDecision:
     """Shared schema bootstrap branch chosen from a schema snapshot."""
 
-    action: Literal["create_fresh", "apply_current_extensions", "upgrade_v2_to_v3", "version_mismatch"]
+    action: Literal[
+        "create_fresh",
+        "apply_current_extensions",
+        "upgrade_v2_to_current",
+        "upgrade_v3_to_v4",
+        "version_mismatch",
+    ]
     extension_plan: SchemaExtensionPlan | None = None
     current_version: int | None = None
 
@@ -193,6 +200,27 @@ _MESSAGE_TYPE_EXTENSION_DESCRIPTORS: tuple[SchemaExtensionDescriptor, ...] = (
         index_name="idx_messages_conversation_message_type",
         ddl=_MESSAGE_TYPE_INDEX_SQL,
     ),
+)
+
+_ACTION_FTS_TRIGGER_REPLACEMENT_STATEMENTS: tuple[str, ...] = (
+    "DROP TRIGGER IF EXISTS action_events_fts_ai",
+    "DROP TRIGGER IF EXISTS action_events_fts_ad",
+    "DROP TRIGGER IF EXISTS action_events_fts_au",
+    """CREATE TRIGGER action_events_fts_ai
+       AFTER INSERT ON action_events BEGIN
+           INSERT INTO action_events_fts(rowid, event_id, message_id, conversation_id, action_kind, tool_name, text)
+           VALUES (new.rowid, new.event_id, new.message_id, new.conversation_id, new.action_kind, new.normalized_tool_name, new.search_text);
+       END""",
+    """CREATE TRIGGER action_events_fts_ad
+       AFTER DELETE ON action_events BEGIN
+           DELETE FROM action_events_fts WHERE rowid = old.rowid;
+       END""",
+    """CREATE TRIGGER action_events_fts_au
+       AFTER UPDATE ON action_events BEGIN
+           DELETE FROM action_events_fts WHERE rowid = old.rowid;
+           INSERT INTO action_events_fts(rowid, event_id, message_id, conversation_id, action_kind, tool_name, text)
+           VALUES (new.rowid, new.event_id, new.message_id, new.conversation_id, new.action_kind, new.normalized_tool_name, new.search_text);
+       END""",
 )
 
 _SCHEMA_EXTENSION_DESCRIPTORS: tuple[SchemaExtensionDescriptor, ...] = (
@@ -597,6 +625,7 @@ def schema_extension_snapshot_tables() -> tuple[str, ...]:
     for descriptor in _SCHEMA_EXTENSION_DESCRIPTORS:
         for table_name in descriptor.snapshot_tables():
             table_names.setdefault(table_name, None)
+    table_names.setdefault("action_events_fts", None)
     return tuple(table_names)
 
 
@@ -664,6 +693,33 @@ def build_v2_to_v3_upgrade_plan(snapshot: SchemaSnapshot) -> SchemaExtensionPlan
     return SchemaExtensionPlan(statements=tuple(statements), scripts=())
 
 
+def build_v3_to_v4_upgrade_plan(snapshot: SchemaSnapshot) -> SchemaExtensionPlan:
+    """Align action-event FTS rowids with the base table for targeted repair."""
+    assert_supported_archive_layout_snapshot(snapshot)
+
+    if not snapshot.has_table("action_events"):
+        return SchemaExtensionPlan(statements=(), scripts=())
+
+    statements: list[str] = []
+    if not snapshot.has_table("action_events_fts"):
+        statements.append(FTS_ACTIONS_TABLE_SQL)
+    statements.extend(_ACTION_FTS_TRIGGER_REPLACEMENT_STATEMENTS[:3])
+    statements.append("DELETE FROM action_events_fts")
+    statements.append(ACTION_FTS_REBUILD_SQL)
+    statements.extend(_ACTION_FTS_TRIGGER_REPLACEMENT_STATEMENTS[3:])
+    return SchemaExtensionPlan(statements=tuple(statements), scripts=())
+
+
+def build_v2_to_current_upgrade_plan(snapshot: SchemaSnapshot) -> SchemaExtensionPlan:
+    """Build the declared v2 upgrade path to the current archive version."""
+    v2_to_v3 = build_v2_to_v3_upgrade_plan(snapshot)
+    v3_to_v4 = build_v3_to_v4_upgrade_plan(snapshot)
+    return SchemaExtensionPlan(
+        statements=(*v2_to_v3.statements, *v3_to_v4.statements),
+        scripts=(),
+    )
+
+
 def decide_schema_bootstrap(snapshot: SchemaSnapshot) -> SchemaBootstrapDecision:
     """Choose the canonical schema bootstrap path for sync and async backends."""
     if snapshot.current_version == 0:
@@ -671,10 +727,17 @@ def decide_schema_bootstrap(snapshot: SchemaSnapshot) -> SchemaBootstrapDecision
 
     assert_supported_archive_layout_snapshot(snapshot)
 
-    if snapshot.current_version == 2 and SCHEMA_VERSION == 3 and snapshot.has_table("messages"):
+    if snapshot.current_version == 2 and SCHEMA_VERSION == 4 and snapshot.has_table("messages"):
         return SchemaBootstrapDecision(
-            action="upgrade_v2_to_v3",
-            extension_plan=build_v2_to_v3_upgrade_plan(snapshot),
+            action="upgrade_v2_to_current",
+            extension_plan=build_v2_to_current_upgrade_plan(snapshot),
+            current_version=snapshot.current_version,
+        )
+
+    if snapshot.current_version == 3 and SCHEMA_VERSION == 4:
+        return SchemaBootstrapDecision(
+            action="upgrade_v3_to_v4",
+            extension_plan=build_v3_to_v4_upgrade_plan(snapshot),
             current_version=snapshot.current_version,
         )
 
@@ -798,7 +861,9 @@ __all__ = [
     "apply_schema_extension_plan_async",
     "assert_supported_archive_layout_snapshot",
     "build_current_schema_extension_plan",
+    "build_v2_to_current_upgrade_plan",
     "build_v2_to_v3_upgrade_plan",
+    "build_v3_to_v4_upgrade_plan",
     "capture_schema_snapshot",
     "capture_schema_snapshot_async",
     "decide_schema_bootstrap",

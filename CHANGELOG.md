@@ -97,6 +97,9 @@ documentation polish do not require an entry.
   `PRAGMA user_version`.
 - Schema v2 archives that already have `messages.message_type` skip the
   message-type backfill scan and only repair the missing version/index state.
+- Schema v3 archives now upgrade to v4 by rebuilding action-event FTS rows
+  with base-table rowids, enabling targeted incremental FTS repairs instead
+  of archive-wide FTS scans.
 - `sanitize_path` symlink probe narrowed to `OSError` and treats
   uncertainty as suspicious (previously a `PermissionError` on an
   unreadable directory could mask a traversal attempt).

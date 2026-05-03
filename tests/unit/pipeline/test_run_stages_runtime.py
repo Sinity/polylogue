@@ -315,6 +315,7 @@ async def test_execute_index_stage_covers_parse_index_reprocess_and_error_paths(
         assert all_rebuild == IndexStageOutcome(indexed=True, item_count=2)
 
         index_service.get_index_status.return_value = {"exists": True}
+        update_calls_before_reprocess = index_service.update_index.await_count
         reprocess = await run_stages.execute_index_stage(
             config=SimpleNamespace(),
             stage="reprocess",
@@ -322,7 +323,8 @@ async def test_execute_index_stage_covers_parse_index_reprocess_and_error_paths(
             processed_ids={"conv-9"},
             backend=_backend(),
         )
-        assert reprocess == IndexStageOutcome(indexed=True, item_count=1)
+        assert reprocess == IndexStageOutcome(indexed=True, item_count=0)
+        assert index_service.update_index.await_count == update_calls_before_reprocess
 
         index_service.update_index.side_effect = RuntimeError("bad index")
         error = await run_stages.execute_index_stage(

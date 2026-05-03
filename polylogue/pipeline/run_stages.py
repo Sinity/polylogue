@@ -379,11 +379,10 @@ async def execute_index_stage(
                     item_count=len(processed_ids),
                 )
             if processed_ids:
-                index_kwargs = {"progress_callback": progress_callback} if progress_callback is not None else {}
-                return IndexStageOutcome(
-                    indexed=await index_service.update_index(processed_ids, **index_kwargs),
-                    item_count=len(processed_ids),
-                )
+                # The parse stage repairs FTS for changed conversations as a
+                # synchronous ingest side effect. Re-running the same repair in
+                # the chained index stage doubles FTS I/O on large archives.
+                return IndexStageOutcome(indexed=True, item_count=0)
         return IndexStageOutcome(indexed=False, item_count=0)
     except Exception as exc:
         return IndexStageOutcome(

@@ -39,8 +39,9 @@ FTS_REBUILD_SQL = """
 """
 
 ACTION_FTS_REBUILD_SQL = """
-    INSERT INTO action_events_fts (event_id, message_id, conversation_id, action_kind, tool_name, text)
+    INSERT INTO action_events_fts (rowid, event_id, message_id, conversation_id, action_kind, tool_name, text)
     SELECT
+        ae.rowid,
         ae.event_id,
         ae.message_id,
         ae.conversation_id,
@@ -64,7 +65,14 @@ def chunked(items: Sequence[str], *, size: int) -> Iterable[Sequence[str]]:
 
 def delete_conversation_rows_sql(chunk_size: int) -> str:
     placeholders = ", ".join("?" for _ in range(chunk_size))
-    return f"DELETE FROM messages_fts WHERE conversation_id IN ({placeholders})"
+    return f"""
+        DELETE FROM messages_fts
+        WHERE rowid IN (
+            SELECT messages.rowid
+            FROM messages
+            WHERE messages.conversation_id IN ({placeholders})
+        )
+    """
 
 
 def insert_conversation_rows_sql(chunk_size: int) -> str:
@@ -79,14 +87,22 @@ def insert_conversation_rows_sql(chunk_size: int) -> str:
 
 def delete_action_rows_sql(chunk_size: int) -> str:
     placeholders = ", ".join("?" for _ in range(chunk_size))
-    return f"DELETE FROM action_events_fts WHERE conversation_id IN ({placeholders})"
+    return f"""
+        DELETE FROM action_events_fts
+        WHERE rowid IN (
+            SELECT ae.rowid
+            FROM action_events ae
+            WHERE ae.conversation_id IN ({placeholders})
+        )
+    """
 
 
 def insert_action_rows_sql(chunk_size: int) -> str:
     placeholders = ", ".join("?" for _ in range(chunk_size))
     return f"""
-        INSERT INTO action_events_fts (event_id, message_id, conversation_id, action_kind, tool_name, text)
+        INSERT INTO action_events_fts (rowid, event_id, message_id, conversation_id, action_kind, tool_name, text)
         SELECT
+            ae.rowid,
             ae.event_id,
             ae.message_id,
             ae.conversation_id,

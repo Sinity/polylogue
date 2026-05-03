@@ -149,7 +149,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         raise DatabaseError(schema_version_mismatch_message(decision.current_version or 0))
         return
 
-    if decision.action == "upgrade_v2_to_v3" and decision.extension_plan is not None:
+    if decision.action in {"upgrade_v2_to_current", "upgrade_v3_to_v4"} and decision.extension_plan is not None:
         _apply_version_upgrade_plan(conn, snapshot, decision.extension_plan)
         logger.info("Upgraded schema from v%s to v%s", decision.current_version, SCHEMA_VERSION)
         return
@@ -180,7 +180,7 @@ async def ensure_schema_async(conn: aiosqlite.Connection) -> None:
         raise DatabaseError(schema_version_mismatch_message(decision.current_version or 0))
         return
 
-    if decision.action == "upgrade_v2_to_v3" and decision.extension_plan is not None:
+    if decision.action in {"upgrade_v2_to_current", "upgrade_v3_to_v4"} and decision.extension_plan is not None:
         await _apply_version_upgrade_plan_async(conn, snapshot, decision.extension_plan)
         logger.info("Upgraded schema from v%s to v%s", decision.current_version, SCHEMA_VERSION)
         return
