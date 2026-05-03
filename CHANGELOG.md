@@ -51,6 +51,14 @@ documentation polish do not require an entry.
 - Partial indexes scoped to the gating `WHERE` of each `session_profiles`
   search-text backfill, so repeated bootstraps drain an empty index
   instead of scanning the table.
+- Schema v5: tags M2M tables (`tags`, `conversation_tags`), blob GC lease
+  tables (`pending_blob_refs`, `gc_generations`), and `insights.db` extraction
+  with its own schema lifecycle. Wipe-and-rebuild required.
+- `ArchiveWriteGateway` as the single canonical write path (daemon RPC stub for
+  slice G). Post-ingest side effects (FTS repair, cache invalidation) now route
+  through `polylogue.archive.write_effects`.
+- `run_blob_gc()` for safe garbage collection of unreferenced blobs with lease,
+  generation, and MIN_AGE guards.
 
 ### Changed
 

@@ -84,13 +84,15 @@ def _apply_version_upgrade_plan(
     snapshot: SchemaSnapshot,
     plan: SchemaExtensionPlan,
 ) -> None:
-    if plan.scripts:
-        raise DatabaseError("Schema version upgrade plans must use statement-level SQL")
+    if plan.scripts and plan.statements:
+        raise DatabaseError("Schema version upgrade plans must use statement-level SQL or scripts, not both")
     _log_index_replacement(snapshot, plan)
     try:
         conn.execute("BEGIN IMMEDIATE")
         for statement in plan.statements:
             conn.execute(statement)
+        for script in plan.scripts:
+            conn.executescript(script)
         ensure_vec0_table(conn)
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     except Exception:
@@ -104,13 +106,15 @@ async def _apply_version_upgrade_plan_async(
     snapshot: SchemaSnapshot,
     plan: SchemaExtensionPlan,
 ) -> None:
-    if plan.scripts:
-        raise DatabaseError("Schema version upgrade plans must use statement-level SQL")
+    if plan.scripts and plan.statements:
+        raise DatabaseError("Schema version upgrade plans must use statement-level SQL or scripts, not both")
     _log_index_replacement(snapshot, plan)
     try:
         await conn.execute("BEGIN IMMEDIATE")
         for statement in plan.statements:
             await conn.execute(statement)
+        for script in plan.scripts:
+            await conn.executescript(script)
         await ensure_vec0_table_async(conn)
         await conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     except Exception:
@@ -149,7 +153,10 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         raise DatabaseError(schema_version_mismatch_message(decision.current_version or 0))
         return
 
-    if decision.action in {"upgrade_v2_to_current", "upgrade_v3_to_v4"} and decision.extension_plan is not None:
+    if (
+        decision.action in {"upgrade_v2_to_current", "upgrade_v3_to_v4", "upgrade_v4_to_v5"}
+        and decision.extension_plan is not None
+    ):
         _apply_version_upgrade_plan(conn, snapshot, decision.extension_plan)
         logger.info("Upgraded schema from v%s to v%s", decision.current_version, SCHEMA_VERSION)
         return
@@ -180,7 +187,10 @@ async def ensure_schema_async(conn: aiosqlite.Connection) -> None:
         raise DatabaseError(schema_version_mismatch_message(decision.current_version or 0))
         return
 
-    if decision.action in {"upgrade_v2_to_current", "upgrade_v3_to_v4"} and decision.extension_plan is not None:
+    if (
+        decision.action in {"upgrade_v2_to_current", "upgrade_v3_to_v4", "upgrade_v4_to_v5"}
+        and decision.extension_plan is not None
+    ):
         await _apply_version_upgrade_plan_async(conn, snapshot, decision.extension_plan)
         logger.info("Upgraded schema from v%s to v%s", decision.current_version, SCHEMA_VERSION)
         return
