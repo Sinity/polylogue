@@ -9,9 +9,9 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from polylogue.archive.conversation.models import Conversation, ConversationSummary
     from polylogue.archive.query.search_hits import ConversationSearchHit
-    from polylogue.storage.backends.query_store import SQLiteQueryStore
     from polylogue.storage.runtime import ConversationRecord
     from polylogue.storage.search.models import ConversationSearchEvidenceHit, ConversationSearchResult
+    from polylogue.storage.sqlite.query_store import SQLiteQueryStore
 
 
 def _rerank_evidence_hits(

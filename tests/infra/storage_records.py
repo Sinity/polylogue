@@ -15,7 +15,6 @@ from polylogue.archive.conversation.branch_type import BranchType
 from polylogue.archive.message.roles import Role
 from polylogue.core.json import dumps, require_json_document, require_json_value
 from polylogue.pipeline.prepare import _timestamp_sort_key
-from polylogue.storage.backends.connection import connection_context, open_connection
 from polylogue.storage.runtime import (
     AttachmentRecord,
     ContentBlockRecord,
@@ -26,6 +25,7 @@ from polylogue.storage.runtime import (
     _json_or_none,
     _make_ref_id,
 )
+from polylogue.storage.sqlite.connection import connection_context, open_connection
 from polylogue.types import (
     AttachmentId,
     ContentBlockType,
@@ -759,8 +759,8 @@ class ConversationBuilder:
         return self.conv
 
     async def build(self) -> Conversation | None:
-        from polylogue.storage.backends.async_sqlite import SQLiteBackend
         from polylogue.storage.repository import ConversationRepository
+        from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
         self.save()
         async with ConversationRepository(backend=SQLiteBackend(db_path=self.db_path)) as repo:

@@ -12,7 +12,6 @@ from polylogue.cli.shared.run_workflow import display_result
 from polylogue.config import Source, get_config
 from polylogue.pipeline.observers import ExecObserver, NotificationObserver, WebhookObserver
 from polylogue.pipeline.runner import latest_run, plan_sources, run_sources
-from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.run_state import (
     DriftBucket,
     RenderFailurePayload,
@@ -20,6 +19,7 @@ from polylogue.storage.run_state import (
     RunDrift,
     RunResult,
 )
+from polylogue.storage.sqlite.connection import open_connection
 from tests.infra.source_builders import ChatGPTExportBuilder, GenericConversationBuilder, InboxBuilder
 
 

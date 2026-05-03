@@ -14,17 +14,6 @@ from polylogue.archive.conversation.models import Conversation
 from polylogue.archive.session.session_profile import SessionProfile, build_session_analysis, build_session_profile
 from polylogue.protocols import ProgressCallback
 from polylogue.storage.action_events.rows import attach_blocks_to_messages
-from polylogue.storage.backends.queries.attachments import get_attachments_batch
-from polylogue.storage.backends.queries.mappers import (
-    _json_object,
-    _parse_json,
-    _row_float,
-    _row_get,
-    _row_text,
-    _row_to_content_block,
-    _row_to_message,
-    _row_to_session_profile_record,
-)
 from polylogue.storage.hydrators import conversation_from_records
 from polylogue.storage.insights.session.aggregates import (
     list_async_provider_day_groups,
@@ -62,6 +51,17 @@ from polylogue.storage.runtime import (
     SessionPhaseRecord,
     SessionProfileRecord,
     SessionWorkEventRecord,
+)
+from polylogue.storage.sqlite.queries.attachments import get_attachments_batch
+from polylogue.storage.sqlite.queries.mappers import (
+    _json_object,
+    _parse_json,
+    _row_float,
+    _row_get,
+    _row_text,
+    _row_to_content_block,
+    _row_to_message,
+    _row_to_session_profile_record,
 )
 from polylogue.types import ConversationId
 
@@ -540,11 +540,11 @@ async def rebuild_session_insights_async(
     progress_callback: ProgressCallback | None = None,
     progress_total: int | None = None,
 ) -> SessionInsightCounts:
-    from polylogue.storage.backends.queries.session_insight_profile_writes import (
+    from polylogue.storage.sqlite.queries.session_insight_profile_writes import (
         replace_session_profile,
     )
-    from polylogue.storage.backends.queries.session_insight_thread_queries import replace_work_thread
-    from polylogue.storage.backends.queries.session_insight_timeline_writes import (
+    from polylogue.storage.sqlite.queries.session_insight_thread_queries import replace_work_thread
+    from polylogue.storage.sqlite.queries.session_insight_timeline_writes import (
         replace_session_phases,
         replace_session_work_events,
     )

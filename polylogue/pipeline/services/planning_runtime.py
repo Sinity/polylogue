@@ -299,8 +299,8 @@ async def build_ingest_plan(
                 parse_ready_raw_ids.append(record.raw_id)
 
         if preview_records and preview_validation is not None:
-            scanned_preview_validation = await validation.evaluate_raw_records(
-                raw_records=preview_records,
+            scanned_preview_validation = await validation.evaluate_raw_artifacts(
+                raw_artifacts=preview_records,
                 persist=False,
             )
             preview_validation.merge(scanned_preview_validation)

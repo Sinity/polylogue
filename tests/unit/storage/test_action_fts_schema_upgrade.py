@@ -5,8 +5,8 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from polylogue.storage.backends.schema import SCHEMA_VERSION, _ensure_schema
-from polylogue.storage.backends.schema_bootstrap import SchemaSnapshot, build_v3_to_v4_upgrade_plan
+from polylogue.storage.sqlite.schema import SCHEMA_VERSION, _ensure_schema
+from polylogue.storage.sqlite.schema_bootstrap import SchemaSnapshot, build_v3_to_v4_upgrade_plan
 
 
 def _create_v3_action_fts_fixture(conn: sqlite3.Connection) -> None:

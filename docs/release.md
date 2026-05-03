@@ -14,7 +14,7 @@ captures the things to *check* at cut time.
 - [ ] `CHANGELOG.md` Unreleased entries reviewed and grouped under
       `Added`, `Changed`, `Fixed`, `Security`, `Removed`.
 - [ ] `SCHEMA_VERSION` bumped if any change in this slice modified
-      `polylogue/storage/backends/schema_ddl.py` or its inputs.
+      `polylogue/storage/sqlite/schema_ddl.py` or its inputs.
 - [ ] No `until: "vX.Y.Z"` exception in `docs/plans/*.yaml` references
       this release without a resolution PR.
 - [ ] `pip-audit` green (covered by CI; re-run locally if anything

@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.hydrators import conversation_from_records
+from polylogue.storage.sqlite.connection import open_connection
 from tests.infra.archive_scenarios import (
     ArchiveScenario,
     ScenarioAttachment,

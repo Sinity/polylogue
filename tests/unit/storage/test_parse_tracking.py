@@ -17,14 +17,14 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.storage.backends.async_sqlite import SQLiteBackend
-from polylogue.storage.backends.schema import (
+from polylogue.storage.raw.models import RawConversationStateUpdate
+from polylogue.storage.runtime import RawConversationRecord
+from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
+from polylogue.storage.sqlite.schema import (
     SCHEMA_VERSION,
     _ensure_raw_source_mtime_index,
     _ensure_schema,
 )
-from polylogue.storage.raw.models import RawConversationStateUpdate
-from polylogue.storage.runtime import RawConversationRecord
 
 # ─── Backend method tests ──────────────────────────────────────────────────
 

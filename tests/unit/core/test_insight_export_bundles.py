@@ -9,8 +9,8 @@ import pytest
 
 from polylogue.api import Polylogue
 from polylogue.insights.export_bundles import InsightExportBundleError, InsightExportBundleRequest
-from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
+from polylogue.storage.sqlite.connection import open_connection
 from tests.infra.storage_records import ConversationBuilder
 
 

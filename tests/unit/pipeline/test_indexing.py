@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from polylogue.config import Config
 from polylogue.pipeline.services.indexing import IndexService
-from polylogue.storage.backends.async_sqlite import SQLiteBackend
+from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from tests.infra.storage_records import make_content_block, make_conversation, make_message
 
 

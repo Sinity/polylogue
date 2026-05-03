@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from polylogue.storage.backends.connection import open_read_connection as open_connection
 from polylogue.storage.search import runtime as _search_runtime
 from polylogue.storage.search.models import SearchHit, SearchResult
 from polylogue.storage.search.query_builders import (
@@ -12,6 +11,7 @@ from polylogue.storage.search.query_builders import (
     build_ranked_conversation_search_query,
 )
 from polylogue.storage.search.query_support import _FTS5_SPECIAL, escape_fts5_query, normalize_fts5_query
+from polylogue.storage.sqlite.connection import open_read_connection as open_connection
 
 
 def search_messages(

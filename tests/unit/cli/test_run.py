@@ -15,7 +15,6 @@ from polylogue.cli.click_app import cli
 from polylogue.cli.commands.run import maybe_prompt_run_stage
 from polylogue.cli.shared.types import AppEnv
 from polylogue.sources import DriveError
-from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.repository import ConversationRepository
 from polylogue.storage.run_state import (
     DriftBucket,
@@ -27,6 +26,7 @@ from polylogue.storage.run_state import (
     RunDrift,
     RunResult,
 )
+from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.ui import UI
 from tests.infra.storage_records import DbFactory
 

@@ -11,8 +11,8 @@ from polylogue.site.search import SearchIndexWriter, build_search_document
 
 if TYPE_CHECKING:
     from polylogue.protocols import ProgressCallback
-    from polylogue.storage.backends.async_sqlite import SQLiteBackend
     from polylogue.storage.repository import ConversationRepository
+    from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
 
 @runtime_checkable

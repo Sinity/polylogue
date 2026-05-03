@@ -24,7 +24,7 @@ class TestCorruptionRecovery:
         the connection layer re-creates the schema rather than raising.  The
         invariant is: the database is usable afterward and the schema tables exist.
         """
-        from polylogue.storage.backends.connection import _clear_connection_cache, open_connection
+        from polylogue.storage.sqlite.connection import _clear_connection_cache, open_connection
 
         db = tmp_path / "corrupt.db"
         with open_connection(db):
@@ -46,7 +46,7 @@ class TestCorruptionRecovery:
 
     def test_truncated_file(self, tmp_path: Path) -> None:
         """Truncating a DB file to 50% produces a clean error or recovery."""
-        from polylogue.storage.backends.connection import open_connection
+        from polylogue.storage.sqlite.connection import open_connection
 
         db = tmp_path / "truncated.db"
         with open_connection(db):
@@ -66,7 +66,7 @@ class TestCorruptionRecovery:
 
     def test_read_only_db(self, tmp_path: Path) -> None:
         """Read-only DB file produces actionable write error."""
-        from polylogue.storage.backends.connection import open_connection
+        from polylogue.storage.sqlite.connection import open_connection
 
         db = tmp_path / "readonly.db"
         with open_connection(db):
@@ -88,7 +88,7 @@ class TestCorruptionRecovery:
 
     def test_missing_file_creates_fresh(self, tmp_path: Path) -> None:
         """Nonexistent path creates a fresh DB cleanly."""
-        from polylogue.storage.backends.connection import open_connection
+        from polylogue.storage.sqlite.connection import open_connection
 
         db = tmp_path / "subdir" / "brand_new.db"
         db.parent.mkdir(parents=True, exist_ok=True)
@@ -100,7 +100,7 @@ class TestCorruptionRecovery:
 
     def test_empty_file(self, tmp_path: Path) -> None:
         """Zero-byte file is handled cleanly."""
-        from polylogue.storage.backends.connection import open_connection
+        from polylogue.storage.sqlite.connection import open_connection
 
         db = tmp_path / "empty.db"
         db.write_bytes(b"")

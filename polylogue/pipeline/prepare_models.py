@@ -19,7 +19,7 @@ from polylogue.storage.runtime import (
 from polylogue.types import ContentHash, ConversationId, MessageId
 
 if TYPE_CHECKING:
-    from polylogue.storage.backends.async_sqlite import SQLiteBackend
+    from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
 
 class RecordBundle(BaseModel):

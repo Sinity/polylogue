@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Protocol
 import aiosqlite
 
 if TYPE_CHECKING:
-    from polylogue.storage.backends.query_store import SQLiteQueryStore
+    from polylogue.storage.sqlite.query_store import SQLiteQueryStore
 
 
 class RepositoryBackendProtocol(Protocol):

@@ -28,8 +28,6 @@ if TYPE_CHECKING:
     from polylogue.archive.stats import ArchiveStats
     from polylogue.storage.action_events.artifacts import ActionEventArtifactState
     from polylogue.storage.archive_views import ConversationRenderProjection
-    from polylogue.storage.backends.queries.messages import MessageTypeName
-    from polylogue.storage.backends.queries.stats import AggregateMessageStats
     from polylogue.storage.query_models import ConversationRecordQuery
     from polylogue.storage.runtime import (
         ArtifactObservationRecord,
@@ -38,6 +36,8 @@ if TYPE_CHECKING:
         MessageRecord,
         RawConversationRecord,
     )
+    from polylogue.storage.sqlite.queries.messages import MessageTypeName
+    from polylogue.storage.sqlite.queries.stats import AggregateMessageStats
     from polylogue.types import ConversationId
 
 

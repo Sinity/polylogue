@@ -10,7 +10,7 @@ from polylogue.archive.semantic.content_projection import ContentProjectionSpec
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
-from polylogue.storage.backends.queries.message_query_reads import MessageTypeName
+from polylogue.storage.sqlite.queries.message_query_reads import MessageTypeName
 
 
 def run_messages(

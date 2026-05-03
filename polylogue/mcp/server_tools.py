@@ -33,7 +33,7 @@ if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP
 
     from polylogue.mcp.server_support import ServerCallbacks
-    from polylogue.storage.backends.queries.message_query_reads import MessageTypeName
+    from polylogue.storage.sqlite.queries.message_query_reads import MessageTypeName
 
 
 def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:

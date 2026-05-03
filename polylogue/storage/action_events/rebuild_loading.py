@@ -7,11 +7,11 @@ from collections.abc import AsyncIterator, Iterable, Sequence
 
 import aiosqlite
 
-from polylogue.storage.backends.queries.mappers import (
+from polylogue.storage.runtime import ContentBlockRecord, ConversationRecord, MessageRecord
+from polylogue.storage.sqlite.queries.mappers import (
     _row_to_content_block,
     _row_to_message,
 )
-from polylogue.storage.runtime import ContentBlockRecord, ConversationRecord, MessageRecord
 
 _ALL_ACTION_EVENT_CONVERSATION_IDS_SQL = (
     "SELECT conversation_id FROM conversations ORDER BY COALESCE(sort_key, 0) DESC, conversation_id"

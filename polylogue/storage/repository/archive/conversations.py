@@ -20,8 +20,8 @@ from polylogue.storage.repository.repository_contracts import RepositoryBackendP
 from polylogue.storage.runtime import AttachmentRecord, ConversationRecord, MessageRecord
 
 if TYPE_CHECKING:
-    from polylogue.storage.backends.queries.messages import MessageTypeName
-    from polylogue.storage.backends.query_store import SQLiteQueryStore
+    from polylogue.storage.sqlite.queries.messages import MessageTypeName
+    from polylogue.storage.sqlite.query_store import SQLiteQueryStore
     from polylogue.types import ConversationId
 
 

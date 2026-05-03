@@ -5,8 +5,8 @@ from __future__ import annotations
 import sqlite3
 
 from polylogue.storage.artifacts.inspection import inspect_raw_artifact
-from polylogue.storage.backends.queries.mappers import _row_to_raw_conversation
 from polylogue.storage.runtime import ArtifactObservationRecord
+from polylogue.storage.sqlite.queries.mappers import _row_to_raw_conversation
 
 
 def _upsert_artifact_observation(

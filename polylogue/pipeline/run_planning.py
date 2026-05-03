@@ -6,14 +6,14 @@ from typing import TYPE_CHECKING
 
 from polylogue.config import Config
 from polylogue.pipeline.run_support import run_coroutine_sync, select_sources
-from polylogue.storage.backends import create_backend
 from polylogue.storage.run_state import PlanResult
+from polylogue.storage.sqlite import create_backend
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from polylogue.protocols import ProgressCallback
-    from polylogue.storage.backends.async_sqlite import SQLiteBackend
+    from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
 
 def plan_sources(

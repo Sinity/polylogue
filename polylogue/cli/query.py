@@ -51,7 +51,7 @@ if TYPE_CHECKING:
         TagStore,
         VectorProvider,
     )
-    from polylogue.storage.backends.async_sqlite import SQLiteBackend
+    from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
     class QueryExecutionStore(ConversationArchiveStatsStore, ConversationQueryRuntimeStore, TagStore, Protocol):
         """Repository surface needed by query execution and grouped stats helpers."""

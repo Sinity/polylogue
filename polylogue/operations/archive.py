@@ -67,8 +67,6 @@ from polylogue.insights.resume import ResumeBrief, ResumeOperations, build_resum
 from polylogue.maintenance.targets import build_maintenance_target_catalog
 from polylogue.paths.sanitize import conversation_render_root
 from polylogue.services import RuntimeServices, build_runtime_services
-from polylogue.storage.backends.connection import connection_context
-from polylogue.storage.backends.queries.stats import ProviderMetricsRow
 from polylogue.storage.insights.session.runtime import (
     SessionInsightReadyFlag,
     SessionInsightStatusSnapshot,
@@ -76,6 +74,8 @@ from polylogue.storage.insights.session.runtime import (
 from polylogue.storage.repair import collect_archive_debt_statuses_sync
 from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.search import SearchHit, SearchResult
+from polylogue.storage.sqlite.connection import connection_context
+from polylogue.storage.sqlite.queries.stats import ProviderMetricsRow
 from polylogue.types import Provider
 
 logger = structlog.get_logger(__name__)
@@ -97,11 +97,11 @@ if TYPE_CHECKING:
     from polylogue.archive.query.search_hits import ConversationSearchHit
     from polylogue.archive.stats import ArchiveStats as StorageArchiveStats
     from polylogue.config import Config
-    from polylogue.storage.backends.async_sqlite import SQLiteBackend
-    from polylogue.storage.backends.queries.messages import MessageTypeName
     from polylogue.storage.insights.session.runtime import SessionInsightCounts
     from polylogue.storage.repository import ConversationRepository
     from polylogue.storage.runtime import RawConversationRecord
+    from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
+    from polylogue.storage.sqlite.queries.messages import MessageTypeName
 
 _ResultT = TypeVar("_ResultT")
 _QueryT = TypeVar("_QueryT")

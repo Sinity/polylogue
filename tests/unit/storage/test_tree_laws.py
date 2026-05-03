@@ -12,8 +12,8 @@ from pathlib import Path
 
 from hypothesis import HealthCheck, given, settings
 
-from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.repository import ConversationRepository
+from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from tests.infra.strategies.storage import (
     ConversationSpec,
     conversation_graph_strategy,

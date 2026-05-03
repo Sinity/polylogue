@@ -10,13 +10,13 @@ import aiosqlite
 from polylogue.archive.conversation.threads import WorkThread, WorkThreadPayload, build_session_threads
 from polylogue.archive.session.documents import WorkThreadDocument
 from polylogue.insights.archive_models import WorkThreadPayload as ArchivedWorkThreadPayload
-from polylogue.storage.backends.queries.mappers import _row_to_session_profile_record
 from polylogue.storage.insights.session.profiles import hydrate_session_profile, now_iso
 from polylogue.storage.runtime import (
     SESSION_INSIGHT_MATERIALIZER_VERSION,
     SessionProfileRecord,
     WorkThreadRecord,
 )
+from polylogue.storage.sqlite.queries.mappers import _row_to_session_profile_record
 from polylogue.types import ConversationId
 
 _ROOT_THREAD_IDS_SQL = """
