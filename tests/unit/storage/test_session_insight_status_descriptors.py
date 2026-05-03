@@ -36,6 +36,45 @@ def test_fts_descriptor_marks_duplicates_unready() -> None:
     assert descriptor.ready({"demo_fts": False}, {"source_rows": 0, "indexed_rows": 0, "duplicate_rows": 0}) is False
 
 
+async def test_fts_descriptor_async_can_skip_distinct_freshness_counts(tmp_path: Path) -> None:
+    db_path = tmp_path / "fts-status.db"
+    async with aiosqlite.connect(db_path) as conn:
+        await conn.executescript(
+            """
+            CREATE TABLE demo_fts (id TEXT NOT NULL);
+            INSERT INTO demo_fts (id) VALUES ('a'), ('a'), ('b');
+            """
+        )
+        await conn.commit()
+
+        descriptor = SessionInsightFtsDescriptor(
+            table_key="demo_fts",
+            table_name="demo_fts",
+            count_key="indexed_rows",
+            duplicate_count_key="duplicate_rows",
+            source_count_key="source_rows",
+            distinct_sql="SELECT COUNT(DISTINCT id) FROM demo_fts",
+            duplicate_sql="SELECT COUNT(*) - COUNT(DISTINCT id) FROM demo_fts",
+            ready_key="profile_merged_fts_ready",
+        )
+
+        fresh = await descriptor.counts_async(
+            conn,
+            {"demo_fts": True},
+            {"source_rows": 2},
+            verify_freshness=True,
+        )
+        lightweight = await descriptor.counts_async(
+            conn,
+            {"demo_fts": True},
+            {"source_rows": 2},
+            verify_freshness=False,
+        )
+
+    assert fresh == {"indexed_rows": 2, "duplicate_rows": 1}
+    assert lightweight == {"indexed_rows": 3, "duplicate_rows": 1}
+
+
 def test_count_descriptor_uses_fallback_when_freshness_is_disabled() -> None:
     descriptor = SessionInsightCountDescriptor(
         count_key="expected_rows",
@@ -101,3 +140,42 @@ async def test_status_sync_and_async_match_when_product_tables_are_absent(tmp_pa
     assert sync_status.stale_profile_row_count == 0
     assert sync_status.profile_rows_ready is False
     assert sync_status.threads_ready is False
+
+
+async def test_lightweight_status_sync_and_async_match_with_freshness_tables(tmp_path: Path) -> None:
+    db_path = tmp_path / "status-lightweight.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE conversations (
+                conversation_id TEXT PRIMARY KEY,
+                parent_conversation_id TEXT,
+                sort_key REAL,
+                updated_at TEXT
+            );
+            CREATE TABLE session_profiles (
+                conversation_id TEXT PRIMARY KEY,
+                work_event_count INTEGER NOT NULL,
+                phase_count INTEGER NOT NULL
+            );
+            CREATE TABLE session_profiles_fts (conversation_id TEXT NOT NULL);
+            CREATE TABLE work_threads (thread_id TEXT PRIMARY KEY);
+
+            INSERT INTO conversations (conversation_id, parent_conversation_id, sort_key, updated_at)
+            VALUES ('root', NULL, 1.0, '2026-04-01T00:00:00Z');
+            INSERT INTO session_profiles (conversation_id, work_event_count, phase_count)
+            VALUES ('root', 0, 0);
+            INSERT INTO session_profiles_fts (conversation_id) VALUES ('root'), ('root');
+            INSERT INTO work_threads (thread_id) VALUES ('root');
+            """
+        )
+        sync_status = session_insight_status_sync(conn, verify_freshness=False)
+
+    async with aiosqlite.connect(db_path) as conn:
+        async_status = await session_insight_status_async(conn, verify_freshness=False)
+
+    assert asdict(sync_status) == asdict(async_status)
+    assert sync_status.root_threads == sync_status.thread_count == 1
+    assert sync_status.stale_profile_row_count == 0
+    assert sync_status.profile_merged_fts_count == 2
+    assert sync_status.profile_merged_fts_duplicate_count == 1

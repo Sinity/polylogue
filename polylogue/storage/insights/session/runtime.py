@@ -83,6 +83,14 @@ class SessionInsightCounts:
 
 @dataclass(slots=True, frozen=True)
 class SessionInsightStatusSnapshot:
+    """Readiness snapshot for session-insight materializations.
+
+    Lightweight status calls may skip expensive freshness verification. In that
+    mode, `root_threads` falls back to `thread_count`, and ready flags derived
+    from freshness-gated counts can be approximate. Use a verified status call
+    for health checks that must prove materialized tables are current.
+    """
+
     total_conversations: int = 0
     root_threads: int = 0
     profile_row_count: int = 0

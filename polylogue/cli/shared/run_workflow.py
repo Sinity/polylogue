@@ -18,7 +18,6 @@ from polylogue.cli.shared.formatting import (
 from polylogue.cli.shared.helpers import fail
 from polylogue.cli.shared.run_display_workflow import render_sources
 from polylogue.cli.shared.run_observers import progress_observer
-from polylogue.cli.shared.run_watch_workflow import WatchDisplayObserver, WatchStatusObserver
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
 from polylogue.core.timestamps import format_timestamp
@@ -220,8 +219,6 @@ def render_preview_summary(
 
 
 __all__ = [
-    "WatchDisplayObserver",
-    "WatchStatusObserver",
     "display_result",
     "execute_sync_once",
     "format_counts",

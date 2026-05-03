@@ -159,22 +159,6 @@ def test_run_stage_request_helper_conflicts_fail_fast() -> None:
         )
 
 
-def test_run_result_callback_rejects_watch_only_flags_without_watch_mode() -> None:
-    with pytest.raises(SystemExit, match="run: --notify, --exec, and --webhook require --watch mode"):
-        _raw_callback()(
-            _ctx(_env()),
-            [],
-            False,
-            (),
-            (),
-            False,
-            True,
-            None,
-            None,
-            False,
-        )
-
-
 def test_run_result_callback_surfaces_stage_normalization_errors() -> None:
     with patch("polylogue.cli.commands.run.normalize_stage_sequence", side_effect=ValueError("bad stage")):
         with pytest.raises(SystemExit, match="run: bad stage"):
@@ -184,10 +168,6 @@ def test_run_result_callback_surfaces_stage_normalization_errors() -> None:
                 False,
                 (),
                 (),
-                False,
-                False,
-                None,
-                None,
                 False,
             )
 
@@ -202,10 +182,6 @@ def test_run_result_callback_embed_only_returns_before_source_resolution() -> No
                 False,
                 (),
                 (),
-                False,
-                False,
-                None,
-                None,
                 False,
             )
 
@@ -230,10 +206,6 @@ def test_run_result_callback_embed_then_parse_strips_embed_from_stage_sequence()
                             (),
                             (),
                             False,
-                            False,
-                            None,
-                            None,
-                            False,
                         )
 
     run_embed.assert_called_once()
@@ -254,65 +226,31 @@ def test_run_result_callback_forwards_reparse_as_force_write() -> None:
                             False,
                             (),
                             (),
-                            False,
-                            False,
-                            None,
-                            None,
                             True,
                         )
 
     assert run_sync_once.call_args.kwargs["force_write"] is True
 
 
-def test_run_result_callback_watch_mode_builds_observers_and_executes_sync_once() -> None:
+def test_run_result_callback_rejects_reparse_without_parse_stage() -> None:
     env = _env(plain=True)
-    runner_state: dict[str, object] = {}
+    with (
+        patch("polylogue.cli.commands.run.run_coroutine_sync") as run_coroutine_sync,
+        patch("polylogue.cli.commands.run._run_sync_once") as run_sync_once,
+    ):
+        with pytest.raises(SystemExit) as excinfo:
+            _raw_callback()(
+                _ctx(env),
+                [_run_stage_request("materialize")],
+                False,
+                (),
+                (),
+                True,
+            )
 
-    class FakeWatchRunner:
-        def __init__(self, *, sync_fn: object, observer: object, interval: int) -> None:
-            runner_state["observer"] = observer
-            runner_state["interval"] = interval
-            runner_state["sync_fn"] = sync_fn
-
-        def run(self) -> None:
-            sync_fn = runner_state["sync_fn"]
-            assert callable(sync_fn)
-            sync_fn()
-
-    with patch("polylogue.cli.commands.run.resolve_sources", return_value=["drive"]):
-        with patch("polylogue.cli.commands.run.maybe_prompt_sources", return_value=["drive"]):
-            with patch("polylogue.cli.commands.run._WatchDisplayObserver", return_value="display"):
-                with patch("polylogue.cli.commands.run._WatchStatusObserver", return_value="status"):
-                    with patch("polylogue.cli.commands.run.NotificationObserver", return_value="notify"):
-                        with patch("polylogue.cli.commands.run.ExecObserver", return_value="exec"):
-                            with patch("polylogue.cli.commands.run.WebhookObserver", return_value="webhook"):
-                                with patch(
-                                    "polylogue.cli.commands.run.CompositeObserver",
-                                    side_effect=lambda observers: tuple(observers),
-                                ):
-                                    with patch(
-                                        "polylogue.cli.commands.run._run_with_progress", return_value=_run_result()
-                                    ) as run_with_progress:
-                                        with patch("polylogue.pipeline.watch.WatchRunner", FakeWatchRunner):
-                                            _raw_callback()(
-                                                _ctx(env),
-                                                [_run_stage_request("render", render_format="html")],
-                                                False,
-                                                (),
-                                                (),
-                                                True,
-                                                True,
-                                                "echo hi",
-                                                "https://example.test",
-                                                False,
-                                            )
-
-    assert runner_state["interval"] == 60
-    assert runner_state["observer"] == ("display", "status", "notify", "exec", "webhook")
-    run_with_progress.assert_called_once()
-    printed = [call.args[0] for call in env.ui.console.print.call_args_list]
-    assert "Watch mode: syncing every 60 seconds. Press Ctrl+C to stop." in printed
-    assert printed[-1] == "\nWatch mode stopped."
+    assert "--reparse requires a stage sequence that includes parse" in str(excinfo.value)
+    run_coroutine_sync.assert_not_called()
+    run_sync_once.assert_not_called()
 
 
 def test_run_result_callback_can_cancel_nonwatch_execution_before_running() -> None:
@@ -326,10 +264,6 @@ def test_run_result_callback_can_cancel_nonwatch_execution_before_running() -> N
                     False,
                     (),
                     (),
-                    False,
-                    False,
-                    None,
-                    None,
                     False,
                 )
 

@@ -12,13 +12,11 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from click.testing import CliRunner
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 from rich.console import Console
 from rich.progress import TaskID
 
-from polylogue.cli.commands.run import run_command
 from polylogue.cli.shared.run_observers import (
     PlainProgressObserver as _PlainProgressObserver,
 )
@@ -216,37 +214,6 @@ def test_display_result_title_and_render_lookup_contract(
                 assert f"Latest render: {latest_path}" in env.ui.console_buffer.getvalue()
         else:
             mock_latest.assert_not_called()
-
-
-@settings(max_examples=40, deadline=None)
-@given(
-    notify=st.booleans(),
-    exec_cmd=st.booleans(),
-    webhook=st.booleans(),
-)
-def test_run_command_watch_flag_contract(notify: bool, exec_cmd: bool, webhook: bool) -> None:
-    runner = CliRunner()
-    env = _make_env(plain=True)
-    args: list[str] = []
-    if notify:
-        args.append("--notify")
-    if exec_cmd:
-        args.extend(["--exec", "echo test"])
-    if webhook:
-        args.extend(["--webhook", "https://example.com"])
-
-    with (
-        patch("polylogue.cli.commands.run.resolve_sources", return_value=None),
-        patch("polylogue.cli.commands.run.maybe_prompt_sources", return_value=None),
-        patch("polylogue.cli.commands.run._run_sync_once", return_value=_run_result()),
-    ):
-        result = runner.invoke(run_command, args, obj=env)
-
-    if notify or exec_cmd or webhook:
-        assert result.exit_code != 0
-        assert "require --watch mode" in result.output.lower()
-    else:
-        assert result.exit_code == 0
 
 
 @settings(max_examples=30, deadline=None)
