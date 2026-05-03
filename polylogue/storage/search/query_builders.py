@@ -9,8 +9,8 @@ from pathlib import Path
 from typing import TypeAlias
 
 from polylogue.paths.sanitize import conversation_render_root
-from polylogue.storage.backends.connection import _build_provider_scope_filter
 from polylogue.storage.search.query_support import normalize_fts5_query
+from polylogue.storage.sqlite.connection import _build_provider_scope_filter
 
 SQLiteQueryParam: TypeAlias = str | int | float
 

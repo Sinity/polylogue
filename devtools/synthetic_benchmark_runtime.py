@@ -36,7 +36,7 @@ def _row_count(value: object) -> int:
 
 def _db_row_counts(db_path: Path) -> dict[str, int]:
     """Collect row counts and file size for a database."""
-    from polylogue.storage.backends.connection import open_connection
+    from polylogue.storage.sqlite.connection import open_connection
 
     stats: dict[str, int] = {}
     if not db_path.exists():
@@ -78,7 +78,7 @@ async def _ameasure(coro: Awaitable[_T]) -> tuple[float, _T]:
 
 def _session_insight_table_counts(db_path: Path) -> dict[str, int]:
     """Collect row counts for durable session-insight tables and FTS projections."""
-    from polylogue.storage.backends.connection import open_connection
+    from polylogue.storage.sqlite.connection import open_connection
 
     stats: dict[str, int] = {}
     if not db_path.exists():
@@ -106,8 +106,8 @@ def _session_insight_table_counts(db_path: Path) -> dict[str, int]:
 
 def run_fts_rebuild_campaign(db_path: Path) -> CampaignResult:
     """Benchmark full FTS index rebuild."""
-    from polylogue.storage.backends.connection import open_connection
     from polylogue.storage.index import rebuild_index
+    from polylogue.storage.sqlite.connection import open_connection
 
     stats_before = _db_row_counts(db_path)
 
@@ -137,9 +137,9 @@ def run_fts_rebuild_campaign(db_path: Path) -> CampaignResult:
 
 async def run_incremental_index_campaign(db_path: Path, batch_size: int = 100) -> CampaignResult:
     """Benchmark incremental FTS index updates."""
-    from polylogue.storage.backends.async_sqlite import SQLiteBackend
     from polylogue.storage.query_models import ConversationRecordQuery
     from polylogue.storage.search_providers.fts5 import FTS5Provider
+    from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
     backend = SQLiteBackend(db_path=db_path)
     try:
@@ -185,8 +185,8 @@ async def run_incremental_index_campaign(db_path: Path, batch_size: int = 100) -
 
 async def run_filter_scan_campaign(db_path: Path) -> CampaignResult:
     """Benchmark common filter query patterns."""
-    from polylogue.storage.backends.async_sqlite import SQLiteBackend
     from polylogue.storage.query_models import ConversationRecordQuery
+    from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
     backend = SQLiteBackend(db_path=db_path)
     metrics: dict[str, float] = {}
@@ -235,8 +235,8 @@ async def run_filter_scan_campaign(db_path: Path) -> CampaignResult:
 
 async def run_startup_readiness_campaign(db_path: Path) -> CampaignResult:
     """Benchmark startup readiness check speed."""
-    from polylogue.storage.backends.async_sqlite import SQLiteBackend
     from polylogue.storage.query_models import ConversationRecordQuery
+    from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
     metrics: dict[str, float] = {}
 
@@ -280,7 +280,7 @@ async def run_startup_readiness_campaign(db_path: Path) -> CampaignResult:
 def run_action_event_materialization_campaign(db_path: Path) -> CampaignResult:
     """Benchmark full action-event read-model rebuild."""
     from polylogue.storage.action_events.rebuild_runtime import rebuild_action_event_read_model_sync
-    from polylogue.storage.backends.connection import open_connection
+    from polylogue.storage.sqlite.connection import open_connection
 
     stats_before = _db_row_counts(db_path)
 
@@ -314,8 +314,8 @@ def run_action_event_materialization_campaign(db_path: Path) -> CampaignResult:
 
 def run_session_insight_materialization_campaign(db_path: Path) -> CampaignResult:
     """Benchmark full durable session-insight rebuild."""
-    from polylogue.storage.backends.connection import open_connection
     from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
+    from polylogue.storage.sqlite.connection import open_connection
 
     stats_before = _session_insight_table_counts(db_path)
 

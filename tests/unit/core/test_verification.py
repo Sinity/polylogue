@@ -27,7 +27,7 @@ from polylogue.schemas.validation.requests import (
     SchemaVerificationRequest,
 )
 from polylogue.storage.artifacts.inspection import artifact_observation_id
-from polylogue.storage.backends.connection import open_connection
+from polylogue.storage.sqlite.connection import open_connection
 
 
 def _insert_raw_record(
@@ -259,7 +259,7 @@ class TestVerifyRawCorpus:
         assert report.providers == {}
 
     def test_empty_db(self, tmp_path: Path) -> None:
-        from polylogue.storage.backends.connection import open_connection
+        from polylogue.storage.sqlite.connection import open_connection
 
         db = tmp_path / "empty.db"
         with open_connection(db):
@@ -269,7 +269,7 @@ class TestVerifyRawCorpus:
         assert report.providers == {}
 
     def test_provider_filter_empty(self, tmp_path: Path) -> None:
-        from polylogue.storage.backends.connection import open_connection
+        from polylogue.storage.sqlite.connection import open_connection
 
         db = tmp_path / "empty.db"
         with open_connection(db):
@@ -281,7 +281,7 @@ class TestVerifyRawCorpus:
         assert report.total_records == 0
 
     def test_max_samples_preserved_in_report(self, tmp_path: Path) -> None:
-        from polylogue.storage.backends.connection import open_connection
+        from polylogue.storage.sqlite.connection import open_connection
 
         db = tmp_path / "empty.db"
         with open_connection(db):
@@ -293,7 +293,7 @@ class TestVerifyRawCorpus:
         assert report.max_samples == 100
 
     def test_record_limit_preserved_in_report(self, tmp_path: Path) -> None:
-        from polylogue.storage.backends.connection import open_connection
+        from polylogue.storage.sqlite.connection import open_connection
 
         db = tmp_path / "empty.db"
         with open_connection(db):
@@ -305,7 +305,7 @@ class TestVerifyRawCorpus:
         assert report.record_limit == 50
 
     def test_record_offset_preserved_in_report(self, tmp_path: Path) -> None:
-        from polylogue.storage.backends.connection import open_connection
+        from polylogue.storage.sqlite.connection import open_connection
 
         db = tmp_path / "empty.db"
         with open_connection(db):
@@ -317,7 +317,7 @@ class TestVerifyRawCorpus:
         assert report.record_offset == 25
 
     def test_offset_negative_becomes_zero(self, tmp_path: Path) -> None:
-        from polylogue.storage.backends.connection import open_connection
+        from polylogue.storage.sqlite.connection import open_connection
 
         db = tmp_path / "empty.db"
         with open_connection(db):
@@ -329,7 +329,7 @@ class TestVerifyRawCorpus:
         assert report.record_offset == 0
 
     def test_quarantine_malformed_flag_preserved(self, tmp_path: Path) -> None:
-        from polylogue.storage.backends.connection import open_connection
+        from polylogue.storage.sqlite.connection import open_connection
 
         db = tmp_path / "empty.db"
         with open_connection(db):
@@ -342,7 +342,7 @@ class TestVerifyRawCorpus:
         assert report.total_records == 0
 
     def test_report_structure_matches_schema(self, tmp_path: Path) -> None:
-        from polylogue.storage.backends.connection import open_connection
+        from polylogue.storage.sqlite.connection import open_connection
 
         db = tmp_path / "empty.db"
         with open_connection(db):
@@ -355,7 +355,7 @@ class TestVerifyRawCorpus:
         assert hasattr(report, "record_offset")
 
     def test_provider_stats_have_required_fields(self, tmp_path: Path) -> None:
-        from polylogue.storage.backends.connection import open_connection
+        from polylogue.storage.sqlite.connection import open_connection
 
         db = tmp_path / "empty.db"
         with open_connection(db):
@@ -386,7 +386,7 @@ class TestProveRawArtifactCoverage:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        from polylogue.storage.backends.connection import open_connection
+        from polylogue.storage.sqlite.connection import open_connection
 
         db_path = tmp_path / "proof.db"
         with open_connection(db_path):

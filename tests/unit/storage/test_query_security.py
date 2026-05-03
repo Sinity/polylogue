@@ -8,9 +8,9 @@ from pathlib import Path
 import pytest
 from hypothesis import HealthCheck, given, settings
 
-from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.repository import ConversationRepository
 from polylogue.storage.search import escape_fts5_query
+from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from tests.infra.adversarial_cases import FTS5_ESCAPE_SECURITY_CASES
 from tests.infra.storage_records import make_conversation, make_message
 from tests.infra.strategies.adversarial import (

@@ -116,7 +116,7 @@ The `all` pipeline stage runs: acquire → parse → materialize → render → 
 - Single SQLite file, WAL mode.
 - Schema is fresh-first: version mismatches are rejected unless an explicit,
   reviewed in-place upgrade exists for that exact transition. `SCHEMA_VERSION`
-  lives in `storage/backends/schema_ddl.py`.
+  lives in `storage/sqlite/schema_ddl.py`.
 - FTS5 with `unicode61` tokenizer (no porter stemmer in this SQLite build).
 
 ## Placement Rules

@@ -17,10 +17,10 @@ from polylogue.insights.archive import ProviderAnalyticsInsight
 from polylogue.insights.archive_models import ARCHIVE_INSIGHT_CONTRACT_VERSION
 from polylogue.insights.registry import get_insight_type, insight_items_payload
 from polylogue.storage.action_events.rebuild_runtime import rebuild_action_event_read_model_sync
-from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
 from polylogue.storage.insights.session.status import session_insight_status_sync
 from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZER_VERSION
+from polylogue.storage.sqlite.connection import open_connection
 from tests.infra.json_contracts import (
     extract_json_result,
     json_array,

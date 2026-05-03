@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.storage.backends.connection import open_connection
+from polylogue.storage.sqlite.connection import open_connection
 from tests.infra.archive_scenarios import (
     ArchiveScenario,
     ScenarioAttachment,

@@ -21,8 +21,8 @@ from polylogue.storage.runtime import RawConversationRecord
 
 if TYPE_CHECKING:
     from polylogue.config import DriveConfig, Source
-    from polylogue.storage.backends.async_sqlite import SQLiteBackend
     from polylogue.storage.repository import ConversationRepository
+    from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
 logger = get_logger(__name__)
 

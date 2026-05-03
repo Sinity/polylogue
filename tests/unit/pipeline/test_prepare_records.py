@@ -14,8 +14,8 @@ from polylogue.pipeline.prepare_models import PersistedConversationResult
 from polylogue.pipeline.services.validation import ValidationService
 from polylogue.schemas import ValidationResult
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedConversation, ParsedMessage
-from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.repository import ConversationRepository
+from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.types import Provider
 
 
@@ -710,7 +710,7 @@ class TestValidationService:
         raw_id_1, blob_size_1 = blob_store.write_from_bytes(b'{"id":"1","mapping":{}}')
         raw_id_2, blob_size_2 = blob_store.write_from_bytes(b'{"id":"2","mapping":{}}')
 
-        raw_records = [
+        raw_artifacts = [
             MagicMock(
                 raw_id=raw_id_1,
                 raw_content=b'{"id":"1","mapping":{}}',
@@ -728,7 +728,7 @@ class TestValidationService:
         ]
         service = ValidationService(backend=MagicMock())
         service.repository = MagicMock()
-        service.repository.get_raw_conversations_batch = AsyncMock(return_value=raw_records)
+        service.repository.get_raw_conversations_batch = AsyncMock(return_value=raw_artifacts)
         service.repository.mark_raw_validated = AsyncMock()
         callback = MagicMock()
 

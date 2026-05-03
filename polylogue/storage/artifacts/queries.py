@@ -7,9 +7,9 @@ from dataclasses import dataclass, field
 
 from polylogue.archive.artifact_taxonomy import ArtifactKind
 from polylogue.storage.artifacts.views import ArtifactCohortSummary
-from polylogue.storage.backends.queries.mappers import _row_to_artifact_observation
 from polylogue.storage.query_models import ArtifactObservationListQuery
 from polylogue.storage.runtime import ArtifactObservationRecord
+from polylogue.storage.sqlite.queries.mappers import _row_to_artifact_observation
 from polylogue.types import ArtifactSupportStatus, Provider
 
 _EFFECTIVE_PROVIDER_SQL = "COALESCE(payload_provider, provider_name)"

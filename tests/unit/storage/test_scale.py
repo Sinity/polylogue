@@ -23,12 +23,12 @@ from pathlib import Path
 import pytest
 from typing_extensions import TypedDict, Unpack
 
-from polylogue.storage.backends.async_sqlite import SQLiteBackend
-from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.index import rebuild_index
 from polylogue.storage.query_models import ConversationRecordQuery
 from polylogue.storage.repository import ConversationRepository
 from polylogue.storage.runtime import ContentBlockRecord
+from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
+from polylogue.storage.sqlite.connection import open_connection
 from tests.infra.storage_records import make_content_block, make_conversation, make_message
 
 # Number of conversations for scale tests.

@@ -9,7 +9,7 @@ from polylogue.storage.query_models import ConversationRecordQuery
 from polylogue.storage.runtime import ConversationRecord
 
 if TYPE_CHECKING:
-    from polylogue.storage.backends.query_store import SQLiteQueryStore
+    from polylogue.storage.sqlite.query_store import SQLiteQueryStore
 
 
 class RepositoryArchiveTreeMixin:

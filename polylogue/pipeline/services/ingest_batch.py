@@ -38,11 +38,6 @@ from polylogue.pipeline.services.ingest_worker import (
     ingest_record,
 )
 from polylogue.pipeline.services.process_pool import process_pool_executor
-from polylogue.storage.backends.connection import _load_sqlite_vec
-from polylogue.storage.backends.connection_profile import (
-    DB_TIMEOUT,
-    WRITE_CONNECTION_PRAGMA_STATEMENTS,
-)
 from polylogue.storage.conversation_replacement import (
     recount_and_prune_attachments_sync,
     replace_conversation_runtime_state_sync,
@@ -50,6 +45,11 @@ from polylogue.storage.conversation_replacement import (
 from polylogue.storage.raw.models import RawConversationStateUpdate
 from polylogue.storage.runtime import RawConversationRecord
 from polylogue.storage.search.cache import invalidate_search_cache
+from polylogue.storage.sqlite.connection import _load_sqlite_vec
+from polylogue.storage.sqlite.connection_profile import (
+    DB_TIMEOUT,
+    WRITE_CONNECTION_PRAGMA_STATEMENTS,
+)
 
 if TYPE_CHECKING:
     import aiosqlite
@@ -57,7 +57,7 @@ if TYPE_CHECKING:
     from polylogue.pipeline.services.parsing import ParsingService
     from polylogue.pipeline.services.parsing_models import ParseResult
     from polylogue.protocols import ProgressCallback
-    from polylogue.storage.backends.async_sqlite import SQLiteBackend
+    from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
 logger = get_logger(__name__)
 
@@ -639,20 +639,20 @@ def _run_ingest_record(
 
 
 def _iter_ingest_results_sync(
-    raw_records: list[RawConversationRecord],
+    raw_artifacts: list[RawConversationRecord],
     *,
     request: _IngestWorkerRequest,
     worker_count: int,
 ) -> Iterable[IngestRecordResult]:
     if worker_count <= 1:
-        for raw_record in raw_records:
+        for raw_record in raw_artifacts:
             yield _run_ingest_record(raw_record, request)
         return
 
     try:
         with process_pool_executor(max_workers=worker_count) as executor:
             futures: dict[Future[IngestRecordResult], str] = {}
-            for raw_record in raw_records:
+            for raw_record in raw_artifacts:
                 future = executor.submit(_run_ingest_record, raw_record, request)
                 futures[future] = raw_record.raw_id
 
@@ -666,7 +666,7 @@ def _iter_ingest_results_sync(
                         error=f"worker: {exc}",
                     )
     except (TypeError, pickle.PicklingError):
-        for raw_record in raw_records:
+        for raw_record in raw_artifacts:
             yield _run_ingest_record(raw_record, request)
 
 
@@ -678,16 +678,16 @@ def _record_blob_size(record: object) -> int:
     return max(int(getattr(record, "blob_size", 0) or 0), 0)
 
 
-def _select_ingest_worker_count(raw_records: Sequence[object], ingest_workers: int | None) -> int:
+def _select_ingest_worker_count(raw_artifacts: Sequence[object], ingest_workers: int | None) -> int:
     base_worker_count = min(
-        len(raw_records),
+        len(raw_artifacts),
         os.cpu_count() or 4,
         _resolved_ingest_worker_limit(ingest_workers),
     )
     if base_worker_count <= 1:
         return base_worker_count
 
-    blob_sizes = [_record_blob_size(record) for record in raw_records]
+    blob_sizes = [_record_blob_size(record) for record in raw_artifacts]
     total_blob_bytes = sum(blob_sizes)
     max_blob_bytes = max(blob_sizes, default=0)
 
@@ -701,14 +701,14 @@ def _select_ingest_worker_count(raw_records: Sequence[object], ingest_workers: i
 
 
 def _new_ingest_batch_summary(
-    raw_records: list[RawConversationRecord],
+    raw_artifacts: list[RawConversationRecord],
     *,
     ingest_workers: int | None,
 ) -> _IngestBatchSummary:
     summary = _IngestBatchSummary()
-    summary.raw_record_count = len(raw_records)
-    summary.worker_count = _select_ingest_worker_count(raw_records, ingest_workers)
-    summary.total_blob_mb = sum(record.blob_size for record in raw_records) / (1024 * 1024)
+    summary.raw_record_count = len(raw_artifacts)
+    summary.worker_count = _select_ingest_worker_count(raw_artifacts, ingest_workers)
+    summary.total_blob_mb = sum(record.blob_size for record in raw_artifacts) / (1024 * 1024)
     return summary
 
 
@@ -769,7 +769,7 @@ def _drain_ingest_result(
 
 def _consume_ingest_results(
     conn: sqlite3.Connection,
-    raw_records: list[RawConversationRecord],
+    raw_artifacts: list[RawConversationRecord],
     *,
     worker_request: _IngestWorkerRequest,
     summary: _IngestBatchSummary,
@@ -779,7 +779,7 @@ def _consume_ingest_results(
 ) -> None:
     result_iterator = iter(
         _iter_ingest_results_sync(
-            raw_records,
+            raw_artifacts,
             request=worker_request,
             worker_count=summary.worker_count,
         )
@@ -839,7 +839,7 @@ def _commit_sync_ingest_side_effects(conn: sqlite3.Connection, changed_conversat
 
 
 def _process_ingest_batch_sync(
-    raw_records: list[RawConversationRecord],
+    raw_artifacts: list[RawConversationRecord],
     *,
     db_path: Path,
     archive_root_str: str,
@@ -853,7 +853,7 @@ def _process_ingest_batch_sync(
         suspend_fts_triggers_sync,
     )
 
-    summary = _new_ingest_batch_summary(raw_records, ingest_workers=ingest_workers)
+    summary = _new_ingest_batch_summary(raw_artifacts, ingest_workers=ingest_workers)
     worker_request = _make_ingest_worker_request(
         archive_root_str=archive_root_str,
         blob_root_str=blob_root_str,
@@ -876,7 +876,7 @@ def _process_ingest_batch_sync(
         conn.execute("BEGIN IMMEDIATE")
         _consume_ingest_results(
             conn,
-            raw_records,
+            raw_artifacts,
             worker_request=worker_request,
             summary=summary,
             materialized_ids=materialized_ids,
@@ -1052,8 +1052,8 @@ async def process_ingest_batch(
     """
     import asyncio
 
-    raw_records = await service.repository.get_raw_conversations_batch(batch_ids)
-    if not raw_records:
+    raw_artifacts = await service.repository.get_raw_conversations_batch(batch_ids)
+    if not raw_artifacts:
         return None
 
     archive_root_str = str(service.archive_root)
@@ -1067,7 +1067,7 @@ async def process_ingest_batch(
 
     batch_summary = await asyncio.to_thread(
         _process_ingest_batch_sync,
-        raw_records,
+        raw_artifacts,
         db_path=backend.db_path,
         archive_root_str=archive_root_str,
         blob_root_str=blob_root_str,
@@ -1289,7 +1289,7 @@ async def refresh_session_insights_bulk(
             )
         return observation
     except Exception as exc:
-        logger.warning("Session product refresh failed (non-fatal): %s", exc, exc_info=True)
+        logger.warning("Session insight refresh failed (non-fatal): %s", exc, exc_info=True)
         return {
             "conversations": len(changed_conversation_ids),
             "failed": True,

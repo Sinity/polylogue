@@ -11,17 +11,17 @@ import sqlite3
 import pytest
 
 from polylogue.errors import DatabaseError
-from polylogue.storage.backends.queries.mappers import (
+from polylogue.storage.runtime import (
+    ConversationRecord,
+    MessageRecord,
+    RawConversationRecord,
+)
+from polylogue.storage.sqlite.queries.mappers import (
     _parse_json,
     _row_get,
     _row_to_conversation,
     _row_to_message,
     _row_to_raw_conversation,
-)
-from polylogue.storage.runtime import (
-    ConversationRecord,
-    MessageRecord,
-    RawConversationRecord,
 )
 
 

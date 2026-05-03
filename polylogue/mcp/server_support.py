@@ -17,7 +17,7 @@ from polylogue.surfaces.payloads import serialize_surface_payload
 
 if TYPE_CHECKING:
     from polylogue.config import Config
-    from polylogue.storage.backends.async_sqlite import SQLiteBackend
+    from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
 logger = get_logger(__name__)
 _runtime_services: RuntimeServices | None = None

@@ -9,9 +9,6 @@ from typing import TYPE_CHECKING
 from polylogue.archive.conversation.models import Conversation
 from polylogue.core.json import JSONDocument, JSONValue
 from polylogue.core.payload_coercion import string_sequence
-from polylogue.storage.backends.queries import conversations as conversations_q
-from polylogue.storage.backends.queries import publications as publications_q
-from polylogue.storage.backends.queries import runs as runs_q
 from polylogue.storage.repository.archive.writes.conversations import (
     conversation_to_record,
     delete_conversation_via_backend,
@@ -27,6 +24,9 @@ from polylogue.storage.runtime import (
     PublicationRecord,
     RunRecord,
 )
+from polylogue.storage.sqlite.queries import conversations as conversations_q
+from polylogue.storage.sqlite.queries import publications as publications_q
+from polylogue.storage.sqlite.queries import runs as runs_q
 
 
 class RepositoryWriteMixin:

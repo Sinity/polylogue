@@ -10,8 +10,8 @@ from polylogue.api.insights import PolylogueInsightsMixin
 from polylogue.config import Config
 from polylogue.operations import ArchiveOperations, ArchiveStats
 from polylogue.services import build_runtime_services
-from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.repository import ConversationRepository
+from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
 
 class Polylogue(PolylogueArchiveMixin, PolylogueInsightsMixin, PolylogueIngestMixin):

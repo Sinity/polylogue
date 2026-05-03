@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from sqlite3 import Connection
 
-from polylogue.storage.backends.connection import _build_provider_scope_filter
 from polylogue.storage.search.models import ConversationSearchResult
+from polylogue.storage.sqlite.connection import _build_provider_scope_filter
 
 
 def _resolve_ranked_conversation_hits(

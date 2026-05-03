@@ -5,8 +5,8 @@ import pytest
 from polylogue.archive.query.plan import ConversationQueryPlan
 from polylogue.archive.query.retrieval_candidates import fetch_search_results
 from polylogue.errors import DatabaseError
-from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.repository import ConversationRepository
+from polylogue.storage.sqlite.connection import open_connection
 from tests.infra.storage_records import ConversationBuilder
 
 

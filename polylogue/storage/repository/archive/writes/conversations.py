@@ -8,11 +8,6 @@ from polylogue.archive.conversation.models import Conversation
 from polylogue.core.hashing import hash_payload
 from polylogue.core.json import JSONValue, json_document
 from polylogue.storage.action_events.rows import attach_blocks_to_messages, build_action_event_records
-from polylogue.storage.backends.queries import action_events as action_events_q
-from polylogue.storage.backends.queries import attachments as attachments_q
-from polylogue.storage.backends.queries import conversations as conversations_q
-from polylogue.storage.backends.queries import messages as messages_q
-from polylogue.storage.backends.queries import stats as stats_q
 from polylogue.storage.conversation_replacement import (
     recount_and_prune_attachments_async,
     replace_conversation_runtime_state_async,
@@ -30,6 +25,11 @@ from polylogue.storage.runtime import (
     MessageRecord,
 )
 from polylogue.storage.search.cache import invalidate_search_cache
+from polylogue.storage.sqlite.queries import action_events as action_events_q
+from polylogue.storage.sqlite.queries import attachments as attachments_q
+from polylogue.storage.sqlite.queries import conversations as conversations_q
+from polylogue.storage.sqlite.queries import messages as messages_q
+from polylogue.storage.sqlite.queries import stats as stats_q
 
 
 def provider_conversation_id(conversation_id: str, provider: str | None) -> str:
@@ -238,7 +238,7 @@ async def delete_conversation_via_backend(
     backend: RepositoryBackendProtocol,
     conversation_id: str,
 ) -> bool:
-    from polylogue.storage.backends.queries import conversations as conversations_q
+    from polylogue.storage.sqlite.queries import conversations as conversations_q
 
     async with backend.transaction(), backend.connection() as conn:
         parent_row = await (

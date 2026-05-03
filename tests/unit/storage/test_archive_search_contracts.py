@@ -11,8 +11,6 @@ from polylogue.archive.message.messages import MessageCollection
 from polylogue.core.json import JSONDocument
 from polylogue.pipeline.prepare import prepare_records
 from polylogue.sources.parsers.drive import parse_chunked_prompt
-from polylogue.storage.backends.async_sqlite import SQLiteBackend
-from polylogue.storage.backends.query_store import SQLiteQueryStore
 from polylogue.storage.repository import ConversationRepository
 from polylogue.storage.repository.archive.search import RepositoryArchiveSearchMixin
 from polylogue.storage.runtime import ConversationRecord
@@ -20,6 +18,8 @@ from polylogue.storage.search.models import ConversationSearchEvidenceHit, Conve
 from polylogue.storage.search_providers.hybrid_conversations import (
     _resolve_ranked_conversation_hits,
 )
+from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
+from polylogue.storage.sqlite.query_store import SQLiteQueryStore
 from polylogue.types import ContentHash, ConversationId, Provider
 
 

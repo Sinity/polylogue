@@ -204,7 +204,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         path_targets=("action-event-repair-loop",),
         code_refs=(
             "polylogue.storage.action_events.rebuild_runtime.rebuild_action_event_read_model_sync",
-            "polylogue.storage.backends.schema_ddl_actions.ACTION_FTS_DDL",
+            "polylogue.storage.sqlite.schema_ddl_actions.ACTION_FTS_DDL",
         ),
         surfaces=("index", "doctor", "repair", "retrieval_evidence"),
         mutates_state=True,

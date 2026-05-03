@@ -106,7 +106,7 @@ class TestShowEmbeddingStats:
         mock_conn.execute.return_value.fetchone.return_value = query_results[0]
 
         with (
-            patch("polylogue.storage.backends.connection.open_connection") as mock_open,
+            patch("polylogue.storage.sqlite.connection.open_connection") as mock_open,
             patch(
                 "polylogue.storage.embeddings.embedding_stats.read_embedding_stats_sync",
                 return_value=EmbeddingStatsSnapshot(
@@ -131,7 +131,7 @@ class TestShowEmbeddingStats:
         mock_conn.execute.return_value.fetchone.return_value = (100,)
 
         with (
-            patch("polylogue.storage.backends.connection.open_connection") as mock_open,
+            patch("polylogue.storage.sqlite.connection.open_connection") as mock_open,
             patch(
                 "polylogue.storage.embeddings.embedding_stats.read_embedding_stats_sync",
                 return_value=EmbeddingStatsSnapshot(),
@@ -151,7 +151,7 @@ class TestShowEmbeddingStats:
         ]
 
         with (
-            patch("polylogue.storage.backends.connection.open_connection") as mock_open,
+            patch("polylogue.storage.sqlite.connection.open_connection") as mock_open,
             patch(
                 "polylogue.storage.embeddings.embedding_stats.read_embedding_stats_sync",
                 return_value=EmbeddingStatsSnapshot(
@@ -233,7 +233,7 @@ class TestEmbedBatch:
         mock_vec_provider = MagicMock()
         convs = [{"conversation_id": f"conv-{i}", "title": f"Test {i}"} for i in range(1, num_convs + 1)]
 
-        with patch("polylogue.storage.backends.connection.open_connection") as mock_open:
+        with patch("polylogue.storage.sqlite.connection.open_connection") as mock_open:
             mock_conn = MagicMock()
             mock_conn.execute.return_value.fetchmany.side_effect = [convs, []]
             mock_open.return_value.__enter__ = MagicMock(return_value=mock_conn)
@@ -247,7 +247,7 @@ class TestEmbedBatch:
 
     def testembed_batch_rebuild_flag(self, mock_env: MagicMock, mock_repository: MagicMock) -> None:
         mock_vec_provider = MagicMock()
-        with patch("polylogue.storage.backends.connection.open_connection") as mock_open:
+        with patch("polylogue.storage.sqlite.connection.open_connection") as mock_open:
             mock_conn = MagicMock()
             mock_conn.execute.return_value.fetchmany.side_effect = [[], []]
             mock_open.return_value.__enter__ = MagicMock(return_value=mock_conn)
@@ -267,7 +267,7 @@ class TestEmbedBatch:
             {"conversation_id": "conv-2", "title": "Test 2"},
             {"conversation_id": "conv-3", "title": "Test 3"},
         ]
-        with patch("polylogue.storage.backends.connection.open_connection") as mock_open:
+        with patch("polylogue.storage.sqlite.connection.open_connection") as mock_open:
             mock_conn = MagicMock()
             mock_conn.execute.return_value.fetchmany.side_effect = [convs, []]
             mock_open.return_value.__enter__ = MagicMock(return_value=mock_conn)
@@ -378,7 +378,7 @@ class TestEmbedBatchRichMode:
             mock_repository.backend.queries.get_messages = AsyncMock(return_value=messages_side_effect)
 
         convs = [{"conversation_id": f"conv-{i}", "title": f"Test {i}"} for i in range(1, num_convs + 1)]
-        with patch("polylogue.storage.backends.connection.open_connection") as mock_open:
+        with patch("polylogue.storage.sqlite.connection.open_connection") as mock_open:
             mock_conn = MagicMock()
             mock_conn.execute.return_value.fetchmany.side_effect = [convs, []]
             mock_open.return_value.__enter__ = MagicMock(return_value=mock_conn)

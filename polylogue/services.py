@@ -6,8 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from polylogue.config import Config, get_config
-from polylogue.storage.backends import SQLiteBackend, create_backend
 from polylogue.storage.repository import ConversationRepository
+from polylogue.storage.sqlite import SQLiteBackend, create_backend
 
 
 @dataclass

@@ -8,8 +8,8 @@ from pathlib import Path
 from click.testing import CliRunner
 
 from polylogue.cli.click_app import cli
-from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
+from polylogue.storage.sqlite.connection import open_connection
 from tests.infra.storage_records import ConversationBuilder
 
 

@@ -19,7 +19,7 @@ from polylogue.schemas.synthetic import SyntheticCorpus
 from polylogue.schemas.validation.corpus import verify_raw_corpus
 from polylogue.schemas.validation.requests import SchemaVerificationRequest
 from polylogue.schemas.validator import SchemaValidator, validate_provider_export
-from polylogue.storage.backends.connection import open_connection
+from polylogue.storage.sqlite.connection import open_connection
 from polylogue.types import Provider
 
 if TYPE_CHECKING:
@@ -505,7 +505,7 @@ def test_live_observed_codex_records_validate(source_path: str, sample: dict[str
                                     "name": "Edit",
                                     "input": {
                                         "replace_all": False,
-                                        "file_path": "/realm/project/polylogue/polylogue/storage/backends/schema_ddl.py",
+                                        "file_path": "/realm/project/polylogue/polylogue/storage/sqlite/schema_ddl.py",
                                         "old_string": "old",
                                         "new_string": "new",
                                     },

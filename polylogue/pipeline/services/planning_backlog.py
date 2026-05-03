@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.raw.artifacts import parse_backlog_query_spec, validation_backlog_query_spec
+from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
 
 def dedupe_ids(raw_ids: list[str]) -> list[str]:

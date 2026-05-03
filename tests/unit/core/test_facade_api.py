@@ -397,8 +397,8 @@ class TestPolylogueArchiveInsights:
         self: object,
         cli_workspace: dict[str, Path],
     ) -> None:
-        from polylogue.storage.backends.connection import open_connection
         from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
+        from polylogue.storage.sqlite.connection import open_connection
 
         db_path = cli_workspace["db_path"]
         (

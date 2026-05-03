@@ -23,9 +23,9 @@ if TYPE_CHECKING:
     from polylogue.pipeline.services.parsing import IngestResult
     from polylogue.pipeline.stage_models import AcquireResult
     from polylogue.protocols import ProgressCallback
-    from polylogue.storage.backends.async_sqlite import SQLiteBackend
     from polylogue.storage.insights.session.runtime import SessionInsightCounts
     from polylogue.storage.repository import ConversationRepository
+    from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
 
 @dataclass(slots=True)

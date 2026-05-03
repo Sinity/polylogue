@@ -30,7 +30,7 @@ from polylogue.rendering.renderers import (
     list_formats,
 )
 from polylogue.rendering.renderers.markdown import MarkdownRenderer as MarkdownRendererDirect
-from polylogue.storage.backends.connection import open_connection
+from polylogue.storage.sqlite.connection import open_connection
 from tests.infra import GOLDEN_DIR
 from tests.infra.assertions import (
     assert_contains_all,

@@ -11,18 +11,18 @@ from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from polylogue.storage.backends.connection import (
-    open_connection as _open_connection,
-)
-from polylogue.storage.backends.connection import (
-    open_read_connection,
-)
 from polylogue.storage.search.models import ConversationSearchResult
 from polylogue.storage.search_providers.hybrid_conversations import (
     _resolve_ranked_conversation_hits,
     _resolve_ranked_conversation_ids,
 )
 from polylogue.storage.search_providers.hybrid_factory import create_hybrid_provider
+from polylogue.storage.sqlite.connection import (
+    open_connection as _open_connection,
+)
+from polylogue.storage.sqlite.connection import (
+    open_read_connection,
+)
 
 if TYPE_CHECKING:
     from polylogue.protocols import VectorProvider

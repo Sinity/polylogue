@@ -5,8 +5,8 @@ import sqlite3
 
 import pytest
 
-from polylogue.storage.backends.queries.mappers_insight_profiles import _row_to_session_profile_record
-from polylogue.storage.backends.queries.mappers_insight_timelines import (
+from polylogue.storage.sqlite.queries.mappers_insight_profiles import _row_to_session_profile_record
+from polylogue.storage.sqlite.queries.mappers_insight_timelines import (
     _row_to_session_phase_record,
     _row_to_session_work_event_record,
 )

@@ -24,7 +24,7 @@ from polylogue.proof.models import (
     TrustMetadata,
 )
 from polylogue.proof.subjects import build_catalog_subjects
-from polylogue.storage.backends.schema_ddl import SCHEMA_VERSION
+from polylogue.storage.sqlite.schema_ddl import SCHEMA_VERSION
 
 _REVIEWED_AT = "2026-04-22T00:00:00+00:00"
 _RUNNER_VERSION = "proof-catalog.v1"

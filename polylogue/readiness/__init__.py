@@ -103,7 +103,7 @@ def _summarize_db_error(exc: Exception) -> str:
 
 
 def _open_readiness_probe_connection(db_path: Path) -> AbstractContextManager[sqlite3.Connection]:
-    from polylogue.storage.backends.connection import open_read_connection
+    from polylogue.storage.sqlite.connection import open_read_connection
 
     return open_read_connection(db_path)
 
@@ -124,7 +124,7 @@ def _config_path_checks(config: Config) -> list[ReadinessCheck]:
 
 
 def _database_probe_checks(config: Config, *, deep: bool) -> tuple[list[ReadinessCheck], str | None]:
-    from polylogue.storage.backends.schema import assert_supported_archive_layout
+    from polylogue.storage.sqlite.schema import assert_supported_archive_layout
 
     checks: list[ReadinessCheck] = []
     try:
@@ -388,7 +388,7 @@ def run_runtime_readiness(config: Config) -> ReadinessReport:
             checks.append(ReadinessCheck("db_writable", VerifyStatus.WARNING, summary=f"Parent missing: {parent}"))
 
     try:
-        from polylogue.storage.backends.schema import SCHEMA_VERSION, assert_supported_archive_layout
+        from polylogue.storage.sqlite.schema import SCHEMA_VERSION, assert_supported_archive_layout
 
         with _open_readiness_probe_connection(config.db_path) as conn:
             assert_supported_archive_layout(conn)
@@ -601,7 +601,7 @@ def quick_readiness_summary(archive_root: Path) -> str:
     summary suitable for the non-verbose CLI status line.
     """
     try:
-        from polylogue.storage.backends.schema import SCHEMA_VERSION
+        from polylogue.storage.sqlite.schema import SCHEMA_VERSION
 
         db_path_val = db_path()
         with _open_readiness_probe_connection(db_path_val) as conn:

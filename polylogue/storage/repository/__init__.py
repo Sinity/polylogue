@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from polylogue.storage.backends.async_sqlite import SQLiteBackend
+from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
 if TYPE_CHECKING:
     from pathlib import Path

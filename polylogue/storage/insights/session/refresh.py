@@ -8,7 +8,6 @@ from dataclasses import dataclass
 
 import aiosqlite
 
-from polylogue.storage.backends.queries.mappers import _row_to_session_profile_record
 from polylogue.storage.insights.session.aggregates import (
     profile_provider_day,
     refresh_async_provider_day_aggregates,
@@ -30,6 +29,7 @@ from polylogue.storage.insights.session.threads import (
     thread_root_ids_async,
 )
 from polylogue.storage.runtime import SessionPhaseRecord, SessionProfileRecord, SessionWorkEventRecord
+from polylogue.storage.sqlite.queries.mappers import _row_to_session_profile_record
 
 # Keep incremental refreshes on the same bounded chunk size as full rebuilds.
 # Hydrating 100 conversations at once inflates RSS badly on pathological archives.
@@ -117,7 +117,7 @@ async def _refresh_thread_roots_async(
     *,
     transaction_depth: int,
 ) -> int:
-    from polylogue.storage.backends.queries.session_insight_thread_queries import (
+    from polylogue.storage.sqlite.queries.session_insight_thread_queries import (
         replace_work_thread,
     )
 
@@ -154,7 +154,7 @@ async def delete_session_insights_for_conversation_async(
     *,
     transaction_depth: int = 0,
 ) -> SessionInsightCounts:
-    from polylogue.storage.backends.queries.session_insight_timeline_writes import (
+    from polylogue.storage.sqlite.queries.session_insight_timeline_writes import (
         replace_session_phases,
         replace_session_work_events,
     )
@@ -227,10 +227,10 @@ async def _apply_session_insight_conversation_update_async(
     *,
     transaction_depth: int,
 ) -> _SessionInsightRefreshUpdate:
-    from polylogue.storage.backends.queries.session_insight_profile_writes import (
+    from polylogue.storage.sqlite.queries.session_insight_profile_writes import (
         replace_session_profile,
     )
-    from polylogue.storage.backends.queries.session_insight_timeline_writes import (
+    from polylogue.storage.sqlite.queries.session_insight_timeline_writes import (
         replace_session_phases,
         replace_session_work_events,
     )
@@ -418,10 +418,10 @@ async def _apply_session_insight_conversation_updates_async(
     transaction_depth: int,
     page_size: int = _SESSION_INSIGHT_REFRESH_PAGE_SIZE,
 ) -> _SessionInsightBulkRefreshUpdate:
-    from polylogue.storage.backends.queries.session_insight_profile_writes import (
+    from polylogue.storage.sqlite.queries.session_insight_profile_writes import (
         replace_session_profiles_bulk,
     )
-    from polylogue.storage.backends.queries.session_insight_timeline_writes import (
+    from polylogue.storage.sqlite.queries.session_insight_timeline_writes import (
         replace_session_phases_bulk,
         replace_session_work_events_bulk,
     )

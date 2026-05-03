@@ -10,19 +10,19 @@ from typing_extensions import TypedDict
 
 from polylogue.core.json import JSONDocument
 from polylogue.pipeline.run_support import write_run_json
-from polylogue.storage.backends import create_backend
-from polylogue.storage.backends.queries import runs as runs_q
 from polylogue.storage.run_state import DriftBucketPayload, RunCountsPayload, RunDrift, RunDriftPayload, RunResult
 from polylogue.storage.runtime import RunRecord
+from polylogue.storage.sqlite import create_backend
+from polylogue.storage.sqlite.queries import runs as runs_q
 
 if TYPE_CHECKING:
     from polylogue.config import Config
     from polylogue.core.metrics import PipelineMetrics
     from polylogue.pipeline.run_stages import IndexStageOutcome
     from polylogue.pipeline.run_state import RunExecutionState
-    from polylogue.storage.backends.async_sqlite import SQLiteBackend
     from polylogue.storage.repository import ConversationRepository
     from polylogue.storage.run_state import PlanResult
+    from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
 
 class RunPayload(TypedDict):

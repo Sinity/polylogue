@@ -35,16 +35,16 @@ from polylogue.pipeline.stage_specs import (
     stage_specs_for_sequence,
     validate_stage_contract,
 )
-from polylogue.storage.backends import create_backend
 from polylogue.storage.repository import ConversationRepository
 from polylogue.storage.run_state import RunResult
+from polylogue.storage.sqlite import create_backend
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from polylogue.protocols import ProgressCallback
-    from polylogue.storage.backends.async_sqlite import SQLiteBackend
     from polylogue.storage.run_state import PlanResult
+    from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
 logger = get_logger(__name__)
 

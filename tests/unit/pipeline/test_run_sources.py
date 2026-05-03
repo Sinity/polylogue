@@ -30,11 +30,11 @@ from polylogue.pipeline.stage_specs import (
     stage_specs_for_sequence,
 )
 from polylogue.sources.parsers.base import RawConversationData
-from polylogue.storage.backends import create_backend
-from polylogue.storage.backends.async_sqlite import SQLiteBackend
-from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.insights.session.runtime import SessionInsightCounts
 from polylogue.storage.run_state import PlanCounts, PlanResult, RunCounts, RunDrift, RunResult
+from polylogue.storage.sqlite import create_backend
+from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
+from polylogue.storage.sqlite.connection import open_connection
 from polylogue.types import PlanStage
 from tests.infra.storage_records import make_conversation, make_message, store_records
 

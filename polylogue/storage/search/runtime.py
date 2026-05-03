@@ -8,12 +8,12 @@ from pathlib import Path
 
 from polylogue.errors import DatabaseError
 from polylogue.maintenance.targets import build_maintenance_target_catalog
-from polylogue.storage.backends.connection import open_read_connection
 from polylogue.storage.fts.fts_lifecycle import check_fts_readiness, message_fts_readiness_sync
 from polylogue.storage.search.cache import SearchCacheKey
 from polylogue.storage.search.models import SearchHit, SearchResult
 from polylogue.storage.search.query_builders import build_ranked_conversation_search_query, resolve_conversation_path
 from polylogue.storage.search.query_support import sort_key_to_iso
+from polylogue.storage.sqlite.connection import open_read_connection
 
 _MAINTENANCE_TARGET_CATALOG = build_maintenance_target_catalog()
 _MESSAGE_SEARCH_REPAIR_HINT = _MAINTENANCE_TARGET_CATALOG.repair_hint(("dangling_fts",), include_run_all=True)
