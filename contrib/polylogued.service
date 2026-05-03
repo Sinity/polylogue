@@ -1,0 +1,25 @@
+[Unit]
+Description=Polylogue daemon — live archive convergence
+Documentation=https://github.com/Sinity/polylogue
+After=default.target
+
+[Service]
+Type=simple
+ExecStart=polylogued run --enable-api --api-host 127.0.0.1 --api-port 8766 --no-browser-capture
+Restart=on-failure
+RestartSec=5s
+Nice=10
+IOSchedulingClass=idle
+MemoryHigh=1G
+MemoryMax=2G
+
+# Security hardening
+PrivateTmp=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.local/share/polylogue
+ReadOnlyPaths=%h/.claude/projects %h/.codex/sessions
+
+[Install]
+WantedBy=default.target

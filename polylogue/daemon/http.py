@@ -212,8 +212,9 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             quick_check_detail = ""
             try:
                 report = self._sync_run(lambda p: p.health_check())
-                quick_check_ok = report.ok
-                quick_check_detail = report.summary.get("status", "")
+                errors = [c for c in report.checks if c.status.value == "error"]
+                quick_check_ok = len(errors) == 0
+                quick_check_detail = "ok" if quick_check_ok else f"{len(errors)} check(s) in error state"
             except Exception as exc:
                 quick_check_ok = False
                 quick_check_detail = str(exc)
