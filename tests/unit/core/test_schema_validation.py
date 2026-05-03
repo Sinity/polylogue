@@ -428,6 +428,20 @@ def test_missing_provider_raises() -> None:
                 },
             },
         ),
+        (
+            "/tmp/codex-session.jsonl",
+            {
+                "timestamp": "2026-05-03T04:29:42.000Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "tool_search_call",
+                    "arguments": {
+                        "query": "GitHub pull request issue get repository",
+                        "limit": 8,
+                    },
+                },
+            },
+        ),
     ],
 )
 def test_live_observed_codex_records_validate(source_path: str, sample: dict[str, object]) -> None:
