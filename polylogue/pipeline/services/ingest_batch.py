@@ -44,7 +44,8 @@ from polylogue.storage.conversation_replacement import (
 )
 from polylogue.storage.raw.models import RawConversationStateUpdate
 from polylogue.storage.runtime import RawConversationRecord
-from polylogue.storage.search.cache import invalidate_search_cache
+from polylogue.archive.write_effects import commit_archive_write_effects
+from polylogue.archive.write_gateway import WriteOperation
 from polylogue.storage.sqlite.connection import _load_sqlite_vec
 from polylogue.storage.sqlite.connection_profile import (
     DB_TIMEOUT,
@@ -824,18 +825,12 @@ def _commit_ingest_results(
 
 
 def _commit_sync_ingest_side_effects(conn: sqlite3.Connection, changed_conversation_ids: Sequence[str]) -> None:
-    from polylogue.storage.fts.fts_lifecycle import (
-        repair_fts_index_sync,
-        restore_fts_triggers_sync,
+    """Run post-ingest side effects through the canonical write-effects path."""
+    commit_archive_write_effects(
+        conn,
+        WriteOperation.INGEST,
+        {"changed_conversation_ids": tuple(changed_conversation_ids)},
     )
-
-    changed_ids = sorted(set(changed_conversation_ids))
-    restore_fts_triggers_sync(conn)
-    if changed_ids:
-        repair_fts_index_sync(conn, changed_ids)
-    conn.commit()
-    if changed_ids:
-        invalidate_search_cache()
 
 
 def _process_ingest_batch_sync(
