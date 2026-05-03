@@ -17,7 +17,7 @@ files:
     owner: stable
     cross_cut: { api: async }
   - path: polylogue/api/archive.py
-    loc: 337
+    loc: 517
     target: polylogue/api/archive.py
     owner: stable
     cross_cut: { api: async }
@@ -281,7 +281,7 @@ files:
     owner: archive-query
     reason: archive-domain query semantics
   - path: polylogue/archive/query/fields.py
-    loc: 910
+    loc: 911
     target: polylogue/archive/query/fields.py
     owner: archive-query
     reason: archive-domain query semantics
@@ -361,7 +361,7 @@ files:
     owner: archive-query
     reason: archive-domain query semantics
   - path: polylogue/archive/query/spec.py
-    loc: 391
+    loc: 474
     target: polylogue/archive/query/spec.py
     owner: archive-query
     reason: archive-domain query semantics
@@ -484,13 +484,29 @@ files:
     target: polylogue/archive/viewport/viewports.py
     owner: archive-viewport
     reason: archive-domain semantics
+  - path: polylogue/archive/write_effects.py
+    loc: 87
+    target: polylogue/archive/write_effects.py
+    owner: stable
+  - path: polylogue/archive/write_gateway.py
+    loc: 135
+    target: polylogue/archive/write_gateway.py
+    owner: stable
   - path: polylogue/artifacts/__init__.py
-    loc: 1072
+    loc: 21
     target: polylogue/artifacts/__init__.py
+    owner: stable
+  - path: polylogue/artifacts/descriptors.py
+    loc: 60
+    target: polylogue/artifacts/descriptors.py
     owner: stable
   - path: polylogue/artifacts/graph.py
     loc: 112
     target: polylogue/artifacts/graph.py
+    owner: stable
+  - path: polylogue/artifacts/runtime.py
+    loc: 1005
+    target: polylogue/artifacts/runtime.py
     owner: stable
   - path: polylogue/assets.py
     loc: 65
@@ -506,11 +522,11 @@ files:
     target: polylogue/browser_capture/models.py
     owner: stable
   - path: polylogue/browser_capture/receiver.py
-    loc: 145
+    loc: 154
     target: polylogue/browser_capture/receiver.py
     owner: stable
   - path: polylogue/browser_capture/server.py
-    loc: 149
+    loc: 199
     target: polylogue/browser_capture/server.py
     owner: stable
   - path: polylogue/cli/__init__.py
@@ -550,7 +566,7 @@ files:
     target: polylogue/cli/commands/auth.py
     owner: stable
   - path: polylogue/cli/commands/check.py
-    loc: 116
+    loc: 114
     target: polylogue/cli/commands/check.py
     owner: stable
   - path: polylogue/cli/commands/completions.py
@@ -578,7 +594,7 @@ files:
     target: polylogue/cli/commands/neighbors.py
     owner: stable
   - path: polylogue/cli/commands/reset.py
-    loc: 128
+    loc: 236
     target: polylogue/cli/commands/reset.py
     owner: stable
   - path: polylogue/cli/commands/resume.py
@@ -586,7 +602,7 @@ files:
     target: polylogue/cli/commands/resume.py
     owner: stable
   - path: polylogue/cli/commands/run.py
-    loc: 639
+    loc: 529
     target: polylogue/cli/commands/run.py
     owner: stable
   - path: polylogue/cli/commands/schema.py
@@ -596,10 +612,6 @@ files:
   - path: polylogue/cli/commands/tags.py
     loc: 60
     target: polylogue/cli/commands/tags.py
-    owner: stable
-  - path: polylogue/cli/insights_rendering.py
-    loc: 49
-    target: polylogue/cli/insights_rendering.py
     owner: stable
   - path: polylogue/cli/machine_main.py
     loc: 81
@@ -662,20 +674,20 @@ files:
     target: polylogue/cli/shared/check_maintenance.py
     owner: stable
   - path: polylogue/cli/shared/check_models.py
-    loc: 49
+    loc: 47
     target: polylogue/cli/shared/check_models.py
     owner: stable
     cross_cut: { lifecycle: model }
   - path: polylogue/cli/shared/check_options.py
-    loc: 121
+    loc: 114
     target: polylogue/cli/shared/check_options.py
     owner: stable
   - path: polylogue/cli/shared/check_rendering_json.py
-    loc: 52
+    loc: 50
     target: polylogue/cli/shared/check_rendering_json.py
     owner: stable
   - path: polylogue/cli/shared/check_rendering_plain.py
-    loc: 276
+    loc: 273
     target: polylogue/cli/shared/check_rendering_plain.py
     owner: stable
   - path: polylogue/cli/shared/check_support.py
@@ -687,7 +699,7 @@ files:
     target: polylogue/cli/shared/check_validation.py
     owner: stable
   - path: polylogue/cli/shared/check_workflow.py
-    loc: 307
+    loc: 296
     target: polylogue/cli/shared/check_workflow.py
     owner: stable
   - path: polylogue/cli/shared/embed_runtime.py
@@ -728,16 +740,12 @@ files:
     target: polylogue/cli/shared/insight_command_contracts.py
     owner: stable
   - path: polylogue/cli/shared/machine_errors.py
-    loc: 305
+    loc: 303
     target: polylogue/cli/shared/machine_errors.py
     owner: stable
   - path: polylogue/cli/shared/qa_capture.py
     loc: 49
     target: polylogue/cli/shared/qa_capture.py
-    owner: stable
-  - path: polylogue/cli/shared/qa_finalization.py
-    loc: 62
-    target: polylogue/cli/shared/qa_finalization.py
     owner: stable
   - path: polylogue/cli/shared/qa_requests.py
     loc: 142
@@ -760,7 +768,7 @@ files:
     target: polylogue/cli/shared/run_observers.py
     owner: stable
   - path: polylogue/cli/shared/run_workflow.py
-    loc: 240
+    loc: 237
     target: polylogue/cli/shared/run_workflow.py
     owner: stable
   - path: polylogue/cli/shared/schema_command_support.py
@@ -780,7 +788,7 @@ files:
     target: polylogue/cli/shared/schema_rendering_results.py
     owner: stable
   - path: polylogue/cli/shared/types.py
-    loc: 36
+    loc: 46
     target: polylogue/cli/shared/types.py
     owner: stable
   - path: polylogue/cli/shell_completion_values.py
@@ -851,12 +859,24 @@ files:
     target: polylogue/daemon/browser_capture.py
     owner: stable
   - path: polylogue/daemon/cli.py
-    loc: 184
+    loc: 262
     target: polylogue/daemon/cli.py
     owner: stable
+  - path: polylogue/daemon/events.py
+    loc: 137
+    target: polylogue/daemon/events.py
+    owner: stable
+  - path: polylogue/daemon/http.py
+    loc: 456
+    target: polylogue/daemon/http.py
+    owner: stable
   - path: polylogue/daemon/status.py
-    loc: 87
+    loc: 193
     target: polylogue/daemon/status.py
+    owner: stable
+  - path: polylogue/daemon/web_shell.py
+    loc: 291
+    target: polylogue/daemon/web_shell.py
     owner: stable
   - path: polylogue/errors.py
     loc: 29
@@ -897,12 +917,16 @@ files:
     target: polylogue/insights/readiness.py
     owner: stable
   - path: polylogue/insights/registry.py
-    loc: 665
+    loc: 671
     target: polylogue/insights/registry.py
     owner: stable
   - path: polylogue/insights/resume.py
     loc: 452
     target: polylogue/insights/resume.py
+    owner: stable
+  - path: polylogue/insights/storage.py
+    loc: 146
+    target: polylogue/insights/storage.py
     owner: stable
   - path: polylogue/logging.py
     loc: 166
@@ -942,19 +966,19 @@ files:
     target: polylogue/mcp/query_contracts.py
     owner: stable
   - path: polylogue/mcp/server.py
-    loc: 118
+    loc: 120
     target: polylogue/mcp/server.py
     owner: stable
   - path: polylogue/mcp/server_insight_tools.py
-    loc: 128
+    loc: 129
     target: polylogue/mcp/server_insight_tools.py
     owner: stable
   - path: polylogue/mcp/server_maintenance_tools.py
-    loc: 190
+    loc: 193
     target: polylogue/mcp/server_maintenance_tools.py
     owner: stable
   - path: polylogue/mcp/server_mutation_tools.py
-    loc: 158
+    loc: 174
     target: polylogue/mcp/server_mutation_tools.py
     owner: stable
   - path: polylogue/mcp/server_prompts.py
@@ -966,11 +990,11 @@ files:
     target: polylogue/mcp/server_resources.py
     owner: stable
   - path: polylogue/mcp/server_support.py
-    loc: 213
+    loc: 224
     target: polylogue/mcp/server_support.py
     owner: stable
   - path: polylogue/mcp/server_tools.py
-    loc: 359
+    loc: 363
     target: polylogue/mcp/server_tools.py
     owner: stable
   - path: polylogue/operations/__init__.py
@@ -1044,7 +1068,7 @@ files:
     target: polylogue/pipeline/run_activity.py
     owner: stable
   - path: polylogue/pipeline/run_execution.py
-    loc: 377
+    loc: 380
     target: polylogue/pipeline/run_execution.py
     owner: stable
   - path: polylogue/pipeline/run_finalization.py
@@ -1056,7 +1080,7 @@ files:
     target: polylogue/pipeline/run_planning.py
     owner: stable
   - path: polylogue/pipeline/run_stages.py
-    loc: 557
+    loc: 545
     target: polylogue/pipeline/run_stages.py
     owner: stable
   - path: polylogue/pipeline/run_state.py
@@ -1084,11 +1108,11 @@ files:
     target: polylogue/pipeline/services/__init__.py
     owner: stable
   - path: polylogue/pipeline/services/acquisition.py
-    loc: 225
+    loc: 286
     target: polylogue/pipeline/services/acquisition.py
     owner: stable
   - path: polylogue/pipeline/services/acquisition_persistence.py
-    loc: 40
+    loc: 41
     target: polylogue/pipeline/services/acquisition_persistence.py
     owner: stable
   - path: polylogue/pipeline/services/acquisition_records.py
@@ -1096,7 +1120,7 @@ files:
     target: polylogue/pipeline/services/acquisition_records.py
     owner: stable
   - path: polylogue/pipeline/services/acquisition_streams.py
-    loc: 158
+    loc: 175
     target: polylogue/pipeline/services/acquisition_streams.py
     owner: stable
   - path: polylogue/pipeline/services/indexing.py
@@ -1104,7 +1128,7 @@ files:
     target: polylogue/pipeline/services/indexing.py
     owner: stable
   - path: polylogue/pipeline/services/ingest_batch.py
-    loc: 1301
+    loc: 1295
     target: polylogue/pipeline/services/ingest_batch.py
     owner: stable
   - path: polylogue/pipeline/services/ingest_worker.py
@@ -1138,7 +1162,7 @@ files:
     owner: stable
     cross_cut: { lifecycle: model }
   - path: polylogue/pipeline/services/planning_runtime.py
-    loc: 385
+    loc: 386
     target: polylogue/pipeline/services/planning_runtime.py
     owner: stable
     cross_cut: { lifecycle: runtime }
@@ -1794,11 +1818,6 @@ files:
     target: polylogue/showcase/cli_boundary.py
     owner: stable
     reason: verification-lab showcase substrate retained
-  - path: polylogue/showcase/context.py
-    loc: 114
-    target: polylogue/showcase/context.py
-    owner: stable
-    reason: verification-lab showcase substrate retained
   - path: polylogue/showcase/corpus_requests.py
     loc: 43
     target: polylogue/showcase/corpus_requests.py
@@ -2023,7 +2042,7 @@ files:
     target: polylogue/sources/assembly_gemini.py
     owner: stable
   - path: polylogue/sources/cursor.py
-    loc: 142
+    loc: 196
     target: polylogue/sources/cursor.py
     owner: stable
   - path: polylogue/sources/decoder_json.py
@@ -2043,7 +2062,7 @@ files:
     target: polylogue/sources/dispatch.py
     owner: stable
   - path: polylogue/sources/drive/__init__.py
-    loc: 284
+    loc: 310
     target: polylogue/sources/drive/__init__.py
     owner: stable
   - path: polylogue/sources/drive/auth.py
@@ -2091,11 +2110,11 @@ files:
     target: polylogue/sources/live/__init__.py
     owner: stable
   - path: polylogue/sources/live/cursor.py
-    loc: 63
+    loc: 289
     target: polylogue/sources/live/cursor.py
     owner: stable
   - path: polylogue/sources/live/watcher.py
-    loc: 146
+    loc: 188
     target: polylogue/sources/live/watcher.py
     owner: stable
   - path: polylogue/sources/parsers/base.py
@@ -2216,7 +2235,7 @@ files:
     owner: stable
     cross_cut: { lifecycle: model }
   - path: polylogue/sources/source_acquisition.py
-    loc: 166
+    loc: 168
     target: polylogue/sources/source_acquisition.py
     owner: stable
   - path: polylogue/sources/source_acquisition_components.py
@@ -2228,7 +2247,7 @@ files:
     target: polylogue/sources/source_parsing.py
     owner: stable
   - path: polylogue/sources/source_walk.py
-    loc: 103
+    loc: 105
     target: polylogue/sources/source_walk.py
     owner: stable
   - path: polylogue/sources/token_store.py
@@ -2302,248 +2321,10 @@ files:
     loc: 58
     target: polylogue/storage/artifacts/views.py
     owner: stable
-  - path: polylogue/storage/sqlite/__init__.py
-    loc: 29
-    target: polylogue/storage/sqlite/__init__.py
-    owner: stable
-  - path: polylogue/storage/sqlite/async_sqlite.py
-    loc: 567
-    target: polylogue/storage/sqlite/async_sqlite.py
-    owner: stable
-  - path: polylogue/storage/sqlite/async_sqlite_archive.py
-    loc: 239
-    target: polylogue/storage/sqlite/async_sqlite_archive.py
-    owner: stable
-  - path: polylogue/storage/sqlite/async_sqlite_raw.py
-    loc: 252
-    target: polylogue/storage/sqlite/async_sqlite_raw.py
-    owner: stable
-  - path: polylogue/storage/sqlite/connection.py
-    loc: 239
-    target: polylogue/storage/sqlite/connection.py
-    owner: stable
-  - path: polylogue/storage/sqlite/connection_profile.py
-    loc: 95
-    target: polylogue/storage/sqlite/connection_profile.py
-    owner: stable
-  - path: polylogue/storage/sqlite/queries/__init__.py
-    loc: 37
-    target: polylogue/storage/sqlite/queries/__init__.py
-    owner: stable
-  - path: polylogue/storage/sqlite/queries/action_events.py
-    loc: 124
-    target: polylogue/storage/sqlite/queries/action_events.py
-    owner: stable
-  - path: polylogue/storage/sqlite/queries/artifacts.py
-    loc: 109
-    target: polylogue/storage/sqlite/queries/artifacts.py
-    owner: stable
-  - path: polylogue/storage/sqlite/queries/attachment_content_blocks.py
-    loc: 95
-    target: polylogue/storage/sqlite/queries/attachment_content_blocks.py
-    owner: stable
-  - path: polylogue/storage/sqlite/queries/attachment_mutations.py
-    loc: 143
-    target: polylogue/storage/sqlite/queries/attachment_mutations.py
-    owner: stable
-  - path: polylogue/storage/sqlite/queries/attachment_records.py
-    loc: 236
-    target: polylogue/storage/sqlite/queries/attachment_records.py
-    owner: stable
-  - path: polylogue/storage/sqlite/queries/attachments.py
-    loc: 27
-    target: polylogue/storage/sqlite/queries/attachments.py
-    owner: stable
-  - path: polylogue/storage/sqlite/queries/conversations.py
-    loc: 61
-    target: polylogue/storage/sqlite/queries/conversations.py
-    owner: stable
-  - path: polylogue/storage/sqlite/queries/conversations_identity.py
-    loc: 158
-    target: polylogue/storage/sqlite/queries/conversations_identity.py
-    owner: stable
-  - path: polylogue/storage/sqlite/queries/conversations_reads.py
-    loc: 345
-    target: polylogue/storage/sqlite/queries/conversations_reads.py
-    owner: stable
-    cross_cut: { layer: read }
-  - path: polylogue/storage/sqlite/queries/conversations_search.py
-    loc: 138
-    target: polylogue/storage/sqlite/queries/conversations_search.py
-    owner: stable
-  - path: polylogue/storage/sqlite/queries/conversations_writes.py
-    loc: 144
-    target: polylogue/storage/sqlite/queries/conversations_writes.py
-    owner: stable
-    cross_cut: { layer: write }
-  - path: polylogue/storage/sqlite/queries/filter_builder.py
-    loc: 216
-    target: polylogue/storage/sqlite/queries/filter_builder.py
-    owner: stable
-  - path: polylogue/storage/sqlite/queries/mappers.py
-    loc: 57
-    target: polylogue/storage/sqlite/queries/mappers.py
-    owner: stable
-  - path: polylogue/storage/sqlite/queries/mappers_archive.py
-    loc: 200
-    target: polylogue/storage/sqlite/queries/mappers_archive.py
-    owner: stable
-  - path: polylogue/storage/sqlite/queries/mappers_insight_aggregates.py
-    loc: 82
-    target: polylogue/storage/sqlite/queries/mappers_insight_aggregates.py
-    owner: stable
-  - path: polylogue/storage/sqlite/queries/mappers_insight_legacy.py
-    loc: 405
-    target: polylogue/storage/sqlite/queries/mappers_insight_legacy.py
-    owner: stable
-  - path: polylogue/storage/sqlite/queries/mappers_insight_profiles.py
-    loc: 110
-    target: polylogue/storage/sqlite/queries/mappers_insight_profiles.py
-    owner: stable
-  - path: polylogue/storage/sqlite/queries/mappers_insight_timelines.py
-    loc: 167
-    target: polylogue/storage/sqlite/queries/mappers_insight_timelines.py
-    owner: stable
-  - path: polylogue/storage/sqlite/queries/mappers_support.py
-    loc: 149
-    target: polylogue/storage/sqlite/queries/mappers_support.py
-    owner: stable
-  - path: polylogue/storage/sqlite/queries/message_query_reads.py
-    loc: 155
-    target: polylogue/storage/sqlite/queries/message_query_reads.py
-    owner: stable
-    cross_cut: { layer: read }
-  - path: polylogue/storage/sqlite/queries/message_query_stats.py
-    loc: 66
-    target: polylogue/storage/sqlite/queries/message_query_stats.py
-    owner: stable
-  - path: polylogue/storage/sqlite/queries/message_query_writes.py
-    loc: 118
-    target: polylogue/storage/sqlite/queries/message_query_writes.py
-    owner: stable
-    cross_cut: { layer: write }
-  - path: polylogue/storage/sqlite/queries/messages.py
-    loc: 31
-    target: polylogue/storage/sqlite/queries/messages.py
-    owner: stable
-  - path: polylogue/storage/sqlite/queries/publications.py
-    loc: 82
-    target: polylogue/storage/sqlite/queries/publications.py
-    owner: stable
-  - path: polylogue/storage/sqlite/queries/raw.py
-    loc: 47
-    target: polylogue/storage/sqlite/queries/raw.py
-    owner: stable
-  - path: polylogue/storage/sqlite/queries/raw_reads.py
-    loc: 340
-    target: polylogue/storage/sqlite/queries/raw_reads.py
-    owner: stable
-    cross_cut: { layer: read }
-  - path: polylogue/storage/sqlite/queries/raw_state.py
-    loc: 234
-    target: polylogue/storage/sqlite/queries/raw_state.py
-    owner: stable
-  - path: polylogue/storage/sqlite/queries/raw_writes.py
-    loc: 71
-    target: polylogue/storage/sqlite/queries/raw_writes.py
-    owner: stable
-    cross_cut: { layer: write }
-  - path: polylogue/storage/sqlite/queries/runs.py
-    loc: 73
-    target: polylogue/storage/sqlite/queries/runs.py
-    owner: stable
-  - path: polylogue/storage/sqlite/queries/session_insight_profile_reads.py
-    loc: 117
-    target: polylogue/storage/sqlite/queries/session_insight_profile_reads.py
-    owner: stable
-    cross_cut: { layer: read }
-  - path: polylogue/storage/sqlite/queries/session_insight_profile_writes.py
-    loc: 73
-    target: polylogue/storage/sqlite/queries/session_insight_profile_writes.py
-    owner: stable
-    cross_cut: { layer: write }
-  - path: polylogue/storage/sqlite/queries/session_insight_summary_queries.py
-    loc: 163
-    target: polylogue/storage/sqlite/queries/session_insight_summary_queries.py
-    owner: stable
-  - path: polylogue/storage/sqlite/queries/session_insight_thread_queries.py
-    loc: 100
-    target: polylogue/storage/sqlite/queries/session_insight_thread_queries.py
-    owner: stable
-  - path: polylogue/storage/sqlite/queries/session_insight_timeline_reads.py
-    loc: 137
-    target: polylogue/storage/sqlite/queries/session_insight_timeline_reads.py
-    owner: stable
-    cross_cut: { layer: read }
-  - path: polylogue/storage/sqlite/queries/session_insight_timeline_writes.py
-    loc: 123
-    target: polylogue/storage/sqlite/queries/session_insight_timeline_writes.py
-    owner: stable
-    cross_cut: { layer: write }
-  - path: polylogue/storage/sqlite/queries/stats.py
-    loc: 326
-    target: polylogue/storage/sqlite/queries/stats.py
-    owner: stable
-  - path: polylogue/storage/sqlite/query_store.py
-    loc: 166
-    target: polylogue/storage/sqlite/query_store.py
-    owner: stable
-  - path: polylogue/storage/sqlite/query_store_archive.py
-    loc: 258
-    target: polylogue/storage/sqlite/query_store_archive.py
-    owner: stable
-  - path: polylogue/storage/sqlite/query_store_insight_profiles.py
-    loc: 81
-    target: polylogue/storage/sqlite/query_store_insight_profiles.py
-    owner: stable
-  - path: polylogue/storage/sqlite/query_store_insight_timelines.py
-    loc: 99
-    target: polylogue/storage/sqlite/query_store_insight_timelines.py
-    owner: stable
-  - path: polylogue/storage/sqlite/query_store_maintenance.py
-    loc: 110
-    target: polylogue/storage/sqlite/query_store_maintenance.py
-    owner: stable
-  - path: polylogue/storage/sqlite/schema.py
-    loc: 152
-    target: polylogue/storage/sqlite/schema.py
-    owner: stable
-  - path: polylogue/storage/sqlite/schema_bootstrap.py
-    loc: 708
-    target: polylogue/storage/sqlite/schema_bootstrap.py
-    owner: stable
-  - path: polylogue/storage/sqlite/schema_ddl.py
-    loc: 74
-    target: polylogue/storage/sqlite/schema_ddl.py
-    owner: stable
-  - path: polylogue/storage/sqlite/schema_ddl_actions.py
-    loc: 92
-    target: polylogue/storage/sqlite/schema_ddl_actions.py
-    owner: stable
-  - path: polylogue/storage/sqlite/schema_ddl_archive.py
-    loc: 288
-    target: polylogue/storage/sqlite/schema_ddl_archive.py
-    owner: stable
-  - path: polylogue/storage/sqlite/schema_ddl_aux.py
-    loc: 96
-    target: polylogue/storage/sqlite/schema_ddl_aux.py
-    owner: stable
-  - path: polylogue/storage/sqlite/schema_ddl_insight_aggregates.py
-    loc: 101
-    target: polylogue/storage/sqlite/schema_ddl_insight_aggregates.py
-    owner: stable
-  - path: polylogue/storage/sqlite/schema_ddl_insight_profiles.py
-    loc: 158
-    target: polylogue/storage/sqlite/schema_ddl_insight_profiles.py
-    owner: stable
-  - path: polylogue/storage/sqlite/schema_ddl_insight_timelines.py
-    loc: 110
-    target: polylogue/storage/sqlite/schema_ddl_insight_timelines.py
-    owner: stable
-  - path: polylogue/storage/sqlite/sqlite_vec_extension.py
-    loc: 40
-    target: polylogue/storage/sqlite/sqlite_vec_extension.py
-    owner: stable
+  - path: polylogue/storage/blob_gc.py
+    loc: 196
+    target: TBD
+    owner: storage-domain
   - path: polylogue/storage/blob_store.py
     loc: 310
     target: polylogue/storage/blob_store.py
@@ -2604,11 +2385,11 @@ files:
     target: polylogue/storage/fts/__init__.py
     owner: stable
   - path: polylogue/storage/fts/fts_lifecycle.py
-    loc: 454
+    loc: 456
     target: polylogue/storage/fts/fts_lifecycle.py
     owner: stable
   - path: polylogue/storage/fts/sql.py
-    loc: 117
+    loc: 133
     target: polylogue/storage/fts/sql.py
     owner: stable
   - path: polylogue/storage/hydrators.py
@@ -2663,11 +2444,11 @@ files:
     target: polylogue/storage/insights/session/refresh.py
     owner: stable
   - path: polylogue/storage/insights/session/runtime.py
-    loc: 136
+    loc: 144
     target: polylogue/storage/insights/session/runtime.py
     owner: stable
   - path: polylogue/storage/insights/session/status.py
-    loc: 853
+    loc: 896
     target: polylogue/storage/insights/session/status.py
     owner: stable
   - path: polylogue/storage/insights/session/storage.py
@@ -2912,6 +2693,260 @@ files:
     loc: 35
     target: polylogue/storage/search_providers/sqlite_vec_support.py
     owner: stable
+  - path: polylogue/storage/sqlite/__init__.py
+    loc: 29
+    target: polylogue/storage/sqlite/__init__.py
+    owner: stable
+  - path: polylogue/storage/sqlite/async_sqlite.py
+    loc: 567
+    target: polylogue/storage/sqlite/async_sqlite.py
+    owner: stable
+  - path: polylogue/storage/sqlite/async_sqlite_archive.py
+    loc: 239
+    target: polylogue/storage/sqlite/async_sqlite_archive.py
+    owner: stable
+  - path: polylogue/storage/sqlite/async_sqlite_raw.py
+    loc: 252
+    target: polylogue/storage/sqlite/async_sqlite_raw.py
+    owner: stable
+  - path: polylogue/storage/sqlite/connection.py
+    loc: 239
+    target: polylogue/storage/sqlite/connection.py
+    owner: stable
+  - path: polylogue/storage/sqlite/connection_profile.py
+    loc: 95
+    target: polylogue/storage/sqlite/connection_profile.py
+    owner: stable
+  - path: polylogue/storage/sqlite/queries/__init__.py
+    loc: 37
+    target: polylogue/storage/sqlite/queries/__init__.py
+    owner: stable
+  - path: polylogue/storage/sqlite/queries/action_events.py
+    loc: 124
+    target: polylogue/storage/sqlite/queries/action_events.py
+    owner: stable
+  - path: polylogue/storage/sqlite/queries/artifacts.py
+    loc: 109
+    target: polylogue/storage/sqlite/queries/artifacts.py
+    owner: stable
+  - path: polylogue/storage/sqlite/queries/attachment_content_blocks.py
+    loc: 95
+    target: polylogue/storage/sqlite/queries/attachment_content_blocks.py
+    owner: stable
+  - path: polylogue/storage/sqlite/queries/attachment_mutations.py
+    loc: 143
+    target: polylogue/storage/sqlite/queries/attachment_mutations.py
+    owner: stable
+  - path: polylogue/storage/sqlite/queries/attachment_records.py
+    loc: 236
+    target: polylogue/storage/sqlite/queries/attachment_records.py
+    owner: stable
+  - path: polylogue/storage/sqlite/queries/attachments.py
+    loc: 27
+    target: polylogue/storage/sqlite/queries/attachments.py
+    owner: stable
+  - path: polylogue/storage/sqlite/queries/conversations.py
+    loc: 61
+    target: polylogue/storage/sqlite/queries/conversations.py
+    owner: stable
+  - path: polylogue/storage/sqlite/queries/conversations_identity.py
+    loc: 158
+    target: polylogue/storage/sqlite/queries/conversations_identity.py
+    owner: stable
+  - path: polylogue/storage/sqlite/queries/conversations_reads.py
+    loc: 345
+    target: polylogue/storage/sqlite/queries/conversations_reads.py
+    owner: stable
+    cross_cut: { layer: read }
+  - path: polylogue/storage/sqlite/queries/conversations_search.py
+    loc: 138
+    target: polylogue/storage/sqlite/queries/conversations_search.py
+    owner: stable
+  - path: polylogue/storage/sqlite/queries/conversations_writes.py
+    loc: 144
+    target: polylogue/storage/sqlite/queries/conversations_writes.py
+    owner: stable
+    cross_cut: { layer: write }
+  - path: polylogue/storage/sqlite/queries/cursor.py
+    loc: 62
+    target: polylogue/storage/sqlite/queries/cursor.py
+    owner: stable
+  - path: polylogue/storage/sqlite/queries/filter_builder.py
+    loc: 216
+    target: polylogue/storage/sqlite/queries/filter_builder.py
+    owner: stable
+  - path: polylogue/storage/sqlite/queries/mappers.py
+    loc: 57
+    target: polylogue/storage/sqlite/queries/mappers.py
+    owner: stable
+  - path: polylogue/storage/sqlite/queries/mappers_archive.py
+    loc: 200
+    target: polylogue/storage/sqlite/queries/mappers_archive.py
+    owner: stable
+  - path: polylogue/storage/sqlite/queries/mappers_insight_aggregates.py
+    loc: 82
+    target: polylogue/storage/sqlite/queries/mappers_insight_aggregates.py
+    owner: stable
+  - path: polylogue/storage/sqlite/queries/mappers_insight_legacy.py
+    loc: 405
+    target: polylogue/storage/sqlite/queries/mappers_insight_legacy.py
+    owner: stable
+  - path: polylogue/storage/sqlite/queries/mappers_insight_profiles.py
+    loc: 110
+    target: polylogue/storage/sqlite/queries/mappers_insight_profiles.py
+    owner: stable
+  - path: polylogue/storage/sqlite/queries/mappers_insight_timelines.py
+    loc: 167
+    target: polylogue/storage/sqlite/queries/mappers_insight_timelines.py
+    owner: stable
+  - path: polylogue/storage/sqlite/queries/mappers_support.py
+    loc: 149
+    target: polylogue/storage/sqlite/queries/mappers_support.py
+    owner: stable
+  - path: polylogue/storage/sqlite/queries/message_query_reads.py
+    loc: 155
+    target: polylogue/storage/sqlite/queries/message_query_reads.py
+    owner: stable
+    cross_cut: { layer: read }
+  - path: polylogue/storage/sqlite/queries/message_query_stats.py
+    loc: 66
+    target: polylogue/storage/sqlite/queries/message_query_stats.py
+    owner: stable
+  - path: polylogue/storage/sqlite/queries/message_query_writes.py
+    loc: 118
+    target: polylogue/storage/sqlite/queries/message_query_writes.py
+    owner: stable
+    cross_cut: { layer: write }
+  - path: polylogue/storage/sqlite/queries/messages.py
+    loc: 31
+    target: polylogue/storage/sqlite/queries/messages.py
+    owner: stable
+  - path: polylogue/storage/sqlite/queries/publications.py
+    loc: 82
+    target: polylogue/storage/sqlite/queries/publications.py
+    owner: stable
+  - path: polylogue/storage/sqlite/queries/raw.py
+    loc: 47
+    target: polylogue/storage/sqlite/queries/raw.py
+    owner: stable
+  - path: polylogue/storage/sqlite/queries/raw_reads.py
+    loc: 340
+    target: polylogue/storage/sqlite/queries/raw_reads.py
+    owner: stable
+    cross_cut: { layer: read }
+  - path: polylogue/storage/sqlite/queries/raw_state.py
+    loc: 234
+    target: polylogue/storage/sqlite/queries/raw_state.py
+    owner: stable
+  - path: polylogue/storage/sqlite/queries/raw_writes.py
+    loc: 71
+    target: polylogue/storage/sqlite/queries/raw_writes.py
+    owner: stable
+    cross_cut: { layer: write }
+  - path: polylogue/storage/sqlite/queries/runs.py
+    loc: 73
+    target: polylogue/storage/sqlite/queries/runs.py
+    owner: stable
+  - path: polylogue/storage/sqlite/queries/session_insight_profile_reads.py
+    loc: 117
+    target: polylogue/storage/sqlite/queries/session_insight_profile_reads.py
+    owner: stable
+    cross_cut: { layer: read }
+  - path: polylogue/storage/sqlite/queries/session_insight_profile_writes.py
+    loc: 73
+    target: polylogue/storage/sqlite/queries/session_insight_profile_writes.py
+    owner: stable
+    cross_cut: { layer: write }
+  - path: polylogue/storage/sqlite/queries/session_insight_summary_queries.py
+    loc: 163
+    target: polylogue/storage/sqlite/queries/session_insight_summary_queries.py
+    owner: stable
+  - path: polylogue/storage/sqlite/queries/session_insight_thread_queries.py
+    loc: 100
+    target: polylogue/storage/sqlite/queries/session_insight_thread_queries.py
+    owner: stable
+  - path: polylogue/storage/sqlite/queries/session_insight_timeline_reads.py
+    loc: 137
+    target: polylogue/storage/sqlite/queries/session_insight_timeline_reads.py
+    owner: stable
+    cross_cut: { layer: read }
+  - path: polylogue/storage/sqlite/queries/session_insight_timeline_writes.py
+    loc: 123
+    target: polylogue/storage/sqlite/queries/session_insight_timeline_writes.py
+    owner: stable
+    cross_cut: { layer: write }
+  - path: polylogue/storage/sqlite/queries/stats.py
+    loc: 326
+    target: polylogue/storage/sqlite/queries/stats.py
+    owner: stable
+  - path: polylogue/storage/sqlite/query_store.py
+    loc: 166
+    target: polylogue/storage/sqlite/query_store.py
+    owner: stable
+  - path: polylogue/storage/sqlite/query_store_archive.py
+    loc: 258
+    target: polylogue/storage/sqlite/query_store_archive.py
+    owner: stable
+  - path: polylogue/storage/sqlite/query_store_insight_profiles.py
+    loc: 81
+    target: polylogue/storage/sqlite/query_store_insight_profiles.py
+    owner: stable
+  - path: polylogue/storage/sqlite/query_store_insight_timelines.py
+    loc: 99
+    target: polylogue/storage/sqlite/query_store_insight_timelines.py
+    owner: stable
+  - path: polylogue/storage/sqlite/query_store_maintenance.py
+    loc: 110
+    target: polylogue/storage/sqlite/query_store_maintenance.py
+    owner: stable
+  - path: polylogue/storage/sqlite/schema.py
+    loc: 212
+    target: polylogue/storage/sqlite/schema.py
+    owner: stable
+  - path: polylogue/storage/sqlite/schema_bootstrap.py
+    loc: 879
+    target: polylogue/storage/sqlite/schema_bootstrap.py
+    owner: stable
+  - path: polylogue/storage/sqlite/schema_ddl.py
+    loc: 89
+    target: polylogue/storage/sqlite/schema_ddl.py
+    owner: stable
+  - path: polylogue/storage/sqlite/schema_ddl_actions.py
+    loc: 94
+    target: polylogue/storage/sqlite/schema_ddl_actions.py
+    owner: stable
+  - path: polylogue/storage/sqlite/schema_ddl_archive.py
+    loc: 335
+    target: polylogue/storage/sqlite/schema_ddl_archive.py
+    owner: stable
+  - path: polylogue/storage/sqlite/schema_ddl_aux.py
+    loc: 96
+    target: polylogue/storage/sqlite/schema_ddl_aux.py
+    owner: stable
+  - path: polylogue/storage/sqlite/schema_ddl_cursor.py
+    loc: 30
+    target: polylogue/storage/sqlite/schema_ddl_cursor.py
+    owner: stable
+  - path: polylogue/storage/sqlite/schema_ddl_identity.py
+    loc: 49
+    target: polylogue/storage/sqlite/schema_ddl_identity.py
+    owner: stable
+  - path: polylogue/storage/sqlite/schema_ddl_insight_aggregates.py
+    loc: 101
+    target: polylogue/storage/sqlite/schema_ddl_insight_aggregates.py
+    owner: stable
+  - path: polylogue/storage/sqlite/schema_ddl_insight_profiles.py
+    loc: 158
+    target: polylogue/storage/sqlite/schema_ddl_insight_profiles.py
+    owner: stable
+  - path: polylogue/storage/sqlite/schema_ddl_insight_timelines.py
+    loc: 110
+    target: polylogue/storage/sqlite/schema_ddl_insight_timelines.py
+    owner: stable
+  - path: polylogue/storage/sqlite/sqlite_vec_extension.py
+    loc: 40
+    target: polylogue/storage/sqlite/sqlite_vec_extension.py
+    owner: stable
   - path: polylogue/surfaces/__init__.py
     loc: 0
     target: polylogue/surfaces/__init__.py
@@ -2980,6 +3015,18 @@ files:
   - path: polylogue/ui/tui/widgets/stats.py
     loc: 32
     target: polylogue/ui/tui/widgets/stats.py
+    owner: stable
+  - path: polylogue/verification/__init__.py
+    loc: 1
+    target: polylogue/verification/__init__.py
+    owner: stable
+  - path: polylogue/verification/manifests/__init__.py
+    loc: 1
+    target: polylogue/verification/manifests/__init__.py
+    owner: stable
+  - path: polylogue/verification/manifests/models.py
+    loc: 816
+    target: polylogue/verification/manifests/models.py
     owner: stable
   - path: polylogue/version.py
     loc: 200
