@@ -182,11 +182,9 @@ _PATH_COMPONENT_RE = __import__("re").compile(r"^[^./][^/]*(?:/[^./][^/]*)*$")
 
 
 def _validate_path_component(field: str, value: str | None) -> None:
-    """Reject absolute paths, ../ escapes, and empty components."""
+    """Reject ../ escapes and empty components. Absolute paths are allowed."""
     if value is None:
         return
-    if value.startswith("/"):
-        raise QuerySpecError(field, value)
     if ".." in value.split("/"):
         raise QuerySpecError(field, value)
     if value == "." or value == "":
