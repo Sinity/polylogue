@@ -14,6 +14,7 @@ from polylogue.mcp.server_support import (
     _error_json,
     _extract_fenced_code,
     _get_config,
+    _get_polylogue,
     _get_runtime_services,
     _json_payload,
     _safe_call,
@@ -87,6 +88,7 @@ def build_server(*, role: MCPRole = "read") -> FastMCP:
         get_backend=lambda: _get_backend(),
         get_config=lambda: _get_config(),
         get_archive_ops=lambda: _get_archive_ops(),
+        get_polylogue=lambda: _get_polylogue(),
         extract_fenced_code=_extract_fenced_code,
         role=role,
     )

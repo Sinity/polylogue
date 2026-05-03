@@ -17,14 +17,17 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     @mcp.tool()
     async def add_tag(conversation_id: str, tag: str) -> str:
         async def run() -> str:
-            resolved = await hooks.get_query_store().resolve_id(conversation_id, strict=True)
-            if not resolved:
+            from polylogue.api.archive import ConversationNotFoundError
+
+            poly = hooks.get_polylogue()
+            try:
+                await poly.add_tag(conversation_id, tag)
+            except ConversationNotFoundError:
                 return hooks.error_json("conversation not found", conversation_id=conversation_id)
-            await hooks.get_tag_store().add_tag(resolved, tag)
             return hooks.json_payload(
                 MCPMutationStatusPayload(
                     status="ok",
-                    conversation_id=resolved,
+                    conversation_id=conversation_id,
                     tag=tag,
                 ),
                 exclude_none=True,
@@ -35,14 +38,17 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     @mcp.tool()
     async def remove_tag(conversation_id: str, tag: str) -> str:
         async def run() -> str:
-            resolved = await hooks.get_query_store().resolve_id(conversation_id, strict=True)
-            if not resolved:
+            from polylogue.api.archive import ConversationNotFoundError
+
+            poly = hooks.get_polylogue()
+            try:
+                await poly.remove_tag(conversation_id, tag)
+            except ConversationNotFoundError:
                 return hooks.error_json("conversation not found", conversation_id=conversation_id)
-            await hooks.get_tag_store().remove_tag(resolved, tag)
             return hooks.json_payload(
                 MCPMutationStatusPayload(
                     status="ok",
-                    conversation_id=resolved,
+                    conversation_id=conversation_id,
                     tag=tag,
                 ),
                 exclude_none=True,
@@ -79,7 +85,8 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     @mcp.tool()
     async def list_tags(provider: str | None = None) -> str:
         async def run() -> str:
-            tags = await hooks.get_tag_store().list_tags(provider=provider)
+            poly = hooks.get_polylogue()
+            tags = await poly.list_tags(provider=provider)
             return hooks.json_payload(MCPTagCountsPayload(root=tags))
 
         return await hooks.async_safe_call("list_tags", run)
@@ -87,7 +94,8 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     @mcp.tool()
     async def get_metadata(conversation_id: str) -> str:
         async def run() -> str:
-            metadata = await hooks.get_tag_store().get_metadata(conversation_id)
+            poly = hooks.get_polylogue()
+            metadata = await poly.get_metadata(conversation_id)
             return hooks.json_payload(MCPMetadataPayload.from_document(metadata))
 
         return await hooks.async_safe_call("get_metadata", run)
@@ -95,18 +103,22 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     @mcp.tool()
     async def set_metadata(conversation_id: str, key: str, value: str) -> str:
         async def run() -> str:
-            resolved = await hooks.get_query_store().resolve_id(conversation_id, strict=True)
-            if not resolved:
-                return hooks.error_json("conversation not found", conversation_id=conversation_id)
+            from polylogue.api.archive import ConversationNotFoundError
+
+            poly = hooks.get_polylogue()
             try:
-                parsed_value = json.loads(value)
-            except (json.JSONDecodeError, TypeError):
-                parsed_value = value
-            await hooks.get_tag_store().update_metadata(resolved, key, parsed_value)
+                from contextlib import suppress
+
+                parsed_value: object = value
+                with suppress(json.JSONDecodeError, TypeError):
+                    parsed_value = json.loads(value)
+                await poly.update_metadata(conversation_id, key, str(parsed_value))
+            except ConversationNotFoundError:
+                return hooks.error_json("conversation not found", conversation_id=conversation_id)
             return hooks.json_payload(
                 MCPMutationStatusPayload(
                     status="ok",
-                    conversation_id=resolved,
+                    conversation_id=conversation_id,
                     key=key,
                 ),
                 exclude_none=True,
@@ -140,14 +152,18 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                     "Safety guard: set confirm=true to delete",
                     conversation_id=conversation_id,
                 )
-            resolved = await hooks.get_query_store().resolve_id(conversation_id, strict=True)
-            if not resolved:
+            from polylogue.api.archive import ConversationNotFoundError
+            from polylogue.mcp.server_support import _get_polylogue
+
+            poly = _get_polylogue()
+            try:
+                deleted = await poly.delete_conversation(conversation_id)
+            except ConversationNotFoundError:
                 return hooks.error_json("conversation not found", conversation_id=conversation_id)
-            deleted = await hooks.get_query_store().delete_conversation(resolved)
             return hooks.json_payload(
                 MCPMutationStatusPayload(
                     status="deleted" if deleted else "not_found",
-                    conversation_id=resolved,
+                    conversation_id=conversation_id,
                 ),
                 exclude_none=True,
             )

@@ -158,11 +158,11 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         id: str,
     ) -> str:
         async def run() -> str:
-            ops = hooks.get_archive_ops()
-            summary = await ops.get_conversation_summary(id)
+            poly = hooks.get_polylogue()
+            summary = await poly.get_conversation_summary(id)
             if summary is None:
                 return hooks.error_json(f"Conversation not found: {id}")
-            stats = await ops.get_conversation_stats(id)
+            stats = await poly.get_conversation_stats(id)
             return hooks.json_payload(
                 MCPConversationSummaryPayload.from_summary(
                     summary,
@@ -183,7 +183,9 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         async def run() -> str:
             if not id and not (query and query.strip()):
                 return hooks.error_json("neighbor_candidates requires id or query")
-            candidates = await hooks.get_archive_ops().neighbor_candidates(
+
+            poly = hooks.get_polylogue()
+            candidates = await poly.neighbor_candidates(
                 conversation_id=id,
                 query=query,
                 provider=provider,
@@ -213,11 +215,11 @@ def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     @mcp.tool()
     async def get_conversation_summary(id: str) -> str:
         async def run() -> str:
-            ops = hooks.get_archive_ops()
-            summary = await ops.get_conversation_summary(id)
+            poly = hooks.get_polylogue()
+            summary = await poly.get_conversation_summary(id)
             if summary is None:
                 return hooks.error_json(f"Conversation not found: {id}")
-            stats = await ops.get_conversation_stats(id)
+            stats = await poly.get_conversation_stats(id)
             return hooks.json_payload(
                 MCPConversationSummaryPayload.from_summary(
                     summary,
@@ -230,7 +232,8 @@ def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     @mcp.tool()
     async def get_session_tree(conversation_id: str) -> str:
         async def run() -> str:
-            tree = await hooks.get_archive_ops().get_session_tree(conversation_id)
+            poly = hooks.get_polylogue()
+            tree = await poly.get_session_tree(conversation_id)
             return hooks.json_payload(conversation_summary_list_payload(tree))
 
         return await hooks.async_safe_call("get_session_tree", run)
@@ -265,11 +268,9 @@ def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 prose_only=prose_only,
             ).build_projection()
 
-            ops = hooks.get_archive_ops()
-            summary = await ops.get_conversation_summary(conversation_id)
-            if summary is None:
-                return hooks.error_json(f"Conversation not found: {conversation_id}")
-            canonical_id = str(summary.id)
+            from polylogue.api.archive import ConversationNotFoundError
+
+            poly = hooks.get_polylogue()
             from polylogue.archive.message.roles import normalize_message_roles
             from polylogue.archive.message.types import validate_message_type_filter
 
@@ -277,18 +278,21 @@ def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             normalized_message_type = (
                 validate_message_type_filter(message_type).value if message_type is not None else None
             )
-            paginated, total = await ops.get_messages_paginated(
-                canonical_id,
-                message_role=roles,
-                message_type=cast("MessageTypeName | None", normalized_message_type),
-                limit=hooks.clamp_limit(limit),
-                offset=max(0, offset),
-                content_projection=projection,
-            )
+            try:
+                paginated, total = await poly.get_messages_paginated(
+                    conversation_id,
+                    message_role=roles,
+                    message_type=cast("MessageTypeName | None", normalized_message_type),
+                    limit=hooks.clamp_limit(limit),
+                    offset=max(0, offset),
+                    content_projection=projection,
+                )
+            except ConversationNotFoundError:
+                return hooks.error_json(f"Conversation not found: {conversation_id}")
 
             return hooks.json_payload(
                 MCPMessagesListPayload(
-                    conversation_id=canonical_id,
+                    conversation_id=conversation_id,
                     messages=tuple(MCPMessagePayload.from_message(msg) for msg in paginated),
                     total=total,
                     limit=hooks.clamp_limit(limit),
