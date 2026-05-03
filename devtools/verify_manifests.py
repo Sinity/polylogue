@@ -1,7 +1,8 @@
 """Verify internal consistency across all docs/plans/*.yaml manifests.
 
-Ensures manifest files are valid YAML and their cross-references are
-consistent. Runs as part of devtools verify.
+Ensures manifest files are valid YAML, their cross-references are
+consistent, and their structure matches the declared Pydantic models.
+Runs as part of devtools verify.
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ import yaml
 
 from devtools.authored_scenario_catalog import get_authored_scenario_catalog
 from devtools.command_catalog import COMMANDS
+from polylogue.verification.manifests.models import validate_manifest
 
 _COVERAGE_AXIS_KEYS = ("domain", "subject", "area", "dimension", "artifact", "platform", "concern")
 _COVERAGE_GAP_SEVERITIES = {"info", "minor", "major", "serious"}
@@ -476,6 +478,20 @@ def _coverage_gap_slug(value: str) -> str:
     return "".join(char if char.isalnum() else "-" for char in value.lower()).strip("-") or "unnamed"
 
 
+def check_pydantic_models(plans_dir: Path) -> list[str]:
+    """Validate every YAML manifest against its Pydantic model schema."""
+    errors: list[str] = []
+    for path in sorted(plans_dir.glob("*.yaml")):
+        try:
+            data = load_manifest(path)
+        except ValueError as exc:
+            errors.append(str(exc))
+            continue
+        model_errors = validate_manifest(str(path), data)
+        errors.extend(model_errors)
+    return errors
+
+
 def main(argv: list[str] | None = None) -> int:
     """Run all manifest consistency checks. Returns exit code."""
     project_root = Path(__file__).resolve().parents[1]
@@ -487,6 +503,7 @@ def main(argv: list[str] | None = None) -> int:
 
     all_errors: list[str] = []
     for check in (
+        check_pydantic_models,
         check_lint_escalation,
         check_suppressions,
         check_assurance_domains,
