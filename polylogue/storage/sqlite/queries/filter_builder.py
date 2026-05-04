@@ -13,10 +13,13 @@ _SEMANTIC_ACTION_TYPES = tuple(category.value for category in ToolCategory)
 
 def _iso_to_epoch(iso_str: str) -> float:
     """Convert an ISO date string to epoch seconds for SQL comparison."""
-    from datetime import datetime
+    from datetime import datetime, timezone
 
     try:
-        return datetime.fromisoformat(iso_str).timestamp()
+        dt = datetime.fromisoformat(iso_str)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.timestamp()
     except (ValueError, TypeError):
         pass
     try:

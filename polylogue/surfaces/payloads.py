@@ -125,6 +125,9 @@ class ConversationMessagePayload(SurfacePayloadModel):
     text: str
     timestamp: datetime | None = None
     message_type: str = "message"
+    content_blocks: list[dict[str, object]] = Field(default_factory=list)
+    provider_meta: dict[str, object] | None = None
+    parent_id: str | None = None
 
     @classmethod
     def from_message(cls, message: Message) -> ConversationMessagePayload:
@@ -141,6 +144,9 @@ class ConversationMessagePayload(SurfacePayloadModel):
             text=message.text or "",
             timestamp=message.timestamp,
             message_type=message_type,
+            content_blocks=message.content_blocks,
+            provider_meta=message.provider_meta,
+            parent_id=message.parent_id,
         )
 
 
