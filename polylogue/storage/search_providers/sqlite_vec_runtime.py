@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from polylogue.storage.search_providers.sqlite_vec_support import SqliteVecError, logger
-from polylogue.storage.sqlite.connection_profile import DB_TIMEOUT
+from polylogue.storage.sqlite.connection_profile import open_connection
 from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
 
 
@@ -21,7 +21,7 @@ class SqliteVecRuntimeMixin:
 
     def _get_connection(self) -> sqlite3.Connection:
         """Get connection with sqlite-vec extension loaded if available."""
-        conn = sqlite3.connect(self.db_path, timeout=DB_TIMEOUT)
+        conn = open_connection(self.db_path)
         conn.row_factory = sqlite3.Row
 
         if self._vec_available is None:

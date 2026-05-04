@@ -97,6 +97,30 @@ class RepositoryWriteMixin:
         async with self._backend.connection() as conn:
             return await conversations_q.get_metadata(conn, conversation_id)
 
+    async def _upsert_normalized_tag(self, conversation_id: str, tag_name: str) -> None:
+        """Upsert a tag into the normalized tags table and link to conversation."""
+        async with self._backend.transaction(), self._backend.connection() as conn:
+            await conn.execute("INSERT OR IGNORE INTO tags (name) VALUES (?)", (tag_name,))
+            cursor = await conn.execute("SELECT id FROM tags WHERE name = ?", (tag_name,))
+            row = await cursor.fetchone()
+            if row is not None:
+                tag_id = row["id"]
+                await conn.execute(
+                    "INSERT OR IGNORE INTO conversation_tags (conversation_id, tag_id) VALUES (?, ?)",
+                    (conversation_id, tag_id),
+                )
+
+    async def _delete_normalized_tag(self, conversation_id: str, tag_name: str) -> None:
+        """Remove a tag link from the normalized tables for a conversation."""
+        async with self._backend.transaction(), self._backend.connection() as conn:
+            cursor = await conn.execute("SELECT id FROM tags WHERE name = ?", (tag_name,))
+            row = await cursor.fetchone()
+            if row is not None:
+                await conn.execute(
+                    "DELETE FROM conversation_tags WHERE conversation_id = ? AND tag_id = ?",
+                    (conversation_id, row["id"]),
+                )
+
     async def _metadata_read_modify_write(
         self,
         conversation_id: str,
@@ -136,6 +160,8 @@ class RepositoryWriteMixin:
             return False
 
         await self._metadata_read_modify_write(conversation_id, _add)
+        # Also write to normalized tables for M2M query support
+        await self._upsert_normalized_tag(conversation_id, tag)
 
     async def bulk_add_tags(self, conversation_ids: list[str], tags: list[str]) -> int:
         """Add tags to multiple conversations within a single transaction.
@@ -173,6 +199,16 @@ class RepositoryWriteMixin:
                         conversation_id,
                         meta,
                     )
+                    # Also write to normalized tables
+                    for tag in tags:
+                        await conn.execute("INSERT OR IGNORE INTO tags (name) VALUES (?)", (tag,))
+                        cursor = await conn.execute("SELECT id FROM tags WHERE name = ?", (tag,))
+                        row = await cursor.fetchone()
+                        if row is not None:
+                            await conn.execute(
+                                "INSERT OR IGNORE INTO conversation_tags (conversation_id, tag_id) VALUES (?, ?)",
+                                (conversation_id, row["id"]),
+                            )
                     applied_count += 1
         return applied_count
 
@@ -187,6 +223,8 @@ class RepositoryWriteMixin:
             return False
 
         await self._metadata_read_modify_write(conversation_id, _remove)
+        # Also remove from normalized tables
+        await self._delete_normalized_tag(conversation_id, tag)
 
     async def list_tags(self, *, provider: str | None = None) -> dict[str, int]:
         async with self._backend.connection() as conn:

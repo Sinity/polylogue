@@ -438,7 +438,7 @@ Usage: polylogue reset [OPTIONS]
 
   Identity-preserving reset:
     --conversation ID  Tombstone a specific conversation (preserves user metadata)
-    --source PATH      Tombstone all conversations from a source path
+    --source NAME      Tombstone all conversations from a named watch source
 
 Options:
   --database           Delete the SQLite database
@@ -450,7 +450,8 @@ Options:
   --all                Reset everything
   -y, --yes            Skip confirmation prompt
   --conversation TEXT  Tombstone a specific conversation by ID
-  --source PATH        Tombstone all conversations from a source path
+  --source TEXT        Tombstone all conversations from a named watch source
+                       (e.g., claude-code, codex)
   -h, --help           Show this message and exit.
 ```
 

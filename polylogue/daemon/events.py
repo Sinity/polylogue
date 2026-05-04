@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from polylogue.paths import db_path
+from polylogue.storage.sqlite.connection_profile import open_connection
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -41,8 +42,7 @@ def _ensure_events_db() -> sqlite3.Connection:
     """Open (creating if necessary) the daemon events database."""
     path = _events_db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(path))
-    conn.execute("PRAGMA journal_mode=WAL")
+    conn = open_connection(path)
     conn.executescript(_DAEMON_EVENTS_DDL)
     return conn
 

@@ -25,18 +25,16 @@ async def _ensure_fts_startup_readiness() -> None:
     the write path maintains FTS atomically via commit_archive_write_effects.
     This check runs once at startup and never again.
     """
-    import sqlite3
-    from pathlib import Path as _Path
-
     from polylogue.paths import archive_root, db_path
+    from polylogue.storage.sqlite.connection_profile import open_connection
 
-    db = db_path() or _Path(archive_root()) / "polylogue.db"
+    db = db_path() or Path(archive_root()) / "polylogue.db"
     if not db.exists():
         return
 
-    conn: sqlite3.Connection | None = None
+    conn = None
     try:
-        conn = sqlite3.connect(str(db), timeout=10.0)
+        conn = open_connection(db, timeout=10.0)
         total = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
         if total == 0:
             conn.close()

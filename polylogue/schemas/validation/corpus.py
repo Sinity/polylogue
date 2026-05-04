@@ -13,6 +13,7 @@ from polylogue.core.common import format_malformed_jsonl_error as _format_malfor
 from polylogue.core.provider_identity import CORE_RUNTIME_PROVIDERS
 from polylogue.schemas.validator import SchemaValidator
 from polylogue.storage.blob_store import get_blob_store
+from polylogue.storage.sqlite.connection_profile import open_connection
 
 from .models import ProviderSchemaVerification, SchemaVerificationReport
 from .requests import SchemaVerificationRequest, bounded_window
@@ -219,7 +220,7 @@ def verify_raw_corpus(
     total_records = 0
     provider_filter = set(request.providers or [])
 
-    conn = sqlite3.connect(db_path)
+    conn = open_connection(db_path)
     conn.row_factory = sqlite3.Row
     try:
         quarantine_updates: list[VerificationUpdate] = []

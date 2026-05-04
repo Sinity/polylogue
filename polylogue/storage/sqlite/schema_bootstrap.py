@@ -73,6 +73,8 @@ class SchemaBootstrapDecision:
         "upgrade_v2_to_current",
         "upgrade_v3_to_v4",
         "upgrade_v4_to_v5",
+        "upgrade_v4_to_v6",
+        "upgrade_v5_to_v6",
         "version_mismatch",
     ]
     extension_plan: SchemaExtensionPlan | None = None
@@ -566,6 +568,32 @@ _SCHEMA_EXTENSION_DESCRIPTORS: tuple[SchemaExtensionDescriptor, ...] = (
     # Slice B: cursor expansion columns added. SCHEMA_VERSION bump deferred to
     # slice E (storage v2 + write gateway).
     SchemaScriptExtensionDescriptor(_SOURCE_FILE_CURSOR_DDL),
+    # Tags M2M migration: copy JSON metadata tags into normalized tables.
+    # Idempotent — INSERT OR IGNORE on both tags and conversation_tags means
+    # repeated runs are safe.
+    SchemaBackfillDescriptor(
+        table_name="conversation_tags",
+        ddl="""
+            INSERT OR IGNORE INTO tags (name)
+            SELECT DISTINCT tag.value
+            FROM conversations,
+                 json_each(json_extract(metadata, '$.tags')) AS tag
+            WHERE metadata IS NOT NULL
+              AND json_extract(metadata, '$.tags') IS NOT NULL
+        """,
+    ),
+    SchemaBackfillDescriptor(
+        table_name="conversation_tags",
+        ddl="""
+            INSERT OR IGNORE INTO conversation_tags (conversation_id, tag_id)
+            SELECT c.conversation_id, t.id
+            FROM conversations c,
+                 json_each(json_extract(c.metadata, '$.tags')) AS tag
+            JOIN tags t ON t.name = tag.value
+            WHERE c.metadata IS NOT NULL
+              AND json_extract(c.metadata, '$.tags') IS NOT NULL
+        """,
+    ),
 )
 
 _V2_TO_V3_MESSAGE_TYPE_BACKFILL_SQL = """
@@ -754,11 +782,13 @@ def decide_schema_bootstrap(snapshot: SchemaSnapshot) -> SchemaBootstrapDecision
             from polylogue.storage.sqlite.schema_ddl_archive import BLOB_LEASE_DDL, TAGS_M2M_DDL
             from polylogue.storage.sqlite.schema_ddl_cursor import SOURCE_FILE_CURSOR_DDL
 
+            extra_stmts = _split_ddl_into_statements(SOURCE_FILE_CURSOR_DDL, TAGS_M2M_DDL, BLOB_LEASE_DDL)
+            if SCHEMA_VERSION >= 6:
+                from polylogue.storage.sqlite.schema_ddl_identity import IDENTITY_DDL
+
+                extra_stmts = (*extra_stmts, *_split_ddl_into_statements(IDENTITY_DDL))
             plan = SchemaExtensionPlan(
-                statements=(
-                    *plan.statements,
-                    *_split_ddl_into_statements(SOURCE_FILE_CURSOR_DDL, TAGS_M2M_DDL, BLOB_LEASE_DDL),
-                ),
+                statements=(*plan.statements, *extra_stmts),
                 scripts=(),
             )
         return SchemaBootstrapDecision(
@@ -771,12 +801,30 @@ def decide_schema_bootstrap(snapshot: SchemaSnapshot) -> SchemaBootstrapDecision
         from polylogue.storage.sqlite.schema_ddl_archive import BLOB_LEASE_DDL, TAGS_M2M_DDL
         from polylogue.storage.sqlite.schema_ddl_cursor import SOURCE_FILE_CURSOR_DDL
 
+        plan_stmts = _split_ddl_into_statements(SOURCE_FILE_CURSOR_DDL, TAGS_M2M_DDL, BLOB_LEASE_DDL)
+        if SCHEMA_VERSION >= 6:
+            from polylogue.storage.sqlite.schema_ddl_identity import IDENTITY_DDL
+
+            plan_stmts = (*plan_stmts, *_split_ddl_into_statements(IDENTITY_DDL))
         plan = SchemaExtensionPlan(
-            statements=_split_ddl_into_statements(SOURCE_FILE_CURSOR_DDL, TAGS_M2M_DDL, BLOB_LEASE_DDL),
+            statements=plan_stmts,
             scripts=(),
         )
         return SchemaBootstrapDecision(
-            action="upgrade_v4_to_v5",
+            action="upgrade_v4_to_v5" if SCHEMA_VERSION == 5 else "upgrade_v4_to_v6",
+            extension_plan=plan,
+            current_version=snapshot.current_version,
+        )
+
+    if snapshot.current_version == 5 and SCHEMA_VERSION >= 6:
+        from polylogue.storage.sqlite.schema_ddl_identity import IDENTITY_DDL
+
+        plan = SchemaExtensionPlan(
+            statements=_split_ddl_into_statements(IDENTITY_DDL),
+            scripts=(),
+        )
+        return SchemaBootstrapDecision(
+            action="upgrade_v5_to_v6",
             extension_plan=plan,
             current_version=snapshot.current_version,
         )
