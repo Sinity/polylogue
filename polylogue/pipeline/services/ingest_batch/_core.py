@@ -22,6 +22,16 @@ from typing import TYPE_CHECKING
 
 from polylogue.archive.write_effects import commit_archive_write_effects
 from polylogue.archive.write_gateway import WriteOperation
+from polylogue.core.common import (
+    _ACTION_EVENT_INSERT_SQL,
+    _ATTACHMENT_REF_INSERT_SQL,
+    _ATTACHMENT_UPSERT_SQL,
+    _CONTENT_BLOCK_UPSERT_SQL,
+    _CONVERSATION_UPSERT_SQL,
+    _IDENTITY_LEDGER_UPSERT_SQL,
+    _MESSAGE_UPSERT_SQL,
+    _STATS_UPSERT_SQL,
+)
 from polylogue.core.metrics import (
     read_current_rss_mb,
     read_peak_rss_children_mb,
@@ -31,18 +41,10 @@ from polylogue.logging import get_logger
 from polylogue.paths import blob_store_root
 from polylogue.pipeline.payload_types import MaterializeStageObservation, ParseBatchObservation
 from polylogue.pipeline.services.ingest_batch._models import (
-    _ACTION_EVENT_INSERT_SQL,
-    _ATTACHMENT_REF_INSERT_SQL,
-    _ATTACHMENT_UPSERT_SQL,
-    _CONTENT_BLOCK_UPSERT_SQL,
-    _CONVERSATION_UPSERT_SQL,
     _DEFAULT_INGEST_WORKER_LIMIT,
-    _IDENTITY_LEDGER_UPSERT_SQL,
     _INGEST_EXTREME_BLOB_LIMIT_BYTES,
     _INGEST_HIGH_BLOB_LIMIT_BYTES,
     _INGEST_SOFT_BLOB_LIMIT_BYTES,
-    _MESSAGE_UPSERT_SQL,
-    _STATS_UPSERT_SQL,
     _BulkConnectionBackendLike,
     _ConnectionBackendLike,
     _ConversationEntry,

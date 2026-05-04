@@ -139,6 +139,12 @@ INSERT OR IGNORE INTO attachment_refs (
 ) VALUES (?, ?, ?, ?, ?)
 """
 
+_IDENTITY_LEDGER_UPSERT_SQL = """
+INSERT OR IGNORE INTO identity_ledger (
+    provider, source, source_path, provider_conversation_id, raw_hash, current_conversation_id
+) VALUES (?, ?, ?, ?, ?, ?)
+"""
+
 
 # Public exports — both sync and async write paths import these directly.
 SQL_CONVERSATION_UPSERT = _CONVERSATION_UPSERT_SQL
