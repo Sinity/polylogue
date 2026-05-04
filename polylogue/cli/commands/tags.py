@@ -47,14 +47,18 @@ def tags_command(
         click.echo("Hint: use --add-tag to tag conversations, e.g.: polylogue --latest --add-tag important")
         return
 
-    # Calculate column widths
-    max_tag_len = max(len(t) for t in tags)
-    max_count_len = max(len(str(c)) for c in tags.values())
+    from rich.console import Console
+    from rich.table import Table
 
-    header = provider or "all providers"
-    click.echo(f"Tags ({header}, {len(tags)} total):\n")
+    console = Console()
+    table = Table(title=f"Tags ({provider or 'all providers'}, {len(tags)} total)")
+    table.add_column("Tag", style="bold cyan")
+    table.add_column("Count", justify="right", style="green")
+
     for tag, tag_count in tags.items():
-        click.echo(f"  {tag:<{max_tag_len}}  {tag_count:>{max_count_len}}")
+        table.add_row(tag, str(tag_count))
+
+    console.print(table)
 
 
 __all__ = ["tags_command"]
