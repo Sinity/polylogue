@@ -123,7 +123,7 @@ PIPELINE_STAGE_SPECS: dict[str, PipelineStageSpec] = {
         suspend_fts_triggers=True,
         inputs=(StageInput(name="processed_ids"),),
     ),
-    "embed": PipelineStageSpec(name="embed", log_stage="embed", pipeline_managed=False),
+    "embed": PipelineStageSpec(name="embed", log_stage="embed", pipeline_managed=True),
 }
 
 

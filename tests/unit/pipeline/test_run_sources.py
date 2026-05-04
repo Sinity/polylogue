@@ -165,7 +165,7 @@ def test_expand_requested_stage_contract() -> None:
 def test_pipeline_stage_specs_cover_leaf_stage_vocabulary() -> None:
     assert set(PIPELINE_STAGE_SPECS) == RUN_LEAF_STAGES
     assert PIPELINE_STAGE_SPECS["parse"].log_stage == "ingest"
-    assert PIPELINE_STAGE_SPECS["embed"].pipeline_managed is False
+    assert PIPELINE_STAGE_SPECS["embed"].pipeline_managed is True
 
 
 def test_stage_specs_preserve_sequence_order_and_fts_policy() -> None:
