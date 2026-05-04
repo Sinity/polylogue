@@ -1127,9 +1127,13 @@ files:
     loc: 313
     target: polylogue/pipeline/services/indexing.py
     owner: stable
-  - path: polylogue/pipeline/services/ingest_batch.py
-    loc: 1295
-    target: polylogue/pipeline/services/ingest_batch.py
+  - path: polylogue/pipeline/services/ingest_batch/__init__.py
+    loc: 1
+    target: polylogue/pipeline/services/ingest_batch/__init__.py
+    owner: stable
+  - path: polylogue/pipeline/services/ingest_batch/_core.py
+    loc: 1326
+    target: polylogue/pipeline/services/ingest_batch/_core.py
     owner: stable
   - path: polylogue/pipeline/services/ingest_worker.py
     loc: 987
