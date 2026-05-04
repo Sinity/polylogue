@@ -60,11 +60,31 @@ def commit_archive_write_effects(
 
     changed_ids: Sequence[str] = payload.get("changed_conversation_ids", [])
     sorted_ids = sorted(set(changed_ids)) if changed_ids else []
+    blob_hashes: list[str] = payload.get("_blob_hashes", [])
+    operation_id: str = payload.get("_operation_id", "")
+    db_path: str | None = payload.get("_db_path")
+
+    # Acquire blob GC leases before the main data commit so a concurrent GC
+    # run sees them. Uses a separate connection (immediate commit) because
+    # leases must be visible to other connections before *this* transaction
+    # commits its blob references.
+    if blob_hashes and operation_id and db_path:
+        from polylogue.storage.blob_gc import acquire_blob_leases
+
+        acquire_blob_leases(db_path, blob_hashes, operation_id)
 
     restore_fts_triggers_sync(conn)
     if sorted_ids:
         repair_fts_index_sync(conn, sorted_ids)
     conn.commit()
+
+    # Release blob GC leases after successful commit — the blob references
+    # are now durable and the GC can safely clean unreferenced blobs.
+    if blob_hashes and operation_id:
+        from polylogue.storage.blob_gc import release_operation_leases
+
+        release_operation_leases(conn, operation_id)
+        conn.commit()
 
     if sorted_ids:
         _invalidate_search_cache()

@@ -88,6 +88,16 @@ class LiveWatcher:
     def stop(self) -> None:
         self._stop.set()
 
+    def cancel_pending(self) -> None:
+        """Cancel all orphaned debounced child tasks.
+
+        Called during shutdown to clean up scheduled work that will never
+        complete.
+        """
+        for entry in self._pending.values():
+            if entry.pending_task is not None and not entry.pending_task.done():
+                entry.pending_task.cancel()
+
     async def _catch_up(self, roots: list[Path]) -> None:
         files: list[Path] = []
         for root in roots:
@@ -96,6 +106,9 @@ class LiveWatcher:
             return
         logger.info("live.watcher: catch-up scan over %d file(s)", len(files))
         for path in files:
+            if self._stop.is_set():
+                logger.info("live.watcher: catch-up interrupted by stop event")
+                return
             await self._ingest_if_grown(path)
 
     def _schedule(self, path: Path) -> None:
