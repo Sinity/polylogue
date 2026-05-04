@@ -192,7 +192,49 @@ def run_blob_gc(
         conn.close()
 
 
+def acquire_blob_leases(
+    db_path: str | Path,
+    blob_hashes: list[str],
+    operation_id: str,
+) -> None:
+    """Acquire leases on blob hashes to prevent GC during active operations.
+
+    Uses a fresh connection that commits immediately so leases are visible
+    to concurrent GC runs before the main data transaction commits.
+    """
+    if not blob_hashes:
+        return
+    conn = open_connection(db_path)
+    try:
+        now = int(time.time())
+        for blob_hash in blob_hashes:
+            conn.execute(
+                "INSERT OR IGNORE INTO pending_blob_refs (blob_hash, operation_id, acquired_at) VALUES (?, ?, ?)",
+                (blob_hash, operation_id, now),
+            )
+        conn.commit()
+        logger.debug("Acquired %d blob lease(s) for operation %s", len(blob_hashes), operation_id)
+    finally:
+        conn.close()
+
+
+def release_operation_leases(
+    conn: sqlite3.Connection,
+    operation_id: str,
+) -> None:
+    """Release all blob leases for an operation.
+
+    Call after the data transaction that references blob hashes has been committed.
+    Uses the provided connection (within the same transaction as the release, if desired,
+    or called immediately post-commit).
+    """
+    conn.execute("DELETE FROM pending_blob_refs WHERE operation_id = ?", (operation_id,))
+    logger.debug("Released blob leases for operation %s", operation_id)
+
+
 __all__ = [
     "MIN_AGE_S",
+    "acquire_blob_leases",
+    "release_operation_leases",
     "run_blob_gc",
 ]
