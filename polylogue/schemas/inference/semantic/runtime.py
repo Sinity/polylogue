@@ -54,10 +54,21 @@ def infer_semantic_roles(
     return candidates
 
 
-def select_best_roles(candidates: list[SemanticCandidate]) -> dict[str, SemanticCandidate]:
-    """Select the single best candidate for each semantic role."""
+def select_best_roles(
+    candidates: list[SemanticCandidate],
+    *,
+    pins: dict[str, set[str]] | None = None,
+) -> dict[str, SemanticCandidate]:
+    """Select the single best candidate for each semantic role.
+
+    When ``pins`` is provided, candidates whose (path, role) appears in
+    the rejected set are filtered out before selection.
+    """
+    rejected: dict[str, set[str]] = pins or {}
     best: dict[str, SemanticCandidate] = {}
     for candidate in candidates:
+        if candidate.path in rejected and candidate.role in rejected[candidate.path]:
+            continue
         if candidate.role not in best or candidate.confidence > best[candidate.role].confidence:
             best[candidate.role] = candidate
     return best
