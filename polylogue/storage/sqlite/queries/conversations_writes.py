@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import aiosqlite
 
+from polylogue.core.common import SQL_CONVERSATION_UPSERT as _CONVERSATION_UPSERT_SQL
 from polylogue.storage.runtime import ConversationRecord, _json_or_none
 
 
@@ -22,44 +23,7 @@ async def save_conversation_record(
     transaction_depth: int,
 ) -> None:
     await conn.execute(
-        """
-        INSERT INTO conversations (
-            conversation_id,
-            provider_name,
-            provider_conversation_id,
-            title,
-            created_at,
-            updated_at,
-            sort_key,
-            content_hash,
-            provider_meta,
-            metadata,
-            version,
-            parent_conversation_id,
-            branch_type,
-            raw_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(conversation_id) DO UPDATE SET
-            title = excluded.title,
-            created_at = excluded.created_at,
-            updated_at = excluded.updated_at,
-            sort_key = excluded.sort_key,
-            content_hash = excluded.content_hash,
-            provider_meta = excluded.provider_meta,
-            metadata = COALESCE(excluded.metadata, conversations.metadata),
-            parent_conversation_id = excluded.parent_conversation_id,
-            branch_type = excluded.branch_type,
-            raw_id = COALESCE(excluded.raw_id, conversations.raw_id)
-        WHERE
-            content_hash != excluded.content_hash
-            OR IFNULL(title, '') != IFNULL(excluded.title, '')
-            OR IFNULL(created_at, '') != IFNULL(excluded.created_at, '')
-            OR IFNULL(updated_at, '') != IFNULL(excluded.updated_at, '')
-            OR IFNULL(provider_meta, '') != IFNULL(excluded.provider_meta, '')
-            OR IFNULL(parent_conversation_id, '') != IFNULL(excluded.parent_conversation_id, '')
-            OR IFNULL(branch_type, '') != IFNULL(excluded.branch_type, '')
-            OR IFNULL(raw_id, '') != IFNULL(excluded.raw_id, '')
-        """,
+        _CONVERSATION_UPSERT_SQL,
         (
             record.conversation_id,
             record.provider_name,

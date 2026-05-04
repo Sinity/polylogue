@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import aiosqlite
 
+from polylogue.core.common import SQL_ACTION_EVENT_INSERT as _ACTION_EVENT_INSERT_SQL
 from polylogue.storage.runtime import ActionEventRecord, _json_array_or_none
 from polylogue.storage.sqlite.queries.mappers import _row_to_action_event
 
@@ -68,31 +69,7 @@ async def replace_action_events(
     await conn.execute("DELETE FROM action_events WHERE conversation_id = ?", (conversation_id,))
     if records:
         await conn.executemany(
-            """
-            INSERT INTO action_events (
-                event_id,
-                conversation_id,
-                message_id,
-                materializer_version,
-                source_block_id,
-                timestamp,
-                sort_key,
-                sequence_index,
-                provider_name,
-                action_kind,
-                tool_name,
-                normalized_tool_name,
-                tool_id,
-                affected_paths_json,
-                cwd_path,
-                branch_names_json,
-                command,
-                query_text,
-                url,
-                output_text,
-                search_text
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
+            _ACTION_EVENT_INSERT_SQL,
             [
                 (
                     record.event_id,

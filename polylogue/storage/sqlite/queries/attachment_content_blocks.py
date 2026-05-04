@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import aiosqlite
 
+from polylogue.core.common import SQL_CONTENT_BLOCK_UPSERT as _CONTENT_BLOCK_UPSERT_SQL
 from polylogue.storage.runtime import ContentBlockRecord
 from polylogue.storage.sqlite.queries.mappers import _row_to_content_block
 
@@ -40,31 +41,7 @@ async def save_content_blocks(
     """Persist content block records using bulk insert."""
     if not records:
         return
-    query = """
-        INSERT INTO content_blocks (
-            block_id,
-            message_id,
-            conversation_id,
-            block_index,
-            type,
-            text,
-            tool_name,
-            tool_id,
-            tool_input,
-            media_type,
-            metadata,
-            semantic_type
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(message_id, block_index) DO UPDATE SET
-            type = excluded.type,
-            text = excluded.text,
-            tool_name = excluded.tool_name,
-            tool_id = excluded.tool_id,
-            tool_input = excluded.tool_input,
-            media_type = excluded.media_type,
-            metadata = excluded.metadata,
-            semantic_type = excluded.semantic_type
-    """
+    query = _CONTENT_BLOCK_UPSERT_SQL
     await conn.executemany(
         query,
         [

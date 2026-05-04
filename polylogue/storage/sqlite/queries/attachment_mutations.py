@@ -4,6 +4,12 @@ from __future__ import annotations
 
 import aiosqlite
 
+from polylogue.core.common import (
+    SQL_ATTACHMENT_REF_INSERT as _ATTACHMENT_REF_INSERT_SQL,
+)
+from polylogue.core.common import (
+    SQL_ATTACHMENT_UPSERT as _ATTACHMENT_UPSERT_SQL,
+)
 from polylogue.storage.runtime import AttachmentRecord, _json_or_none, _make_ref_id
 
 
@@ -16,16 +22,7 @@ async def save_attachments(
     if not records:
         return
     await conn.executemany(
-        """
-        INSERT INTO attachments (
-            attachment_id, mime_type, size_bytes, path, ref_count, provider_meta
-        ) VALUES (?, ?, ?, ?, ?, ?)
-        ON CONFLICT(attachment_id) DO UPDATE SET
-            mime_type = COALESCE(excluded.mime_type, attachments.mime_type),
-            size_bytes = COALESCE(excluded.size_bytes, attachments.size_bytes),
-            path = COALESCE(excluded.path, attachments.path),
-            provider_meta = COALESCE(excluded.provider_meta, attachments.provider_meta)
-        """,
+        _ATTACHMENT_UPSERT_SQL,
         [
             (
                 record.attachment_id,
@@ -51,11 +48,7 @@ async def save_attachments(
             )
         )
     await conn.executemany(
-        """
-        INSERT OR IGNORE INTO attachment_refs (
-            ref_id, attachment_id, conversation_id, message_id, provider_meta
-        ) VALUES (?, ?, ?, ?, ?)
-        """,
+        _ATTACHMENT_REF_INSERT_SQL,
         ref_data,
     )
 
