@@ -44,7 +44,7 @@ dependencies = [
   "aiosqlite>=0.19.0",  # Async SQLite support
   "pydantic-settings",
   "glom>=24.7.0",  # Declarative data extraction
-  "mcp>=1.0.0",  # Model Context Protocol SDK
+  "mcp>=1.27.0",  # Model Context Protocol SDK
   "pyyaml>=6.0",  # YAML output format
   "typing-extensions>=4.7",  # TypedDict that pydantic accepts on Py<3.12
   "watchfiles>=0.21",  # Rust-backed filesystem watcher for live ingestion
