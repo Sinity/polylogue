@@ -436,16 +436,22 @@ Usage: polylogue reset [OPTIONS]
   By default, requires explicit flags to specify what to reset. Use --all to
   reset everything.
 
+  Identity-preserving reset:
+    --conversation ID  Tombstone a specific conversation (preserves user metadata)
+    --source PATH      Tombstone all conversations from a source path
+
 Options:
-  --database  Delete the SQLite database
-  --blob      Delete the content-addressed blob store
-  --assets    Delete archived assets/attachments
-  --render    Delete rendered conversations (Markdown/HTML)
-  --cache     Delete search indexes, schemas, and cache
-  --auth      Delete Google Drive OAuth tokens
-  --all       Reset everything
-  -y, --yes   Skip confirmation prompt
-  -h, --help  Show this message and exit.
+  --database           Delete the SQLite database
+  --blob               Delete the content-addressed blob store
+  --assets             Delete archived assets/attachments
+  --render             Delete rendered conversations (Markdown/HTML)
+  --cache              Delete search indexes, schemas, and cache
+  --auth               Delete Google Drive OAuth tokens
+  --all                Reset everything
+  -y, --yes            Skip confirmation prompt
+  --conversation TEXT  Tombstone a specific conversation by ID
+  --source PATH        Tombstone all conversations from a source path
+  -h, --help           Show this message and exit.
 ```
 
 ## Schema

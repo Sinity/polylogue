@@ -20,6 +20,8 @@ from collections.abc import Collection, Sequence
 from dataclasses import dataclass, field
 from typing import Literal
 
+from polylogue.errors import PolylogueError
+
 StageContextPolicy = Literal["none", "requested_or_leaf", "requested_or_all_after_parse"]
 
 
@@ -62,8 +64,10 @@ class PipelineStageSpec:
         return self.name
 
 
-class StageContractError(RuntimeError):
+class StageContractError(PolylogueError):
     """Raised when a stage runs with required inputs not produced upstream."""
+
+    http_status_code = 500
 
     def __init__(self, *, stage: str, missing: Sequence[str], reason: str) -> None:
         formatted = ", ".join(sorted(missing))

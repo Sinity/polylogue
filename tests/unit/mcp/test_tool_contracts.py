@@ -45,7 +45,6 @@ from polylogue.insights.archive_models import (
     WorkThreadMemberEvidencePayload,
     WorkThreadPayload,
 )
-from polylogue.storage.insights.session.runtime import SessionInsightCounts
 from polylogue.types import ConversationId, Provider
 from tests.infra.builders import make_conv, make_msg
 from tests.infra.mcp import (

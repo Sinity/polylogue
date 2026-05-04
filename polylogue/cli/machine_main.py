@@ -33,6 +33,9 @@ def run_machine_entry(
         except PolylogueError as exc:
             click.ClickException(str(exc)).show()
             raise SystemExit(1) from exc
+        except Exception as exc:
+            click.ClickException(f"unexpected error: {type(exc).__name__}: {exc}").show()
+            raise SystemExit(1) from exc
         return
 
     command = extract_command(argv)

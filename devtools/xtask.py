@@ -94,11 +94,11 @@ def _cmd_recent(args: argparse.Namespace) -> int:
         print("no tasks recorded")
         return 0
     for task in reversed(recent):
-        ts = task.get("timestamp", "?")
-        cmd = task.get("command", "?")
+        ts: str = task.get("timestamp", "?")  # type: ignore[assignment]
+        cmd: str = task.get("command", "?")  # type: ignore[assignment]
         code = task.get("exit_code")
         dur = task.get("duration_ms")
-        parts = [ts, cmd]
+        parts: list[str] = [ts, cmd]
         if code is not None:
             parts.append(f"exit={code}")
         if dur is not None:
@@ -128,14 +128,14 @@ def _cmd_stats(args: argparse.Namespace) -> int:
     duration_count = 0
 
     for task in tasks:
-        cmd = task.get("command", "(unknown)")
+        cmd: str = task.get("command", "(unknown)")  # type: ignore[assignment]
         by_command[cmd] = by_command.get(cmd, 0) + 1
         code = task.get("exit_code")
-        code_key = str(code) if code is not None else "(none)"
+        code_key: str = str(code) if code is not None else "(none)"
         by_exit_code[code_key] = by_exit_code.get(code_key, 0) + 1
         dur = task.get("duration_ms")
         if dur is not None:
-            total_duration_ms += float(dur)
+            total_duration_ms += float(dur)  # type: ignore[arg-type]
             duration_count += 1
 
     stats: dict[str, Any] = {

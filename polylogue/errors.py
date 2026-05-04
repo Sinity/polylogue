@@ -17,13 +17,25 @@ Hierarchy (subclasses defined in their respective modules):
 
 from __future__ import annotations
 
+from http import HTTPStatus
+
 
 class PolylogueError(Exception):
-    """Base class for all Polylogue errors."""
+    """Base class for all Polylogue errors.
+
+    Every derived error should set ``is_transient`` (whether retrying might
+    succeed) and ``http_status_code`` (the best HTTP status when surfaced
+    through the daemon API or MCP boundary).
+    """
+
+    is_transient: bool = False
+    http_status_code: int = HTTPStatus.INTERNAL_SERVER_ERROR
 
 
 class DatabaseError(PolylogueError):
     """Base class for database errors."""
+
+    http_status_code: int = HTTPStatus.SERVICE_UNAVAILABLE
 
 
 __all__ = ["DatabaseError", "PolylogueError"]

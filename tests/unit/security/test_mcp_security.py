@@ -19,9 +19,10 @@ class TestMcpSafeCall:
             raise ValueError("test error message")
 
         result = _safe_call("test_tool", failing)
+        assert result is not None
         parsed = json.loads(result)
         assert parsed["error"] == "internal MCP tool error"
-        assert parsed["code"] == "internal_error"
+        assert parsed["code"] == -32603  # JSON-RPC internal error
         assert parsed["detail"] == "ValueError"
         assert parsed["tool"] == "test_tool"
 
@@ -30,6 +31,7 @@ class TestMcpSafeCall:
             raise RuntimeError("internal error")
 
         result = _safe_call("test_tool", failing)
+        assert result is not None
         parsed = json.loads(result)
         assert "traceback" not in parsed
         assert "Traceback" not in result
@@ -40,6 +42,7 @@ class TestMcpSafeCall:
             raise ImportError("No module named 'secret_module'")
 
         result = _safe_call("test_tool", failing)
+        assert result is not None
         parsed = json.loads(result)
         assert parsed["error"] == "internal MCP tool error"
         assert "/realm/" not in result

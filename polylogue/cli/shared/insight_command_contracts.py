@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from polylogue.archive.query.spec import QuerySpecError, parse_query_date, split_csv
+from polylogue.errors import PolylogueError
 from polylogue.insights.registry import InsightType
 
 if TYPE_CHECKING:
@@ -29,8 +30,10 @@ def query_model_field_names(insight_type: InsightType) -> frozenset[str]:
     return frozenset(query_model.model_fields)
 
 
-class InsightCommandInputError(ValueError):
+class InsightCommandInputError(PolylogueError):
     """Invalid insight-command filter input."""
+
+    http_status_code = 400
 
 
 def _normalize_product_provider(value: object) -> str | None:

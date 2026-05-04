@@ -62,9 +62,10 @@ class TestSafeCall:
             raise RuntimeError("DB connection lost")
 
         result = _safe_call("test_tool", failing)
+        assert result is not None
         data = json.loads(result)
         assert data["error"] == "internal MCP tool error"
-        assert data["code"] == "internal_error"
+        assert data["code"] == -32603  # JSON-RPC internal error
         assert data["detail"] == "RuntimeError"
         assert data["tool"] == "test_tool"
 
@@ -73,6 +74,7 @@ class TestSafeCall:
             raise ValueError("secret internal path /home/user/.db")
 
         result = _safe_call("test_tool", failing)
+        assert result is not None
         # _safe_call wraps in JSON, no raw traceback
         assert "Traceback" not in result
 

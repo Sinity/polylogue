@@ -22,6 +22,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
+from polylogue.archive.write_effects import commit_archive_write_effects
+from polylogue.archive.write_gateway import WriteOperation
 from polylogue.core.metrics import (
     read_current_rss_mb,
     read_peak_rss_children_mb,
@@ -44,8 +46,6 @@ from polylogue.storage.conversation_replacement import (
 )
 from polylogue.storage.raw.models import RawConversationStateUpdate
 from polylogue.storage.runtime import RawConversationRecord
-from polylogue.archive.write_effects import commit_archive_write_effects
-from polylogue.archive.write_gateway import WriteOperation
 from polylogue.storage.sqlite.connection import _load_sqlite_vec
 from polylogue.storage.sqlite.connection_profile import (
     DB_TIMEOUT,
@@ -889,6 +889,16 @@ def _process_ingest_batch_sync(
         conn.rollback()
         raise
     finally:
+        # Post-commit side effects (FTS repair + cache invalidation) run after
+        # the main transaction commits because commit_archive_write_effects()
+        # does its own conn.commit() internally (restores FTS triggers + rebuilds
+        # FTS indexes in a separate transaction). Nesting that inside the BEGIN
+        # IMMEDIATE transaction would cause nested-commit errors.
+        #
+        # This ordering also means a transient FTS repair failure won't roll
+        # back the already-durable data writes — and a data-write rollback in
+        # the except branch above leaves changed_ids empty, so side effects are
+        # a no-op.
         try:
             _commit_sync_ingest_side_effects(conn, tuple(changed_ids))
         except Exception:

@@ -9,6 +9,8 @@ import sys
 
 from devtools.click_dispatch import main
 
+__all__ = ["main"]
+
 
 def _entrypoint() -> int:
     """Read sys.argv and delegate to the Click-based dispatch."""

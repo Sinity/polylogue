@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import aiosqlite
 
-from polylogue.core.json import json_document
+from polylogue.core.common import json_object as _json_object
 from polylogue.storage.runtime import PublicationRecord, _json_or_none
 from polylogue.storage.sqlite.queries.mappers import _parse_json
 
@@ -12,14 +12,6 @@ __all__ = [
     "get_latest_publication",
     "record_publication",
 ]
-
-
-def _json_object(value: object) -> dict[str, object]:
-    document = json_document(value)
-    result: dict[str, object] = {}
-    for key, item in document.items():
-        result[key] = item
-    return result
 
 
 async def get_latest_publication(
@@ -68,6 +60,7 @@ async def record_publication(
             duration_ms,
             manifest_json
         ) VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(publication_id) DO NOTHING
         """,
         (
             record.publication_id,

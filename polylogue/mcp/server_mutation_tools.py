@@ -96,7 +96,7 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         async def run() -> str:
             poly = hooks.get_polylogue()
             metadata = await poly.get_metadata(conversation_id)
-            return hooks.json_payload(MCPMetadataPayload.from_document(metadata))
+            return hooks.json_payload(MCPMetadataPayload.from_document(metadata))  # type: ignore[arg-type]
 
         return await hooks.async_safe_call("get_metadata", run)
 

@@ -14,7 +14,10 @@ import logging
 import sqlite3
 from dataclasses import dataclass
 from enum import Enum
+from http import HTTPStatus
 from typing import Any
+
+from polylogue.errors import PolylogueError
 
 logger = logging.getLogger(__name__)
 
@@ -36,8 +39,11 @@ class WriteResult:
     status: str  # "committed", "rejected", "deferred"
 
 
-class DaemonUnavailableError(Exception):
+class DaemonUnavailableError(PolylogueError):
     """Raised when the daemon RPC target is unreachable or not running."""
+
+    is_transient = True
+    http_status_code = HTTPStatus.SERVICE_UNAVAILABLE
 
 
 class ArchiveWriteGateway:

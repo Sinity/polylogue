@@ -12,6 +12,9 @@ import aiosqlite
 from polylogue.archive.conversation.branch_type import BranchType
 from polylogue.archive.conversation.models import Conversation
 from polylogue.archive.session.session_profile import SessionProfile, build_session_analysis, build_session_profile
+
+# Re-export canonical chunked from polylogue.core.common.
+from polylogue.core.common import chunked  # noqa: F401
 from polylogue.protocols import ProgressCallback
 from polylogue.storage.action_events.rows import attach_blocks_to_messages
 from polylogue.storage.hydrators import conversation_from_records
@@ -126,11 +129,6 @@ class SessionInsightRecordBundle:
     @property
     def phase_count(self) -> int:
         return len(self.phase_records)
-
-
-def chunked(items: Sequence[str], *, size: int) -> Iterable[Sequence[str]]:
-    for index in range(0, len(items), size):
-        yield items[index : index + size]
 
 
 def iter_conversation_id_pages_sync(

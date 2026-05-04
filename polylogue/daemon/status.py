@@ -83,14 +83,15 @@ def _fts_readiness_info() -> dict[str, bool]:
     """Check FTS readiness without importing heavy modules."""
     try:
         from polylogue.config import Config
-        from polylogue.paths import archive_root
+        from polylogue.paths import archive_root, render_root
         from polylogue.readiness import get_readiness
 
-        cfg = Config(archive_root=archive_root())
+        cfg = Config(archive_root=archive_root(), render_root=render_root(), sources=[])
         report = get_readiness(cfg, deep=False, probe_only=False)
+        counts = report.counts()
         return {
-            "messages_ready": report.ok,
-            "action_events_ready": report.ok,
+            "messages_ready": counts.ok > 0,
+            "action_events_ready": counts.ok > 0,
         }
     except Exception:
         return {"messages_ready": False, "action_events_ready": False}

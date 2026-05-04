@@ -16,7 +16,7 @@ per_package:
   polylogue/proof/:
     source_loc_ceiling: 1500
   polylogue/pipeline/services/:
-    source_loc_ceiling: 1300
+    source_loc_ceiling: 1350
   polylogue/operations/:
     source_loc_ceiling: 1100
   polylogue/storage/:

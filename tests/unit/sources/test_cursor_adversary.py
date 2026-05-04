@@ -133,9 +133,7 @@ class TestCursorSkipDecisions:
         NEW_PARSER = "v2"
         record = cursor_store.get_record(source_file)
         assert record is not None
-        assert record.parser_fingerprint != NEW_PARSER, (
-            "parser version change should trigger re-ingest"
-        )
+        assert record.parser_fingerprint != NEW_PARSER, "parser version change should trigger re-ingest"
 
     def test_rename_detection_via_stat(self, cursor_store: CursorStore, tmp_path: Path) -> None:
         """Moving a file changes its path; st_dev/st_ino persist across rename."""

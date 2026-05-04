@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from polylogue.archive.raw_payload import RawPayloadEnvelope, build_raw_payload_envelope
+from polylogue.core.common import format_malformed_jsonl_error as _format_malformed_jsonl_error
 from polylogue.logging import get_logger
 from polylogue.schemas.validator import SchemaValidator
 from polylogue.storage.blob_store import BlobStore
@@ -64,13 +65,6 @@ def _validator_for_payload(
         )
     except (FileNotFoundError, ImportError):
         return None
-
-
-def _format_malformed_jsonl_error(*, malformed_lines: int, malformed_detail: str | None) -> str:
-    message = f"Malformed JSONL lines: {malformed_lines}"
-    if malformed_detail:
-        return f"{message} (first bad {malformed_detail})"
-    return message
 
 
 @dataclass

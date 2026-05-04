@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Literal, TypeAlias
 from polylogue.archive.message.roles import MessageRoleFilter, Role, normalize_message_roles
 from polylogue.archive.query.spec import ConversationQuerySpec
 from polylogue.archive.semantic.content_projection import ContentProjectionSpec
+from polylogue.errors import PolylogueError
 
 if TYPE_CHECKING:
     from polylogue.archive.models import Conversation, ConversationSummary
@@ -154,8 +155,10 @@ class QueryMutationSpec:
         return bool(self.set_meta or self.add_tags)
 
 
-class QueryPlanError(ValueError):
+class QueryPlanError(PolylogueError):
     """Raised when CLI query parameters describe an invalid plan."""
+
+    http_status_code = 400
 
 
 class QueryAction(str, Enum):

@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Protocol
 
 from polylogue.archive.semantic.pricing import CostEstimatePayload, CostUsagePayload
 from polylogue.archive.session.session_profile import SessionProfile
+from polylogue.errors import PolylogueError
 from polylogue.insights.archive_models import (
     ARCHIVE_INSIGHT_CONTRACT_VERSION,
     ArchiveEnrichmentProvenance,
@@ -37,8 +38,11 @@ if TYPE_CHECKING:
     )
 
 
-class ArchiveInsightUnavailableError(RuntimeError):
+class ArchiveInsightUnavailableError(PolylogueError):
     """Raised when a durable archive-insight surface is not ready to read."""
+
+    is_transient = True
+    http_status_code = 503
 
 
 class PaginatedInsightQuery(ArchiveInsightModel):

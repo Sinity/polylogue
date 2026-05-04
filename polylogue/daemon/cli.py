@@ -144,9 +144,9 @@ async def run_daemon_services(
             tasks.append(server_task)
 
         if enable_api:
-            from polylogue.daemon.http import make_daemon_api_server
+            from polylogue.daemon.http import DaemonAPIHandler, DaemonAPIHTTPServer
 
-            api_server = make_daemon_api_server(api_host, api_port)
+            api_server = DaemonAPIHTTPServer((api_host, api_port), DaemonAPIHandler)
             api_server_task = asyncio.create_task(asyncio.to_thread(api_server.serve_forever, 0.5))
             tasks.append(api_server_task)
 

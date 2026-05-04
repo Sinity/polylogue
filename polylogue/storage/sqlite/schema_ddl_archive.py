@@ -55,9 +55,9 @@ ARCHIVE_STORAGE_DDL = """
             metadata TEXT DEFAULT '{}',
             source_name TEXT GENERATED ALWAYS AS (json_extract(provider_meta, '$.source')) STORED,
             version INTEGER NOT NULL,
-            parent_conversation_id TEXT REFERENCES conversations(conversation_id),
+            parent_conversation_id TEXT REFERENCES conversations(conversation_id) ON DELETE SET NULL,
             branch_type TEXT CHECK (branch_type IN ('continuation', 'sidechain', 'fork', 'subagent') OR branch_type IS NULL),
-            raw_id TEXT REFERENCES raw_conversations(raw_id)
+            raw_id TEXT REFERENCES raw_conversations(raw_id) ON DELETE SET NULL
         );
 
         CREATE INDEX IF NOT EXISTS idx_conversations_provider

@@ -42,10 +42,20 @@ class _FakeApi:
         self.messages_kwargs = {"conversation_id": conversation_id, **kwargs}
         if self.messages_result is None:
             from polylogue.api.archive import ConversationNotFoundError
+
             raise ConversationNotFoundError("missing")
         msgs, total = self.messages_result
         # Convert dicts to fake objects with attribute access for Message compat
-        objs = [type("_FakeMsg", (), {**m, "message_type": type("_FakeMT", (), {"value": m.get("message_type", "")})()})() for m in msgs] if msgs else []
+        objs = (
+            [
+                type(
+                    "_FakeMsg", (), {**m, "message_type": type("_FakeMT", (), {"value": m.get("message_type", "")})()}
+                )()
+                for m in msgs
+            ]
+            if msgs
+            else []
+        )
         return objs, total
 
     async def get_raw_artifacts_for_conversation(

@@ -7,8 +7,8 @@ from collections.abc import Callable, Sequence
 
 import aiosqlite
 
+from polylogue.core.common import chunked
 from polylogue.storage.action_events.rebuild_loading import (
-    chunked,
     iter_conversation_id_pages_async,
     iter_conversation_id_pages_sync,
     load_async_batch,

@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 
 from polylogue.archive.conversation.tail_overlay import TailOverlayInfo, with_tail_overlay_provider_meta
 from polylogue.config import Config, Source
+from polylogue.errors import PolylogueError
 from polylogue.pipeline.prepare import prepare_bundle, save_bundle
 from polylogue.services import RuntimeServices, build_runtime_services
 from polylogue.sources.source_parsing import iter_source_conversations_with_raw
@@ -21,8 +22,11 @@ if TYPE_CHECKING:
 SUPPORTED_TAIL_SOURCE_NAMES = frozenset({"claude-code"})
 
 
-class TailOverlayUnavailableError(ValueError):
+class TailOverlayUnavailableError(PolylogueError):
     """Raised when a tail overlay cannot be constructed for the current config."""
+
+    is_transient = True
+    http_status_code = 503
 
 
 def _snapshot_archive_db(source_db: Path, snapshot_db: Path) -> None:
