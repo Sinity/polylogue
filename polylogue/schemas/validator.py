@@ -76,6 +76,16 @@ _UUID_KEY_RE = re.compile(
 )
 
 
+def _normalize_empty_arrays(data: object) -> object:
+    """Replace empty lists with None — newer ChatGPT exports use []
+    for fields that older exports represented as null."""
+    if isinstance(data, dict):
+        return {k: None if isinstance(v, list) and len(v) == 0 else _normalize_empty_arrays(v) for k, v in data.items()}
+    if isinstance(data, list):
+        return [_normalize_empty_arrays(item) for item in data]
+    return data
+
+
 def _sample_payload(value: object) -> ValidationSample | None:
     if not isinstance(value, Mapping):
         return None
@@ -244,10 +254,11 @@ class SchemaValidator:
         return _available_providers(registry_cls=SchemaRegistry)
 
     def validate(self, data: object, *, include_drift: bool | None = None) -> ValidationResult:
-        errors = [format_validation_error(error) for error in self._validator.iter_errors(data)]
+        normalized = _normalize_empty_arrays(data)
+        errors = [format_validation_error(error) for error in self._validator.iter_errors(normalized)]
         drift_warnings: list[str] = []
         should_detect_drift = self.strict if include_drift is None else include_drift
-        sample = _sample_payload(data)
+        sample = _sample_payload(normalized)
         if should_detect_drift and sample is not None:
             drift_warnings.extend(detect_drift(sample, self.schema, ""))
         return ValidationResult(
