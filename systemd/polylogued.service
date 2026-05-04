@@ -1,0 +1,29 @@
+[Unit]
+Description=Polylogue archive daemon
+Documentation=https://github.com/Sinity/polylogue
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/polylogued run --enable-api
+Restart=on-failure
+RestartSec=5
+WorkingDirectory=%h
+
+# Security hardening
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.local/share/polylogue
+ReadWritePaths=%h/.config/claude
+ReadWritePaths=%h/.codex
+
+# Resource limits
+LimitNOFILE=4096
+MemoryHigh=4G
+CPUQuota=200%
+
+[Install]
+WantedBy=default.target

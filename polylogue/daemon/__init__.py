@@ -3,5 +3,17 @@
 from __future__ import annotations
 
 from polylogue.daemon.cli import main
+from polylogue.daemon.convergence import (
+    ConvergenceStage,
+    DaemonConverger,
+    FileState,
+    StageState,
+)
 
-__all__ = ["main"]
+__all__ = [
+    "ConvergenceStage",
+    "DaemonConverger",
+    "FileState",
+    "StageState",
+    "main",
+]
