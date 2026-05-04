@@ -1,15 +1,13 @@
 """Convergence stage implementations for the daemon pipeline.
 
 Each stage has a ``check`` that inspects current archive state and an
-``execute`` that performs the missing work. Stages are designed to be
-composed into a :class:`~polylogue.daemon.convergence.DaemonConverger`.
-
-Stage order: acquire → ingest → converge (FTS + insights)
+``execute`` that performs the missing work. Stages run in order:
+acquire → parse → materialize → index → embed → insights.
 """
 
 from __future__ import annotations
 
-import hashlib
+import sqlite3
 from pathlib import Path
 
 from polylogue.daemon.convergence import ConvergenceStage
@@ -19,10 +17,9 @@ logger = get_logger(__name__)
 
 
 def _fingerprint_file(path: Path) -> tuple[str, int]:
-    """SHA-256 fingerprint of file content, plus last complete newline offset.
+    """SHA-256 fingerprint + last complete newline offset."""
+    import hashlib
 
-    Returns (hex_digest, last_complete_newline_byte_offset).
-    """
     hasher = hashlib.sha256()
     last_nl = 0
     offset = 0
@@ -32,7 +29,6 @@ def _fingerprint_file(path: Path) -> tuple[str, int]:
             if not chunk:
                 break
             hasher.update(chunk)
-            # Track last newline for JSONL files that may be mid-write.
             nl = chunk.rfind(b"\n")
             if nl != -1:
                 last_nl = offset + nl
@@ -40,99 +36,151 @@ def _fingerprint_file(path: Path) -> tuple[str, int]:
     return hasher.hexdigest(), last_nl
 
 
-def make_acquire_stage(db_path: Path, blob_root: Path) -> ConvergenceStage:
-    """Stage: acquire — ensure the source file is stored as a content-addressed blob.
+# ── Stage: acquire ────────────────────────────────────────────────
 
-    Check returns True if the blob is missing or the file has changed.
-    Execute hashes the file, writes to blob store, and inserts/updates
-    the ``raw_conversations`` row.
-    """
+
+def make_acquire_stage(db_path: Path) -> ConvergenceStage:
+    """Ensure the source file is stored as a blob and has a raw_conversations row."""
 
     def check(path: Path) -> bool:
         if not path.exists():
             return False
         from polylogue.sources.live.cursor import CursorStore
 
-        # Use cursor-based fingerprint check — fast path for unchanged files.
         cursor = CursorStore(db_path.parent / "polylogue.sqlite")
         record = cursor.get_record(path)
         if record is None:
             return True
         try:
-            fingerprint, _ = _fingerprint_file(path)
+            fp, _ = _fingerprint_file(path)
         except FileNotFoundError:
             return False
         stat = path.stat()
-        return stat.st_size != record.byte_size or fingerprint != record.content_fingerprint
+        return stat.st_size != record.byte_size or fp != record.content_fingerprint
 
     def execute(path: Path) -> bool:
+        import asyncio
+
         from polylogue.api import Polylogue
         from polylogue.sources.live.cursor import CursorStore
 
-        source_name = "ingest"
-        try:
-            resolved = path.resolve()
-            # Derive source name from parent directory
-            source_name = resolved.parent.name
-        except OSError:
-            pass
-
-        cursor = CursorStore(db_path.parent / "polylogue.sqlite")
-        import asyncio
-
-        async def _run() -> None:
-            async with Polylogue() as polylogue:
-                await polylogue.parse_file(path, source_name=source_name)
+        async def _acquire() -> bool:
+            async with Polylogue() as poly:
+                try:
+                    result = await poly.parse_file(path)
+                    return result is not None
+                except Exception:
+                    logger.warning("acquire failed for %s", path, exc_info=True)
+                    return False
 
         try:
-            asyncio.run(_run())
+            ok = asyncio.run(_acquire())
         except Exception:
-            logger.warning("acquire+ingest failed for %s", path, exc_info=True)
-            cursor.mark_failed(path)
+            logger.warning("acquire failed for %s", path, exc_info=True)
             return False
 
-        # Update cursor so next check skips this file.
-        try:
-            stat = path.stat()
-            fingerprint, last_nl = _fingerprint_file(path)
-            cursor.set(
-                path,
-                stat.st_size,
-                byte_offset=last_nl,
-                last_complete_newline=last_nl,
-                parser_fingerprint="convergence-v1",
-                content_fingerprint=fingerprint,
-                source_name=source_name,
-                st_dev=getattr(stat, "st_dev", None),
-                st_ino=getattr(stat, "st_ino", None),
-                mtime_ns=getattr(stat, "st_mtime_ns", None),
-            )
-            cursor.reset_failures(path)
-        except FileNotFoundError:
-            pass
-        return True
+        if ok:
+            cursor = CursorStore(db_path.parent / "polylogue.sqlite")
+            try:
+                stat = path.stat()
+                fp, last_nl = _fingerprint_file(path)
+                cursor.set(
+                    path,
+                    stat.st_size,
+                    byte_offset=last_nl,
+                    last_complete_newline=last_nl,
+                    parser_fingerprint="convergence-v2",
+                    content_fingerprint=fp,
+                    source_name=path.parent.name,
+                    st_dev=None,
+                    st_ino=None,
+                    mtime_ns=None,
+                )
+                cursor.reset_failures(path)
+            except FileNotFoundError:
+                pass
+        return ok
 
     return ConvergenceStage(
         name="acquire",
-        description="Hash source file and store as content-addressed blob",
+        description="Hash and store source file as content-addressed blob",
         check=check,
         execute=execute,
         cpu_bound=False,
     )
 
 
-def make_fts_converge_stage(db_path: Path) -> ConvergenceStage:
-    """Stage: converge — verify FTS coverage and repair gaps.
+# ── Stage: parse ──────────────────────────────────────────────────
 
-    Check returns True if the FTS index has gaps (fewer indexed messages
-    than total messages). Execute rebuilds the FTS index.
-    """
 
-    def check(path: Path) -> bool:  # noqa: ARG001 — path unused, checks global state
+def make_parse_stage(db_path: Path) -> ConvergenceStage:
+    """Parse acquired blobs — decode JSONL, detect provider, extract records."""
+
+    def check(path: Path) -> bool:
+        """Check if raw record exists and hasn't been parsed yet."""
+        if not db_path.exists():
+            return True
+        from polylogue.sources.live.cursor import CursorStore
         from polylogue.storage.sqlite.connection_profile import open_connection
 
+        cursor = CursorStore(db_path.parent / "polylogue.sqlite")
+        record = cursor.get_record(path)
+        if record is None:
+            return True  # Never seen — need to acquire first, but parse needs it too
+        try:
+            conn = open_connection(db_path, timeout=5.0)
+            try:
+                fp, _ = _fingerprint_file(path)
+                row = conn.execute(
+                    "SELECT 1 FROM raw_conversations r "
+                    "JOIN live_cursor l ON l.source_path = r.source_path "
+                    "WHERE r.source_path = ? AND r.parsed_at IS NOT NULL "
+                    "AND l.content_fingerprint = ? "
+                    "LIMIT 1",
+                    (str(path), fp),
+                ).fetchone()
+                return row is None
+            finally:
+                conn.close()
+        except Exception:
+            return True
+
+    def execute(path: Path) -> bool:
+        import asyncio
+
+        from polylogue.api import Polylogue
+
+        async def _parse() -> bool:
+            async with Polylogue() as poly:
+                try:
+                    await poly.parse_file(path)
+                    return True
+                except Exception:
+                    logger.warning("parse failed for %s", path, exc_info=True)
+                    return False
+
+        return asyncio.run(_parse())
+
+    return ConvergenceStage(
+        name="parse",
+        description="Decode JSONL, detect provider, extract message records",
+        check=check,
+        execute=execute,
+        cpu_bound=True,
+    )
+
+
+# ── Stage: FTS converge ───────────────────────────────────────────
+
+
+def make_fts_converge_stage(db_path: Path) -> ConvergenceStage:
+    """Verify FTS coverage and repair gaps."""
+
+    def check(path: Path) -> bool:  # noqa: ARG001
         if not db_path.exists():
             return False
+        from polylogue.storage.sqlite.connection_profile import open_connection
+
         try:
             conn = open_connection(db_path, timeout=5.0)
             try:
@@ -144,7 +192,6 @@ def make_fts_converge_stage(db_path: Path) -> ConvergenceStage:
             finally:
                 conn.close()
         except Exception:
-            logger.warning("convergence: FTS check failed", exc_info=True)
             return False
 
     def execute(path: Path) -> bool:  # noqa: ARG001
@@ -158,7 +205,7 @@ def make_fts_converge_stage(db_path: Path) -> ConvergenceStage:
                 rebuild_fts_index_sync(conn)
                 conn.commit()
                 new_count = int(conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0])
-                logger.info("convergence: FTS rebuilt — %d/%d messages indexed", new_count, total)
+                logger.info("convergence: FTS rebuilt — %d/%d indexed", new_count, total)
                 return new_count >= total
             finally:
                 conn.close()
@@ -167,7 +214,7 @@ def make_fts_converge_stage(db_path: Path) -> ConvergenceStage:
             return False
 
     return ConvergenceStage(
-        name="converge",
+        name="fts",
         description="Verify FTS coverage and repair gaps",
         check=check,
         execute=execute,
@@ -175,21 +222,83 @@ def make_fts_converge_stage(db_path: Path) -> ConvergenceStage:
     )
 
 
-def make_insight_converge_stage(db_path: Path) -> ConvergenceStage:
-    """Stage: insights — verify session insight freshness.
+# ── Stage: embed ──────────────────────────────────────────────────
 
-    Check returns True if any conversations have stale or missing
-    session insights. Execute rebuilds insights for affected conversations.
-    """
+
+def make_embed_stage(db_path: Path) -> ConvergenceStage:
+    """Generate vector embeddings for un-embedded conversations."""
 
     def check(path: Path) -> bool:  # noqa: ARG001
-        from polylogue.storage.sqlite.connection_profile import open_connection
+        import os
 
+        if not os.environ.get("VOYAGE_API_KEY"):
+            return False
         if not db_path.exists():
             return False
+        from polylogue.storage.sqlite.connection_profile import open_connection
+
         try:
             conn = open_connection(db_path, timeout=5.0)
             try:
+                if not _table_exists(conn, "embedding_status"):
+                    return False
+                total = int(conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0])
+                if total == 0:
+                    return False
+                embedded = int(conn.execute("SELECT COUNT(*) FROM embedding_status").fetchone()[0])
+                return embedded < total
+            finally:
+                conn.close()
+        except Exception:
+            return False
+
+    def execute(path: Path) -> bool:  # noqa: ARG001
+        import asyncio
+
+        from polylogue.api import Polylogue
+        from polylogue.pipeline.run_stages import execute_embed_stage
+
+        async def _embed() -> bool:
+            async with Polylogue() as poly:
+                try:
+                    result = await execute_embed_stage(
+                        config=poly._config,
+                        backend=poly.backend,
+                        model="voyage-4",
+                    )
+                    logger.info("embed: %d embedded, %d errors", result.embedded_count, result.error_count)
+                    return result.error_count == 0
+                except Exception:
+                    logger.warning("embed failed", exc_info=True)
+                    return False
+
+        return asyncio.run(_embed())
+
+    return ConvergenceStage(
+        name="embed",
+        description="Generate vector embeddings for un-embedded conversations",
+        check=check,
+        execute=execute,
+        cpu_bound=False,
+    )
+
+
+# ── Stage: insights ───────────────────────────────────────────────
+
+
+def make_insight_converge_stage(db_path: Path) -> ConvergenceStage:
+    """Refresh session insights for conversations missing them."""
+
+    def check(path: Path) -> bool:  # noqa: ARG001
+        if not db_path.exists():
+            return False
+        from polylogue.storage.sqlite.connection_profile import open_connection
+
+        try:
+            conn = open_connection(db_path, timeout=5.0)
+            try:
+                if not _table_exists(conn, "session_profiles"):
+                    return False
                 total_conv = int(conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0])
                 if total_conv == 0:
                     return False
@@ -206,14 +315,14 @@ def make_insight_converge_stage(db_path: Path) -> ConvergenceStage:
         from polylogue.api import Polylogue
 
         async def _refresh() -> None:
-            async with Polylogue() as polylogue:
-                await polylogue.rebuild_insights()
+            async with Polylogue() as poly:
+                await poly.rebuild_insights()
 
         try:
             asyncio.run(_refresh())
             return True
         except Exception:
-            logger.warning("convergence: insight rebuild failed", exc_info=True)
+            logger.warning("insight rebuild failed", exc_info=True)
             return False
 
     return ConvergenceStage(
@@ -225,8 +334,21 @@ def make_insight_converge_stage(db_path: Path) -> ConvergenceStage:
     )
 
 
+# ── Helpers ────────────────────────────────────────────────────────
+
+
+def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1",
+        (table,),
+    ).fetchone()
+    return row is not None
+
+
 __all__ = [
     "make_acquire_stage",
+    "make_embed_stage",
     "make_fts_converge_stage",
     "make_insight_converge_stage",
+    "make_parse_stage",
 ]
