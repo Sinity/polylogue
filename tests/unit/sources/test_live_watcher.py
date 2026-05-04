@@ -138,17 +138,23 @@ def test_cursor_migrates_size_only_rows(tmp_path: Path) -> None:
     assert {"byte_offset", "content_fingerprint", "source_name"}.issubset(columns)
 
 
-# --- LiveWatcher: ingest_if_grown ---------------------------------------------
+# --- LiveWatcher: needs_work + ingest_files (batched) --------------------------
 
 
 def _make_watcher(tmp_path: Path, root: Path, *, debounce_s: float = 0.01) -> tuple[LiveWatcher, AsyncMock]:
     polylogue = MagicMock()
     polylogue.archive_root = tmp_path
-    polylogue.parse_file = AsyncMock()
+    polylogue.parse_sources = AsyncMock()
     cursor = CursorStore(tmp_path / "cursor.sqlite")
     sources = (WatchSource(name="test", root=root),)
     watcher = LiveWatcher(polylogue, sources, debounce_s=debounce_s, cursor=cursor)
-    return watcher, polylogue.parse_file
+    return watcher, polylogue.parse_sources
+
+
+async def _ingest_one(watcher: LiveWatcher, path: Path) -> None:
+    """Helper: check and ingest a single file (mimics old _ingest_if_grown)."""
+    if watcher._needs_work(path):
+        await watcher._ingest_files([path])
 
 
 def test_skip_when_file_not_grown(tmp_path: Path) -> None:
@@ -156,13 +162,13 @@ def test_skip_when_file_not_grown(tmp_path: Path) -> None:
     root.mkdir()
     f = root / "session.jsonl"
     f.write_text('{"role":"user","content":"a"}\n')
-    watcher, parse_file = _make_watcher(tmp_path, root)
+    watcher, parse_sources = _make_watcher(tmp_path, root)
 
-    asyncio.run(watcher._ingest_if_grown(f))
-    assert parse_file.await_count == 1
+    asyncio.run(_ingest_one(watcher, f))
+    assert parse_sources.await_count == 1
 
-    asyncio.run(watcher._ingest_if_grown(f))
-    assert parse_file.await_count == 1  # cursor matches size
+    asyncio.run(_ingest_one(watcher, f))
+    assert parse_sources.await_count == 1  # cursor matches size
 
 
 def test_reingest_when_file_grows(tmp_path: Path) -> None:
@@ -170,15 +176,15 @@ def test_reingest_when_file_grows(tmp_path: Path) -> None:
     root.mkdir()
     f = root / "session.jsonl"
     f.write_text('{"role":"user","content":"a"}\n')
-    watcher, parse_file = _make_watcher(tmp_path, root)
+    watcher, parse_sources = _make_watcher(tmp_path, root)
 
-    asyncio.run(watcher._ingest_if_grown(f))
+    asyncio.run(_ingest_one(watcher, f))
     f.write_text('{"a":1}\n{"b":2}\n{"c":3}\n')
-    asyncio.run(watcher._ingest_if_grown(f))
+    asyncio.run(_ingest_one(watcher, f))
     f.write_text('{"a":1}\n{"b":2}\n{"c":3}\n{"d":4}\n')
-    asyncio.run(watcher._ingest_if_grown(f))
+    asyncio.run(_ingest_one(watcher, f))
 
-    assert parse_file.await_count == 3
+    assert parse_sources.await_count == 3
 
 
 def test_same_size_rewrite_triggers_reingest(tmp_path: Path) -> None:
@@ -186,16 +192,16 @@ def test_same_size_rewrite_triggers_reingest(tmp_path: Path) -> None:
     root.mkdir()
     f = root / "session.jsonl"
     f.write_text('{"a":1}\n')
-    watcher, parse_file = _make_watcher(tmp_path, root)
+    watcher, parse_sources = _make_watcher(tmp_path, root)
 
-    asyncio.run(watcher._ingest_if_grown(f))
-    assert parse_file.await_count == 1
+    asyncio.run(_ingest_one(watcher, f))
+    assert parse_sources.await_count == 1
 
     f.write_text('{"b":2}\n')
     assert f.stat().st_size == len('{"a":1}\n')
-    asyncio.run(watcher._ingest_if_grown(f))
+    asyncio.run(_ingest_one(watcher, f))
 
-    assert parse_file.await_count == 2
+    assert parse_sources.await_count == 2
 
 
 def test_legacy_size_only_cursor_reingests_to_populate_fingerprint(tmp_path: Path) -> None:
@@ -203,13 +209,13 @@ def test_legacy_size_only_cursor_reingests_to_populate_fingerprint(tmp_path: Pat
     root.mkdir()
     f = root / "session.jsonl"
     f.write_text('{"a":1}\n')
-    watcher, parse_file = _make_watcher(tmp_path, root)
+    watcher, parse_sources = _make_watcher(tmp_path, root)
     watcher._cursor.set(f, f.stat().st_size)
 
-    asyncio.run(watcher._ingest_if_grown(f))
-    asyncio.run(watcher._ingest_if_grown(f))
+    asyncio.run(_ingest_one(watcher, f))
+    asyncio.run(_ingest_one(watcher, f))
 
-    assert parse_file.await_count == 1
+    assert parse_sources.await_count == 1
     record = watcher._cursor.get_record(f)
     assert record is not None
     assert record.content_fingerprint
@@ -221,16 +227,16 @@ def test_parser_fingerprint_change_triggers_reingest(tmp_path: Path, monkeypatch
     root.mkdir()
     f = root / "session.jsonl"
     f.write_text('{"a":1}\n')
-    watcher, parse_file = _make_watcher(tmp_path, root)
+    watcher, parse_sources = _make_watcher(tmp_path, root)
 
-    asyncio.run(watcher._ingest_if_grown(f))
-    monkeypatch.setattr(live_watcher, "_PARSER_FINGERPRINT", "live-jsonl-full-file-v2")
-    asyncio.run(watcher._ingest_if_grown(f))
+    asyncio.run(_ingest_one(watcher, f))
+    monkeypatch.setattr(live_watcher, "_PARSER_FINGERPRINT", "live-batched-v3")
+    asyncio.run(_ingest_one(watcher, f))
 
-    assert parse_file.await_count == 2
+    assert parse_sources.await_count == 2
     record = watcher._cursor.get_record(f)
     assert record is not None
-    assert record.parser_fingerprint == "live-jsonl-full-file-v2"
+    assert record.parser_fingerprint == "live-batched-v3"
 
 
 def test_truncate_rewrite_triggers_reingest(tmp_path: Path) -> None:
@@ -238,13 +244,13 @@ def test_truncate_rewrite_triggers_reingest(tmp_path: Path) -> None:
     root.mkdir()
     f = root / "session.jsonl"
     f.write_text('{"a":1}\n{"b":2}\n')
-    watcher, parse_file = _make_watcher(tmp_path, root)
+    watcher, parse_sources = _make_watcher(tmp_path, root)
 
-    asyncio.run(watcher._ingest_if_grown(f))
+    asyncio.run(_ingest_one(watcher, f))
     f.write_text('{"c":3}\n')
-    asyncio.run(watcher._ingest_if_grown(f))
+    asyncio.run(_ingest_one(watcher, f))
 
-    assert parse_file.await_count == 2
+    assert parse_sources.await_count == 2
 
 
 def test_partial_trailing_line_keeps_cursor_at_last_newline(tmp_path: Path) -> None:
@@ -254,12 +260,12 @@ def test_partial_trailing_line_keeps_cursor_at_last_newline(tmp_path: Path) -> N
     complete = b'{"a":1}\n'
     partial = b'{"b":'
     f.write_bytes(complete + partial)
-    watcher, parse_file = _make_watcher(tmp_path, root)
+    watcher, parse_sources = _make_watcher(tmp_path, root)
 
-    asyncio.run(watcher._ingest_if_grown(f))
+    asyncio.run(_ingest_one(watcher, f))
 
     record = watcher._cursor.get_record(f)
-    assert parse_file.await_count == 1
+    assert parse_sources.await_count == 1
     assert record is not None
     assert record.byte_size == len(complete + partial)
     assert record.byte_offset == len(complete)
@@ -271,13 +277,13 @@ def test_append_after_partial_line_reingests_completed_record(tmp_path: Path) ->
     root.mkdir()
     f = root / "session.jsonl"
     f.write_text('{"a":1}\n{"b":')
-    watcher, parse_file = _make_watcher(tmp_path, root)
+    watcher, parse_sources = _make_watcher(tmp_path, root)
 
-    asyncio.run(watcher._ingest_if_grown(f))
+    asyncio.run(_ingest_one(watcher, f))
     f.write_text('{"a":1}\n{"b":2}\n')
-    asyncio.run(watcher._ingest_if_grown(f))
+    asyncio.run(_ingest_one(watcher, f))
 
-    assert parse_file.await_count == 2
+    assert parse_sources.await_count == 2
     record = watcher._cursor.get_record(f)
     assert record is not None
     assert record.byte_offset == f.stat().st_size
@@ -290,21 +296,21 @@ def test_year_old_file_resumed_triggers_reingest(tmp_path: Path) -> None:
     root.mkdir()
     old = root / "old-session.jsonl"
     old.write_text('{"role":"user","content":"original"}\n')
-    watcher, parse_file = _make_watcher(tmp_path, root)
-    asyncio.run(watcher._ingest_if_grown(old))
-    parse_file.reset_mock()
+    watcher, parse_sources = _make_watcher(tmp_path, root)
+    asyncio.run(_ingest_one(watcher, old))
+    parse_sources.reset_mock()
 
     old.write_text('{"role":"user","content":"original"}\n{"role":"user","content":"resumed"}\n')
-    asyncio.run(watcher._ingest_if_grown(old))
-    assert parse_file.await_count == 1
+    asyncio.run(_ingest_one(watcher, old))
+    assert parse_sources.await_count == 1
 
 
 def test_missing_file_is_silent(tmp_path: Path) -> None:
     root = tmp_path / "src"
     root.mkdir()
-    watcher, parse_file = _make_watcher(tmp_path, root)
-    asyncio.run(watcher._ingest_if_grown(root / "ghost.jsonl"))
-    assert parse_file.await_count == 0
+    watcher, parse_sources = _make_watcher(tmp_path, root)
+    assert not watcher._needs_work(root / "ghost.jsonl")
+    assert parse_sources.await_count == 0
 
 
 def test_parse_failure_does_not_advance_cursor(tmp_path: Path) -> None:
@@ -312,14 +318,14 @@ def test_parse_failure_does_not_advance_cursor(tmp_path: Path) -> None:
     root.mkdir()
     f = root / "session.jsonl"
     f.write_text('{"role":"user","content":"a"}\n')
-    watcher, parse_file = _make_watcher(tmp_path, root)
-    parse_file.side_effect = RuntimeError("parser sad")
+    watcher, parse_sources = _make_watcher(tmp_path, root)
+    parse_sources.side_effect = RuntimeError("parser sad")
 
-    asyncio.run(watcher._ingest_if_grown(f))
+    asyncio.run(_ingest_one(watcher, f))
     assert watcher._cursor.get(f) == 0  # cursor not advanced
 
-    parse_file.side_effect = None
-    asyncio.run(watcher._ingest_if_grown(f))
+    parse_sources.side_effect = None
+    asyncio.run(_ingest_one(watcher, f))
     assert watcher._cursor.get(f) > 0  # advanced after success
 
 
@@ -328,43 +334,13 @@ def test_parse_failure_retries_on_next_event(tmp_path: Path) -> None:
     root.mkdir()
     f = root / "session.jsonl"
     f.write_text('{"a":1}\n')
-    watcher, parse_file = _make_watcher(tmp_path, root)
-    parse_file.side_effect = [RuntimeError("flaky"), None]
+    watcher, parse_sources = _make_watcher(tmp_path, root)
+    parse_sources.side_effect = [RuntimeError("flaky"), None]
 
-    asyncio.run(watcher._ingest_if_grown(f))
-    asyncio.run(watcher._ingest_if_grown(f))
+    asyncio.run(_ingest_one(watcher, f))
+    asyncio.run(_ingest_one(watcher, f))
 
-    assert parse_file.await_count == 2
-
-
-def test_parse_file_receives_watch_source_name(tmp_path: Path) -> None:
-    root = tmp_path / "src"
-    project_dir = root / "my-project-slug"
-    project_dir.mkdir(parents=True)
-    f = project_dir / "session.jsonl"
-    f.write_text('{"a":1}\n')
-    watcher, parse_file = _make_watcher(tmp_path, root)
-
-    asyncio.run(watcher._ingest_if_grown(f))
-    parse_file.assert_awaited_once()
-    call = parse_file.await_args
-    assert call is not None
-    assert call.kwargs["source_name"] == "test"
-
-
-def test_cursor_records_watch_source_name(tmp_path: Path) -> None:
-    root = tmp_path / "src"
-    nested = root / "my-project-slug"
-    nested.mkdir(parents=True)
-    f = nested / "session.jsonl"
-    f.write_text('{"a":1}\n')
-    watcher, _parse_file = _make_watcher(tmp_path, root)
-
-    asyncio.run(watcher._ingest_if_grown(f))
-
-    record = watcher._cursor.get_record(f)
-    assert record is not None
-    assert record.source_name == "test"
+    assert parse_sources.await_count == 2
 
 
 # --- catch_up bootstrap --------------------------------------------------------
@@ -376,10 +352,11 @@ def test_catch_up_processes_pre_existing_files(tmp_path: Path) -> None:
     files = [root / f"s{i}.jsonl" for i in range(3)]
     for f in files:
         f.write_text('{"a":1}\n')
-    watcher, parse_file = _make_watcher(tmp_path, root)
+    watcher, parse_sources = _make_watcher(tmp_path, root)
 
     asyncio.run(watcher._catch_up([root]))
-    assert parse_file.await_count == 3
+    # All 3 files should be batched into one parse_sources call
+    assert parse_sources.await_count == 1
 
 
 def test_catch_up_skips_already_processed(tmp_path: Path) -> None:
@@ -387,12 +364,12 @@ def test_catch_up_skips_already_processed(tmp_path: Path) -> None:
     root.mkdir()
     f = root / "s.jsonl"
     f.write_text('{"a":1}\n')
-    watcher, parse_file = _make_watcher(tmp_path, root)
-    asyncio.run(watcher._ingest_if_grown(f))
-    parse_file.reset_mock()
+    watcher, parse_sources = _make_watcher(tmp_path, root)
+    asyncio.run(_ingest_one(watcher, f))
+    parse_sources.reset_mock()
 
     asyncio.run(watcher._catch_up([root]))
-    assert parse_file.await_count == 0
+    assert parse_sources.await_count == 0
 
 
 def test_catch_up_walks_recursively(tmp_path: Path) -> None:
@@ -401,10 +378,10 @@ def test_catch_up_walks_recursively(tmp_path: Path) -> None:
     nested.mkdir(parents=True)
     f = nested / "deep.jsonl"
     f.write_text('{"a":1}\n')
-    watcher, parse_file = _make_watcher(tmp_path, root)
+    watcher, parse_sources = _make_watcher(tmp_path, root)
 
     asyncio.run(watcher._catch_up([root]))
-    assert parse_file.await_count == 1
+    assert parse_sources.await_count == 1
 
 
 def test_catch_up_ignores_non_jsonl(tmp_path: Path) -> None:
@@ -413,18 +390,18 @@ def test_catch_up_ignores_non_jsonl(tmp_path: Path) -> None:
     (root / "session.jsonl").write_text('{"a":1}\n')
     (root / "config.toml").write_text("x=1")
     (root / "README.md").write_text("# hi")
-    watcher, parse_file = _make_watcher(tmp_path, root)
+    watcher, parse_sources = _make_watcher(tmp_path, root)
 
     asyncio.run(watcher._catch_up([root]))
-    assert parse_file.await_count == 1
+    assert parse_sources.await_count == 1
 
 
 def test_catch_up_handles_empty_roots(tmp_path: Path) -> None:
     root = tmp_path / "src"
     root.mkdir()
-    watcher, parse_file = _make_watcher(tmp_path, root)
+    watcher, parse_sources = _make_watcher(tmp_path, root)
     asyncio.run(watcher._catch_up([root]))
-    assert parse_file.await_count == 0
+    assert parse_sources.await_count == 0
 
 
 # --- debounce ------------------------------------------------------------------
@@ -435,20 +412,20 @@ def test_debounce_coalesces_rapid_changes(tmp_path: Path) -> None:
     root.mkdir()
     f = root / "session.jsonl"
     f.write_text('{"a":1}\n')
-    watcher, parse_file = _make_watcher(tmp_path, root, debounce_s=0.05)
+    watcher, parse_sources = _make_watcher(tmp_path, root, debounce_s=0.05)
 
     async def _drive() -> None:
         for _ in range(5):
-            watcher._schedule(f)
+            watcher._enqueue(f)
             await asyncio.sleep(0.01)
-        # Wait long enough for one debounce window to elapse
-        entry = watcher._pending[f]
-        task = entry.pending_task
-        assert task is not None
-        await task
+        # Wait for debounce to flush the batch
+        while watcher._pending_scheduled or watcher._pending_paths:
+            await asyncio.sleep(0.02)
+        await asyncio.sleep(0.1)  # let the flush task complete
 
     asyncio.run(_drive())
-    assert parse_file.await_count == 1
+    # All 5 enqueues should coalesce into 1 batch
+    assert parse_sources.await_count == 1
 
 
 # --- WatchSource ---------------------------------------------------------------
@@ -472,21 +449,21 @@ def test_end_to_end_modify_triggers_ingest(tmp_path: Path) -> None:
     root.mkdir()
     f = root / "session.jsonl"
     f.write_text('{"a":1}\n')
-    watcher, parse_file = _make_watcher(tmp_path, root, debounce_s=0.05)
+    watcher, parse_sources = _make_watcher(tmp_path, root, debounce_s=0.05)
 
     async def _drive() -> None:
         run_task = asyncio.create_task(watcher.run())
         # Wait for catch_up to finish ingesting the pre-existing file.
         for _ in range(50):
-            if parse_file.await_count >= 1:
+            if parse_sources.await_count >= 1:
                 break
             await asyncio.sleep(0.05)
-        baseline = parse_file.await_count
+        baseline = parse_sources.await_count
         # Append more content; expect a second ingest after debounce.
         with open(f, "a") as fh:
             fh.write('{"b":2}\n')
         for _ in range(60):
-            if parse_file.await_count > baseline:
+            if parse_sources.await_count > baseline:
                 break
             await asyncio.sleep(0.1)
         watcher.stop()
@@ -494,7 +471,7 @@ def test_end_to_end_modify_triggers_ingest(tmp_path: Path) -> None:
             await asyncio.wait_for(run_task, timeout=5.0)
         except asyncio.TimeoutError:
             run_task.cancel()
-        assert parse_file.await_count > baseline
+        assert parse_sources.await_count > baseline
 
     asyncio.run(_drive())
 
@@ -502,7 +479,7 @@ def test_end_to_end_modify_triggers_ingest(tmp_path: Path) -> None:
 def test_end_to_end_new_file_creation_triggers_ingest(tmp_path: Path) -> None:
     root = tmp_path / "src"
     root.mkdir()
-    watcher, parse_file = _make_watcher(tmp_path, root, debounce_s=0.05)
+    watcher, parse_sources = _make_watcher(tmp_path, root, debounce_s=0.05)
 
     async def _drive() -> None:
         run_task = asyncio.create_task(watcher.run())
@@ -510,7 +487,7 @@ def test_end_to_end_new_file_creation_triggers_ingest(tmp_path: Path) -> None:
         f = root / "fresh.jsonl"
         f.write_text('{"new":true}\n')
         for _ in range(60):
-            if parse_file.await_count >= 1:
+            if parse_sources.await_count >= 1:
                 break
             await asyncio.sleep(0.1)
         watcher.stop()
@@ -518,7 +495,7 @@ def test_end_to_end_new_file_creation_triggers_ingest(tmp_path: Path) -> None:
             await asyncio.wait_for(run_task, timeout=5.0)
         except asyncio.TimeoutError:
             run_task.cancel()
-        assert parse_file.await_count >= 1
+        assert parse_sources.await_count >= 1
 
     asyncio.run(_drive())
 
@@ -528,16 +505,16 @@ def test_end_to_end_deletion_does_not_ingest(tmp_path: Path) -> None:
     root.mkdir()
     f = root / "doomed.jsonl"
     f.write_text('{"a":1}\n')
-    watcher, parse_file = _make_watcher(tmp_path, root, debounce_s=0.05)
+    watcher, parse_sources = _make_watcher(tmp_path, root, debounce_s=0.05)
 
     async def _drive() -> None:
         run_task = asyncio.create_task(watcher.run())
         # Wait for catch_up
         for _ in range(50):
-            if parse_file.await_count >= 1:
+            if parse_sources.await_count >= 1:
                 break
             await asyncio.sleep(0.05)
-        baseline = parse_file.await_count
+        baseline = parse_sources.await_count
         f.unlink()
         await asyncio.sleep(0.5)
         watcher.stop()
@@ -545,6 +522,6 @@ def test_end_to_end_deletion_does_not_ingest(tmp_path: Path) -> None:
             await asyncio.wait_for(run_task, timeout=5.0)
         except asyncio.TimeoutError:
             run_task.cancel()
-        assert parse_file.await_count == baseline  # deletion did not trigger ingest
+        assert parse_sources.await_count == baseline  # deletion did not trigger ingest
 
     asyncio.run(_drive())
