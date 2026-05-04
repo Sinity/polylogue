@@ -216,6 +216,7 @@ QUERY_FIELD_DESCRIPTORS: tuple[QueryFieldDescriptor, ...] = (
         name="contains_terms",
         spec_attr="contains_terms",
         spec_description=_label("contains", _join_comma),
+        mcp_names=("contains",),
         api_names=("contains",),
     ),
     QueryFieldDescriptor(
@@ -229,6 +230,7 @@ QUERY_FIELD_DESCRIPTORS: tuple[QueryFieldDescriptor, ...] = (
         blocks_sql_count=True,
         blocks_action_event_stats=True,
         blocks_simple_message_hit=True,
+        mcp_names=("exclude_text",),
     ),
     QueryFieldDescriptor(
         name="retrieval_lane",
@@ -396,6 +398,7 @@ QUERY_FIELD_DESCRIPTORS: tuple[QueryFieldDescriptor, ...] = (
         blocks_simple_message_hit=True,
         completion_source="provider",
         completion_label="provider",
+        mcp_names=("exclude_provider",),
     ),
     QueryFieldDescriptor(
         name="repo_names",
@@ -436,6 +439,7 @@ QUERY_FIELD_DESCRIPTORS: tuple[QueryFieldDescriptor, ...] = (
         blocks_simple_message_hit=True,
         completion_source="tag",
         completion_label="tag",
+        mcp_names=("exclude_tag",),
     ),
     QueryFieldDescriptor(
         name="title",
@@ -460,6 +464,7 @@ QUERY_FIELD_DESCRIPTORS: tuple[QueryFieldDescriptor, ...] = (
         blocks_sql_count=True,
         blocks_action_event_stats=True,
         blocks_simple_message_hit=True,
+        mcp_names=("has_type",),
     ),
     QueryFieldDescriptor(
         name="filter_has_tool_use",
@@ -543,6 +548,7 @@ QUERY_FIELD_DESCRIPTORS: tuple[QueryFieldDescriptor, ...] = (
         sql_param="max_messages",
         requires_stats_join=True,
         blocks_simple_message_hit=True,
+        mcp_names=("max_messages",),
     ),
     QueryFieldDescriptor(
         name="min_words",
@@ -570,6 +576,7 @@ QUERY_FIELD_DESCRIPTORS: tuple[QueryFieldDescriptor, ...] = (
         blocks_sql_count=True,
         blocks_action_event_stats=True,
         blocks_simple_message_hit=True,
+        mcp_names=("similar_text",),
     ),
     QueryFieldDescriptor(
         name="since",
@@ -597,6 +604,7 @@ QUERY_FIELD_DESCRIPTORS: tuple[QueryFieldDescriptor, ...] = (
         sql_param="until",
         storage_value=_iso_value,
         blocks_simple_message_hit=True,
+        mcp_names=("until",),
     ),
     QueryFieldDescriptor(
         name="conversation_id",
@@ -610,12 +618,14 @@ QUERY_FIELD_DESCRIPTORS: tuple[QueryFieldDescriptor, ...] = (
         blocks_simple_message_hit=True,
         completion_source="conversation_id",
         completion_label="conversation",
+        mcp_names=("conv_id",),
     ),
     QueryFieldDescriptor(
         name="latest",
         spec_attr="latest",
         spec_active=_is_true,
         selection_filter=True,
+        mcp_names=("latest",),
     ),
     QueryFieldDescriptor(
         name="sort",
@@ -639,6 +649,7 @@ QUERY_FIELD_DESCRIPTORS: tuple[QueryFieldDescriptor, ...] = (
         plan_description=_literal("reverse"),
         selection_filter=False,
         blocks_simple_message_hit=True,
+        mcp_names=("reverse",),
     ),
     QueryFieldDescriptor(
         name="limit",
@@ -716,6 +727,7 @@ QUERY_FIELD_DESCRIPTORS: tuple[QueryFieldDescriptor, ...] = (
         plan_description=_label("sample"),
         selection_filter=False,
         blocks_simple_message_hit=True,
+        mcp_names=("sample",),
     ),
     QueryFieldDescriptor(
         name="offset",
@@ -745,7 +757,7 @@ QUERY_FIELD_DESCRIPTORS: tuple[QueryFieldDescriptor, ...] = (
         blocks_sql_count=True,
         completion_source="conversation_id",
         completion_label="conversation",
-        mcp_names=("since_session",),
+        mcp_names=("since_session", "since_session_id"),
     ),
     QueryFieldDescriptor(
         name="message_type",

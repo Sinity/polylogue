@@ -18,6 +18,7 @@ MCPToolOffset: TypeAlias = Annotated[int, Field(ge=0)]
 _QUERY_PARAM_ALIASES = {
     "has_tool_use": "filter_has_tool_use",
     "has_thinking": "filter_has_thinking",
+    "has_paste": "filter_has_paste",
 }
 
 
@@ -46,9 +47,16 @@ class MCPConversationQueryRequest:
     retrieval_lane: str | None = None
     provider: str | None = None
     since: str | None = None
+    until: str | None = None
     tag: str | None = None
     repo: str | None = None
     title: str | None = None
+    contains: str | None = None
+    exclude_text: str | None = None
+    exclude_provider: str | None = None
+    exclude_tag: str | None = None
+    has_type: str | None = None
+    conv_id: str | None = None
     referenced_path: str | None = None
     cwd_prefix: str | None = None
     action: str | None = None
@@ -58,13 +66,19 @@ class MCPConversationQueryRequest:
     tool: str | None = None
     exclude_tool: str | None = None
     sort: str | None = None
+    reverse: bool = False
+    latest: str | None = None
     has_tool_use: bool = False
     has_thinking: bool = False
     has_paste: bool = False
     typed_only: bool = False
     min_messages: int | None = None
+    max_messages: int | None = None
     min_words: int | None = None
+    sample: int | None = None
+    similar_text: str | None = None
     since_session: str | None = None
+    since_session_id: str | None = None
     message_type: str | None = None
     offset: MCPToolOffset = 0
     limit: MCPToolLimit = 10
@@ -76,9 +90,16 @@ class MCPConversationQueryRequest:
             retrieval_lane=self.retrieval_lane or "auto",
             provider=self.provider,
             since=self.since,
+            until=self.until,
             tag=self.tag,
             repo=self.repo,
             title=self.title,
+            contains=self.contains,
+            exclude_text=self.exclude_text,
+            exclude_provider=self.exclude_provider,
+            exclude_tag=self.exclude_tag,
+            has_type=self.has_type,
+            conv_id=self.conv_id,
             referenced_path=self.referenced_path,
             cwd_prefix=self.cwd_prefix,
             action=self.action,
@@ -88,14 +109,20 @@ class MCPConversationQueryRequest:
             tool=self.tool,
             exclude_tool=self.exclude_tool,
             sort=self.sort,
+            reverse=self.reverse,
+            latest=self.latest,
             limit=clamp_limit(self.limit),
             has_tool_use=self.has_tool_use,
             has_thinking=self.has_thinking,
             has_paste=self.has_paste,
             typed_only=self.typed_only,
             min_messages=self.min_messages,
+            max_messages=self.max_messages,
             min_words=self.min_words,
+            sample=self.sample,
+            similar_text=self.similar_text,
             since_session=self.since_session,
+            since_session_id=self.since_session_id,
             message_type=self.message_type,
             offset=self.offset,
         )
