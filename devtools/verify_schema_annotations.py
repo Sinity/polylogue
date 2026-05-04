@@ -10,6 +10,7 @@ Exit 0 when all schemas have annotations, 1 otherwise.
 
 from __future__ import annotations
 
+import gzip
 import json
 from pathlib import Path
 
@@ -32,11 +33,15 @@ def check_provider(provider_dir: Path) -> tuple[str, bool, list[str]]:
         if not elements_dir.exists():
             continue
         for schema_file in sorted(elements_dir.iterdir()):
-            if schema_file.suffix != ".json":
+            if schema_file.suffix not in (".json", ".gz"):
                 continue
             try:
-                data = json.loads(schema_file.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, OSError) as exc:
+                if schema_file.suffix == ".gz":
+                    with gzip.open(schema_file, "rt", encoding="utf-8") as fh:
+                        data = json.load(fh)
+                else:
+                    data = json.loads(schema_file.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError, gzip.BadGzipFile) as exc:
                 failures.append(f"{version_dir.name}/{schema_file.name}: {exc}")
                 continue
             if _has_semantic_annotations(data):
@@ -92,10 +97,14 @@ def main() -> int:
             if not elements_dir.exists():
                 continue
             for schema_file in sorted(elements_dir.iterdir()):
-                if schema_file.suffix != ".json":
+                if schema_file.suffix not in (".json", ".gz"):
                     continue
                 try:
-                    data = json.loads(schema_file.read_text(encoding="utf-8"))
+                    if schema_file.suffix == ".gz":
+                        with gzip.open(schema_file, "rt", encoding="utf-8") as fh:
+                            data = json.load(fh)
+                    else:
+                        data = json.loads(schema_file.read_text(encoding="utf-8"))
                 except Exception:
                     continue
                 total_annotations += _count_annotations(data)
