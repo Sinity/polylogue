@@ -14,6 +14,7 @@ so we skip unchanged files entirely.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable, Iterable, Iterator
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
@@ -53,6 +54,7 @@ class FileState:
 
     path: Path
     stages: dict[str, StageState] = field(default_factory=dict)
+    stage_times: dict[str, float] = field(default_factory=dict)
     error_count: int = 0
     last_error: str | None = None
 
@@ -137,6 +139,7 @@ class DaemonConverger:
 
             state.stages[stage_name] = StageState.IN_PROGRESS
 
+            t_stage = time.perf_counter()
             try:
                 if stage.cpu_bound and self._executor is not None:
                     future = self._executor.submit(stage.execute, path)
@@ -155,6 +158,7 @@ class DaemonConverger:
                 state.last_error = str(exc)
                 continue
 
+            state.stage_times[stage_name] = time.perf_counter() - t_stage
             state.stages[stage_name] = StageState.DONE if success else StageState.FAILED
             if not success:
                 state.error_count += 1

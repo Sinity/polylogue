@@ -299,11 +299,11 @@ async def run_daemon_services(
         # Insights stage: refreshes session profiles for new conversations.
         from polylogue.daemon.convergence import DaemonConverger
         from polylogue.daemon.convergence_stages import (
-            make_acquire_stage,
+            make_acquire_check_stage,
             make_embed_stage,
-            make_fts_converge_stage,
-            make_insight_converge_stage,
-            make_parse_stage,
+            make_fts_stage,
+            make_ingest_stage,
+            make_insights_stage,
         )
         from polylogue.paths import archive_root, db_path
 
@@ -311,11 +311,11 @@ async def run_daemon_services(
 
         converger = DaemonConverger(
             stages=(
-                make_acquire_stage(_db),
-                make_parse_stage(_db),
-                make_fts_converge_stage(_db),
+                make_acquire_check_stage(_db),
+                make_ingest_stage(_db),
+                make_fts_stage(_db),
                 make_embed_stage(_db),
-                make_insight_converge_stage(_db),
+                make_insights_stage(_db),
             ),
             max_workers=2,
         )
