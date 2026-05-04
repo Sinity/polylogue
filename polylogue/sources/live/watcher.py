@@ -1,21 +1,22 @@
 """Live JSONL session watcher.
 
 Watches one or more roots for ``*.jsonl`` changes via ``watchfiles`` and
-re-parses each grown file through the existing ingest pipeline. Idempotent
-via content-hash dedup; the cursor table only suppresses re-work when the
-stored content fingerprint and parser fingerprint still match the file.
+ingests new or grown files through the archive pipeline. Idempotent via
+content-hash dedup; the cursor table suppresses re-work when the stored
+content fingerprint and parser fingerprint still match the file.
 
-There's no concept of a "live" or "active" session here — any JSONL under the
-roots may grow at any time, including ones years old (resume). The watcher
-treats every grown file identically.
+Files are batched: all changed files within a debounce window are collected
+and ingested in a single pipeline call. This avoids the O(n²) problem where
+each file triggered a full source-tree rescan via ``parse_file()``.
 """
 
 from __future__ import annotations
 
 import asyncio
 import hashlib
+import time
 from collections.abc import Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -26,7 +27,7 @@ if TYPE_CHECKING:
     from polylogue.api import Polylogue
 
 logger = get_logger(__name__)
-_PARSER_FINGERPRINT = "live-jsonl-full-file-v1"
+_PARSER_FINGERPRINT = "live-batched-v2"
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,15 +41,14 @@ class WatchSource:
         return self.root.exists()
 
 
-@dataclass(slots=True)
-class _PendingFile:
-    path: Path
-    last_change_at: float = 0.0
-    pending_task: asyncio.Task[None] | None = field(default=None)
-
-
 class LiveWatcher:
-    """Async watcher that ingests grown JSONL files as they're appended-to."""
+    """Async watcher that ingests grown JSONL files in batches.
+
+    On startup (catch-up), all files across all roots are fingerprinted
+    and the changed ones are ingested in a single batch. During live
+    watching, files that change within the debounce window are batched
+    together.
+    """
 
     def __init__(
         self,
@@ -57,12 +57,17 @@ class LiveWatcher:
         *,
         debounce_s: float = 2.0,
         cursor: CursorStore | None = None,
+        max_workers: int | None = None,
     ) -> None:
         self._polylogue = polylogue
         self._sources = tuple(sources)
         self._debounce_s = debounce_s
         self._cursor = cursor or CursorStore(polylogue.archive_root / "polylogue.sqlite")
-        self._pending: dict[Path, _PendingFile] = {}
+        self._max_workers = max_workers
+        self._pending_paths: set[Path] = set()
+        self._pending_scheduled = False
+        self._last_batch_at: float = 0.0
+        self._batch_lock = asyncio.Lock()
         self._stop = asyncio.Event()
 
     async def run(self) -> None:
@@ -83,20 +88,17 @@ class LiveWatcher:
                 path = Path(raw_path)
                 if path.suffix != ".jsonl":
                     continue
-                self._schedule(path)
+                self._enqueue(path)
 
     def stop(self) -> None:
         self._stop.set()
 
     def cancel_pending(self) -> None:
-        """Cancel all orphaned debounced child tasks.
+        pass  # No orphaned tasks with the batched model
 
-        Called during shutdown to clean up scheduled work that will never
-        complete.
-        """
-        for entry in self._pending.values():
-            if entry.pending_task is not None and not entry.pending_task.done():
-                entry.pending_task.cancel()
+    # ------------------------------------------------------------------
+    # Catch-up: batch all changed files
+    # ------------------------------------------------------------------
 
     async def _catch_up(self, roots: list[Path]) -> None:
         files: list[Path] = []
@@ -105,70 +107,171 @@ class LiveWatcher:
         if not files:
             return
         logger.info("live.watcher: catch-up scan over %d file(s)", len(files))
+
+        changed: list[Path] = []
         for path in files:
             if self._stop.is_set():
-                logger.info("live.watcher: catch-up interrupted by stop event")
                 return
-            await self._ingest_if_grown(path)
+            if self._needs_work(path):
+                changed.append(path)
 
-    def _schedule(self, path: Path) -> None:
-        entry = self._pending.get(path)
-        if entry is None:
-            entry = _PendingFile(path=path)
-            self._pending[path] = entry
+        if not changed:
+            logger.info("live.watcher: all %d file(s) up to date", len(files))
+            return
 
-        loop = asyncio.get_running_loop()
-        entry.last_change_at = loop.time()
-        if entry.pending_task is None or entry.pending_task.done():
-            entry.pending_task = asyncio.create_task(self._debounced(entry))
+        logger.info("live.watcher: %d/%d file(s) need ingest — batching", len(changed), len(files))
+        await self._ingest_files(changed)
 
-    async def _debounced(self, entry: _PendingFile) -> None:
-        loop = asyncio.get_running_loop()
+    # ------------------------------------------------------------------
+    # Live: debounced batch scheduling
+    # ------------------------------------------------------------------
+
+    def _enqueue(self, path: Path) -> None:
+        """Enqueue a path for batched ingestion after debounce."""
+        self._pending_paths.add(path)
+        if not self._pending_scheduled:
+            self._pending_scheduled = True
+            asyncio.create_task(self._debounced_batch())
+
+    async def _debounced_batch(self) -> None:
+        """Wait for the debounce window, then flush all pending paths."""
+        await asyncio.sleep(self._debounce_s)
+
+        # Re-check: collect any new arrivals during the sleep.
         while True:
-            await asyncio.sleep(self._debounce_s)
-            if loop.time() - entry.last_change_at >= self._debounce_s:
+            before = len(self._pending_paths)
+            await asyncio.sleep(0.5)
+            after = len(self._pending_paths)
+            if after == before:
                 break
-        await self._ingest_if_grown(entry.path)
 
-    async def _ingest_if_grown(self, path: Path) -> None:
+        await self._flush_pending()
+
+    async def _flush_pending(self) -> None:
+        """Flush all pending paths in a single batch."""
+        async with self._batch_lock:
+            if not self._pending_paths:
+                self._pending_scheduled = False
+                return
+            paths = list(self._pending_paths)
+            self._pending_paths.clear()
+            self._pending_scheduled = False
+
+        # Filter to files that actually need work.
+        needed = [p for p in paths if self._needs_work(p)]
+        if not needed:
+            return
+
+        logger.info("live.watcher: batching %d changed file(s)", len(needed))
+        await self._ingest_files(needed)
+
+    # ------------------------------------------------------------------
+    # Shared helpers
+    # ------------------------------------------------------------------
+
+    def _needs_work(self, path: Path) -> bool:
+        """Return True if the file is new, grown, or fingerprint-changed."""
         try:
             stat = path.stat()
         except FileNotFoundError:
-            return
+            return False
         size = stat.st_size
         try:
-            fingerprint, last_complete_newline = _fingerprint_file(path)
+            fingerprint, _last_nl = _fingerprint_file(path)
         except FileNotFoundError:
-            return
+            return False
         cursor = self._cursor.get_record(path)
-        if (
+        return not (
             cursor is not None
             and size == cursor.byte_size
             and fingerprint == cursor.content_fingerprint
             and cursor.parser_fingerprint == _PARSER_FINGERPRINT
-        ):
-            return
-        source_name = self._source_name_for(path)
-        try:
-            await self._polylogue.parse_file(path, source_name=source_name)
-        except Exception as exc:
-            logger.warning("live.watcher: parse failed for %s: %s", path, exc)
-            self._cursor.mark_failed(path)
-            return
-        self._cursor.set(
-            path,
-            size,
-            byte_offset=last_complete_newline,
-            last_complete_newline=last_complete_newline,
-            parser_fingerprint=_PARSER_FINGERPRINT,
-            content_fingerprint=fingerprint,
-            source_name=source_name,
-            st_dev=getattr(stat, "st_dev", None),
-            st_ino=getattr(stat, "st_ino", None),
-            mtime_ns=getattr(stat, "st_mtime_ns", None),
         )
-        self._cursor.reset_failures(path)
-        logger.debug("live.watcher: ingested %s (size=%d, source=%s)", path, size, source_name)
+
+    async def _ingest_files(self, paths: list[Path]) -> None:
+        """Ingest a batch of files through the pipeline.
+
+        Groups files by source, then calls ``parse_sources()`` once per
+        source. This avoids the per-file source-tree rescan that
+        ``parse_file()`` triggers.
+        """
+        from polylogue.config import Source
+
+        # Group by source
+        by_source: dict[str, list[Path]] = {}
+        for path in paths:
+            source_name = self._source_name_for(path)
+            by_source.setdefault(source_name, []).append(path)
+
+        fingerprints: dict[Path, tuple[int, str, int]] = {}
+
+        for source_name, source_paths in by_source.items():
+            if self._stop.is_set():
+                return
+
+            # Take the first file's directory as the source root
+            sources = [
+                Source(name=source_name, path=p.parent) for p in {path.parent.resolve() for path in source_paths}
+            ]
+
+            t0 = time.perf_counter()
+            try:
+                await self._polylogue.parse_sources(
+                    sources=sources,
+                    download_assets=False,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "live.watcher: batch ingest failed for source=%s (%d file(s)): %s",
+                    source_name,
+                    len(source_paths),
+                    exc,
+                )
+                for p in source_paths:
+                    self._cursor.mark_failed(p)
+                continue
+
+            elapsed = time.perf_counter() - t0
+            logger.info(
+                "live.watcher: batch ingested source=%s — %d file(s) in %.1fs (%.1f/s)",
+                source_name,
+                len(source_paths),
+                elapsed,
+                len(source_paths) / max(elapsed, 0.01),
+            )
+
+            # Pre-compute fingerprints for cursor update. We do this after
+            # ingest so files that were mid-write during fingerprinting get
+            # their post-ingest state recorded.
+            for path in source_paths:
+                try:
+                    stat = path.stat()
+                    fp, last_nl = _fingerprint_file(path)
+                    fingerprints[path] = (stat.st_size, fp, last_nl)
+                except FileNotFoundError:
+                    continue
+
+        # Update cursors
+        for path, (size, fp, last_nl) in fingerprints.items():
+            self._cursor.set(
+                path,
+                size,
+                byte_offset=last_nl,
+                last_complete_newline=last_nl,
+                parser_fingerprint=_PARSER_FINGERPRINT,
+                content_fingerprint=fp,
+                source_name=self._source_name_for(path),
+                st_dev=None,
+                st_ino=None,
+                mtime_ns=None,
+            )
+            self._cursor.reset_failures(path)
+
+        logger.info(
+            "live.watcher: batch complete — %d file(s), %d source(s)",
+            len(paths),
+            len(by_source),
+        )
 
     def _source_name_for(self, path: Path) -> str:
         resolved = path.resolve()
