@@ -1,14 +1,17 @@
 {
-  "rejected": [
+  "provider": "claude-code",
+  "pins": [
     {
       "path": "$.gitBranch",
       "role": "conversation_title",
-      "reason": "git branch names (e.g. 'master') are not conversation titles — the branch is metadata about the working copy"
+      "action": "reject",
+      "reason": "git branch names (e.g. 'master') are not conversation titles"
     },
     {
       "path": "$.toolUseResult.oldTodos",
       "role": "message_container",
-      "reason": "oldTodos is a todo list from tool results, not a message container — it represents prior task state"
+      "action": "reject",
+      "reason": "oldTodos is a todo list from tool results, not a message container"
     }
   ]
 }

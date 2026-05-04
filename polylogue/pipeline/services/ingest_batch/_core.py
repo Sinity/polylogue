@@ -919,9 +919,12 @@ async def process_ingest_batch(
         )
 
     try:
+        import asyncio as _asyncio
+
         from polylogue.daemon.events import emit_daemon_event
 
-        emit_daemon_event(
+        await _asyncio.to_thread(
+            emit_daemon_event,
             "ingestion_batch",
             payload={
                 "elapsed_s": round(batch_summary.elapsed_s, 2),
@@ -934,7 +937,7 @@ async def process_ingest_batch(
             },
         )
     except Exception:
-        pass
+        logger.debug("ingest_batch: failed to emit daemon event", exc_info=True)
 
     raw_state_update_elapsed_s = await _persist_batch_raw_state_updates(
         service,

@@ -182,7 +182,7 @@ def _insight_freshness_info() -> dict[str, object]:
 
 
 def _safe_int(value: object) -> int:
-    if isinstance(value, int | float) and not isinstance(value, bool):
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
         return int(value)
     return 0
 
