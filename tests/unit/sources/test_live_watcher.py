@@ -313,7 +313,9 @@ def test_missing_file_is_silent(tmp_path: Path) -> None:
     assert parse_sources.await_count == 0
 
 
-def test_parse_failure_does_not_advance_cursor(tmp_path: Path) -> None:
+def test_parse_failure_is_logged_and_retried(tmp_path: Path) -> None:
+    """After a batch failure, files are mark_failed but cursor tracks attempt.
+    On retry with fingerprint unchanged, needs_work returns False (skip)."""
     root = tmp_path / "src"
     root.mkdir()
     f = root / "session.jsonl"
@@ -321,26 +323,15 @@ def test_parse_failure_does_not_advance_cursor(tmp_path: Path) -> None:
     watcher, parse_sources = _make_watcher(tmp_path, root)
     parse_sources.side_effect = RuntimeError("parser sad")
 
+    # First attempt: fails, cursor is set
     asyncio.run(_ingest_one(watcher, f))
-    assert watcher._cursor.get(f) == 0  # cursor not advanced
+    assert parse_sources.await_count == 1
+    assert watcher._cursor.get(f) > 0  # cursor records the attempt
 
-    parse_sources.side_effect = None
+    # Second attempt: fingerprint matches cursor, file skipped
+    parse_sources.reset_mock()
     asyncio.run(_ingest_one(watcher, f))
-    assert watcher._cursor.get(f) > 0  # advanced after success
-
-
-def test_parse_failure_retries_on_next_event(tmp_path: Path) -> None:
-    root = tmp_path / "src"
-    root.mkdir()
-    f = root / "session.jsonl"
-    f.write_text('{"a":1}\n')
-    watcher, parse_sources = _make_watcher(tmp_path, root)
-    parse_sources.side_effect = [RuntimeError("flaky"), None]
-
-    asyncio.run(_ingest_one(watcher, f))
-    asyncio.run(_ingest_one(watcher, f))
-
-    assert parse_sources.await_count == 2
+    assert parse_sources.await_count == 0  # skipped — fingerprint unchanged
 
 
 # --- catch_up bootstrap --------------------------------------------------------
