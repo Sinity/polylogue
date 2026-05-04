@@ -18,12 +18,27 @@ from polylogue.schemas.generation.support import (
     collapse_dynamic_keys,
 )
 from polylogue.schemas.observation import ProviderConfig
+from polylogue.schemas.pinning import load_pins
 from polylogue.schemas.privacy_config import SchemaPrivacyConfig
 from polylogue.schemas.redaction_report import SchemaReport
 from polylogue.schemas.shape_fingerprint import _structure_fingerprint
 
 SchemaInput: TypeAlias = Mapping[str, object]
 SchemaPayload: TypeAlias = JSONDocument
+
+
+def _load_pins_safe(provider: str) -> dict[str, set[str]]:
+    try:
+        pins = load_pins(provider)
+        rejected: dict[str, set[str]] = {}
+        for pin in pins.pins:
+            if pin.action == "reject":
+                rejected.setdefault(pin.path, set()).add(pin.role)
+        return rejected
+    except Exception:
+        return {}
+
+
 MutableSchemaPayload: TypeAlias = JSONDocument
 
 
@@ -68,7 +83,8 @@ def _generate_cluster_schema(
         min_conversation_count=3,
         privacy_config=privacy_config,
     )
-    schema = _annotate_semantic_and_relational(schema, field_stats, artifact_kind=artifact_kind)
+    pins = _load_pins_safe(provider)
+    schema = _annotate_semantic_and_relational(schema, field_stats, artifact_kind=artifact_kind, pins=pins)
     schema["$schema"] = "https://json-schema.org/draft/2020-12/schema"
 
     redaction_report = _build_redaction_report(
@@ -108,6 +124,7 @@ def generate_schema_from_samples(
     annotate: bool = True,
     max_stats_samples: int = 500,
     max_genson_samples: int | None = None,
+    provider: str | None = None,
 ) -> MutableSchemaPayload:
     if not GENSON_AVAILABLE:
         raise ImportError("genson is required for schema generation. Install with: pip install genson")
@@ -137,7 +154,8 @@ def generate_schema_from_samples(
 
         field_stats = _collect_field_stats(stats_samples)
         schema = _annotate_schema(schema, field_stats)
-        schema = _annotate_semantic_and_relational(schema, field_stats)
+        pins = _load_pins_safe(provider) if provider else {}
+        schema = _annotate_semantic_and_relational(schema, field_stats, pins=pins)
 
     schema["$schema"] = "https://json-schema.org/draft/2020-12/schema"
     return schema
