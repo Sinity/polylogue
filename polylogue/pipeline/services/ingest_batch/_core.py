@@ -79,9 +79,6 @@ if TYPE_CHECKING:
 
 from polylogue.pipeline.services.ingest_batch._models import (
     _DEFAULT_INGEST_WORKER_LIMIT,
-    _INGEST_EXTREME_BLOB_LIMIT_BYTES,
-    _INGEST_HIGH_BLOB_LIMIT_BYTES,
-    _INGEST_SOFT_BLOB_LIMIT_BYTES,
     _BulkConnectionBackendLike,
     _ConnectionBackendLike,
     _ConversationEntry,
@@ -501,30 +498,12 @@ def _resolved_ingest_worker_limit(value: int | None) -> int:
     return value if value is not None else _DEFAULT_INGEST_WORKER_LIMIT
 
 
-def _record_blob_size(record: object) -> int:
-    return max(int(getattr(record, "blob_size", 0) or 0), 0)
-
-
 def _select_ingest_worker_count(raw_artifacts: Sequence[object], ingest_workers: int | None) -> int:
-    base_worker_count = min(
-        len(raw_artifacts),
+    return min(
+        max(len(raw_artifacts), 1),
         os.cpu_count() or 4,
         _resolved_ingest_worker_limit(ingest_workers),
     )
-    if base_worker_count <= 1:
-        return base_worker_count
-
-    blob_sizes = [_record_blob_size(record) for record in raw_artifacts]
-    total_blob_bytes = sum(blob_sizes)
-    max_blob_bytes = max(blob_sizes, default=0)
-
-    if max_blob_bytes >= _INGEST_EXTREME_BLOB_LIMIT_BYTES or total_blob_bytes >= _INGEST_EXTREME_BLOB_LIMIT_BYTES:
-        return 1
-    if max_blob_bytes >= _INGEST_HIGH_BLOB_LIMIT_BYTES or total_blob_bytes >= _INGEST_HIGH_BLOB_LIMIT_BYTES:
-        return min(base_worker_count, 2)
-    if total_blob_bytes >= _INGEST_SOFT_BLOB_LIMIT_BYTES:
-        return min(base_worker_count, 4)
-    return base_worker_count
 
 
 def _new_ingest_batch_summary(
