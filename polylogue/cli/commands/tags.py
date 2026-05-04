@@ -47,10 +47,8 @@ def tags_command(
         click.echo("Hint: use --add-tag to tag conversations, e.g.: polylogue --latest --add-tag important")
         return
 
-    from rich.console import Console
     from rich.table import Table
 
-    console = Console()
     table = Table(title=f"Tags ({provider or 'all providers'}, {len(tags)} total)")
     table.add_column("Tag", style="bold cyan")
     table.add_column("Count", justify="right", style="green")
@@ -58,7 +56,7 @@ def tags_command(
     for tag, tag_count in tags.items():
         table.add_row(tag, str(tag_count))
 
-    console.print(table)
+    env.ui.print(table)
 
 
 __all__ = ["tags_command"]

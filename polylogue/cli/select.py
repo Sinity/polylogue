@@ -55,12 +55,12 @@ class SelectConversationRow:
     @property
     def label(self) -> str:
         date = self.date or "unknown"
-        return f"{self.provider} | {date} | {self.title}"
+        return f"{self.provider} | {date} | {self.title} | {self.conversation_id}"
 
     @property
     def preview(self) -> str:
         date = self.date or "unknown"
-        return f"Provider: {self.provider}\nDate:     {date}\nTitle:    {self.title}\nID:       {self.conversation_id}"
+        return f"Provider: {self.provider}  Date: {date}  Title: {self.title}  ID: {self.conversation_id}"
 
     def to_json(self) -> JSONDocument:
         return {
