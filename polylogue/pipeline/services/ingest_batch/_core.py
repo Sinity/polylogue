@@ -892,6 +892,13 @@ async def process_ingest_batch(
             messages=batch_summary.total_msgs,
             workers=batch_summary.worker_count,
             changed=len(batch_summary.changed_conversation_ids),
+            write_s=round(batch_summary.write_elapsed_s, 2),
+            commit_s=round(batch_summary.commit_elapsed_s, 2),
+            drain_s=round(batch_summary.drain_elapsed_s, 2),
+            flush_s=round(batch_summary.flush_elapsed_s, 2),
+            wait_s=round(batch_summary.result_wait_s, 2),
+            setup_s=round(batch_summary.setup_elapsed_s, 2),
+            tear_s=round(batch_summary.teardown_elapsed_s, 2),
         )
 
     raw_state_update_elapsed_s = await _persist_batch_raw_state_updates(
