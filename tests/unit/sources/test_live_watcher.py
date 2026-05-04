@@ -349,20 +349,24 @@ def test_parse_failure_retries_on_next_event(tmp_path: Path) -> None:
 def test_catch_up_processes_pre_existing_files(tmp_path: Path) -> None:
     root = tmp_path / "src"
     root.mkdir()
-    files = [root / f"s{i}.jsonl" for i in range(3)]
+    # Session files at {project}/{uuid}.jsonl
+    proj = root / "my-project"
+    proj.mkdir()
+    files = [proj / f"s{i}.jsonl" for i in range(3)]
     for f in files:
         f.write_text('{"a":1}\n')
     watcher, parse_sources = _make_watcher(tmp_path, root)
 
     asyncio.run(watcher._catch_up([root]))
-    # All 3 files should be batched into one parse_sources call
     assert parse_sources.await_count == 1
 
 
 def test_catch_up_skips_already_processed(tmp_path: Path) -> None:
     root = tmp_path / "src"
     root.mkdir()
-    f = root / "s.jsonl"
+    proj = root / "my-project"
+    proj.mkdir()
+    f = proj / "s.jsonl"
     f.write_text('{"a":1}\n')
     watcher, parse_sources = _make_watcher(tmp_path, root)
     asyncio.run(_ingest_one(watcher, f))
@@ -372,11 +376,14 @@ def test_catch_up_skips_already_processed(tmp_path: Path) -> None:
     assert parse_sources.await_count == 0
 
 
-def test_catch_up_walks_recursively(tmp_path: Path) -> None:
+def test_catch_up_finds_subagent_files(tmp_path: Path) -> None:
     root = tmp_path / "src"
-    nested = root / "deep" / "nested"
-    nested.mkdir(parents=True)
-    f = nested / "deep.jsonl"
+    root.mkdir()
+    proj = root / "my-project"
+    session_dir = proj / "some-uuid"
+    subagents = session_dir / "subagents"
+    subagents.mkdir(parents=True)
+    f = subagents / "agent-abc123.jsonl"
     f.write_text('{"a":1}\n')
     watcher, parse_sources = _make_watcher(tmp_path, root)
 
@@ -387,13 +394,30 @@ def test_catch_up_walks_recursively(tmp_path: Path) -> None:
 def test_catch_up_ignores_non_jsonl(tmp_path: Path) -> None:
     root = tmp_path / "src"
     root.mkdir()
-    (root / "session.jsonl").write_text('{"a":1}\n')
-    (root / "config.toml").write_text("x=1")
-    (root / "README.md").write_text("# hi")
+    proj = root / "my-project"
+    proj.mkdir()
+    (proj / "session.jsonl").write_text('{"a":1}\n')
+    (proj / "config.toml").write_text("x=1")
+    (proj / "README.md").write_text("# hi")
     watcher, parse_sources = _make_watcher(tmp_path, root)
 
     asyncio.run(watcher._catch_up([root]))
     assert parse_sources.await_count == 1
+
+
+def test_catch_up_ignores_junk_at_wrong_depth(tmp_path: Path) -> None:
+    root = tmp_path / "src"
+    root.mkdir()
+    # Files at root level are ignored (not {project}/{uuid}.jsonl)
+    (root / "orphan.jsonl").write_text('{"a":1}\n')
+    # Files nested too deep without subagent structure are ignored
+    deep = root / "p" / "u" / "extra" / "deep.jsonl"
+    deep.parent.mkdir(parents=True)
+    deep.write_text('{"a":1}\n')
+    watcher, parse_sources = _make_watcher(tmp_path, root)
+
+    asyncio.run(watcher._catch_up([root]))
+    assert parse_sources.await_count == 0
 
 
 def test_catch_up_handles_empty_roots(tmp_path: Path) -> None:

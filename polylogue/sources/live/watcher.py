@@ -103,7 +103,10 @@ class LiveWatcher:
     async def _catch_up(self, roots: list[Path]) -> None:
         files: list[Path] = []
         for root in roots:
-            files.extend(p for p in root.rglob("*.jsonl") if p.is_file())
+            # Session files: {project}/{uuid}.jsonl
+            files.extend(p for p in root.glob("*/*.jsonl") if p.is_file())
+            # Sub-agent files: {project}/{uuid}/subagents/agent-*.jsonl
+            files.extend(p for p in root.glob("*/*/subagents/agent-*.jsonl") if p.is_file())
         if not files:
             return
         logger.info("live.watcher: catch-up scan over %d file(s)", len(files))
