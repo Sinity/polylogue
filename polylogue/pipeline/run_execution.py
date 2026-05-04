@@ -291,7 +291,7 @@ async def run_sources(
                 explicit_sequence=explicit_sequence,
                 executed_stages=executed_stages,
             )
-            if not spec.pipeline_managed and spec.name != "embed":
+            if not spec.pipeline_managed:
                 executed_stages.add(spec.name)
                 executed_specs.append(spec)
                 return
