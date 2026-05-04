@@ -760,6 +760,30 @@
           "default": null,
           "title": "Action Text"
         },
+        "contains": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Contains"
+        },
+        "conv_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Conv Id"
+        },
         "cwd_prefix": {
           "anyOf": [
             {
@@ -784,6 +808,42 @@
           "default": null,
           "title": "Exclude Action"
         },
+        "exclude_provider": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Exclude Provider"
+        },
+        "exclude_tag": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Exclude Tag"
+        },
+        "exclude_text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Exclude Text"
+        },
         "exclude_tool": {
           "anyOf": [
             {
@@ -796,6 +856,11 @@
           "default": null,
           "title": "Exclude Tool"
         },
+        "has_paste": {
+          "default": false,
+          "title": "Has Paste",
+          "type": "boolean"
+        },
         "has_thinking": {
           "default": false,
           "title": "Has Thinking",
@@ -806,11 +871,47 @@
           "title": "Has Tool Use",
           "type": "boolean"
         },
+        "has_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Has Type"
+        },
+        "latest": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Latest"
+        },
         "limit": {
           "default": 10,
           "minimum": 1,
           "title": "Limit",
           "type": "integer"
+        },
+        "max_messages": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Messages"
         },
         "message_type": {
           "anyOf": [
@@ -902,6 +1003,35 @@
           "default": null,
           "title": "Retrieval Lane"
         },
+        "reverse": {
+          "default": false,
+          "title": "Reverse",
+          "type": "boolean"
+        },
+        "sample": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sample"
+        },
+        "similar_text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Similar Text"
+        },
         "since": {
           "anyOf": [
             {
@@ -925,6 +1055,18 @@
           ],
           "default": null,
           "title": "Since Session"
+        },
+        "since_session_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Since Session Id"
         },
         "sort": {
           "anyOf": [
@@ -973,6 +1115,23 @@
           ],
           "default": null,
           "title": "Tool"
+        },
+        "typed_only": {
+          "default": false,
+          "title": "Typed Only",
+          "type": "boolean"
+        },
+        "until": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Until"
         }
       },
       "title": "list_conversationsArguments",
@@ -1218,6 +1377,30 @@
           "default": null,
           "title": "Action Text"
         },
+        "contains": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Contains"
+        },
+        "conv_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Conv Id"
+        },
         "cwd_prefix": {
           "anyOf": [
             {
@@ -1242,6 +1425,42 @@
           "default": null,
           "title": "Exclude Action"
         },
+        "exclude_provider": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Exclude Provider"
+        },
+        "exclude_tag": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Exclude Tag"
+        },
+        "exclude_text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Exclude Text"
+        },
         "exclude_tool": {
           "anyOf": [
             {
@@ -1254,6 +1473,11 @@
           "default": null,
           "title": "Exclude Tool"
         },
+        "has_paste": {
+          "default": false,
+          "title": "Has Paste",
+          "type": "boolean"
+        },
         "has_thinking": {
           "default": false,
           "title": "Has Thinking",
@@ -1264,11 +1488,47 @@
           "title": "Has Tool Use",
           "type": "boolean"
         },
+        "has_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Has Type"
+        },
+        "latest": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Latest"
+        },
         "limit": {
           "default": 10,
           "minimum": 1,
           "title": "Limit",
           "type": "integer"
+        },
+        "max_messages": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Messages"
         },
         "message_type": {
           "anyOf": [
@@ -1364,6 +1624,35 @@
           "default": null,
           "title": "Retrieval Lane"
         },
+        "reverse": {
+          "default": false,
+          "title": "Reverse",
+          "type": "boolean"
+        },
+        "sample": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sample"
+        },
+        "similar_text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Similar Text"
+        },
         "since": {
           "anyOf": [
             {
@@ -1388,6 +1677,30 @@
           "default": null,
           "title": "Since Session"
         },
+        "since_session_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Since Session Id"
+        },
+        "sort": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sort"
+        },
         "tag": {
           "anyOf": [
             {
@@ -1400,6 +1713,18 @@
           "default": null,
           "title": "Tag"
         },
+        "title": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Title"
+        },
         "tool": {
           "anyOf": [
             {
@@ -1411,6 +1736,23 @@
           ],
           "default": null,
           "title": "Tool"
+        },
+        "typed_only": {
+          "default": false,
+          "title": "Typed Only",
+          "type": "boolean"
+        },
+        "until": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Until"
         }
       },
       "required": [

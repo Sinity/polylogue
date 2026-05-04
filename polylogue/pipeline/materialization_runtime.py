@@ -255,7 +255,7 @@ def materialize_conversation(
         word_count = len(msg.text.split()) if msg.text and msg.text.strip() else 0
         has_tool_use = 1 if (block_types & {"tool_use", "tool_result"}) or msg.role == "tool" else 0
         has_thinking = 1 if "thinking" in block_types else 0
-        has_paste = detect_paste(msg.text)
+        has_paste = detect_paste(msg.text) if msg.role == "user" else 0
         if message_type == MessageType.MESSAGE:
             if "thinking" in block_types:
                 message_type = MessageType.THINKING
