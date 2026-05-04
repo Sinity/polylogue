@@ -209,10 +209,10 @@ class LiveWatcher:
             if self._stop.is_set():
                 return
 
-            # Take the first file's directory as the source root
-            sources = [
-                Source(name=source_name, path=p.parent) for p in {path.parent.resolve() for path in source_paths}
-            ]
+            # Pass individual file paths — directories would cause the
+            # pipeline to scan all files including non-conversation metadata
+            # (history.jsonl, sessions-index.json, etc.).
+            sources = [Source(name=f"{source_name}:{p.parent.name}", path=p) for p in source_paths]
 
             t0 = time.perf_counter()
             try:
