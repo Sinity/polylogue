@@ -16,11 +16,9 @@ import sqlite3
 import time
 from collections.abc import Iterable, Sequence
 from concurrent.futures import Future, as_completed
-from contextlib import AbstractAsyncContextManager
-from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING
 
 from polylogue.archive.write_effects import commit_archive_write_effects
 from polylogue.archive.write_gateway import WriteOperation
@@ -74,104 +72,26 @@ from polylogue.storage.sqlite.connection_profile import (
 )
 
 if TYPE_CHECKING:
-    import aiosqlite
-
     from polylogue.pipeline.services.parsing import ParsingService
     from polylogue.pipeline.services.parsing_models import ParseResult
     from polylogue.protocols import ProgressCallback
     from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
+from polylogue.pipeline.services.ingest_batch._models import (
+    _DEFAULT_INGEST_WORKER_LIMIT,
+    _INGEST_EXTREME_BLOB_LIMIT_BYTES,
+    _INGEST_HIGH_BLOB_LIMIT_BYTES,
+    _INGEST_SOFT_BLOB_LIMIT_BYTES,
+    _BulkConnectionBackendLike,
+    _ConnectionBackendLike,
+    _ConversationEntry,
+    _IngestBatchSummary,
+    _IngestWorkerRequest,
+    _ParsingServiceRawStateLike,
+    _RawIngestOutcome,
+)
+
 logger = get_logger(__name__)
-
-_DEFAULT_INGEST_WORKER_LIMIT = 8
-_INGEST_SOFT_BLOB_LIMIT_BYTES = 48 * 1024 * 1024
-_INGEST_HIGH_BLOB_LIMIT_BYTES = 96 * 1024 * 1024
-_INGEST_EXTREME_BLOB_LIMIT_BYTES = 256 * 1024 * 1024
-
-
-class _RawStateRepositoryLike(Protocol):
-    async def update_raw_state(self, raw_id: str, *, state: RawConversationStateUpdate) -> object: ...
-
-
-class _ParsingServiceRawStateLike(Protocol):
-    @property
-    def repository(self) -> _RawStateRepositoryLike: ...
-
-
-class _BulkConnectionBackendLike(Protocol):
-    def bulk_connection(self) -> AbstractAsyncContextManager[object]: ...
-
-
-class _ConnectionBackendLike(Protocol):
-    def connection(self) -> AbstractAsyncContextManager[aiosqlite.Connection]: ...
-
-
-@dataclass(slots=True)
-class _RawIngestOutcome:
-    raw_id: str
-    payload_provider: str | None
-    validation_status: str
-    validation_error: str | None
-    parse_error: str | None
-    error: str | None
-    had_conversations: bool
-
-
-@dataclass(slots=True)
-class _IngestBatchSummary:
-    outcomes: dict[str, _RawIngestOutcome] = field(default_factory=dict)
-    failed_raw_ids: dict[str, str] = field(default_factory=dict)
-    skipped_raw_ids: set[str] = field(default_factory=set)
-    processed_ids: set[str] = field(default_factory=set)
-    changed_conversation_ids: list[str] = field(default_factory=list)
-    counts: dict[str, int] = field(
-        default_factory=lambda: {
-            "conversations": 0,
-            "messages": 0,
-            "attachments": 0,
-            "skipped_conversations": 0,
-            "skipped_messages": 0,
-            "skipped_attachments": 0,
-        }
-    )
-    changed_counts: dict[str, int] = field(
-        default_factory=lambda: {
-            "conversations": 0,
-            "messages": 0,
-            "attachments": 0,
-        }
-    )
-    parse_failures: int = 0
-    total_msgs: int = 0
-    total_convos: int = 0
-    raw_record_count: int = 0
-    worker_count: int = 0
-    total_blob_mb: float = 0.0
-    total_result_bytes: int = 0
-    max_result_bytes: int = 0
-    max_result_raw_id: str | None = None
-    elapsed_s: float = 0.0
-    setup_elapsed_s: float = 0.0
-    max_current_rss_mb: float | None = None
-    result_wait_s: float = 0.0
-    drain_elapsed_s: float = 0.0
-    write_elapsed_s: float = 0.0
-    max_write_elapsed_s: float = 0.0
-    flush_elapsed_s: float = 0.0
-    commit_elapsed_s: float = 0.0
-    teardown_elapsed_s: float = 0.0
-
-
-@dataclass(frozen=True, slots=True)
-class _IngestWorkerRequest:
-    archive_root_str: str
-    blob_root_str: str
-    validation_mode: str
-    measure_ingest_result_size: bool
-
-
-_ConversationEntry = tuple[str, ConversationData]
-
 
 # ---------------------------------------------------------------------------
 # SQL templates — imported from polylogue.core.common (canonical source)
