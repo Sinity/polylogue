@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from polylogue.storage.sqlite.connection_profile import open_connection
+
 _DDL = """
 CREATE TABLE IF NOT EXISTS live_cursor (
     source_path TEXT PRIMARY KEY,
@@ -70,8 +72,7 @@ class CursorStore:
             self._ensure_columns(conn)
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self._db_path, timeout=10.0)
-        conn.execute("PRAGMA journal_mode=WAL")
+        conn = open_connection(self._db_path, timeout=10.0)
         return conn
 
     def _ensure_columns(self, conn: sqlite3.Connection) -> None:

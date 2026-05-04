@@ -25,6 +25,7 @@ from polylogue.schemas.observation import (
     resolve_provider_config,
 )
 from polylogue.storage.blob_store import get_blob_store
+from polylogue.storage.sqlite.connection_profile import open_connection
 from polylogue.types import Provider
 
 logger = get_logger(__name__)
@@ -160,7 +161,7 @@ def _iter_schema_units_from_db(
     """Yield clusterable schema units from raw_conversations."""
     provider_name = Provider.from_string(provider_name)
     blob_store = get_blob_store()
-    conn = sqlite3.connect(db_path)
+    conn = open_connection(db_path)
     try:
         query_provider = config.db_provider_name or provider_name
         where_clause, where_params = _sample_provider_where_clause(query_provider)
@@ -271,7 +272,7 @@ def get_sample_count_from_db(
     if config.db_provider_name and str(config.db_provider_name) not in provider_tokens:
         provider_tokens.append(str(config.db_provider_name))
 
-    conn = sqlite3.connect(db_path)
+    conn = open_connection(db_path)
     try:
         placeholders = ",".join("?" for _ in provider_tokens)
         row = conn.execute(

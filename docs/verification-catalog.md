@@ -92,7 +92,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `polylogue neighbors` | `polylogue/cli/commands/neighbors.py:42` `polylogue.cli.commands.neighbors.neighbors_command` |
 | `polylogue open` | `polylogue/cli/query_verbs.py:97` `polylogue.cli.query_verbs.open_verb` |
 | `polylogue raw` | `polylogue/cli/query_verbs.py:247` `polylogue.cli.query_verbs.raw_verb` |
-| `polylogue reset` | `polylogue/cli/commands/reset.py:90` `polylogue.cli.commands.reset.reset_command` |
+| `polylogue reset` | `polylogue/cli/commands/reset.py:102` `polylogue.cli.commands.reset.reset_command` |
 | `polylogue resume` | `polylogue/cli/commands/resume.py:22` `polylogue.cli.commands.resume.resume_command` |
 | `polylogue run` | `polylogue/cli/commands/run.py:161` `polylogue.cli.commands.run.run_command` |
 | `polylogue run acquire` | `polylogue/cli/commands/run.py:312` `polylogue.cli.commands.run.run_acquire_stage` |

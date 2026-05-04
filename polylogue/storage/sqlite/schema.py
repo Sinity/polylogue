@@ -154,7 +154,8 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         return
 
     if (
-        decision.action in {"upgrade_v2_to_current", "upgrade_v3_to_v4", "upgrade_v4_to_v5"}
+        decision.action
+        in {"upgrade_v2_to_current", "upgrade_v3_to_v4", "upgrade_v4_to_v5", "upgrade_v4_to_v6", "upgrade_v5_to_v6"}
         and decision.extension_plan is not None
     ):
         _apply_version_upgrade_plan(conn, snapshot, decision.extension_plan)
@@ -188,7 +189,8 @@ async def ensure_schema_async(conn: aiosqlite.Connection) -> None:
         return
 
     if (
-        decision.action in {"upgrade_v2_to_current", "upgrade_v3_to_v4", "upgrade_v4_to_v5"}
+        decision.action
+        in {"upgrade_v2_to_current", "upgrade_v3_to_v4", "upgrade_v4_to_v5", "upgrade_v4_to_v6", "upgrade_v5_to_v6"}
         and decision.extension_plan is not None
     ):
         await _apply_version_upgrade_plan_async(conn, snapshot, decision.extension_plan)

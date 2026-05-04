@@ -14,10 +14,9 @@ import logging
 import sqlite3
 from dataclasses import dataclass
 from enum import Enum
-from http import HTTPStatus
 from typing import Any
 
-from polylogue.errors import PolylogueError
+from polylogue.storage.sqlite.connection_profile import open_connection as _open_conn
 
 logger = logging.getLogger(__name__)
 
@@ -39,11 +38,8 @@ class WriteResult:
     status: str  # "committed", "rejected", "deferred"
 
 
-class DaemonUnavailableError(PolylogueError):
+class DaemonUnavailableError(Exception):
     """Raised when the daemon RPC target is unreachable or not running."""
-
-    is_transient = True
-    http_status_code = HTTPStatus.SERVICE_UNAVAILABLE
 
 
 class ArchiveWriteGateway:
@@ -123,7 +119,7 @@ class ArchiveWriteGateway:
         owns_conn = conn is None
 
         if owns_conn:
-            conn = sqlite3.connect(self._db_path)
+            conn = _open_conn(self._db_path)
 
         assert conn is not None
         try:

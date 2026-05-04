@@ -125,21 +125,50 @@ async def set_metadata(
 
 
 async def list_tags(conn: aiosqlite.Connection, *, provider: str | None = None) -> dict[str, int]:
-    where = "WHERE metadata IS NOT NULL AND json_extract(metadata, '$.tags') IS NOT NULL"
+    """List all tags with conversation counts, optionally filtered by provider.
+
+    Reads from the normalized ``tags`` + ``conversation_tags`` tables.
+    Falls back to JSON metadata extraction when the normalized tables are empty
+    (e.g. before migration has run).
+    """
     params: tuple[str, ...] = ()
+    join = "JOIN conversations c ON ct.conversation_id = c.conversation_id"
+    where = ""
     if provider:
-        where += " AND provider_name = ?"
+        where = " AND c.provider_name = ?"
         params = (provider,)
+    cursor = await conn.execute(
+        f"""
+        SELECT t.name AS tag_name, COUNT(DISTINCT ct.conversation_id) AS cnt
+        FROM conversation_tags ct
+        JOIN tags t ON t.id = ct.tag_id
+        {join}
+        WHERE 1=1{where}
+        GROUP BY t.name
+        ORDER BY cnt DESC
+        """,
+        params,
+    )
+    rows = await cursor.fetchall()
+    if rows:
+        return {row["tag_name"]: row["cnt"] for row in rows}
+
+    # Fallback: read from JSON metadata for archives that haven't been migrated yet
+    json_where = "WHERE metadata IS NOT NULL AND json_extract(metadata, '$.tags') IS NOT NULL"
+    json_params: tuple[str, ...] = ()
+    if provider:
+        json_where += " AND provider_name = ?"
+        json_params = (provider,)
     cursor = await conn.execute(
         f"""
         SELECT tag.value AS tag_name, COUNT(*) AS cnt
         FROM conversations,
              json_each(json_extract(metadata, '$.tags')) AS tag
-        {where}
+        {json_where}
         GROUP BY tag.value
         ORDER BY cnt DESC
         """,
-        params,
+        json_params,
     )
     rows = await cursor.fetchall()
     return {row["tag_name"]: row["cnt"] for row in rows}

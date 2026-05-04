@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import sqlite3
 import tempfile
 from collections.abc import Sequence
 from contextlib import asynccontextmanager
@@ -15,6 +14,7 @@ from polylogue.errors import PolylogueError
 from polylogue.pipeline.prepare import prepare_bundle, save_bundle
 from polylogue.services import RuntimeServices, build_runtime_services
 from polylogue.sources.source_parsing import iter_source_conversations_with_raw
+from polylogue.storage.sqlite.connection_profile import open_connection, open_readonly_connection
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -34,8 +34,8 @@ def _snapshot_archive_db(source_db: Path, snapshot_db: Path) -> None:
     if not source_db.exists():
         return
 
-    source = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)
-    target = sqlite3.connect(snapshot_db)
+    source = open_readonly_connection(source_db)
+    target = open_connection(snapshot_db)
     try:
         source.backup(target)
     finally:

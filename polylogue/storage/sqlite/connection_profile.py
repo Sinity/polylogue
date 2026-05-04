@@ -1,8 +1,23 @@
-"""Canonical SQLite connection profiles shared by sync and async backends."""
+"""Canonical SQLite connection profiles and factory functions shared by sync and async backends.
+
+Factories
+---------
+``open_connection(path)`` returns a read-write connection with write pragmas applied.
+``open_readonly_connection(path)`` returns a uri=ro connection with read pragmas applied.
+``connection_context(path)`` is a context manager for a single-use read-write connection.
+
+These are lightweight one-shot wrappers around ``sqlite3.connect()``.  For the
+thread-local cached connection used by the async runtime, use the factories in
+``connection.py`` instead.
+"""
 
 from __future__ import annotations
 
+import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal
 
 
@@ -79,6 +94,53 @@ WRITE_CONNECTION_PRAGMA_STATEMENTS = WRITE_CONNECTION_PROFILE.pragma_statements
 READ_CONNECTION_PRAGMA_STATEMENTS = READ_CONNECTION_PROFILE.pragma_statements
 
 
+# ---------------------------------------------------------------------------
+# Lightweight factory functions — open + apply pragmas, no caching / schema / vec
+# ---------------------------------------------------------------------------
+
+
+def open_connection(path: str | Path, *, timeout: float = DB_TIMEOUT) -> sqlite3.Connection:
+    """Open a read-write SQLite connection with canonical write pragmas applied.
+
+    This is a lightweight one-shot factory: it opens the file, applies the
+    write-time PRAGMA profile, and returns the connection.  The caller owns
+    the connection lifecycle (must close it).
+
+    For the thread-local cached archive connection used by the async runtime,
+    use ``connection_context`` from ``connection.py`` instead.
+    """
+    conn = sqlite3.connect(str(path), timeout=timeout)
+    for stmt in WRITE_CONNECTION_PRAGMA_STATEMENTS:
+        conn.execute(stmt)
+    return conn
+
+
+def open_readonly_connection(path: str | Path, *, timeout: float = READ_DB_TIMEOUT) -> sqlite3.Connection:
+    """Open a read-only SQLite connection with canonical read pragmas applied.
+
+    Uses ``file:...?mode=ro`` URI mode to guarantee no write locks are taken.
+    Returns ``None`` / raises ``sqlite3.OperationalError`` if the database file
+    does not exist.
+    """
+    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=timeout)
+    for stmt in READ_CONNECTION_PRAGMA_STATEMENTS:
+        conn.execute(stmt)
+    return conn
+
+
+@contextmanager
+def connection_context(path: str | Path, *, timeout: float = DB_TIMEOUT) -> Iterator[sqlite3.Connection]:
+    """Context manager for a single-use read-write connection.
+
+    Opens a connection with write pragmas, yields it, and closes on exit.
+    """
+    conn = open_connection(path, timeout=timeout)
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
 __all__ = [
     "DB_TIMEOUT",
     "READ_CACHE_SIZE_KIB",
@@ -92,4 +154,7 @@ __all__ = [
     "WRITE_CONNECTION_PRAGMA_STATEMENTS",
     "WRITE_CONNECTION_PROFILE",
     "WRITE_MMAP_SIZE_BYTES",
+    "connection_context",
+    "open_connection",
+    "open_readonly_connection",
 ]

@@ -47,10 +47,6 @@ from polylogue.storage.conversation_replacement import (
 from polylogue.storage.raw.models import RawConversationStateUpdate
 from polylogue.storage.runtime import RawConversationRecord
 from polylogue.storage.sqlite.connection import _load_sqlite_vec
-from polylogue.storage.sqlite.connection_profile import (
-    DB_TIMEOUT,
-    WRITE_CONNECTION_PRAGMA_STATEMENTS,
-)
 
 if TYPE_CHECKING:
     import aiosqlite
@@ -66,6 +62,12 @@ _DEFAULT_INGEST_WORKER_LIMIT = 8
 _INGEST_SOFT_BLOB_LIMIT_BYTES = 48 * 1024 * 1024
 _INGEST_HIGH_BLOB_LIMIT_BYTES = 96 * 1024 * 1024
 _INGEST_EXTREME_BLOB_LIMIT_BYTES = 256 * 1024 * 1024
+
+_IDENTITY_LEDGER_UPSERT_SQL = """
+INSERT OR IGNORE INTO identity_ledger (
+    provider, source, source_path, provider_conversation_id, raw_hash, current_conversation_id
+) VALUES (?, ?, ?, ?, ?, ?)
+"""
 
 
 class _RawStateRepositoryLike(Protocol):
@@ -282,13 +284,30 @@ INSERT OR IGNORE INTO attachment_refs (
 # ---------------------------------------------------------------------------
 
 
+def _write_identity_ledger(conn: sqlite3.Connection, cdata: ConversationData) -> None:
+    """Write identity ledger row so re-imported conversations are recognized."""
+    source_path = cdata.source_name
+    provider_conversation_id = cdata.conversation_tuple[2]
+    conn.execute(
+        _IDENTITY_LEDGER_UPSERT_SQL,
+        (
+            cdata.provider_name,
+            cdata.source_name,
+            source_path,
+            provider_conversation_id,
+            cdata.content_hash,
+            cdata.conversation_id,
+        ),
+    )
+
+
 def _open_sync_connection(db_path: Path) -> sqlite3.Connection:
     """Open a sync sqlite3 connection with the same pragmas as the async backend."""
+    from polylogue.storage.sqlite.connection_profile import open_connection
+
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(db_path), timeout=DB_TIMEOUT)
+    conn = open_connection(db_path)
     conn.row_factory = sqlite3.Row
-    for statement in WRITE_CONNECTION_PRAGMA_STATEMENTS:
-        conn.execute(statement)
     _load_sqlite_vec(conn)
     return conn
 
@@ -564,6 +583,8 @@ def _write_conversation_entry(
         summary.write_elapsed_s += write_elapsed
         if write_elapsed > summary.max_write_elapsed_s:
             summary.max_write_elapsed_s = write_elapsed
+        if content_changed:
+            _write_identity_ledger(conn, cdata)
         _record_write_result(
             summary,
             cdata,
