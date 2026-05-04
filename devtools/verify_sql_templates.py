@@ -58,7 +58,7 @@ _SQL_TEMPLATE_SOURCES = frozenset(
 
 def _function_body_hash(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
     """Compute a stable hash of a function body (excludes name and decorators)."""
-    body_bytes = ast.unparse(node.body).encode("utf-8")
+    body_bytes = ast.unparse(ast.Module(body=node.body, type_ignores=[])).encode("utf-8")
     return hashlib.sha256(body_bytes).hexdigest()[:16]
 
 

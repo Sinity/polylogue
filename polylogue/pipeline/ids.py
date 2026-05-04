@@ -194,7 +194,7 @@ def _conversation_hash_payload(
     updated_at: str | None,
     messages: list[dict[str, JSONValue]],
     attachments: list[dict[str, JSONValue]],
-) -> dict[str, JSONValue]:
+) -> dict[str, object]:
     """Build the content-hash payload dict shared by pipeline and async write paths."""
     return {
         "title": _normalize_for_hash(title),

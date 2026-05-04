@@ -63,8 +63,8 @@ def _content_hash_from_metadata_or_domain(conversation: Conversation, metadata: 
         }
         if message.content_blocks:
             msg_entry["content_blocks"] = [
-                _content_block_payload(b)
-                for b in message.content_blocks  # type: ignore[arg-type]
+                _content_block_payload(b)  # type: ignore[arg-type]
+                for b in message.content_blocks
             ]
         messages_payload.append(msg_entry)
 
