@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Protocol, TypeAlias
 
 from polylogue.archive.conversation.branch_type import BranchType
-from polylogue.archive.message.paste_detection import detect_paste
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
 from polylogue.archive.viewport.viewports import ToolCategory, classify_tool
@@ -239,10 +238,6 @@ def materialize_conversation(
     message_id_map = _build_message_ids(normalized_convo, conversation_id)
 
     messages: list[MaterializedMessage] = []
-    total_word_count = 0
-    total_tool_use = 0
-    total_thinking = 0
-    total_paste = 0
 
     for idx, msg in enumerate(normalized_convo.messages, start=1):
         provider_message_id = msg.provider_message_id or f"msg-{idx}"
@@ -252,10 +247,12 @@ def materialize_conversation(
         )
         block_types = {block.type for block in msg.content_blocks}
         message_type = msg.message_type
-        word_count = len(msg.text.split()) if msg.text and msg.text.strip() else 0
-        has_tool_use = 1 if (block_types & {"tool_use", "tool_result"}) or msg.role == "tool" else 0
-        has_thinking = 1 if "thinking" in block_types else 0
-        has_paste = detect_paste(msg.text) if msg.role == "user" else 0
+        # Stats deferred to batch enrichment after ingest — compute only
+        # content_hash (needed for idempotency) and message_type.
+        word_count = 0
+        has_tool_use = 0
+        has_thinking = 0
+        has_paste = 0
         if message_type == MessageType.MESSAGE:
             if "thinking" in block_types:
                 message_type = MessageType.THINKING
@@ -263,11 +260,6 @@ def materialize_conversation(
                 message_type = MessageType.TOOL_RESULT
             elif "tool_use" in block_types:
                 message_type = MessageType.TOOL_USE
-
-        total_word_count += word_count
-        total_tool_use += has_tool_use
-        total_thinking += has_thinking
-        total_paste += has_paste
 
         blocks = [
             _materialize_content_block(message_id, block_index, block)
@@ -333,10 +325,10 @@ def materialize_conversation(
         attachments=attachments,
         stats=MaterializedConversationStats(
             message_count=len(messages),
-            word_count=total_word_count,
-            tool_use_count=total_tool_use,
-            thinking_count=total_thinking,
-            paste_count=total_paste,
+            word_count=0,
+            tool_use_count=0,
+            thinking_count=0,
+            paste_count=0,
         ),
     )
 
