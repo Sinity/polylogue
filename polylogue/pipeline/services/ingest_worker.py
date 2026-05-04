@@ -626,7 +626,7 @@ def _run_parse_plan(
 def ingest_record(
     raw_record: RawConversationRecord,
     archive_root_str: str,
-    validation_mode_value: str = "strict",
+    validation_mode_value: str = "advisory",
     measure_serialized_size: bool = False,
     *,
     blob_root_str: str | None = None,

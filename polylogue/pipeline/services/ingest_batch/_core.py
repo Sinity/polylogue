@@ -863,7 +863,7 @@ async def process_ingest_batch(
     peak_rss_self_start_mb = read_peak_rss_self_mb()
 
     # Get validation mode from environment
-    validation_mode = os.environ.get("POLYLOGUE_SCHEMA_VALIDATION", "strict")
+    validation_mode = os.environ.get("POLYLOGUE_SCHEMA_VALIDATION", "advisory")
 
     batch_summary = await asyncio.to_thread(
         _process_ingest_batch_sync,
@@ -882,7 +882,7 @@ async def process_ingest_batch(
     if progress_callback and progressed_raw_count:
         progress_callback(progressed_raw_count)
 
-    if batch_summary.elapsed_s > 2.0:
+    if batch_summary.elapsed_s > 0.0:
         logger.info(
             "ingest_batch",
             elapsed_s=round(batch_summary.elapsed_s, 2),
