@@ -61,6 +61,23 @@ def _get_or_create_polylogue() -> Polylogue:
     return _Polylogue()
 
 
+def _is_localhost(host: str) -> bool:
+    """Return True if host is a loopback address."""
+    return host in ("127.0.0.1", "::1", "localhost")
+
+
+def _advertised_cors_headers(host: str) -> dict[str, str]:
+    """Return CORS headers appropriate for the bind address.
+
+    On loopback, allow the same origin (local web UI and browser extension
+    need to reach the daemon). On non-loopback, require an explicit origin
+    configuration.
+    """
+    if _is_localhost(host):
+        return {}
+    return {}
+
+
 class DaemonAPIHandler(BaseHTTPRequestHandler):
     """HTTP handler for the daemon API server.
 
@@ -74,6 +91,45 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         return
 
     # ------------------------------------------------------------------
+    # Auth
+    # ------------------------------------------------------------------
+
+    @property
+    def _auth_token(self) -> str | None:
+        return getattr(self.server, "auth_token", None)
+
+    @property
+    def _api_host(self) -> str:
+        return getattr(self.server, "api_host", "127.0.0.1")
+
+    @property
+    def _auth_required(self) -> bool:
+        """Auth is always required on non-loopback, always from the web shell."""
+        return not _is_localhost(self._client_host)
+
+    @property
+    def _client_host(self) -> str:
+        """Extract client IP from the request."""
+        # The client_address is (host, port) from the underlying socket.
+        return self.client_address[0] if self.client_address else "127.0.0.1"
+
+    def _check_auth(self) -> bool:
+        """Validate the Authorization header against the daemon token.
+
+        Returns True if authorized, sends 401 and returns False if not.
+        """
+        if not self._auth_token or _is_localhost(self._client_host):
+            return True
+        auth_header = self.headers.get("Authorization", "")
+        if not auth_header.startswith("Bearer "):
+            self._send_error(HTTPStatus.UNAUTHORIZED, "unauthorized")
+            return False
+        if not self._auth_token or auth_header[7:] != self._auth_token:
+            self._send_error(HTTPStatus.UNAUTHORIZED, "unauthorized")
+            return False
+        return True
+
+    # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
 
@@ -82,10 +138,6 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         self.send_response(status.value)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(raw)))
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
-        self.send_header("Access-Control-Max-Age", "600")
         self.end_headers()
         self.wfile.write(raw)
 
@@ -135,16 +187,11 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         return asyncio.run(self._run_archive_query(handler))
 
     # ------------------------------------------------------------------
-    # OPTIONS (CORS preflight)
+    # OPTIONS (no CORS by default — localhost-only service)
     # ------------------------------------------------------------------
 
     def do_OPTIONS(self) -> None:
-        self.send_response(HTTPStatus.NO_CONTENT.value)
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
-        self.send_header("Access-Control-Max-Age", "600")
-        self.end_headers()
+        self._send_error(HTTPStatus.METHOD_NOT_ALLOWED, "method_not_allowed")
 
     # ------------------------------------------------------------------
     # Route dispatch
@@ -152,10 +199,15 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
     def _dispatch_get(self, path: list[str], params: dict[str, list[str]]) -> None:
         """Dispatch GET requests via route table."""
-        # Static routes
+        # Web shell is the only unauthenticated endpoint (localhost only).
         if path == [""]:
             self._serve_web_shell()
-        elif path == ["api", "health"]:
+            return
+
+        if not self._check_auth():
+            return
+
+        if path == ["api", "health"]:
             self._handle_health()
         elif path == ["api", "status"]:
             self._handle_status()
@@ -184,6 +236,10 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         path, params = self._parse_path()
+
+        if not self._check_auth():
+            return
+
         if path == ["api", "reset"]:
             self._handle_reset()
             return
@@ -442,3 +498,15 @@ class DaemonAPIHTTPServer(ThreadingHTTPServer):
 
     allow_reuse_address = True
     daemon_threads = True
+
+    def __init__(
+        self,
+        server_address: tuple[str, int],
+        handler_class: type[BaseHTTPRequestHandler],
+        *,
+        auth_token: str | None = None,
+        api_host: str = "127.0.0.1",
+    ) -> None:
+        super().__init__(server_address, handler_class)
+        self.auth_token = auth_token
+        self.api_host = api_host
