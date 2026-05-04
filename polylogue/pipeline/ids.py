@@ -187,6 +187,31 @@ def message_content_hash(message: ParsedMessage, provider_message_id: str) -> Co
     return ContentHash(hash_payload(payload))
 
 
+def _conversation_hash_payload(
+    *,
+    title: str | None,
+    created_at: str | None,
+    updated_at: str | None,
+    messages: list[dict[str, JSONValue]],
+    attachments: list[dict[str, JSONValue]],
+) -> dict[str, object]:
+    """Build the content-hash payload dict shared by pipeline and async write paths."""
+    return {
+        "title": _normalize_for_hash(title),
+        "created_at": _normalize_for_hash(created_at),
+        "updated_at": _normalize_for_hash(updated_at),
+        "messages": messages,
+        "attachments": sorted(
+            attachments,
+            key=lambda item: (
+                str(item.get("message_id") or ""),
+                str(item.get("id") or ""),
+                str(item.get("name") or ""),
+            ),
+        ),
+    }
+
+
 def conversation_content_hash(convo: ParsedConversation) -> ContentHash:
     """Generate content hash for conversation.
 
@@ -210,34 +235,27 @@ def conversation_content_hash(convo: ParsedConversation) -> ContentHash:
         if msg.content_blocks:
             msg_payload["content_blocks"] = [_content_block_payload(b) for b in msg.content_blocks]
         messages_payload.append(msg_payload)
-    attachments_payload = sorted(
-        [
-            {
-                "id": _normalize_for_hash(att.provider_attachment_id),
-                "message_id": _normalize_for_hash(att.message_provider_id),
-                "name": _normalize_for_hash(att.name),
-                "mime_type": _normalize_for_hash(att.mime_type),
-                "size_bytes": _normalize_for_hash(att.size_bytes),
-                "digest": _normalize_for_hash(
-                    str(att.provider_meta["sha256"]) if att.provider_meta and att.provider_meta.get("sha256") else None
-                ),
-            }
-            for att in convo.attachments
-        ],
-        key=lambda item: (
-            item.get("message_id") or "",
-            item.get("id") or "",
-            item.get("name") or "",
-        ),
-    )
+    attachments_payload = [
+        {
+            "id": _normalize_for_hash(att.provider_attachment_id),
+            "message_id": _normalize_for_hash(att.message_provider_id),
+            "name": _normalize_for_hash(att.name),
+            "mime_type": _normalize_for_hash(att.mime_type),
+            "size_bytes": _normalize_for_hash(att.size_bytes),
+            "digest": _normalize_for_hash(
+                str(att.provider_meta["sha256"]) if att.provider_meta and att.provider_meta.get("sha256") else None
+            ),
+        }
+        for att in convo.attachments
+    ]
     return ContentHash(
         hash_payload(
-            {
-                "title": _normalize_for_hash(convo.title),
-                "created_at": _normalize_for_hash(convo.created_at),
-                "updated_at": _normalize_for_hash(convo.updated_at),
-                "messages": messages_payload,
-                "attachments": attachments_payload,
-            }
+            _conversation_hash_payload(
+                title=convo.title,
+                created_at=convo.created_at,
+                updated_at=convo.updated_at,
+                messages=messages_payload,
+                attachments=attachments_payload,
+            )
         )
     )

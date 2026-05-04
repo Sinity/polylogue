@@ -11,6 +11,7 @@ from typing import Literal, Protocol
 
 from polylogue.config import Config
 from polylogue.core.json import JSONDocument, dumps, require_json_document
+from polylogue.errors import PolylogueError
 from polylogue.insights.archive import (
     ArchiveInsightUnavailableError,
     DaySessionSummaryInsight,
@@ -62,7 +63,7 @@ _INSIGHT_ALIASES = {
 }
 
 
-class InsightExportBundleError(RuntimeError):
+class InsightExportBundleError(PolylogueError):
     """Raised when an insight export bundle cannot be written."""
 
 

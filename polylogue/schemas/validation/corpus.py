@@ -9,20 +9,13 @@ from pathlib import Path
 from typing import TypeAlias
 
 from polylogue.archive.raw_payload import build_raw_payload_envelope
+from polylogue.core.common import format_malformed_jsonl_error as _format_malformed_jsonl_error
 from polylogue.core.provider_identity import CORE_RUNTIME_PROVIDERS
 from polylogue.schemas.validator import SchemaValidator
 from polylogue.storage.blob_store import get_blob_store
 
 from .models import ProviderSchemaVerification, SchemaVerificationReport
 from .requests import SchemaVerificationRequest, bounded_window
-
-
-def _format_malformed_jsonl_error(*, malformed_lines: int, malformed_detail: str | None) -> str:
-    message = f"Malformed JSONL lines: {malformed_lines}"
-    if malformed_detail:
-        return f"{message} (first bad {malformed_detail})"
-    return message
-
 
 VerificationRow: TypeAlias = tuple[str, str, str | None, str]
 VerificationSqlParam: TypeAlias = str | int

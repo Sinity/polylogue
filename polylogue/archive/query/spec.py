@@ -14,6 +14,7 @@ from polylogue.archive.query.fields import describe_spec_fields, query_spec_has_
 from polylogue.archive.query.plan import ConversationQueryPlan
 from polylogue.archive.viewport.viewports import ToolCategory
 from polylogue.core.dates import parse_date
+from polylogue.errors import PolylogueError
 from polylogue.types import Provider
 
 if TYPE_CHECKING:
@@ -29,8 +30,10 @@ _SpecT = TypeVar("_SpecT", bound="ConversationQuerySpec")
 # ---------------------------------------------------------------------------
 
 
-class QuerySpecError(ValueError):
+class QuerySpecError(PolylogueError):
     """Typed query-spec construction/application error."""
+
+    http_status_code = 400
 
     def __init__(self, field: str, value: str) -> None:
         super().__init__(f"invalid {field}: {value}")

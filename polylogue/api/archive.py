@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Protocol
 
 from polylogue.archive.message.roles import MessageRoleFilter
 from polylogue.archive.semantic.content_projection import ContentProjectionSpec
+from polylogue.errors import PolylogueError
 from polylogue.insights.archive import (
     SessionEnrichmentInsight,
     SessionEnrichmentInsightQuery,
@@ -143,8 +144,10 @@ if TYPE_CHECKING:
         async def get_conversation_stats(self, conversation_id: str) -> dict[str, int]: ...
 
 
-class ConversationNotFoundError(ValueError):
+class ConversationNotFoundError(PolylogueError):
     """Raised when a requested conversation does not exist in the archive."""
+
+    http_status_code = 404
 
 
 class PolylogueArchiveMixin:
@@ -472,7 +475,7 @@ class PolylogueArchiveMixin:
             raise ConversationNotFoundError(conversation_id)
         from polylogue.storage.repository.archive.repository_writes import RepositoryWriteMixin
 
-        store: RepositoryWriteMixin = self.repository  # type: ignore[assignment]
+        store: RepositoryWriteMixin = self.repository
         existing = await store.list_tags()
         await store.add_tag(str(resolved), tag)
         after = await store.list_tags()
@@ -485,7 +488,7 @@ class PolylogueArchiveMixin:
             raise ConversationNotFoundError(conversation_id)
         from polylogue.storage.repository.archive.repository_writes import RepositoryWriteMixin
 
-        store: RepositoryWriteMixin = self.repository  # type: ignore[assignment]
+        store: RepositoryWriteMixin = self.repository
         existing = await store.list_tags()
         await store.remove_tag(str(resolved), tag)
         after = await store.list_tags()
@@ -495,7 +498,7 @@ class PolylogueArchiveMixin:
         """Return all metadata key-value pairs for a conversation."""
         from polylogue.storage.repository.archive.repository_writes import RepositoryWriteMixin
 
-        store: RepositoryWriteMixin = self.repository  # type: ignore[assignment]
+        store: RepositoryWriteMixin = self.repository
         result: dict[str, str] = {}
         doc = await store.get_metadata(conversation_id)
         for k, v in doc.items():
@@ -509,5 +512,5 @@ class PolylogueArchiveMixin:
             raise ConversationNotFoundError(conversation_id)
         from polylogue.storage.repository.archive.repository_writes import RepositoryWriteMixin
 
-        store: RepositoryWriteMixin = self.repository  # type: ignore[assignment]
+        store: RepositoryWriteMixin = self.repository
         await store.update_metadata(str(resolved), key, value)

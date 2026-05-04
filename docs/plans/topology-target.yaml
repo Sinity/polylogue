@@ -310,11 +310,6 @@ files:
     target: polylogue/archive/query/plan_execution.py
     owner: archive-query
     reason: archive-domain query semantics
-  - path: polylogue/archive/query/read_fields.py
-    loc: 172
-    target: polylogue/archive/query/read_fields.py
-    owner: archive-query
-    reason: archive-domain query semantics
   - path: polylogue/archive/query/retrieval.py
     loc: 49
     target: polylogue/archive/query/retrieval.py
@@ -805,6 +800,11 @@ files:
     target: polylogue/core/__init__.py
     owner: core-primitive
     reason: core primitive
+  - path: polylogue/core/common.py
+    loc: 186
+    target: polylogue/core/common.py
+    owner: core-primitive
+    reason: canonical SQL templates and shared utilities
   - path: polylogue/core/dates.py
     loc: 56
     target: polylogue/core/dates.py

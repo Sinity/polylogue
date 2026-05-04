@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
 from typing import Protocol
+
+# Re-export canonical chunked from polylogue.core.common.
+from polylogue.core.common import chunked  # noqa: F401
 
 FTS_MESSAGES_TABLE_SQL = """
     CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
@@ -56,11 +58,6 @@ class IndexedMessage(Protocol):
     message_id: str
     conversation_id: str
     text: str | None
-
-
-def chunked(items: Sequence[str], *, size: int) -> Iterable[Sequence[str]]:
-    for index in range(0, len(items), size):
-        yield items[index : index + size]
 
 
 def delete_conversation_rows_sql(chunk_size: int) -> str:

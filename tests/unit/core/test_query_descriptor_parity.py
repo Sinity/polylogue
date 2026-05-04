@@ -14,7 +14,7 @@ from polylogue.mcp.query_contracts import MCPConversationQueryRequest
 def test_descriptor_mcp_names_match_mcp_query_request_fields() -> None:
     """Every MCPConversationQueryRequest field with a descriptor must match."""
     mcp_fields = {field.name for field in fields(MCPConversationQueryRequest)}
-    declared = set()
+    declared: set[str] = set()
     for d in QUERY_FIELD_DESCRIPTORS:
         declared.update(d.mcp_names)
     # Control fields (limit, offset, sort) don't need descriptors

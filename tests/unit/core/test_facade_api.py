@@ -532,7 +532,7 @@ class TestPolylogueArchiveInsights:
         )
 
         archive = Polylogue(archive_root=cli_workspace["archive_root"], db_path=db_path)
-        stats = await archive.get_archive_stats()
+        stats = await archive.stats()
         health = await archive.health_check()
         counts = await archive.rebuild_insights(["conv-public"])
 

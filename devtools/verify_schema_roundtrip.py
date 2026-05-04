@@ -15,14 +15,14 @@ try:
     import jsonschema
     from jsonschema import Draft202012Validator
 except ImportError:  # pragma: no cover
-    jsonschema = None  # type: ignore[assignment]
-    Draft202012Validator = None  # type: ignore[assignment]
+    jsonschema = None
+    Draft202012Validator = None
 
 try:
     from polylogue.schemas.synthetic import SyntheticCorpus
     from polylogue.schemas.synthetic.wire_formats import PROVIDER_WIRE_FORMATS
 except ImportError:  # pragma: no cover
-    SyntheticCorpus = None  # type: ignore[assignment]
+    SyntheticCorpus = None  # type: ignore[misc,assignment]
     PROVIDER_WIRE_FORMATS = {}
 
 
