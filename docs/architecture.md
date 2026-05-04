@@ -96,8 +96,9 @@ The `all` pipeline stage runs: acquire → parse → materialize → render → 
 | Claude Code | `parentUuid`/`sessionId` in record array | `parsers/claude.py` (code path) |
 | Codex | Session envelope structure | `parsers/codex.py` |
 | Gemini | `chunkedPrompt.chunks` structure | `parsers/drive.py` |
+| Drive | Google Takeout format with OAuth | `parsers/drive.py` |
 
-`detect_provider()` calls each parser's `looks_like()` in order.
+Six known providers plus `UNKNOWN`. `detect_provider()` calls each parser's `looks_like()` in order.
 
 ## Key Abstractions
 
@@ -110,6 +111,71 @@ The `all` pipeline stage runs: acquire → parse → materialize → render → 
 | `Session Insights` | `storage/insights/session/` | Materialized read models: profiles, work events, phases, threads, aggregates. |
 | `ContentHash` | `pipeline/ids.py` | SHA-256 over NFC-normalized conversation payload. Title, timestamps, messages, attachments are hashed. User metadata (tags, summaries) is excluded — editable metadata doesn't trigger re-import. |
 | `Provider` enum | `types.py` | 6 known providers + UNKNOWN. All provider identity flows through this enum. |
+
+## Artifact Taxonomy
+
+Acquired files are classified by `ArtifactKind` before ingestion:
+
+| Kind | Description |
+|------|-------------|
+| `conversation_document` | A single conversation (Claude Code JSONL, ChatGPT JSON) |
+| `conversation_record_stream` | Stream of conversation events |
+| `subagent_conversation_stream` | Sidechain sub-agent conversation |
+| `agent_sidecar_meta` | Session metadata (history.jsonl, sessions-index.json) |
+| `session_index` | Provider-level session index |
+| `bridge_pointer` | Pointer from a parent session to a sub-agent session |
+| `metadata_document` | Supplementary metadata |
+| `unknown` | Unclassified artifact |
+
+`classify_artifact()` in `sources/artifact_taxonomy/` assigns each acquired file
+a kind. The daemon uses artifact classification to route files to the correct
+ingestion path.
+
+## Hook Integration
+
+Polylogue integrates with AI coding agents via hook scripts that fire on session
+lifecycle events:
+
+- **Claude Code**: 16 hook events available (SessionStart, SessionEnd,
+  PreToolUse, PostToolUse, Notification, Stop, SubagentStart/Stop, PreCompact,
+  PermissionRequest). See [#802](https://github.com/Sinity/polylogue/issues/802).
+- **Codex**: 6 hook events available (SessionStart, SessionEnd, PreToolUse,
+  PostToolUse, Error, Warning).
+
+Hook scripts call `polylogue-hook` which ingests session data at event
+granularity, providing 100% data coverage vs. ~79% from post-hoc JSONL
+discovery. Hooks are the enabling infrastructure for real-time context injection
+(SessionStart), session completion processing (SessionEnd), and accurate paste
+detection (PreToolUse/PostToolUse).
+
+## Embedding Pipeline
+
+Vector embeddings for semantic search, powered by Voyage AI (`voyage-4`,
+1024 dimensions) via SQLite-vec (`vec0` virtual table):
+
+- **Storage**: `message_embeddings` (vec0), `embeddings_meta`, `embedding_status`
+- **Search**: `--similar` flag triggers pure vector search; hybrid mode combines
+  FTS5 + vector via Reciprocal Rank Fusion
+- **Integration**: Currently CLI-only (`polylogue run embed`). Daemon-side
+  post-ingest embedding is designed but not yet implemented
+  ([#828](https://github.com/Sinity/polylogue/issues/828))
+
+The embedding pipeline is fully built but dormant (0 messages embedded in
+production). It requires `VOYAGE_API_KEY` and the `sqlite-vec` Python package.
+
+## Blob Store
+
+Content-addressed storage for large binary artifacts (message content,
+attachments, exports):
+
+- **Addressing**: SHA-256 hash over content, stored in 256 prefix-sharded
+  subdirectories (`blob/ab/cdef...`)
+- **Dedup**: Identical content produces identical hashes — automatic
+  deduplication
+- **Linking**: `link_group_key` groups blobs by session for lifecycle management
+- **Scale**: ~24K blobs, ~42 GB in production archive
+- **GC**: Blob garbage collection is tracked in
+  [#818](https://github.com/Sinity/polylogue/issues/818)
 
 ## Database
 

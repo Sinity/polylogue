@@ -121,6 +121,14 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "devtools.render_quality_reference",
     ),
     CommandSpec(
+        "render-pages",
+        "generated surfaces",
+        "Build the GitHub Pages static site into _site/.",
+        "devtools.render_pages",
+        use_when="Build or verify the full GitHub Pages static site after changing docs, templates, or design docs.",
+        examples=("devtools render-pages", "devtools render-pages --check", "devtools render-pages --serve"),
+    ),
+    CommandSpec(
         "render-verification-catalog",
         "generated surfaces",
         "Render the verification-lab proof catalog from obligation registries.",

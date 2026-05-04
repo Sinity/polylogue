@@ -201,19 +201,49 @@ Nix expressions.
 See [TESTING.md](TESTING.md) and [docs/devtools.md](docs/devtools.md) for
 details.
 
-## Widening Type-Check Coverage
+## Type Checking
 
-CI runs `mypy --strict` over a subset of `polylogue/*`. The legacy debt
-is tracked as a list of excluded files in `[tool.mypy] exclude` in
-`pyproject.toml`. The list only shrinks.
+CI runs `mypy --strict` on all files under `polylogue/`, `tests/`, and
+`devtools/`. Configuration is in `pyproject.toml`:
 
-To clean a module:
+```toml
+[tool.mypy]
+strict = true
+files = ["polylogue", "tests/**/*.py", "devtools/**/*.py"]
+```
 
-1. Pick a file from the exclude list.
-2. Remove its entry and run `mypy polylogue/` — fix the reported errors.
-3. Run `devtools verify` to confirm the gate still passes.
-4. Commit the removed entry together with the fixes.
+There is no exclude list. All new files are checked by default. The mypy gate
+runs as part of `devtools verify` and in CI.
 
-New files under `polylogue/` are checked by default. Anything added
-that fails `mypy --strict` must be cleaned before merge, not added to
-the exclude list.
+## Verification Baseline
+
+Before creating a PR, run the full local baseline. CI runs the same checks.
+
+```bash
+devtools verify            # format + lint + mypy + render-all --check + pytest
+devtools verify --quick    # format + lint + mypy + render-all --check (skip tests)
+devtools verify --lab      # verification-lab checks (obligations, proof pack)
+```
+
+The quick gate runs on `git push` via `.githooks/pre-push`. It's a fast check,
+not a substitute for the full baseline.
+
+Proof Pack: every PR gets a `Polylogue Proof Pack` comment. It's a verification
+impact report showing affected domains, required gates, and known gaps. Use it
+to choose focused verification — run the gates that match touched files, state
+in the PR why a suggested gate is only optional for that change.
+
+## PR Body Discipline
+
+The PR template requires four sections:
+
+1. **Summary**: one paragraph describing what changed and why
+2. **Problem**: evidence or observation that triggered the work. Not "user asked"
+3. **Solution**: modules touched, non-obvious decisions, alternatives rejected
+4. **Verification**: exact commands run and the output line that matters. Not
+   "tests pass"
+
+The PR title becomes the squash-merge subject on `master`. Rules:
+- ≤72 characters, conventional prefix, imperative mood
+- Describes what changed, not what was worked on
+- Accurate — do not claim alignment or unification unless the diff achieves it
