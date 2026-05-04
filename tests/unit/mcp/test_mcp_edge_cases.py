@@ -6,7 +6,6 @@ and concurrent access patterns.
 
 from __future__ import annotations
 
-import json
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -57,26 +56,24 @@ class TestSafeCall:
         result = _safe_call("test", lambda: '{"ok": true}')
         assert '"ok"' in result
 
-    def test_exception_returns_json_error(self) -> None:
+    def test_exception_raises_polylogue_error(self) -> None:
         def failing() -> None:
             raise RuntimeError("DB connection lost")
 
-        result = _safe_call("test_tool", failing)
-        assert result is not None
-        data = json.loads(result)
-        assert data["error"] == "internal MCP tool error"
-        assert data["code"] == -32603  # JSON-RPC internal error
-        assert data["detail"] == "RuntimeError"
-        assert data["tool"] == "test_tool"
+        from polylogue.errors import PolylogueError
+
+        with pytest.raises(PolylogueError, match="test_tool.*RuntimeError"):
+            _safe_call("test_tool", failing)
 
     def test_traceback_not_in_output(self) -> None:
         def failing() -> None:
             raise ValueError("secret internal path /home/user/.db")
 
-        result = _safe_call("test_tool", failing)
-        assert result is not None
-        # _safe_call wraps in JSON, no raw traceback
-        assert "Traceback" not in result
+        from polylogue.errors import PolylogueError
+
+        with pytest.raises(PolylogueError) as exc:
+            _safe_call("test_tool", failing)
+        assert "Traceback" not in str(exc.value)
 
 
 # =============================================================================

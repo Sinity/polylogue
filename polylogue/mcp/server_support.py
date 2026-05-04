@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Literal, Protocol, TypeVar, overload
 
 from pydantic import BaseModel
 
+from polylogue.errors import PolylogueError
 from polylogue.logging import get_logger
 from polylogue.mcp.payloads import MCPErrorPayload, MCPFencedCodeBlock
 from polylogue.operations import ArchiveOperations
@@ -135,12 +136,14 @@ def _safe_call(fn_name: str, fn: Callable[[], TResult]) -> TResult | str: ...
 
 
 def _safe_call(fn_name: str, fn: Callable[[], TResult]) -> TResult | str:
-    """Call fn() and return its result, or a JSON error dict on exception."""
+    """Call fn() and return its result. Raises on error so FastMCP sets isError=True."""
     try:
         return fn()
+    except PolylogueError:
+        raise
     except Exception as exc:
         logger.exception("MCP tool %s failed", fn_name)
-        return _json_payload(_exception_error_payload(fn_name, exc), exclude_none=True)
+        raise PolylogueError(f"{fn_name}: {type(exc).__name__}: {exc}") from exc
 
 
 @overload
@@ -156,12 +159,14 @@ async def _async_safe_call(fn_name: str, fn: Callable[[], Awaitable[TResult]]) -
 
 
 async def _async_safe_call(fn_name: str, fn: Callable[[], Awaitable[TResult]]) -> TResult | str:
-    """Async version of _safe_call for async tool handlers."""
+    """Async version of _safe_call. Raises on error so FastMCP sets isError=True."""
     try:
         return await fn()
+    except PolylogueError:
+        raise
     except Exception as exc:
         logger.exception("MCP tool %s failed", fn_name)
-        return _json_payload(_exception_error_payload(fn_name, exc), exclude_none=True)
+        raise PolylogueError(f"{fn_name}: {type(exc).__name__}: {exc}") from exc
 
 
 def _error_json(message: str, **extra: object) -> str:
