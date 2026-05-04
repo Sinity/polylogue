@@ -55,23 +55,12 @@ def _has_active_lease(conn: sqlite3.Connection, blob_hash: str) -> bool:
 def _still_referenced(conn: sqlite3.Connection, blob_hash: str) -> bool:
     """Return True if the blob hash is referenced by any archive row.
 
-    Checks against the content_hash column of messages and conversations,
-    and against attachment rows.
+    Blobs are stored under their ``raw_id`` (SHA-256 of source content).
+    A blob is referenced if any ``raw_conversations`` row carries that
+    ``raw_id`` — meaning the original source file is still in the archive.
     """
     row = conn.execute(
-        "SELECT 1 FROM messages WHERE content_hash = ? LIMIT 1",
-        (blob_hash,),
-    ).fetchone()
-    if row:
-        return True
-    row = conn.execute(
-        "SELECT 1 FROM conversations WHERE content_hash = ? LIMIT 1",
-        (blob_hash,),
-    ).fetchone()
-    if row:
-        return True
-    row = conn.execute(
-        "SELECT 1 FROM attachments WHERE attachment_id = ? LIMIT 1",
+        "SELECT 1 FROM raw_conversations WHERE raw_id = ? LIMIT 1",
         (blob_hash,),
     ).fetchone()
     return row is not None
@@ -84,6 +73,8 @@ def _candidate_blobs(
 ) -> list[tuple[str, float]]:
     """List blob files eligible for GC consideration.
 
+    Blobs are stored in two-level prefix directories: ``{root}/{hh}/{hh...}``.
+    Walks all prefix subdirectories (00–ff) to find actual blob files.
     Returns list of ``(blob_hash, mtime)`` tuples sorted by mtime ascending.
     """
     if not blob_dir.is_dir():
@@ -92,13 +83,23 @@ def _candidate_blobs(
     candidates: list[tuple[str, float]] = []
     now = time.time()
     try:
-        for entry in os.scandir(str(blob_dir)):
-            if (
-                entry.is_file(follow_symlinks=False)
-                and not entry.name.startswith(".")
-                and now - entry.stat().st_mtime >= older_than
-            ):
-                candidates.append((entry.name, entry.stat().st_mtime))
+        for prefix_dir in os.scandir(str(blob_dir)):
+            if not prefix_dir.is_dir(follow_symlinks=False):
+                continue
+            if not prefix_dir.name or len(prefix_dir.name) != 2:
+                continue
+            try:
+                for entry in os.scandir(prefix_dir.path):
+                    if (
+                        entry.is_file(follow_symlinks=False)
+                        and not entry.name.startswith(".")
+                        and now - entry.stat().st_mtime >= older_than
+                    ):
+                        blob_hash = prefix_dir.name + entry.name
+                        candidates.append((blob_hash, entry.stat().st_mtime))
+            except PermissionError:
+                logger.warning("Permission denied scanning blob prefix: %s", prefix_dir.path)
+                continue
     except PermissionError:
         logger.warning("Permission denied scanning blob directory: %s", blob_dir)
         return []
