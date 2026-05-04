@@ -58,12 +58,14 @@ class LiveWatcher:
         debounce_s: float = 2.0,
         cursor: CursorStore | None = None,
         max_workers: int | None = None,
+        converger: object | None = None,  # DaemonConverger | None — avoids circular import
     ) -> None:
         self._polylogue = polylogue
         self._sources = tuple(sources)
         self._debounce_s = debounce_s
         self._cursor = cursor or CursorStore(polylogue.archive_root / "polylogue.sqlite")
         self._max_workers = max_workers
+        self._converger = converger
         self._pending_paths: set[Path] = set()
         self._pending_scheduled = False
         self._last_batch_at: float = 0.0
@@ -221,83 +223,87 @@ class LiveWatcher:
         source. This avoids the per-file source-tree rescan that
         ``parse_file()`` triggers.
         """
+        if self._converger is not None:
+            t0 = time.perf_counter()
+            for path in paths:
+                if self._stop.is_set():
+                    return
+                try:
+                    self._converger.converge_file(path)  # type: ignore[attr-defined]
+                except Exception as exc:
+                    logger.warning("live.watcher: converge failed for %s: %s", path, exc)
+            elapsed = time.perf_counter() - t0
+            logger.info(
+                "live.watcher: converged %d file(s) in %.1fs (%.1f/s)",
+                len(paths),
+                elapsed,
+                len(paths) / max(elapsed, 0.01),
+            )
+            for path in paths:
+                try:
+                    stat = path.stat()
+                    fp, last_nl = _fingerprint_file(path)
+                except FileNotFoundError:
+                    continue
+                self._cursor.set(
+                    path,
+                    stat.st_size,
+                    byte_offset=last_nl,
+                    last_complete_newline=last_nl,
+                    parser_fingerprint=_PARSER_FINGERPRINT,
+                    content_fingerprint=fp,
+                    source_name=self._source_name_for(path),
+                    st_dev=None,
+                    st_ino=None,
+                    mtime_ns=None,
+                )
+                self._cursor.reset_failures(path)
+            return
+
         from polylogue.config import Source
 
-        # Group by source
         by_source: dict[str, list[Path]] = {}
         for path in paths:
-            source_name = self._source_name_for(path)
-            by_source.setdefault(source_name, []).append(path)
-
-        fingerprints: dict[Path, tuple[int, str, int]] = {}
-
+            by_source.setdefault(self._source_name_for(path), []).append(path)
         for source_name, source_paths in by_source.items():
             if self._stop.is_set():
                 return
-
-            # Pass individual file paths — directories would cause the
-            # pipeline to scan all files including non-conversation metadata
-            # (history.jsonl, sessions-index.json, etc.).
             sources = [Source(name=f"{source_name}:{p.parent.name}", path=p) for p in source_paths]
-
             t0 = time.perf_counter()
             try:
-                await self._polylogue.parse_sources(
-                    sources=sources,
-                    download_assets=False,
-                )
+                await self._polylogue.parse_sources(sources=sources, download_assets=False)
             except Exception as exc:
-                logger.warning(
-                    "live.watcher: batch ingest failed for source=%s (%d file(s)): %s",
-                    source_name,
-                    len(source_paths),
-                    exc,
-                )
+                logger.warning("live.watcher: batch failed for %s: %s", source_name, exc)
                 for p in source_paths:
                     self._cursor.mark_failed(p)
                 continue
-
             elapsed = time.perf_counter() - t0
             logger.info(
-                "live.watcher: batch ingested source=%s — %d file(s) in %.1fs (%.1f/s)",
+                "live.watcher: batch ingested %s — %d in %.1fs (%.1f/s)",
                 source_name,
                 len(source_paths),
                 elapsed,
                 len(source_paths) / max(elapsed, 0.01),
             )
-
-            # Pre-compute fingerprints for cursor update. We do this after
-            # ingest so files that were mid-write during fingerprinting get
-            # their post-ingest state recorded.
             for path in source_paths:
                 try:
                     stat = path.stat()
                     fp, last_nl = _fingerprint_file(path)
-                    fingerprints[path] = (stat.st_size, fp, last_nl)
                 except FileNotFoundError:
                     continue
-
-        # Update cursors
-        for path, (size, fp, last_nl) in fingerprints.items():
-            self._cursor.set(
-                path,
-                size,
-                byte_offset=last_nl,
-                last_complete_newline=last_nl,
-                parser_fingerprint=_PARSER_FINGERPRINT,
-                content_fingerprint=fp,
-                source_name=self._source_name_for(path),
-                st_dev=None,
-                st_ino=None,
-                mtime_ns=None,
-            )
-            self._cursor.reset_failures(path)
-
-        logger.info(
-            "live.watcher: batch complete — %d file(s), %d source(s)",
-            len(paths),
-            len(by_source),
-        )
+                self._cursor.set(
+                    path,
+                    stat.st_size,
+                    byte_offset=last_nl,
+                    last_complete_newline=last_nl,
+                    parser_fingerprint=_PARSER_FINGERPRINT,
+                    content_fingerprint=fp,
+                    source_name=self._source_name_for(path),
+                    st_dev=None,
+                    st_ino=None,
+                    mtime_ns=None,
+                )
+                self._cursor.reset_failures(path)
 
     def _source_name_for(self, path: Path) -> str:
         resolved = path.resolve()

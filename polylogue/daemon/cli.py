@@ -300,18 +300,21 @@ async def run_daemon_services(
         from polylogue.daemon.convergence import DaemonConverger
         from polylogue.daemon.convergence_stages import (
             make_acquire_stage,
+            make_embed_stage,
             make_fts_converge_stage,
             make_insight_converge_stage,
+            make_parse_stage,
         )
-        from polylogue.paths import archive_root, blob_store_root, db_path
+        from polylogue.paths import archive_root, db_path
 
         _db = db_path() or Path(archive_root()) / "polylogue.db"
-        _blob = blob_store_root()
 
         converger = DaemonConverger(
             stages=(
-                make_acquire_stage(_db, _blob),
+                make_acquire_stage(_db),
+                make_parse_stage(_db),
                 make_fts_converge_stage(_db),
+                make_embed_stage(_db),
                 make_insight_converge_stage(_db),
             ),
             max_workers=2,
@@ -347,7 +350,7 @@ async def run_daemon_services(
 
         if enable_watch:
             async with Polylogue() as polylogue:
-                watcher = LiveWatcher(polylogue, sources, debounce_s=debounce_s)
+                watcher = LiveWatcher(polylogue, sources, debounce_s=debounce_s, converger=converger)
                 watcher_task = asyncio.create_task(watcher.run())
                 tasks.append(watcher_task)
                 all_tasks = tasks + maintenance_tasks
