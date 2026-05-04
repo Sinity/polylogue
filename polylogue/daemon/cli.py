@@ -154,6 +154,49 @@ async def _periodic_heartbeat() -> None:
             logger.warning("daemon: heartbeat query failed", exc_info=True)
 
 
+async def _periodic_convergence_check(
+    sources: tuple[WatchSource, ...],
+) -> None:
+    """Periodically verify FTS coverage, insight freshness, and repair gaps.
+
+    This is a safety net that runs every 10 minutes. The write path
+    maintains these atomically via commit_archive_write_effects(),
+    so gaps should be rare — this catches edge cases like crash recovery.
+    """
+    from polylogue.paths import archive_root, db_path
+    from polylogue.storage.sqlite.connection_profile import open_connection
+
+    db = db_path() or Path(archive_root()) / "polylogue.db"
+    while True:
+        await asyncio.sleep(600)  # 10 minutes
+        if not db.exists():
+            continue
+        try:
+            conn = open_connection(db, timeout=5.0)
+            try:
+                total_msgs = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+                if total_msgs == 0:
+                    continue
+                fts_count = conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0]
+                gap = total_msgs - fts_count
+                if gap > 0:
+                    logger.warning(
+                        "convergence: FTS gap detected (%d/%d messages, %.1f%%). Rebuilding.",
+                        fts_count,
+                        total_msgs,
+                        100 * gap / total_msgs,
+                    )
+                    from polylogue.storage.fts.fts_lifecycle import rebuild_fts_index_sync
+
+                    rebuild_fts_index_sync(conn)
+                    conn.commit()
+                    logger.info("convergence: FTS rebuild complete — %d messages indexed.", total_msgs)
+            finally:
+                conn.close()
+        except Exception:
+            logger.warning("convergence: check failed", exc_info=True)
+
+
 def _acquire_pidfile(pidfile: Path) -> int:
     """Acquire an advisory lock on the pidfile via fcntl.flock.
 
@@ -237,7 +280,8 @@ async def run_daemon_services(
     # Periodic maintenance tasks.
     wal_task = asyncio.create_task(_periodic_wal_checkpoint())
     heartbeat_task = asyncio.create_task(_periodic_heartbeat())
-    maintenance_tasks = [wal_task, heartbeat_task]
+    convergence_task = asyncio.create_task(_periodic_convergence_check(sources))
+    maintenance_tasks = [wal_task, heartbeat_task, convergence_task]
 
     api_server: ThreadingHTTPServer | None = None
     api_server_task: asyncio.Task[None] | None = None
@@ -245,9 +289,17 @@ async def run_daemon_services(
     server_task: asyncio.Task[None] | None = None
     watcher: LiveWatcher | None = None
     watcher_task: asyncio.Task[None] | None = None
+    converger: DaemonConverger | None = None
     tasks: list[asyncio.Task[None]] = []
 
     try:
+        # Start the convergence engine — it periodically checks and repairs
+        # FTS gaps, insight freshness, and other archive invariants.
+        from polylogue.daemon.convergence import DaemonConverger
+
+        converger = DaemonConverger(stages=(), max_workers=2)
+        await converger.start()
+
         if enable_browser_capture:
             server = make_server(
                 browser_capture_host,
@@ -290,6 +342,8 @@ async def run_daemon_services(
     finally:
         if watcher is not None:
             watcher.stop()
+        if converger is not None:
+            await converger.stop()
         if server is not None:
             server.shutdown()
         if api_server is not None:

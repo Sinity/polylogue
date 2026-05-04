@@ -8,10 +8,10 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 
 ## Snapshot
 
-- subjects: `517`
+- subjects: `507`
 - claims: `44`
 - runner bindings: `44`
-- proof obligations: `583`
+- proof obligations: `553`
 
 ## Quality Checks
 
@@ -40,7 +40,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `assurance.coverage_gap` | 23 |
 | `assurance.coverage_item` | 107 |
 | `assurance.coverage_manifest` | 9 |
-| `cli.command` | 55 |
+| `cli.command` | 45 |
 | `cli.json_command` | 5 |
 | `diagnostic.observable` | 1 |
 | `error.surface` | 2 |
@@ -72,6 +72,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `polylogue diagnostics turns` | `polylogue/cli/commands/diagnostics.py:92` `polylogue.cli.commands.diagnostics.turns_command` |
 | `polylogue doctor` | `polylogue/cli/commands/check.py:31` `polylogue.cli.commands.check.check_command` |
 | `polylogue export` | `polylogue/cli/commands/export.py:29` `polylogue.cli.commands.export.export_command` |
+| `polylogue ingest` | `polylogue/cli/commands/ingest.py:21` `polylogue.cli.commands.ingest.ingest_command` |
 | `polylogue insights` | `polylogue/cli/commands/insights.py:134` `polylogue.cli.commands.insights.insights_command` |
 | `polylogue insights analytics` | `polylogue/cli/commands/insights.py:100` `polylogue.cli.commands.insights._make_callback.<locals>.callback` |
 | `polylogue insights cost-rollups` | `polylogue/cli/commands/insights.py:100` `polylogue.cli.commands.insights._make_callback.<locals>.callback` |
@@ -94,18 +95,6 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `polylogue raw` | `polylogue/cli/query_verbs.py:247` `polylogue.cli.query_verbs.raw_verb` |
 | `polylogue reset` | `polylogue/cli/commands/reset.py:102` `polylogue.cli.commands.reset.reset_command` |
 | `polylogue resume` | `polylogue/cli/commands/resume.py:22` `polylogue.cli.commands.resume.resume_command` |
-| `polylogue run` | `polylogue/cli/commands/run.py:161` `polylogue.cli.commands.run.run_command` |
-| `polylogue run acquire` | `polylogue/cli/commands/run.py:312` `polylogue.cli.commands.run.run_acquire_stage` |
-| `polylogue run all` | `polylogue/cli/commands/run.py:362` `polylogue.cli.commands.run.run_all_stage` |
-| `polylogue run embed` | `polylogue/cli/commands/run.py:466` `polylogue.cli.commands.run.run_embed_stage` |
-| `polylogue run index` | `polylogue/cli/commands/run.py:350` `polylogue.cli.commands.run.run_index_stage` |
-| `polylogue run materialize` | `polylogue/cli/commands/run.py:330` `polylogue.cli.commands.run.run_materialize_stage` |
-| `polylogue run parse` | `polylogue/cli/commands/run.py:324` `polylogue.cli.commands.run.run_parse_stage` |
-| `polylogue run publish` | `polylogue/cli/commands/run.py:368` `polylogue.cli.commands.run.run_publish_stage` |
-| `polylogue run render` | `polylogue/cli/commands/run.py:336` `polylogue.cli.commands.run.run_render_stage` |
-| `polylogue run reprocess` | `polylogue/cli/commands/run.py:356` `polylogue.cli.commands.run.run_reprocess_stage` |
-| `polylogue run schema` | `polylogue/cli/commands/run.py:318` `polylogue.cli.commands.run.run_schema_stage` |
-| `polylogue run site` | `polylogue/cli/commands/run.py:374` `polylogue.cli.commands.run.run_site_stage` |
 | `polylogue schema` | `polylogue/cli/commands/schema.py:38` `polylogue.cli.commands.schema.schema_command` |
 | `polylogue schema compare` | `polylogue/cli/commands/schema.py:56` `polylogue.cli.commands.schema.schema_compare` |
 | `polylogue schema explain` | `polylogue/cli/commands/schema.py:94` `polylogue.cli.commands.schema.schema_explain` |
@@ -113,6 +102,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `polylogue select` | `polylogue/cli/query_verbs.py:285` `polylogue.cli.query_verbs.select_verb` |
 | `polylogue show` | `polylogue/cli/query_verbs.py:83` `polylogue.cli.query_verbs.show_verb` |
 | `polylogue stats` | `polylogue/cli/query_verbs.py:55` `polylogue.cli.query_verbs.stats_verb` |
+| `polylogue status` | `polylogue/cli/commands/status.py:16` `polylogue.cli.commands.status.status_command` |
 | `polylogue tags` | `polylogue/cli/commands/tags.py:12` `polylogue.cli.commands.tags.tags_command` |
 
 ## Schema Annotation Subjects
@@ -292,10 +282,10 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `assurance.coverage.gap_has_closure_path` | 23 |
 | `assurance.coverage.item_declared` | 107 |
 | `assurance.coverage.manifest_structured` | 9 |
-| `cli.command.help` | 55 |
+| `cli.command.help` | 45 |
 | `cli.command.json_envelope` | 5 |
-| `cli.command.no_traceback` | 55 |
-| `cli.command.plain_mode` | 55 |
+| `cli.command.no_traceback` | 45 |
+| `cli.command.plain_mode` | 45 |
 | `diagnostic.observable_trace_mapping` | 1 |
 | `error.machine_user_context` | 2 |
 | `generated.scenario.family_registered` | 9 |
