@@ -541,7 +541,7 @@ files:
     target: polylogue/cli/click_app.py
     owner: stable
   - path: polylogue/cli/click_command_registration.py
-    loc: 51
+    loc: 53
     target: polylogue/cli/click_command_registration.py
     owner: stable
   - path: polylogue/cli/click_option_groups.py
@@ -580,6 +580,10 @@ files:
     loc: 54
     target: polylogue/cli/commands/export.py
     owner: stable
+  - path: polylogue/cli/commands/ingest.py
+    loc: 72
+    target: polylogue/cli/commands/ingest.py
+    owner: stable
   - path: polylogue/cli/commands/insights.py
     loc: 298
     target: polylogue/cli/commands/insights.py
@@ -603,6 +607,10 @@ files:
   - path: polylogue/cli/commands/schema.py
     loc: 128
     target: polylogue/cli/commands/schema.py
+    owner: stable
+  - path: polylogue/cli/commands/status.py
+    loc: 117
+    target: polylogue/cli/commands/status.py
     owner: stable
   - path: polylogue/cli/commands/tags.py
     loc: 62
@@ -851,7 +859,7 @@ files:
     owner: core-primitive
     reason: core primitive
   - path: polylogue/daemon/__init__.py
-    loc: 7
+    loc: 19
     target: polylogue/daemon/__init__.py
     owner: stable
   - path: polylogue/daemon/browser_capture.py
@@ -859,15 +867,23 @@ files:
     target: polylogue/daemon/browser_capture.py
     owner: stable
   - path: polylogue/daemon/cli.py
-    loc: 568
+    loc: 640
     target: polylogue/daemon/cli.py
+    owner: stable
+  - path: polylogue/daemon/convergence.py
+    loc: 199
+    target: polylogue/daemon/convergence.py
+    owner: stable
+  - path: polylogue/daemon/convergence_stages.py
+    loc: 232
+    target: polylogue/daemon/convergence_stages.py
     owner: stable
   - path: polylogue/daemon/events.py
     loc: 137
     target: polylogue/daemon/events.py
     owner: stable
   - path: polylogue/daemon/http.py
-    loc: 512
+    loc: 572
     target: polylogue/daemon/http.py
     owner: stable
   - path: polylogue/daemon/status.py
@@ -1132,7 +1148,7 @@ files:
     target: polylogue/pipeline/services/ingest_batch/__init__.py
     owner: stable
   - path: polylogue/pipeline/services/ingest_batch/_core.py
-    loc: 1145
+    loc: 1121
     target: polylogue/pipeline/services/ingest_batch/_core.py
     owner: stable
   - path: polylogue/pipeline/services/ingest_batch/_models.py
@@ -1983,7 +1999,7 @@ files:
     target: polylogue/site/models.py
     owner: stable
   - path: polylogue/site/pages_builder.py
-    loc: 221
+    loc: 219
     target: polylogue/site/pages_builder.py
     owner: stable
   - path: polylogue/site/pages_style.py
@@ -2302,7 +2318,7 @@ files:
     owner: stable
     cross_cut: { lifecycle: runtime }
   - path: polylogue/storage/action_events/rebuild_sql.py
-    loc: 62
+    loc: 42
     target: polylogue/storage/action_events/rebuild_sql.py
     owner: stable
   - path: polylogue/storage/action_events/rebuild_storage.py
@@ -2743,7 +2759,7 @@ files:
     target: polylogue/storage/sqlite/queries/__init__.py
     owner: stable
   - path: polylogue/storage/sqlite/queries/action_events.py
-    loc: 124
+    loc: 101
     target: polylogue/storage/sqlite/queries/action_events.py
     owner: stable
   - path: polylogue/storage/sqlite/queries/artifacts.py
@@ -2751,11 +2767,11 @@ files:
     target: polylogue/storage/sqlite/queries/artifacts.py
     owner: stable
   - path: polylogue/storage/sqlite/queries/attachment_content_blocks.py
-    loc: 95
+    loc: 72
     target: polylogue/storage/sqlite/queries/attachment_content_blocks.py
     owner: stable
   - path: polylogue/storage/sqlite/queries/attachment_mutations.py
-    loc: 143
+    loc: 136
     target: polylogue/storage/sqlite/queries/attachment_mutations.py
     owner: stable
   - path: polylogue/storage/sqlite/queries/attachment_records.py
@@ -2784,7 +2800,7 @@ files:
     target: polylogue/storage/sqlite/queries/conversations_search.py
     owner: stable
   - path: polylogue/storage/sqlite/queries/conversations_writes.py
-    loc: 144
+    loc: 108
     target: polylogue/storage/sqlite/queries/conversations_writes.py
     owner: stable
     cross_cut: { layer: write }
@@ -2834,7 +2850,7 @@ files:
     target: polylogue/storage/sqlite/queries/message_query_stats.py
     owner: stable
   - path: polylogue/storage/sqlite/queries/message_query_writes.py
-    loc: 118
+    loc: 76
     target: polylogue/storage/sqlite/queries/message_query_writes.py
     owner: stable
     cross_cut: { layer: write }
@@ -2897,7 +2913,7 @@ files:
     owner: stable
     cross_cut: { layer: write }
   - path: polylogue/storage/sqlite/queries/stats.py
-    loc: 326
+    loc: 316
     target: polylogue/storage/sqlite/queries/stats.py
     owner: stable
   - path: polylogue/storage/sqlite/query_store.py
