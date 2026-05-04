@@ -108,19 +108,33 @@ class LiveWatcher:
             return
         logger.info("live.watcher: catch-up scan over %d file(s)", len(files))
 
-        changed: list[Path] = []
-        for path in files:
+        # Process in chunks so progress is visible and we don't
+        # fingerprint 10K+ files before any ingest starts.
+        chunk_size = 200
+        chunk: list[Path] = []
+
+        for i, path in enumerate(files, start=1):
             if self._stop.is_set():
                 return
             if self._needs_work(path):
-                changed.append(path)
+                chunk.append(path)
 
-        if not changed:
-            logger.info("live.watcher: all %d file(s) up to date", len(files))
-            return
+            if len(chunk) >= chunk_size:
+                logger.info(
+                    "live.watcher: chunk %d/%d — ingesting %d file(s)",
+                    i,
+                    len(files),
+                    len(chunk),
+                )
+                await self._ingest_files(chunk)
+                chunk.clear()
 
-        logger.info("live.watcher: %d/%d file(s) need ingest — batching", len(changed), len(files))
-        await self._ingest_files(changed)
+        if chunk:
+            logger.info(
+                "live.watcher: final chunk — ingesting %d file(s)",
+                len(chunk),
+            )
+            await self._ingest_files(chunk)
 
     # ------------------------------------------------------------------
     # Live: debounced batch scheduling
