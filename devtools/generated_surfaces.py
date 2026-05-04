@@ -10,6 +10,7 @@ from devtools import (
     render_cli_reference,
     render_devtools_reference,
     render_docs_surface,
+    render_pages,
     render_quality_reference,
     render_topology_status,
     render_verification_catalog,
@@ -77,6 +78,13 @@ GENERATED_SURFACES: tuple[GeneratedSurface, ...] = (
         description="Render docs/topology-status.md from the topology projection and realized tree.",
         command=control_plane_argv("render-topology-status"),
         main=render_topology_status.main,
+    ),
+    GeneratedSurface(
+        name="pages",
+        label="GitHub Pages",
+        description="Build the GitHub Pages static site into _site/.",
+        command=control_plane_argv("render-pages"),
+        main=render_pages.main,
     ),
 )
 

@@ -1,0 +1,49 @@
+name: GitHub Pages
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.1.0
+        with:
+          python-version: "3.13"
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --extra dev --frozen
+
+      - name: Install Pagefind
+        run: |
+          curl -L https://github.com/CloudCannon/pagefind/releases/latest/download/pagefind-v1.3.0-x86_64-unknown-linux-musl.tar.gz | tar xz
+          mv pagefind /usr/local/bin/
+
+      - name: Build site
+        run: uv run devtools render-pages --skip-pagefind
+
+      - name: Index with Pagefind
+        run: pagefind --site _site/
+
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./_site
+          destination_dir: .
+          force_orphan: true

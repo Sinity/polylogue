@@ -102,10 +102,8 @@ Never delete:
 - **`tests/unit/sources/test_parsers_props.py`**, **`test_null_guard_properties.py`**:
   Hypothesis property tests ensuring parsers never crash on arbitrary input and
   handle nulls in every field position.
-- **`tests/unit/core/test_properties.py`**: Domain model invariants (role
-  normalization, timestamp parsing, hashing determinism).
+
 - **`tests/integration/`**: End-to-end pipeline tests against real archive
   shapes.
 - **`tests/unit/security/`**: Security boundary tests.
-- **`tests/unit/storage/test_crud.py`**: Core storage contract tests (create,
-  read, update, delete round-trips).
+
