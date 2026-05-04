@@ -108,31 +108,40 @@ class LiveWatcher:
             return
         logger.info("live.watcher: catch-up scan over %d file(s)", len(files))
 
-        # Process in chunks so progress is visible and we don't
-        # fingerprint 10K+ files before any ingest starts.
-        chunk_size = 200
+        # Process in size-based chunks so a single 150 MB session
+        # doesn't starve the batch alongside 199 tiny files.
+        chunk_size_bytes = 50 * 1024 * 1024  # 50 MB
         chunk: list[Path] = []
+        chunk_bytes: int = 0
 
         for i, path in enumerate(files, start=1):
             if self._stop.is_set():
                 return
             if self._needs_work(path):
+                try:
+                    size = path.stat().st_size
+                except FileNotFoundError:
+                    size = 0
                 chunk.append(path)
+                chunk_bytes += size
 
-            if len(chunk) >= chunk_size:
+            if chunk_bytes >= chunk_size_bytes and chunk:
                 logger.info(
-                    "live.watcher: chunk %d/%d — ingesting %d file(s)",
+                    "live.watcher: chunk %d/%d — ingesting %d file(s) (%.1f MB)",
                     i,
                     len(files),
                     len(chunk),
+                    chunk_bytes / 1e6,
                 )
                 await self._ingest_files(chunk)
                 chunk.clear()
+                chunk_bytes = 0
 
         if chunk:
             logger.info(
-                "live.watcher: final chunk — ingesting %d file(s)",
+                "live.watcher: final chunk — ingesting %d file(s) (%.1f MB)",
                 len(chunk),
+                chunk_bytes / 1e6,
             )
             await self._ingest_files(chunk)
 
