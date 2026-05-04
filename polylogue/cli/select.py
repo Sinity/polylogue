@@ -55,7 +55,12 @@ class SelectConversationRow:
     @property
     def label(self) -> str:
         date = self.date or "unknown"
-        return f"{self.provider} | {date} | {self.title} | {self.conversation_id}"
+        return f"{self.provider} | {date} | {self.title}"
+
+    @property
+    def preview(self) -> str:
+        date = self.date or "unknown"
+        return f"Provider: {self.provider}\nDate:     {date}\nTitle:    {self.title}\nID:       {self.conversation_id}"
 
     def to_json(self) -> JSONDocument:
         return {
@@ -87,7 +92,7 @@ def render_select_row(row: SelectConversationRow, print_field: SelectPrintField)
 
 
 def _fzf_input(rows: list[SelectConversationRow]) -> str:
-    return "\n".join(f"{row.conversation_id}\t{row.label}" for row in rows)
+    return "\n".join(f"{row.conversation_id}\t{row.label}\t{row.preview}" for row in rows)
 
 
 def _parse_fzf_output(value: str) -> str | None:
@@ -102,7 +107,20 @@ def _choose_with_fzf(rows: list[SelectConversationRow]) -> SelectConversationRow
         return None
     try:
         completed = subprocess.run(
-            ["fzf", "--delimiter", "\t", "--with-nth", "2..", "--height", "40%", "--reverse"],
+            [
+                "fzf",
+                "--delimiter",
+                "\t",
+                "--with-nth",
+                "2",
+                "--height",
+                "40%",
+                "--reverse",
+                "--preview",
+                "echo {} | cut -f3-",
+                "--preview-window",
+                "down:4:wrap",
+            ],
             input=_fzf_input(rows),
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
