@@ -5,6 +5,7 @@ from __future__ import annotations
 import aiosqlite
 from typing_extensions import TypedDict
 
+from polylogue.core.common import SQL_STATS_UPSERT as _STATS_UPSERT_SQL
 from polylogue.storage.runtime import MessageRecord
 
 
@@ -203,18 +204,7 @@ async def upsert_conversation_stats(
     thinking_count = sum(1 for m in messages if m.has_thinking)
     paste_count = sum(1 for m in messages if m.has_paste)
     await conn.execute(
-        """
-        INSERT INTO conversation_stats
-            (conversation_id, provider_name, message_count, word_count, tool_use_count, thinking_count, paste_count)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(conversation_id) DO UPDATE SET
-            provider_name  = excluded.provider_name,
-            message_count  = excluded.message_count,
-            word_count     = excluded.word_count,
-            tool_use_count = excluded.tool_use_count,
-            thinking_count = excluded.thinking_count,
-            paste_count    = excluded.paste_count
-        """,
+        _STATS_UPSERT_SQL,
         (conversation_id, provider_name, message_count, word_count, tool_use_count, thinking_count, paste_count),
     )
     if transaction_depth == 0:

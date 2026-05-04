@@ -16,21 +16,34 @@ import sqlite3
 import time
 from collections.abc import Iterable, Sequence
 from concurrent.futures import Future, as_completed
+from contextlib import AbstractAsyncContextManager
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 from polylogue.archive.write_effects import commit_archive_write_effects
 from polylogue.archive.write_gateway import WriteOperation
 from polylogue.core.common import (
-    _ACTION_EVENT_INSERT_SQL,
-    _ATTACHMENT_REF_INSERT_SQL,
-    _ATTACHMENT_UPSERT_SQL,
-    _CONTENT_BLOCK_UPSERT_SQL,
-    _CONVERSATION_UPSERT_SQL,
-    _IDENTITY_LEDGER_UPSERT_SQL,
-    _MESSAGE_UPSERT_SQL,
-    _STATS_UPSERT_SQL,
+    SQL_ACTION_EVENT_INSERT as _ACTION_EVENT_INSERT_SQL,
+)
+from polylogue.core.common import (
+    SQL_ATTACHMENT_REF_INSERT as _ATTACHMENT_REF_INSERT_SQL,
+)
+from polylogue.core.common import (
+    SQL_ATTACHMENT_UPSERT as _ATTACHMENT_UPSERT_SQL,
+)
+from polylogue.core.common import (
+    SQL_CONTENT_BLOCK_UPSERT as _CONTENT_BLOCK_UPSERT_SQL,
+)
+from polylogue.core.common import (
+    SQL_CONVERSATION_UPSERT as _CONVERSATION_UPSERT_SQL,
+)
+from polylogue.core.common import (
+    SQL_MESSAGE_UPSERT as _MESSAGE_UPSERT_SQL,
+)
+from polylogue.core.common import (
+    SQL_STATS_UPSERT as _STATS_UPSERT_SQL,
 )
 from polylogue.core.metrics import (
     read_current_rss_mb,
@@ -40,19 +53,6 @@ from polylogue.core.metrics import (
 from polylogue.logging import get_logger
 from polylogue.paths import blob_store_root
 from polylogue.pipeline.payload_types import MaterializeStageObservation, ParseBatchObservation
-from polylogue.pipeline.services.ingest_batch._models import (
-    _DEFAULT_INGEST_WORKER_LIMIT,
-    _INGEST_EXTREME_BLOB_LIMIT_BYTES,
-    _INGEST_HIGH_BLOB_LIMIT_BYTES,
-    _INGEST_SOFT_BLOB_LIMIT_BYTES,
-    _BulkConnectionBackendLike,
-    _ConnectionBackendLike,
-    _ConversationEntry,
-    _IngestBatchSummary,
-    _IngestWorkerRequest,
-    _ParsingServiceRawStateLike,
-    _RawIngestOutcome,
-)
 from polylogue.pipeline.services.ingest_worker import (
     ConversationData,
     ConversationTuple,
@@ -68,8 +68,14 @@ from polylogue.storage.conversation_replacement import (
 from polylogue.storage.raw.models import RawConversationStateUpdate
 from polylogue.storage.runtime import RawConversationRecord
 from polylogue.storage.sqlite.connection import _load_sqlite_vec
+from polylogue.storage.sqlite.connection_profile import (
+    DB_TIMEOUT,
+    WRITE_CONNECTION_PRAGMA_STATEMENTS,
+)
 
 if TYPE_CHECKING:
+    import aiosqlite
+
     from polylogue.pipeline.services.parsing import ParsingService
     from polylogue.pipeline.services.parsing_models import ParseResult
     from polylogue.protocols import ProgressCallback
@@ -77,35 +83,118 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
+_DEFAULT_INGEST_WORKER_LIMIT = 8
+_INGEST_SOFT_BLOB_LIMIT_BYTES = 48 * 1024 * 1024
+_INGEST_HIGH_BLOB_LIMIT_BYTES = 96 * 1024 * 1024
+_INGEST_EXTREME_BLOB_LIMIT_BYTES = 256 * 1024 * 1024
+
+
+class _RawStateRepositoryLike(Protocol):
+    async def update_raw_state(self, raw_id: str, *, state: RawConversationStateUpdate) -> object: ...
+
+
+class _ParsingServiceRawStateLike(Protocol):
+    @property
+    def repository(self) -> _RawStateRepositoryLike: ...
+
+
+class _BulkConnectionBackendLike(Protocol):
+    def bulk_connection(self) -> AbstractAsyncContextManager[object]: ...
+
+
+class _ConnectionBackendLike(Protocol):
+    def connection(self) -> AbstractAsyncContextManager[aiosqlite.Connection]: ...
+
+
+@dataclass(slots=True)
+class _RawIngestOutcome:
+    raw_id: str
+    payload_provider: str | None
+    validation_status: str
+    validation_error: str | None
+    parse_error: str | None
+    error: str | None
+    had_conversations: bool
+
+
+@dataclass(slots=True)
+class _IngestBatchSummary:
+    outcomes: dict[str, _RawIngestOutcome] = field(default_factory=dict)
+    failed_raw_ids: dict[str, str] = field(default_factory=dict)
+    skipped_raw_ids: set[str] = field(default_factory=set)
+    processed_ids: set[str] = field(default_factory=set)
+    changed_conversation_ids: list[str] = field(default_factory=list)
+    counts: dict[str, int] = field(
+        default_factory=lambda: {
+            "conversations": 0,
+            "messages": 0,
+            "attachments": 0,
+            "skipped_conversations": 0,
+            "skipped_messages": 0,
+            "skipped_attachments": 0,
+        }
+    )
+    changed_counts: dict[str, int] = field(
+        default_factory=lambda: {
+            "conversations": 0,
+            "messages": 0,
+            "attachments": 0,
+        }
+    )
+    parse_failures: int = 0
+    total_msgs: int = 0
+    total_convos: int = 0
+    raw_record_count: int = 0
+    worker_count: int = 0
+    total_blob_mb: float = 0.0
+    total_result_bytes: int = 0
+    max_result_bytes: int = 0
+    max_result_raw_id: str | None = None
+    elapsed_s: float = 0.0
+    setup_elapsed_s: float = 0.0
+    max_current_rss_mb: float | None = None
+    result_wait_s: float = 0.0
+    drain_elapsed_s: float = 0.0
+    write_elapsed_s: float = 0.0
+    max_write_elapsed_s: float = 0.0
+    flush_elapsed_s: float = 0.0
+    commit_elapsed_s: float = 0.0
+    teardown_elapsed_s: float = 0.0
+
+
+@dataclass(frozen=True, slots=True)
+class _IngestWorkerRequest:
+    archive_root_str: str
+    blob_root_str: str
+    validation_mode: str
+    measure_ingest_result_size: bool
+
+
+_ConversationEntry = tuple[str, ConversationData]
+
+
+# ---------------------------------------------------------------------------
+# SQL templates — imported from polylogue.core.common (canonical source)
+# ---------------------------------------------------------------------------
+
+# _CONVERSATION_UPSERT_SQL, _MESSAGE_UPSERT_SQL, _CONTENT_BLOCK_UPSERT_SQL,
+# _STATS_UPSERT_SQL, _ACTION_EVENT_INSERT_SQL, _ATTACHMENT_UPSERT_SQL,
+# _ATTACHMENT_REF_INSERT_SQL are imported at the top of this module from
+# polylogue.core.common — sync and async paths share the same SQL templates.
+
+
 # ---------------------------------------------------------------------------
 # Sync DB writer
 # ---------------------------------------------------------------------------
 
 
-def _write_identity_ledger(conn: sqlite3.Connection, cdata: ConversationData) -> None:
-    """Write identity ledger row so re-imported conversations are recognized."""
-    source_path = cdata.source_name
-    provider_conversation_id = cdata.conversation_tuple[2]
-    conn.execute(
-        _IDENTITY_LEDGER_UPSERT_SQL,
-        (
-            cdata.provider_name,
-            cdata.source_name,
-            source_path,
-            provider_conversation_id,
-            cdata.content_hash,
-            cdata.conversation_id,
-        ),
-    )
-
-
 def _open_sync_connection(db_path: Path) -> sqlite3.Connection:
     """Open a sync sqlite3 connection with the same pragmas as the async backend."""
-    from polylogue.storage.sqlite.connection_profile import open_connection
-
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = open_connection(db_path)
+    conn = sqlite3.connect(str(db_path), timeout=DB_TIMEOUT)
     conn.row_factory = sqlite3.Row
+    for statement in WRITE_CONNECTION_PRAGMA_STATEMENTS:
+        conn.execute(statement)
     _load_sqlite_vec(conn)
     return conn
 
@@ -381,8 +470,6 @@ def _write_conversation_entry(
         summary.write_elapsed_s += write_elapsed
         if write_elapsed > summary.max_write_elapsed_s:
             summary.max_write_elapsed_s = write_elapsed
-        if content_changed:
-            _write_identity_ledger(conn, cdata)
         _record_write_result(
             summary,
             cdata,
@@ -708,16 +795,6 @@ def _process_ingest_batch_sync(
         conn.rollback()
         raise
     finally:
-        # Post-commit side effects (FTS repair + cache invalidation) run after
-        # the main transaction commits because commit_archive_write_effects()
-        # does its own conn.commit() internally (restores FTS triggers + rebuilds
-        # FTS indexes in a separate transaction). Nesting that inside the BEGIN
-        # IMMEDIATE transaction would cause nested-commit errors.
-        #
-        # This ordering also means a transient FTS repair failure won't roll
-        # back the already-durable data writes — and a data-write rollback in
-        # the except branch above leaves changed_ids empty, so side effects are
-        # a no-op.
         try:
             _commit_sync_ingest_side_effects(conn, tuple(changed_ids))
         except Exception:
@@ -917,27 +994,6 @@ async def process_ingest_batch(
             workers=batch_summary.worker_count,
             changed=len(batch_summary.changed_conversation_ids),
         )
-
-    try:
-        import asyncio as _asyncio
-
-        from polylogue.daemon.events import emit_daemon_event
-
-        await _asyncio.to_thread(
-            emit_daemon_event,
-            "ingestion_batch",
-            payload={
-                "elapsed_s": round(batch_summary.elapsed_s, 2),
-                "records": batch_summary.raw_record_count,
-                "blob_mb": round(batch_summary.total_blob_mb, 1),
-                "conversations": batch_summary.total_convos,
-                "messages": batch_summary.total_msgs,
-                "changed_conversations": len(batch_summary.changed_conversation_ids),
-                "workers": batch_summary.worker_count,
-            },
-        )
-    except Exception:
-        logger.debug("ingest_batch: failed to emit daemon event", exc_info=True)
 
     raw_state_update_elapsed_s = await _persist_batch_raw_state_updates(
         service,

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from polylogue.core.common import SQL_ACTION_EVENT_INSERT as _ACTION_EVENT_INSERT_SQL
+
 ACTION_EVENT_REPAIR_CANDIDATE_IDS_SQL = """
     SELECT DISTINCT cb.conversation_id
     FROM content_blocks cb
@@ -35,28 +37,6 @@ ACTION_EVENT_CONVERSATION_IDS_SQL = """
     WHERE type = 'tool_use'
     ORDER BY conversation_id
 """
-ACTION_EVENT_INSERT_SQL = """
-    INSERT INTO action_events (
-        event_id,
-        conversation_id,
-        message_id,
-        materializer_version,
-        source_block_id,
-        timestamp,
-        sort_key,
-        sequence_index,
-        provider_name,
-        action_kind,
-        tool_name,
-        normalized_tool_name,
-        tool_id,
-        affected_paths_json,
-        cwd_path,
-        branch_names_json,
-        command,
-        query_text,
-        url,
-        output_text,
-        search_text
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-"""
+# Re-export from canonical source so rebuild callers and ingest_batch both
+# use the same SQL template.
+ACTION_EVENT_INSERT_SQL = _ACTION_EVENT_INSERT_SQL
