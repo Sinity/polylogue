@@ -289,9 +289,17 @@ async def run_daemon_services(
     server_task: asyncio.Task[None] | None = None
     watcher: LiveWatcher | None = None
     watcher_task: asyncio.Task[None] | None = None
+    converger: DaemonConverger | None = None
     tasks: list[asyncio.Task[None]] = []
 
     try:
+        # Start the convergence engine — it periodically checks and repairs
+        # FTS gaps, insight freshness, and other archive invariants.
+        from polylogue.daemon.convergence import DaemonConverger
+
+        converger = DaemonConverger(stages=(), max_workers=2)
+        await converger.start()
+
         if enable_browser_capture:
             server = make_server(
                 browser_capture_host,
@@ -334,6 +342,8 @@ async def run_daemon_services(
     finally:
         if watcher is not None:
             watcher.stop()
+        if converger is not None:
+            await converger.stop()
         if server is not None:
             server.shutdown()
         if api_server is not None:

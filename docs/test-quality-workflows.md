@@ -15,10 +15,10 @@ Current registry snapshot:
 - mutation campaigns: `19`
 - benchmark campaigns: `3`
 - synthetic benchmark campaigns: `6`
-- scenario projections: `253`
+- scenario projections: `245`
 - inferred corpus scenarios: `5`
   - benchmark-campaign: `3`
-  - exercise: `147`
+  - exercise: `139`
   - inferred-corpus-scenario: `5`
   - mutation-campaign: `19`
   - synthetic-benchmark: `6`
@@ -334,6 +334,7 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `exercise` | `help-diagnostics-turns` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | diagnostics turns help |
 | `exercise` | `help-doctor` | `message-fts-readiness-loop`<br>`retrieval-band-readiness-loop` | `message_fts`<br>`action_event_readiness`<br>`session_insight_readiness`<br>`retrieval_band_readiness`<br>`archive_readiness` | `cli.help`<br>`project-archive-readiness` | — | `generated`<br>`help`<br>`structural` | doctor help |
 | `exercise` | `help-export` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | export help |
+| `exercise` | `help-ingest` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | ingest help |
 | `exercise` | `help-insights` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | insights help |
 | `exercise` | `help-insights-analytics` | `provider-analytics-query-loop` | `session_insight_rows`<br>`provider_analytics_results` | `cli.help`<br>`query-provider-analytics` | — | `generated`<br>`help`<br>`structural` | insights analytics help |
 | `exercise` | `help-insights-cost-rollups` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | insights cost-rollups help |
@@ -357,18 +358,9 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `exercise` | `help-raw` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | raw help |
 | `exercise` | `help-reset` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | reset help |
 | `exercise` | `help-resume` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | resume help |
-| `exercise` | `help-run` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | run help |
-| `exercise` | `help-run-acquire` | `source-acquisition-loop` | `configured_sources`<br>`source_payload_stream`<br>`raw_validation_state`<br>`artifact_observation_rows` | `cli.help`<br>`acquire-raw-conversations` | — | `generated`<br>`help`<br>`structural` | run acquire help |
-| `exercise` | `help-run-all` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | run all help |
-| `exercise` | `help-run-embed` | `embedding-materialization-loop` | `archive_conversation_rows`<br>`embedding_metadata_rows`<br>`embedding_status_rows`<br>`message_embedding_vectors` | `cli.help`<br>`materialize-transcript-embeddings` | — | `generated`<br>`help`<br>`structural` | run embed help |
-| `exercise` | `help-run-index` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | run index help |
-| `exercise` | `help-run-materialize` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | run materialize help |
-| `exercise` | `help-run-parse` | `source-acquisition-loop`<br>`raw-reparse-loop`<br>`raw-archive-ingest-loop` | `configured_sources`<br>`source_payload_stream`<br>`raw_validation_state`<br>`artifact_observation_rows`<br>`validation_backlog`<br>`parse_backlog`<br>`parse_quarantine`<br>`archive_conversation_rows` | `cli.help`<br>`acquire-raw-conversations`<br>`plan-validation-backlog`<br>`plan-parse-backlog`<br>`ingest-archive-runtime` | — | `generated`<br>`help`<br>`structural` | run parse help |
-| `exercise` | `help-run-publish` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | run publish help |
-| `exercise` | `help-run-render` | `conversation-render-loop` | `conversation_render_projection`<br>`rendered_conversation_artifacts` | `cli.help`<br>`render-conversations` | — | `generated`<br>`help`<br>`structural` | run render help |
-| `exercise` | `help-run-reprocess` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | run reprocess help |
-| `exercise` | `help-run-schema` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | run schema help |
-| `exercise` | `help-run-site` | `site-publication-loop` | `conversation_render_projection`<br>`site_conversation_pages`<br>`site_publication_manifest`<br>`publication_records` | `cli.help`<br>`publish-site` | — | `generated`<br>`help`<br>`structural` | run site help |
+| `exercise` | `help-run` | — | — | — | — | — | Run subcommand help |
+| `exercise` | `help-run-embed` | — | — | — | — | — | Run embed subcommand help |
+| `exercise` | `help-run-site` | — | — | — | — | — | Run site stage help |
 | `exercise` | `help-schema` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | schema help |
 | `exercise` | `help-schema-compare` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | schema compare help |
 | `exercise` | `help-schema-explain` | `schema-explain-query-loop` | `schema_packages`<br>`schema_explanation_results` | `cli.help`<br>`query-schema-explanations` | — | `generated`<br>`help`<br>`structural` | schema explain help |
@@ -376,6 +368,7 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `exercise` | `help-select` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | select help |
 | `exercise` | `help-show` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | show help |
 | `exercise` | `help-stats` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | stats help |
+| `exercise` | `help-status` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | status help |
 | `exercise` | `help-tags` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | tags help |
 | `exercise` | `json-doctor` | `message-fts-readiness-loop`<br>`retrieval-band-readiness-loop` | `message_fts`<br>`action_event_readiness`<br>`session_insight_readiness`<br>`retrieval_band_readiness`<br>`archive_readiness` | `cli.json-contract`<br>`project-archive-readiness` | — | `generated`<br>`json-contract`<br>`maintenance`<br>`readiness` | doctor JSON contract |
 | `exercise` | `json-doctor-action-event-preview` | `action-event-repair-loop` | `action_event_rows`<br>`action_event_fts`<br>`action_event_readiness` | `cli.json-contract`<br>`project-action-event-readiness` | — | `generated`<br>`json-contract`<br>`maintenance`<br>`action-events` | doctor JSON contract |
@@ -388,7 +381,6 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `exercise` | `json-insights-threads` | `work-thread-query-loop` | `work_thread_rows`<br>`work_thread_fts`<br>`work_thread_results` | `cli.json-contract`<br>`query-work-threads` | — | `generated`<br>`json-contract`<br>`insights`<br>`threads` | insights threads JSON contract |
 | `exercise` | `json-insights-week-summaries` | `week-summary-query-loop` | `day_session_summary_rows`<br>`week_session_summary_results` | `cli.json-contract`<br>`query-week-session-summaries` | — | `generated`<br>`json-contract`<br>`insights`<br>`week-summaries` | insights week-summaries JSON contract |
 | `exercise` | `json-insights-work-events` | `session-work-event-query-loop` | `session_work_event_rows`<br>`session_work_event_fts`<br>`session_work_event_results` | `cli.json-contract`<br>`query-session-work-events` | — | `generated`<br>`json-contract`<br>`insights`<br>`work-events` | insights work-events JSON contract |
-| `exercise` | `json-run-embed` | `retrieval-band-readiness-loop`<br>`embedding-status-query-loop` | `embedding_metadata_rows`<br>`embedding_status_rows`<br>`message_embedding_vectors`<br>`action_event_readiness`<br>`session_insight_readiness`<br>`retrieval_band_readiness`<br>`embedding_status_results` | `cli.json-contract`<br>`project-retrieval-band-readiness`<br>`query-embedding-status` | — | `generated`<br>`json-contract` | run embed JSON contract |
 | `exercise` | `json-schema-list` | `schema-list-query-loop` | `schema_packages`<br>`schema_cluster_manifests`<br>`inferred_corpus_specs`<br>`inferred_corpus_scenarios`<br>`schema_list_results` | `cli.json-contract`<br>`query-schema-catalog` | — | `generated`<br>`json-contract` | schema list JSON contract |
 | `exercise` | `json-tags` | — | — | `cli.json-contract` | — | `generated`<br>`json-contract` | tags JSON contract |
 | `exercise` | `query-count` | — | — | — | — | — | Count conversations |

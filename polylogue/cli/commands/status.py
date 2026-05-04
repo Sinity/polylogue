@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 from urllib.request import Request, urlopen
 
 import click
@@ -47,7 +48,7 @@ def status_command(
     _show_daemon_status(env, result)
 
 
-def _show_daemon_status(env: AppEnv, status: dict) -> None:
+def _show_daemon_status(env: AppEnv, status: dict[str, Any]) -> None:
     overall = status.get("overall", "unknown")
     color = {"ok": "green", "warn": "yellow", "err": "red", "idle": "blue"}.get(overall, "white")
     env.ui.console.print(f"\n[bold {color}]Status: {overall}[/bold {color}]")
