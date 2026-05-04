@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import json
+import pytest
 
 from polylogue.mcp.server_support import _safe_call
 
@@ -14,36 +14,32 @@ class TestMcpSafeCall:
         result = _safe_call("test_tool", lambda: '{"ok": true}')
         assert result == '{"ok": true}'
 
-    def test_error_returns_json(self: object) -> None:
+    def test_error_raises_polylogue_error(self: object) -> None:
         def failing() -> None:
             raise ValueError("test error message")
 
-        result = _safe_call("test_tool", failing)
-        assert result is not None
-        parsed = json.loads(result)
-        assert parsed["error"] == "internal MCP tool error"
-        assert parsed["code"] == -32603  # JSON-RPC internal error
-        assert parsed["detail"] == "ValueError"
-        assert parsed["tool"] == "test_tool"
+        from polylogue.errors import PolylogueError
 
-    def test_no_traceback_in_error_response(self: object) -> None:
+        with pytest.raises(PolylogueError, match="test_tool.*ValueError"):
+            _safe_call("test_tool", failing)
+
+    def test_no_raw_traceback_in_error(self: object) -> None:
         def failing() -> None:
             raise RuntimeError("internal error")
 
-        result = _safe_call("test_tool", failing)
-        assert result is not None
-        parsed = json.loads(result)
-        assert "traceback" not in parsed
-        assert "Traceback" not in result
-        assert "File " not in result  # No file paths leaked
+        from polylogue.errors import PolylogueError
+
+        with pytest.raises(PolylogueError) as exc:
+            _safe_call("test_tool", failing)
+        assert "Traceback" not in str(exc.value)
 
     def test_no_internal_paths_in_error(self: object) -> None:
         def failing() -> None:
             raise ImportError("No module named 'secret_module'")
 
-        result = _safe_call("test_tool", failing)
-        assert result is not None
-        parsed = json.loads(result)
-        assert parsed["error"] == "internal MCP tool error"
-        assert "/realm/" not in result
-        assert "polylogue/" not in result
+        from polylogue.errors import PolylogueError
+
+        with pytest.raises(PolylogueError) as exc:
+            _safe_call("test_tool", failing)
+        assert "/realm/" not in str(exc.value)
+        assert "polylogue/" not in str(exc.value)

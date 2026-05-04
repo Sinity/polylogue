@@ -73,6 +73,7 @@ def annotate_semantic_and_relational(
     field_stats: Mapping[str, FieldStats],
     *,
     artifact_kind: str | None = None,
+    pins: dict[str, set[str]] | None = None,
 ) -> JSONDocument: ...
 
 
@@ -82,6 +83,7 @@ def annotate_semantic_and_relational(
     field_stats: Mapping[str, FieldStats],
     *,
     artifact_kind: str | None = None,
+    pins: dict[str, set[str]] | None = None,
 ) -> JSONValue: ...
 
 
@@ -90,6 +92,7 @@ def annotate_semantic_and_relational(
     field_stats: Mapping[str, FieldStats],
     *,
     artifact_kind: str | None = None,
+    pins: dict[str, set[str]] | None = None,
 ) -> JSONValue:
     """Attach semantic-role and relational annotations to a schema."""
     schema_node = _schema_node(schema)
@@ -97,7 +100,7 @@ def annotate_semantic_and_relational(
         return schema
     stats_by_path = dict(field_stats)
     candidates = infer_semantic_roles(stats_by_path, artifact_kind=artifact_kind)
-    best_roles = select_best_roles(candidates)
+    best_roles = select_best_roles(candidates, pins=pins)
     role_by_path: dict[str, tuple[str, float, JSONDocument]] = {}
     for role, candidate in best_roles.items():
         role_by_path[candidate.path] = (role, candidate.confidence, json_document(candidate.evidence))

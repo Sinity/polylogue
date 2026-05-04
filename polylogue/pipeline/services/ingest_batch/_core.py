@@ -916,6 +916,24 @@ async def process_ingest_batch(
             changed=len(batch_summary.changed_conversation_ids),
         )
 
+    try:
+        from polylogue.daemon.events import emit_daemon_event
+
+        emit_daemon_event(
+            "ingestion_batch",
+            payload={
+                "elapsed_s": round(batch_summary.elapsed_s, 2),
+                "records": batch_summary.raw_record_count,
+                "blob_mb": round(batch_summary.total_blob_mb, 1),
+                "conversations": batch_summary.total_convos,
+                "messages": batch_summary.total_msgs,
+                "changed_conversations": len(batch_summary.changed_conversation_ids),
+                "workers": batch_summary.worker_count,
+            },
+        )
+    except Exception:
+        pass
+
     raw_state_update_elapsed_s = await _persist_batch_raw_state_updates(
         service,
         backend,

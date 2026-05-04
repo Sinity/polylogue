@@ -50,11 +50,13 @@ def _annotate_semantic_and_relational(
     field_stats: FieldStatsMapping,
     *,
     artifact_kind: str | None = None,
+    pins: dict[str, set[str]] | None = None,
 ) -> SchemaPayload:
     return annotate_semantic_and_relational(
         json_document(dict(schema)),
         dict(field_stats),
         artifact_kind=artifact_kind,
+        pins=pins,
     )
 
 
