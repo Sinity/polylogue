@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import contextlib
 import shutil
-import sqlite3
 from pathlib import Path
 
 import click
@@ -25,6 +24,7 @@ from polylogue.paths import (
     render_root,
     state_home,
 )
+from polylogue.storage.sqlite.connection_profile import open_connection
 
 # Schema for the tombstone/trash table.
 _TOMBSTONE_DDL = """
@@ -41,7 +41,7 @@ def _ensure_trash_table(db: Path) -> None:
     """Ensure the conversation_trash table exists in the archive database."""
     if not db.exists():
         return
-    conn = sqlite3.connect(str(db))
+    conn = open_connection(db)
     try:
         conn.execute(_TOMBSTONE_DDL)
         conn.commit()
@@ -59,7 +59,7 @@ def _tombstone_conversations(db: Path, conversation_ids: list[str]) -> int:
     if not conversation_ids:
         return 0
     _ensure_trash_table(db)
-    conn = sqlite3.connect(str(db))
+    conn = open_connection(db)
     try:
         from datetime import UTC, datetime
 
@@ -67,10 +67,22 @@ def _tombstone_conversations(db: Path, conversation_ids: list[str]) -> int:
         count = 0
         c = conn.cursor()
         for conv_id in conversation_ids:
+            # Look up the identity ledger key to preserve it in the tombstone
+            identity_key = None
+            try:
+                row = c.execute(
+                    "SELECT provider || ':' || source || ':' || source_path || ':' || provider_conversation_id || ':' || raw_hash "
+                    "FROM identity_ledger WHERE current_conversation_id = ? LIMIT 1",
+                    (conv_id,),
+                ).fetchone()
+                if row:
+                    identity_key = row[0]
+            except Exception:
+                pass
             # Record the tombstone
             c.execute(
-                "INSERT OR IGNORE INTO conversation_trash (conversation_id, tombstoned_at) VALUES (?, ?)",
-                (conv_id, ts),
+                "INSERT OR IGNORE INTO conversation_trash (conversation_id, tombstoned_at, identity_key) VALUES (?, ?, ?)",
+                (conv_id, ts, identity_key),
             )
             # Delete associated messages (hard-delete — content lives in blob store)
             c.execute("DELETE FROM messages WHERE conversation_id = ?", (conv_id,))
@@ -142,7 +154,7 @@ def reset_command(
         if not _db.exists():
             env.ui.console.print("Database does not exist; nothing to tombstone.")
             return
-        conn = sqlite3.connect(str(_db))
+        conn = open_connection(_db)
         try:
             rows = conn.execute(
                 "SELECT id FROM conversations WHERE source_path LIKE ?",
