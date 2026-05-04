@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, TypeAlias
+from typing import Literal, TypeAlias, cast
 
 import orjson
 
@@ -22,7 +22,14 @@ JSONRecord: TypeAlias = JSONDocument
 
 
 def _load_json_record(line: str) -> JSONValue:
-    return loads(line)
+    try:
+        return loads(line)
+    except orjson.JSONDecodeError:
+        # Retry with stdlib json — tolerant of raw control characters
+        # (ANSI escape codes in bash output, etc.) that orjson rejects.
+        import json
+
+        return cast("JSONValue", json.loads(line))
 
 
 @dataclass(frozen=True)
