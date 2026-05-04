@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import inspect
-from collections.abc import Awaitable, Iterable, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, TypeVar, overload
+from typing import TYPE_CHECKING, Any, Protocol, TypeVar, overload
 
 import click
 
@@ -377,9 +377,6 @@ async def _execute_query_plan(
     repo: QueryExecutionStore,
     plan: QueryExecutionPlan,
 ) -> None:
-    from polylogue.cli import query_actions as _query_actions
-    from polylogue.cli import query_output as _query_output
-
     vector_provider = _create_query_vector_provider(config, db_path=repo.backend.db_path)
 
     if plan.selection.similar_text and vector_provider is None:
@@ -415,91 +412,228 @@ async def _execute_query_plan(
 
     route = resolve_query_route(plan, can_use_summaries=filter_chain.can_use_summaries())
 
-    if route == QueryRoute.COUNT:
-        click.echo(await _observe_query_operation(repo, plan, route, filter_chain.count()))
+    handler = _route_handlers.get(route)
+    if handler is not None:
+        await handler(env, params, config=config, repo=repo, plan=plan, filter_chain=filter_chain)
         return
 
-    if route == QueryRoute.SUMMARY_LIST:
-        search_hits = await _observe_query_operation(
-            repo,
-            plan,
-            route,
-            _search_hits_for_execution_plan(repo, plan, vector_provider=vector_provider),
-        )
-        if search_hits is not None:
-            if not search_hits:
-                summary_diagnostics = await _diagnose_query_miss(repo, plan.selection, config=config)
-                no_results(env, params, diagnostics=summary_diagnostics)
-            await _query_output.output_search_hits(env, search_hits, plan.output, repo)
-            return
+    # Default: full conversation list + output
+    await _handle_default(env, params, config=config, repo=repo, plan=plan, filter_chain=filter_chain)
 
-        summary_results = await _observe_query_operation(repo, plan, route, filter_chain.list_summaries())
-        if not summary_results:
+
+# ---------------------------------------------------------------------------
+# Route handlers (extracted from _execute_query_plan, each independently testable)
+# ---------------------------------------------------------------------------
+
+_RouteHandler = Callable[..., Awaitable[None]]
+
+
+async def _handle_count(
+    env: AppEnv,
+    params: QueryParams,
+    *,
+    config: Config,
+    repo: QueryExecutionStore,
+    plan: QueryExecutionPlan,
+    filter_chain: Any,
+) -> None:
+    click.echo(await _observe_query_operation(repo, plan, QueryRoute.COUNT, filter_chain.count()))
+
+
+async def _handle_summary_list(
+    env: AppEnv,
+    params: QueryParams,
+    *,
+    config: Config,
+    repo: QueryExecutionStore,
+    plan: QueryExecutionPlan,
+    filter_chain: Any,
+) -> None:
+    from polylogue.cli import query_output as _query_output
+
+    vector_provider = _create_query_vector_provider(config, db_path=repo.backend.db_path)
+    search_hits = await _observe_query_operation(
+        repo,
+        plan,
+        QueryRoute.SUMMARY_LIST,
+        _search_hits_for_execution_plan(repo, plan, vector_provider=vector_provider),
+    )
+    if search_hits is not None:
+        if not search_hits:
             summary_diagnostics = await _diagnose_query_miss(repo, plan.selection, config=config)
             no_results(env, params, diagnostics=summary_diagnostics)
-        await _query_output._output_summary_list(env, summary_results, plan.output, repo)
+        await _query_output.output_search_hits(env, search_hits, plan.output, repo)
         return
 
-    if route == QueryRoute.STREAM:
-        full_id = await _query_actions.resolve_stream_target(repo, filter_chain, plan.selection)
-        if plan.output.transform is not None:
-            click.echo(
-                "Warning: --transform is ignored in --stream mode (messages are streamed individually).",
-                err=True,
-            )
-        if any(target.kind != "stdout" for target in plan.output.destinations):
-            click.echo(
-                f"Warning: --output {','.join(plan.output.destination_labels())} is ignored in --stream mode (output goes to stdout).",
-                err=True,
-            )
+    summary_results = await _observe_query_operation(repo, plan, QueryRoute.SUMMARY_LIST, filter_chain.list_summaries())
+    if not summary_results:
+        summary_diagnostics = await _diagnose_query_miss(repo, plan.selection, config=config)
+        no_results(env, params, diagnostics=summary_diagnostics)
+    await _query_output._output_summary_list(env, summary_results, plan.output, repo)
 
-        message_limit_param = params.get("limit")
-        message_limit = message_limit_param if isinstance(message_limit_param, int) else None
-        await _query_output.stream_conversation(
-            env,
-            repo,
-            full_id,
-            output_format=plan.output.stream_format(),
-            dialogue_only=plan.output.dialogue_only,
-            message_roles=plan.output.effective_message_roles(),
-            content_projection=plan.output.content_projection if plan.output.filters_content() else None,
-            message_limit=message_limit,
+
+async def _handle_stream(
+    env: AppEnv,
+    params: QueryParams,
+    *,
+    config: Config,
+    repo: QueryExecutionStore,
+    plan: QueryExecutionPlan,
+    filter_chain: Any,
+) -> None:
+    from polylogue.cli import query_actions as _query_actions
+    from polylogue.cli import query_output as _query_output
+
+    full_id = await _query_actions.resolve_stream_target(repo, filter_chain, plan.selection)
+    if plan.output.transform is not None:
+        click.echo("Warning: --transform is ignored in --stream mode (messages are streamed individually).", err=True)
+    if any(target.kind != "stdout" for target in plan.output.destinations):
+        click.echo(
+            f"Warning: --output {','.join(plan.output.destination_labels())} is ignored in --stream mode (output goes to stdout).",
+            err=True,
         )
-        return
+    message_limit_param = params.get("limit")
+    message_limit = message_limit_param if isinstance(message_limit_param, int) else None
+    await _query_output.stream_conversation(
+        env,
+        repo,
+        full_id,
+        output_format=plan.output.stream_format(),
+        dialogue_only=plan.output.dialogue_only,
+        message_roles=plan.output.effective_message_roles(),
+        content_projection=plan.output.content_projection if plan.output.filters_content() else None,
+        message_limit=message_limit,
+    )
 
-    if route == QueryRoute.STATS_SQL:
-        await _observe_query_operation(
-            repo,
-            plan,
-            route,
-            _query_output.output_stats_sql(
-                env,
-                filter_chain,
-                repo,
-                selection=plan.selection,
-                output_format=plan.output.output_format,
-            ),
-        )
-        return
 
-    if route == QueryRoute.SUMMARY_STATS:
-        summaries = await _observe_query_operation(repo, plan, route, filter_chain.list_summaries())
-        msg_counts = await repo.get_message_counts_batch([str(summary.id) for summary in summaries])
-        _query_output.output_stats_by_summaries(
+async def _handle_stats_sql(
+    env: AppEnv,
+    params: QueryParams,
+    *,
+    config: Config,
+    repo: QueryExecutionStore,
+    plan: QueryExecutionPlan,
+    filter_chain: Any,
+) -> None:
+    from polylogue.cli import query_output as _query_output
+
+    await _observe_query_operation(
+        repo,
+        plan,
+        QueryRoute.STATS_SQL,
+        _query_output.output_stats_sql(
             env,
-            summaries,
-            msg_counts,
-            _stats_dimension(plan),
+            filter_chain,
+            repo,
             selection=plan.selection,
             output_format=plan.output.output_format,
-        )
-        return
+        ),
+    )
 
-    if route == QueryRoute.STATS_BY and plan.stats_dimension in {"action", "tool"}:
+
+async def _handle_summary_stats(
+    env: AppEnv,
+    params: QueryParams,
+    *,
+    config: Config,
+    repo: QueryExecutionStore,
+    plan: QueryExecutionPlan,
+    filter_chain: Any,
+) -> None:
+    from polylogue.cli import query_output as _query_output
+
+    summaries = await _observe_query_operation(repo, plan, QueryRoute.SUMMARY_STATS, filter_chain.list_summaries())
+    msg_counts = await repo.get_message_counts_batch([str(summary.id) for summary in summaries])
+    _query_output.output_stats_by_summaries(
+        env,
+        summaries,
+        msg_counts,
+        _stats_dimension(plan),
+        selection=plan.selection,
+        output_format=plan.output.output_format,
+    )
+
+
+async def _handle_open(
+    env: AppEnv,
+    params: QueryParams,
+    *,
+    config: Config,
+    repo: QueryExecutionStore,
+    plan: QueryExecutionPlan,
+    filter_chain: Any,
+) -> None:
+    from polylogue.cli import query_output as _query_output
+
+    if filter_chain.can_use_summaries():
+        open_results: Sequence[Conversation | ConversationSummary] = await _observe_query_operation(
+            repo,
+            plan,
+            QueryRoute.OPEN,
+            filter_chain.list_summaries(),
+        )
+    else:
+        open_results = await _observe_query_operation(repo, plan, QueryRoute.OPEN, filter_chain.list())
+    open_diagnostics = await _diagnose_query_miss(repo, plan.selection, config=config) if not open_results else None
+    _query_output._open_result(env, open_results, plan.output, selection=plan.selection, diagnostics=open_diagnostics)
+
+
+async def _handle_modify(
+    env: AppEnv,
+    params: QueryParams,
+    *,
+    config: Config,
+    repo: QueryExecutionStore,
+    plan: QueryExecutionPlan,
+    filter_chain: Any,
+) -> None:
+    from polylogue.cli import query_actions as _query_actions
+
+    route = resolve_query_route(plan, can_use_summaries=filter_chain.can_use_summaries())
+    if route == QueryRoute.SUMMARY_MODIFY:
+        matched_results = await _observe_query_operation(repo, plan, route, filter_chain.list_summaries())
+    else:
+        matched_results = await _observe_query_operation(repo, plan, route, filter_chain.list())
+    await _query_actions.apply_modifiers(env, matched_results, plan.mutation, repo)
+
+
+async def _handle_delete(
+    env: AppEnv,
+    params: QueryParams,
+    *,
+    config: Config,
+    repo: QueryExecutionStore,
+    plan: QueryExecutionPlan,
+    filter_chain: Any,
+) -> None:
+    from polylogue.cli import query_actions as _query_actions
+
+    route = resolve_query_route(plan, can_use_summaries=filter_chain.can_use_summaries())
+    if route == QueryRoute.SUMMARY_DELETE:
+        matched_results = await _observe_query_operation(repo, plan, route, filter_chain.list_summaries())
+    else:
+        matched_results = await _observe_query_operation(repo, plan, route, filter_chain.list())
+    await _query_actions.delete_conversations(env, matched_results, plan.mutation, repo)
+
+
+async def _handle_stats_by(
+    env: AppEnv,
+    params: QueryParams,
+    *,
+    config: Config,
+    repo: QueryExecutionStore,
+    plan: QueryExecutionPlan,
+    filter_chain: Any,
+) -> None:
+    from polylogue.cli import query_output as _query_output
+
+    dim = _stats_dimension(plan)
+    # Semantic dimension (action, tool) — try search-first path
+    if dim in {"action", "tool"}:
         semantic_summaries = await _observe_query_operation(
             repo,
             plan,
-            route,
+            QueryRoute.STATS_BY,
             _semantic_stats_summaries(repo, filter_chain),
         )
         if semantic_summaries is not None:
@@ -507,78 +641,57 @@ async def _execute_query_plan(
                 env,
                 semantic_summaries,
                 repo,
-                _stats_dimension(plan),
+                dim,
                 selection=plan.selection,
                 output_format=plan.output.output_format,
             )
             return
 
-    if route == QueryRoute.STATS_BY and plan.stats_dimension in {"repo", "work-kind"}:
-        summaries = await _observe_query_operation(repo, plan, route, _profile_stats_summaries(repo, filter_chain))
+    # Profile dimension (repo, work-kind) — profile-backed path
+    if dim in {"repo", "work-kind"}:
+        summaries = await _observe_query_operation(
+            repo,
+            plan,
+            QueryRoute.STATS_BY,
+            _profile_stats_summaries(repo, filter_chain),
+        )
         await _query_output.output_stats_by_profile_summaries(
             env,
             summaries,
             repo,
-            _stats_dimension(plan),
+            dim,
             selection=plan.selection,
             output_format=plan.output.output_format,
         )
         return
 
-    if route == QueryRoute.OPEN:
-        if filter_chain.can_use_summaries():
-            open_results: Sequence[Conversation | ConversationSummary] = await _observe_query_operation(
-                repo,
-                plan,
-                route,
-                filter_chain.list_summaries(),
-            )
-        else:
-            open_results = await _observe_query_operation(repo, plan, route, filter_chain.list())
-        open_diagnostics = await _diagnose_query_miss(repo, plan.selection, config=config) if not open_results else None
-        _query_output._open_result(
-            env,
-            open_results,
-            plan.output,
-            selection=plan.selection,
-            diagnostics=open_diagnostics,
-        )
-        return
+    # Generic fallback
+    conversation_results = await _observe_query_operation(repo, plan, QueryRoute.STATS_BY, filter_chain.list())
+    projected_results = project_query_results(conversation_results, plan)
+    _query_output._output_stats_by(
+        env,
+        projected_results,
+        dim,
+        selection=plan.selection,
+        output_format=plan.output.output_format,
+    )
 
-    if route in {QueryRoute.MODIFY, QueryRoute.SUMMARY_MODIFY}:
-        if route == QueryRoute.SUMMARY_MODIFY:
-            matched_results: Sequence[Conversation | ConversationSummary] = await _observe_query_operation(
-                repo,
-                plan,
-                route,
-                filter_chain.list_summaries(),
-            )
-        else:
-            matched_results = await _observe_query_operation(repo, plan, route, filter_chain.list())
-        await _query_actions.apply_modifiers(env, matched_results, plan.mutation, repo)
-        return
 
-    if route in {QueryRoute.DELETE, QueryRoute.SUMMARY_DELETE}:
-        if route == QueryRoute.SUMMARY_DELETE:
-            matched_results = await _observe_query_operation(repo, plan, route, filter_chain.list_summaries())
-        else:
-            matched_results = await _observe_query_operation(repo, plan, route, filter_chain.list())
-        await _query_actions.delete_conversations(env, matched_results, plan.mutation, repo)
-        return
+async def _handle_default(
+    env: AppEnv,
+    params: QueryParams,
+    *,
+    config: Config,
+    repo: QueryExecutionStore,
+    plan: QueryExecutionPlan,
+    filter_chain: Any,
+) -> None:
+    from polylogue.cli import query_output as _query_output
 
-    if route == QueryRoute.STATS_BY:
-        conversation_results = await _observe_query_operation(repo, plan, route, filter_chain.list())
-        projected_results = project_query_results(conversation_results, plan)
-        _query_output._output_stats_by(
-            env,
-            projected_results,
-            _stats_dimension(plan),
-            selection=plan.selection,
-            output_format=plan.output.output_format,
-        )
-        return
-
-    conversation_results = await _observe_query_operation(repo, plan, route, filter_chain.list())
+    vector_provider = _create_query_vector_provider(config, db_path=repo.backend.db_path)
+    conversation_results = await _observe_query_operation(
+        repo, plan, resolve_query_route(plan, can_use_summaries=filter_chain.can_use_summaries()), filter_chain.list()
+    )
     projected_results = project_query_results(conversation_results, plan)
     output_diagnostics = (
         await _diagnose_query_miss(repo, plan.selection, config=config) if not projected_results else None
@@ -595,6 +708,21 @@ async def _execute_query_plan(
         selection=plan.selection,
         diagnostics=output_diagnostics,
     )
+
+
+_route_handlers: dict[QueryRoute, _RouteHandler] = {
+    QueryRoute.COUNT: _handle_count,
+    QueryRoute.SUMMARY_LIST: _handle_summary_list,
+    QueryRoute.STREAM: _handle_stream,
+    QueryRoute.STATS_SQL: _handle_stats_sql,
+    QueryRoute.SUMMARY_STATS: _handle_summary_stats,
+    QueryRoute.OPEN: _handle_open,
+    QueryRoute.MODIFY: _handle_modify,
+    QueryRoute.SUMMARY_MODIFY: _handle_modify,
+    QueryRoute.DELETE: _handle_delete,
+    QueryRoute.SUMMARY_DELETE: _handle_delete,
+    QueryRoute.STATS_BY: _handle_stats_by,
+}
 
 
 async def async_execute_query_request(env: AppEnv, request: RootModeRequest) -> None:
