@@ -65,3 +65,4 @@ AGENTS.md
 
 # Build metadata embedded into release artifacts
 polylogue/_build_info.py
+_site/
