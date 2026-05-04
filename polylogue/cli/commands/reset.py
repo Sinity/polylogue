@@ -157,7 +157,7 @@ def reset_command(
         conn = open_connection(_db)
         try:
             rows = conn.execute(
-                "SELECT id FROM conversations WHERE source_path LIKE ?",
+                "SELECT c.conversation_id FROM conversations c JOIN raw_conversations r ON c.raw_id = r.raw_id WHERE r.source_path LIKE ?",
                 (f"{source_path}%",),
             ).fetchall()
             conv_ids = [r[0] for r in rows]
