@@ -49,7 +49,7 @@ dependencies = [
   "typing-extensions>=4.7",  # TypedDict that pydantic accepts on Py<3.12
   "watchfiles>=0.21",  # Rust-backed filesystem watcher for live ingestion
   # Transitive constraints to avoid known CVEs surfaced by pip-audit:
-  "cryptography>=46.0.7",  # CVE-2026-39892 (transitive via google-auth)
+  "cryptography>=48.0.0",  # CVE-2026-39892 (transitive via google-auth)
   "python-multipart>=0.0.27",  # CVE-2026-40347 (transitive via mcp)
 ]
 
