@@ -243,6 +243,9 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         if path == ["api", "reset"]:
             self._handle_reset()
             return
+        if path == ["api", "ingest"]:
+            self._handle_ingest()
+            return
         self._send_error(HTTPStatus.NOT_FOUND, "not_found")
 
     # ------------------------------------------------------------------
@@ -491,6 +494,63 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
         emit_daemon_event("reset", operation_id=op_id, payload=result if isinstance(result, dict) else None)
         self._send_json(HTTPStatus.OK, result)
+
+    # ------------------------------------------------------------------
+    # Handlers: ingest
+    # ------------------------------------------------------------------
+
+    @daemon_safe_handler
+    def _handle_ingest(self) -> None:
+        content_length = int(self.headers.get("Content-Length", 0))
+        body_raw = self.rfile.read(content_length) if content_length > 0 else b"{}"
+        body_text = body_raw.decode("utf-8")
+        try:
+            body = json.loads(body_text)
+        except json.JSONDecodeError:
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
+            return
+
+        ingest_path = body.get("path")
+        if not ingest_path:
+            self._send_error(HTTPStatus.BAD_REQUEST, "missing_path")
+            return
+
+        from pathlib import Path as _Path
+
+        source = _Path(ingest_path).expanduser().resolve()
+        if not source.exists():
+            self._send_error(HTTPStatus.BAD_REQUEST, "path_not_found")
+            return
+
+        # Stage into the archive inbox — the daemon watcher picks it up.
+        from polylogue.paths import archive_root
+
+        inbox = archive_root() / "inbox"
+        inbox.mkdir(parents=True, exist_ok=True)
+
+        import shutil
+
+        dest = inbox / source.name
+        try:
+            if source.is_dir():
+                shutil.copytree(source, dest, dirs_exist_ok=True)
+            else:
+                shutil.copy2(source, dest)
+        except OSError as exc:
+            self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "error": str(exc)})
+            return
+
+        op_id = f"ingest-{source.name}"
+        emit_daemon_event("ingest", operation_id=op_id, payload={"path": str(source), "inbox": str(dest)})
+        self._send_json(
+            HTTPStatus.ACCEPTED,
+            {
+                "ok": True,
+                "operation_id": op_id,
+                "path": str(source),
+                "message": "Ingestion scheduled. Check status for progress.",
+            },
+        )
 
 
 class DaemonAPIHTTPServer(ThreadingHTTPServer):

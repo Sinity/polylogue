@@ -146,6 +146,7 @@ Commands:
   diagnostics  Temporal session diagnostics
   doctor       Health check with optional maintenance and cleanup previews.
   export       Export one known conversation by ID.
+  ingest       Schedule a file or directory for ingestion by the daemon.
   insights     Inspect durable archive insights.
   list         List matched conversations.
   messages     Show paginated messages for a conversation.
@@ -154,11 +155,11 @@ Commands:
   raw          Show raw archive artifacts for a conversation.
   reset        Reset database, blob store, assets, rendered outputs, or...
   resume       Reconstruct work-state context for a fresh agent session.
-  run          Run pipeline stages on configured sources and/or transient...
   schema       Inspect schema packages, versions, and evidence.
   select       Select one matched conversation and print a field.
   show         Show matched conversations with default full-content output.
   stats        Show statistics for matched conversations.
+  status       Show daemon and archive health.
   tags         List all tags with conversation counts.
 ```
 
@@ -233,71 +234,472 @@ Options:
 ## Run
 
 ```text
-Usage: polylogue run [OPTIONS] COMMAND1 [ARGS]... [COMMAND2 [ARGS]...]...
+Usage: polylogue [OPTIONS] COMMAND [ARGS]...
 
-  Run pipeline stages on configured sources and/or transient input paths.
+  Polylogue - AI conversation archive.
+
+  Query mode (default):
+      polylogue "search terms"
+      polylogue -p claude-ai --since "last week"
+      polylogue --latest --output browser
+
+  Verbs (actions on matched conversations):
+      polylogue "error" -p claude-ai --since 2025-01 list
+      polylogue --has thinking --sort tokens list --limit 10
+      polylogue -p chatgpt count
+      polylogue --provider codex stats --by provider
+      polylogue --latest open
+      polylogue "urgent" --tag review delete --dry-run
+      polylogue list --format json
+
+  Combined filters:
+      polylogue --referenced-path README.md --action file_read list
+      polylogue --action search --action file_edit list
+      polylogue --action-sequence file_read,file_edit,shell list
+      polylogue --action-text "pytest -q" list
+      polylogue "pytest -q tests/unit/core/test_semantic_facts.py" --retrieval-lane actions --limit 5
+      polylogue --tail --provider claude-code --latest list
+      polylogue --action other stats --by tool --format json
+      polylogue --provider claude-code --since 2026-01-01 stats --by repo --format json
+      polylogue --tool bash --exclude-tool read list
+      polylogue --similar "sqlite locking bug in parser" --limit 5
+
+  Modifiers (write operations):
+      polylogue "urgent" --add-tag review
+
+  Run `polylogue <command> --help` for subcommand details.
 
 Options:
-  --preview      Preview work without writing
-  --source TEXT  Configured source name (repeatable). Accepts 'last' for the
-                 previously synced source.
-  --input PATH   Transient file, directory, or archive path (repeatable).
-                 Accepts .json, .jsonl, .ndjson, .zip.
-  --reparse      Force re-parsing of all raw conversations (clears parse
-                 tracking)
-  -h, --help     Show this message and exit.
+  -i, --id TEXT                   Conversation ID (exact or prefix match)
+  -c, --contains TEXT             FTS term (repeatable = AND)
+  --exclude-text TEXT             Exclude FTS term
+  --retrieval-lane [auto|dialogue|actions|hybrid]
+                                  Query lane: dialogue FTS, action text, or
+                                  hybrid
+  -p, --provider TEXT             Include providers (comma = OR)
+  --exclude-provider TEXT         Exclude providers
+  -r, --repo TEXT                 Filter by repository name (comma = OR)
+  -t, --tag TEXT                  Include tags (comma = OR, supports
+                                  key:value)
+  --exclude-tag TEXT              Exclude tags
+  --title TEXT                    Title contains
+  --referenced-path TEXT          Referenced file path contains substring
+                                  (repeatable = AND)
+  --cwd-prefix TEXT               Filter conversations whose recorded working
+                                  directory starts with this prefix
+  --action [file_read|file_write|file_edit|shell|git|search|web|agent|subagent|other|none]
+                                  Require semantic action category (repeatable
+                                  = AND)
+  --exclude-action [file_read|file_write|file_edit|shell|git|search|web|agent|subagent|other|none]
+                                  Exclude semantic action category (repeatable
+                                  = AND)
+  --action-sequence TEXT          Require ordered semantic action subsequence
+                                  (comma-separated)
+  --action-text TEXT              Require text within normalized action
+                                  evidence (repeatable = AND)
+  --tool TEXT                     Require normalized tool name (repeatable =
+                                  AND)
+  --exclude-tool TEXT             Exclude normalized tool name (repeatable =
+                                  AND)
+  --similar TEXT                  Semantic similarity query (requires
+                                  embeddings)
+  --has TEXT                      Filter by content: thinking (reasoning),
+                                  tools (calls), summary, attachments
+  --has-tool-use                  Only conversations with tool use (SQL
+                                  pushdown)
+  --has-thinking                  Only conversations with thinking blocks (SQL
+                                  pushdown)
+  --has-paste                     Only conversations with pasted content (SQL
+                                  pushdown)
+  --typed-only                    Only conversations without pasted content
+                                  (typed prose only)
+  --min-messages INTEGER          Minimum message count
+  --max-messages INTEGER          Maximum message count
+  --min-words INTEGER             Minimum total word count
+  --message-type [message|summary|tool_use|tool_result|thinking]
+                                  Filter by message content type (message,
+                                  summary, tool_use, tool_result, thinking)
+  --since-session TEXT            Show sessions in same cwd after this
+                                  conversation ID
+  --since TEXT                    After date (ISO, 'yesterday', 'last week')
+  --until TEXT                    Before date
+  -n, --limit INTEGER             Max results
+  --offset INTEGER                Offset for paginated results
+  --latest                        Most recent (= --sort date --limit 1)
+  --sort [date|tokens|messages|words|longest|random]
+                                  Sort by field
+  --reverse                       Reverse sort order
+  --sample INTEGER                Random sample of N conversations
+  -o, --output TEXT               Output destinations: browser, clipboard,
+                                  stdout (comma-separated)
+  -f, --format [markdown|json|html|obsidian|org|yaml|plaintext|csv]
+                                  Output format (for --latest, --stream, or
+                                  verb output)
+  --transform [strip-tools|strip-thinking|strip-all]
+                                  Remove content: strip-tools (tool calls),
+                                  strip-thinking (reasoning), strip-all (both)
+  --no-code-blocks                Exclude fenced and structured code blocks
+                                  from output
+  --no-tool-calls                 Exclude tool invocation records from output
+  --no-tool-outputs               Exclude tool-result payloads from output
+  --no-file-reads                 Exclude file-read payloads while keeping
+                                  other tool output
+  --prose-only                    Show only authored prose text
+  --stream                        Stream output (low memory). Requires
+                                  --latest or -i ID. Incompatible with
+                                  --transform
+  -d, --dialogue-only             Show only user/assistant messages
+  --message-role TEXT             Show only selected message roles (repeatable
+                                  or comma-separated: user, assistant, system,
+                                  tool, unknown)
+  --set TEXT...                   Set metadata key value
+  --add-tag TEXT                  Add tags (comma-separated)
+  --tail                          Tail ahead-of-archive Claude Code source
+                                  state during queries
+  --plain                         Force non-interactive plain output
+  -v, --verbose                   Verbose output
+  --version                       Show the version and exit.
+  -h, --help                      Show this message and exit.
 
 Commands:
-  acquire      Capture raw payloads only.
-  all          Run the full pipeline.
-  embed        Generate semantic embeddings for conversations.
-  index        Build retrieval and search indexes.
-  materialize  Refresh derived read models.
-  parse        Parse persisted raw backlog into normalized conversations.
-  publish      Render and build the static site.
-  render       Render human-facing publication artifacts.
-  reprocess    Skip acquisition and rerun downstream stages.
-  schema       Infer schemas from acquired raw payloads.
-  site         Generate a static HTML site from the archive.
+  auth         Authenticate with external services (Google Drive for...
+  bulk-export  Bulk export every matched conversation in one process.
+  completions  Generate shell completion scripts.
+  count        Print count of matched conversations.
+  dashboard    Launch the dashboard TUI.
+  delete       Delete matched conversations.
+  diagnostics  Temporal session diagnostics
+  doctor       Health check with optional maintenance and cleanup previews.
+  export       Export one known conversation by ID.
+  ingest       Schedule a file or directory for ingestion by the daemon.
+  insights     Inspect durable archive insights.
+  list         List matched conversations.
+  messages     Show paginated messages for a conversation.
+  neighbors    Show explainable neighboring or near-duplicate candidates.
+  open         Open matched conversation in browser/editor.
+  raw          Show raw archive artifacts for a conversation.
+  reset        Reset database, blob store, assets, rendered outputs, or...
+  resume       Reconstruct work-state context for a fresh agent session.
+  schema       Inspect schema packages, versions, and evidence.
+  select       Select one matched conversation and print a field.
+  show         Show matched conversations with default full-content output.
+  stats        Show statistics for matched conversations.
+  status       Show daemon and archive health.
+  tags         List all tags with conversation counts.
 ```
 
 ## Run Embed
 
 ```text
-Usage: polylogue run embed [OPTIONS]
+Usage: polylogue [OPTIONS] COMMAND [ARGS]...
 
-  Generate semantic embeddings for conversations.
+  Polylogue - AI conversation archive.
+
+  Query mode (default):
+      polylogue "search terms"
+      polylogue -p claude-ai --since "last week"
+      polylogue --latest --output browser
+
+  Verbs (actions on matched conversations):
+      polylogue "error" -p claude-ai --since 2025-01 list
+      polylogue --has thinking --sort tokens list --limit 10
+      polylogue -p chatgpt count
+      polylogue --provider codex stats --by provider
+      polylogue --latest open
+      polylogue "urgent" --tag review delete --dry-run
+      polylogue list --format json
+
+  Combined filters:
+      polylogue --referenced-path README.md --action file_read list
+      polylogue --action search --action file_edit list
+      polylogue --action-sequence file_read,file_edit,shell list
+      polylogue --action-text "pytest -q" list
+      polylogue "pytest -q tests/unit/core/test_semantic_facts.py" --retrieval-lane actions --limit 5
+      polylogue --tail --provider claude-code --latest list
+      polylogue --action other stats --by tool --format json
+      polylogue --provider claude-code --since 2026-01-01 stats --by repo --format json
+      polylogue --tool bash --exclude-tool read list
+      polylogue --similar "sqlite locking bug in parser" --limit 5
+
+  Modifiers (write operations):
+      polylogue "urgent" --add-tag review
+
+  Run `polylogue <command> --help` for subcommand details.
 
 Options:
-  -c, --conversation TEXT         Embed a specific conversation by ID
-  --model [voyage-4|voyage-4-large|voyage-4-lite]
-                                  Voyage AI model: voyage-4 (default),
-                                  voyage-4-large, voyage-4-lite
-  -r, --rebuild                   Re-embed all conversations (ignore existing
+  -i, --id TEXT                   Conversation ID (exact or prefix match)
+  -c, --contains TEXT             FTS term (repeatable = AND)
+  --exclude-text TEXT             Exclude FTS term
+  --retrieval-lane [auto|dialogue|actions|hybrid]
+                                  Query lane: dialogue FTS, action text, or
+                                  hybrid
+  -p, --provider TEXT             Include providers (comma = OR)
+  --exclude-provider TEXT         Exclude providers
+  -r, --repo TEXT                 Filter by repository name (comma = OR)
+  -t, --tag TEXT                  Include tags (comma = OR, supports
+                                  key:value)
+  --exclude-tag TEXT              Exclude tags
+  --title TEXT                    Title contains
+  --referenced-path TEXT          Referenced file path contains substring
+                                  (repeatable = AND)
+  --cwd-prefix TEXT               Filter conversations whose recorded working
+                                  directory starts with this prefix
+  --action [file_read|file_write|file_edit|shell|git|search|web|agent|subagent|other|none]
+                                  Require semantic action category (repeatable
+                                  = AND)
+  --exclude-action [file_read|file_write|file_edit|shell|git|search|web|agent|subagent|other|none]
+                                  Exclude semantic action category (repeatable
+                                  = AND)
+  --action-sequence TEXT          Require ordered semantic action subsequence
+                                  (comma-separated)
+  --action-text TEXT              Require text within normalized action
+                                  evidence (repeatable = AND)
+  --tool TEXT                     Require normalized tool name (repeatable =
+                                  AND)
+  --exclude-tool TEXT             Exclude normalized tool name (repeatable =
+                                  AND)
+  --similar TEXT                  Semantic similarity query (requires
                                   embeddings)
-  -s, --stats                     Show embedding statistics only
-  --format [json]                 Output format for embedding statistics
-                                  (requires --stats)
-  -n, --limit INTEGER             Maximum number of conversations to embed
+  --has TEXT                      Filter by content: thinking (reasoning),
+                                  tools (calls), summary, attachments
+  --has-tool-use                  Only conversations with tool use (SQL
+                                  pushdown)
+  --has-thinking                  Only conversations with thinking blocks (SQL
+                                  pushdown)
+  --has-paste                     Only conversations with pasted content (SQL
+                                  pushdown)
+  --typed-only                    Only conversations without pasted content
+                                  (typed prose only)
+  --min-messages INTEGER          Minimum message count
+  --max-messages INTEGER          Maximum message count
+  --min-words INTEGER             Minimum total word count
+  --message-type [message|summary|tool_use|tool_result|thinking]
+                                  Filter by message content type (message,
+                                  summary, tool_use, tool_result, thinking)
+  --since-session TEXT            Show sessions in same cwd after this
+                                  conversation ID
+  --since TEXT                    After date (ISO, 'yesterday', 'last week')
+  --until TEXT                    Before date
+  -n, --limit INTEGER             Max results
+  --offset INTEGER                Offset for paginated results
+  --latest                        Most recent (= --sort date --limit 1)
+  --sort [date|tokens|messages|words|longest|random]
+                                  Sort by field
+  --reverse                       Reverse sort order
+  --sample INTEGER                Random sample of N conversations
+  -o, --output TEXT               Output destinations: browser, clipboard,
+                                  stdout (comma-separated)
+  -f, --format [markdown|json|html|obsidian|org|yaml|plaintext|csv]
+                                  Output format (for --latest, --stream, or
+                                  verb output)
+  --transform [strip-tools|strip-thinking|strip-all]
+                                  Remove content: strip-tools (tool calls),
+                                  strip-thinking (reasoning), strip-all (both)
+  --no-code-blocks                Exclude fenced and structured code blocks
+                                  from output
+  --no-tool-calls                 Exclude tool invocation records from output
+  --no-tool-outputs               Exclude tool-result payloads from output
+  --no-file-reads                 Exclude file-read payloads while keeping
+                                  other tool output
+  --prose-only                    Show only authored prose text
+  --stream                        Stream output (low memory). Requires
+                                  --latest or -i ID. Incompatible with
+                                  --transform
+  -d, --dialogue-only             Show only user/assistant messages
+  --message-role TEXT             Show only selected message roles (repeatable
+                                  or comma-separated: user, assistant, system,
+                                  tool, unknown)
+  --set TEXT...                   Set metadata key value
+  --add-tag TEXT                  Add tags (comma-separated)
+  --tail                          Tail ahead-of-archive Claude Code source
+                                  state during queries
+  --plain                         Force non-interactive plain output
+  -v, --verbose                   Verbose output
+  --version                       Show the version and exit.
   -h, --help                      Show this message and exit.
+
+Commands:
+  auth         Authenticate with external services (Google Drive for...
+  bulk-export  Bulk export every matched conversation in one process.
+  completions  Generate shell completion scripts.
+  count        Print count of matched conversations.
+  dashboard    Launch the dashboard TUI.
+  delete       Delete matched conversations.
+  diagnostics  Temporal session diagnostics
+  doctor       Health check with optional maintenance and cleanup previews.
+  export       Export one known conversation by ID.
+  ingest       Schedule a file or directory for ingestion by the daemon.
+  insights     Inspect durable archive insights.
+  list         List matched conversations.
+  messages     Show paginated messages for a conversation.
+  neighbors    Show explainable neighboring or near-duplicate candidates.
+  open         Open matched conversation in browser/editor.
+  raw          Show raw archive artifacts for a conversation.
+  reset        Reset database, blob store, assets, rendered outputs, or...
+  resume       Reconstruct work-state context for a fresh agent session.
+  schema       Inspect schema packages, versions, and evidence.
+  select       Select one matched conversation and print a field.
+  show         Show matched conversations with default full-content output.
+  stats        Show statistics for matched conversations.
+  status       Show daemon and archive health.
+  tags         List all tags with conversation counts.
 ```
 
 ## Run Site
 
 ```text
-Usage: polylogue run site [OPTIONS]
+Usage: polylogue [OPTIONS] COMMAND [ARGS]...
 
-  Generate a static HTML site from the archive.
+  Polylogue - AI conversation archive.
+
+  Query mode (default):
+      polylogue "search terms"
+      polylogue -p claude-ai --since "last week"
+      polylogue --latest --output browser
+
+  Verbs (actions on matched conversations):
+      polylogue "error" -p claude-ai --since 2025-01 list
+      polylogue --has thinking --sort tokens list --limit 10
+      polylogue -p chatgpt count
+      polylogue --provider codex stats --by provider
+      polylogue --latest open
+      polylogue "urgent" --tag review delete --dry-run
+      polylogue list --format json
+
+  Combined filters:
+      polylogue --referenced-path README.md --action file_read list
+      polylogue --action search --action file_edit list
+      polylogue --action-sequence file_read,file_edit,shell list
+      polylogue --action-text "pytest -q" list
+      polylogue "pytest -q tests/unit/core/test_semantic_facts.py" --retrieval-lane actions --limit 5
+      polylogue --tail --provider claude-code --latest list
+      polylogue --action other stats --by tool --format json
+      polylogue --provider claude-code --since 2026-01-01 stats --by repo --format json
+      polylogue --tool bash --exclude-tool read list
+      polylogue --similar "sqlite locking bug in parser" --limit 5
+
+  Modifiers (write operations):
+      polylogue "urgent" --add-tag review
+
+  Run `polylogue <command> --help` for subcommand details.
 
 Options:
-  -o, --output PATH               Output directory for generated site
-                                  (default: ~/.local/share/polylogue/site)
-  --title TEXT                    Site title
-  --search / --no-search          Enable client-side search (default: enabled)
-  --search-provider [pagefind|lunr]
-                                  Search index provider (default: pagefind)
-  --dashboard / --no-dashboard    Generate dashboard page (default: enabled)
+  -i, --id TEXT                   Conversation ID (exact or prefix match)
+  -c, --contains TEXT             FTS term (repeatable = AND)
+  --exclude-text TEXT             Exclude FTS term
+  --retrieval-lane [auto|dialogue|actions|hybrid]
+                                  Query lane: dialogue FTS, action text, or
+                                  hybrid
+  -p, --provider TEXT             Include providers (comma = OR)
+  --exclude-provider TEXT         Exclude providers
+  -r, --repo TEXT                 Filter by repository name (comma = OR)
+  -t, --tag TEXT                  Include tags (comma = OR, supports
+                                  key:value)
+  --exclude-tag TEXT              Exclude tags
+  --title TEXT                    Title contains
+  --referenced-path TEXT          Referenced file path contains substring
+                                  (repeatable = AND)
+  --cwd-prefix TEXT               Filter conversations whose recorded working
+                                  directory starts with this prefix
+  --action [file_read|file_write|file_edit|shell|git|search|web|agent|subagent|other|none]
+                                  Require semantic action category (repeatable
+                                  = AND)
+  --exclude-action [file_read|file_write|file_edit|shell|git|search|web|agent|subagent|other|none]
+                                  Exclude semantic action category (repeatable
+                                  = AND)
+  --action-sequence TEXT          Require ordered semantic action subsequence
+                                  (comma-separated)
+  --action-text TEXT              Require text within normalized action
+                                  evidence (repeatable = AND)
+  --tool TEXT                     Require normalized tool name (repeatable =
+                                  AND)
+  --exclude-tool TEXT             Exclude normalized tool name (repeatable =
+                                  AND)
+  --similar TEXT                  Semantic similarity query (requires
+                                  embeddings)
+  --has TEXT                      Filter by content: thinking (reasoning),
+                                  tools (calls), summary, attachments
+  --has-tool-use                  Only conversations with tool use (SQL
+                                  pushdown)
+  --has-thinking                  Only conversations with thinking blocks (SQL
+                                  pushdown)
+  --has-paste                     Only conversations with pasted content (SQL
+                                  pushdown)
+  --typed-only                    Only conversations without pasted content
+                                  (typed prose only)
+  --min-messages INTEGER          Minimum message count
+  --max-messages INTEGER          Maximum message count
+  --min-words INTEGER             Minimum total word count
+  --message-type [message|summary|tool_use|tool_result|thinking]
+                                  Filter by message content type (message,
+                                  summary, tool_use, tool_result, thinking)
+  --since-session TEXT            Show sessions in same cwd after this
+                                  conversation ID
+  --since TEXT                    After date (ISO, 'yesterday', 'last week')
+  --until TEXT                    Before date
+  -n, --limit INTEGER             Max results
+  --offset INTEGER                Offset for paginated results
+  --latest                        Most recent (= --sort date --limit 1)
+  --sort [date|tokens|messages|words|longest|random]
+                                  Sort by field
+  --reverse                       Reverse sort order
+  --sample INTEGER                Random sample of N conversations
+  -o, --output TEXT               Output destinations: browser, clipboard,
+                                  stdout (comma-separated)
+  -f, --format [markdown|json|html|obsidian|org|yaml|plaintext|csv]
+                                  Output format (for --latest, --stream, or
+                                  verb output)
+  --transform [strip-tools|strip-thinking|strip-all]
+                                  Remove content: strip-tools (tool calls),
+                                  strip-thinking (reasoning), strip-all (both)
+  --no-code-blocks                Exclude fenced and structured code blocks
+                                  from output
+  --no-tool-calls                 Exclude tool invocation records from output
+  --no-tool-outputs               Exclude tool-result payloads from output
+  --no-file-reads                 Exclude file-read payloads while keeping
+                                  other tool output
+  --prose-only                    Show only authored prose text
+  --stream                        Stream output (low memory). Requires
+                                  --latest or -i ID. Incompatible with
+                                  --transform
+  -d, --dialogue-only             Show only user/assistant messages
+  --message-role TEXT             Show only selected message roles (repeatable
+                                  or comma-separated: user, assistant, system,
+                                  tool, unknown)
+  --set TEXT...                   Set metadata key value
+  --add-tag TEXT                  Add tags (comma-separated)
+  --tail                          Tail ahead-of-archive Claude Code source
+                                  state during queries
+  --plain                         Force non-interactive plain output
+  -v, --verbose                   Verbose output
+  --version                       Show the version and exit.
   -h, --help                      Show this message and exit.
+
+Commands:
+  auth         Authenticate with external services (Google Drive for...
+  bulk-export  Bulk export every matched conversation in one process.
+  completions  Generate shell completion scripts.
+  count        Print count of matched conversations.
+  dashboard    Launch the dashboard TUI.
+  delete       Delete matched conversations.
+  diagnostics  Temporal session diagnostics
+  doctor       Health check with optional maintenance and cleanup previews.
+  export       Export one known conversation by ID.
+  ingest       Schedule a file or directory for ingestion by the daemon.
+  insights     Inspect durable archive insights.
+  list         List matched conversations.
+  messages     Show paginated messages for a conversation.
+  neighbors    Show explainable neighboring or near-duplicate candidates.
+  open         Open matched conversation in browser/editor.
+  raw          Show raw archive artifacts for a conversation.
+  reset        Reset database, blob store, assets, rendered outputs, or...
+  resume       Reconstruct work-state context for a fresh agent session.
+  schema       Inspect schema packages, versions, and evidence.
+  select       Select one matched conversation and print a field.
+  show         Show matched conversations with default full-content output.
+  stats        Show statistics for matched conversations.
+  status       Show daemon and archive health.
+  tags         List all tags with conversation counts.
 ```
 
 ## Insights
