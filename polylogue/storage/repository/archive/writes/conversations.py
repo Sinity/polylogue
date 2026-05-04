@@ -6,8 +6,8 @@ import builtins
 
 from polylogue.archive.conversation.models import Conversation
 from polylogue.core.hashing import hash_payload
-from polylogue.core.json import json_document
-from polylogue.pipeline.ids import _conversation_hash_payload, _normalize_for_hash
+from polylogue.core.json import JSONValue, json_document
+from polylogue.pipeline.ids import _content_block_payload, _conversation_hash_payload, _normalize_for_hash
 from polylogue.storage.action_events.rows import attach_blocks_to_messages, build_action_event_records
 from polylogue.storage.conversation_replacement import (
     recount_and_prune_attachments_async,
@@ -41,61 +41,54 @@ def provider_conversation_id(conversation_id: str, provider: str | None) -> str:
     return conversation_id[len(prefix) :] if conversation_id.startswith(prefix) else conversation_id
 
 
-def _normalize_hash_value(value: object) -> JSONValue:
-    if value is None:
-        return "__POLYLOGUE_NULL__"
-    if value == "":
-        return "__POLYLOGUE_EMPTY__"
-    if isinstance(value, (str, int, float, bool)):
-        return value
-    return str(value)
-
-
 def _content_hash_from_metadata_or_domain(conversation: Conversation, metadata: dict[str, object]) -> str:
+    """Compute the conversation content hash through the canonical ids.py path.
+
+    Previously had a divergent hash computation that differed from
+    polylogue.pipeline.ids.conversation_content_hash().  Now builds
+    hash-form message and attachment dicts from the domain Conversation
+    model and delegates to the shared _conversation_hash_payload helper.
+    """
     existing = metadata.get("content_hash")
     if isinstance(existing, str) and existing.strip():
         return existing
 
     messages_payload: list[dict[str, JSONValue]] = []
     for message in conversation.messages:
-        messages_payload.append(
-            {
-                "id": str(message.id),
-                "role": str(message.role),
-                "text": _normalize_hash_value(message.text),
-                "timestamp": _normalize_hash_value(message.timestamp.isoformat() if message.timestamp else None),
-            }
-        )
-    attachments_payload = sorted(
-        [
-            {
-                "id": _normalize_hash_value(attachment.id),
-                "message_id": _normalize_hash_value(message.id),
-                "name": _normalize_hash_value(attachment.name),
-                "mime_type": _normalize_hash_value(attachment.mime_type),
-                "size_bytes": _normalize_hash_value(attachment.size_bytes),
-            }
-            for message in conversation.messages
-            for attachment in message.attachments
-        ],
-        key=lambda item: (
-            str(item.get("message_id") or ""),
-            str(item.get("id") or ""),
-            str(item.get("name") or ""),
-        ),
-    )
-    return hash_payload(
-        {
-            "title": _normalize_hash_value(conversation.title),
-            "created_at": _normalize_hash_value(
-                conversation.created_at.isoformat() if conversation.created_at else None
-            ),
-            "updated_at": _normalize_hash_value(
-                conversation.updated_at.isoformat() if conversation.updated_at else None
-            ),
-            "messages": messages_payload,
-            "attachments": attachments_payload,
+        msg_entry: dict[str, JSONValue] = {
+            "id": str(message.id),
+            "role": str(message.role),
+            "text": _normalize_for_hash(message.text),
+            "timestamp": _normalize_for_hash(message.timestamp.isoformat() if message.timestamp else None),
         }
+        if message.content_blocks:
+            msg_entry["content_blocks"] = [
+                _content_block_payload(b)
+                for b in message.content_blocks  # type: ignore[arg-type]
+            ]
+        messages_payload.append(msg_entry)
+
+    attachments_payload: list[dict[str, JSONValue]] = []
+    for message in conversation.messages:
+        for attachment in message.attachments:
+            attachments_payload.append(
+                {
+                    "id": _normalize_for_hash(attachment.id),
+                    "message_id": _normalize_for_hash(message.id),
+                    "name": _normalize_for_hash(attachment.name),
+                    "mime_type": _normalize_for_hash(attachment.mime_type),
+                    "size_bytes": _normalize_for_hash(attachment.size_bytes),
+                }
+            )
+
+    return hash_payload(
+        _conversation_hash_payload(
+            title=conversation.title,
+            created_at=conversation.created_at.isoformat() if conversation.created_at else None,
+            updated_at=conversation.updated_at.isoformat() if conversation.updated_at else None,
+            messages=messages_payload,
+            attachments=attachments_payload,
+        )
     )
 
 

@@ -173,6 +173,14 @@ def json_object(value: object) -> dict[str, object]:
     return result
 
 
+def format_malformed_jsonl_error(*, malformed_lines: int, malformed_detail: str | None) -> str:
+    """Format a human-readable error for malformed JSONL input."""
+    message = f"Malformed JSONL lines: {malformed_lines}"
+    if malformed_detail:
+        return f"{message} (first bad {malformed_detail})"
+    return message
+
+
 __all__ = [
     "SQL_ACTION_EVENT_INSERT",
     "SQL_ATTACHMENT_REF_INSERT",
@@ -182,5 +190,6 @@ __all__ = [
     "SQL_MESSAGE_UPSERT",
     "SQL_STATS_UPSERT",
     "chunked",
+    "format_malformed_jsonl_error",
     "json_object",
 ]

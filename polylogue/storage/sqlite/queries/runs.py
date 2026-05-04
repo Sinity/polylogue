@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import aiosqlite
 
-from polylogue.core.json import json_document
+from polylogue.core.common import json_object as _json_object
 from polylogue.storage.run_state import RunCounts
 from polylogue.storage.runtime import RunRecord, _json_or_none
 from polylogue.storage.sqlite.queries.mappers import _parse_json
@@ -13,14 +13,6 @@ __all__ = [
     "get_latest_run",
     "record_run",
 ]
-
-
-def _json_object(value: object) -> dict[str, object]:
-    document = json_document(value)
-    result: dict[str, object] = {}
-    for key, item in document.items():
-        result[key] = item
-    return result
 
 
 async def get_latest_run(conn: aiosqlite.Connection) -> RunRecord | None:
@@ -58,6 +50,7 @@ async def record_run(
             indexed,
             duration_ms
         ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(run_id) DO NOTHING
         """,
         (
             record.run_id,

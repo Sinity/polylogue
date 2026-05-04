@@ -248,10 +248,14 @@ def conversation_content_hash(convo: ParsedConversation) -> ContentHash:
         }
         for att in convo.attachments
     ]
-    return ContentHash(hash_payload(_conversation_hash_payload(
-        title=convo.title,
-        created_at=convo.created_at,
-        updated_at=convo.updated_at,
-        messages=messages_payload,
-        attachments=attachments_payload,
-    )))
+    return ContentHash(
+        hash_payload(
+            _conversation_hash_payload(
+                title=convo.title,
+                created_at=convo.created_at,
+                updated_at=convo.updated_at,
+                messages=messages_payload,
+                attachments=attachments_payload,
+            )
+        )
+    )

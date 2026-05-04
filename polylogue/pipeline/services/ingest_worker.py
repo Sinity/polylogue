@@ -22,6 +22,7 @@ from polylogue.archive.artifact_taxonomy import ArtifactClassification, classify
 from polylogue.archive.conversation.branch_type import BranchType
 from polylogue.archive.message.roles import Role
 from polylogue.archive.raw_payload.decode import RawPayloadEnvelope
+from polylogue.core.common import format_malformed_jsonl_error as _format_malformed_jsonl_error
 from polylogue.core.json import dumps as json_dumps
 from polylogue.logging import get_logger
 from polylogue.pipeline.materialization_runtime import (
@@ -143,13 +144,6 @@ ActionEventTuple = tuple[
 StatsTuple = tuple[ConversationId, str, int, int, int, int, int]
 AttachmentTuple = tuple[AttachmentId, str | None, int | None, str | None, int, str | None]
 AttachmentRefTuple = tuple[str, AttachmentId, ConversationId, MessageId | None, str | None]
-
-
-def _format_malformed_jsonl_error(*, malformed_lines: int, malformed_detail: str | None) -> str:
-    message = f"Malformed JSONL lines: {malformed_lines}"
-    if malformed_detail:
-        return f"{message} (first bad {malformed_detail})"
-    return message
 
 
 # ---------------------------------------------------------------------------
