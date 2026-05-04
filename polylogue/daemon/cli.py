@@ -199,11 +199,19 @@ async def run_daemon_services(
     enable_api: bool = False,
     api_host: str = "127.0.0.1",
     api_port: int = 8766,
+    api_auth_token: str | None = None,
 ) -> None:
     """Run configured daemon components until interrupted."""
     from polylogue.paths import archive_root
 
     global _pidfile_path
+
+    # Non-localhost API binding requires explicit opt-in.
+    if enable_api and api_host not in ("127.0.0.1", "::1", "localhost") and not browser_capture_allow_remote:
+        raise click.UsageError(
+            f"--api-host={api_host} is not a loopback address. "
+            f"Add --insecure-allow-remote to accept the risk of exposing the daemon API."
+        )
 
     logger.info("daemon started")
 
@@ -258,7 +266,12 @@ async def run_daemon_services(
                 DaemonAPIHTTPServer,
             )
 
-            api_server = DaemonAPIHTTPServer((api_host, api_port), DaemonAPIHandler)
+            api_server = DaemonAPIHTTPServer(
+                (api_host, api_port),
+                DaemonAPIHandler,
+                auth_token=api_auth_token,
+                api_host=api_host,
+            )
             api_server_task = asyncio.create_task(asyncio.to_thread(api_server.serve_forever, 0.5))
             tasks.append(api_server_task)
 
@@ -449,6 +462,11 @@ def status_command(spool_path: Path | None, output_format: str | None) -> None:
     type=int,
     help="Daemon API server port.",
 )
+@click.option(
+    "--api-auth-token",
+    default=None,
+    help="Daemon API auth token (generate one if not provided; write to archive root).",
+)
 def run_command(
     roots: tuple[Path, ...],
     debounce_s: float,
@@ -463,6 +481,7 @@ def run_command(
     enable_api: bool,
     api_host: str,
     api_port: int,
+    api_auth_token: str | None,
 ) -> None:
     """Run configured daemon components.
 
@@ -507,6 +526,7 @@ def run_command(
                 enable_api=enable_api,
                 api_host=api_host,
                 api_port=api_port,
+                api_auth_token=api_auth_token,
             )
         )
     except KeyboardInterrupt:
