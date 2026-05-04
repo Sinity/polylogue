@@ -293,11 +293,29 @@ async def run_daemon_services(
     tasks: list[asyncio.Task[None]] = []
 
     try:
-        # Start the convergence engine — it periodically checks and repairs
-        # FTS gaps, insight freshness, and other archive invariants.
+        # Start the convergence engine with real pipeline stages.
+        # Acquire stage: checks file fingerprints, calls parse_file() for new/changed files.
+        # Converge stage: detects and repairs FTS gaps (crash recovery).
+        # Insights stage: refreshes session profiles for new conversations.
         from polylogue.daemon.convergence import DaemonConverger
+        from polylogue.daemon.convergence_stages import (
+            make_acquire_stage,
+            make_fts_converge_stage,
+            make_insight_converge_stage,
+        )
+        from polylogue.paths import archive_root, blob_store_root, db_path
 
-        converger = DaemonConverger(stages=(), max_workers=2)
+        _db = db_path() or Path(archive_root()) / "polylogue.db"
+        _blob = blob_store_root()
+
+        converger = DaemonConverger(
+            stages=(
+                make_acquire_stage(_db, _blob),
+                make_fts_converge_stage(_db),
+                make_insight_converge_stage(_db),
+            ),
+            max_workers=2,
+        )
         await converger.start()
 
         if enable_browser_capture:
