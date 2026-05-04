@@ -24,6 +24,8 @@ import sqlite3
 import time
 from pathlib import Path
 
+from polylogue.storage.sqlite.connection_profile import open_connection
+
 logger = logging.getLogger(__name__)
 
 # Minimum age in seconds for a blob to be eligible for deletion.
@@ -138,7 +140,7 @@ def run_blob_gc(
         logger.debug("Blob directory %s does not exist, skipping GC", blob_dir)
         return 0
 
-    conn = sqlite3.connect(str(db_path))
+    conn = open_connection(db_path)
     conn.row_factory = sqlite3.Row
     try:
         generation = _current_generation(conn)

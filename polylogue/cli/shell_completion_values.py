@@ -208,6 +208,31 @@ def complete_tag_values(
     prefix, current = _split_csv_incomplete(incomplete)
     rows = _fetch_rows(
         """
+        SELECT t.name AS tag_name, COUNT(DISTINCT ct.conversation_id) AS cnt
+        FROM conversation_tags ct
+        JOIN tags t ON t.id = ct.tag_id
+        WHERE (? = '' OR t.name LIKE ?)
+        GROUP BY t.name
+        ORDER BY cnt DESC, t.name ASC
+        LIMIT ?
+        """,
+        (
+            current,
+            f"{current}%",
+            _MAX_VALUE_COMPLETIONS,
+        ),
+    )
+    if rows:
+        items = _rows_to_completion_items(
+            rows,
+            value_column="tag_name",
+            help_builder=lambda row: f"{int(row['cnt'])} conversations",
+        )
+        return _with_csv_prefix(items, prefix)
+
+    # Fallback to JSON metadata for pre-migration archives
+    rows = _fetch_rows(
+        """
         SELECT
             tag.value AS tag_name,
             COUNT(*) AS cnt

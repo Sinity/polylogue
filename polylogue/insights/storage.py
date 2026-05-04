@@ -23,6 +23,7 @@ import logging
 import sqlite3
 from pathlib import Path
 
+from polylogue.storage.sqlite.connection_profile import open_connection
 from polylogue.storage.sqlite.schema_ddl_insight_aggregates import (
     SESSION_INSIGHT_AGGREGATE_DDL,
 )
@@ -74,9 +75,7 @@ class InsightsDB:
 
     def connect(self) -> sqlite3.Connection:
         """Open a sync connection to the insights database."""
-        conn = sqlite3.connect(str(self._db_path))
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA foreign_keys=ON")
+        conn = open_connection(self._db_path)
         conn.row_factory = sqlite3.Row
         return conn
 
