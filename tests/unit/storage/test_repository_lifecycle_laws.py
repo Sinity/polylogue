@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -216,5 +217,56 @@ async def test_repository_rejects_domain_conversation_without_message_records(
                 scenario.facts_from_connection(conn),
                 await scenario.facts_from_repository(repository),
             )
+    finally:
+        await repository.close()
+
+
+@pytest.mark.asyncio()
+async def test_repository_resaves_hydrated_domain_provider_events(
+    workspace_env: Mapping[str, Path],
+) -> None:
+    """Domain Conversation writes preserve first-class provider events."""
+    scenario = ArchiveScenario(
+        name="domain-provider-events",
+        provider="claude-code",
+        title="Domain provider events",
+        messages=(ScenarioMessage(role="user", text="Question", message_id="m1"),),
+    )
+    db_path, _ = seed_workspace_scenarios(workspace_env, [scenario])
+    with open_connection(db_path) as conn:
+        conv_record, msg_records, attachment_records = scenario.records_from_connection(conn)
+        conn.execute(
+            """
+            INSERT INTO provider_events (
+                event_id, conversation_id, provider_name, event_index, event_type,
+                timestamp, sort_key, payload_json, materializer_version
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                f"{conv_record.conversation_id}:provider-event:000000",
+                conv_record.conversation_id,
+                conv_record.provider_name,
+                0,
+                "compaction",
+                conv_record.updated_at,
+                0.5,
+                json.dumps({"summary": "compact"}),
+                1,
+            ),
+        )
+        conn.commit()
+
+    repository = repository_for_scenario_db(db_path)
+    try:
+        conversation = await repository.get(scenario.resolved_conversation_id)
+        assert conversation is not None
+        assert [event.event_type for event in conversation.provider_events] == ["compaction"]
+
+        counts = await repository.save_conversation(conversation, msg_records, attachment_records)
+        assert counts["provider_events"] == 1
+
+        refreshed = await repository.get(scenario.resolved_conversation_id)
+        assert refreshed is not None
+        assert [event.payload for event in refreshed.provider_events] == [{"summary": "compact"}]
     finally:
         await repository.close()

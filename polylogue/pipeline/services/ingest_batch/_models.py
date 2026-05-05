@@ -58,9 +58,11 @@ class _IngestBatchSummary:
             "conversations": 0,
             "messages": 0,
             "attachments": 0,
+            "provider_events": 0,
             "skipped_conversations": 0,
             "skipped_messages": 0,
             "skipped_attachments": 0,
+            "skipped_provider_events": 0,
         }
     )
     changed_counts: dict[str, int] = field(
@@ -68,6 +70,7 @@ class _IngestBatchSummary:
             "conversations": 0,
             "messages": 0,
             "attachments": 0,
+            "provider_events": 0,
         }
     )
     parse_failures: int = 0

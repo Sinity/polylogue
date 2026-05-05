@@ -15,6 +15,7 @@ from polylogue.storage.runtime import (
     ContentBlockRecord,
     ConversationRecord,
     MessageRecord,
+    ProviderEventRecord,
 )
 from polylogue.types import ContentHash, ConversationId, MessageId
 
@@ -27,15 +28,18 @@ class RecordBundle(BaseModel):
     messages: list[MessageRecord]
     attachments: list[AttachmentRecord]
     content_blocks: list[ContentBlockRecord] = Field(default_factory=list)
+    provider_events: list[ProviderEventRecord] = Field(default_factory=list)
 
 
 class SaveResult(BaseModel):
     conversations: int
     messages: int
     attachments: int
+    provider_events: int = 0
     skipped_conversations: int
     skipped_messages: int
     skipped_attachments: int
+    skipped_provider_events: int = 0
 
 
 @dataclass

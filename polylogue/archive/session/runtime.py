@@ -57,11 +57,7 @@ def build_session_profile(
     facts = session_analysis.facts
     attribution = session_analysis.attribution
     cost_usd, cost_is_estimated = harmonize_session_cost(conversation)
-    compaction_count = 0
-    if conversation.provider_meta:
-        compactions = conversation.provider_meta.get("context_compactions")
-        if isinstance(compactions, list):
-            compaction_count = len(compactions)
+    compaction_count = sum(1 for event in conversation.provider_events if event.event_type == "compaction")
     engaged_duration_ms = sum(int(phase.duration_ms or 0) for phase in session_analysis.phases)
     if engaged_duration_ms <= 0:
         engaged_duration_ms = max(int(conversation.total_duration_ms or 0), 0)

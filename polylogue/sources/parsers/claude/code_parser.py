@@ -94,7 +94,6 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedCo
     timestamps: list[str] = []
     seen_record_uuids: set[str] = set()
     session_id: str | None = None
-    context_compactions: list[ClaudeCodeContextCompaction] = []
     provider_events: list[ParsedProviderEvent] = []
     total_cost = 0.0
     total_duration = 0
@@ -115,7 +114,6 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedCo
                 raw_timestamp if isinstance(raw_timestamp, (str, int, float)) else None
             )
             context_compaction = dict(compaction)
-            context_compactions.append(context_compaction)
             provider_events.append(
                 ParsedProviderEvent(
                     event_type="compaction",
@@ -206,8 +204,6 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedCo
         conversation_id = session_id or fallback_id
 
     provider_meta: ClaudeCodeProviderMeta = {}
-    if context_compactions:
-        provider_meta["context_compactions"] = context_compactions
     if saw_cost_field:
         provider_meta["total_cost_usd"] = total_cost
     if saw_duration_field:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import builtins
 
 from polylogue.archive.conversation.models import Conversation
+from polylogue.archive.provider.events import ProviderEvent
 from polylogue.core.hashing import hash_payload
 from polylogue.core.json import JSONValue, json_document
 from polylogue.pipeline.ids import _content_block_payload, _conversation_hash_payload, _normalize_for_hash
@@ -24,12 +25,14 @@ from polylogue.storage.runtime import (
     ContentBlockRecord,
     ConversationRecord,
     MessageRecord,
+    ProviderEventRecord,
 )
 from polylogue.storage.search.cache import invalidate_search_cache
 from polylogue.storage.sqlite.queries import action_events as action_events_q
 from polylogue.storage.sqlite.queries import attachments as attachments_q
 from polylogue.storage.sqlite.queries import conversations as conversations_q
 from polylogue.storage.sqlite.queries import messages as messages_q
+from polylogue.storage.sqlite.queries import provider_events as provider_events_q
 from polylogue.storage.sqlite.queries import stats as stats_q
 
 
@@ -88,6 +91,14 @@ def _content_hash_from_metadata_or_domain(conversation: Conversation, metadata: 
             updated_at=conversation.updated_at.isoformat() if conversation.updated_at else None,
             messages=messages_payload,
             attachments=attachments_payload,
+            provider_events=[
+                {
+                    "event_type": _normalize_for_hash(event.event_type),
+                    "timestamp": _normalize_for_hash(event.timestamp.isoformat() if event.timestamp else None),
+                    "payload": hash_payload(event.payload),
+                }
+                for event in conversation.provider_events
+            ],
         )
     )
 
@@ -119,12 +130,29 @@ def conversation_to_record(conversation: Conversation) -> ConversationRecord:
     )
 
 
+def provider_event_to_record(event: ProviderEvent) -> ProviderEventRecord:
+    return ProviderEventRecord(
+        event_id=event.id,
+        conversation_id=event.conversation_id,
+        provider_name=str(event.provider),
+        event_index=event.event_index,
+        event_type=event.event_type,
+        timestamp=event.timestamp.isoformat() if event.timestamp else None,
+        sort_key=event.sort_key,
+        payload=event.payload,
+        source_message_id=event.source_message_id,
+        raw_id=event.raw_id,
+        materializer_version=event.materializer_version,
+    )
+
+
 async def save_via_backend(
     backend: RepositoryBackendProtocol,
     conversation: ConversationRecord,
     messages: builtins.list[MessageRecord],
     attachments: builtins.list[AttachmentRecord],
     content_blocks: builtins.list[ContentBlockRecord] | None = None,
+    provider_events: builtins.list[ProviderEventRecord] | None = None,
 ) -> dict[str, int]:
     import time as _time
 
@@ -134,10 +162,13 @@ async def save_via_backend(
         "conversations": 0,
         "messages": 0,
         "attachments": 0,
+        "provider_events": 0,
         "skipped_conversations": 0,
         "skipped_messages": 0,
         "skipped_attachments": 0,
+        "skipped_provider_events": 0,
     }
+    provider_events = provider_events or []
 
     async with backend.transaction(), backend.connection() as conn:
         t0 = _time.perf_counter()
@@ -161,6 +192,7 @@ async def save_via_backend(
             counts["skipped_conversations"] = 1
             counts["skipped_messages"] = len(messages)
             counts["skipped_attachments"] = len(attachments)
+            counts["skipped_provider_events"] = len(provider_events)
         else:
             counts["conversations"] = 1
             t0 = _time.perf_counter()
@@ -201,6 +233,16 @@ async def save_via_backend(
                 backend.transaction_depth,
             )
             timings["action_events"] = _time.perf_counter() - t0
+
+            t0 = _time.perf_counter()
+            await provider_events_q.replace_provider_events(
+                conn,
+                conversation.conversation_id,
+                provider_events,
+                backend.transaction_depth,
+            )
+            counts["provider_events"] = len(provider_events)
+            timings["provider_events"] = _time.perf_counter() - t0
 
             t0 = _time.perf_counter()
             new_attachment_ids: set[str] = {str(att.attachment_id) for att in attachments}

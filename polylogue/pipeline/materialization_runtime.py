@@ -18,6 +18,7 @@ from polylogue.pipeline.ids import (
     attachment_content_id,
     conversation_content_hash,
     message_content_hash,
+    provider_event_id,
 )
 from polylogue.pipeline.ids import conversation_id as make_conversation_id
 from polylogue.pipeline.ids import message_id as make_message_id
@@ -32,6 +33,7 @@ from polylogue.types import (
     ConversationId,
     MessageId,
     Provider,
+    ProviderEventId,
     SemanticBlockType,
 )
 
@@ -83,6 +85,19 @@ class MaterializedAttachment:
 
 
 @dataclass(frozen=True, slots=True)
+class MaterializedProviderEvent:
+    event_id: ProviderEventId
+    conversation_id: ConversationId
+    provider_name: Provider
+    event_index: int
+    event_type: str
+    timestamp: str | None
+    sort_key: float | None
+    payload: ProviderMetadata
+    source_message_id: MessageId | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class MaterializedConversationStats:
     message_count: int
     word_count: int
@@ -106,6 +121,7 @@ class MaterializedConversation:
     branch_type: BranchType | None
     messages: list[MaterializedMessage]
     attachments: list[MaterializedAttachment]
+    provider_events: list[MaterializedProviderEvent]
     stats: MaterializedConversationStats
 
 
@@ -133,8 +149,32 @@ def _merged_conversation_provider_meta(
 ) -> ProviderMetadata:
     merged_provider_meta: ProviderMetadata = {"source": source_name}
     if convo.provider_meta:
-        merged_provider_meta.update(convo.provider_meta)
+        merged_provider_meta.update(
+            {key: value for key, value in convo.provider_meta.items() if key != "context_compactions"}
+        )
     return merged_provider_meta
+
+
+def _materialize_provider_events(
+    convo: ParsedConversation,
+    *,
+    conversation_id: ConversationId,
+) -> list[MaterializedProviderEvent]:
+    events: list[MaterializedProviderEvent] = []
+    for event_index, event in enumerate(convo.provider_events):
+        events.append(
+            MaterializedProviderEvent(
+                event_id=provider_event_id(conversation_id, event_index),
+                conversation_id=conversation_id,
+                provider_name=convo.provider_name,
+                event_index=event_index,
+                event_type=event.event_type,
+                timestamp=event.timestamp,
+                sort_key=_timestamp_sort_key(event.timestamp),
+                payload=dict(event.payload),
+            )
+        )
+    return events
 
 
 def _attachment_provider_meta(
@@ -247,11 +287,16 @@ def materialize_conversation(
         )
         block_types = {block.type for block in msg.content_blocks}
         message_type = msg.message_type
-        # Stats deferred to batch enrichment after ingest — compute only
-        # content_hash (needed for idempotency) and message_type.
+        # Aggregate session stats are rebuilt later, but these per-message
+        # flags are part of the archive row itself and drive query filters.
         word_count = 0
-        has_tool_use = 0
-        has_thinking = 0
+        has_tool_use = int(
+            "tool_use" in block_types
+            or "tool_result" in block_types
+            or msg.role == "tool"
+            or message_type in {MessageType.TOOL_USE, MessageType.TOOL_RESULT}
+        )
+        has_thinking = int("thinking" in block_types or message_type == MessageType.THINKING)
         has_paste = 0
         if message_type == MessageType.MESSAGE:
             if "thinking" in block_types:
@@ -323,6 +368,10 @@ def materialize_conversation(
         branch_type=normalized_convo.branch_type,
         messages=messages,
         attachments=attachments,
+        provider_events=_materialize_provider_events(
+            normalized_convo,
+            conversation_id=conversation_id,
+        ),
         stats=MaterializedConversationStats(
             message_count=len(messages),
             word_count=0,
@@ -354,6 +403,7 @@ __all__ = [
     "MaterializedConversation",
     "MaterializedConversationStats",
     "MaterializedMessage",
+    "MaterializedProviderEvent",
     "ProviderMetadata",
     "_timestamp_sort_key",
     "materialize_conversation",

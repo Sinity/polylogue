@@ -16,6 +16,7 @@ from polylogue.storage.sqlite.schema_ddl import (
     _ACTION_EVENT_DDL,
     _ACTION_FTS_DDL,
     _ARTIFACT_OBSERVATION_DDL,
+    _PROVIDER_EVENT_DDL,
     _PUBLICATION_DDL,
     _SESSION_INSIGHT_DDL,
     _SOURCE_FILE_CURSOR_DDL,
@@ -75,6 +76,7 @@ class SchemaBootstrapDecision:
         "upgrade_v4_to_v5",
         "upgrade_v4_to_v6",
         "upgrade_v5_to_v6",
+        "upgrade_v6_to_v7",
         "version_mismatch",
     ]
     extension_plan: SchemaExtensionPlan | None = None
@@ -191,6 +193,16 @@ def _normalize_sql(sql: str) -> str:
     normalized = " ".join(sql.replace(";", " ").split())
     normalized = re.sub(r"\bIF\s+NOT\s+EXISTS\b", "", normalized, flags=re.IGNORECASE)
     return " ".join(normalized.split())
+
+
+def _split_ddl_into_statements(*ddls: str) -> tuple[str, ...]:
+    stmts: list[str] = []
+    for ddl in ddls:
+        for statement in ddl.split(";"):
+            statement = statement.strip()
+            if statement and not statement.startswith("--"):
+                stmts.append(statement)
+    return tuple(stmts)
 
 
 _MESSAGE_TYPE_EXTENSION_DESCRIPTORS: tuple[SchemaExtensionDescriptor, ...] = (
@@ -334,6 +346,7 @@ _SCHEMA_EXTENSION_DESCRIPTORS: tuple[SchemaExtensionDescriptor, ...] = (
     ),
     SchemaScriptExtensionDescriptor(_ARTIFACT_OBSERVATION_DDL),
     SchemaScriptExtensionDescriptor(_PUBLICATION_DDL),
+    SchemaScriptExtensionDescriptor(_PROVIDER_EVENT_DDL),
     SchemaScriptExtensionDescriptor(_ACTION_EVENT_DDL),
     SchemaColumnExtensionDescriptor(
         table_name="action_events",
@@ -651,6 +664,50 @@ _V2_TO_V3_MESSAGE_TYPE_BACKFILL_WITH_BLOCKS_SQL = """
           )
         """
 
+_V6_TO_V7_PROVIDER_EVENTS_BACKFILL_SQL = """
+        INSERT OR IGNORE INTO provider_events (
+            event_id,
+            conversation_id,
+            provider_name,
+            event_index,
+            event_type,
+            timestamp,
+            sort_key,
+            payload_json,
+            source_message_id,
+            raw_id,
+            materializer_version
+        )
+        SELECT
+            c.conversation_id || ':provider-event:' || printf('%06d', CAST(je.key AS INTEGER)),
+            c.conversation_id,
+            c.provider_name,
+            CAST(je.key AS INTEGER),
+            'compaction',
+            json_extract(je.value, '$.timestamp'),
+            NULL,
+            json(je.value),
+            NULL,
+            c.raw_id,
+            1
+        FROM conversations AS c,
+             json_each(json_extract(c.provider_meta, '$.context_compactions')) AS je
+        WHERE c.provider_meta IS NOT NULL
+          AND json_valid(c.provider_meta)
+          AND json_type(c.provider_meta, '$.context_compactions') = 'array'
+        """
+
+_V6_TO_V7_PROVIDER_META_CLEANUP_SQL = """
+        UPDATE conversations
+        SET provider_meta = CASE
+            WHEN json_remove(provider_meta, '$.context_compactions') IN ('{}', 'null') THEN NULL
+            ELSE json_remove(provider_meta, '$.context_compactions')
+        END
+        WHERE provider_meta IS NOT NULL
+          AND json_valid(provider_meta)
+          AND json_type(provider_meta, '$.context_compactions') IS NOT NULL
+        """
+
 
 def schema_extension_snapshot_tables() -> tuple[str, ...]:
     """Tables that current-schema extension planning must inspect."""
@@ -659,6 +716,7 @@ def schema_extension_snapshot_tables() -> tuple[str, ...]:
         for table_name in descriptor.snapshot_tables():
             table_names.setdefault(table_name, None)
     table_names.setdefault("action_events_fts", None)
+    table_names.setdefault("conversations", None)
     return tuple(table_names)
 
 
@@ -672,6 +730,12 @@ def schema_extension_snapshot_indexes() -> tuple[str, ...]:
 
 
 def schema_version_mismatch_message(current_version: int) -> str:
+    if current_version > SCHEMA_VERSION:
+        return (
+            f"Database schema version {current_version} is newer than this Polylogue runtime expects "
+            f"({SCHEMA_VERSION}). Update the installed Polylogue runtime to the build that created or migrated "
+            "the database before opening it."
+        )
     return (
         f"Database schema version {current_version} is incompatible with expected version {SCHEMA_VERSION}. "
         "Polylogue only supports explicitly declared in-place archive upgrades. Move the database aside or rebuild "
@@ -747,10 +811,33 @@ def build_v2_to_current_upgrade_plan(snapshot: SchemaSnapshot) -> SchemaExtensio
     """Build the declared v2 upgrade path to the current archive version."""
     v2_to_v3 = build_v2_to_v3_upgrade_plan(snapshot)
     v3_to_v4 = build_v3_to_v4_upgrade_plan(snapshot)
+    extra_statements: tuple[str, ...] = ()
+    if SCHEMA_VERSION >= 5:
+        from polylogue.storage.sqlite.schema_ddl_archive import BLOB_LEASE_DDL, TAGS_M2M_DDL
+        from polylogue.storage.sqlite.schema_ddl_cursor import SOURCE_FILE_CURSOR_DDL
+
+        extra_statements = _split_ddl_into_statements(SOURCE_FILE_CURSOR_DDL, TAGS_M2M_DDL, BLOB_LEASE_DDL)
+    if SCHEMA_VERSION >= 6:
+        from polylogue.storage.sqlite.schema_ddl_identity import IDENTITY_DDL
+
+        extra_statements = (*extra_statements, *_split_ddl_into_statements(IDENTITY_DDL))
+    if SCHEMA_VERSION >= 7:
+        extra_statements = (*extra_statements, *build_v6_to_v7_upgrade_plan(snapshot).statements)
     return SchemaExtensionPlan(
-        statements=(*v2_to_v3.statements, *v3_to_v4.statements),
+        statements=(*v2_to_v3.statements, *v3_to_v4.statements, *extra_statements),
         scripts=(),
     )
+
+
+def build_v6_to_v7_upgrade_plan(snapshot: SchemaSnapshot) -> SchemaExtensionPlan:
+    """Promote provider protocol events out of conversation provider_meta."""
+    assert_supported_archive_layout_snapshot(snapshot)
+
+    statements = list(_split_ddl_into_statements(_PROVIDER_EVENT_DDL))
+    if snapshot.has_table("conversations"):
+        statements.append(_V6_TO_V7_PROVIDER_EVENTS_BACKFILL_SQL)
+        statements.append(_V6_TO_V7_PROVIDER_META_CLEANUP_SQL)
+    return SchemaExtensionPlan(statements=tuple(statements), scripts=())
 
 
 def decide_schema_bootstrap(snapshot: SchemaSnapshot) -> SchemaBootstrapDecision:
@@ -767,15 +854,6 @@ def decide_schema_bootstrap(snapshot: SchemaSnapshot) -> SchemaBootstrapDecision
             current_version=snapshot.current_version,
         )
 
-    def _split_ddl_into_statements(*ddls: str) -> tuple[str, ...]:
-        stmts: list[str] = []
-        for ddl in ddls:
-            for s in ddl.split(";"):
-                s = s.strip()
-                if s and not s.startswith("--"):
-                    stmts.append(s)
-        return tuple(stmts)
-
     if snapshot.current_version == 3 and SCHEMA_VERSION >= 4:
         plan = build_v3_to_v4_upgrade_plan(snapshot)
         if SCHEMA_VERSION >= 5:
@@ -787,6 +865,8 @@ def decide_schema_bootstrap(snapshot: SchemaSnapshot) -> SchemaBootstrapDecision
                 from polylogue.storage.sqlite.schema_ddl_identity import IDENTITY_DDL
 
                 extra_stmts = (*extra_stmts, *_split_ddl_into_statements(IDENTITY_DDL))
+            if SCHEMA_VERSION >= 7:
+                extra_stmts = (*extra_stmts, *build_v6_to_v7_upgrade_plan(snapshot).statements)
             plan = SchemaExtensionPlan(
                 statements=(*plan.statements, *extra_stmts),
                 scripts=(),
@@ -806,6 +886,8 @@ def decide_schema_bootstrap(snapshot: SchemaSnapshot) -> SchemaBootstrapDecision
             from polylogue.storage.sqlite.schema_ddl_identity import IDENTITY_DDL
 
             plan_stmts = (*plan_stmts, *_split_ddl_into_statements(IDENTITY_DDL))
+        if SCHEMA_VERSION >= 7:
+            plan_stmts = (*plan_stmts, *build_v6_to_v7_upgrade_plan(snapshot).statements)
         plan = SchemaExtensionPlan(
             statements=plan_stmts,
             scripts=(),
@@ -819,13 +901,23 @@ def decide_schema_bootstrap(snapshot: SchemaSnapshot) -> SchemaBootstrapDecision
     if snapshot.current_version == 5 and SCHEMA_VERSION >= 6:
         from polylogue.storage.sqlite.schema_ddl_identity import IDENTITY_DDL
 
+        plan_statements = _split_ddl_into_statements(IDENTITY_DDL)
+        if SCHEMA_VERSION >= 7:
+            plan_statements = (*plan_statements, *build_v6_to_v7_upgrade_plan(snapshot).statements)
         plan = SchemaExtensionPlan(
-            statements=_split_ddl_into_statements(IDENTITY_DDL),
+            statements=plan_statements,
             scripts=(),
         )
         return SchemaBootstrapDecision(
             action="upgrade_v5_to_v6",
             extension_plan=plan,
+            current_version=snapshot.current_version,
+        )
+
+    if snapshot.current_version == 6 and SCHEMA_VERSION >= 7:
+        return SchemaBootstrapDecision(
+            action="upgrade_v6_to_v7",
+            extension_plan=build_v6_to_v7_upgrade_plan(snapshot),
             current_version=snapshot.current_version,
         )
 

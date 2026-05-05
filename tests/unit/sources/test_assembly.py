@@ -7,15 +7,17 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.archive.conversation.branch_type import BranchType
 from polylogue.archive.message.roles import Role
 from polylogue.sources.assembly import SidecarData, get_assembly_spec
 from polylogue.sources.assembly_claude_code import ClaudeCodeAssemblySpec
 from polylogue.sources.assembly_codex import CodexAssemblySpec, _parse_codex_session_index
 from polylogue.sources.assembly_gemini import GeminiAssemblySpec
-from polylogue.sources.parsers.base import ParsedAttachment, ParsedConversation, ParsedMessage
+from polylogue.sources.parsers.base import ParsedAttachment, ParsedConversation, ParsedMessage, ParsedProviderEvent
 from polylogue.sources.parsers.claude.index import (
     SessionIndexEntry,
     _looks_like_git_branch,
+    enrich_conversation_from_index,
 )
 from polylogue.types import Provider
 
@@ -283,6 +285,44 @@ class TestClaudeCodeAssemblySpec:
         assert result is conv
         assert result.title == "original"
 
+    def test_enrich_conversation_from_index_preserves_semantic_fields(self, tmp_path: Path) -> None:
+        session_file = tmp_path / "session-1.jsonl"
+        conversation = ParsedConversation(
+            provider_name=Provider.CLAUDE_CODE,
+            provider_conversation_id="session-1",
+            title="session-1",
+            created_at="2025-01-01T00:00:00Z",
+            updated_at="2025-01-01T00:00:00Z",
+            messages=[_parsed_message("m1", "user", "hello")],
+            provider_events=[
+                ParsedProviderEvent(
+                    event_type="compaction",
+                    timestamp="2025-01-01T00:00:01Z",
+                    payload={"summary": "compact"},
+                )
+            ],
+            parent_conversation_provider_id="parent-session",
+            branch_type=BranchType.SIDECHAIN,
+        )
+        entry = SessionIndexEntry(
+            session_id="session-1",
+            full_path=str(session_file),
+            first_prompt="Summarize this repo",
+            summary="Investigate parser contracts",
+            message_count=12,
+            created="2025-01-02T00:00:00Z",
+            modified="2025-01-03T00:00:00Z",
+            git_branch="main",
+            project_path="/tmp/project",
+            is_sidechain=True,
+        )
+
+        enriched = enrich_conversation_from_index(conversation, entry)
+
+        assert enriched.provider_events == conversation.provider_events
+        assert enriched.parent_conversation_provider_id == "parent-session"
+        assert enriched.branch_type == BranchType.SIDECHAIN
+
 
 # ---------------------------------------------------------------------------
 # Codex Assembly
@@ -536,8 +576,6 @@ class TestLooksLikeGitBranch:
 
     def test_git_branch_summary_skipped_in_enrichment(self) -> None:
         """enrich_conversation_from_index skips summary that looks like a git branch."""
-        from polylogue.sources.parsers.claude.index import enrich_conversation_from_index
-
         conv = _parsed_conversation(
             Provider.CLAUDE_CODE,
             "sess-1",
@@ -565,8 +603,6 @@ class TestLooksLikeGitBranch:
 
     def test_git_branch_exact_match_skipped(self) -> None:
         """Exact branch names like 'main' are rejected as summaries."""
-        from polylogue.sources.parsers.claude.index import enrich_conversation_from_index
-
         conv = _parsed_conversation(
             Provider.CLAUDE_CODE,
             "sess-1",

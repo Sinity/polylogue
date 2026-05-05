@@ -174,15 +174,13 @@ def enrich_conversation_from_index(
         }
     )
 
-    return ParsedConversation(
-        provider_name=conv.provider_name,
-        provider_conversation_id=conv.provider_conversation_id,
-        title=title,
-        created_at=index_entry.created or conv.created_at,
-        updated_at=index_entry.modified or conv.updated_at,
-        messages=conv.messages,
-        attachments=conv.attachments,
-        provider_meta=provider_meta,
+    return conv.model_copy(
+        update={
+            "title": title,
+            "created_at": index_entry.created or conv.created_at,
+            "updated_at": index_entry.modified or conv.updated_at,
+            "provider_meta": provider_meta,
+        }
     )
 
 

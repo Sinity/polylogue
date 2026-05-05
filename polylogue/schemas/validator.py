@@ -76,13 +76,92 @@ _UUID_KEY_RE = re.compile(
 )
 
 
-def _normalize_empty_arrays(data: object) -> object:
-    """Replace empty lists with None — newer ChatGPT exports use []
-    for fields that older exports represented as null."""
+def _schema_type_values(schema: object) -> set[str]:
+    if not isinstance(schema, Mapping):
+        return set()
+    schema_type = schema.get("type")
+    if isinstance(schema_type, str):
+        return {schema_type}
+    if isinstance(schema_type, list):
+        return {item for item in schema_type if isinstance(item, str)}
+    return set()
+
+
+def _schema_allows_type(schema: object, type_name: str) -> bool:
+    if not isinstance(schema, Mapping):
+        return False
+    if type_name in _schema_type_values(schema):
+        return True
+    for key in ("anyOf", "oneOf", "allOf"):
+        branches = schema.get(key)
+        if isinstance(branches, list) and any(_schema_allows_type(branch, type_name) for branch in branches):
+            return True
+    return False
+
+
+def _schema_branch_for_value(schema: object, value: object) -> object:
+    if not isinstance(schema, Mapping):
+        return None
+    for key in ("anyOf", "oneOf"):
+        branches = schema.get(key)
+        if not isinstance(branches, list):
+            continue
+        for branch in branches:
+            if isinstance(value, Mapping) and _schema_allows_type(branch, "object"):
+                return branch
+            if isinstance(value, list) and _schema_allows_type(branch, "array"):
+                return branch
+            if value is None and _schema_allows_type(branch, "null"):
+                return branch
+        for branch in branches:
+            if isinstance(branch, Mapping):
+                return branch
+    return schema
+
+
+def _schema_for_property(schema: object, key: str, value: object) -> object:
+    schema = _schema_branch_for_value(schema, value)
+    if not isinstance(schema, Mapping):
+        return None
+    properties = schema.get("properties")
+    if isinstance(properties, Mapping) and key in properties:
+        return properties[key]
+    additional_properties = schema.get("additionalProperties")
+    if isinstance(additional_properties, Mapping):
+        return additional_properties
+    return None
+
+
+def _schema_for_items(schema: object, value: object) -> object:
+    schema = _schema_branch_for_value(schema, value)
+    if not isinstance(schema, Mapping):
+        return None
+    items = schema.get("items")
+    return items if isinstance(items, Mapping) else None
+
+
+def _normalize_empty_arrays(data: object, schema: object = None) -> object:
+    """Coerce empty arrays to null only when the active schema expects null.
+
+    Some provider fields moved between ``null`` and ``[]`` across exports, but
+    structural fields such as ChatGPT ``mapping.*.children`` are genuinely
+    arrays. Normalization must therefore follow the selected JSON schema instead
+    of rewriting every empty list globally.
+    """
+    schema = _schema_branch_for_value(schema, data)
     if isinstance(data, dict):
-        return {k: None if isinstance(v, list) and len(v) == 0 else _normalize_empty_arrays(v) for k, v in data.items()}
+        return {
+            key: _normalize_empty_arrays(value, _schema_for_property(schema, key, value)) for key, value in data.items()
+        }
     if isinstance(data, list):
-        return [_normalize_empty_arrays(item) for item in data]
+        if len(data) == 0:
+            if _schema_allows_type(schema, "array"):
+                return []
+            if _schema_allows_type(schema, "null"):
+                return None
+            return []
+        item_schema = _schema_for_items(schema, data)
+        return [_normalize_empty_arrays(item, item_schema) for item in data]
     return data
 
 
@@ -254,7 +333,7 @@ class SchemaValidator:
         return _available_providers(registry_cls=SchemaRegistry)
 
     def validate(self, data: object, *, include_drift: bool | None = None) -> ValidationResult:
-        normalized = _normalize_empty_arrays(data)
+        normalized = _normalize_empty_arrays(data, self.schema)
         errors = [format_validation_error(error) for error in self._validator.iter_errors(normalized)]
         drift_warnings: list[str] = []
         should_detect_drift = self.strict if include_drift is None else include_drift

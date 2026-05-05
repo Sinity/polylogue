@@ -183,6 +183,24 @@ def test_schema_validator_payload_resolution_supports_lightweight_registry(
     assert "from_default" in json_document(validator.schema["properties"])
 
 
+def test_schema_validator_preserves_empty_arrays_when_schema_expects_array() -> None:
+    validator = SchemaValidator(
+        {
+            "type": "object",
+            "properties": {
+                "children": {"type": "array", "items": {"type": "string"}},
+                "legacy_null": {"type": "null"},
+            },
+            "additionalProperties": False,
+        },
+        strict=True,
+    )
+
+    result = validator.validate({"children": [], "legacy_null": []})
+
+    assert result.is_valid
+
+
 def test_dynamic_key_maps_do_not_emit_drift_warnings() -> None:
     """Explicit dynamic-key containers should suppress key-level drift noise."""
     validator = SchemaValidator(

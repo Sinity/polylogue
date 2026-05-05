@@ -13,6 +13,7 @@ from polylogue.storage.runtime import (
     ContentBlockRecord,
     ConversationRecord,
     MessageRecord,
+    ProviderEventRecord,
     RawConversationRecord,
 )
 from polylogue.storage.sqlite.queries.mappers_support import (
@@ -30,6 +31,7 @@ from polylogue.types import (
     ConversationId,
     MessageId,
     Provider,
+    ProviderEventId,
     SemanticBlockType,
     ValidationMode,
     ValidationStatus,
@@ -190,11 +192,29 @@ def _row_to_action_event(row: sqlite3.Row) -> ActionEventRecord:
     )
 
 
+def _row_to_provider_event(row: sqlite3.Row) -> ProviderEventRecord:
+    source_message_id = _row_text(row, "source_message_id")
+    return ProviderEventRecord(
+        event_id=ProviderEventId(row["event_id"]),
+        conversation_id=ConversationId(row["conversation_id"]),
+        provider_name=_row_text(row, "provider_name") or "",
+        event_index=_row_int(row, "event_index", 0) or 0,
+        event_type=_row_text(row, "event_type") or "",
+        timestamp=_row_text(row, "timestamp"),
+        sort_key=_row_float(row, "sort_key"),
+        payload=_json_object(_parse_json(row["payload_json"], field="payload_json", record_id=row["event_id"])) or {},
+        source_message_id=MessageId(source_message_id) if source_message_id is not None else None,
+        raw_id=_row_text(row, "raw_id"),
+        materializer_version=_row_int(row, "materializer_version", 1) or 1,
+    )
+
+
 __all__ = [
     "_row_to_action_event",
     "_row_to_artifact_observation",
     "_row_to_content_block",
     "_row_to_conversation",
     "_row_to_message",
+    "_row_to_provider_event",
     "_row_to_raw_conversation",
 ]

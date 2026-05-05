@@ -30,6 +30,7 @@ from polylogue.storage.runtime import (
     ContentBlockRecord,
     ConversationRecord,
     MessageRecord,
+    ProviderEventRecord,
 )
 
 if TYPE_CHECKING:
@@ -51,6 +52,7 @@ class PrepareRepository(Protocol):
         messages: list[MessageRecord],
         attachments: list[AttachmentRecord],
         content_blocks: list[ContentBlockRecord] | None = None,
+        provider_events: list[ProviderEventRecord] | None = None,
     ) -> dict[str, int]: ...
 
 
@@ -60,6 +62,7 @@ async def save_bundle(bundle: RecordBundle, repository: PrepareRepository) -> Sa
         messages=bundle.messages,
         attachments=bundle.attachments,
         content_blocks=bundle.content_blocks,
+        provider_events=bundle.provider_events,
     )
     return SaveResult(**counts)
 

@@ -51,6 +51,7 @@ from polylogue.storage.runtime import (
     ContentBlockRecord,
     ConversationRecord,
     MessageRecord,
+    ProviderEventRecord,
     SessionPhaseRecord,
     SessionProfileRecord,
     SessionWorkEventRecord,
@@ -65,6 +66,10 @@ from polylogue.storage.sqlite.queries.mappers import (
     _row_to_content_block,
     _row_to_message,
     _row_to_session_profile_record,
+)
+from polylogue.storage.sqlite.queries.provider_events import (
+    get_provider_events_batch,
+    sync_provider_events_batch,
 )
 from polylogue.types import ConversationId
 
@@ -97,8 +102,7 @@ SELECT
     raw_id,
     json_extract(provider_meta, '$.cwd') AS provider_meta_cwd,
     json_extract(provider_meta, '$.gitBranch') AS provider_meta_git_branch,
-    json_extract(provider_meta, '$.git') AS provider_meta_git,
-    json_extract(provider_meta, '$.context_compactions') AS provider_meta_context_compactions
+    json_extract(provider_meta, '$.git') AS provider_meta_git
 FROM conversations
 WHERE conversation_id IN ({placeholders})
 """
@@ -109,6 +113,7 @@ class SessionInsightArchiveBatch:
     conversations: list[ConversationRecord]
     messages: list[MessageRecord]
     attachments_by_conversation: dict[str, list[AttachmentRecord]]
+    provider_events_by_conversation: dict[str, list[ProviderEventRecord]]
     blocks: list[ContentBlockRecord]
 
 
@@ -184,16 +189,6 @@ def _row_to_session_insight_conversation(row: sqlite3.Row) -> ConversationRecord
         parsed_git = _parse_json(git_raw, field="provider_meta.git", record_id=row["conversation_id"])
         if isinstance(parsed_git, dict) and parsed_git:
             provider_meta["git"] = parsed_git
-    compactions_raw = _row_get(row, "provider_meta_context_compactions")
-    if isinstance(compactions_raw, str) and compactions_raw:
-        parsed_compactions = _parse_json(
-            compactions_raw,
-            field="provider_meta.context_compactions",
-            record_id=row["conversation_id"],
-        )
-        if isinstance(parsed_compactions, list) and parsed_compactions:
-            provider_meta["context_compactions"] = parsed_compactions
-
     parent_conversation_id = _row_text(row, "parent_conversation_id")
     branch_type = _row_text(row, "branch_type")
 
@@ -288,6 +283,7 @@ def load_sync_batch(
         conversations=conversations,
         messages=messages,
         attachments_by_conversation=sync_attachment_batch(conn, conversation_ids),
+        provider_events_by_conversation=sync_provider_events_batch(conn, conversation_ids),
         blocks=blocks,
     )
 
@@ -335,10 +331,12 @@ async def load_async_batch(
         ).fetchall()
     ]
     attachments = await get_attachments_batch(conn, list(conversation_ids))
+    provider_events = await get_provider_events_batch(conn, list(conversation_ids))
     return SessionInsightArchiveBatch(
         conversations=conversations,
         messages=messages,
         attachments_by_conversation=attachments,
+        provider_events_by_conversation=provider_events,
         blocks=blocks,
     )
 
@@ -365,6 +363,7 @@ def hydrate_conversations(
                 conversation,
                 attached_messages,
                 batch.attachments_by_conversation.get(conversation_id, []),
+                batch.provider_events_by_conversation.get(conversation_id, []),
             )
         )
     return hydrated

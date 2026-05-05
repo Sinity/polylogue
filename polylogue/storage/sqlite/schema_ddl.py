@@ -47,8 +47,11 @@ from polylogue.storage.sqlite.schema_ddl_insight_profiles import (
 from polylogue.storage.sqlite.schema_ddl_insight_timelines import (
     SESSION_INSIGHT_TIMELINE_DDL as _SESSION_INSIGHT_TIMELINE_DDL,
 )
+from polylogue.storage.sqlite.schema_ddl_provider_events import (
+    PROVIDER_EVENT_DDL as _PROVIDER_EVENT_DDL,
+)
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 
 # Complete target schema applied to fresh databases.
@@ -68,6 +71,7 @@ SCHEMA_DDL += "\n\n" + _SOURCE_FILE_CURSOR_DDL
 SCHEMA_DDL += "\n\n" + _TAGS_M2M_DDL
 SCHEMA_DDL += "\n\n" + _IDENTITY_DDL
 SCHEMA_DDL += "\n\n" + _BLOB_LEASE_DDL
+SCHEMA_DDL += "\n\n" + _PROVIDER_EVENT_DDL
 SCHEMA_DDL += "\n\n" + _ACTION_EVENT_DDL
 SCHEMA_DDL += _ACTION_FTS_DDL
 
@@ -86,6 +90,7 @@ __all__ = [
     "_IDENTITY_DDL",
     "_MESSAGE_FTS_DDL",
     "_PUBLICATION_DDL",
+    "_PROVIDER_EVENT_DDL",
     "_RAW_ARCHIVE_DDL",
     "_SESSION_INSIGHT_DDL",
     "_SOURCE_FILE_CURSOR_DDL",
