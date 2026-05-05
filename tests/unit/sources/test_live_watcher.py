@@ -8,7 +8,8 @@ import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from typing import Any, cast
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -171,10 +172,13 @@ def test_watcher_default_cursor_uses_archive_database(tmp_path: Path) -> None:
     root = tmp_path / "src"
     root.mkdir()
     db_path = tmp_path / "archive.db"
-    polylogue = SimpleNamespace(
-        archive_root=tmp_path,
-        backend=SimpleNamespace(db_path=db_path),
-        parse_sources=AsyncMock(),
+    polylogue = cast(
+        Any,
+        SimpleNamespace(
+            archive_root=tmp_path,
+            backend=SimpleNamespace(db_path=db_path),
+            parse_sources=AsyncMock(),
+        ),
     )
 
     watcher = LiveWatcher(polylogue, (WatchSource(name="test", root=root),))
@@ -365,6 +369,35 @@ def test_parse_failure_is_recorded_and_backed_off(tmp_path: Path) -> None:
     parse_sources.reset_mock()
     asyncio.run(_ingest_one(watcher, f))
     assert parse_sources.await_count == 0
+
+
+def test_ingest_files_emits_observable_batch_metrics(tmp_path: Path) -> None:
+    root = tmp_path / "src"
+    root.mkdir()
+    f = root / "session.jsonl"
+    f.write_text('{"role":"user","content":"a"}\n')
+    watcher, _parse_sources = _make_watcher(tmp_path, root)
+
+    with patch("polylogue.daemon.events.emit_daemon_event") as emit:
+        asyncio.run(watcher._ingest_files([f], queued_file_count=3, skipped_file_count=2))
+
+    emit.assert_called_once()
+    kind = emit.call_args.args[0]
+    payload = emit.call_args.kwargs["payload"]
+    assert kind == "ingestion_batch"
+    assert payload["queued_file_count"] == 3
+    assert payload["needed_file_count"] == 1
+    assert payload["skipped_file_count"] == 2
+    assert payload["succeeded_file_count"] == 1
+    assert payload["failed_file_count"] == 0
+    assert payload["source_group_count"] == 1
+    assert payload["input_bytes"] == f.stat().st_size
+    assert payload["cursor_fingerprint_read_bytes"] == f.stat().st_size
+    assert payload["archive_write_bytes_delta"] >= 0
+    assert payload["parse_time_s"] >= 0
+    assert payload["total_time_s"] >= 0
+    assert payload["stage_timings_s"] == {}
+    assert payload["failed_paths"] == []
 
 
 def test_parse_failure_retries_after_backoff(tmp_path: Path) -> None:

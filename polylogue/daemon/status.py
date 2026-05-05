@@ -49,6 +49,23 @@ class InsightFreshness(BaseModel):
     total_sessions: int = 0
 
 
+class LiveCursorFileState(BaseModel):
+    source_path: str
+    failure_count: int = 0
+    next_retry_at: str | None = None
+    excluded: bool = False
+    retry_due: bool = False
+
+
+class LiveCursorSummary(BaseModel):
+    tracked_file_count: int = 0
+    failed_file_count: int = 0
+    excluded_file_count: int = 0
+    retry_due_file_count: int = 0
+    in_backoff_file_count: int = 0
+    failing_files: list[LiveCursorFileState] = Field(default_factory=list)
+
+
 # ---------------------------------------------------------------------------
 # DaemonStatus — typed model consumed by all surfaces
 # ---------------------------------------------------------------------------
@@ -64,6 +81,7 @@ class DaemonStatus(BaseModel):
     current_operations: list[dict[str, object]] = Field(default_factory=list)
     reset_queue: list[dict[str, object]] = Field(default_factory=list)
     ingestion_throughput: IngestionThroughput = Field(default_factory=IngestionThroughput)
+    live_cursor: LiveCursorSummary = Field(default_factory=LiveCursorSummary)
     db_size_bytes: int = 0
     wal_size_bytes: int = 0
     blob_dir_size_bytes: int = 0
@@ -191,9 +209,14 @@ def _safe_int(value: object) -> int:
 
 def _failing_files_info() -> list[str]:
     """Return live-source files currently marked failed or excluded."""
+    return [item.source_path for item in _live_cursor_summary_info().failing_files]
+
+
+def _live_cursor_summary_info() -> LiveCursorSummary:
+    """Return live cursor backlog/failure state without source-tree scans."""
     dbf = db_path()
     if not dbf.exists():
-        return []
+        return LiveCursorSummary()
     try:
         conn = open_readonly_connection(dbf)
         try:
@@ -201,10 +224,11 @@ def _failing_files_info() -> list[str]:
                 "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'live_cursor'"
             ).fetchone()
             if has_table is None:
-                return []
+                return LiveCursorSummary()
+            tracked_file_count = int(conn.execute("SELECT COUNT(*) FROM live_cursor").fetchone()[0])
             rows = conn.execute(
                 """
-                SELECT source_path
+                SELECT source_path, failure_count, next_retry_at, excluded
                 FROM live_cursor
                 WHERE failure_count > 0 OR excluded = 1
                 ORDER BY source_path
@@ -213,8 +237,57 @@ def _failing_files_info() -> list[str]:
         finally:
             conn.close()
     except sqlite3.Error:
-        return []
-    return [str(row[0]) for row in rows]
+        return LiveCursorSummary()
+
+    now = datetime.now(UTC)
+    failing_files: list[LiveCursorFileState] = []
+    failed_file_count = 0
+    excluded_file_count = 0
+    retry_due_file_count = 0
+    in_backoff_file_count = 0
+    for row in rows:
+        failure_count = int(row[1] or 0)
+        excluded = bool(row[3])
+        retry_due = False
+        if failure_count > 0:
+            failed_file_count += 1
+            retry_due = _retry_due(row[2], now=now)
+            if retry_due:
+                retry_due_file_count += 1
+            else:
+                in_backoff_file_count += 1
+        if excluded:
+            excluded_file_count += 1
+        failing_files.append(
+            LiveCursorFileState(
+                source_path=str(row[0]),
+                failure_count=failure_count,
+                next_retry_at=row[2],
+                excluded=excluded,
+                retry_due=retry_due,
+            )
+        )
+
+    return LiveCursorSummary(
+        tracked_file_count=tracked_file_count,
+        failed_file_count=failed_file_count,
+        excluded_file_count=excluded_file_count,
+        retry_due_file_count=retry_due_file_count,
+        in_backoff_file_count=in_backoff_file_count,
+        failing_files=failing_files,
+    )
+
+
+def _retry_due(next_retry_at: str | None, *, now: datetime) -> bool:
+    if not next_retry_at:
+        return True
+    try:
+        retry_at = datetime.fromisoformat(next_retry_at)
+    except ValueError:
+        return True
+    if retry_at.tzinfo is None:
+        retry_at = retry_at.replace(tzinfo=UTC)
+    return retry_at <= now
 
 
 def _check_daemon_liveness() -> bool:
@@ -242,6 +315,7 @@ def build_daemon_status(
     db_info = _db_size_info()
     fts = _fts_readiness_info()
     freshness = _insight_freshness_info()
+    live_cursor = _live_cursor_summary_info()
 
     return DaemonStatus(
         daemon_liveness=_check_daemon_liveness(),
@@ -251,7 +325,8 @@ def build_daemon_status(
             browser_capture="running" if browser_capture_spool_path else "stopped",
         ),
         source_lag=[SourceLagItem(name=s.name, root=str(s.root), exists=s.exists()) for s in watch_sources],
-        failing_files=_failing_files_info(),
+        failing_files=[item.source_path for item in live_cursor.failing_files],
+        live_cursor=live_cursor,
         db_size_bytes=_safe_int(db_info.get("db_size_bytes", 0)),
         wal_size_bytes=_safe_int(db_info.get("wal_size_bytes", 0)),
         blob_dir_size_bytes=_blob_size_info(),
@@ -318,6 +393,7 @@ def daemon_status_payload(
             "watcher_roots": [str(s.root) for s in watch_sources],
             "browser_capture_active": status.browser_capture_active,
             "failing_files": status.failing_files,
+            "live_cursor": status.live_cursor.model_dump(),
             "operations": status.current_operations,
             "last_ingestion_batch": last_ingestion,
             "fts_readiness": fts,
@@ -346,6 +422,16 @@ def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
         origin_text = ", ".join(str(item) for item in origins) if isinstance(origins, list) else str(origins)
         lines.append(f"Browser capture origins: {origin_text}")
     failing_files = payload.get("failing_files")
+    live_cursor = payload.get("live_cursor")
+    if isinstance(live_cursor, dict):
+        lines.append(
+            "Live cursor: "
+            f"{live_cursor.get('tracked_file_count', 0)} tracked, "
+            f"{live_cursor.get('failed_file_count', 0)} failed, "
+            f"{live_cursor.get('excluded_file_count', 0)} excluded, "
+            f"{live_cursor.get('retry_due_file_count', 0)} retry due, "
+            f"{live_cursor.get('in_backoff_file_count', 0)} in backoff"
+        )
     if isinstance(failing_files, list) and failing_files:
         lines.append(f"Failing files: {len(failing_files)}")
         for path in failing_files:

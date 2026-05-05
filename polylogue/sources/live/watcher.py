@@ -192,7 +192,11 @@ class LiveWatcher:
             return
 
         logger.info("live.watcher: batching %d changed file(s)", len(needed))
-        await self._ingest_files(needed)
+        await self._ingest_files(
+            needed,
+            queued_file_count=len(paths),
+            skipped_file_count=len(paths) - len(needed),
+        )
 
     # ------------------------------------------------------------------
     # Shared helpers
@@ -222,10 +226,25 @@ class LiveWatcher:
             and cursor.parser_fingerprint == _PARSER_FINGERPRINT
         )
 
-    async def _ingest_files(self, paths: list[Path]) -> None:
+    async def _ingest_files(
+        self,
+        paths: list[Path],
+        *,
+        queued_file_count: int | None = None,
+        skipped_file_count: int = 0,
+    ) -> None:
         """Ingest files in batch, then run global convergence stages once."""
         from polylogue.config import Source
+        from polylogue.daemon.events import emit_daemon_event
 
+        batch_started = time.perf_counter()
+        db_bytes_before = _path_size(self._cursor._db_path) + _path_size(self._cursor._db_path.with_suffix(".db-wal"))
+        input_bytes = sum(_path_size(path) for path in paths)
+        cursor_fingerprint_read_bytes = 0
+        parse_time_s = 0.0
+        convergence_time_s = 0.0
+        stage_timings: dict[str, float] = {}
+        failed_paths: list[str] = []
         # Phase 1: batched ingest via parse_sources() — efficient.
         by_source: dict[str, list[Path]] = {}
         for path in paths:
@@ -241,16 +260,18 @@ class LiveWatcher:
             except Exception as exc:
                 logger.warning("live.watcher: batch failed for %s: %s", source_name, exc)
                 for p in source_paths:
-                    self._record_failed_cursor(p)
+                    failed_paths.append(str(p))
+                    cursor_fingerprint_read_bytes += self._record_failed_cursor(p)
                 continue
+            parse_elapsed = time.perf_counter() - t0
+            parse_time_s += parse_elapsed
             succeeded_paths.update(source_paths)
-            elapsed = time.perf_counter() - t0
             logger.info(
                 "live.watcher: batch ingested %s — %d in %.1fs (%.1f/s)",
                 source_name,
                 len(source_paths),
-                elapsed,
-                len(source_paths) / max(elapsed, 0.01),
+                parse_elapsed,
+                len(source_paths) / max(parse_elapsed, 0.01),
             )
 
         # Phase 2: global convergence — run once after batch ingest.
@@ -258,7 +279,10 @@ class LiveWatcher:
             try:
                 hint_path = next(iter(succeeded_paths))
                 if hint_path:
-                    self._converger.converge_file(hint_path)  # type: ignore[attr-defined]
+                    t0 = time.perf_counter()
+                    state = self._converger.converge_file(hint_path)  # type: ignore[attr-defined]
+                    convergence_time_s = time.perf_counter() - t0
+                    stage_timings = dict(getattr(state, "stage_times", {}))
             except Exception as exc:
                 logger.warning("live.watcher: post-ingest converge failed: %s", exc)
 
@@ -269,6 +293,7 @@ class LiveWatcher:
                 fp, last_nl = _fingerprint_file(path)
             except FileNotFoundError:
                 continue
+            cursor_fingerprint_read_bytes += stat.st_size
             self._cursor.set(
                 path,
                 stat.st_size,
@@ -283,13 +308,34 @@ class LiveWatcher:
             )
             self._cursor.reset_failures(path)
 
-    def _record_failed_cursor(self, path: Path) -> None:
+        db_bytes_after = _path_size(self._cursor._db_path) + _path_size(self._cursor._db_path.with_suffix(".db-wal"))
+        payload = {
+            "queued_file_count": queued_file_count if queued_file_count is not None else len(paths),
+            "needed_file_count": len(paths),
+            "skipped_file_count": skipped_file_count,
+            "succeeded_file_count": len(succeeded_paths),
+            "failed_file_count": len(failed_paths),
+            "source_group_count": len(by_source),
+            "input_bytes": input_bytes,
+            "cursor_fingerprint_read_bytes": cursor_fingerprint_read_bytes,
+            "archive_bytes_before": db_bytes_before,
+            "archive_bytes_after": db_bytes_after,
+            "archive_write_bytes_delta": max(0, db_bytes_after - db_bytes_before),
+            "parse_time_s": round(parse_time_s, 6),
+            "convergence_time_s": round(convergence_time_s, 6),
+            "total_time_s": round(time.perf_counter() - batch_started, 6),
+            "stage_timings_s": {name: round(elapsed, 6) for name, elapsed in stage_timings.items()},
+            "failed_paths": failed_paths,
+        }
+        emit_daemon_event("ingestion_batch", payload=payload)
+
+    def _record_failed_cursor(self, path: Path) -> int:
         try:
             stat = path.stat()
             fp, last_nl = _fingerprint_file(path)
         except FileNotFoundError:
             self._cursor.mark_failed(path)
-            return
+            return 0
         existing = self._cursor.get_record(path)
         self._cursor.set(
             path,
@@ -307,6 +353,7 @@ class LiveWatcher:
             excluded=bool(existing.excluded) if existing else False,
         )
         self._cursor.mark_failed(path)
+        return stat.st_size
 
     def _source_name_for(self, path: Path) -> str:
         resolved = path.resolve()
@@ -343,6 +390,13 @@ def _cursor_db_path(polylogue: Polylogue) -> Path:
     if isinstance(db_path, Path):
         return db_path
     return Path(polylogue.archive_root) / "polylogue.db"
+
+
+def _path_size(path: Path) -> int:
+    try:
+        return path.stat().st_size
+    except OSError:
+        return 0
 
 
 def _retry_due(next_retry_at: str | None) -> bool:
