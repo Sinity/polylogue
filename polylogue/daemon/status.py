@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -13,6 +14,7 @@ from polylogue.core.json import JSONDocument, json_document
 from polylogue.paths import blob_store_root, db_path
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.watcher import default_sources
+from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 # ---------------------------------------------------------------------------
 # Typed sub-models
@@ -187,6 +189,34 @@ def _safe_int(value: object) -> int:
     return 0
 
 
+def _failing_files_info() -> list[str]:
+    """Return live-source files currently marked failed or excluded."""
+    dbf = db_path()
+    if not dbf.exists():
+        return []
+    try:
+        conn = open_readonly_connection(dbf)
+        try:
+            has_table = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'live_cursor'"
+            ).fetchone()
+            if has_table is None:
+                return []
+            rows = conn.execute(
+                """
+                SELECT source_path
+                FROM live_cursor
+                WHERE failure_count > 0 OR excluded = 1
+                ORDER BY source_path
+                """
+            ).fetchall()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return []
+    return [str(row[0]) for row in rows]
+
+
 def _check_daemon_liveness() -> bool:
     """Check whether the daemon process is running via pidfile."""
     try:
@@ -221,6 +251,7 @@ def build_daemon_status(
             browser_capture="running" if browser_capture_spool_path else "stopped",
         ),
         source_lag=[SourceLagItem(name=s.name, root=str(s.root), exists=s.exists()) for s in watch_sources],
+        failing_files=_failing_files_info(),
         db_size_bytes=_safe_int(db_info.get("db_size_bytes", 0)),
         wal_size_bytes=_safe_int(db_info.get("wal_size_bytes", 0)),
         blob_dir_size_bytes=_blob_size_info(),
@@ -286,7 +317,8 @@ def daemon_status_payload(
             "quick_check_age_s": None,
             "watcher_roots": [str(s.root) for s in watch_sources],
             "browser_capture_active": status.browser_capture_active,
-            "operations": [],
+            "failing_files": status.failing_files,
+            "operations": status.current_operations,
             "last_ingestion_batch": last_ingestion,
             "fts_readiness": fts,
         }
@@ -313,6 +345,11 @@ def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
         origins = browser_capture.get("allowed_origins", [])
         origin_text = ", ".join(str(item) for item in origins) if isinstance(origins, list) else str(origins)
         lines.append(f"Browser capture origins: {origin_text}")
+    failing_files = payload.get("failing_files")
+    if isinstance(failing_files, list) and failing_files:
+        lines.append(f"Failing files: {len(failing_files)}")
+        for path in failing_files:
+            lines.append(f"  {path}")
     return lines
 
 

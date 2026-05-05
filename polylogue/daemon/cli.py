@@ -8,6 +8,8 @@ import contextlib
 import faulthandler
 import fcntl
 import os
+import sys
+from contextlib import redirect_stdout
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
@@ -377,7 +379,9 @@ async def run_daemon_services(
 
         # Cancel orphaned debounced watcher child tasks.
         if watcher is not None:
-            watcher.cancel_pending()
+            cancel_pending = getattr(watcher, "cancel_pending", None)
+            if callable(cancel_pending):
+                cancel_pending()
 
         # Drain component tasks with a timeout.
         drained_results = await _drain_tasks(tasks, timeout=5.0)
@@ -448,10 +452,13 @@ main.add_command(browser_capture_command)
     help="Output format.",
 )
 def status_command(spool_path: Path | None, output_format: str | None) -> None:
-    payload = daemon_status_payload(browser_capture_spool_path=spool_path)
+    configure_logging()
     if output_format == "json":
+        with redirect_stdout(sys.stderr):
+            payload = daemon_status_payload(browser_capture_spool_path=spool_path)
         click.echo(dumps(payload))
         return
+    payload = daemon_status_payload(browser_capture_spool_path=spool_path)
     for line in format_daemon_status_lines(payload):
         click.echo(line)
 
