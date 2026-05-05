@@ -241,7 +241,27 @@ class CursorStore:
         """Increment failure count and set exponential backoff."""
         record = self.get_record(path)
         if record is None:
-            return
+            try:
+                stat = path.stat()
+                byte_size = stat.st_size
+                st_dev = stat.st_dev
+                st_ino = stat.st_ino
+                mtime_ns = stat.st_mtime_ns
+            except FileNotFoundError:
+                byte_size = 0
+                st_dev = None
+                st_ino = None
+                mtime_ns = None
+            self.set(
+                path,
+                byte_size,
+                st_dev=st_dev,
+                st_ino=st_ino,
+                mtime_ns=mtime_ns,
+            )
+            record = self.get_record(path)
+            if record is None:
+                return
         failures = record.failure_count + 1
         delay_s = min(60 * (2 ** (failures - 1)), 3600)  # cap at 1 hour
         retry_at = datetime.now(UTC).timestamp() + delay_s

@@ -55,7 +55,7 @@ def make_acquire_check_stage(db_path: Path) -> ConvergenceStage:
             return False
         from polylogue.sources.live.cursor import CursorStore
 
-        cursor = CursorStore(db_path.parent / "polylogue.sqlite")
+        cursor = CursorStore(db_path)
         record = cursor.get_record(path)
         if record is None:
             return True
@@ -95,7 +95,7 @@ def make_ingest_stage(db_path: Path) -> ConvergenceStage:
             return False
         from polylogue.sources.live.cursor import CursorStore
 
-        cursor = CursorStore(db_path.parent / "polylogue.sqlite")
+        cursor = CursorStore(db_path)
         record = cursor.get_record(path)
         if record is None:
             return True
@@ -119,12 +119,12 @@ def make_ingest_stage(db_path: Path) -> ConvergenceStage:
                     await poly.parse_file(path, source_name=source_name)
             except Exception:
                 logger.warning("ingest failed for %s", path, exc_info=True)
-                cursor = CursorStore(db_path.parent / "polylogue.sqlite")
+                cursor = CursorStore(db_path)
                 cursor.mark_failed(path)
                 return False
 
             # Update cursor so subsequent checks skip this file.
-            cursor = CursorStore(db_path.parent / "polylogue.sqlite")
+            cursor = CursorStore(db_path)
             try:
                 stat = path.stat()
                 fp, last_nl = _fingerprint_file(path)

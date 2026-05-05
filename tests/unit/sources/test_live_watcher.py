@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -80,6 +82,20 @@ def test_cursor_writes_updated_at(tmp_path: Path) -> None:
     assert "T" in row[0]  # ISO 8601
 
 
+def test_cursor_mark_failed_creates_record_for_new_path(tmp_path: Path) -> None:
+    store = CursorStore(tmp_path / "live.sqlite")
+    p = tmp_path / "new.jsonl"
+    p.write_text('{"a":1}\n')
+
+    store.mark_failed(p)
+
+    record = store.get_record(p)
+    assert record is not None
+    assert record.byte_size == p.stat().st_size
+    assert record.failure_count == 1
+    assert record.next_retry_at is not None
+
+
 def test_cursor_round_trips_freshness_metadata(tmp_path: Path) -> None:
     store = CursorStore(tmp_path / "live.sqlite")
     p = tmp_path / "session.jsonl"
@@ -149,6 +165,21 @@ def _make_watcher(tmp_path: Path, root: Path, *, debounce_s: float = 0.01) -> tu
     sources = (WatchSource(name="test", root=root),)
     watcher = LiveWatcher(polylogue, sources, debounce_s=debounce_s, cursor=cursor)
     return watcher, polylogue.parse_sources
+
+
+def test_watcher_default_cursor_uses_archive_database(tmp_path: Path) -> None:
+    root = tmp_path / "src"
+    root.mkdir()
+    db_path = tmp_path / "archive.db"
+    polylogue = SimpleNamespace(
+        archive_root=tmp_path,
+        backend=SimpleNamespace(db_path=db_path),
+        parse_sources=AsyncMock(),
+    )
+
+    watcher = LiveWatcher(polylogue, (WatchSource(name="test", root=root),))
+
+    assert watcher._cursor._db_path == db_path
 
 
 async def _ingest_one(watcher: LiveWatcher, path: Path) -> None:
@@ -313,9 +344,8 @@ def test_missing_file_is_silent(tmp_path: Path) -> None:
     assert parse_sources.await_count == 0
 
 
-def test_parse_failure_is_logged_and_retried(tmp_path: Path) -> None:
-    """After a batch failure, files are mark_failed but cursor tracks attempt.
-    On retry with fingerprint unchanged, needs_work returns False (skip)."""
+def test_parse_failure_is_recorded_and_backed_off(tmp_path: Path) -> None:
+    """After a batch failure, cursor state records failure and backs off."""
     root = tmp_path / "src"
     root.mkdir()
     f = root / "session.jsonl"
@@ -326,12 +356,40 @@ def test_parse_failure_is_logged_and_retried(tmp_path: Path) -> None:
     # First attempt: fails, cursor is set
     asyncio.run(_ingest_one(watcher, f))
     assert parse_sources.await_count == 1
-    assert watcher._cursor.get(f) > 0  # cursor records the attempt
+    record = watcher._cursor.get_record(f)
+    assert record is not None
+    assert record.failure_count == 1
+    assert record.next_retry_at is not None
 
-    # Second attempt: fingerprint matches cursor, file skipped
+    # Second immediate attempt: file is skipped during backoff.
     parse_sources.reset_mock()
     asyncio.run(_ingest_one(watcher, f))
-    assert parse_sources.await_count == 0  # skipped — fingerprint unchanged
+    assert parse_sources.await_count == 0
+
+
+def test_parse_failure_retries_after_backoff(tmp_path: Path) -> None:
+    root = tmp_path / "src"
+    root.mkdir()
+    f = root / "session.jsonl"
+    f.write_text('{"role":"user","content":"a"}\n')
+    watcher, parse_sources = _make_watcher(tmp_path, root)
+    parse_sources.side_effect = RuntimeError("parser sad")
+
+    asyncio.run(_ingest_one(watcher, f))
+    parse_sources.reset_mock()
+    parse_sources.side_effect = None
+    past = (datetime.now(UTC) - timedelta(seconds=1)).isoformat()
+    with sqlite3.connect(tmp_path / "cursor.sqlite") as conn:
+        conn.execute("UPDATE live_cursor SET next_retry_at = ? WHERE source_path = ?", (past, str(f)))
+        conn.commit()
+
+    asyncio.run(_ingest_one(watcher, f))
+
+    assert parse_sources.await_count == 1
+    record = watcher._cursor.get_record(f)
+    assert record is not None
+    assert record.failure_count == 0
+    assert record.next_retry_at is None
 
 
 # --- catch_up bootstrap --------------------------------------------------------

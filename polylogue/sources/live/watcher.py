@@ -17,6 +17,7 @@ import hashlib
 import time
 from collections.abc import Iterable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -63,7 +64,7 @@ class LiveWatcher:
         self._polylogue = polylogue
         self._sources = tuple(sources)
         self._debounce_s = debounce_s
-        self._cursor = cursor or CursorStore(polylogue.archive_root / "polylogue.sqlite")
+        self._cursor = cursor or CursorStore(_cursor_db_path(polylogue))
         self._max_workers = max_workers
         self._converger = converger
         self._pending_paths: set[Path] = set()
@@ -209,6 +210,11 @@ class LiveWatcher:
         except FileNotFoundError:
             return False
         cursor = self._cursor.get_record(path)
+        if cursor is not None:
+            if cursor.excluded:
+                return False
+            if cursor.failure_count > 0:
+                return _retry_due(cursor.next_retry_at)
         return not (
             cursor is not None
             and size == cursor.byte_size
@@ -224,6 +230,7 @@ class LiveWatcher:
         by_source: dict[str, list[Path]] = {}
         for path in paths:
             by_source.setdefault(self._source_name_for(path), []).append(path)
+        succeeded_paths: set[Path] = set()
         for source_name, source_paths in by_source.items():
             if self._stop.is_set():
                 return
@@ -234,8 +241,9 @@ class LiveWatcher:
             except Exception as exc:
                 logger.warning("live.watcher: batch failed for %s: %s", source_name, exc)
                 for p in source_paths:
-                    self._cursor.mark_failed(p)
+                    self._record_failed_cursor(p)
                 continue
+            succeeded_paths.update(source_paths)
             elapsed = time.perf_counter() - t0
             logger.info(
                 "live.watcher: batch ingested %s — %d in %.1fs (%.1f/s)",
@@ -246,16 +254,16 @@ class LiveWatcher:
             )
 
         # Phase 2: global convergence — run once after batch ingest.
-        if self._converger is not None:
+        if self._converger is not None and succeeded_paths:
             try:
-                hint_path = paths[0] if paths else None
+                hint_path = next(iter(succeeded_paths))
                 if hint_path:
                     self._converger.converge_file(hint_path)  # type: ignore[attr-defined]
             except Exception as exc:
                 logger.warning("live.watcher: post-ingest converge failed: %s", exc)
 
-        # Update cursors.
-        for path in paths:
+        # Update cursors only for paths that ingested successfully.
+        for path in succeeded_paths:
             try:
                 stat = path.stat()
                 fp, last_nl = _fingerprint_file(path)
@@ -269,11 +277,36 @@ class LiveWatcher:
                 parser_fingerprint=_PARSER_FINGERPRINT,
                 content_fingerprint=fp,
                 source_name=self._source_name_for(path),
-                st_dev=None,
-                st_ino=None,
-                mtime_ns=None,
+                st_dev=stat.st_dev,
+                st_ino=stat.st_ino,
+                mtime_ns=stat.st_mtime_ns,
             )
             self._cursor.reset_failures(path)
+
+    def _record_failed_cursor(self, path: Path) -> None:
+        try:
+            stat = path.stat()
+            fp, last_nl = _fingerprint_file(path)
+        except FileNotFoundError:
+            self._cursor.mark_failed(path)
+            return
+        existing = self._cursor.get_record(path)
+        self._cursor.set(
+            path,
+            stat.st_size,
+            byte_offset=last_nl,
+            last_complete_newline=last_nl,
+            parser_fingerprint=_PARSER_FINGERPRINT,
+            content_fingerprint=fp,
+            source_name=self._source_name_for(path),
+            st_dev=stat.st_dev,
+            st_ino=stat.st_ino,
+            mtime_ns=stat.st_mtime_ns,
+            failure_count=existing.failure_count if existing else 0,
+            next_retry_at=existing.next_retry_at if existing else None,
+            excluded=bool(existing.excluded) if existing else False,
+        )
+        self._cursor.mark_failed(path)
 
     def _source_name_for(self, path: Path) -> str:
         resolved = path.resolve()
@@ -301,6 +334,27 @@ def _fingerprint_file(path: Path) -> tuple[str, int]:
     newline_at = content.rfind(b"\n")
     last_complete_newline = 0 if newline_at < 0 else newline_at + 1
     return hashlib.sha256(content).hexdigest(), last_complete_newline
+
+
+def _cursor_db_path(polylogue: Polylogue) -> Path:
+    """Use the archive database for daemon cursor state."""
+    backend = getattr(polylogue, "backend", None)
+    db_path = getattr(backend, "db_path", None)
+    if isinstance(db_path, Path):
+        return db_path
+    return Path(polylogue.archive_root) / "polylogue.db"
+
+
+def _retry_due(next_retry_at: str | None) -> bool:
+    if not next_retry_at:
+        return True
+    try:
+        retry_at = datetime.fromisoformat(next_retry_at)
+    except ValueError:
+        return True
+    if retry_at.tzinfo is None:
+        retry_at = retry_at.replace(tzinfo=UTC)
+    return retry_at <= datetime.now(UTC)
 
 
 __all__ = ["LiveWatcher", "WatchSource", "default_sources"]

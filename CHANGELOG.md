@@ -83,6 +83,9 @@ documentation polish do not require an entry.
   watch roots and the browser-capture receiver target.
 - `polylogue doctor --daemon` now includes the same daemon component status in
   the interactive health surface.
+- Live watcher cursor and failure state now live in the archive database and
+  failed ingests remain retryable after backoff instead of being recorded as
+  successful cursor progress.
 - `Config` rejects relative `archive_root`, `render_root`, or `db_path`
   with `ConfigError` at construction.
 - `_privacy_level_value` raises `ValueError` on unknown level strings
