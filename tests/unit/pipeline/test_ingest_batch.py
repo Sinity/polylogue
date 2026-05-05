@@ -111,6 +111,7 @@ def _conversation_data(
     stats_tuple: StatsTuple | None = None,
     attachment_tuples: list[AttachmentTuple] | None = None,
     attachment_ref_tuples: list[AttachmentRefTuple] | None = None,
+    append_only: bool = False,
 ) -> ConversationData:
     typed_conversation_id = ConversationId(conversation_id)
     conversation_tuple: ConversationTuple = (
@@ -140,6 +141,7 @@ def _conversation_data(
         stats_tuple=stats_tuple or (),
         attachment_tuples=list(attachment_tuples or []),
         attachment_ref_tuples=list(attachment_ref_tuples or []),
+        append_only=append_only,
     )
 
 
@@ -442,6 +444,60 @@ def test_write_conversation_replaces_runtime_rows_on_content_change(tmp_path: Pa
         ).fetchone()
         assert stats_row is not None
         assert stats_row[0] == 1
+
+
+def test_write_conversation_append_mode_preserves_existing_messages(tmp_path: Path) -> None:
+    with open_connection(tmp_path / "ingest.db") as conn:
+        initial = _conversation_data(
+            "codex:append",
+            content_hash="hash-v1",
+            message_tuples=[
+                _message_tuple(
+                    "msg-1",
+                    "codex:append",
+                    role="user",
+                    text="first",
+                    content_hash="msg-v1-1",
+                    sort_key=1.0,
+                )
+            ],
+            stats_tuple=(ConversationId("codex:append"), "codex", 1, 1, 0, 0, 0),
+        )
+        tail = _conversation_data(
+            "codex:append",
+            content_hash="hash-tail",
+            message_tuples=[
+                _message_tuple(
+                    "msg-2",
+                    "codex:append",
+                    role="assistant",
+                    text="second",
+                    content_hash="msg-v2-2",
+                    sort_key=2.0,
+                )
+            ],
+            append_only=True,
+        )
+
+        changed_initial, _initial_counts = _write_conversation(conn, initial)
+        changed_tail, tail_counts = _write_conversation(conn, tail)
+        conn.commit()
+
+        rows = conn.execute(
+            "SELECT message_id, text FROM messages WHERE conversation_id = ? ORDER BY sort_key",
+            ("codex:append",),
+        ).fetchall()
+        stats = conn.execute(
+            "SELECT message_count, word_count FROM conversation_stats WHERE conversation_id = ?",
+            ("codex:append",),
+        ).fetchone()
+
+        assert changed_initial is True
+        assert changed_tail is True
+        assert tail_counts["messages"] == 1
+        assert [(row["message_id"], row["text"]) for row in rows] == [("msg-1", "first"), ("msg-2", "second")]
+        assert stats is not None
+        assert (stats["message_count"], stats["word_count"]) == (2, 2)
 
 
 def test_write_conversation_force_write_updates_sort_key_only(tmp_path: Path) -> None:

@@ -17,6 +17,7 @@ import time
 from collections.abc import Iterable, Sequence
 from concurrent.futures import Future, as_completed
 from datetime import datetime, timezone
+from hashlib import sha256
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -73,6 +74,7 @@ from polylogue.storage.sqlite.connection_profile import (
     DB_TIMEOUT,
     WRITE_CONNECTION_PRAGMA_STATEMENTS,
 )
+from polylogue.types import ContentHash
 
 if TYPE_CHECKING:
     from polylogue.pipeline.services.parsing import ParsingService
@@ -255,6 +257,126 @@ def _parent_ready(
     return parent_id in materialized_ids or _conversation_exists(conn, parent_id)
 
 
+def _conversation_tuple_with_hash(conversation: ConversationTuple, content_hash: str) -> ConversationTuple:
+    return (
+        conversation[0],
+        conversation[1],
+        conversation[2],
+        conversation[3],
+        conversation[4],
+        conversation[5],
+        conversation[6],
+        ContentHash(content_hash),
+        conversation[8],
+        conversation[9],
+        conversation[10],
+        conversation[11],
+        conversation[12],
+        conversation[13],
+    )
+
+
+def _existing_message_hashes(conn: sqlite3.Connection, message_ids: Sequence[str]) -> dict[str, str]:
+    if not message_ids:
+        return {}
+    placeholders = ", ".join("?" for _ in message_ids)
+    rows = conn.execute(
+        f"SELECT message_id, content_hash FROM messages WHERE message_id IN ({placeholders})",
+        tuple(message_ids),
+    ).fetchall()
+    return {str(row["message_id"]): str(row["content_hash"]) for row in rows}
+
+
+def _append_content_hash(existing_hash: str | None, tail_hash: str) -> str:
+    if not existing_hash:
+        return tail_hash
+    return sha256(f"{existing_hash}\0{tail_hash}".encode()).hexdigest()
+
+
+def _upsert_stats_from_messages(conn: sqlite3.Connection, conversation_id: str, provider_name: str) -> None:
+    row = conn.execute(
+        """
+        SELECT
+            COUNT(*) AS message_count,
+            COALESCE(SUM(word_count), 0) AS word_count,
+            COALESCE(SUM(has_tool_use), 0) AS tool_use_count,
+            COALESCE(SUM(has_thinking), 0) AS thinking_count,
+            COALESCE(SUM(has_paste), 0) AS paste_count
+        FROM messages
+        WHERE conversation_id = ?
+        """,
+        (conversation_id,),
+    ).fetchone()
+    conn.execute(
+        _STATS_UPSERT_SQL,
+        (
+            conversation_id,
+            provider_name,
+            int(row["message_count"] or 0),
+            int(row["word_count"] or 0),
+            int(row["tool_use_count"] or 0),
+            int(row["thinking_count"] or 0),
+            int(row["paste_count"] or 0),
+        ),
+    )
+
+
+_ACTION_EVENT_INSERT_OR_IGNORE_SQL = _ACTION_EVENT_INSERT_SQL.replace("INSERT INTO", "INSERT OR IGNORE INTO", 1)
+
+
+def _append_conversation(
+    conn: sqlite3.Connection,
+    cdata: ConversationData,
+    *,
+    existing_hash: str | None,
+) -> tuple[bool, dict[str, int]]:
+    counts: dict[str, int] = {
+        "conversations": 0,
+        "messages": 0,
+        "attachments": 0,
+        "skipped_conversations": 0,
+        "skipped_messages": 0,
+        "skipped_attachments": 0,
+    }
+    message_ids = [str(message[0]) for message in cdata.message_tuples]
+    existing_messages = _existing_message_hashes(conn, message_ids)
+    changed_messages = [
+        message for message in cdata.message_tuples if existing_messages.get(str(message[0])) != str(message[6])
+    ]
+    if not changed_messages and not cdata.attachment_tuples:
+        counts["skipped_conversations"] = 1
+        counts["skipped_messages"] = len(cdata.message_tuples)
+        counts["skipped_attachments"] = len(cdata.attachment_tuples)
+        return False, counts
+
+    merged_hash = _append_content_hash(existing_hash, cdata.content_hash)
+    conn.execute(
+        _CONVERSATION_UPSERT_SQL, _conversation_tuple_with_hash(_resolved_conversation_tuple(conn, cdata), merged_hash)
+    )
+
+    if cdata.message_tuples:
+        sorted_msgs = _topo_sort_message_tuples(cdata.message_tuples)
+        conn.executemany(_MESSAGE_UPSERT_SQL, sorted_msgs)
+        counts["messages"] = len(changed_messages)
+
+    if cdata.block_tuples:
+        conn.executemany(_CONTENT_BLOCK_UPSERT_SQL, cdata.block_tuples)
+
+    if cdata.action_event_tuples:
+        conn.executemany(_ACTION_EVENT_INSERT_OR_IGNORE_SQL, cdata.action_event_tuples)
+
+    affected_attachment_ids = {str(attachment_id) for attachment_id, *_rest in cdata.attachment_tuples}
+    if cdata.attachment_tuples:
+        conn.executemany(_ATTACHMENT_UPSERT_SQL, cdata.attachment_tuples)
+        conn.executemany(_ATTACHMENT_REF_INSERT_SQL, cdata.attachment_ref_tuples)
+        counts["attachments"] = len(cdata.attachment_tuples)
+        recount_and_prune_attachments_sync(conn, affected_attachment_ids)
+
+    _upsert_stats_from_messages(conn, cdata.conversation_id, cdata.provider_name)
+    counts["conversations"] = 1
+    return True, counts
+
+
 def _write_conversation(
     conn: sqlite3.Connection, cdata: ConversationData, *, force_write: bool = False
 ) -> tuple[bool, dict[str, int]]:
@@ -274,6 +396,13 @@ def _write_conversation(
     }
 
     content_unchanged = _check_content_unchanged(conn, cdata.conversation_id, cdata.content_hash)
+
+    existing_row = conn.execute(
+        "SELECT content_hash FROM conversations WHERE conversation_id = ?",
+        (cdata.conversation_id,),
+    ).fetchone()
+    if cdata.append_only and existing_row is not None:
+        return _append_conversation(conn, cdata, existing_hash=str(existing_row["content_hash"]))
 
     if not force_write and content_unchanged:
         counts["skipped_conversations"] = 1

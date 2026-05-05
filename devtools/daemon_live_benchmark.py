@@ -62,6 +62,28 @@ def generate_daemon_live_workload(root: Path, *, scale: str) -> DaemonLiveGenera
     )
 
 
+def append_daemon_live_workload(
+    workload: DaemonLiveGeneratedWorkload, *, message_index: int
+) -> DaemonLiveGeneratedWorkload:
+    """Append one generated JSONL record per file and return updated workload stats."""
+    append_delta_bytes = 0
+    for path in workload.files:
+        session_id = path.stem
+        record = _make_claude_code_record(session_id, message_index)
+        before = path.stat().st_size
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, sort_keys=True))
+            handle.write("\n")
+        append_delta_bytes += path.stat().st_size - before
+    return DaemonLiveGeneratedWorkload(
+        root=workload.root,
+        files=workload.files,
+        source_bytes=sum(path.stat().st_size for path in workload.files),
+        message_count=workload.message_count + len(workload.files),
+        append_delta_bytes=append_delta_bytes,
+    )
+
+
 def _write_jsonl(path: Path, records: list[dict[str, object]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as handle:
@@ -71,28 +93,27 @@ def _write_jsonl(path: Path, records: list[dict[str, object]]) -> None:
 
 
 def _make_claude_code_session(session_id: str, message_count: int) -> list[dict[str, object]]:
-    records: list[dict[str, object]] = []
-    for index in range(message_count):
-        role = "user" if index % 2 == 0 else "assistant"
-        records.append(
-            {
-                "parentUuid": None if index == 0 else f"{session_id}-msg-{index - 1:04d}",
-                "sessionId": session_id,
-                "type": role,
-                "message": {
-                    "role": role,
-                    "content": f"Daemon live benchmark message {index} for {session_id}. "
-                    f"This generated payload keeps parser work deterministic.",
-                },
-                "uuid": f"{session_id}-msg-{index:04d}",
-                "timestamp": f"2026-05-05T00:{index // 60:02d}:{index % 60:02d}.000Z",
-                "cwd": "/realm/project/polylogue",
-                "version": "1.0.0",
-                "isSidechain": False,
-                "userType": "external",
-            }
-        )
-    return records
+    return [_make_claude_code_record(session_id, index) for index in range(message_count)]
+
+
+def _make_claude_code_record(session_id: str, index: int) -> dict[str, object]:
+    role = "user" if index % 2 == 0 else "assistant"
+    return {
+        "parentUuid": None if index == 0 else f"{session_id}-msg-{index - 1:04d}",
+        "sessionId": session_id,
+        "type": role,
+        "message": {
+            "role": role,
+            "content": f"Daemon live benchmark message {index} for {session_id}. "
+            f"This generated payload keeps parser work deterministic.",
+        },
+        "uuid": f"{session_id}-msg-{index:04d}",
+        "timestamp": f"2026-05-05T00:{index // 60:02d}:{index % 60:02d}.000Z",
+        "cwd": "/realm/project/polylogue",
+        "version": "1.0.0",
+        "isSidechain": False,
+        "userType": "external",
+    }
 
 
 async def run_daemon_live_convergence_workload(db_path: Path) -> tuple[dict[str, float], dict[str, int]]:
@@ -124,26 +145,51 @@ async def run_daemon_live_convergence_workload(db_path: Path) -> tuple[dict[str,
                 parser_fingerprint="daemon-live-benchmark-v1",
                 converger=converger,
             )
-            metrics = await processor.ingest_files(workload.files, emit_event=False)
+            initial_metrics = await processor.ingest_files(workload.files, emit_event=False)
+            workload = append_daemon_live_workload(
+                workload,
+                message_index=DAEMON_LIVE_SCALE_SPECS.get(scale, DAEMON_LIVE_SCALE_SPECS["small"]).messages_per_file,
+            )
+            append_metrics = await processor.ingest_files(workload.files, emit_event=False)
     finally:
         await converger.stop()
 
-    total_wall_s = metrics.total_time_s
-    files_per_s = (metrics.succeeded_file_count / total_wall_s) if total_wall_s > 0 else 0.0
+    total_wall_s = initial_metrics.total_time_s + append_metrics.total_time_s
+    files_per_s = (
+        (initial_metrics.succeeded_file_count + append_metrics.succeeded_file_count) / total_wall_s
+        if total_wall_s > 0
+        else 0.0
+    )
     messages_per_s = (workload.message_count / total_wall_s) if total_wall_s > 0 else 0.0
     normalized_metrics = {
         "total_wall_s": total_wall_s,
-        "parse_wall_s": metrics.parse_time_s,
-        "convergence_wall_s": metrics.convergence_time_s,
+        "parse_wall_s": initial_metrics.parse_time_s + append_metrics.parse_time_s,
+        "convergence_wall_s": initial_metrics.convergence_time_s + append_metrics.convergence_time_s,
         "files_per_s": round(files_per_s, 3),
         "messages_per_s": round(messages_per_s, 3),
-        "archive_write_bytes_delta": float(metrics.archive_write_bytes_delta),
-        "payload_read_bytes": float(metrics.input_bytes),
-        "cursor_fingerprint_read_bytes": float(metrics.cursor_fingerprint_read_bytes),
-        "succeeded_files": float(metrics.succeeded_file_count),
-        "failed_files": float(metrics.failed_file_count),
+        "archive_write_bytes_delta": float(
+            initial_metrics.archive_write_bytes_delta + append_metrics.archive_write_bytes_delta
+        ),
+        "payload_read_bytes": float(
+            initial_metrics.source_payload_read_bytes + append_metrics.source_payload_read_bytes
+        ),
+        "initial_payload_read_bytes": float(initial_metrics.source_payload_read_bytes),
+        "append_payload_read_bytes": float(append_metrics.source_payload_read_bytes),
+        "append_input_bytes": float(append_metrics.input_bytes),
+        "cursor_fingerprint_read_bytes": float(
+            initial_metrics.cursor_fingerprint_read_bytes + append_metrics.cursor_fingerprint_read_bytes
+        ),
+        "succeeded_files": float(initial_metrics.succeeded_file_count + append_metrics.succeeded_file_count),
+        "failed_files": float(initial_metrics.failed_file_count + append_metrics.failed_file_count),
+        "append_files": float(append_metrics.append_file_count),
+        "full_files": float(initial_metrics.full_file_count + append_metrics.full_file_count),
     }
-    normalized_metrics.update({f"stage_{name}_wall_s": elapsed for name, elapsed in metrics.stage_timings_s.items()})
+    normalized_metrics.update(
+        {f"stage_initial_{name}_wall_s": elapsed for name, elapsed in initial_metrics.stage_timings_s.items()}
+    )
+    normalized_metrics.update(
+        {f"stage_append_{name}_wall_s": elapsed for name, elapsed in append_metrics.stage_timings_s.items()}
+    )
     db_stats = {
         "files_count": len(workload.files),
         "source_bytes": workload.source_bytes,
@@ -157,6 +203,7 @@ __all__ = [
     "DAEMON_LIVE_SCALE_SPECS",
     "DaemonLiveGeneratedWorkload",
     "DaemonLiveScaleSpec",
+    "append_daemon_live_workload",
     "generate_daemon_live_workload",
     "run_daemon_live_convergence_workload",
     "scale_from_db_path",

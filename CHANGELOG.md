@@ -61,7 +61,8 @@ documentation polish do not require an entry.
   generation, and MIN_AGE guards.
 - `devtools run-benchmark-campaigns` now includes a
   `daemon-live-convergence` synthetic campaign that reports live-ingest file
-  counts, read/write byte shape, stage timings, and archive row counts.
+  counts, read/write byte shape, append-tail byte shape, stage timings, and
+  archive row counts.
 
 ### Changed
 
@@ -94,6 +95,9 @@ documentation polish do not require an entry.
   successful cursor progress.
 - `polylogued status` and daemon ingestion events now expose live cursor
   backlog, retry state, batch counters, byte deltas, and convergence timings.
+- Live daemon ingestion now uses cursor offsets for append-only JSONL growth so
+  completed tails can be read and merged without re-reading unchanged source
+  prefixes.
 - Daemon convergence now uses the live watcher's batched ingest path as the
   only source-ingest path; post-ingest convergence stages only repair FTS,
   embeddings, and insights.

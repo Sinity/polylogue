@@ -257,6 +257,63 @@ def test_legacy_size_only_cursor_reingests_to_populate_fingerprint(tmp_path: Pat
     assert record.parser_fingerprint
 
 
+def test_unchanged_file_uses_stat_fast_path_without_fingerprint_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "src"
+    root.mkdir()
+    f = root / "session.jsonl"
+    f.write_text('{"a":1}\n')
+    watcher, _parse_sources = _make_watcher(tmp_path, root)
+    stat = f.stat()
+    watcher._cursor.set(
+        f,
+        stat.st_size,
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+        content_fingerprint="already-known",
+        st_dev=stat.st_dev,
+        st_ino=stat.st_ino,
+        mtime_ns=stat.st_mtime_ns,
+    )
+
+    def fail_fingerprint(path: Path) -> tuple[str, int]:
+        raise AssertionError(f"unchanged file should not be fingerprinted: {path}")
+
+    monkeypatch.setattr(live_watcher, "fingerprint_file", fail_fingerprint)
+
+    assert watcher._needs_work(f) is False
+
+
+def test_append_plan_reads_only_completed_tail(tmp_path: Path) -> None:
+    root = tmp_path / "src"
+    root.mkdir()
+    f = root / "session.jsonl"
+    original = b'{"a":1}\n'
+    appended = b'{"b":2}\n{"c":'
+    f.write_bytes(original + appended)
+    watcher, _parse_sources = _make_watcher(tmp_path, root)
+    stat = f.stat()
+    watcher._cursor.set(
+        f,
+        len(original),
+        byte_offset=len(original),
+        last_complete_newline=len(original),
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+        content_fingerprint="base",
+        st_dev=stat.st_dev,
+        st_ino=stat.st_ino,
+        mtime_ns=stat.st_mtime_ns,
+    )
+
+    plan = watcher._batch_processor._append_plan(f)
+
+    assert plan is not None
+    assert plan.start_offset == len(original)
+    assert plan.payload == b'{"b":2}\n'
+    assert plan.bytes_read == len(appended)
+    assert plan.last_complete_newline == len(original) + len(b'{"b":2}\n')
+
+
 def test_parser_fingerprint_change_triggers_reingest(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     root = tmp_path / "src"
     root.mkdir()
@@ -392,7 +449,10 @@ def test_ingest_files_emits_observable_batch_metrics(tmp_path: Path) -> None:
     assert payload["failed_file_count"] == 0
     assert payload["source_group_count"] == 1
     assert payload["input_bytes"] == f.stat().st_size
+    assert payload["source_payload_read_bytes"] == f.stat().st_size
     assert payload["cursor_fingerprint_read_bytes"] == f.stat().st_size
+    assert payload["append_file_count"] == 0
+    assert payload["full_file_count"] == 1
     assert payload["archive_write_bytes_delta"] >= 0
     assert payload["parse_time_s"] >= 0
     assert payload["total_time_s"] >= 0

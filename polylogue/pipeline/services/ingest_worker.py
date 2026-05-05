@@ -200,6 +200,7 @@ class ConversationData:
     # Source metadata
     source_name: str = ""
     raw_id: str | None = None
+    append_only: bool = False
 
 
 @dataclass(slots=True)
@@ -571,6 +572,7 @@ def _materialize_parsed_conversations(
                 source_name=context.source_name,
                 archive_root=context.archive_root,
                 raw_id=context.raw_record.raw_id,
+                append_only=context.raw_record.source_index == -1,
             )
             result_convos.append(cdata)
         except Exception as exc:
@@ -861,6 +863,7 @@ def _transform_to_tuples(
     source_name: str,
     archive_root: Path,
     raw_id: str | None,
+    append_only: bool = False,
 ) -> ConversationData:
     """Convert a ParsedConversation to DB-ready tuples."""
     materialized = materialize_conversation(
@@ -885,6 +888,7 @@ def _transform_to_tuples(
         attachment_ref_tuples=attachment_ref_tuples,
         source_name=source_name,
         raw_id=raw_id,
+        append_only=append_only,
     )
 
 

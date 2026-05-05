@@ -5,12 +5,19 @@ from __future__ import annotations
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from hashlib import sha256
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
 from polylogue.config import Source
+from polylogue.core.provider_identity import canonical_acquisition_provider
 from polylogue.logging import get_logger
+from polylogue.paths import blob_store_root
+from polylogue.pipeline.services.ingest_batch._core import _process_ingest_batch_sync
 from polylogue.sources.live.cursor import CursorStore
+from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.runtime import RawConversationRecord
 
 if TYPE_CHECKING:
     from polylogue.api import Polylogue
@@ -37,7 +44,10 @@ class LiveBatchMetrics:
     failed_file_count: int
     source_group_count: int
     input_bytes: int
+    source_payload_read_bytes: int
     cursor_fingerprint_read_bytes: int
+    append_file_count: int
+    full_file_count: int
     archive_bytes_before: int
     archive_bytes_after: int
     archive_write_bytes_delta: int
@@ -56,7 +66,10 @@ class LiveBatchMetrics:
             "failed_file_count": self.failed_file_count,
             "source_group_count": self.source_group_count,
             "input_bytes": self.input_bytes,
+            "source_payload_read_bytes": self.source_payload_read_bytes,
             "cursor_fingerprint_read_bytes": self.cursor_fingerprint_read_bytes,
+            "append_file_count": self.append_file_count,
+            "full_file_count": self.full_file_count,
             "archive_bytes_before": self.archive_bytes_before,
             "archive_bytes_after": self.archive_bytes_after,
             "archive_write_bytes_delta": self.archive_write_bytes_delta,
@@ -102,17 +115,39 @@ class LiveBatchProcessor:
         batch_started = time.perf_counter()
         db_bytes_before = _path_size(self._cursor._db_path) + _path_size(self._cursor._db_path.with_suffix(".db-wal"))
         input_bytes = sum(_path_size(path) for path in paths)
+        source_payload_read_bytes = 0
         cursor_fingerprint_read_bytes = 0
         parse_time_s = 0.0
         convergence_time_s = 0.0
         stage_timings: dict[str, float] = {}
         failed_paths: list[str] = []
+        succeeded_paths: set[Path] = set()
+
+        append_plans: list[_AppendPlan] = []
+        full_paths: list[Path] = []
+        for path in paths:
+            append_plan = self._append_plan(path) if self._can_ingest_appends_directly() else None
+            if append_plan is None:
+                full_paths.append(path)
+            else:
+                append_plans.append(append_plan)
+                source_payload_read_bytes += append_plan.bytes_read
+
+        if append_plans:
+            t0 = time.perf_counter()
+            append_result = self._ingest_append_plans(append_plans)
+            parse_time_s += time.perf_counter() - t0
+            for plan in append_result.succeeded:
+                succeeded_paths.add(plan.path)
+                self._record_append_cursor(plan)
+            for plan in append_result.failed:
+                failed_paths.append(str(plan.path))
+                cursor_fingerprint_read_bytes += self._record_failed_cursor(plan.path)
 
         by_source: dict[str, list[Path]] = {}
-        for path in paths:
+        for path in full_paths:
             by_source.setdefault(self._source_name_for(path), []).append(path)
 
-        succeeded_paths: set[Path] = set()
         for source_name, source_paths in by_source.items():
             if self._stop_requested():
                 break
@@ -128,6 +163,7 @@ class LiveBatchProcessor:
                 continue
             parse_elapsed = time.perf_counter() - t0
             parse_time_s += parse_elapsed
+            source_payload_read_bytes += sum(_path_size(path) for path in source_paths)
             succeeded_paths.update(source_paths)
             logger.info(
                 "live.watcher: batch ingested %s — %d in %.1fs (%.1f/s)",
@@ -147,7 +183,7 @@ class LiveBatchProcessor:
             except Exception as exc:
                 logger.warning("live.watcher: post-ingest converge failed: %s", exc)
 
-        for path in succeeded_paths:
+        for path in succeeded_paths - {plan.path for plan in append_plans}:
             try:
                 stat = path.stat()
                 fp, last_nl = fingerprint_file(path)
@@ -175,9 +211,12 @@ class LiveBatchProcessor:
             skipped_file_count=skipped_file_count,
             succeeded_file_count=len(succeeded_paths),
             failed_file_count=len(failed_paths),
-            source_group_count=len(by_source),
+            source_group_count=len({self._source_name_for(path) for path in paths}),
             input_bytes=input_bytes,
+            source_payload_read_bytes=source_payload_read_bytes,
             cursor_fingerprint_read_bytes=cursor_fingerprint_read_bytes,
+            append_file_count=len(append_plans),
+            full_file_count=len(full_paths),
             archive_bytes_before=db_bytes_before,
             archive_bytes_after=db_bytes_after,
             archive_write_bytes_delta=max(0, db_bytes_after - db_bytes_before),
@@ -231,6 +270,170 @@ class LiveBatchProcessor:
             except OSError:
                 continue
         return path.parent.name
+
+    def _can_ingest_appends_directly(self) -> bool:
+        backend = getattr(self._polylogue, "backend", None)
+        return isinstance(getattr(backend, "db_path", None), Path)
+
+    def _append_plan(self, path: Path) -> _AppendPlan | None:
+        cursor = self._cursor.get_record(path)
+        if cursor is None or cursor.parser_fingerprint != self._current_parser_fingerprint():
+            return None
+        try:
+            stat = path.stat()
+        except FileNotFoundError:
+            return None
+        if stat.st_size <= cursor.byte_offset:
+            return None
+        if cursor.st_dev is not None and cursor.st_dev != stat.st_dev:
+            return None
+        if cursor.st_ino is not None and cursor.st_ino != stat.st_ino:
+            return None
+
+        start_offset = max(cursor.byte_offset, 0)
+        with path.open("rb") as handle:
+            handle.seek(start_offset)
+            payload = handle.read()
+        newline_at = payload.rfind(b"\n")
+        if newline_at < 0:
+            return None
+        complete_payload = payload[: newline_at + 1]
+        if not complete_payload:
+            return None
+        tail_hash = sha256(complete_payload).hexdigest()
+        return _AppendPlan(
+            path=path,
+            source_name=self._source_name_for(path),
+            start_offset=start_offset,
+            last_complete_newline=start_offset + newline_at + 1,
+            stat_size=stat.st_size,
+            st_dev=stat.st_dev,
+            st_ino=stat.st_ino,
+            mtime_ns=stat.st_mtime_ns,
+            payload=complete_payload,
+            payload_hash=tail_hash,
+            cursor_fingerprint=cursor.content_fingerprint,
+            bytes_read=len(payload),
+        )
+
+    def _ingest_append_plans(self, plans: list[_AppendPlan]) -> _AppendResult:
+        if not plans:
+            return _AppendResult(succeeded=[], failed=[])
+        archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
+        blob_root = blob_store_root()
+        blob_store = BlobStore(blob_root)
+        raw_records: list[RawConversationRecord] = []
+        raw_by_id: dict[str, _AppendPlan] = {}
+        for plan in plans:
+            raw_id, blob_size = blob_store.write_from_bytes(plan.payload)
+            raw_records.append(
+                RawConversationRecord(
+                    raw_id=raw_id,
+                    provider_name=canonical_acquisition_provider(plan.source_name, source_name=plan.source_name),
+                    source_name=plan.source_name,
+                    source_path=str(plan.path),
+                    source_index=-1,
+                    blob_size=blob_size,
+                    acquired_at=datetime.now(UTC).isoformat(),
+                    file_mtime=datetime.fromtimestamp(plan.mtime_ns / 1_000_000_000, UTC).isoformat(),
+                )
+            )
+            raw_by_id[raw_id] = plan
+
+        self._persist_append_raw_records(raw_records)
+        try:
+            summary = _process_ingest_batch_sync(
+                raw_records,
+                db_path=self._cursor._db_path,
+                archive_root_str=str(archive_root),
+                blob_root_str=str(blob_root),
+                validation_mode=str(getattr(getattr(self._polylogue, "config", None), "validation_mode", "advisory")),
+                ingest_workers=1,
+                measure_ingest_result_size=False,
+            )
+        except Exception as exc:
+            logger.warning("live.watcher: append ingest failed: %s", exc)
+            return _AppendResult(succeeded=[], failed=plans)
+
+        failed = [raw_by_id[raw_id] for raw_id in summary.failed_raw_ids if raw_id in raw_by_id]
+        failed_paths = {plan.path for plan in failed}
+        succeeded = [plan for plan in plans if plan.path not in failed_paths and summary.parse_failures == 0]
+        if summary.parse_failures and not failed:
+            return _AppendResult(succeeded=[], failed=plans)
+        return _AppendResult(succeeded=succeeded, failed=failed)
+
+    def _persist_append_raw_records(self, records: list[RawConversationRecord]) -> None:
+        if not records:
+            return
+        with self._cursor._connect() as conn:
+            conn.executemany(
+                """
+                INSERT OR IGNORE INTO raw_conversations (
+                    raw_id,
+                    provider_name,
+                    payload_provider,
+                    source_name,
+                    source_path,
+                    source_index,
+                    blob_size,
+                    acquired_at,
+                    file_mtime
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        record.raw_id,
+                        record.provider_name,
+                        record.payload_provider,
+                        record.source_name,
+                        record.source_path,
+                        record.source_index,
+                        record.blob_size,
+                        record.acquired_at,
+                        record.file_mtime,
+                    )
+                    for record in records
+                ],
+            )
+            conn.commit()
+
+    def _record_append_cursor(self, plan: _AppendPlan) -> None:
+        content_fingerprint = sha256(f"{plan.cursor_fingerprint or ''}\0{plan.payload_hash}".encode()).hexdigest()
+        self._cursor.set(
+            plan.path,
+            plan.stat_size,
+            byte_offset=plan.last_complete_newline,
+            last_complete_newline=plan.last_complete_newline,
+            parser_fingerprint=self._current_parser_fingerprint(),
+            content_fingerprint=content_fingerprint,
+            source_name=plan.source_name,
+            st_dev=plan.st_dev,
+            st_ino=plan.st_ino,
+            mtime_ns=plan.mtime_ns,
+        )
+        self._cursor.reset_failures(plan.path)
+
+
+@dataclass(frozen=True, slots=True)
+class _AppendPlan:
+    path: Path
+    source_name: str
+    start_offset: int
+    last_complete_newline: int
+    stat_size: int
+    st_dev: int
+    st_ino: int
+    mtime_ns: int
+    payload: bytes
+    payload_hash: str
+    cursor_fingerprint: str | None
+    bytes_read: int
+
+
+@dataclass(frozen=True, slots=True)
+class _AppendResult:
+    succeeded: list[_AppendPlan]
+    failed: list[_AppendPlan]
 
 
 def fingerprint_file(path: Path) -> tuple[str, int]:

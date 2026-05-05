@@ -216,16 +216,30 @@ class LiveWatcher:
         except FileNotFoundError:
             return False
         size = stat.st_size
-        try:
-            fingerprint, _last_nl = fingerprint_file(path)
-        except FileNotFoundError:
-            return False
         cursor = self._cursor.get_record(path)
         if cursor is not None:
             if cursor.excluded:
                 return False
             if cursor.failure_count > 0:
                 return _retry_due(cursor.next_retry_at)
+            parser_matches = cursor.parser_fingerprint == _PARSER_FINGERPRINT
+            same_inode = (cursor.st_dev is None or cursor.st_dev == stat.st_dev) and (
+                cursor.st_ino is None or cursor.st_ino == stat.st_ino
+            )
+            if parser_matches and same_inode and size > cursor.byte_offset:
+                return True
+            if (
+                parser_matches
+                and same_inode
+                and size == cursor.byte_size
+                and cursor.mtime_ns == stat.st_mtime_ns
+                and cursor.content_fingerprint is not None
+            ):
+                return False
+        try:
+            fingerprint, _last_nl = fingerprint_file(path)
+        except FileNotFoundError:
+            return False
         return not (
             cursor is not None
             and size == cursor.byte_size
