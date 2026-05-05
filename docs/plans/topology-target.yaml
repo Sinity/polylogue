@@ -2358,8 +2358,9 @@ files:
     owner: stable
   - path: polylogue/storage/blob_gc.py
     loc: 241
-    target: TBD
-    owner: storage-domain
+    target: polylogue/storage/blob_gc.py
+    owner: storage-root
+    reason: storage-root cross-cutting helper
   - path: polylogue/storage/blob_store.py
     loc: 310
     target: polylogue/storage/blob_store.py

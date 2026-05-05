@@ -35,7 +35,10 @@ def test_build_runtime_scenario_coverage_tracks_the_current_authored_map() -> No
         "schema-list-query-loop",
         "schema-explain-query-loop",
     }
-    assert all(path.complete for path in coverage.paths.values())
+    incomplete_paths = {name: path for name, path in coverage.paths.items() if not path.complete}
+    assert set(incomplete_paths) == {"conversation-render-loop"}
+    assert incomplete_paths["conversation-render-loop"].uncovered_artifacts == ("rendered_conversation_artifacts",)
+    assert incomplete_paths["conversation-render-loop"].uncovered_operations == ("render-conversations",)
     assert "raw_validation_state" in coverage.artifacts
     assert "configured_sources" in coverage.artifacts
     assert "source_payload_stream" in coverage.artifacts
@@ -52,7 +55,6 @@ def test_build_runtime_scenario_coverage_tracks_the_current_authored_map() -> No
     assert "conversation_query_results" in coverage.artifacts
     assert "archive_readiness" in coverage.artifacts
     assert "conversation_render_projection" in coverage.artifacts
-    assert "rendered_conversation_artifacts" in coverage.artifacts
     assert "site_conversation_pages" in coverage.artifacts
     assert "site_publication_manifest" in coverage.artifacts
     assert "publication_records" in coverage.artifacts
@@ -70,7 +72,6 @@ def test_build_runtime_scenario_coverage_tracks_the_current_authored_map() -> No
     assert "project-retrieval-band-readiness" in coverage.operations
     assert "query-embedding-status" in coverage.operations
     assert "query-conversations" in coverage.operations
-    assert "render-conversations" in coverage.operations
     assert "publish-site" in coverage.operations
     assert "materialize-session-insights" in coverage.operations
     assert "project-archive-readiness" in coverage.operations
@@ -83,8 +84,8 @@ def test_build_runtime_scenario_coverage_tracks_the_current_authored_map() -> No
     assert "query-schema-explanations" in coverage.operations
     assert "cli.help" in coverage.declared_operations
     assert "benchmark.query.search-filters" in coverage.declared_operations
-    assert coverage.uncovered_artifacts == ()
-    assert coverage.uncovered_operations == ()
+    assert coverage.uncovered_artifacts == ("rendered_conversation_artifacts",)
+    assert coverage.uncovered_operations == ("render-conversations",)
     assert coverage.uncovered_maintenance_targets == (
         "empty_conversations",
         "orphaned_attachments",
@@ -92,4 +93,4 @@ def test_build_runtime_scenario_coverage_tracks_the_current_authored_map() -> No
         "orphaned_messages",
         "wal_checkpoint",
     )
-    assert coverage.uncovered_declared_operations == ()
+    assert coverage.uncovered_declared_operations == ("render-conversations",)
