@@ -163,6 +163,12 @@ def test_prose_only_drops_claude_code_protocol_artifacts() -> None:
             ],
         ),
         make_msg(
+            id="inline-reminder-example",
+            role=Role.USER,
+            text="Please explain literal <system-reminder> tags.",
+            content_blocks=[{"type": "text", "text": "Please explain literal <system-reminder> tags."}],
+        ),
+        make_msg(
             id="local-command-caveat",
             role=Role.USER,
             text=(
@@ -217,9 +223,10 @@ def test_prose_only_drops_claude_code_protocol_artifacts() -> None:
 
     projected = project_message_content(messages, ContentProjectionSpec.prose_only())
 
-    assert [message.id for message in projected] == ["direct-user", "leading-reminder"]
+    assert [message.id for message in projected] == ["direct-user", "leading-reminder", "inline-reminder-example"]
     assert projected[1].text == "Actual user prompt."
     assert projected[1].content_blocks == [{"type": "text", "text": "Actual user prompt."}]
+    assert projected[2].text == "Please explain literal <system-reminder> tags."
 
 
 def test_projection_default_coercion_returns_unfiltered_messages() -> None:

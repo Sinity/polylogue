@@ -51,6 +51,7 @@ def test_parse_code_classifies_runtime_artifacts() -> None:
     result = parse_code(items, "fallback")
 
     by_id = {message.provider_message_id: message for message in result.messages}
+    assert len(result.messages) == len(by_id) == 4
     assert by_id["task-1"].message_type is MessageType.PROTOCOL
     assert by_id["command-1"].message_type is MessageType.PROTOCOL
     assert by_id["skill-1"].message_type is MessageType.CONTEXT

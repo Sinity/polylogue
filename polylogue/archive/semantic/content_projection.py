@@ -8,7 +8,7 @@ from dataclasses import dataclass, replace
 from enum import Enum
 from typing import TYPE_CHECKING
 
-from polylogue.archive.message.artifacts import strip_system_reminders
+from polylogue.archive.message.artifacts import strip_leading_system_reminders, strip_system_reminders
 from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
@@ -261,9 +261,9 @@ def _text_block_segments(block: Mapping[str, object]) -> list[_Segment]:
     text = _block_text(block)
     if text is None:
         return [_Segment(ContentKind.PROSE, None, block=dict(block))]
-    if "<system-reminder>" not in text:
+    if not text.lstrip().startswith("<system-reminder>"):
         return [_Segment(ContentKind.PROSE, text, block=dict(block))]
-    cleaned = strip_system_reminders(text)
+    cleaned = strip_leading_system_reminders(text)
     if not cleaned:
         return [_Segment(ContentKind.SYSTEM_NOISE, text, block=dict(block))]
     return [_Segment(ContentKind.PROSE, cleaned, block=_block_with_text(block, cleaned))]
