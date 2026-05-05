@@ -142,20 +142,6 @@ MUTATION_CAMPAIGNS: dict[str, MutationCampaign] = {
             "tests/unit/cli/test_query_fmt.py",
         ),
     ),
-    "cli-run": MutationCampaign(
-        name="cli-run",
-        description="Run command execution, display, and watch contracts",
-        paths_to_mutate=("polylogue/cli/commands/run.py",),
-        tests=(
-            "tests/unit/cli/test_run.py",
-            "tests/unit/cli/test_run_int.py",
-            "tests/unit/cli/test_run_laws.py",
-        ),
-        path_targets=("conversation-render-loop",),
-        artifact_targets=("conversation_render_projection", "rendered_conversation_artifacts"),
-        operation_targets=("render-conversations",),
-        tags=("mutation", "run", "render"),
-    ),
     "ui-core": MutationCampaign(
         name="ui-core",
         description="UI prompt, progress, and facade interaction contracts",

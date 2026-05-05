@@ -68,8 +68,8 @@ class TestExercisesByGroup:
     def test_inventory_includes_nested_command_paths(self) -> None:
         observed = {command_path.display_name for command_path in inventory_command_paths()}
         assert {
+            "diagnostics turns",
             "insights analytics",
-            "run render",
             "schema explain",
         } <= observed
 
@@ -109,7 +109,6 @@ class TestExercisesByGroup:
             "--target",
             "session_insights",
         ]
-        assert observed["json-run-embed"].args == ["run", "embed", "--stats", "--format", "json"]
         assert "json-schema-compare" not in observed
         assert "json-schema-generate" not in observed
         assert "json-schema-promote" not in observed
@@ -190,37 +189,6 @@ class TestExercisesByGroup:
             "threads",
         )
 
-    def test_static_reparse_preview_exercise_preserves_declared_targets(self) -> None:
-        observed = {exercise.name: exercise for exercise in EXERCISES}
-
-        reparse_preview = observed["run-preview-reparse"]
-
-        assert reparse_preview.args == [
-            "run",
-            "--preview",
-            "--reparse",
-            "--source",
-            "inbox",
-            "parse",
-        ]
-        assert reparse_preview.origin == "authored.showcase-catalog"
-        assert reparse_preview.path_targets == ("raw-reparse-loop",)
-        assert reparse_preview.artifact_targets == (
-            "raw_validation_state",
-            "validation_backlog",
-            "parse_backlog",
-            "parse_quarantine",
-        )
-        assert reparse_preview.operation_targets == (
-            "plan-validation-backlog",
-            "plan-parse-backlog",
-        )
-        assert reparse_preview.tags == (
-            "pipeline",
-            "reparse",
-            "maintenance",
-        )
-
     def test_exported_qa_extra_roots_match_generated_family(self) -> None:
         expected_names = [scenario.name for scenario in generate_qa_extra_scenarios()]
 
@@ -243,14 +211,13 @@ class TestVhsExercises:
                 assert e.name not in vhs_names
 
     def test_expected_count(self) -> None:
-        """Six exercises are marked for VHS capture."""
-        assert len(vhs_exercises()) == 6
+        """Five exercises are marked for VHS capture."""
+        assert len(vhs_exercises()) == 5
 
     def test_expected_names(self) -> None:
         vhs_names = {e.name for e in vhs_exercises()}
         expected = {
             "help-main",
-            "run-preview",
             "stats-default",
             "query-list",
             "doctor-readiness",

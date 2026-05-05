@@ -381,7 +381,7 @@ async def _execute_query_plan(
 
     if plan.selection.similar_text and vector_provider is None:
         click.echo(
-            "Error: --similar requires vector search support. Configure VOYAGE_API_KEY and build embeddings with `polylogue run embed` first.",
+            "Error: --similar requires vector search support. Configure VOYAGE_API_KEY and daemon-managed embeddings first.",
             err=True,
         )
         raise SystemExit(1)
@@ -389,7 +389,7 @@ async def _execute_query_plan(
         archive_stats = await repo.get_archive_stats()
         if archive_stats.embedded_messages <= 0:
             click.echo(
-                "Error: --similar requires existing embeddings. Run `polylogue run embed` first.",
+                "Error: --similar requires existing embeddings. Build embeddings through the daemon before querying.",
                 err=True,
             )
             raise SystemExit(1)

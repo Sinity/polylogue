@@ -80,6 +80,9 @@ documentation polish do not require an entry.
 - Live watching is no longer exposed through root `polylogue watch` or
   `polylogue run --watch`; use `polylogued watch` for the long-running source
   watcher.
+- Root `polylogue run` and its stage subcommands were removed; ingestion is
+  daemon-owned through `polylogued run` and explicit `polylogue ingest PATH`
+  requests.
 - Browser-capture receiver serving/status moved from root `polylogue
   browser-capture` to `polylogued browser-capture`.
 - `polylogued status` now reports configured daemon components, including live

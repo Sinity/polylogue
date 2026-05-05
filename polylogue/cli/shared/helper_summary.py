@@ -141,7 +141,7 @@ def print_summary_impl(
                 ui.console.print(
                     "[yellow]No conversations yet. Drop export files in[/yellow] "
                     f"[bold]{inbox}[/bold]"
-                    " [yellow]and run[/yellow] [bold]polylogue run all[/bold]"
+                    " [yellow]and start[/yellow] [bold]polylogued run[/bold]"
                 )
 
             max_width = 30

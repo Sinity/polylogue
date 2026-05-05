@@ -301,7 +301,7 @@ def open_result(
 
     if not render_root or not render_root.exists():
         click.echo("No rendered outputs found.", err=True)
-        click.echo("Run 'polylogue run' first to render conversations.", err=True)
+        click.echo("Start 'polylogued run' first to ingest and render conversations.", err=True)
         raise SystemExit(1)
 
     from polylogue.paths.sanitize import conversation_render_root
@@ -316,7 +316,7 @@ def open_result(
 
     if not render_file:
         click.echo("No rendered output found for this conversation.", err=True)
-        click.echo("Run 'polylogue run' to render conversations.", err=True)
+        click.echo("Start 'polylogued run' to ingest and render conversations.", err=True)
         raise SystemExit(1)
 
     if output.print_path:

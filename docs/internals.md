@@ -147,7 +147,7 @@ Content-addressed blob storage for large binary data:
 Cross-check adjacent surfaces after changes:
 
 - query: `cli/query*.py` ↔ `archive/filter/filters.py` ↔ `storage/search*.py`
-- pipeline: `cli/commands/run.py` ↔ `pipeline/` ↔ `storage/` ↔ `insights/`
+- pipeline: `daemon/` ↔ `pipeline/` ↔ `storage/` ↔ `insights/`
 - maintenance: `cli/commands/check.py` ↔ `storage/repair.py` ↔ `health.py`
 - publication: `rendering/` ↔ `site/` ↔ `showcase/`
 - schema: `schemas/` ↔ `sources/providers/` ↔ `pipeline/services/validation_*`

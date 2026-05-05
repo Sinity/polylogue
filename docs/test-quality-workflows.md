@@ -12,31 +12,31 @@ Current registry snapshot:
 - live lanes: `20`
 - composite lanes: `24`
 - validation families: `5`
-- mutation campaigns: `19`
+- mutation campaigns: `18`
 - benchmark campaigns: `3`
 - synthetic benchmark campaigns: `7`
-- scenario projections: `256`
+- scenario projections: `236`
 - inferred corpus scenarios: `5`
   - benchmark-campaign: `3`
-  - exercise: `149`
+  - exercise: `130`
   - inferred-corpus-scenario: `5`
-  - mutation-campaign: `19`
+  - mutation-campaign: `18`
   - synthetic-benchmark: `7`
   - validation-family: `5`
   - validation-lane: `68`
 
 ## Runtime Coverage
 
-- covered runtime paths: `27`
-- covered runtime artifacts: `59`
-- covered runtime operations: `31`
+- covered runtime paths: `26`
+- covered runtime artifacts: `58`
+- covered runtime operations: `30`
 - covered maintenance targets: `3`
-- covered declared operation targets: `43`
-- uncovered runtime paths: —
-- uncovered runtime artifacts: —
-- uncovered runtime operations: —
+- covered declared operation targets: `42`
+- uncovered runtime paths: `conversation-render-loop`
+- uncovered runtime artifacts: `rendered_conversation_artifacts`
+- uncovered runtime operations: `render-conversations`
 - uncovered maintenance targets: `empty_conversations`, `orphaned_attachments`, `orphaned_content_blocks`, `orphaned_messages`, `wal_checkpoint`
-- uncovered declared operation targets: —
+- uncovered declared operation targets: `render-conversations`
 
 Inspect the full authored map with:
 
@@ -223,7 +223,6 @@ Durable mutation ledgers live under `.local/mutation-campaigns/`; workflow polic
 | Campaign | Mutates | Tests | Description |
 | --- | --- | --- | --- |
 | `cli-query` | `polylogue/cli/query.py`<br>`polylogue/archive/query/plan.py`<br>`polylogue/cli/query_actions.py`<br>`polylogue/cli/query_output.py` | `tests/unit/cli/test_query_exec.py`<br>`tests/unit/cli/test_query_exec_laws.py`<br>`tests/unit/cli/test_query_fmt.py` | Query command planning, action routing, and summary output contracts |
-| `cli-run` | `polylogue/cli/commands/run.py` | `tests/unit/cli/test_run.py`<br>`tests/unit/cli/test_run_int.py`<br>`tests/unit/cli/test_run_laws.py` | Run command execution, display, and watch contracts |
 | `drive-client` | `polylogue/sources/drive/source.py`<br>`polylogue/sources/drive/gateway.py`<br>`polylogue/sources/drive/auth.py`<br>`polylogue/sources/drive/__init__.py` | `tests/unit/sources/test_drive_source_client.py`<br>`tests/unit/sources/test_drive_gateway.py`<br>`tests/unit/sources/test_drive_auth.py`<br>`tests/unit/sources/test_drive_ops.py` | Drive auth, transport, JSON payload parsing, and ingest attachment contracts |
 | `filters` | `polylogue/archive/filter/filters.py` | `tests/unit/core/test_filters_schemas.py`<br>`tests/unit/core/test_filters_props.py` | ConversationFilter semantics and summary/picker contracts |
 | `fts5` | `polylogue/storage/search_providers/fts5.py` | `tests/unit/storage/test_fts5.py` | FTS5 query escaping and conversation search semantics |
@@ -359,18 +358,6 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `exercise` | `help-raw` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | raw help |
 | `exercise` | `help-reset` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | reset help |
 | `exercise` | `help-resume` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | resume help |
-| `exercise` | `help-run` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | run help |
-| `exercise` | `help-run-acquire` | `source-acquisition-loop` | `configured_sources`<br>`source_payload_stream`<br>`raw_validation_state`<br>`artifact_observation_rows` | `cli.help`<br>`acquire-raw-conversations` | — | `generated`<br>`help`<br>`structural` | run acquire help |
-| `exercise` | `help-run-all` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | run all help |
-| `exercise` | `help-run-embed` | `embedding-materialization-loop` | `archive_conversation_rows`<br>`embedding_metadata_rows`<br>`embedding_status_rows`<br>`message_embedding_vectors` | `cli.help`<br>`materialize-transcript-embeddings` | — | `generated`<br>`help`<br>`structural` | run embed help |
-| `exercise` | `help-run-index` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | run index help |
-| `exercise` | `help-run-materialize` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | run materialize help |
-| `exercise` | `help-run-parse` | `source-acquisition-loop`<br>`raw-reparse-loop`<br>`raw-archive-ingest-loop` | `configured_sources`<br>`source_payload_stream`<br>`raw_validation_state`<br>`artifact_observation_rows`<br>`validation_backlog`<br>`parse_backlog`<br>`parse_quarantine`<br>`archive_conversation_rows` | `cli.help`<br>`acquire-raw-conversations`<br>`plan-validation-backlog`<br>`plan-parse-backlog`<br>`ingest-archive-runtime` | — | `generated`<br>`help`<br>`structural` | run parse help |
-| `exercise` | `help-run-publish` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | run publish help |
-| `exercise` | `help-run-render` | `conversation-render-loop` | `conversation_render_projection`<br>`rendered_conversation_artifacts` | `cli.help`<br>`render-conversations` | — | `generated`<br>`help`<br>`structural` | run render help |
-| `exercise` | `help-run-reprocess` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | run reprocess help |
-| `exercise` | `help-run-schema` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | run schema help |
-| `exercise` | `help-run-site` | `site-publication-loop` | `conversation_render_projection`<br>`site_conversation_pages`<br>`site_publication_manifest`<br>`publication_records` | `cli.help`<br>`publish-site` | — | `generated`<br>`help`<br>`structural` | run site help |
 | `exercise` | `help-schema` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | schema help |
 | `exercise` | `help-schema-compare` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | schema compare help |
 | `exercise` | `help-schema-explain` | `schema-explain-query-loop` | `schema_packages`<br>`schema_explanation_results` | `cli.help`<br>`query-schema-explanations` | — | `generated`<br>`help`<br>`structural` | schema explain help |
@@ -391,7 +378,6 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `exercise` | `json-insights-threads` | `work-thread-query-loop` | `work_thread_rows`<br>`work_thread_fts`<br>`work_thread_results` | `cli.json-contract`<br>`query-work-threads` | — | `generated`<br>`json-contract`<br>`insights`<br>`threads` | insights threads JSON contract |
 | `exercise` | `json-insights-week-summaries` | `week-summary-query-loop` | `day_session_summary_rows`<br>`week_session_summary_results` | `cli.json-contract`<br>`query-week-session-summaries` | — | `generated`<br>`json-contract`<br>`insights`<br>`week-summaries` | insights week-summaries JSON contract |
 | `exercise` | `json-insights-work-events` | `session-work-event-query-loop` | `session_work_event_rows`<br>`session_work_event_fts`<br>`session_work_event_results` | `cli.json-contract`<br>`query-session-work-events` | — | `generated`<br>`json-contract`<br>`insights`<br>`work-events` | insights work-events JSON contract |
-| `exercise` | `json-run-embed` | `retrieval-band-readiness-loop`<br>`embedding-status-query-loop` | `embedding_metadata_rows`<br>`embedding_status_rows`<br>`message_embedding_vectors`<br>`action_event_readiness`<br>`session_insight_readiness`<br>`retrieval_band_readiness`<br>`embedding_status_results` | `cli.json-contract`<br>`project-retrieval-band-readiness`<br>`query-embedding-status` | — | `generated`<br>`json-contract` | run embed JSON contract |
 | `exercise` | `json-schema-list` | `schema-list-query-loop` | `schema_packages`<br>`schema_cluster_manifests`<br>`inferred_corpus_specs`<br>`inferred_corpus_scenarios`<br>`schema_list_results` | `cli.json-contract`<br>`query-schema-catalog` | — | `generated`<br>`json-contract` | schema list JSON contract |
 | `exercise` | `json-tags` | — | — | `cli.json-contract` | — | `generated`<br>`json-contract` | tags JSON contract |
 | `exercise` | `query-count` | — | — | — | — | — | Count conversations |
@@ -419,12 +405,6 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `exercise` | `query-stream-json` | — | — | — | — | — | Stream latest as JSON lines |
 | `exercise` | `query-stream-latest` | — | — | — | — | — | Stream latest conversation |
 | `exercise` | `reverse-sort` | — | — | — | — | — | Reverse sort by date |
-| `exercise` | `run-all` | — | — | — | — | — | Run full pipeline (seeded fixtures) |
-| `exercise` | `run-preview` | — | — | — | — | — | Preview pipeline plan (seeded fixtures) |
-| `exercise` | `run-preview-live` | — | — | — | — | — | Preview pipeline against live sources |
-| `exercise` | `run-preview-reparse` | `raw-reparse-loop` | `raw_validation_state`<br>`validation_backlog`<br>`parse_backlog`<br>`parse_quarantine` | `plan-validation-backlog`<br>`plan-parse-backlog` | — | `pipeline`<br>`reparse`<br>`maintenance` | Preview force-reparse planning (seeded fixtures) |
-| `exercise` | `run-stage-index` | — | — | — | — | — | Run index stage only |
-| `exercise` | `run-stage-render` | — | — | — | — | — | Run render stage only |
 | `exercise` | `sample-random` | — | — | — | — | — | Random sample of conversations |
 | `exercise` | `set-meta` | — | — | — | — | — | Set metadata on conversation |
 | `exercise` | `site-generate` | — | — | — | — | — | Generate static site via run stage |
@@ -442,7 +422,6 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `inferred-corpus-scenario` | `codex:v1` | `inferred-corpus-compilation-loop` | `schema_packages`<br>`schema_cluster_manifests`<br>`inferred_corpus_specs`<br>`inferred_corpus_scenarios` | `compile-inferred-corpus-specs`<br>`compile-inferred-corpus-scenarios` | — | `inferred`<br>`schema`<br>`synthetic`<br>`scenario` | Compiled inferred corpus scenario for codex v1 across 1 corpus variant(s). |
 | `inferred-corpus-scenario` | `gemini:v1` | `inferred-corpus-compilation-loop` | `schema_packages`<br>`schema_cluster_manifests`<br>`inferred_corpus_specs`<br>`inferred_corpus_scenarios` | `compile-inferred-corpus-specs`<br>`compile-inferred-corpus-scenarios` | — | `inferred`<br>`schema`<br>`synthetic`<br>`scenario` | Compiled inferred corpus scenario for gemini v1 across 1 corpus variant(s). |
 | `mutation-campaign` | `cli-query` | — | — | — | — | `mutation` | Query command planning, action routing, and summary output contracts |
-| `mutation-campaign` | `cli-run` | `conversation-render-loop` | `conversation_render_projection`<br>`rendered_conversation_artifacts` | `render-conversations` | — | `mutation`<br>`run`<br>`render` | Run command execution, display, and watch contracts |
 | `mutation-campaign` | `drive-client` | — | — | — | — | `mutation` | Drive auth, transport, JSON payload parsing, and ingest attachment contracts |
 | `mutation-campaign` | `filters` | — | — | — | — | `mutation` | ConversationFilter semantics and summary/picker contracts |
 | `mutation-campaign` | `fts5` | — | — | — | — | `mutation` | FTS5 query escaping and conversation search semantics |

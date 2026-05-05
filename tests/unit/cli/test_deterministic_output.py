@@ -225,7 +225,7 @@ class TestPlainModeNoAnsi:
         ["--plain", "--help"],
         ["--plain", "doctor", "--help"],
         ["--plain", "tags", "--help"],
-        ["--plain", "run", "--help"],
+        ["--plain", "status", "--help"],
     ]
 
     @pytest.mark.parametrize(

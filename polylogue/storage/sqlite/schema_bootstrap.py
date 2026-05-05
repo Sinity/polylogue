@@ -739,7 +739,7 @@ def schema_version_mismatch_message(current_version: int) -> str:
     return (
         f"Database schema version {current_version} is incompatible with expected version {SCHEMA_VERSION}. "
         "Polylogue only supports explicitly declared in-place archive upgrades. Move the database aside or rebuild "
-        "it with `polylogue reset --database && polylogue run`."
+        "it with `polylogue reset --database && polylogued run`."
     )
 
 

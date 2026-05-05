@@ -156,7 +156,6 @@ Commands:
   raw          Show raw archive artifacts for a conversation.
   reset        Reset database, blob store, assets, rendered outputs, or...
   resume       Reconstruct work-state context for a fresh agent session.
-  run          Run pipeline stages on configured sources and/or transient...
   schema       Inspect schema packages, versions, and evidence.
   select       Select one matched conversation and print a field.
   show         Show matched conversations with default full-content output.
@@ -231,76 +230,6 @@ Options:
   --dry-run   Preview without deleting
   --force     Skip confirmation
   -h, --help  Show this message and exit.
-```
-
-## Run
-
-```text
-Usage: polylogue run [OPTIONS] COMMAND1 [ARGS]... [COMMAND2 [ARGS]...]...
-
-  Run pipeline stages on configured sources and/or transient input paths.
-
-Options:
-  --preview      Preview work without writing
-  --source TEXT  Configured source name (repeatable). Accepts 'last' for the
-                 previously synced source.
-  --input PATH   Transient file, directory, or archive path (repeatable).
-                 Accepts .json, .jsonl, .ndjson, .zip.
-  --reparse      Force re-parsing of all raw conversations (clears parse
-                 tracking)
-  -h, --help     Show this message and exit.
-
-Commands:
-  acquire      Capture raw payloads only.
-  all          Run the full pipeline.
-  embed        Generate semantic embeddings for conversations.
-  index        Build retrieval and search indexes.
-  materialize  Refresh derived read models.
-  parse        Parse persisted raw backlog into normalized conversations.
-  publish      Render and build the static site.
-  render       Render human-facing publication artifacts.
-  reprocess    Skip acquisition and rerun downstream stages.
-  schema       Infer schemas from acquired raw payloads.
-  site         Generate a static HTML site from the archive.
-```
-
-## Run Embed
-
-```text
-Usage: polylogue run embed [OPTIONS]
-
-  Generate semantic embeddings for conversations.
-
-Options:
-  -c, --conversation TEXT         Embed a specific conversation by ID
-  --model [voyage-4|voyage-4-large|voyage-4-lite]
-                                  Voyage AI model: voyage-4 (default),
-                                  voyage-4-large, voyage-4-lite
-  -r, --rebuild                   Re-embed all conversations (ignore existing
-                                  embeddings)
-  -s, --stats                     Show embedding statistics only
-  --format [json]                 Output format for embedding statistics
-                                  (requires --stats)
-  -n, --limit INTEGER             Maximum number of conversations to embed
-  -h, --help                      Show this message and exit.
-```
-
-## Run Site
-
-```text
-Usage: polylogue run site [OPTIONS]
-
-  Generate a static HTML site from the archive.
-
-Options:
-  -o, --output PATH               Output directory for generated site
-                                  (default: ~/.local/share/polylogue/site)
-  --title TEXT                    Site title
-  --search / --no-search          Enable client-side search (default: enabled)
-  --search-provider [pagefind|lunr]
-                                  Search index provider (default: pagefind)
-  --dashboard / --no-dashboard    Generate dashboard page (default: enabled)
-  -h, --help                      Show this message and exit.
 ```
 
 ## Insights

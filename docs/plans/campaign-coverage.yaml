@@ -23,17 +23,6 @@ mutation_campaigns:
       - tests/unit/cli/test_query_fmt.py
     status: active
 
-  - name: cli-run
-    description: >
-      Run command execution, display, and watch contracts
-    paths_to_mutate:
-      - polylogue/cli/commands/run.py
-    tests:
-      - tests/unit/cli/test_run.py
-      - tests/unit/cli/test_run_int.py
-      - tests/unit/cli/test_run_laws.py
-    status: active
-
   - name: drive-client
     description: >
       Drive auth, transport, JSON payload parsing, and ingest attachment contracts

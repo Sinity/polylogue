@@ -369,7 +369,7 @@ async def run_sources(
         except Exception:
             logger.exception(
                 "FTS trigger restoration failed; search index may return stale "
-                "results until the next 'devtools verify' or 'polylogue run index' rebuild",
+                "results until the next 'devtools verify' or daemon convergence rebuild",
             )
         if owns_repository:
             await active_repository.close()

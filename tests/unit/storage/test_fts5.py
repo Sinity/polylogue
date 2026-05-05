@@ -1357,7 +1357,7 @@ def test_search_without_fts_table_raises_descriptive_error(
     db_without_fts: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """search() raises DatabaseError mentioning 'polylogue run' when FTS missing."""
+    """search() raises DatabaseError mentioning missing FTS when FTS missing."""
     archive_root = workspace_env["archive_root"]
 
     import polylogue.paths as _paths

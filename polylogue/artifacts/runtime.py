@@ -578,7 +578,7 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
     ArtifactNode(
         name="rendered_conversation_artifacts",
         layer=ArtifactLayer.PROJECTION,
-        description="Filesystem render outputs produced by run render for conversation pages.",
+        description="Filesystem render outputs produced for conversation pages.",
         depends_on=("conversation_render_projection",),
         code_refs=(
             "polylogue.pipeline.services.rendering.RenderService.render_conversations",

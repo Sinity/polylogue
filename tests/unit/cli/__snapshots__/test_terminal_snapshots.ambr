@@ -58,33 +58,6 @@
     -h, --help                      Show this message and exit.
   '''
 # ---
-# name: TestCommandOutputs.test_run_help_output_snapshot
-  '''
-  Usage: polylogue run [OPTIONS] COMMAND1 [ARGS]... [COMMAND2 [ARGS]...]...
-    Run pipeline stages on configured sources and<PATH> transient input paths.
-  Options:
-    --preview      Preview work without writing
-    --source TEXT  Configured source name (repeatable). Accepts 'last' for the
-                   previously synced source.
-    --input PATH   Transient file, directory, or archive path (repeatable).
-                   Accepts .json, .jsonl, .ndjson, .zip.
-    --reparse      Force re-parsing of all raw conversations (clears parse
-                   tracking)
-    -h, --help     Show this message and exit.
-  Commands:
-    acquire      Capture raw payloads only.
-    all          Run the full pipeline.
-    embed        Generate semantic embeddings for conversations.
-    index        Build retrieval and search indexes.
-    materialize  Refresh derived read models.
-    parse        Parse persisted raw backlog into normalized conversations.
-    publish      Render and build the static site.
-    render       Render human-facing publication artifacts.
-    reprocess    Skip acquisition and rerun downstream stages.
-    schema       Infer schemas from acquired raw payloads.
-    site         Generate a static HTML site from the archive.
-  '''
-# ---
 # name: TestErrorOutput.test_invalid_option_error_output
   '''
   Usage: polylogue [OPTIONS] COMMAND [ARGS]...
@@ -173,9 +146,11 @@
     --min-messages INTEGER          Minimum message count
     --max-messages INTEGER          Maximum message count
     --min-words INTEGER             Minimum total word count
-    --message-type [message|summary|tool_use|tool_result|thinking]
+    --message-type [message|summary|tool_use|tool_result|thinking|context|protocol
+  ]
                                     Filter by message content type (message,
-                                    summary, tool_use, tool_result, thinking)
+                                    summary, tool_use, tool_result, thinking,
+                                    context, protocol)
     --since-session TEXT            Show sessions in same cwd after this
                                     conversation ID
     --since TEXT                    After date (ISO, 'yesterday', 'last week')
@@ -227,6 +202,7 @@
     diagnostics  Temporal session diagnostics
     doctor       Health check with optional maintenance and cleanup previews.
     export       Export one known conversation by ID.
+    ingest       Schedule a file or directory for ingestion by the daemon.
     insights     Inspect durable archive insights.
     list         List matched conversations.
     messages     Show paginated messages for a conversation.
@@ -235,11 +211,11 @@
     raw          Show raw archive artifacts for a conversation.
     reset        Reset database, blob store, assets, rendered outputs, or...
     resume       Reconstruct work-state context for a fresh agent session.
-    run          Run pipeline stages on configured sources and<PATH> transient...
     schema       Inspect schema packages, versions, and evidence.
     select       Select one matched conversation and print a field.
     show         Show matched conversations with default full-content output.
     stats        Show statistics for matched conversations.
+    status       Show daemon and archive health.
     tags         List all tags with conversation counts.
   '''
 # ---
@@ -351,11 +327,12 @@
     --max-messages INTEGER          Maximum message count
     --min-words INTEGER             Minimum total word count
     --message-type [message|summary|tool_use|tool_result|think
-  ing]
+  ing|context|protocol]
                                     Filter by message content
   type (message,
                                     summary, tool_use, tool_re
-  sult, thinking)
+  sult, thinking,
+                                    context, protocol)
     --since-session TEXT            Show sessions in same cwd
   after this
                                     conversation ID
@@ -433,6 +410,8 @@
     doctor       Health check with optional maintenance and cl
   eanup previews.
     export       Export one known conversation by ID.
+    ingest       Schedule a file or directory for ingestion by
+   the daemon.
     insights     Inspect durable archive insights.
     list         List matched conversations.
     messages     Show paginated messages for a conversation.
@@ -445,8 +424,6 @@
   outputs, or...
     resume       Reconstruct work-state context for a fresh ag
   ent session.
-    run          Run pipeline stages on configured sources and
-  <PATH> transient...
     schema       Inspect schema packages, versions, and eviden
   ce.
     select       Select one matched conversation and print a f
@@ -454,6 +431,7 @@
     show         Show matched conversations with default full-
   content output.
     stats        Show statistics for matched conversations.
+    status       Show daemon and archive health.
     tags         List all tags with conversation counts.
   '''
 # ---
@@ -534,9 +512,10 @@
     --min-messages INTEGER          Minimum message count
     --max-messages INTEGER          Maximum message count
     --min-words INTEGER             Minimum total word count
-    --message-type [message|summary|tool_use|tool_result|thinking]
+    --message-type [message|summary|tool_use|tool_result|thinking|context|protocol]
                                     Filter by message content type (message,
-                                    summary, tool_use, tool_result, thinking)
+                                    summary, tool_use, tool_result, thinking,
+                                    context, protocol)
     --since-session TEXT            Show sessions in same cwd after this
                                     conversation ID
     --since TEXT                    After date (ISO, 'yesterday', 'last week')
@@ -588,6 +567,7 @@
     diagnostics  Temporal session diagnostics
     doctor       Health check with optional maintenance and cleanup previews.
     export       Export one known conversation by ID.
+    ingest       Schedule a file or directory for ingestion by the daemon.
     insights     Inspect durable archive insights.
     list         List matched conversations.
     messages     Show paginated messages for a conversation.
@@ -596,11 +576,11 @@
     raw          Show raw archive artifacts for a conversation.
     reset        Reset database, blob store, assets, rendered outputs, or...
     resume       Reconstruct work-state context for a fresh agent session.
-    run          Run pipeline stages on configured sources and<PATH> transient...
     schema       Inspect schema packages, versions, and evidence.
     select       Select one matched conversation and print a field.
     show         Show matched conversations with default full-content output.
     stats        Show statistics for matched conversations.
+    status       Show daemon and archive health.
     tags         List all tags with conversation counts.
   '''
 # ---

@@ -3,25 +3,17 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import TypeAlias
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import click
 import pytest
-from click.testing import CliRunner
 
-from polylogue.cli.click_app import cli
 from polylogue.cli.shared.embed_runtime import embed_batch, embed_single
 from polylogue.cli.shared.embed_stats import show_embedding_stats
 from polylogue.storage.embeddings.models import EmbeddingStatsSnapshot
 
 MessageRow: TypeAlias = dict[str, str]
-
-
-@pytest.fixture
-def runner() -> CliRunner:
-    return CliRunner()
 
 
 @pytest.fixture
@@ -274,77 +266,6 @@ class TestEmbedBatch:
             mock_open.return_value.__exit__ = MagicMock(return_value=False)
             embed_batch(mock_env, mock_repository, mock_vec_provider)
         assert "error" in capsys.readouterr().out.lower()
-
-
-class TestEmbedCommand:
-    def test_embed_command_missing_api_key(self, runner: CliRunner, cli_workspace: dict[str, Path]) -> None:
-        with patch.dict("os.environ", {"VOYAGE_API_KEY": ""}, clear=False):
-            result = runner.invoke(cli, ["--plain", "run", "embed"])
-        assert result.exit_code != 0
-        assert "VOYAGE_API_KEY" in result.output or "Error" in result.output
-
-    def test_embed_command_help(self, runner: CliRunner, cli_workspace: dict[str, Path]) -> None:
-        result = runner.invoke(cli, ["run", "embed", "--help"])
-        assert result.exit_code == 0
-        assert "embed" in result.output.lower()
-
-    @pytest.mark.parametrize("option", ["--stats", "--format", "--model", "--rebuild", "--limit", "--conversation"])
-    def test_embed_command_help_lists_options(
-        self, runner: CliRunner, cli_workspace: dict[str, Path], option: str
-    ) -> None:
-        result = runner.invoke(cli, ["run", "embed", "--help"])
-        assert option in result.output
-
-    def test_embed_command_stats_short_circuit(self, runner: CliRunner, cli_workspace: dict[str, Path]) -> None:
-        with patch("polylogue.cli.commands.run._run_embed_standalone") as mock_standalone:
-            result = runner.invoke(cli, ["--plain", "run", "embed", "--stats"])
-        assert result.exit_code == 0
-        mock_standalone.assert_called_once()
-        opts = mock_standalone.call_args[0][1]
-        assert opts.stats is True
-
-    def test_embed_command_json_requires_stats(self, runner: CliRunner, cli_workspace: dict[str, Path]) -> None:
-        result = runner.invoke(cli, ["--plain", "run", "embed", "--format", "json"])
-        assert result.exit_code != 0
-        assert "--format json requires --stats" in result.output
-
-    def test_embed_command_stats_json_short_circuit(self, runner: CliRunner, cli_workspace: dict[str, Path]) -> None:
-        with patch("polylogue.cli.commands.run._run_embed_standalone") as mock_standalone:
-            result = runner.invoke(cli, ["--plain", "run", "embed", "--stats", "--format", "json"])
-        assert result.exit_code == 0
-        mock_standalone.assert_called_once()
-        opts = mock_standalone.call_args[0][1]
-        assert opts.stats is True
-        assert opts.json_output is True
-
-    def test_embed_command_single_conversation_dispatches(
-        self, runner: CliRunner, cli_workspace: dict[str, Path]
-    ) -> None:
-        with patch("polylogue.cli.commands.run._run_embed_standalone") as mock_standalone:
-            result = runner.invoke(cli, ["--plain", "run", "embed", "--conversation", "conv-123"])
-        assert result.exit_code == 0
-        mock_standalone.assert_called_once()
-        opts = mock_standalone.call_args[0][1]
-        assert opts.conversation == "conv-123"
-
-    def test_embed_command_batch_dispatches_limit_and_rebuild(
-        self, runner: CliRunner, cli_workspace: dict[str, Path]
-    ) -> None:
-        with patch("polylogue.cli.commands.run._run_embed_standalone") as mock_standalone:
-            result = runner.invoke(cli, ["--plain", "run", "embed", "--rebuild", "--limit", "5"])
-        assert result.exit_code == 0
-        mock_standalone.assert_called_once()
-        opts = mock_standalone.call_args[0][1]
-        assert opts.rebuild is True
-        assert opts.limit == 5
-
-    def test_embed_command_sets_non_default_model(self, runner: CliRunner, cli_workspace: dict[str, Path]) -> None:
-        with patch("polylogue.cli.commands.run._run_embed_standalone") as mock_standalone:
-            result = runner.invoke(cli, ["--plain", "run", "embed", "--model", "voyage-4-lite"])
-        assert result.exit_code == 0
-        mock_standalone.assert_called_once()
-        opts = mock_standalone.call_args[0][1]
-        assert opts.model == "voyage-4-lite"
 
 
 class TestEmbedBatchRichMode:

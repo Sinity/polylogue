@@ -31,18 +31,6 @@ def test_mutation_campaign_compiles_its_own_projection_entry() -> None:
     assert projection.tags == ("mutation",)
 
 
-def test_cli_run_campaign_carries_render_runtime_metadata() -> None:
-    cli_run = MUTATION_CAMPAIGNS["cli-run"]
-
-    assert cli_run.path_targets == ("conversation-render-loop",)
-    assert cli_run.artifact_targets == (
-        "conversation_render_projection",
-        "rendered_conversation_artifacts",
-    )
-    assert cli_run.operation_targets == ("render-conversations",)
-    assert cli_run.tags == ("mutation", "run", "render")
-
-
 def test_site_builder_campaign_carries_publication_runtime_metadata() -> None:
     site_builder = MUTATION_CAMPAIGNS["site-builder"]
 
