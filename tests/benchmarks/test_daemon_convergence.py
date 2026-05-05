@@ -109,8 +109,9 @@ def _run_convergence_probe(
         make_fts_stage,
         make_insights_stage,
     )
+    from polylogue.sources.live.batch import LiveBatchProcessor
     from polylogue.sources.live.cursor import CursorStore
-    from polylogue.sources.live.watcher import LiveWatcher, WatchSource
+    from polylogue.sources.live.watcher import WatchSource
 
     # Use a fresh DB for clean measurement.
     db_path = tmp_path / "polylogue.db"
@@ -127,18 +128,19 @@ def _run_convergence_probe(
     ]
     converger = DaemonConverger(stages=stages, max_workers=4)
     polylogue = _BenchmarkPolylogue(tmp_path, db_path)
-    watcher = LiveWatcher(
+    processor = LiveBatchProcessor(
         cast(Any, polylogue),
         (WatchSource(name="benchmark", root=corpus_root),),
         cursor=CursorStore(db_path),
+        parser_fingerprint="benchmark-v1",
         converger=converger,
     )
 
     timings: dict[str, float] = {}
 
-    # Measure canonical batched watcher ingestion with post-ingest convergence.
+    # Measure canonical batched live ingestion with post-ingest convergence.
     t_total = time.perf_counter()
-    asyncio.run(watcher._ingest_files(files))
+    asyncio.run(processor.ingest_files(files, emit_event=False))
     timings["total_s"] = time.perf_counter() - t_total
     timings["files"] = float(len(files))
 

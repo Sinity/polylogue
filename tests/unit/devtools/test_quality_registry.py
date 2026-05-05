@@ -113,6 +113,24 @@ def test_build_quality_registry_exposes_live_catalogs() -> None:
     assert "session_insight_fts" in session_insights.artifact_targets
     assert session_insights.operation_targets == ("materialize-session-insights",)
     assert session_insights.tags == ("benchmark", "synthetic", "session-insights")
+    daemon_live = next(
+        entry for entry in registry.synthetic_benchmark_campaigns if entry.name == "daemon-live-convergence"
+    )
+    assert daemon_live.origin == "authored.synthetic-benchmark"
+    assert daemon_live.summary_metric == "total_wall_s"
+    assert daemon_live.artifact_targets == (
+        "configured_sources",
+        "source_payload_stream",
+        "archive_conversation_rows",
+        "message_source_rows",
+        "message_fts",
+    )
+    assert daemon_live.operation_targets == (
+        "ingest-archive-runtime",
+        "index-message-fts",
+        "materialize-session-insights",
+    )
+    assert daemon_live.tags == ("benchmark", "synthetic", "daemon", "live", "convergence")
     insight_profiles = next(
         entry for entry in registry.catalog.exercise_scenarios if entry.name == "json-insights-profiles"
     )

@@ -21,6 +21,7 @@ from devtools.synthetic_benchmark_runtime import (
     CampaignResult,
     resolve_synthetic_benchmark_runner,
     run_action_event_materialization_campaign,
+    run_daemon_live_convergence_campaign,
     run_session_insight_materialization_campaign,
 )
 from polylogue.scenarios import ExecutionKind
@@ -42,6 +43,10 @@ def test_synthetic_benchmark_registry_is_compiled_from_authored_scenarios() -> N
     assert (
         SYNTHETIC_BENCHMARK_REGISTRY["session-insight-materialization"].description
         == "Benchmark durable session-insight rebuild over synthetic archive conversations"
+    )
+    assert (
+        SYNTHETIC_BENCHMARK_REGISTRY["daemon-live-convergence"].description
+        == "Benchmark daemon live batch convergence over generated JSONL source workloads"
     )
 
 
@@ -78,6 +83,76 @@ async def test_run_synthetic_benchmark_campaign_preserves_scenario_metadata(
     assert result.artifact_targets == ["message_source_rows", "message_fts"]
     assert result.operation_targets == ["index-message-fts", "index.message-fts-incremental"]
     assert result.tags == ["benchmark", "synthetic", "fts"]
+
+
+@pytest.mark.asyncio
+async def test_run_daemon_live_convergence_campaign_reports_workload_metrics(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    async def fake_workload(_db_path: Path) -> tuple[dict[str, float], dict[str, int]]:
+        return (
+            {
+                "total_wall_s": 0.25,
+                "files_ingested": 2.0,
+                "messages_generated": 8.0,
+                "messages_per_s": 32.0,
+                "converged_files": 1.0,
+                "failed_files": 0.0,
+            },
+            {
+                "messages_count": 8,
+                "fts_rows": 8,
+                "live_cursor_count": 2,
+            },
+        )
+
+    class FakeConn:
+        def commit(self) -> None:
+            pass
+
+    class FakeContext:
+        def __enter__(self) -> FakeConn:
+            return FakeConn()
+
+        def __exit__(
+            self, exc_type: type[BaseException] | None, exc: BaseException | None, tb: TracebackType | None
+        ) -> Literal[False]:
+            return False
+
+    monkeypatch.setattr(
+        "devtools.daemon_live_benchmark.run_daemon_live_convergence_workload",
+        fake_workload,
+    )
+    monkeypatch.setattr("polylogue.storage.sqlite.connection.open_connection", lambda _db_path: FakeContext())
+    monkeypatch.setattr(
+        "polylogue.storage.insights.session.rebuild.rebuild_session_insights_sync",
+        lambda conn: SessionInsightCounts(
+            profiles=2,
+            work_events=3,
+            phases=1,
+            threads=1,
+            tag_rollups=2,
+            day_summaries=1,
+        ),
+    )
+    monkeypatch.setattr("devtools.synthetic_benchmark_runtime._db_row_counts", lambda _db_path: {"messages_count": 8})
+    monkeypatch.setattr(
+        "devtools.synthetic_benchmark_runtime._session_insight_table_counts",
+        lambda _db_path: {"session_profiles_count": 2},
+    )
+
+    result = await run_daemon_live_convergence_campaign(tmp_path / "benchmark.db")
+
+    assert result.campaign_name == "daemon-live-convergence"
+    assert result.metrics["total_wall_s"] == 0.25
+    assert result.metrics["messages_per_s"] == 32.0
+    assert result.metrics["profiles_rebuilt"] == 2.0
+    assert result.db_stats == {
+        "messages_count": 8,
+        "fts_rows": 8,
+        "live_cursor_count": 2,
+        "session_profiles_count": 2,
+    }
 
 
 @pytest.mark.asyncio

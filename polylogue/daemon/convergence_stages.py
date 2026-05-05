@@ -110,7 +110,7 @@ def make_embed_stage(db_path: Path) -> ConvergenceStage:
         from polylogue.pipeline.run_stages import execute_embed_stage
 
         async def _embed() -> bool:
-            async with Polylogue() as poly:
+            async with Polylogue(archive_root=db_path.parent, db_path=db_path) as poly:
                 try:
                     result = await execute_embed_stage(
                         config=poly._config,
@@ -161,16 +161,20 @@ def make_insights_stage(db_path: Path) -> ConvergenceStage:
             return False
 
     def execute(path: Path) -> bool:  # noqa: ARG001
-        import asyncio
-
-        from polylogue.api import Polylogue
-
-        async def _refresh() -> None:
-            async with Polylogue() as poly:
-                await poly.rebuild_insights()
+        from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
+        from polylogue.storage.sqlite.connection import open_connection
 
         try:
-            asyncio.run(_refresh())
+            with open_connection(db_path) as conn:
+                counts = rebuild_session_insights_sync(conn)
+                conn.commit()
+                logger.info(
+                    "insights: rebuilt profiles=%d work_events=%d phases=%d threads=%d",
+                    counts.profiles,
+                    counts.work_events,
+                    counts.phases,
+                    counts.threads,
+                )
             return True
         except Exception:
             logger.warning("insights: rebuild failed", exc_info=True)

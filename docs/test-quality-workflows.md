@@ -14,14 +14,14 @@ Current registry snapshot:
 - validation families: `5`
 - mutation campaigns: `19`
 - benchmark campaigns: `3`
-- synthetic benchmark campaigns: `6`
-- scenario projections: `255`
+- synthetic benchmark campaigns: `7`
+- scenario projections: `256`
 - inferred corpus scenarios: `5`
   - benchmark-campaign: `3`
   - exercise: `149`
   - inferred-corpus-scenario: `5`
   - mutation-campaign: `19`
-  - synthetic-benchmark: `6`
+  - synthetic-benchmark: `7`
   - validation-family: `5`
   - validation-lane: `68`
 
@@ -259,6 +259,7 @@ These campaigns generate synthetic archives and run long-haul benchmark workload
 | Campaign | Tests | Warn | Fail | Description |
 | --- | --- | ---: | ---: | --- |
 | `action-event-materialization` | — | 0.0% | 0.0% | Benchmark action-event read-model rebuild over synthetic tool-use transcripts |
+| `daemon-live-convergence` | — | 0.0% | 0.0% | Benchmark daemon live batch convergence over generated JSONL source workloads |
 | `filter-scan` | — | 0.0% | 0.0% | Benchmark common filter query patterns |
 | `fts-rebuild` | — | 0.0% | 0.0% | Benchmark full FTS5 index rebuild |
 | `incremental-index` | — | 0.0% | 0.0% | Benchmark incremental FTS index updates |
@@ -460,6 +461,7 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `mutation-campaign` | `sources-parse` | — | — | — | — | `mutation` | Provider detection, parsing, harmonization, and parser laws |
 | `mutation-campaign` | `ui-core` | — | — | — | — | `mutation` | UI prompt, progress, and facade interaction contracts |
 | `synthetic-benchmark` | `action-event-materialization` | — | `tool_use_source_blocks`<br>`action_event_rows`<br>`action_event_fts` | `materialize-action-events` | — | `benchmark`<br>`synthetic`<br>`action-events` | Benchmark action-event read-model rebuild over synthetic tool-use transcripts |
+| `synthetic-benchmark` | `daemon-live-convergence` | — | `configured_sources`<br>`source_payload_stream`<br>`archive_conversation_rows`<br>`message_source_rows`<br>`message_fts` | `ingest-archive-runtime`<br>`index-message-fts`<br>`materialize-session-insights` | — | `benchmark`<br>`synthetic`<br>`daemon`<br>`live`<br>`convergence` | Benchmark daemon live batch convergence over generated JSONL source workloads |
 | `synthetic-benchmark` | `filter-scan` | — | `message_fts`<br>`conversation_query_results` | `query-conversations`<br>`query.filters.synthetic-scan` | — | `benchmark`<br>`synthetic`<br>`filters` | Benchmark common filter query patterns |
 | `synthetic-benchmark` | `fts-rebuild` | — | `message_source_rows`<br>`message_fts` | `index-message-fts`<br>`index.message-fts-rebuild` | — | `benchmark`<br>`synthetic`<br>`fts` | Benchmark full FTS5 index rebuild |
 | `synthetic-benchmark` | `incremental-index` | — | `message_source_rows`<br>`message_fts` | `index-message-fts`<br>`index.message-fts-incremental` | — | `benchmark`<br>`synthetic`<br>`fts` | Benchmark incremental FTS index updates |

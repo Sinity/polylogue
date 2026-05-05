@@ -59,6 +59,9 @@ documentation polish do not require an entry.
   through `polylogue.archive.write_effects`.
 - `run_blob_gc()` for safe garbage collection of unreferenced blobs with lease,
   generation, and MIN_AGE guards.
+- `devtools run-benchmark-campaigns` now includes a
+  `daemon-live-convergence` synthetic campaign that reports live-ingest file
+  counts, read/write byte shape, stage timings, and archive row counts.
 
 ### Changed
 

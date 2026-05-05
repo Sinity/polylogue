@@ -7,6 +7,7 @@ re-ingesting the same file is a no-op via content-hash dedup.
 
 from __future__ import annotations
 
+from polylogue.sources.live.batch import LiveBatchMetrics, LiveBatchProcessor
 from polylogue.sources.live.watcher import LiveWatcher, WatchSource
 
-__all__ = ["LiveWatcher", "WatchSource"]
+__all__ = ["LiveBatchMetrics", "LiveBatchProcessor", "LiveWatcher", "WatchSource"]
