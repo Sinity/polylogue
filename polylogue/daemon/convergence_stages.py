@@ -1,11 +1,10 @@
 """Convergence stage implementations for the daemon pipeline.
 
 Each stage has a ``check`` that inspects current archive state and an
-``execute`` that performs the missing work. Stages run in order:
-acquire-check → ingest → fts → embed → insights.
+``execute`` that performs the missing work. The live watcher owns
+source ingestion through its batched ``parse_sources(...)`` path; daemon
+convergence stages only repair and refresh post-ingest archive state.
 
-- acquire: fingerprint-based skip (no execute — ingest handles it)
-- ingest: parse_file() for the full acquire+parse+materialize+write
 - fts: rebuild FTS if messages > indexed count
 - embed: vectorize un-embedded conversations via Voyage API
 - insights: refresh session profiles
@@ -20,140 +19,6 @@ from polylogue.daemon.convergence import ConvergenceStage
 from polylogue.logging import get_logger
 
 logger = get_logger(__name__)
-
-
-def _fingerprint_file(path: Path) -> tuple[str, int]:
-    import hashlib
-
-    hasher = hashlib.sha256()
-    last_nl = 0
-    offset = 0
-    with path.open("rb") as f:
-        while True:
-            chunk = f.read(128 * 1024)
-            if not chunk:
-                break
-            hasher.update(chunk)
-            nl = chunk.rfind(b"\n")
-            if nl != -1:
-                last_nl = offset + nl
-            offset += len(chunk)
-    return hasher.hexdigest(), last_nl
-
-
-# ── Stage: acquire-check ───────────────────────────────────────────
-# Checks fingerprint against cursor; execute is no-op because
-# ingest handles the full pipeline. This separation lets callers
-# batch-skip unchanged files before paying the parse cost.
-
-
-def make_acquire_check_stage(db_path: Path) -> ConvergenceStage:
-    """Fingerprint check — returns True if file needs (re)ingestion."""
-
-    def check(path: Path) -> bool:
-        if not path.exists():
-            return False
-        from polylogue.sources.live.cursor import CursorStore
-
-        cursor = CursorStore(db_path)
-        record = cursor.get_record(path)
-        if record is None:
-            return True
-        try:
-            fp, _ = _fingerprint_file(path)
-        except FileNotFoundError:
-            return False
-        stat = path.stat()
-        return stat.st_size != record.byte_size or fp != record.content_fingerprint
-
-    def execute(path: Path) -> bool:
-        return True  # no-op — ingest stage handles the work
-
-    return ConvergenceStage(
-        name="acquire",
-        description="Fingerprint check — skip unchanged files",
-        check=check,
-        execute=execute,
-        cpu_bound=False,
-    )
-
-
-# ── Stage: ingest ──────────────────────────────────────────────────
-
-
-def make_ingest_stage(db_path: Path) -> ConvergenceStage:
-    """Ingest a file through the full pipeline: acquire + parse + materialize + write.
-
-    This is the workhorse. It calls ``parse_file()`` which does the
-    full pipeline for a single file. Subsequent stages (fts, embed,
-    insights) handle post-ingest convergence.
-    """
-
-    def check(path: Path) -> bool:
-        """Check if the file's raw record exists and is parsed."""
-        if not path.exists():
-            return False
-        from polylogue.sources.live.cursor import CursorStore
-
-        cursor = CursorStore(db_path)
-        record = cursor.get_record(path)
-        if record is None:
-            return True
-        # Check if the file fingerprint differs from what was parsed.
-        try:
-            fp, _ = _fingerprint_file(path)
-        except FileNotFoundError:
-            return False
-        return fp != (record.content_fingerprint or "")
-
-    def execute(path: Path) -> bool:
-        import asyncio
-
-        from polylogue.api import Polylogue
-        from polylogue.sources.live.cursor import CursorStore
-
-        async def _run() -> bool:
-            source_name = path.parent.name
-            try:
-                async with Polylogue() as poly:
-                    await poly.parse_file(path, source_name=source_name)
-            except Exception:
-                logger.warning("ingest failed for %s", path, exc_info=True)
-                cursor = CursorStore(db_path)
-                cursor.mark_failed(path)
-                return False
-
-            # Update cursor so subsequent checks skip this file.
-            cursor = CursorStore(db_path)
-            try:
-                stat = path.stat()
-                fp, last_nl = _fingerprint_file(path)
-                cursor.set(
-                    path,
-                    stat.st_size,
-                    byte_offset=last_nl,
-                    last_complete_newline=last_nl,
-                    parser_fingerprint="convergence-v3",
-                    content_fingerprint=fp,
-                    source_name=source_name,
-                    st_dev=None,
-                    st_ino=None,
-                    mtime_ns=None,
-                )
-                cursor.reset_failures(path)
-            except FileNotFoundError:
-                pass
-            return True
-
-        return asyncio.run(_run())
-
-    return ConvergenceStage(
-        name="ingest",
-        description="Full pipeline: acquire → parse → materialize → write",
-        check=check,
-        execute=execute,
-        cpu_bound=True,
-    )
 
 
 # ── Stage: FTS ─────────────────────────────────────────────────────
@@ -332,9 +197,7 @@ def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
 
 
 __all__ = [
-    "make_acquire_check_stage",
     "make_embed_stage",
     "make_fts_stage",
-    "make_ingest_stage",
     "make_insights_stage",
 ]

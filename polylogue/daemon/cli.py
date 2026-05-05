@@ -295,16 +295,13 @@ async def run_daemon_services(
     tasks: list[asyncio.Task[None]] = []
 
     try:
-        # Start the convergence engine with real pipeline stages.
-        # Acquire stage: checks file fingerprints, calls parse_file() for new/changed files.
-        # Converge stage: detects and repairs FTS gaps (crash recovery).
-        # Insights stage: refreshes session profiles for new conversations.
+        # Start the post-ingest convergence engine. The live watcher owns
+        # batched source ingestion; these stages repair archive indexes and
+        # refresh derived state after successful writes.
         from polylogue.daemon.convergence import DaemonConverger
         from polylogue.daemon.convergence_stages import (
-            make_acquire_check_stage,
             make_embed_stage,
             make_fts_stage,
-            make_ingest_stage,
             make_insights_stage,
         )
         from polylogue.paths import archive_root, db_path
@@ -313,8 +310,6 @@ async def run_daemon_services(
 
         converger = DaemonConverger(
             stages=(
-                make_acquire_check_stage(_db),
-                make_ingest_stage(_db),
                 make_fts_stage(_db),
                 make_embed_stage(_db),
                 make_insights_stage(_db),

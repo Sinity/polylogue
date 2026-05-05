@@ -88,6 +88,9 @@ documentation polish do not require an entry.
   successful cursor progress.
 - `polylogued status` and daemon ingestion events now expose live cursor
   backlog, retry state, batch counters, byte deltas, and convergence timings.
+- Daemon convergence now uses the live watcher's batched ingest path as the
+  only source-ingest path; post-ingest convergence stages only repair FTS,
+  embeddings, and insights.
 - `Config` rejects relative `archive_root`, `render_root`, or `db_path`
   with `ConfigError` at construction.
 - `_privacy_level_value` raises `ValueError` on unknown level strings
