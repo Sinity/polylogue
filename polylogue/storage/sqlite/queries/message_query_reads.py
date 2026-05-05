@@ -12,7 +12,7 @@ from polylogue.archive.message.types import validate_message_type_filter
 from polylogue.storage.runtime import MessageRecord
 from polylogue.storage.sqlite.queries.mappers import _row_to_message
 
-MessageTypeName = Literal["message", "summary", "tool_use", "tool_result", "thinking"]
+MessageTypeName = Literal["message", "summary", "tool_use", "tool_result", "thinking", "context", "protocol"]
 
 
 async def get_messages(

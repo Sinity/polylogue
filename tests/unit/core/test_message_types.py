@@ -15,6 +15,8 @@ def test_message_type_normalization_accepts_enums_strings_lists_and_unknowns() -
     assert MessageType.normalize("tool-use") is MessageType.TOOL_USE
     assert MessageType.normalize(" tool_result ") is MessageType.TOOL_RESULT
     assert MessageType.normalize("thinking") is MessageType.THINKING
+    assert MessageType.normalize("context") is MessageType.CONTEXT
+    assert MessageType.normalize("protocol") is MessageType.PROTOCOL
     assert MessageType.normalize(None) is MessageType.MESSAGE
     assert MessageType.normalize("") is MessageType.MESSAGE
     assert MessageType.normalize("unknown") is MessageType.MESSAGE
@@ -25,7 +27,7 @@ def test_message_type_normalization_accepts_enums_strings_lists_and_unknowns() -
         MessageType.TOOL_USE,
         MessageType.TOOL_RESULT,
     )
-    assert message_type_sql_values(["summary", "thinking"]) == ("summary", "thinking")
+    assert message_type_sql_values(["summary", "thinking", "protocol"]) == ("summary", "thinking", "protocol")
 
 
 def test_message_type_filter_validation_rejects_unknown_user_input() -> None:

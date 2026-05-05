@@ -91,9 +91,10 @@ Options:
   --min-messages INTEGER          Minimum message count
   --max-messages INTEGER          Maximum message count
   --min-words INTEGER             Minimum total word count
-  --message-type [message|summary|tool_use|tool_result|thinking]
+  --message-type [message|summary|tool_use|tool_result|thinking|context|protocol]
                                   Filter by message content type (message,
-                                  summary, tool_use, tool_result, thinking)
+                                  summary, tool_use, tool_result, thinking,
+                                  context, protocol)
   --since-session TEXT            Show sessions in same cwd after this
                                   conversation ID
   --since TEXT                    After date (ISO, 'yesterday', 'last week')
@@ -316,9 +317,10 @@ Options:
   --min-messages INTEGER          Minimum message count
   --max-messages INTEGER          Maximum message count
   --min-words INTEGER             Minimum total word count
-  --message-type [message|summary|tool_use|tool_result|thinking]
+  --message-type [message|summary|tool_use|tool_result|thinking|context|protocol]
                                   Filter by message content type (message,
-                                  summary, tool_use, tool_result, thinking)
+                                  summary, tool_use, tool_result, thinking,
+                                  context, protocol)
   --since-session TEXT            Show sessions in same cwd after this
                                   conversation ID
   --since TEXT                    After date (ISO, 'yesterday', 'last week')
@@ -473,9 +475,10 @@ Options:
   --min-messages INTEGER          Minimum message count
   --max-messages INTEGER          Maximum message count
   --min-words INTEGER             Minimum total word count
-  --message-type [message|summary|tool_use|tool_result|thinking]
+  --message-type [message|summary|tool_use|tool_result|thinking|context|protocol]
                                   Filter by message content type (message,
-                                  summary, tool_use, tool_result, thinking)
+                                  summary, tool_use, tool_result, thinking,
+                                  context, protocol)
   --since-session TEXT            Show sessions in same cwd after this
                                   conversation ID
   --since TEXT                    After date (ISO, 'yesterday', 'last week')
@@ -630,9 +633,10 @@ Options:
   --min-messages INTEGER          Minimum message count
   --max-messages INTEGER          Maximum message count
   --min-words INTEGER             Minimum total word count
-  --message-type [message|summary|tool_use|tool_result|thinking]
+  --message-type [message|summary|tool_use|tool_result|thinking|context|protocol]
                                   Filter by message content type (message,
-                                  summary, tool_use, tool_result, thinking)
+                                  summary, tool_use, tool_result, thinking,
+                                  context, protocol)
   --since-session TEXT            Show sessions in same cwd after this
                                   conversation ID
   --since TEXT                    After date (ISO, 'yesterday', 'last week')

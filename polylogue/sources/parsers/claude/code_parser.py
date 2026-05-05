@@ -9,6 +9,7 @@ from typing import TypeAlias
 from pydantic import ValidationError
 
 from polylogue.archive.conversation.branch_type import BranchType
+from polylogue.archive.message.artifacts import classify_text_message_type
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
 from polylogue.logging import get_logger
@@ -76,6 +77,15 @@ def _content_blocks_from_record(record: ClaudeCodeRecord, text: str | None) -> l
     if not content_blocks and text:
         return [ParsedContentBlock(type=ContentBlockType.TEXT, text=text)]
     return content_blocks
+
+
+def _message_type_from_code_record(record: ClaudeCodeRecord, text: str | None) -> MessageType:
+    artifact_type = classify_text_message_type(text)
+    if artifact_type is not None:
+        return artifact_type
+    if record.isMeta:
+        return MessageType.CONTEXT
+    return MessageType.MESSAGE
 
 
 def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedConversation:
@@ -155,6 +165,7 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedCo
         )
         envelope_role = Role.normalize(record.role) if record.role else Role.UNKNOWN
         content_blocks = _content_blocks_from_record(record, text)
+        message_type = _message_type_from_code_record(record, text)
         messages.append(
             ParsedMessage(
                 provider_message_id=str(record.uuid or f"msg-{index}"),
@@ -162,6 +173,7 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedCo
                 text=text or "",
                 timestamp=timestamp,
                 content_blocks=content_blocks,
+                message_type=message_type,
                 parent_message_provider_id=record.parentUuid,
             )
         )

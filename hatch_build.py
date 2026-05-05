@@ -42,14 +42,14 @@ class CustomBuildHook(BuildHookInterface):
         self._generated_build_info = False
         self._build_info_path = Path(self.root) / "polylogue" / "_build_info.py"
 
+        if self._build_info_path.exists():
+            self._register_build_info_artifact(build_data)
+            return
+
         if (Path(self.root) / ".git").exists():
             commit, dirty = _git_metadata(Path(self.root))
             self._build_info_path.write_text(_render_build_info(commit, dirty), encoding="utf-8")
             self._generated_build_info = True
-            self._register_build_info_artifact(build_data)
-            return
-
-        if self._build_info_path.exists():
             self._register_build_info_artifact(build_data)
             return
 

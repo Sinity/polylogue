@@ -86,12 +86,14 @@
           dontCheckRuntimeDeps = true;
 
           postFixup = ''
-            wrapProgram "$out/bin/polylogue" \
-              --unset PYTHONPATH \
-              --unset PYTHONHOME \
-              --unset PYTHONBREAKPOINT \
-              --unset PYTHONUSERBASE \
-              --unset VIRTUAL_ENV
+            for program in polylogue polylogued polylogue-mcp; do
+              wrapProgram "$out/bin/$program" \
+                --unset PYTHONPATH \
+                --unset PYTHONHOME \
+                --unset PYTHONBREAKPOINT \
+                --unset PYTHONUSERBASE \
+                --unset VIRTUAL_ENV
+            done
           '';
 
           meta = {
