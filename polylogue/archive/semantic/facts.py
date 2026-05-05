@@ -126,6 +126,12 @@ class SemanticConversationMessageLike(SemanticMessageLike, Protocol):
     def is_context_dump(self) -> bool: ...
 
     @property
+    def is_protocol_artifact(self) -> bool: ...
+
+    @property
+    def is_noise(self) -> bool: ...
+
+    @property
     def is_thinking(self) -> bool: ...
 
     @property
@@ -215,6 +221,8 @@ def build_message_semantic_facts(message: SemanticConversationMessageLike) -> Me
         is_assistant=message.is_assistant,
         is_dialogue=message.is_dialogue,
         is_context_dump=message.is_context_dump,
+        is_protocol_artifact=message.is_protocol_artifact,
+        is_noise=message.is_noise,
         is_thinking=message.is_thinking,
         is_tool_use=message.is_tool_use,
         is_substantive=message.is_substantive,

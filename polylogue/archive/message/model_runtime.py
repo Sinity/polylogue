@@ -9,7 +9,9 @@ from functools import cached_property
 from typing import TYPE_CHECKING
 
 from polylogue.archive.attachment.models import Attachment
+from polylogue.archive.message.artifacts import classify_text_message_type
 from polylogue.archive.message.roles import Role
+from polylogue.archive.message.types import MessageType
 from polylogue.core.json import JSONDocument, json_document, json_document_list
 from polylogue.logging import get_logger
 from polylogue.types import Provider
@@ -91,6 +93,7 @@ class MessageRuntimeMixin:
     attachments: list[Attachment]
     provider_meta: dict[str, object] | None
     content_blocks: list[dict[str, object]]
+    message_type: MessageType
     parent_id: str | None
     branch_index: int
 
@@ -161,6 +164,10 @@ class MessageRuntimeMixin:
 
     @cached_property
     def is_tool_use(self) -> bool:
+        message_type = MessageType.normalize(getattr(self, "message_type", MessageType.MESSAGE))
+        if message_type in {MessageType.TOOL_USE, MessageType.TOOL_RESULT}:
+            return True
+
         if any(block.get("type") in {"tool_use", "tool_result"} for block in self.content_blocks):
             return True
 
@@ -209,9 +216,15 @@ class MessageRuntimeMixin:
 
     @cached_property
     def is_context_dump(self) -> bool:
+        message_type = MessageType.normalize(getattr(self, "message_type", MessageType.MESSAGE))
+        if message_type == MessageType.CONTEXT:
+            return True
+
         text = self.text
         if not text:
             return False
+        if classify_text_message_type(text) == MessageType.CONTEXT:
+            return True
         stripped = text.lstrip()
         if stripped.startswith(_CONTEXT_START_MARKERS):
             return True
@@ -224,8 +237,15 @@ class MessageRuntimeMixin:
         return any(marker in text and pattern.search(text) for marker, pattern in _CONTEXT_LINE_PATTERNS)
 
     @cached_property
+    def is_protocol_artifact(self) -> bool:
+        message_type = MessageType.normalize(getattr(self, "message_type", MessageType.MESSAGE))
+        if message_type == MessageType.PROTOCOL:
+            return True
+        return classify_text_message_type(self.text) == MessageType.PROTOCOL
+
+    @cached_property
     def is_noise(self) -> bool:
-        return self.is_tool_use or self.is_context_dump or self.is_system
+        return self.is_tool_use or self.is_context_dump or self.is_protocol_artifact or self.is_system
 
     @cached_property
     def is_substantive(self) -> bool:

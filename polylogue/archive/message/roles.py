@@ -30,7 +30,7 @@ class Role(str, Enum):
             return cls.USER
         if lowered in {"assistant", "model", "ai"}:
             return cls.ASSISTANT
-        if lowered == "system":
+        if lowered in {"system", "developer"}:
             return cls.SYSTEM
         if lowered in {"tool", "function", "tool_use", "tool_result", "progress", "result"}:
             return cls.TOOL
@@ -47,7 +47,7 @@ MessageRoleFilter: TypeAlias = tuple[Role, ...]
 ROLE_SQL_VALUES: dict[Role, tuple[str, ...]] = {
     Role.USER: ("user", "human"),
     Role.ASSISTANT: ("assistant", "model", "ai"),
-    Role.SYSTEM: ("system",),
+    Role.SYSTEM: ("system", "developer"),
     Role.TOOL: ("tool", "function", "tool_use", "tool_result", "progress", "result"),
     Role.UNKNOWN: ("unknown",),
 }

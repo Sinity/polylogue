@@ -13,7 +13,9 @@ from datetime import datetime
 from pydantic import ValidationError
 
 from polylogue.archive.conversation.branch_type import BranchType
+from polylogue.archive.message.artifacts import classify_text_message_type
 from polylogue.archive.message.roles import Role
+from polylogue.archive.message.types import MessageType
 from polylogue.core.timestamps import format_timestamp, parse_timestamp
 from polylogue.logging import get_logger
 from polylogue.sources.providers.codex import CodexRecord
@@ -169,6 +171,14 @@ def _codex_tool_message(record: CodexRecord, *, index: int) -> ParsedMessage | N
     return None
 
 
+def _message_type_from_codex_message(record: CodexRecord, text: str | None) -> MessageType:
+    role = record.effective_role.strip().lower()
+    if role in {"system", "developer"}:
+        return MessageType.CONTEXT
+    artifact_type = classify_text_message_type(text)
+    return artifact_type or MessageType.MESSAGE
+
+
 def looks_like(payload: Sequence[object]) -> bool:
     """Detect Codex JSONL format using typed validation.
 
@@ -322,6 +332,7 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedConvers
                     text=text,
                     timestamp=timestamp,
                     content_blocks=content_blocks,
+                    message_type=_message_type_from_codex_message(message_record, text),
                 )
             )
             latest_message_timestamp = _latest_timestamp(latest_message_timestamp, timestamp)
