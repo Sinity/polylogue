@@ -266,7 +266,17 @@ def _text_block_segments(block: Mapping[str, object]) -> list[_Segment]:
     cleaned = strip_system_reminders(text)
     if not cleaned:
         return [_Segment(ContentKind.SYSTEM_NOISE, text, block=dict(block))]
-    return [_Segment(ContentKind.PROSE, cleaned)]
+    return [_Segment(ContentKind.PROSE, cleaned, block=_block_with_text(block, cleaned))]
+
+
+def _block_with_text(block: Mapping[str, object], text: str) -> dict[str, object]:
+    updated = dict(block)
+    for key in ("text", "code", "content", "thinking"):
+        if isinstance(updated.get(key), str):
+            updated[key] = text
+            return updated
+    updated["text"] = text
+    return updated
 
 
 def _segments_from_noncode_text(text: str) -> list[_Segment]:

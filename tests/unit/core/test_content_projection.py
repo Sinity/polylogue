@@ -219,6 +219,7 @@ def test_prose_only_drops_claude_code_protocol_artifacts() -> None:
 
     assert [message.id for message in projected] == ["direct-user", "leading-reminder"]
     assert projected[1].text == "Actual user prompt."
+    assert projected[1].content_blocks == [{"type": "text", "text": "Actual user prompt."}]
 
 
 def test_projection_default_coercion_returns_unfiltered_messages() -> None:
