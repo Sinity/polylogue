@@ -23,6 +23,8 @@ class MessageSemanticFacts:
     is_assistant: bool
     is_dialogue: bool
     is_context_dump: bool
+    is_protocol_artifact: bool
+    is_noise: bool
     is_thinking: bool
     is_tool_use: bool
     is_substantive: bool

@@ -7,6 +7,7 @@ branch tracking, git context, and edge cases.
 from __future__ import annotations
 
 from polylogue.archive.conversation.branch_type import BranchType
+from polylogue.archive.message.types import MessageType
 from polylogue.sources.parsers.base import ParsedConversation
 from polylogue.sources.parsers.codex import looks_like as _looks_like_impl
 from polylogue.sources.parsers.codex import parse as _parse_impl
@@ -304,6 +305,46 @@ class TestMessageParsing:
         from_stream = parse_stream(iter(payload), "fallback")
 
         assert from_stream == from_list
+
+    def test_system_developer_and_protocol_messages_are_typed_as_context_or_protocol(self) -> None:
+        payload = [
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "id": "developer-context",
+                    "role": "developer",
+                    "content": [{"type": "input_text", "text": "<developer>runtime instruction</developer>"}],
+                },
+            },
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "id": "protocol-wrapper",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "<command-name>status</command-name>"}],
+                },
+            },
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "id": "real-user",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "actual request"}],
+                },
+            },
+        ]
+
+        result = parse(payload, "fallback")
+
+        assert [message.role for message in result.messages] == ["system", "user", "user"]
+        assert [message.message_type for message in result.messages] == [
+            MessageType.CONTEXT,
+            MessageType.PROTOCOL,
+            MessageType.MESSAGE,
+        ]
 
 
 # =============================================================================

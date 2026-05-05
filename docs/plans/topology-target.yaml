@@ -190,13 +190,18 @@ files:
     target: polylogue/archive/message/__init__.py
     owner: archive-message
     reason: archive-domain semantics
+  - path: polylogue/archive/message/artifacts.py
+    loc: 85
+    target: polylogue/archive/message/artifacts.py
+    owner: archive-message
+    reason: archive-domain semantics
   - path: polylogue/archive/message/messages.py
     loc: 135
     target: polylogue/archive/message/messages.py
     owner: archive-message
     reason: archive-domain semantics
   - path: polylogue/archive/message/model_runtime.py
-    loc: 298
+    loc: 318
     target: polylogue/archive/message/model_runtime.py
     owner: archive-message
     reason: archive-domain semantics
@@ -217,7 +222,7 @@ files:
     owner: archive-message
     reason: archive-domain semantics
   - path: polylogue/archive/message/types.py
-    loc: 79
+    loc: 81
     target: polylogue/archive/message/types.py
     owner: archive-message
     reason: archive-domain semantics
@@ -371,7 +376,7 @@ files:
     owner: archive-raw-payload
     reason: archive-domain semantics
   - path: polylogue/archive/raw_payload/decode.py
-    loc: 290
+    loc: 297
     target: polylogue/archive/raw_payload/decode.py
     owner: archive-raw-payload
     reason: archive-domain semantics
@@ -396,17 +401,17 @@ files:
     owner: archive-semantic
     reason: archive-domain semantics
   - path: polylogue/archive/semantic/content_projection.py
-    loc: 343
+    loc: 376
     target: polylogue/archive/semantic/content_projection.py
     owner: archive-semantic
     reason: archive-domain semantics
   - path: polylogue/archive/semantic/facts.py
-    loc: 441
+    loc: 449
     target: polylogue/archive/semantic/facts.py
     owner: archive-semantic
     reason: archive-domain semantics
   - path: polylogue/archive/semantic/models.py
-    loc: 254
+    loc: 256
     target: polylogue/archive/semantic/models.py
     owner: archive-semantic
     reason: archive-domain semantics
@@ -867,15 +872,15 @@ files:
     target: polylogue/daemon/browser_capture.py
     owner: stable
   - path: polylogue/daemon/cli.py
-    loc: 640
+    loc: 643
     target: polylogue/daemon/cli.py
     owner: stable
   - path: polylogue/daemon/convergence.py
-    loc: 199
+    loc: 203
     target: polylogue/daemon/convergence.py
     owner: stable
   - path: polylogue/daemon/convergence_stages.py
-    loc: 232
+    loc: 340
     target: polylogue/daemon/convergence_stages.py
     owner: stable
   - path: polylogue/daemon/events.py
@@ -1046,7 +1051,7 @@ files:
     target: polylogue/pipeline/ids.py
     owner: stable
   - path: polylogue/pipeline/materialization_runtime.py
-    loc: 368
+    loc: 360
     target: polylogue/pipeline/materialization_runtime.py
     owner: stable
     cross_cut: { lifecycle: runtime }
@@ -1148,7 +1153,7 @@ files:
     target: polylogue/pipeline/services/ingest_batch/__init__.py
     owner: stable
   - path: polylogue/pipeline/services/ingest_batch/_core.py
-    loc: 1121
+    loc: 1107
     target: polylogue/pipeline/services/ingest_batch/_core.py
     owner: stable
   - path: polylogue/pipeline/services/ingest_batch/_models.py
@@ -1821,7 +1826,7 @@ files:
     target: polylogue/schemas/validation/requests.py
     owner: stable
   - path: polylogue/schemas/validator.py
-    loc: 289
+    loc: 300
     target: polylogue/schemas/validator.py
     owner: stable
   - path: polylogue/schemas/validator_resolution.py
@@ -2151,7 +2156,7 @@ files:
     target: polylogue/sources/live/cursor.py
     owner: stable
   - path: polylogue/sources/live/watcher.py
-    loc: 201
+    loc: 306
     target: polylogue/sources/live/watcher.py
     owner: stable
   - path: polylogue/sources/parsers/base.py
@@ -2188,7 +2193,7 @@ files:
     target: polylogue/sources/parsers/claude/code_detection.py
     owner: stable
   - path: polylogue/sources/parsers/claude/code_parser.py
-    loc: 248
+    loc: 260
     target: polylogue/sources/parsers/claude/code_parser.py
     owner: stable
   - path: polylogue/sources/parsers/claude/common.py
@@ -2200,7 +2205,7 @@ files:
     target: polylogue/sources/parsers/claude/index.py
     owner: stable
   - path: polylogue/sources/parsers/codex.py
-    loc: 365
+    loc: 376
     target: polylogue/sources/parsers/codex.py
     owner: stable
   - path: polylogue/sources/parsers/drive.py

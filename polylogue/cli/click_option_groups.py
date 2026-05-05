@@ -183,7 +183,7 @@ FILTER_OPTION_DECORATORS: tuple[Callable[[ClickCallable], ClickCallable], ...] =
         "--message-type",
         "message_type",
         type=click.Choice([message_type.value for message_type in MessageType]),
-        help="Filter by message content type (message, summary, tool_use, tool_result, thinking)",
+        help="Filter by message content type (message, summary, tool_use, tool_result, thinking, context, protocol)",
         shell_complete=_complete_message_type,
     ),
     click.option(

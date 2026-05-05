@@ -14,6 +14,8 @@ class MessageType(str, Enum):
     TOOL_USE = "tool_use"
     TOOL_RESULT = "tool_result"
     THINKING = "thinking"
+    CONTEXT = "context"
+    PROTOCOL = "protocol"
 
     @classmethod
     def normalize(cls, value: object) -> MessageType:

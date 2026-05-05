@@ -8,8 +8,10 @@ from dataclasses import dataclass, replace
 from enum import Enum
 from typing import TYPE_CHECKING
 
+from polylogue.archive.message.artifacts import strip_leading_system_reminders, strip_system_reminders
 from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.message.roles import Role
+from polylogue.archive.message.types import MessageType
 
 if TYPE_CHECKING:
     from polylogue.archive.conversation.models import Conversation
@@ -169,9 +171,28 @@ def _segments_for_message(
     message: Message,
     tool_semantics: Mapping[str, str],
 ) -> list[_Segment]:
+    whole_message_kind = _whole_message_kind(message, has_content_blocks=bool(message.content_blocks))
+    if whole_message_kind is not None:
+        text = strip_system_reminders((message.text or "").strip())
+        return [_Segment(whole_message_kind, text or (message.text or "").strip())]
     if message.content_blocks:
         return _segments_from_blocks(message.content_blocks, tool_semantics)
     return _segments_from_text(message)
+
+
+def _whole_message_kind(message: Message, *, has_content_blocks: bool) -> ContentKind | None:
+    message_type = MessageType.normalize(getattr(message, "message_type", MessageType.MESSAGE))
+    if not has_content_blocks and (message_type == MessageType.TOOL_RESULT or message.role == Role.TOOL):
+        return ContentKind.TOOL_OUTPUT
+    if (
+        message_type in {MessageType.CONTEXT, MessageType.PROTOCOL}
+        or message.is_context_dump
+        or message.is_protocol_artifact
+    ):
+        return ContentKind.SYSTEM_NOISE
+    if message.is_system:
+        return ContentKind.SYSTEM_NOISE
+    return None
 
 
 def _segments_from_blocks(
@@ -183,7 +204,7 @@ def _segments_from_blocks(
         block = dict(raw_block)
         block_type = str(block.get("type") or "text")
         if block_type == "text":
-            segments.append(_Segment(ContentKind.PROSE, _block_text(block), block=block))
+            segments.extend(_text_block_segments(block))
             continue
         if block_type == "code":
             segments.append(_Segment(ContentKind.CODE, _block_text(block), block=block))
@@ -213,7 +234,7 @@ def _segments_from_text(message: Message) -> list[_Segment]:
         return []
     if message.role == Role.TOOL or message.is_tool_use:
         return [_Segment(ContentKind.TOOL_OUTPUT, text)]
-    if message.is_context_dump or message.is_system:
+    if message.is_context_dump or message.is_protocol_artifact or message.is_system:
         return [_Segment(ContentKind.SYSTEM_NOISE, text)]
 
     segments: list[_Segment] = []
@@ -234,6 +255,28 @@ def _segments_from_text(message: Message) -> list[_Segment]:
         if thinking:
             return [_Segment(ContentKind.REASONING, thinking)]
     return [_Segment(ContentKind.PROSE, text)]
+
+
+def _text_block_segments(block: Mapping[str, object]) -> list[_Segment]:
+    text = _block_text(block)
+    if text is None:
+        return [_Segment(ContentKind.PROSE, None, block=dict(block))]
+    if not text.lstrip().startswith("<system-reminder>"):
+        return [_Segment(ContentKind.PROSE, text, block=dict(block))]
+    cleaned = strip_leading_system_reminders(text)
+    if not cleaned:
+        return [_Segment(ContentKind.SYSTEM_NOISE, text, block=dict(block))]
+    return [_Segment(ContentKind.PROSE, cleaned, block=_block_with_text(block, cleaned))]
+
+
+def _block_with_text(block: Mapping[str, object], text: str) -> dict[str, object]:
+    updated = dict(block)
+    for key in ("text", "code", "content", "thinking"):
+        if isinstance(updated.get(key), str):
+            updated[key] = text
+            return updated
+    updated["text"] = text
+    return updated
 
 
 def _segments_from_noncode_text(text: str) -> list[_Segment]:

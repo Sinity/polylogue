@@ -254,7 +254,7 @@ def _collect_range_signals(
     user_text_parts: list[str] = []
 
     for message in message_range.iter_messages(messages):
-        if message.is_user and message.text and not message.is_context_dump:
+        if message.is_user and message.text and not message.is_noise:
             user_text_parts.append(message.text.lower())
         for action in message.action_events:
             category = action.kind.value
