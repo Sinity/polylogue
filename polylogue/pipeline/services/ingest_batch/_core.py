@@ -134,6 +134,14 @@ def _check_content_unchanged(conn: sqlite3.Connection, cid: str, content_hash: s
     return row is not None and row[0] == content_hash
 
 
+def _stored_message_count(conn: sqlite3.Connection, conversation_id: str) -> int:
+    row = conn.execute(
+        "SELECT COUNT(*) FROM messages WHERE conversation_id = ?",
+        (conversation_id,),
+    ).fetchone()
+    return int(row[0] or 0) if row is not None else 0
+
+
 def _topo_sort_message_tuples(tuples: list[MessageTuple]) -> list[MessageTuple]:
     """Sort message tuples so parents come before children (FK constraint).
 
@@ -409,12 +417,11 @@ def _write_conversation(
         "skipped_provider_events": 0,
     }
 
-    content_unchanged = _check_content_unchanged(conn, cdata.conversation_id, cdata.content_hash)
-
     existing_row = conn.execute(
-        "SELECT content_hash FROM conversations WHERE conversation_id = ?",
+        "SELECT content_hash, raw_id FROM conversations WHERE conversation_id = ?",
         (cdata.conversation_id,),
     ).fetchone()
+    content_unchanged = existing_row is not None and str(existing_row["content_hash"]) == cdata.content_hash
     if cdata.append_only and existing_row is not None:
         return _append_conversation(conn, cdata, existing_hash=str(existing_row["content_hash"]))
 
@@ -423,6 +430,27 @@ def _write_conversation(
         counts["skipped_messages"] = len(cdata.message_tuples)
         counts["skipped_attachments"] = len(cdata.attachment_tuples)
         counts["skipped_provider_events"] = len(cdata.provider_event_tuples)
+        return False, counts
+
+    existing_raw_id = str(existing_row["raw_id"] or "") if existing_row is not None else ""
+    if (
+        not force_write
+        and existing_raw_id
+        and cdata.raw_id
+        and existing_raw_id != cdata.raw_id
+        and len(cdata.message_tuples) < _stored_message_count(conn, cdata.conversation_id)
+    ):
+        counts["skipped_conversations"] = 1
+        counts["skipped_messages"] = len(cdata.message_tuples)
+        counts["skipped_attachments"] = len(cdata.attachment_tuples)
+        counts["skipped_provider_events"] = len(cdata.provider_event_tuples)
+        logger.debug(
+            "Skipping stale duplicate conversation cid=%s raw_id=%s existing_raw_id=%s incoming_msgs=%d",
+            cdata.conversation_id,
+            cdata.raw_id,
+            existing_raw_id,
+            len(cdata.message_tuples),
+        )
         return False, counts
 
     conn.execute(_CONVERSATION_UPSERT_SQL, _resolved_conversation_tuple(conn, cdata))

@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from polylogue.archive.raw_payload.decode import JSONValue, build_raw_payload_envelope, sample_jsonl_payload
+from polylogue.archive.raw_payload.decode import (
+    JSONValue,
+    _sample_jsonl_payload_with_detail,
+    build_raw_payload_envelope,
+    sample_jsonl_payload,
+)
 
 
 def _as_dict(sample: JSONValue) -> dict[str, JSONValue]:
@@ -42,3 +47,19 @@ def test_build_raw_payload_envelope_reports_first_bad_jsonl_line(tmp_path: Path)
     assert envelope.malformed_jsonl_lines == 1
     assert envelope.malformed_jsonl_detail is not None
     assert "line 2" in envelope.malformed_jsonl_detail
+
+
+def test_jsonl_sampling_can_stop_after_bounded_prefix(tmp_path: Path) -> None:
+    path = tmp_path / "bounded.jsonl"
+    path.write_text('{"ok": 1}\n{"ok": 2}\n{"broken": \n', encoding="utf-8")
+
+    samples, malformed, detail = _sample_jsonl_payload_with_detail(
+        path,
+        max_samples=2,
+        jsonl_dict_only=True,
+        scan_full=False,
+    )
+
+    assert [_as_dict(sample)["ok"] for sample in samples] == [1, 2]
+    assert malformed == 0
+    assert detail is None

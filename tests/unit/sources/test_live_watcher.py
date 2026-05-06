@@ -18,6 +18,7 @@ import polylogue.sources.live.watcher as live_watcher
 from polylogue import Polylogue
 from polylogue.sources.live import LiveWatcher, WatchSource
 from polylogue.sources.live.batch import (
+    _STREAMING_FULL_INGEST_BYTES,
     LiveBatchProcessor,
     _full_ingest_worker_count,
     _FullIngestResult,
@@ -244,6 +245,65 @@ def test_live_full_ingest_parallelizes_many_small_records() -> None:
 
     assert _full_ingest_worker_count(records) == 4
     assert _full_ingest_worker_count([giant]) == 1
+
+
+@pytest.mark.asyncio
+async def test_live_full_ingest_streams_large_paths_before_processing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "projects"
+    project = root / "project"
+    project.mkdir(parents=True)
+    source_path = project / "large-session.jsonl"
+    records = [
+        _claude_code_message(
+            session_id="large-live-session",
+            uuid=f"msg-{index}",
+            role="user",
+            text=f"message {index}",
+            timestamp="2026-05-01T00:00:00Z",
+        )
+        for index in range(33)
+    ]
+    _write_jsonl(source_path, records)
+    with source_path.open("r+b") as handle:
+        handle.seek(_STREAMING_FULL_INGEST_BYTES + 128)
+        handle.write(b"\n")
+
+    db_path = tmp_path / "archive.sqlite"
+    polylogue = MagicMock()
+    polylogue.archive_root = tmp_path
+    polylogue.backend.db_path = db_path
+    cursor = CursorStore(db_path)
+    processor = LiveBatchProcessor(
+        polylogue,
+        (WatchSource(name="projects", root=root),),
+        cursor=cursor,
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+    )
+
+    calls: list[str] = []
+
+    def fake_write_from_path(_store: object, path: Path) -> tuple[str, int]:
+        calls.append(f"path:{path.name}")
+        return "a" * 64, path.stat().st_size
+
+    def fail_write_from_bytes(_store: object, _payload: bytes) -> tuple[str, int]:
+        raise AssertionError("large live full ingest should stream from path")
+
+    monkeypatch.setattr("polylogue.sources.live.batch.BlobStore.write_from_path", fake_write_from_path)
+    monkeypatch.setattr("polylogue.sources.live.batch.BlobStore.write_from_bytes", fail_write_from_bytes)
+    monkeypatch.setattr(
+        "polylogue.sources.live.batch._process_ingest_batch_sync",
+        lambda *args, **kwargs: SimpleNamespace(failed_raw_ids={}, parse_failures=0),
+    )
+
+    result = await processor._ingest_full_paths([source_path], source_name="projects")
+
+    assert result.succeeded == [source_path]
+    assert result.failed == []
+    assert calls == ["path:large-session.jsonl"]
 
 
 # --- LiveWatcher: needs_work + ingest_files (batched) --------------------------

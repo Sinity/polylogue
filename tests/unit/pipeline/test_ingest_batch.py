@@ -104,6 +104,7 @@ def _conversation_data(
     conversation_id: str,
     *,
     content_hash: str,
+    raw_id: str | None = None,
     parent_conversation_id: str | None = None,
     message_tuples: list[MessageTuple] | None = None,
     block_tuples: list[ContentBlockTuple] | None = None,
@@ -128,7 +129,7 @@ def _conversation_data(
         1,
         ConversationId(parent_conversation_id) if parent_conversation_id is not None else None,
         None,
-        None,
+        raw_id,
     )
     return ConversationData(
         conversation_id=conversation_id,
@@ -141,6 +142,7 @@ def _conversation_data(
         stats_tuple=stats_tuple or (),
         attachment_tuples=list(attachment_tuples or []),
         attachment_ref_tuples=list(attachment_ref_tuples or []),
+        raw_id=raw_id,
         append_only=append_only,
     )
 
@@ -552,6 +554,79 @@ def test_write_conversation_force_write_updates_sort_key_only(tmp_path: Path) ->
         assert rows[0]["role"] == "user"
         assert rows[0]["text"] == "hello"
         assert rows[0]["sort_key"] == 1777636800.0
+
+
+def test_write_conversation_skips_shorter_duplicate_raw_source(tmp_path: Path) -> None:
+    """Duplicate source files for the same session must not replace fuller rows."""
+    with open_connection(tmp_path / "ingest.db") as conn:
+        conn.executemany(
+            """
+            INSERT INTO raw_conversations (
+                raw_id, provider_name, source_path, blob_size, acquired_at
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            [
+                ("raw-full", "codex", "/tmp/full.jsonl", 1, "2026-04-02T00:00:00Z"),
+                ("raw-stale", "codex", "/tmp/stale.jsonl", 1, "2026-04-02T00:00:00Z"),
+            ],
+        )
+        fuller = _conversation_data(
+            "codex:duplicate",
+            content_hash="hash-full",
+            raw_id="raw-full",
+            message_tuples=[
+                _message_tuple(
+                    "msg-1",
+                    "codex:duplicate",
+                    role="user",
+                    text="first",
+                    content_hash="msg-1",
+                    sort_key=1.0,
+                ),
+                _message_tuple(
+                    "msg-2",
+                    "codex:duplicate",
+                    role="assistant",
+                    text="second",
+                    content_hash="msg-2",
+                    sort_key=2.0,
+                ),
+            ],
+        )
+        stale = _conversation_data(
+            "codex:duplicate",
+            content_hash="hash-stale",
+            raw_id="raw-stale",
+            message_tuples=[
+                _message_tuple(
+                    "msg-1",
+                    "codex:duplicate",
+                    role="user",
+                    text="first stale",
+                    content_hash="msg-1-stale",
+                    sort_key=1.0,
+                )
+            ],
+        )
+
+        changed_full, _counts_full = _write_conversation(conn, fuller)
+        changed_stale, counts_stale = _write_conversation(conn, stale)
+        conn.commit()
+
+        messages = conn.execute(
+            "SELECT message_id, text FROM messages WHERE conversation_id = ? ORDER BY sort_key",
+            ("codex:duplicate",),
+        ).fetchall()
+        raw_id = conn.execute(
+            "SELECT raw_id FROM conversations WHERE conversation_id = ?",
+            ("codex:duplicate",),
+        ).fetchone()["raw_id"]
+
+        assert changed_full is True
+        assert changed_stale is False
+        assert counts_stale["skipped_conversations"] == 1
+        assert [row["text"] for row in messages] == ["first", "second"]
+        assert raw_id == "raw-full"
 
 
 def test_iter_ingest_results_sync_runs_inline_for_single_worker(

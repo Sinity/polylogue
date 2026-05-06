@@ -13,6 +13,8 @@ from json import loads as json_loads
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, cast
 
+import orjson
+
 from polylogue.archive.artifact_taxonomy import classify_artifact, classify_artifact_path
 from polylogue.core.json import JSONValue
 from polylogue.core.metrics import read_current_rss_mb, read_peak_rss_children_mb, read_peak_rss_self_mb
@@ -20,7 +22,7 @@ from polylogue.core.provider_identity import canonical_acquisition_provider
 from polylogue.logging import get_logger
 from polylogue.paths import blob_store_root
 from polylogue.pipeline.services.ingest_batch._core import _process_ingest_batch_sync
-from polylogue.sources.dispatch import _detect_provider_from_raw_bytes
+from polylogue.sources.dispatch import _detect_provider_from_raw_bytes, detect_provider
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.runtime import RawConversationRecord
@@ -32,6 +34,7 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 _LARGE_FULL_PARSE_PROGRESS_BYTES = 64 * 1024 * 1024
+_STREAMING_FULL_INGEST_BYTES = 8 * 1024 * 1024
 LiveBatchEventEmitter = Callable[[str, dict[str, object]], None]
 
 
@@ -471,18 +474,35 @@ class LiveBatchProcessor:
 
         for path in paths:
             try:
-                payload = path.read_bytes()
                 stat = path.stat()
             except OSError:
                 failed.append(path)
                 continue
-            provider = _detect_provider_from_raw_bytes(payload, path.name, fallback_provider)
-            provider_name = provider.value
-            if not _parse_as_conversation_artifact(path, provider=provider, payload=payload):
-                self._mark_excluded_cursor(path, stat, source_name=source_name)
-                continue
-            raw_id, blob_size = blob_store.write_from_bytes(payload)
-            source_payload_read_bytes += len(payload)
+            if stat.st_size >= _STREAMING_FULL_INGEST_BYTES:
+                provider = _detect_provider_from_path_sample(path, fallback_provider)
+                provider_name = provider.value
+                if not _parse_path_as_conversation_artifact(path, provider=provider):
+                    self._mark_excluded_cursor(path, stat, source_name=source_name)
+                    continue
+                try:
+                    raw_id, blob_size = blob_store.write_from_path(path)
+                except OSError:
+                    failed.append(path)
+                    continue
+                source_payload_read_bytes += blob_size
+            else:
+                try:
+                    payload = path.read_bytes()
+                except OSError:
+                    failed.append(path)
+                    continue
+                provider = _detect_provider_from_raw_bytes(payload, path.name, fallback_provider)
+                provider_name = provider.value
+                if not _parse_payload_as_conversation_artifact(path, provider=provider, payload=payload):
+                    self._mark_excluded_cursor(path, stat, source_name=source_name)
+                    continue
+                raw_id, blob_size = blob_store.write_from_bytes(payload)
+                source_payload_read_bytes += len(payload)
             ingested.append(path)
             raw_records.append(
                 RawConversationRecord(
@@ -821,7 +841,52 @@ def _path_size(path: Path) -> int:
         return 0
 
 
-def _parse_as_conversation_artifact(path: Path, *, provider: Provider, payload: bytes) -> bool:
+def _jsonl_sample_from_path(path: Path, *, max_records: int = 32) -> list[JSONValue]:
+    records: list[JSONValue] = []
+    with path.open("rb") as handle:
+        for line in handle:
+            if len(records) >= max_records:
+                break
+            raw = line.strip()
+            if not raw:
+                continue
+            try:
+                records.append(cast(JSONValue, orjson.loads(raw)))
+            except orjson.JSONDecodeError:
+                continue
+    return records
+
+
+def _detect_provider_from_path_sample(path: Path, fallback_provider: Provider) -> Provider:
+    if path.suffix.lower() == ".jsonl":
+        records = _jsonl_sample_from_path(path)
+        if records:
+            return detect_provider(records) or fallback_provider
+        return fallback_provider
+    try:
+        payload = path.read_bytes()
+    except OSError:
+        return fallback_provider
+    return _detect_provider_from_raw_bytes(payload, path.name, fallback_provider)
+
+
+def _parse_path_as_conversation_artifact(path: Path, *, provider: Provider) -> bool:
+    path_classification = classify_artifact_path(path, provider=provider)
+    if path_classification is not None:
+        return path_classification.parse_as_conversation
+    if path.suffix.lower() == ".jsonl":
+        records = _jsonl_sample_from_path(path)
+        if not records:
+            return False
+        return classify_artifact(records, provider=provider, source_path=path).parse_as_conversation
+    try:
+        document = cast(JSONValue, orjson.loads(path.read_bytes()))
+    except orjson.JSONDecodeError:
+        return False
+    return classify_artifact(document, provider=provider, source_path=path).parse_as_conversation
+
+
+def _parse_payload_as_conversation_artifact(path: Path, *, provider: Provider, payload: bytes) -> bool:
     path_classification = classify_artifact_path(path, provider=provider)
     if path_classification is not None:
         return path_classification.parse_as_conversation
@@ -830,18 +895,19 @@ def _parse_as_conversation_artifact(path: Path, *, provider: Provider, payload: 
         for line in BytesIO(payload):
             if len(records) >= 32:
                 break
-            if not line.strip():
+            raw = line.strip()
+            if not raw:
                 continue
             try:
-                records.append(cast(JSONValue, json_loads(line)))
-            except ValueError:
+                records.append(cast(JSONValue, orjson.loads(raw)))
+            except orjson.JSONDecodeError:
                 continue
         if not records:
             return False
         return classify_artifact(records, provider=provider, source_path=path).parse_as_conversation
     try:
-        document = cast(JSONValue, json_loads(payload))
-    except ValueError:
+        document = cast(JSONValue, orjson.loads(payload))
+    except orjson.JSONDecodeError:
         return False
     return classify_artifact(document, provider=provider, source_path=path).parse_as_conversation
 

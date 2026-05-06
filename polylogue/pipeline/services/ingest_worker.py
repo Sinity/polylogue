@@ -425,6 +425,7 @@ def _build_stream_parse_plan(
             context.raw_source,
             max_samples=64,
             jsonl_dict_only=True,
+            scan_full=context.validation_mode is ValidationMode.STRICT,
         )
     except Exception:
         # Sampling helper failed entirely (file I/O, decode, or worse). Logging
@@ -723,6 +724,17 @@ def ingest_record(
         source_name=raw_record.source_name or raw_record.source_path or "",
         fallback_timestamp=raw_record.file_mtime,
     )
+
+    if raw_record.blob_size == 0:
+        error = "decode: Input is a zero-length, empty document"
+        return _record_result(
+            context,
+            stored_payload_provider,
+            validation_status=ValidationStatus.FAILED,
+            validation_error=error,
+            parse_error=error,
+            error=error,
+        )
 
     if _is_stream_record_provider(raw_record.source_path, stored_payload_provider or raw_record.provider_name):
         if validation_mode is ValidationMode.OFF and (
