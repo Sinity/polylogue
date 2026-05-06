@@ -12,25 +12,35 @@ from polylogue.schemas.synthetic import SyntheticCorpus
 
 @dataclass(frozen=True, slots=True)
 class DaemonLiveScaleSpec:
-    files: int
+    files_per_provider: int
     messages_per_file: int
 
 
 DAEMON_LIVE_SCALE_SPECS: dict[str, DaemonLiveScaleSpec] = {
-    "small": DaemonLiveScaleSpec(files=5, messages_per_file=10),
-    "medium": DaemonLiveScaleSpec(files=20, messages_per_file=25),
-    "large": DaemonLiveScaleSpec(files=50, messages_per_file=50),
-    "stretch": DaemonLiveScaleSpec(files=100, messages_per_file=100),
+    "small": DaemonLiveScaleSpec(files_per_provider=5, messages_per_file=10),
+    "medium": DaemonLiveScaleSpec(files_per_provider=20, messages_per_file=25),
+    "large": DaemonLiveScaleSpec(files_per_provider=50, messages_per_file=50),
+    "stretch": DaemonLiveScaleSpec(files_per_provider=100, messages_per_file=100),
 }
 
 
 @dataclass(frozen=True, slots=True)
-class DaemonLiveGeneratedWorkload:
+class DaemonLiveSourceRoot:
+    name: str
     root: Path
+
+
+@dataclass(frozen=True, slots=True)
+class DaemonLiveGeneratedWorkload:
+    sources: tuple[DaemonLiveSourceRoot, ...]
     files: list[Path]
+    files_by_provider: dict[str, list[Path]]
     source_bytes: int
     message_count: int
     append_delta_bytes: int = 0
+
+
+DAEMON_LIVE_PROVIDERS: tuple[str, ...] = ("claude-code", "codex")
 
 
 def scale_from_db_path(db_path: Path) -> str:
@@ -44,32 +54,40 @@ def scale_from_db_path(db_path: Path) -> str:
 
 def generate_daemon_live_workload(root: Path, *, scale: str) -> DaemonLiveGeneratedWorkload:
     spec = DAEMON_LIVE_SCALE_SPECS.get(scale, DAEMON_LIVE_SCALE_SPECS["small"])
-    source_root = root / "live-sources" / "claude-code" / "project"
-    source_root.mkdir(parents=True, exist_ok=True)
-    for stale_path in source_root.glob("*.jsonl"):
-        stale_path.unlink()
-    corpus_spec = CorpusSpec.for_provider(
-        "claude-code",
-        count=spec.files,
-        messages_min=spec.messages_per_file,
-        messages_max=spec.messages_per_file,
-        seed=_seed_for_scale(scale),
-        style="default",
-    )
-    batch = SyntheticCorpus.generate_batch_for_spec(corpus_spec)
+    sources: list[DaemonLiveSourceRoot] = []
     files: list[Path] = []
+    files_by_provider: dict[str, list[Path]] = {}
     source_bytes = 0
     message_count = 0
-    for file_index, artifact in enumerate(batch.artifacts):
-        session_id = f"daemon-live-{scale}-{file_index:04d}"
-        path = source_root / f"{session_id}.jsonl"
-        path.write_bytes(_jsonl_bytes_with_terminal_newline(artifact.raw_bytes))
-        files.append(path)
-        source_bytes += path.stat().st_size
-        message_count += artifact.message_count
+    for provider_index, provider in enumerate(DAEMON_LIVE_PROVIDERS):
+        source_root = root / "live-sources" / provider / "project"
+        source_root.mkdir(parents=True, exist_ok=True)
+        for stale_path in source_root.glob("*.jsonl"):
+            stale_path.unlink()
+        corpus_spec = CorpusSpec.for_provider(
+            provider,
+            count=spec.files_per_provider,
+            messages_min=spec.messages_per_file,
+            messages_max=spec.messages_per_file,
+            seed=_seed_for_scale(scale) + provider_index * 10_000,
+            style="default",
+        )
+        batch = SyntheticCorpus.generate_batch_for_spec(corpus_spec)
+        provider_files: list[Path] = []
+        for file_index, artifact in enumerate(batch.artifacts):
+            session_id = f"daemon-live-{provider}-{scale}-{file_index:04d}"
+            path = source_root / f"{session_id}.jsonl"
+            path.write_bytes(_jsonl_bytes_with_terminal_newline(artifact.raw_bytes))
+            files.append(path)
+            provider_files.append(path)
+            source_bytes += path.stat().st_size
+            message_count += artifact.message_count
+        files_by_provider[provider] = provider_files
+        sources.append(DaemonLiveSourceRoot(name=provider, root=source_root.parent))
     return DaemonLiveGeneratedWorkload(
-        root=source_root.parent,
+        sources=tuple(sources),
         files=files,
+        files_by_provider=files_by_provider,
         source_bytes=source_bytes,
         message_count=message_count,
     )
@@ -80,16 +98,23 @@ def append_daemon_live_workload(
 ) -> DaemonLiveGeneratedWorkload:
     """Append one generated JSONL record per file and return updated workload stats."""
     append_delta_bytes = 0
-    for file_index, path in enumerate(workload.files):
-        record = _make_generated_append_record(path, message_index=message_index, seed=file_index)
-        before = path.stat().st_size
-        with path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(record, sort_keys=True))
-            handle.write("\n")
-        append_delta_bytes += path.stat().st_size - before
+    for provider, paths in workload.files_by_provider.items():
+        for file_index, path in enumerate(paths):
+            record = _make_generated_append_record(
+                provider,
+                path,
+                message_index=message_index,
+                seed=file_index,
+            )
+            before = path.stat().st_size
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(record, sort_keys=True))
+                handle.write("\n")
+            append_delta_bytes += path.stat().st_size - before
     return DaemonLiveGeneratedWorkload(
-        root=workload.root,
+        sources=workload.sources,
         files=workload.files,
+        files_by_provider=workload.files_by_provider,
         source_bytes=sum(path.stat().st_size for path in workload.files),
         message_count=workload.message_count + len(workload.files),
         append_delta_bytes=append_delta_bytes,
@@ -118,18 +143,16 @@ def _read_jsonl_records(path: Path) -> list[dict[str, object]]:
     return records
 
 
-def _make_generated_append_record(path: Path, *, message_index: int, seed: int) -> dict[str, object]:
+def _make_generated_append_record(
+    provider: str,
+    path: Path,
+    *,
+    message_index: int,
+    seed: int,
+) -> dict[str, object]:
     existing_records = _read_jsonl_records(path)
-    last_record = existing_records[-1]
-    session_id = last_record.get("sessionId")
-    parent_uuid = last_record.get("uuid")
-    if not isinstance(session_id, str) or not session_id:
-        raise ValueError(f"daemon-live source lacks a sessionId: {path}")
-    if not isinstance(parent_uuid, str) or not parent_uuid:
-        raise ValueError(f"daemon-live source lacks a parent uuid: {path}")
-
     corpus_spec = CorpusSpec.for_provider(
-        "claude-code",
+        provider,
         count=1,
         messages_min=1,
         messages_max=1,
@@ -139,11 +162,22 @@ def _make_generated_append_record(path: Path, *, message_index: int, seed: int) 
     artifact = SyntheticCorpus.generate_batch_for_spec(corpus_spec).artifacts[0]
     record = _read_generated_record(artifact.raw_bytes, path)
     role = "user" if message_index % 2 == 0 else "assistant"
+    record["timestamp"] = f"2026-05-05T01:{message_index // 60:02d}:{message_index % 60:02d}.000Z"
+    if provider == "codex":
+        record["role"] = role
+        record["id"] = f"{path.stem}-append-{message_index:04d}"
+        return record
+    last_record = existing_records[-1]
+    session_id = last_record.get("sessionId")
+    parent_uuid = last_record.get("uuid")
+    if not isinstance(session_id, str) or not session_id:
+        raise ValueError(f"daemon-live source lacks a sessionId: {path}")
+    if not isinstance(parent_uuid, str) or not parent_uuid:
+        raise ValueError(f"daemon-live source lacks a parent uuid: {path}")
     record["sessionId"] = session_id
     record["parentUuid"] = parent_uuid
     record["uuid"] = f"{session_id}-append-{message_index:04d}"
     record["type"] = role
-    record["timestamp"] = f"2026-05-05T01:{message_index // 60:02d}:{message_index % 60:02d}.000Z"
     message = record.get("message")
     if not isinstance(message, dict):
         message = {}
@@ -179,7 +213,7 @@ async def run_daemon_live_convergence_workload(db_path: Path) -> tuple[dict[str,
         async with Polylogue(archive_root=db_path.parent, db_path=db_path) as polylogue:
             processor = LiveBatchProcessor(
                 polylogue,
-                (WatchSource(name="claude-code", root=workload.root),),
+                tuple(WatchSource(name=source.name, root=source.root) for source in workload.sources),
                 cursor=CursorStore(db_path),
                 parser_fingerprint="daemon-live-benchmark-v1",
                 converger=converger,
@@ -231,6 +265,8 @@ async def run_daemon_live_convergence_workload(db_path: Path) -> tuple[dict[str,
     )
     db_stats = {
         "files_count": len(workload.files),
+        "claude_code_files": len(workload.files_by_provider.get("claude-code", ())),
+        "codex_files": len(workload.files_by_provider.get("codex", ())),
         "source_bytes": workload.source_bytes,
         "append_delta_bytes": workload.append_delta_bytes,
         "messages_count": workload.message_count,
@@ -240,8 +276,10 @@ async def run_daemon_live_convergence_workload(db_path: Path) -> tuple[dict[str,
 
 __all__ = [
     "DAEMON_LIVE_SCALE_SPECS",
+    "DAEMON_LIVE_PROVIDERS",
     "DaemonLiveGeneratedWorkload",
     "DaemonLiveScaleSpec",
+    "DaemonLiveSourceRoot",
     "append_daemon_live_workload",
     "generate_daemon_live_workload",
     "run_daemon_live_convergence_workload",

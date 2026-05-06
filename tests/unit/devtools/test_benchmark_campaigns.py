@@ -62,36 +62,50 @@ def test_all_authored_synthetic_benchmark_runners_resolve() -> None:
         assert callable(resolve_synthetic_benchmark_runner(campaign.execution.runner))
 
 
-def test_daemon_live_workload_uses_synthetic_claude_code_wire_format(tmp_path: Path) -> None:
+def test_daemon_live_workload_uses_synthetic_provider_wire_formats(tmp_path: Path) -> None:
     workload = generate_daemon_live_workload(tmp_path, scale="small")
-    first_file = workload.files[0]
-    records = [json.loads(line) for line in first_file.read_text().splitlines()]
+    claude_file = workload.files_by_provider["claude-code"][0]
+    codex_file = workload.files_by_provider["codex"][0]
+    claude_records = [json.loads(line) for line in claude_file.read_text().splitlines()]
+    codex_records = [json.loads(line) for line in codex_file.read_text().splitlines()]
 
-    assert workload.message_count == 50
-    assert first_file.read_bytes().endswith(b"\n")
-    assert detect_provider(records, first_file) is Provider.CLAUDE_CODE
-    assert all(isinstance(record.get("message"), dict) for record in records)
+    assert workload.message_count == 100
+    assert len(workload.files_by_provider["claude-code"]) == 5
+    assert len(workload.files_by_provider["codex"]) == 5
+    assert claude_file.read_bytes().endswith(b"\n")
+    assert codex_file.read_bytes().endswith(b"\n")
+    assert detect_provider(claude_records, claude_file) is Provider.CLAUDE_CODE
+    assert detect_provider(codex_records, codex_file) is Provider.CODEX
+    assert all(isinstance(record.get("message"), dict) for record in claude_records)
     assert all(
         isinstance(record["message"].get("content"), list)
-        for record in records
+        for record in claude_records
         if isinstance(record.get("message"), dict)
     )
+    assert all(record.get("type") == "message" for record in codex_records)
 
 
 def test_daemon_live_append_preserves_generated_session_identity(tmp_path: Path) -> None:
     workload = generate_daemon_live_workload(tmp_path, scale="small")
-    first_file = workload.files[0]
-    before = [json.loads(line) for line in first_file.read_text().splitlines()]
+    claude_file = workload.files_by_provider["claude-code"][0]
+    codex_file = workload.files_by_provider["codex"][0]
+    claude_before = [json.loads(line) for line in claude_file.read_text().splitlines()]
+    codex_before = [json.loads(line) for line in codex_file.read_text().splitlines()]
 
     updated = append_daemon_live_workload(workload, message_index=10)
-    after = [json.loads(line) for line in first_file.read_text().splitlines()]
+    claude_after = [json.loads(line) for line in claude_file.read_text().splitlines()]
+    codex_after = [json.loads(line) for line in codex_file.read_text().splitlines()]
 
     assert updated.append_delta_bytes > 0
-    assert len(after) == len(before) + 1
-    assert after[-1]["sessionId"] == before[0]["sessionId"]
-    assert after[-1]["parentUuid"] == before[-1]["uuid"]
-    assert isinstance(after[-1].get("message"), dict)
-    assert isinstance(after[-1]["message"].get("content"), list)
+    assert len(claude_after) == len(claude_before) + 1
+    assert claude_after[-1]["sessionId"] == claude_before[0]["sessionId"]
+    assert claude_after[-1]["parentUuid"] == claude_before[-1]["uuid"]
+    assert isinstance(claude_after[-1].get("message"), dict)
+    assert isinstance(claude_after[-1]["message"].get("content"), list)
+    assert len(codex_after) == len(codex_before) + 1
+    assert codex_after[-1]["type"] == "message"
+    assert codex_after[-1]["id"] == f"{codex_file.stem}-append-0010"
+    assert detect_provider(codex_after, codex_file) is Provider.CODEX
 
 
 def test_daemon_live_workload_generation_replaces_stale_jsonl(tmp_path: Path) -> None:
@@ -192,6 +206,8 @@ async def test_run_daemon_live_convergence_campaign_reports_workload_metrics(
                 "messages_count": 8,
                 "fts_rows": 8,
                 "live_cursor_count": 2,
+                "claude_code_files": 1,
+                "codex_files": 1,
             },
         )
 
@@ -240,6 +256,8 @@ async def test_run_daemon_live_convergence_campaign_reports_workload_metrics(
         "messages_count": 8,
         "fts_rows": 8,
         "live_cursor_count": 2,
+        "claude_code_files": 1,
+        "codex_files": 1,
         "session_profiles_count": 2,
     }
 
