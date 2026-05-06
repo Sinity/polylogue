@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+from argparse import Namespace
 from pathlib import Path
 from types import TracebackType
 from typing import Literal
@@ -12,6 +14,7 @@ from devtools.benchmark_campaigns import (
     run_full_campaign,
     run_synthetic_benchmark_campaign,
 )
+from devtools.daemon_live_benchmark import append_daemon_live_workload, generate_daemon_live_workload
 from devtools.large_archive_generator import ArchiveMetrics
 from devtools.synthetic_benchmark_catalog import (
     SYNTHETIC_BENCHMARK_REGISTRY,
@@ -25,7 +28,9 @@ from devtools.synthetic_benchmark_runtime import (
     run_session_insight_materialization_campaign,
 )
 from polylogue.scenarios import ExecutionKind
+from polylogue.sources.dispatch import detect_provider
 from polylogue.storage.insights.session.runtime import SessionInsightCounts
+from polylogue.types import Provider
 
 
 def test_synthetic_benchmark_registry_is_compiled_from_authored_scenarios() -> None:
@@ -55,6 +60,90 @@ def test_all_authored_synthetic_benchmark_runners_resolve() -> None:
         assert campaign.execution is not None
         assert campaign.execution.runner
         assert callable(resolve_synthetic_benchmark_runner(campaign.execution.runner))
+
+
+def test_daemon_live_workload_uses_synthetic_claude_code_wire_format(tmp_path: Path) -> None:
+    workload = generate_daemon_live_workload(tmp_path, scale="small")
+    first_file = workload.files[0]
+    records = [json.loads(line) for line in first_file.read_text().splitlines()]
+
+    assert workload.message_count == 50
+    assert first_file.read_bytes().endswith(b"\n")
+    assert detect_provider(records, first_file) is Provider.CLAUDE_CODE
+    assert all(isinstance(record.get("message"), dict) for record in records)
+    assert all(
+        isinstance(record["message"].get("content"), list)
+        for record in records
+        if isinstance(record.get("message"), dict)
+    )
+
+
+def test_daemon_live_append_preserves_generated_session_identity(tmp_path: Path) -> None:
+    workload = generate_daemon_live_workload(tmp_path, scale="small")
+    first_file = workload.files[0]
+    before = [json.loads(line) for line in first_file.read_text().splitlines()]
+
+    updated = append_daemon_live_workload(workload, message_index=10)
+    after = [json.loads(line) for line in first_file.read_text().splitlines()]
+
+    assert updated.append_delta_bytes > 0
+    assert len(after) == len(before) + 1
+    assert after[-1]["sessionId"] == before[0]["sessionId"]
+    assert after[-1]["parentUuid"] == before[-1]["uuid"]
+    assert isinstance(after[-1].get("message"), dict)
+    assert isinstance(after[-1]["message"].get("content"), list)
+
+
+def test_daemon_live_workload_generation_replaces_stale_jsonl(tmp_path: Path) -> None:
+    workload = generate_daemon_live_workload(tmp_path, scale="small")
+    stale_file = workload.files[0]
+    stale_file.write_text("{}\n", encoding="utf-8")
+
+    regenerated = generate_daemon_live_workload(tmp_path, scale="small")
+
+    assert regenerated.files[0] == stale_file
+    assert len(stale_file.read_text(encoding="utf-8").splitlines()) == (
+        regenerated.message_count // len(regenerated.files)
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_benchmark_campaigns_skips_seed_archive_for_daemon_live(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from devtools import run_campaign
+
+    async def fail_generate_archive(*_args: object, **_kwargs: object) -> ArchiveMetrics:
+        raise AssertionError("daemon-live-convergence should generate its own live workload")
+
+    async def fake_run_campaign(name: str, db_path: Path) -> CampaignResult:
+        assert name == "daemon-live-convergence"
+        assert db_path == tmp_path / "archive-large" / "benchmark.db"
+        return CampaignResult(campaign_name=name, scale_level="", metrics={"total_wall_s": 1.0}, db_stats={})
+
+    saved_results: list[CampaignResult] = []
+
+    def fake_save_campaign_reports(results: list[CampaignResult], output_dir: Path) -> list[Path]:
+        saved_results.extend(results)
+        return [output_dir / "report.json"]
+
+    monkeypatch.setattr("devtools.large_archive_generator.generate_archive", fail_generate_archive)
+    monkeypatch.setattr("devtools.benchmark_campaigns.run_synthetic_benchmark_campaign", fake_run_campaign)
+    monkeypatch.setattr("devtools.campaign_report.save_campaign_reports", fake_save_campaign_reports)
+
+    result = await run_campaign._run(
+        Namespace(
+            list_campaigns=False,
+            campaign="daemon-live-convergence",
+            scale="large",
+            output=tmp_path,
+            seed=42,
+            corpus_source="default",
+        )
+    )
+
+    assert result == 0
+    assert [item.campaign_name for item in saved_results] == ["daemon-live-convergence"]
 
 
 @pytest.mark.asyncio

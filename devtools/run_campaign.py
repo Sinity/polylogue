@@ -93,23 +93,26 @@ async def _run(args: argparse.Namespace) -> int:
             print(f"Available: {', '.join(SYNTHETIC_CAMPAIGNS)}")
             return 1
 
-        level = ScaleLevel(args.scale)
-        spec = get_default_spec(level)
-
-        # Override seed if provided
-        if args.seed != 42:
-            from dataclasses import replace
-
-            spec = replace(spec, seed=args.seed)
-
         archive_dir = args.output / f"archive-{args.scale}"
-        print(f"Generating {args.scale} archive from {args.corpus_source} corpus source...")
-        await generate_archive(
-            spec,
-            archive_dir,
-            corpus_source=CorpusSourceKind(args.corpus_source),
-        )
         db_path = archive_dir / "benchmark.db"
+        if args.campaign == "daemon-live-convergence":
+            archive_dir.mkdir(parents=True, exist_ok=True)
+        else:
+            level = ScaleLevel(args.scale)
+            spec = get_default_spec(level)
+
+            # Override seed if provided
+            if args.seed != 42:
+                from dataclasses import replace
+
+                spec = replace(spec, seed=args.seed)
+
+            print(f"Generating {args.scale} archive from {args.corpus_source} corpus source...")
+            await generate_archive(
+                spec,
+                archive_dir,
+                corpus_source=CorpusSourceKind(args.corpus_source),
+            )
 
         result = await run_synthetic_benchmark_campaign(args.campaign, db_path)
         result.scale_level = args.scale

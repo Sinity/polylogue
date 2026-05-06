@@ -143,6 +143,8 @@ def _detect_provider_from_raw_bytes(
     raw_bytes: bytes,
     stream_name: str,
     fallback_provider: Provider,
+    *,
+    truncated_tail_ok: bool = False,
 ) -> Provider:
     text = _decode_json_bytes(raw_bytes)
     if text:
@@ -155,8 +157,11 @@ def _detect_provider_from_raw_bytes(
             if detected is not None:
                 return detected
 
+    stream_bytes = _trim_jsonl_detection_prefix(raw_bytes, stream_name) if truncated_tail_ok else raw_bytes
+    if not stream_bytes:
+        return fallback_provider
     try:
-        payloads = list(_iter_json_stream(BytesIO(raw_bytes), stream_name))
+        payloads = list(_iter_json_stream(BytesIO(stream_bytes), stream_name))
     except Exception:
         logger.exception(
             "Provider detection by JSON-stream parsing failed for %s; falling back to %s",
@@ -166,6 +171,15 @@ def _detect_provider_from_raw_bytes(
         return fallback_provider
 
     return detect_provider(payloads) or fallback_provider
+
+
+def _trim_jsonl_detection_prefix(raw_bytes: bytes, stream_name: str) -> bytes:
+    if not stream_name.lower().endswith((".jsonl", ".jsonl.txt", ".ndjson")):
+        return raw_bytes
+    if raw_bytes.endswith((b"\n", b"\r")):
+        return raw_bytes
+    newline_at = raw_bytes.rfind(b"\n")
+    return raw_bytes[: newline_at + 1] if newline_at >= 0 else b""
 
 
 def _schema_guided_payload(

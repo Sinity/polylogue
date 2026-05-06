@@ -66,6 +66,27 @@ def _validate_record(item: object, *, index: int, context: str = "record") -> Co
         return None
 
 
+def _is_plausibly_codex_record(item: object) -> bool:
+    if not isinstance(item, dict):
+        return False
+    if item.get("record_type") == "state":
+        return True
+
+    record_type = item.get("type")
+    payload = item.get("payload")
+    if record_type in {"session_meta", "response_item", "compacted", "turn_context"}:
+        return isinstance(payload, dict)
+    if isinstance(payload, dict):
+        return True
+
+    role = item.get("role")
+    content = item.get("content")
+    if record_type == "message" or isinstance(role, str):
+        return "content" not in item or isinstance(content, list)
+
+    return bool(item.get("id") and item.get("timestamp") and "message" not in item)
+
+
 def _payload_record(record: CodexRecord, *, index: int, context: str) -> CodexRecord | None:
     payload = record.payload
     if not isinstance(payload, dict):
@@ -195,6 +216,8 @@ def looks_like(payload: Sequence[object]) -> bool:
         return False
 
     for idx, item in enumerate(payload, start=1):
+        if not _is_plausibly_codex_record(item):
+            continue
         record = _validate_record(item, index=idx)
         if record is None:
             continue

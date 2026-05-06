@@ -183,17 +183,17 @@ class LiveBatchProcessor:
                 t0 = time.perf_counter()
                 state = self._converger.converge_file(hint_path)  # type: ignore[attr-defined]
                 convergence_time_s = time.perf_counter() - t0
-                stage_timings = dict(getattr(state, "stage_times", {}))
+                stage_timings = dict(getattr(state, "last_stage_times", {}))
             except Exception as exc:
                 logger.warning("live.watcher: post-ingest converge failed: %s", exc)
 
         for path in succeeded_paths - {plan.path for plan in append_plans}:
             try:
                 stat = path.stat()
-                fp, last_nl = fingerprint_file(path)
             except FileNotFoundError:
                 continue
-            cursor_fingerprint_read_bytes += stat.st_size
+            fp, last_nl, bytes_read = self._cursor_state_after_full_ingest(path, stat.st_size)
+            cursor_fingerprint_read_bytes += bytes_read
             self._cursor.set(
                 path,
                 stat.st_size,
@@ -259,6 +259,35 @@ class LiveBatchProcessor:
         )
         self._cursor.mark_failed(path)
         return stat.st_size
+
+    def _cursor_state_after_full_ingest(self, path: Path, byte_size: int) -> tuple[str, int, int]:
+        raw_fingerprint = self._latest_raw_fingerprint(path)
+        if raw_fingerprint is None:
+            fp, last_nl = fingerprint_file(path)
+            return fp, last_nl, byte_size
+        last_nl, bytes_read = last_complete_newline_from_tail(path, byte_size)
+        return raw_fingerprint, last_nl, bytes_read
+
+    def _latest_raw_fingerprint(self, path: Path) -> str | None:
+        try:
+            with self._cursor._connect() as conn:
+                row = conn.execute(
+                    """
+                    SELECT raw_id
+                    FROM raw_conversations
+                    WHERE source_path = ?
+                      AND COALESCE(source_index, 0) >= 0
+                    ORDER BY acquired_at DESC, raw_id DESC
+                    LIMIT 1
+                    """,
+                    (str(path),),
+                ).fetchone()
+        except Exception:
+            return None
+        if row is None:
+            return None
+        raw_id = row[0]
+        return raw_id if isinstance(raw_id, str) and raw_id else None
 
     def _current_parser_fingerprint(self) -> str:
         if callable(self._parser_fingerprint):
@@ -507,6 +536,24 @@ def fingerprint_file(path: Path) -> tuple[str, int]:
     return hashlib.sha256(content).hexdigest(), last_complete_newline
 
 
+def last_complete_newline_from_tail(path: Path, byte_size: int, *, chunk_size: int = 64 * 1024) -> tuple[int, int]:
+    if byte_size <= 0:
+        return 0, 0
+    bytes_read = 0
+    end = byte_size
+    with path.open("rb") as handle:
+        while end > 0:
+            start = max(0, end - chunk_size)
+            handle.seek(start)
+            chunk = handle.read(end - start)
+            bytes_read += len(chunk)
+            newline_at = chunk.rfind(b"\n")
+            if newline_at >= 0:
+                return start + newline_at + 1, bytes_read
+            end = start
+    return 0, bytes_read
+
+
 def _path_size(path: Path) -> int:
     try:
         return path.stat().st_size
@@ -514,4 +561,10 @@ def _path_size(path: Path) -> int:
         return 0
 
 
-__all__ = ["LiveBatchEventEmitter", "LiveBatchMetrics", "LiveBatchProcessor", "fingerprint_file"]
+__all__ = [
+    "LiveBatchEventEmitter",
+    "LiveBatchMetrics",
+    "LiveBatchProcessor",
+    "fingerprint_file",
+    "last_complete_newline_from_tail",
+]

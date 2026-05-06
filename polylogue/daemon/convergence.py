@@ -55,6 +55,7 @@ class FileState:
     path: Path
     stages: dict[str, StageState] = field(default_factory=dict)
     stage_times: dict[str, float] = field(default_factory=dict)
+    last_stage_times: dict[str, float] = field(default_factory=dict)
     error_count: int = 0
     last_error: str | None = None
 
@@ -114,6 +115,7 @@ class DaemonConverger:
         if path not in self._file_states:
             self._file_states[path] = FileState(path=path)
         state = self._file_states[path]
+        state.last_stage_times.clear()
 
         for stage_name, stage in self._stages.items():
             current = state.stages.get(stage_name)
@@ -158,7 +160,9 @@ class DaemonConverger:
                 state.last_error = str(exc)
                 continue
 
-            state.stage_times[stage_name] = time.perf_counter() - t_stage
+            elapsed = time.perf_counter() - t_stage
+            state.stage_times[stage_name] = elapsed
+            state.last_stage_times[stage_name] = elapsed
             state.stages[stage_name] = StageState.DONE if success else StageState.FAILED
             if not success:
                 state.error_count += 1

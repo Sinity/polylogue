@@ -17,7 +17,7 @@ import pytest
 import polylogue.sources.live.watcher as live_watcher
 from polylogue import Polylogue
 from polylogue.sources.live import LiveWatcher, WatchSource
-from polylogue.sources.live.batch import LiveBatchProcessor
+from polylogue.sources.live.batch import LiveBatchProcessor, last_complete_newline_from_tail
 from polylogue.sources.live.cursor import CursorRecord, CursorStore
 
 # --- CursorStore ---------------------------------------------------------------
@@ -321,6 +321,17 @@ def test_append_plan_reads_only_completed_tail(tmp_path: Path) -> None:
     assert plan.payload == b'{"b":2}\n'
     assert plan.bytes_read == len(appended)
     assert plan.last_complete_newline == len(original) + len(b'{"b":2}\n')
+
+
+def test_last_complete_newline_from_tail_reads_only_final_chunk(tmp_path: Path) -> None:
+    path = tmp_path / "large.jsonl"
+    complete_prefix = b'{"a":"' + (b"x" * 200_000) + b'"}\n'
+    path.write_bytes(complete_prefix + b'{"b":2}')
+
+    offset, bytes_read = last_complete_newline_from_tail(path, path.stat().st_size)
+
+    assert offset == len(complete_prefix)
+    assert bytes_read < path.stat().st_size
 
 
 def _write_jsonl(path: Path, records: list[dict[str, object]]) -> None:
@@ -741,19 +752,17 @@ def test_catch_up_ignores_non_jsonl(tmp_path: Path) -> None:
     assert parse_sources.await_count == 1
 
 
-def test_catch_up_ignores_junk_at_wrong_depth(tmp_path: Path) -> None:
+def test_catch_up_recurses_like_live_watch(tmp_path: Path) -> None:
     root = tmp_path / "src"
     root.mkdir()
-    # Files at root level are ignored (not {project}/{uuid}.jsonl)
     (root / "orphan.jsonl").write_text('{"a":1}\n')
-    # Files nested too deep without subagent structure are ignored
     deep = root / "p" / "u" / "extra" / "deep.jsonl"
     deep.parent.mkdir(parents=True)
     deep.write_text('{"a":1}\n')
     watcher, parse_sources = _make_watcher(tmp_path, root)
 
     asyncio.run(watcher._catch_up([root]))
-    assert parse_sources.await_count == 0
+    assert parse_sources.await_count == 1
 
 
 def test_catch_up_handles_empty_roots(tmp_path: Path) -> None:

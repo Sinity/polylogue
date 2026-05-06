@@ -6,6 +6,9 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+from polylogue.scenarios import CorpusSpec
+from polylogue.schemas.synthetic import SyntheticCorpus
+
 
 @dataclass(frozen=True, slots=True)
 class DaemonLiveScaleSpec:
@@ -43,17 +46,27 @@ def generate_daemon_live_workload(root: Path, *, scale: str) -> DaemonLiveGenera
     spec = DAEMON_LIVE_SCALE_SPECS.get(scale, DAEMON_LIVE_SCALE_SPECS["small"])
     source_root = root / "live-sources" / "claude-code" / "project"
     source_root.mkdir(parents=True, exist_ok=True)
+    for stale_path in source_root.glob("*.jsonl"):
+        stale_path.unlink()
+    corpus_spec = CorpusSpec.for_provider(
+        "claude-code",
+        count=spec.files,
+        messages_min=spec.messages_per_file,
+        messages_max=spec.messages_per_file,
+        seed=_seed_for_scale(scale),
+        style="default",
+    )
+    batch = SyntheticCorpus.generate_batch_for_spec(corpus_spec)
     files: list[Path] = []
     source_bytes = 0
     message_count = 0
-    for file_index in range(spec.files):
+    for file_index, artifact in enumerate(batch.artifacts):
         session_id = f"daemon-live-{scale}-{file_index:04d}"
         path = source_root / f"{session_id}.jsonl"
-        records = _make_claude_code_session(session_id, spec.messages_per_file)
-        _write_jsonl(path, records)
+        path.write_bytes(_jsonl_bytes_with_terminal_newline(artifact.raw_bytes))
         files.append(path)
         source_bytes += path.stat().st_size
-        message_count += len(records)
+        message_count += artifact.message_count
     return DaemonLiveGeneratedWorkload(
         root=source_root.parent,
         files=files,
@@ -67,9 +80,8 @@ def append_daemon_live_workload(
 ) -> DaemonLiveGeneratedWorkload:
     """Append one generated JSONL record per file and return updated workload stats."""
     append_delta_bytes = 0
-    for path in workload.files:
-        session_id = path.stem
-        record = _make_claude_code_record(session_id, message_index)
+    for file_index, path in enumerate(workload.files):
+        record = _make_generated_append_record(path, message_index=message_index, seed=file_index)
         before = path.stat().st_size
         with path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record, sort_keys=True))
@@ -84,36 +96,70 @@ def append_daemon_live_workload(
     )
 
 
-def _write_jsonl(path: Path, records: list[dict[str, object]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as handle:
-        for record in records:
-            handle.write(json.dumps(record, sort_keys=True))
-            handle.write("\n")
+def _seed_for_scale(scale: str) -> int:
+    return 845_000 + sum(ord(char) for char in scale)
 
 
-def _make_claude_code_session(session_id: str, message_count: int) -> list[dict[str, object]]:
-    return [_make_claude_code_record(session_id, index) for index in range(message_count)]
+def _jsonl_bytes_with_terminal_newline(raw_bytes: bytes) -> bytes:
+    return raw_bytes if raw_bytes.endswith(b"\n") else raw_bytes + b"\n"
 
 
-def _make_claude_code_record(session_id: str, index: int) -> dict[str, object]:
-    role = "user" if index % 2 == 0 else "assistant"
-    return {
-        "parentUuid": None if index == 0 else f"{session_id}-msg-{index - 1:04d}",
-        "sessionId": session_id,
-        "type": role,
-        "message": {
-            "role": role,
-            "content": f"Daemon live benchmark message {index} for {session_id}. "
-            f"This generated payload keeps parser work deterministic.",
-        },
-        "uuid": f"{session_id}-msg-{index:04d}",
-        "timestamp": f"2026-05-05T00:{index // 60:02d}:{index % 60:02d}.000Z",
-        "cwd": "/realm/project/polylogue",
-        "version": "1.0.0",
-        "isSidechain": False,
-        "userType": "external",
-    }
+def _read_jsonl_records(path: Path) -> list[dict[str, object]]:
+    records: list[dict[str, object]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        value = json.loads(line)
+        if not isinstance(value, dict):
+            raise ValueError(f"daemon-live source contains non-object record: {path}")
+        records.append(value)
+    if not records:
+        raise ValueError(f"daemon-live source has no JSONL records: {path}")
+    return records
+
+
+def _make_generated_append_record(path: Path, *, message_index: int, seed: int) -> dict[str, object]:
+    existing_records = _read_jsonl_records(path)
+    last_record = existing_records[-1]
+    session_id = last_record.get("sessionId")
+    parent_uuid = last_record.get("uuid")
+    if not isinstance(session_id, str) or not session_id:
+        raise ValueError(f"daemon-live source lacks a sessionId: {path}")
+    if not isinstance(parent_uuid, str) or not parent_uuid:
+        raise ValueError(f"daemon-live source lacks a parent uuid: {path}")
+
+    corpus_spec = CorpusSpec.for_provider(
+        "claude-code",
+        count=1,
+        messages_min=1,
+        messages_max=1,
+        seed=945_000 + message_index * 10_000 + seed,
+        style="default",
+    )
+    artifact = SyntheticCorpus.generate_batch_for_spec(corpus_spec).artifacts[0]
+    record = _read_generated_record(artifact.raw_bytes, path)
+    role = "user" if message_index % 2 == 0 else "assistant"
+    record["sessionId"] = session_id
+    record["parentUuid"] = parent_uuid
+    record["uuid"] = f"{session_id}-append-{message_index:04d}"
+    record["type"] = role
+    record["timestamp"] = f"2026-05-05T01:{message_index // 60:02d}:{message_index % 60:02d}.000Z"
+    message = record.get("message")
+    if not isinstance(message, dict):
+        message = {}
+        record["message"] = message
+    message["role"] = role
+    return record
+
+
+def _read_generated_record(raw_bytes: bytes, path: Path) -> dict[str, object]:
+    lines = [line for line in raw_bytes.decode("utf-8").splitlines() if line.strip()]
+    if len(lines) != 1:
+        raise ValueError(f"expected one generated append record for {path}, got {len(lines)}")
+    value = json.loads(lines[0])
+    if not isinstance(value, dict):
+        raise ValueError(f"generated append record is not a JSON object for {path}")
+    return value
 
 
 async def run_daemon_live_convergence_workload(db_path: Path) -> tuple[dict[str, float], dict[str, int]]:

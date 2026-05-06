@@ -74,6 +74,10 @@ class TestLooksLike:
         payload = [{"random": "data", "no_type": True}]
         assert not looks_like(payload)
 
+    def test_non_codex_content_shape_rejected_before_validation(self) -> None:
+        payload = [{"role": "user", "content": "synthetic-30495"}]
+        assert not looks_like(payload)
+
     def test_non_dict_items_skipped(self) -> None:
         payload = ["string", 42, None, {"type": "message", "role": "user", "content": []}]
         assert looks_like(payload)  # The dict item matches

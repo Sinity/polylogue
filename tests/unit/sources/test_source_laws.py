@@ -2009,6 +2009,24 @@ def test_iter_source_raw_data_avoids_whole_blob_provider_detection_for_zip_entri
     assert len(items) == 2
 
 
+def test_jsonl_prefix_provider_detection_ignores_truncated_tail() -> None:
+    full = (
+        b'{"sessionId":"s1","uuid":"m1","type":"user","message":{"role":"user","content":[{"type":"text","text":"hi"}]}}\n'
+        b'{"sessionId":"s1","uuid":"m2","parentUuid":"m1","type":"assistant","message":{"role":"assistant","content":'
+        b'[{"type":"text","text":"reply"}]}}\n'
+    )
+    prefix = full[:150]
+
+    provider = dispatch_module._detect_provider_from_raw_bytes(
+        prefix,
+        "session.jsonl",
+        Provider.UNKNOWN,
+        truncated_tail_ok=True,
+    )
+
+    assert provider is Provider.CLAUDE_CODE
+
+
 def test_iter_source_raw_data_reports_split_payload_observations(tmp_path: Path) -> None:
     archive_path = tmp_path / "bundle.zip"
     with zipfile.ZipFile(archive_path, "w") as zf:
