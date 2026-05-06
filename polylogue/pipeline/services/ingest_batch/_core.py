@@ -21,8 +21,7 @@ from hashlib import sha256
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from polylogue.archive.write_effects import commit_archive_write_effects
-from polylogue.archive.write_gateway import WriteOperation
+from polylogue.archive.write_gateway import ArchiveWriteGateway, WriteOperation
 from polylogue.core.common import (
     SQL_ACTION_EVENT_INSERT as _ACTION_EVENT_INSERT_SQL,
 )
@@ -60,9 +59,7 @@ from polylogue.pipeline.services.ingest_worker import (
     ConversationTuple,
     IngestRecordResult,
     MessageTuple,
-    ingest_record,
 )
-from polylogue.pipeline.services.process_pool import process_pool_executor
 from polylogue.storage.conversation_replacement import (
     recount_and_prune_attachments_sync,
     replace_conversation_runtime_state_sync,
@@ -598,7 +595,9 @@ def _run_ingest_record(
     raw_record: RawConversationRecord,
     request: _IngestWorkerRequest,
 ) -> IngestRecordResult:
-    return ingest_record(
+    from polylogue.pipeline.services import ingest_batch as ingest_batch_package
+
+    return ingest_batch_package.ingest_record(
         raw_record,
         request.archive_root_str,
         request.validation_mode,
@@ -619,7 +618,9 @@ def _iter_ingest_results_sync(
         return
 
     try:
-        with process_pool_executor(max_workers=worker_count) as executor:
+        from polylogue.pipeline.services import ingest_batch as ingest_batch_package
+
+        with ingest_batch_package.process_pool_executor(max_workers=worker_count) as executor:
             futures: dict[Future[IngestRecordResult], str] = {}
             for raw_record in raw_artifacts:
                 future = executor.submit(_run_ingest_record, raw_record, request)
@@ -774,12 +775,19 @@ def _commit_ingest_results(
     summary.commit_elapsed_s = time.perf_counter() - commit_started
 
 
-def _commit_sync_ingest_side_effects(conn: sqlite3.Connection, changed_conversation_ids: Sequence[str]) -> None:
+def _commit_sync_ingest_side_effects(
+    conn: sqlite3.Connection,
+    *,
+    db_path: Path,
+    changed_conversation_ids: Sequence[str],
+) -> None:
     """Run post-ingest side effects through the canonical write-effects path."""
-    commit_archive_write_effects(
-        conn,
+    ArchiveWriteGateway(db_path).commit_write_sync(
         WriteOperation.INGEST,
-        {"changed_conversation_ids": tuple(changed_conversation_ids)},
+        {
+            "_connection": conn,
+            "changed_conversation_ids": tuple(changed_conversation_ids),
+        },
     )
 
 
@@ -840,7 +848,7 @@ def _process_ingest_batch_sync(
         raise
     finally:
         try:
-            _commit_sync_ingest_side_effects(conn, tuple(changed_ids))
+            _commit_sync_ingest_side_effects(conn, db_path=db_path, changed_conversation_ids=tuple(changed_ids))
         except Exception:
             conn.rollback()
             raise
