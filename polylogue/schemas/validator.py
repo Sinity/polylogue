@@ -120,20 +120,18 @@ def _schema_branch_for_value(schema: object, value: object) -> object:
 
 
 def _schema_for_property(schema: object, key: str, value: object) -> object:
-    schema = _schema_branch_for_value(schema, value)
     if not isinstance(schema, Mapping):
         return None
     properties = schema.get("properties")
     if isinstance(properties, Mapping) and key in properties:
-        return properties[key]
+        return _schema_branch_for_value(properties[key], value)
     additional_properties = schema.get("additionalProperties")
     if isinstance(additional_properties, Mapping):
-        return additional_properties
+        return _schema_branch_for_value(additional_properties, value)
     return None
 
 
 def _schema_for_items(schema: object, value: object) -> object:
-    schema = _schema_branch_for_value(schema, value)
     if not isinstance(schema, Mapping):
         return None
     items = schema.get("items")

@@ -6,7 +6,7 @@ from contextlib import AbstractContextManager
 from datetime import datetime, timezone
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 from unittest.mock import patch
 
 import pytest
@@ -18,7 +18,7 @@ from polylogue.schemas.registry import SchemaRegistry
 from polylogue.schemas.synthetic import SyntheticCorpus
 from polylogue.schemas.validation.corpus import verify_raw_corpus
 from polylogue.schemas.validation.requests import SchemaVerificationRequest
-from polylogue.schemas.validator import SchemaValidator, validate_provider_export
+from polylogue.schemas.validator import SchemaValidator, _normalize_empty_arrays, validate_provider_export
 from polylogue.storage.sqlite.connection import open_connection
 from polylogue.types import Provider
 
@@ -184,20 +184,60 @@ def test_schema_validator_payload_resolution_supports_lightweight_registry(
 
 
 def test_schema_validator_preserves_empty_arrays_when_schema_expects_array() -> None:
-    validator = SchemaValidator(
-        {
-            "type": "object",
-            "properties": {
-                "children": {"type": "array", "items": {"type": "string"}},
-                "legacy_null": {"type": "null"},
+    schema = {
+        "type": "object",
+        "properties": {
+            "children": {"type": "array", "items": {"type": "string"}},
+            "legacy_null": {"type": "null"},
+            "nodes": {
+                "type": "array",
+                "items": {
+                    "anyOf": [
+                        {"type": "null"},
+                        {
+                            "type": "object",
+                            "properties": {
+                                "children": {"type": "array", "items": {"type": "string"}},
+                                "legacy_null": {"type": "null"},
+                            },
+                            "additionalProperties": False,
+                        },
+                    ]
+                },
             },
-            "additionalProperties": False,
         },
+        "additionalProperties": False,
+    }
+    validator = SchemaValidator(
+        schema,
         strict=True,
     )
 
-    result = validator.validate({"children": [], "legacy_null": []})
+    payload: dict[str, Any] = {
+        "children": [],
+        "legacy_null": [],
+        "nodes": [
+            {
+                "children": [],
+                "legacy_null": [],
+            },
+            None,
+        ],
+    }
 
+    result = validator.validate(payload)
+
+    assert _normalize_empty_arrays(payload, schema) == {
+        "children": [],
+        "legacy_null": None,
+        "nodes": [
+            {
+                "children": [],
+                "legacy_null": None,
+            },
+            None,
+        ],
+    }
     assert result.is_valid
 
 
