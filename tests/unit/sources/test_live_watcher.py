@@ -1058,6 +1058,61 @@ async def test_live_full_ingest_excludes_invalid_jsonl_sidecars_before_raw_stora
 
 
 @pytest.mark.asyncio
+async def test_live_full_ingest_excludes_relationship_index_jsonl_before_raw_storage(
+    workspace_env: dict[str, Path],
+) -> None:
+    root = workspace_env["data_root"] / "projects"
+    project = root / "project" / "analysis" / "index"
+    project.mkdir(parents=True)
+    source_path = project / "conversation_relationships.jsonl"
+    with source_path.open("w", encoding="utf-8") as handle:
+        for index in range(4):
+            handle.write(
+                json.dumps(
+                    {
+                        "conversation": f"conv-{index}",
+                        "parent": f"parent-{index}",
+                        "child": f"child-{index}",
+                        "type": "assistant",
+                        "timestamp": "2026-05-01T00:00:00.000Z",
+                    },
+                    sort_keys=True,
+                )
+                + "\n"
+            )
+    db_path = workspace_env["data_root"] / "exclude-relationship-index.db"
+    archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path)
+    cursor = CursorStore(db_path)
+    processor = LiveBatchProcessor(
+        archive,
+        (WatchSource(name="projects", root=root),),
+        cursor=cursor,
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+    )
+
+    try:
+        metrics = await processor.ingest_files([source_path], emit_event=False)
+        record = cursor.get_record(source_path)
+
+        with sqlite3.connect(db_path) as conn:
+            tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            raw_count = (
+                conn.execute("SELECT COUNT(*) FROM raw_conversations").fetchone()[0]
+                if "raw_conversations" in tables
+                else 0
+            )
+
+        assert metrics.succeeded_file_count == 0
+        assert metrics.failed_file_count == 0
+        assert metrics.source_payload_read_bytes == 0
+        assert raw_count == 0
+        assert record is not None
+        assert record.excluded is True
+    finally:
+        await archive.close()
+
+
+@pytest.mark.asyncio
 async def test_codex_append_uses_existing_session_identity_when_tail_lacks_session_meta(
     workspace_env: dict[str, Path],
 ) -> None:

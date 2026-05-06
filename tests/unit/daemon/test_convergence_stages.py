@@ -51,10 +51,17 @@ def test_insights_stage_rebuilds_sync_against_configured_db(
         opened_paths.append(path)
         yield FakeConnection()
 
-    def fake_rebuild(conn: FakeConnection, *, conversation_ids: list[str]) -> SessionInsightCounts:
+    def fake_rebuild(
+        conn: FakeConnection,
+        *,
+        conversation_ids: list[str],
+        page_size: int,
+    ) -> SessionInsightCounts:
         nonlocal rebuilt
+        del conn
         rebuilt = True
         assert conversation_ids == ["conv-1"]
+        assert page_size == 10
         return SessionInsightCounts(
             profiles=1,
             work_events=2,
@@ -131,3 +138,46 @@ def test_fts_stage_repairs_changed_conversations_without_full_rebuild(
     assert inserted_actions == [["conv-a", "conv-b"]]
     assert committed is True
     assert rebuilt is False
+
+
+def test_insights_stage_batches_sync_rebuild_chunks(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "archive.sqlite"
+    rebuild_calls: list[tuple[list[str], int]] = []
+
+    class FakeConnection:
+        def commit(self) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    @contextmanager
+    def fake_open_connection(path: Path) -> Iterator[FakeConnection]:
+        assert path == db_path
+        yield FakeConnection()
+
+    def fake_rebuild(
+        conn: FakeConnection,
+        *,
+        conversation_ids: list[str],
+        page_size: int,
+    ) -> SessionInsightCounts:
+        del conn
+        rebuild_calls.append((conversation_ids, page_size))
+        return SessionInsightCounts(profiles=2, work_events=0, phases=0, threads=0, tag_rollups=0, day_summaries=0)
+
+    monkeypatch.setattr("polylogue.storage.sqlite.connection.open_connection", fake_open_connection)
+    monkeypatch.setattr("polylogue.storage.insights.session.rebuild.rebuild_session_insights_sync", fake_rebuild)
+    monkeypatch.setattr(
+        stages,
+        "_conversation_ids_for_source_paths",
+        lambda _conn, paths: {Path(paths[0]): ["conv-a"], Path(paths[1]): ["conv-b"]},
+    )
+
+    stage = make_insights_stage(db_path)
+    assert stage.execute_many is not None
+    assert stage.execute_many([tmp_path / "a.jsonl", tmp_path / "b.jsonl"]) is True
+    assert rebuild_calls == [(["conv-a", "conv-b"], 10)]

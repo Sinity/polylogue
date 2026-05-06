@@ -21,6 +21,8 @@ from polylogue.logging import get_logger
 
 logger = get_logger(__name__)
 
+_DAEMON_INSIGHT_REBUILD_PAGE_SIZE = 10
+
 
 # ── Stage: FTS ─────────────────────────────────────────────────────
 
@@ -244,7 +246,11 @@ def make_insights_stage(db_path: Path) -> ConvergenceStage:
                 conversation_ids = _conversation_ids_for_source_path(conn, path) or _conversation_ids_missing_profiles(
                     conn
                 )
-                counts = rebuild_session_insights_sync(conn, conversation_ids=conversation_ids)
+                counts = rebuild_session_insights_sync(
+                    conn,
+                    conversation_ids=conversation_ids,
+                    page_size=_DAEMON_INSIGHT_REBUILD_PAGE_SIZE,
+                )
                 conn.commit()
                 logger.info(
                     "insights: refreshed conversations=%d profiles=%d work_events=%d phases=%d threads=%d",
@@ -293,7 +299,11 @@ def make_insights_stage(db_path: Path) -> ConvergenceStage:
                 )
                 if not conversation_ids:
                     conversation_ids = _conversation_ids_missing_profiles(conn)
-                counts = rebuild_session_insights_sync(conn, conversation_ids=conversation_ids)
+                counts = rebuild_session_insights_sync(
+                    conn,
+                    conversation_ids=conversation_ids,
+                    page_size=_DAEMON_INSIGHT_REBUILD_PAGE_SIZE,
+                )
                 conn.commit()
                 logger.info(
                     "insights: batch refreshed paths=%d conversations=%d profiles=%d work_events=%d phases=%d threads=%d",

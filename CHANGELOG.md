@@ -94,6 +94,9 @@ documentation polish do not require an entry.
 - Daemon live ingest bounds small-file convergence groups, offloads sync
   parse/write work from the event loop, and drains process-pool results without
   retaining the whole parsed batch in memory.
+- Daemon live ingest now excludes relationship-index JSONL sidecars before raw
+  storage instead of treating scalar `conversation`/`parent`/`child` records as
+  provider conversation streams.
 - Live watching is no longer exposed through root `polylogue watch` or
   `polylogue run --watch`; use `polylogued watch` for the long-running source
   watcher.
