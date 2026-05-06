@@ -120,6 +120,9 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedCo
     created_at: str | None = None
     updated_at: str | None = None
     seen_record_uuids: set[str] = set()
+    duplicate_uuid_count = 0
+    first_duplicate_uuid: str | None = None
+    first_duplicate_index: int | None = None
     session_id: str | None = None
     provider_events: list[ParsedProviderEvent] = []
     total_cost = 0.0
@@ -171,7 +174,9 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedCo
         record_uuid = _string_field(item, "uuid")
         if record_uuid:
             if record_uuid in seen_record_uuids:
-                logger.debug("Skipping repeated Claude Code record uuid at index %d: %s", index, record_uuid)
+                duplicate_uuid_count += 1
+                first_duplicate_uuid = first_duplicate_uuid or record_uuid
+                first_duplicate_index = first_duplicate_index or index
                 continue
             seen_record_uuids.add(record_uuid)
 
@@ -220,6 +225,14 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedCo
         model_name = message_payload.get("model")
         if isinstance(model_name, str):
             models.add(model_name)
+
+    if duplicate_uuid_count:
+        logger.debug(
+            "Skipped repeated Claude Code record uuids: count=%d first_index=%s first_uuid=%s",
+            duplicate_uuid_count,
+            first_duplicate_index,
+            first_duplicate_uuid,
+        )
 
     is_subagent = fallback_id.startswith("agent-")
     parent_session_id: str | None = None
