@@ -25,7 +25,7 @@ def test_single_stage_run_skips_validation() -> None:
 
 def test_full_sequence_satisfies_all_inputs() -> None:
     """The default ``all`` sequence satisfies every stage's required inputs."""
-    sequence = stage_specs_for_sequence(("acquire", "parse", "materialize", "render", "site", "index"))
+    sequence = stage_specs_for_sequence(("acquire", "parse", "materialize", "index"))
     executed: list[PipelineStageSpec] = []
     for spec in sequence:
         validate_stage_contract(spec, executed_specs=executed)
@@ -33,17 +33,8 @@ def test_full_sequence_satisfies_all_inputs() -> None:
 
 
 def test_reprocess_sequence_satisfies_inputs() -> None:
-    """``reprocess`` (parse, materialize, render, site, index) satisfies the contract."""
-    sequence = stage_specs_for_sequence(("parse", "materialize", "render", "site", "index"))
-    executed: list[PipelineStageSpec] = []
-    for spec in sequence:
-        validate_stage_contract(spec, executed_specs=executed)
-        executed.append(spec)
-
-
-def test_publish_sequence_satisfies_inputs() -> None:
-    """``publish`` (render, site) satisfies the contract — site's input is optional."""
-    sequence = stage_specs_for_sequence(("render", "site"))
+    """``reprocess`` (parse, materialize, index) satisfies the contract."""
+    sequence = stage_specs_for_sequence(("parse", "materialize", "index"))
     executed: list[PipelineStageSpec] = []
     for spec in sequence:
         validate_stage_contract(spec, executed_specs=executed)
@@ -60,16 +51,6 @@ def test_skipped_parse_violates_materialize_contract() -> None:
     assert "processed_ids" in excinfo.value.missing
 
 
-def test_skipped_parse_violates_render_contract() -> None:
-    """``[acquire, render]`` likewise lacks ``processed_ids`` for render."""
-    acquire = PIPELINE_STAGE_SPECS["acquire"]
-    render = PIPELINE_STAGE_SPECS["render"]
-    with pytest.raises(StageContractError) as excinfo:
-        validate_stage_contract(render, executed_specs=(acquire,))
-    assert excinfo.value.stage == "render"
-    assert "processed_ids" in excinfo.value.missing
-
-
 def test_skipped_parse_violates_index_contract() -> None:
     """``[acquire, index]`` lacks ``processed_ids`` for index."""
     acquire = PIPELINE_STAGE_SPECS["acquire"]
@@ -77,13 +58,6 @@ def test_skipped_parse_violates_index_contract() -> None:
     with pytest.raises(StageContractError) as excinfo:
         validate_stage_contract(index, executed_specs=(acquire,))
     assert "processed_ids" in excinfo.value.missing
-
-
-def test_optional_input_does_not_violate() -> None:
-    """``site`` declares ``rendered`` as optional; running without render is OK."""
-    site = PIPELINE_STAGE_SPECS["site"]
-    parse = PIPELINE_STAGE_SPECS["parse"]
-    validate_stage_contract(site, executed_specs=(parse,))
 
 
 def test_violation_message_contains_stage_and_missing() -> None:

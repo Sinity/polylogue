@@ -43,7 +43,7 @@ class Search(RepositoryBoundContainer):
             summaries = await repo.search_summaries(query, limit=50)
         except (sqlite3.OperationalError, DatabaseError) as exc:
             if "no such table" in str(exc) or "Search index not built" in str(exc):
-                table.add_row("—", "—", "Search index not built. Run: polylogue run", "")
+                table.add_row("—", "—", "Search index not built. Start: polylogued run", "")
             else:
                 table.add_row("—", "—", f"Search error: {exc}", "")
             return

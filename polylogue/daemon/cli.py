@@ -8,6 +8,8 @@ import contextlib
 import faulthandler
 import fcntl
 import os
+import sys
+from contextlib import redirect_stdout
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
@@ -214,13 +216,19 @@ def _acquire_pidfile(pidfile: Path) -> int:
     return fd
 
 
+def _emit_live_batch_event(kind: str, payload: dict[str, object]) -> None:
+    from polylogue.daemon.events import emit_daemon_event
+
+    emit_daemon_event(kind, payload=payload)
+
+
 async def run_live_watcher(
     *,
     sources: tuple[WatchSource, ...],
     debounce_s: float,
 ) -> None:
     async with Polylogue() as polylogue:
-        watcher = LiveWatcher(polylogue, sources, debounce_s=debounce_s)
+        watcher = LiveWatcher(polylogue, sources, debounce_s=debounce_s, event_emitter=_emit_live_batch_event)
         try:
             await watcher.run()
         except KeyboardInterrupt:
@@ -293,30 +301,17 @@ async def run_daemon_services(
     tasks: list[asyncio.Task[None]] = []
 
     try:
-        # Start the convergence engine with real pipeline stages.
-        # Acquire stage: checks file fingerprints, calls parse_file() for new/changed files.
-        # Converge stage: detects and repairs FTS gaps (crash recovery).
-        # Insights stage: refreshes session profiles for new conversations.
+        # Start the post-ingest convergence engine. The live watcher owns
+        # batched source ingestion; these stages repair archive indexes and
+        # refresh derived state after successful writes.
         from polylogue.daemon.convergence import DaemonConverger
-        from polylogue.daemon.convergence_stages import (
-            make_acquire_check_stage,
-            make_embed_stage,
-            make_fts_stage,
-            make_ingest_stage,
-            make_insights_stage,
-        )
+        from polylogue.daemon.convergence_stages import make_default_convergence_stages
         from polylogue.paths import archive_root, db_path
 
         _db = db_path() or Path(archive_root()) / "polylogue.db"
 
         converger = DaemonConverger(
-            stages=(
-                make_acquire_check_stage(_db),
-                make_ingest_stage(_db),
-                make_fts_stage(_db),
-                make_embed_stage(_db),
-                make_insights_stage(_db),
-            ),
+            stages=make_default_convergence_stages(_db),
             max_workers=2,
         )
         await converger.start()
@@ -350,7 +345,13 @@ async def run_daemon_services(
 
         if enable_watch:
             async with Polylogue() as polylogue:
-                watcher = LiveWatcher(polylogue, sources, debounce_s=debounce_s, converger=converger)
+                watcher = LiveWatcher(
+                    polylogue,
+                    sources,
+                    debounce_s=debounce_s,
+                    converger=converger,
+                    event_emitter=_emit_live_batch_event,
+                )
                 watcher_task = asyncio.create_task(watcher.run())
                 tasks.append(watcher_task)
                 all_tasks = tasks + maintenance_tasks
@@ -377,7 +378,9 @@ async def run_daemon_services(
 
         # Cancel orphaned debounced watcher child tasks.
         if watcher is not None:
-            watcher.cancel_pending()
+            cancel_pending = getattr(watcher, "cancel_pending", None)
+            if callable(cancel_pending):
+                cancel_pending()
 
         # Drain component tasks with a timeout.
         drained_results = await _drain_tasks(tasks, timeout=5.0)
@@ -448,10 +451,13 @@ main.add_command(browser_capture_command)
     help="Output format.",
 )
 def status_command(spool_path: Path | None, output_format: str | None) -> None:
-    payload = daemon_status_payload(browser_capture_spool_path=spool_path)
+    configure_logging()
     if output_format == "json":
+        with redirect_stdout(sys.stderr):
+            payload = daemon_status_payload(browser_capture_spool_path=spool_path)
         click.echo(dumps(payload))
         return
+    payload = daemon_status_payload(browser_capture_spool_path=spool_path)
     for line in format_daemon_status_lines(payload):
         click.echo(line)
 

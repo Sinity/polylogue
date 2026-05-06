@@ -50,7 +50,9 @@ eval "$(devtools lab-corpus seed --env-only)"
 devtools lab-corpus seed -p chatgpt -p claude-ai -n 10
 ```
 
-The seeded environment uses the same pipeline as `polylogue run`, so the lab corpus command exercises the full acquire → parse → render → index flow, with validation performed inline during parse.
+The seeded environment uses the archive pipeline directly, so the lab corpus
+command exercises the full acquire → parse → render → index flow, with
+validation performed inline during parse.
 
 ## Options
 

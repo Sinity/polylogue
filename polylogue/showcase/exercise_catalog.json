@@ -28,24 +28,6 @@
       "vhs_capture": true
     },
     {
-      "name": "help-run",
-      "group": "structural",
-      "description": "Run subcommand help",
-      "execution": {
-        "kind": "polylogue",
-        "argv": [
-          "run",
-          "--help"
-        ]
-      },
-      "assertion": {
-        "stdout_contains": [
-          "COMMAND1"
-        ]
-      },
-      "tier": 0
-    },
-    {
       "name": "help-doctor",
       "group": "structural",
       "description": "Doctor subcommand help",
@@ -77,44 +59,6 @@
       "assertion": {
         "stdout_contains": [
           "--format"
-        ]
-      },
-      "tier": 0
-    },
-    {
-      "name": "help-run-embed",
-      "group": "structural",
-      "description": "Run embed subcommand help",
-      "execution": {
-        "kind": "polylogue",
-        "argv": [
-          "run",
-          "embed",
-          "--help"
-        ]
-      },
-      "assertion": {
-        "stdout_contains": [
-          "--stats"
-        ]
-      },
-      "tier": 0
-    },
-    {
-      "name": "help-run-site",
-      "group": "structural",
-      "description": "Run site stage help",
-      "execution": {
-        "kind": "polylogue",
-        "argv": [
-          "run",
-          "site",
-          "--help"
-        ]
-      },
-      "assertion": {
-        "stdout_contains": [
-          "--output"
         ]
       },
       "tier": 0
@@ -154,134 +98,6 @@
         ]
       },
       "tier": 0
-    },
-    {
-      "name": "run-preview",
-      "group": "pipeline",
-      "description": "Preview pipeline plan (seeded fixtures)",
-      "execution": {
-        "kind": "polylogue",
-        "argv": [
-          "run",
-          "--preview",
-          "--source",
-          "inbox"
-        ]
-      },
-      "env": "seeded",
-      "vhs_capture": true
-    },
-    {
-      "name": "run-preview-reparse",
-      "group": "pipeline",
-      "description": "Preview force-reparse planning (seeded fixtures)",
-      "execution": {
-        "kind": "polylogue",
-        "argv": [
-          "run",
-          "--preview",
-          "--reparse",
-          "--source",
-          "inbox",
-          "parse"
-        ]
-      },
-      "assertion": {
-        "stdout_contains": [
-          "Reparse requested."
-        ]
-      },
-      "env": "seeded",
-      "origin": "authored.showcase-catalog",
-      "path_targets": [
-        "raw-reparse-loop"
-      ],
-      "artifact_targets": [
-        "raw_validation_state",
-        "validation_backlog",
-        "parse_backlog",
-        "parse_quarantine"
-      ],
-      "operation_targets": [
-        "plan-validation-backlog",
-        "plan-parse-backlog"
-      ],
-      "tags": [
-        "pipeline",
-        "reparse",
-        "maintenance"
-      ]
-    },
-    {
-      "name": "run-preview-live",
-      "group": "pipeline",
-      "description": "Preview pipeline against live sources",
-      "execution": {
-        "kind": "polylogue",
-        "argv": [
-          "run",
-          "--preview"
-        ]
-      },
-      "assertion": {
-        "stdout_contains": [
-          "Preview"
-        ]
-      },
-      "env": "live",
-      "timeout_s": 600.0
-    },
-    {
-      "name": "run-all",
-      "group": "pipeline",
-      "description": "Run full pipeline (seeded fixtures)",
-      "execution": {
-        "kind": "polylogue",
-        "argv": [
-          "run",
-          "--source",
-          "inbox"
-        ]
-      },
-      "writes": true,
-      "tier": 2,
-      "env": "seeded"
-    },
-    {
-      "name": "run-stage-render",
-      "group": "pipeline",
-      "description": "Run render stage only",
-      "execution": {
-        "kind": "polylogue",
-        "argv": [
-          "run",
-          "--source",
-          "inbox",
-          "render"
-        ]
-      },
-      "writes": true,
-      "depends_on": "run-all",
-      "tier": 2,
-      "env": "seeded"
-    },
-    {
-      "name": "run-stage-index",
-      "group": "pipeline",
-      "description": "Run index stage only",
-      "execution": {
-        "kind": "polylogue",
-        "argv": [
-          "run",
-          "--source",
-          "inbox",
-          "index"
-        ]
-      },
-      "writes": true,
-      "depends_on": "run-all",
-      "tier": 2,
-      "env": "seeded"
     },
     {
       "name": "stats-default",
@@ -961,7 +777,6 @@
       "execution": {
         "kind": "polylogue",
         "argv": [
-          "run",
           "embed",
           "--stats"
         ]
@@ -985,27 +800,6 @@
       },
       "needs_data": true,
       "output_ext": ".json"
-    },
-    {
-      "name": "site-generate",
-      "group": "subcommands",
-      "description": "Generate static site via run stage",
-      "execution": {
-        "kind": "polylogue",
-        "argv": [
-          "run",
-          "site"
-        ]
-      },
-      "assertion": {
-        "stdout_contains": [
-          "site"
-        ]
-      },
-      "needs_data": true,
-      "writes": true,
-      "tier": 2,
-      "env": "seeded"
     },
     {
       "name": "combined-filters",

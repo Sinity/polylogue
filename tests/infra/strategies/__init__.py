@@ -123,11 +123,6 @@ from tests.infra.strategies.search import (
     search_query_strategy,
     search_with_since_strategy,
 )
-from tests.infra.strategies.site import (
-    SiteArchiveSpec,
-    expected_index_pages,
-    site_archive_spec_strategy,
-)
 from tests.infra.strategies.sources import (
     conversations_wrapper_bytes_strategy,
     json_array_bytes_strategy,
@@ -272,8 +267,4 @@ __all__ = [
     "fts5_match_text_strategy",
     "search_query_strategy",
     "search_with_since_strategy",
-    # Site
-    "SiteArchiveSpec",
-    "expected_index_pages",
-    "site_archive_spec_strategy",
 ]

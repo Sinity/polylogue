@@ -25,6 +25,7 @@ _RECORDISH_KEYS = frozenset(
     }
 )
 _MESSAGE_KEYS = frozenset({"role", "content", "text", "parts", "author"})
+_RELATIONSHIP_INDEX_KEYS = frozenset({"conversation", "parent", "child", "type", "timestamp"})
 
 
 def path_only_sidecars() -> dict[str, str]:
@@ -55,6 +56,10 @@ def looks_like_record_stream(payload: list[JSONDocument]) -> bool:
 
 
 def looks_like_record_entry(payload: JSONDocument) -> bool:
+    if _RELATIONSHIP_INDEX_KEYS.issubset(payload) and not any(
+        key in payload for key in ("message", "payload", "sessionId", "parentUuid", "uuid")
+    ):
+        return False
     if any(key in payload for key in _RECORDISH_KEYS):
         return True
     if "role" in payload and any(key in payload for key in ("content", "text")) and len(payload) <= 16:

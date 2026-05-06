@@ -1,0 +1,11 @@
+Usage: polylogue status [OPTIONS]
+
+  Show daemon and archive health.
+
+  Queries the running polylogued daemon for archive status: daemon uptime,
+  ingestion progress, FTS coverage, insight freshness, and component health.
+  Read-only — does not modify state.
+
+Options:
+  --daemon-url TEXT  Daemon API URL.  [default: http://127.0.0.1:8766]
+  -h, --help         Show this message and exit.

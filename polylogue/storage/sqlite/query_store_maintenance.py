@@ -1,4 +1,4 @@
-"""Raw/run/publication query band for SQLiteQueryStore (maintenance run queries removed)."""
+"""Raw query band for SQLiteQueryStore maintenance reads."""
 
 from __future__ import annotations
 
@@ -8,10 +8,8 @@ from typing import TYPE_CHECKING
 
 import aiosqlite
 
-from polylogue.storage.runtime import PublicationRecord, RawConversationRecord, RunRecord
-from polylogue.storage.sqlite.queries import publications as publications_q
+from polylogue.storage.runtime import RawConversationRecord
 from polylogue.storage.sqlite.queries import raw as raw_queries
-from polylogue.storage.sqlite.queries import runs as runs_q
 
 
 class SQLiteQueryStoreMaintenanceMixin:
@@ -97,14 +95,3 @@ class SQLiteQueryStoreMaintenanceMixin:
                 limit=limit,
                 offset=offset,
             )
-
-    async def get_latest_run(self) -> RunRecord | None:
-        async with self._connection_factory() as conn:
-            return await runs_q.get_latest_run(conn)
-
-    async def get_latest_publication(
-        self,
-        publication_kind: str,
-    ) -> PublicationRecord | None:
-        async with self._connection_factory() as conn:
-            return await publications_q.get_latest_publication(conn, publication_kind)

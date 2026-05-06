@@ -68,7 +68,6 @@ AssuranceDomain = Literal[
     "pipeline_correctness",
     "storage_correctness",
     "search_correctness",
-    "site_publication",
     "mcp_surface",
     "cli_surface",
     "api_surface",

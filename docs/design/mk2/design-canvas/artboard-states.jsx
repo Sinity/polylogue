@@ -14,7 +14,7 @@ const States = () => (
       <StateCol surface="web reader · /">
         <StateRow tone="empty" title="no archive yet">
           <p>No conversations. The daemon is running, the archive is just empty.</p>
-          <Mono className="cta">polylogue run --input ~/Downloads/conversations.json</Mono>
+          <Mono className="cta">polylogue ingest ~/Downloads/conversations.json</Mono>
         </StateRow>
         <StateRow tone="loading" title="indexing 2,140 messages">
           <Bar pct={62} />

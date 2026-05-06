@@ -26,7 +26,7 @@ per_package:
 
 exceptions:
   - path: tests/unit/sources/test_source_laws.py
-    ceiling: 2500
+    ceiling: 2600
     reason: "tracked split into source-walk/parser-dispatch/provider-contracts/laws"
 
   - path: tests/unit/cli/test_query_exec_laws.py
@@ -52,10 +52,6 @@ exceptions:
   - path: tests/unit/mcp/test_tool_contracts.py
     ceiling: 1400
     reason: "tracked split into archive-query vs insight-tool contracts"
-
-  - path: tests/unit/pipeline/test_run_sources.py
-    ceiling: 1400
-    reason: "tracked split alongside pipeline-stage independence work"
 
   - path: tests/unit/cli/test_query_exec.py
     ceiling: 1300

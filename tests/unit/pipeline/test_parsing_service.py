@@ -902,7 +902,7 @@ class TestPlanningService:
             failed_id,
         }
 
-    @pytest.mark.parametrize(("stage", "count_key"), [("render", "render"), ("index", "index")])
+    @pytest.mark.parametrize(("stage", "count_key"), [("index", "index")])
     async def test_build_plan_uses_count_query_for_render_and_index(
         self, tmp_path: Path, stage: str, count_key: str
     ) -> None:

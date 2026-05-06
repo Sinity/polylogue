@@ -74,23 +74,7 @@ ARTIFACT_OBSERVATION_DDL = """
 """
 
 
-PUBLICATION_DDL = """
-        CREATE TABLE IF NOT EXISTS publications (
-            publication_id TEXT PRIMARY KEY,
-            publication_kind TEXT NOT NULL,
-            generated_at TEXT NOT NULL,
-            output_dir TEXT NOT NULL,
-            duration_ms INTEGER,
-            manifest_json TEXT NOT NULL
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_publications_kind_generated
-        ON publications(publication_kind, generated_at DESC);
-"""
-
-
 __all__ = [
     "ARTIFACT_OBSERVATION_DDL",
-    "PUBLICATION_DDL",
     "VEC0_DDL",
 ]

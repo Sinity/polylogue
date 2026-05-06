@@ -38,8 +38,8 @@ def _candidate() -> ConversationNeighborCandidate:
 
 def test_neighbors_command_emits_json_payload(cli_runner: CliRunner) -> None:
     env = MagicMock()
-    env.operations = MagicMock()
-    env.operations.neighbor_candidates = AsyncMock(return_value=[_candidate()])
+    env.polylogue = MagicMock()
+    env.polylogue.neighbor_candidates = AsyncMock(return_value=[_candidate()])
 
     result = cli_runner.invoke(
         neighbors_command,
@@ -53,7 +53,7 @@ def test_neighbors_command_emits_json_payload(cli_runner: CliRunner) -> None:
     neighbor = payload["result"]["neighbors"][0]
     assert neighbor["conversation"]["id"] == "candidate"
     assert neighbor["reasons"][0]["kind"] == "same_title"
-    env.operations.neighbor_candidates.assert_called_once_with(
+    env.polylogue.neighbor_candidates.assert_called_once_with(
         conversation_id="target",
         query=None,
         provider=None,

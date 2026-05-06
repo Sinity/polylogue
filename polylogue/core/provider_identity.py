@@ -92,6 +92,11 @@ def canonical_acquisition_provider(
     """
 
     provider = canonical_runtime_provider(provider_hint, default="")
-    if provider:
+    if provider and provider != "unknown":
         return provider
-    return canonical_runtime_provider(source_name)
+    source_provider = canonical_runtime_provider(source_name, default="")
+    if source_provider:
+        return source_provider
+    source_token = normalize_provider_token(source_name)
+    source_prefix = source_token.split(":", 1)[0]
+    return canonical_runtime_provider(source_prefix)

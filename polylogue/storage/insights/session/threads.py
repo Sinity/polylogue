@@ -209,6 +209,20 @@ async def thread_root_ids_async(
     return {str(row["target_id"]): str(row["conversation_id"]) for row in rows}
 
 
+def thread_root_ids_sync(
+    conn: sqlite3.Connection,
+    conversation_ids: Sequence[str],
+) -> dict[str, str]:
+    if not conversation_ids:
+        return {}
+    placeholders = ", ".join("?" for _ in conversation_ids)
+    rows = conn.execute(
+        _THREAD_ROOT_IDS_SQL_TEMPLATE.format(placeholders=placeholders),
+        tuple(conversation_ids),
+    ).fetchall()
+    return {str(row["target_id"]): str(row["conversation_id"]) for row in rows}
+
+
 def thread_conversation_ids_sync(conn: sqlite3.Connection, root_id: str) -> list[str]:
     rows = conn.execute(_THREAD_CONVERSATION_IDS_SQL, (root_id,)).fetchall()
     return [str(row["conversation_id"]) for row in rows]
@@ -407,6 +421,7 @@ __all__ = [
     "thread_conversation_ids_sync",
     "thread_root_id_async",
     "thread_root_ids_async",
+    "thread_root_ids_sync",
     "thread_root_id_sync",
     "thread_search_text",
 ]

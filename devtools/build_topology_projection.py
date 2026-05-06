@@ -100,6 +100,7 @@ STORAGE_PREFIX_TO_SUBPACKAGE = {
 STORAGE_ROOT_KEEP = frozenset(
     {
         "__init__.py",
+        "blob_gc.py",
         "blob_store.py",
         "repair.py",
         "index.py",

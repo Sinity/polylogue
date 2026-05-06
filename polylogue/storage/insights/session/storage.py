@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
 from pydantic import BaseModel
 
@@ -24,6 +24,7 @@ from polylogue.storage.runtime import (
 
 
 _SYNC_COLUMN_CACHE: dict[tuple[int, str], bool] = {}
+_DELETE_WHERE_IN_CHUNK_SIZE = 900
 SqlValue = str | int | float | None
 SqlBindings = tuple[SqlValue, ...]
 
@@ -140,6 +141,14 @@ def build_insert_sql(table: str, columns: Sequence[str]) -> str:
             {", ".join(columns)}
         ) VALUES ({_placeholders(columns)})
         """
+
+
+def _delete_where_in(conn: sqlite3.Connection, table: str, column: str, values: Sequence[str]) -> None:
+    normalized = tuple(dict.fromkeys(str(value) for value in values if str(value)))
+    for start in range(0, len(normalized), _DELETE_WHERE_IN_CHUNK_SIZE):
+        chunk = normalized[start : start + _DELETE_WHERE_IN_CHUNK_SIZE]
+        placeholders = ", ".join("?" for _ in chunk)
+        conn.execute(f"DELETE FROM {table} WHERE {column} IN ({placeholders})", chunk)
 
 
 def _with_legacy_payload_column(
@@ -436,6 +445,21 @@ def replace_session_profile_sync(conn: sqlite3.Connection, record: SessionProfil
     )
 
 
+def replace_session_profiles_bulk_sync(
+    conn: sqlite3.Connection,
+    records: Sequence[SessionProfileRecord],
+) -> None:
+    if not records:
+        return
+    _delete_where_in(conn, "session_profiles", "conversation_id", [record.conversation_id for record in records])
+    has_legacy_payload = table_has_column(conn, "session_profiles", "payload_json")
+    columns = session_profile_insert_columns(has_legacy_payload=has_legacy_payload)
+    conn.executemany(
+        build_insert_sql("session_profiles", columns),
+        [session_profile_insert_values(record, has_legacy_payload=has_legacy_payload) for record in records],
+    )
+
+
 # ---------------------------------------------------------------------------
 # Timeline writes
 # ---------------------------------------------------------------------------
@@ -456,12 +480,46 @@ def replace_session_work_events_sync(
         )
 
 
+def replace_session_work_events_bulk_sync(
+    conn: sqlite3.Connection,
+    records_by_conversation: Mapping[str, Sequence[SessionWorkEventRecord]],
+) -> None:
+    if not records_by_conversation:
+        return
+    _delete_where_in(conn, "session_work_events", "conversation_id", tuple(records_by_conversation))
+    records = [record for conversation_records in records_by_conversation.values() for record in conversation_records]
+    if records:
+        has_legacy_payload = table_has_column(conn, "session_work_events", "payload_json")
+        columns = session_work_event_insert_columns(has_legacy_payload=has_legacy_payload)
+        conn.executemany(
+            build_insert_sql("session_work_events", columns),
+            [session_work_event_insert_values(record, has_legacy_payload=has_legacy_payload) for record in records],
+        )
+
+
 def replace_session_phases_sync(
     conn: sqlite3.Connection,
     conversation_id: str,
     records: Sequence[SessionPhaseRecord],
 ) -> None:
     conn.execute("DELETE FROM session_phases WHERE conversation_id = ?", (conversation_id,))
+    if records:
+        has_legacy_payload = table_has_column(conn, "session_phases", "payload_json")
+        columns = session_phase_insert_columns(has_legacy_payload=has_legacy_payload)
+        conn.executemany(
+            build_insert_sql("session_phases", columns),
+            [session_phase_insert_values(record, has_legacy_payload=has_legacy_payload) for record in records],
+        )
+
+
+def replace_session_phases_bulk_sync(
+    conn: sqlite3.Connection,
+    records_by_conversation: Mapping[str, Sequence[SessionPhaseRecord]],
+) -> None:
+    if not records_by_conversation:
+        return
+    _delete_where_in(conn, "session_phases", "conversation_id", tuple(records_by_conversation))
+    records = [record for conversation_records in records_by_conversation.values() for record in conversation_records]
     if records:
         has_legacy_payload = table_has_column(conn, "session_phases", "payload_json")
         columns = session_phase_insert_columns(has_legacy_payload=has_legacy_payload)
@@ -507,6 +565,42 @@ def replace_work_thread_sync(
                 ),
             ),
             work_thread_insert_values(record),
+        )
+
+
+def replace_work_threads_bulk_sync(
+    conn: sqlite3.Connection,
+    records_by_thread_id: Mapping[str, WorkThreadRecord | None],
+) -> None:
+    if not records_by_thread_id:
+        return
+    _delete_where_in(conn, "work_threads", "thread_id", tuple(records_by_thread_id))
+    records = [record for record in records_by_thread_id.values() if record is not None]
+    if records:
+        conn.executemany(
+            build_insert_sql(
+                "work_threads",
+                (
+                    "thread_id",
+                    "root_id",
+                    "materializer_version",
+                    "materialized_at",
+                    "start_time",
+                    "end_time",
+                    "dominant_repo",
+                    "session_ids_json",
+                    "session_count",
+                    "depth",
+                    "branch_count",
+                    "total_messages",
+                    "total_cost_usd",
+                    "wall_duration_ms",
+                    "work_event_breakdown_json",
+                    "payload_json",
+                    "search_text",
+                ),
+            ),
+            [work_thread_insert_values(record) for record in records],
         )
 
 
@@ -586,10 +680,14 @@ __all__ = [
     "build_insert_sql",
     "day_session_summary_insert_values",
     "replace_day_session_summaries_sync",
+    "replace_session_phases_bulk_sync",
     "replace_session_phases_sync",
+    "replace_session_profiles_bulk_sync",
     "replace_session_profile_sync",
     "replace_session_tag_rollup_rows_sync",
+    "replace_session_work_events_bulk_sync",
     "replace_session_work_events_sync",
+    "replace_work_threads_bulk_sync",
     "replace_work_thread_sync",
     "session_phase_insert_columns",
     "session_phase_insert_values",

@@ -12,7 +12,8 @@ Polylogue ingests ChatGPT exports via the generic parser.
 
 - Extracts message text from `message.content.parts` and preserves roles.
 - Orders mapping nodes by timestamp when available.
-- Stores conversation/message metadata in the SQLite store and renders Markdown/HTML on `polylogue run`.
+- Stores conversation/message metadata in the SQLite store for daemon-owned
+  ingestion and downstream render/read surfaces.
 
 ## Attachment Handling
 

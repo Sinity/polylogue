@@ -101,11 +101,11 @@ Polylogue auto-discovers these directories:
 ~/.codex/sessions/         Codex sessions
 ```
 
-Custom watch roots can be given to the daemon with `--root`. For a one-time
-import, use:
+Custom watch roots can be given to the daemon with `--root`. For an explicit
+one-time ingest request, keep the daemon running and use:
 
 ```bash
-polylogue run --input /path/to/exports
+polylogue ingest /path/to/exports
 ```
 
 ## Next steps

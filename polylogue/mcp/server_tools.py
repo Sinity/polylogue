@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Literal, cast
 
+from polylogue.config import ConfigError
 from polylogue.mcp.payloads import (
     MCPArchiveStatsPayload,
     MCPConversationSummaryPayload,
@@ -212,7 +213,12 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 offset=offset,
             ).build_spec(hooks.clamp_limit)
             conversations = await ops.query_conversations(spec)
-            diagnostics = await ops.diagnose_query_miss(spec) if not conversations else None
+            diagnostics = None
+            if not conversations:
+                try:
+                    diagnostics = await ops.diagnose_query_miss(spec)
+                except ConfigError:
+                    diagnostics = None
             return hooks.json_payload(conversation_query_result_payload(conversations, diagnostics=diagnostics))
 
         return await hooks.async_safe_call("list_conversations", run)

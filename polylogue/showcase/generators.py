@@ -302,18 +302,6 @@ JSON_CONTRACT_SCENARIOS: tuple[Exercise, ...] = (
         env="any",
     ),
     *_product_json_contract_scenarios(),
-    _json_contract_scenario(
-        "json-run-embed",
-        "run embed JSON contract",
-        "run",
-        "embed",
-        "--stats",
-        "--format",
-        "json",
-        needs_data=True,
-        tier=1,
-        env="seeded",
-    ),
 )
 
 

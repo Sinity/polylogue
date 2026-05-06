@@ -59,6 +59,62 @@ def read_peak_rss_children_mb() -> float | None:
     return _read_rusage_peak_rss_mb(resource.RUSAGE_CHILDREN)
 
 
+def read_cgroup_path() -> str | None:
+    """Return this process' unified cgroup path when cgroup v2 is mounted."""
+    try:
+        for line in Path("/proc/self/cgroup").read_text(encoding="utf-8").splitlines():
+            parts = line.split(":", 2)
+            if len(parts) == 3 and parts[0] == "0":
+                return parts[2] or "/"
+    except OSError:
+        return None
+    return None
+
+
+def _cgroup_file(name: str) -> Path | None:
+    cgroup_path = read_cgroup_path()
+    if cgroup_path is None:
+        return None
+    return Path("/sys/fs/cgroup") / cgroup_path.lstrip("/") / name
+
+
+def _read_cgroup_int(name: str) -> int | None:
+    path = _cgroup_file(name)
+    if path is None:
+        return None
+    try:
+        value = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if not value or value == "max":
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+
+def _bytes_to_mb(value: int | None) -> float | None:
+    if value is None:
+        return None
+    return round(value / (1024 * 1024), 1)
+
+
+def read_cgroup_memory_current_mb() -> float | None:
+    """Return memory.current for the current cgroup in MiB."""
+    return _bytes_to_mb(_read_cgroup_int("memory.current"))
+
+
+def read_cgroup_memory_peak_mb() -> float | None:
+    """Return memory.peak for the current cgroup in MiB."""
+    return _bytes_to_mb(_read_cgroup_int("memory.peak"))
+
+
+def read_cgroup_memory_swap_current_mb() -> float | None:
+    """Return memory.swap.current for the current cgroup in MiB."""
+    return _bytes_to_mb(_read_cgroup_int("memory.swap.current"))
+
+
 def _slow_item_elapsed(item: JSONDocument) -> float:
     elapsed = item.get("elapsed_s")
     return float(elapsed) if isinstance(elapsed, int | float) else 0.0
@@ -199,6 +255,10 @@ __all__ = [
     "PipelineMetrics",
     "SlowItemTracker",
     "StageMetrics",
+    "read_cgroup_memory_current_mb",
+    "read_cgroup_memory_peak_mb",
+    "read_cgroup_memory_swap_current_mb",
+    "read_cgroup_path",
     "read_current_rss_mb",
     "read_peak_rss_children_mb",
     "read_peak_rss_self_mb",

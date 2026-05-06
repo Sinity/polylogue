@@ -17,7 +17,6 @@ from polylogue.storage.sqlite.schema_ddl import (
     _ACTION_FTS_DDL,
     _ARTIFACT_OBSERVATION_DDL,
     _PROVIDER_EVENT_DDL,
-    _PUBLICATION_DDL,
     _SESSION_INSIGHT_DDL,
     _SOURCE_FILE_CURSOR_DDL,
     _VEC0_DDL,
@@ -345,7 +344,6 @@ _SCHEMA_EXTENSION_DESCRIPTORS: tuple[SchemaExtensionDescriptor, ...] = (
                 """,
     ),
     SchemaScriptExtensionDescriptor(_ARTIFACT_OBSERVATION_DDL),
-    SchemaScriptExtensionDescriptor(_PUBLICATION_DDL),
     SchemaScriptExtensionDescriptor(_PROVIDER_EVENT_DDL),
     SchemaScriptExtensionDescriptor(_ACTION_EVENT_DDL),
     SchemaColumnExtensionDescriptor(
@@ -739,7 +737,7 @@ def schema_version_mismatch_message(current_version: int) -> str:
     return (
         f"Database schema version {current_version} is incompatible with expected version {SCHEMA_VERSION}. "
         "Polylogue only supports explicitly declared in-place archive upgrades. Move the database aside or rebuild "
-        "it with `polylogue reset --database && polylogue run`."
+        "it with `polylogue reset --database && polylogued run`."
     )
 
 

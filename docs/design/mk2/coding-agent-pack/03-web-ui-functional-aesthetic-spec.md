@@ -169,7 +169,7 @@ Message: “No conversations archived yet.”
 
 Actions:
 
-- show `polylogue run --input PATH` if still current;
+- show `polylogue ingest PATH`;
 - show daemon/live setup if configured;
 - show browser capture setup if extension installed.
 

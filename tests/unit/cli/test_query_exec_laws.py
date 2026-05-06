@@ -179,7 +179,7 @@ def _output_spec(
     message_roles: MessageRoleFilter = (),
     transform: str | None = None,
     list_mode: bool = False,
-    print_path: bool = False,
+    print_url: bool = False,
 ) -> QueryOutputSpec:
     return QueryOutputSpec(
         output_format=output_format,
@@ -189,7 +189,7 @@ def _output_spec(
         message_roles=message_roles,
         transform=transform,
         list_mode=list_mode,
-        print_path=print_path,
+        print_url=print_url,
     )
 
 

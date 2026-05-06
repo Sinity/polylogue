@@ -36,6 +36,9 @@ AXIS_DB_STATS: dict[str, str] = {
     "content-blocks": "content_blocks_count",
     "raw-artifacts": "raw_conversations_count",
     "action-events": "action_events_count",
+    "files": "files_count",
+    "source-bytes": "source_bytes",
+    "append-delta-bytes": "append_delta_bytes",
 }
 
 

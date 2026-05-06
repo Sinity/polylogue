@@ -14,15 +14,9 @@ from polylogue.insights.archive import ProviderAnalyticsInsight
 from polylogue.logging import get_logger
 from polylogue.readiness import ReadinessReport
 from polylogue.services import RuntimeServices
-from polylogue.storage.runtime.archive.records import RunRecord
-from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.ui.theme import provider_color
 
 logger = get_logger(__name__)
-
-
-class LatestRunFn(Protocol):
-    def __call__(self, backend: SQLiteBackend | None = None) -> Awaitable[RunRecord | None]: ...
 
 
 class GetProviderCountsFn(Protocol):
@@ -47,7 +41,6 @@ def print_summary_impl(
     env: AppEnv,
     *,
     verbose: bool = False,
-    latest_run_fn: LatestRunFn,
     format_sources_summary_fn: Callable[[list[Source]], str],
     quick_readiness_summary_fn: Callable[[Path], str],
     get_readiness_fn: Callable[[Config], ReadinessReport],
@@ -58,11 +51,6 @@ def print_summary_impl(
     config = load_effective_config(env)
     archive_stats = None
 
-    last_run_data = run_coroutine_sync(latest_run_fn(env.backend))
-    last_line = "Last run: none"
-    if last_run_data:
-        last_line = f"Last run: {last_run_data.run_id} ({last_run_data.timestamp})"
-
     try:
         archive_stats = run_coroutine_sync(env.repository.get_archive_stats())
     except Exception:
@@ -72,7 +60,7 @@ def print_summary_impl(
         f"Archive: {config.archive_root}",
         f"Render: {config.render_root}",
         f"Sources: {format_sources_summary_fn(config.sources)}",
-        last_line,
+        "Ingestion: owned by polylogued",
     ]
     if archive_stats is not None:
         embedding_line = (
@@ -141,7 +129,7 @@ def print_summary_impl(
                 ui.console.print(
                     "[yellow]No conversations yet. Drop export files in[/yellow] "
                     f"[bold]{inbox}[/bold]"
-                    " [yellow]and run[/yellow] [bold]polylogue run all[/bold]"
+                    " [yellow]and start[/yellow] [bold]polylogued run[/bold]"
                 )
 
             max_width = 30

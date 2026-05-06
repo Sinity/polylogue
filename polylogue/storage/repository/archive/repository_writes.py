@@ -23,12 +23,8 @@ from polylogue.storage.runtime import (
     ConversationRecord,
     MessageRecord,
     ProviderEventRecord,
-    PublicationRecord,
-    RunRecord,
 )
 from polylogue.storage.sqlite.queries import conversations as conversations_q
-from polylogue.storage.sqlite.queries import publications as publications_q
-from polylogue.storage.sqlite.queries import runs as runs_q
 
 
 class RepositoryWriteMixin:
@@ -85,21 +81,6 @@ class RepositoryWriteMixin:
             content_blocks,
             provider_events,
         )
-
-    async def record_run(self, record: RunRecord) -> None:
-        async with self._backend.transaction(), self._backend.connection() as conn:
-            await runs_q.record_run(conn, record, self._backend.transaction_depth)
-
-    async def record_publication(self, record: PublicationRecord) -> None:
-        async with self._backend.transaction(), self._backend.connection() as conn:
-            await publications_q.record_publication(conn, record, self._backend.transaction_depth)
-
-    async def get_latest_publication(
-        self,
-        publication_kind: str,
-    ) -> PublicationRecord | None:
-        async with self._backend.connection() as conn:
-            return await publications_q.get_latest_publication(conn, publication_kind)
 
     async def get_metadata(self, conversation_id: str) -> JSONDocument:
         async with self._backend.connection() as conn:

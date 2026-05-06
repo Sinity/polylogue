@@ -1,20 +1,15 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from polylogue.config import Config
+from polylogue.pipeline.ingest_support import PARSE_STAGES
 from polylogue.pipeline.payload_types import (
     MaterializeStageObservation,
-    RenderStageObservation,
-    SiteBuildOptions,
 )
-from polylogue.pipeline.run_support import PARSE_STAGES
-from polylogue.storage.run_state import RenderFailurePayload
-from polylogue.types import SearchProvider
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -26,14 +21,6 @@ if TYPE_CHECKING:
     from polylogue.storage.insights.session.runtime import SessionInsightCounts
     from polylogue.storage.repository import ConversationRepository
     from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
-
-
-@dataclass(slots=True)
-class RenderStageOutcome:
-    rendered_count: int
-    failures: list[RenderFailurePayload]
-    total: int
-    observation: RenderStageObservation | None = None
 
 
 @dataclass(slots=True)
@@ -57,50 +44,10 @@ class IndexStageOutcome:
 
 
 @dataclass(slots=True)
-class SiteStageOutcome:
-    conversations: int
-    index_pages: int
-    rendered_pages: int
-    error: str | None = None
-
-
-@dataclass(slots=True)
 class EmbedStageOutcome:
     embedded_count: int
     error_count: int
     stats_only: bool = False
-
-
-def _site_option_path(options: SiteBuildOptions, key: str, *, default: Path) -> Path:
-    value = options.get(key)
-    if isinstance(value, Path):
-        return value
-    if isinstance(value, str) and value.strip():
-        return Path(value)
-    return default
-
-
-def _site_option_str(options: SiteBuildOptions, key: str, *, default: str) -> str:
-    value = options.get(key)
-    return value if isinstance(value, str) and value.strip() else default
-
-
-def _site_option_bool(options: SiteBuildOptions, key: str, *, default: bool) -> bool:
-    value = options.get(key)
-    return value if isinstance(value, bool) else default
-
-
-def _site_option_search_provider(
-    options: SiteBuildOptions,
-    *,
-    default: SearchProvider,
-) -> SearchProvider:
-    value = options.get("search_provider")
-    if isinstance(value, SearchProvider):
-        return value
-    if isinstance(value, str) and value.strip():
-        return SearchProvider.from_string(value)
-    return default
 
 
 def _materialize_rebuild_observation(
@@ -254,64 +201,6 @@ async def execute_materialize_stage(
     )
 
 
-async def execute_render_stage(
-    *,
-    config: Config,
-    backend: SQLiteBackend,
-    stage: str,
-    source_names: Sequence[str] | None,
-    processed_ids: set[str],
-    progress_callback: ProgressCallback | None = None,
-    render_format: str = "html",
-) -> RenderStageOutcome:
-    from polylogue.pipeline.services.rendering import RenderService
-    from polylogue.rendering.renderers import create_renderer
-
-    if stage == "render":
-        scoped_source_names = list(source_names) if source_names is not None else None
-        render_total = await backend.count_conversation_ids(source_names=scoped_source_names)
-        render_ids: Iterable[str] | AsyncIterator[str] = backend.iter_conversation_ids(source_names=scoped_source_names)
-    else:
-        render_ids = processed_ids
-        render_total = len(processed_ids)
-
-    if not render_total:
-        return RenderStageOutcome(rendered_count=0, failures=[], total=0)
-
-    if progress_callback is not None:
-        progress_callback(0, desc=f"Rendering: 0/{render_total}")
-    renderer = create_renderer(
-        format=render_format,
-        config=config,
-        backend=backend,
-    )
-    render_service = RenderService(
-        renderer=renderer,
-        render_root=config.render_root,
-        backend=backend,
-    )
-    render_result = await render_service.render_conversations(
-        render_ids,
-        total=render_total,
-        progress_callback=progress_callback,
-    )
-    observation: RenderStageObservation = {"workers": render_result.worker_count}
-    if render_result.rss_start_mb is not None:
-        observation["rss_start_mb"] = render_result.rss_start_mb
-    if render_result.rss_end_mb is not None:
-        observation["rss_end_mb"] = render_result.rss_end_mb
-    if render_result.rss_start_mb is not None and render_result.rss_end_mb is not None:
-        observation["rss_delta_mb"] = round(render_result.rss_end_mb - render_result.rss_start_mb, 1)
-    if render_result.max_current_rss_mb is not None:
-        observation["max_current_rss_mb"] = render_result.max_current_rss_mb
-    return RenderStageOutcome(
-        rendered_count=render_result.rendered_count,
-        failures=render_result.failures,
-        total=render_total,
-        observation=observation,
-    )
-
-
 async def execute_index_stage(
     *,
     config: Config,
@@ -377,50 +266,6 @@ async def execute_index_stage(
         return IndexStageOutcome(
             indexed=False,
             item_count=0,
-            error=f"{type(exc).__name__}: {exc}",
-        )
-
-
-async def execute_site_stage(
-    *,
-    backend: SQLiteBackend,
-    repository: ConversationRepository,
-    site_options: SiteBuildOptions | None = None,
-    progress_callback: ProgressCallback | None = None,
-) -> SiteStageOutcome:
-    """Build a static HTML site from the archive."""
-    from polylogue.paths import data_home
-    from polylogue.site.builder import SiteBuilder, SiteConfig
-
-    opts: SiteBuildOptions = site_options or {}
-    output_path = _site_option_path(opts, "output", default=data_home() / "site")
-    config = SiteConfig(
-        title=_site_option_str(opts, "title", default="Polylogue Archive"),
-        enable_search=_site_option_bool(opts, "search", default=True),
-        search_provider=_site_option_search_provider(opts, default=SearchProvider.PAGEFIND),
-        include_dashboard=_site_option_bool(opts, "dashboard", default=True),
-    )
-
-    builder = SiteBuilder(
-        output_dir=output_path,
-        config=config,
-        backend=backend,
-        repository=repository,
-        progress_callback=progress_callback,
-    )
-
-    try:
-        result = await asyncio.to_thread(builder.build)
-        return SiteStageOutcome(
-            conversations=result.archive.total_conversations,
-            index_pages=result.outputs.total_index_pages,
-            rendered_pages=result.outputs.rendered_conversation_pages,
-        )
-    except Exception as exc:
-        return SiteStageOutcome(
-            conversations=0,
-            index_pages=0,
-            rendered_pages=0,
             error=f"{type(exc).__name__}: {exc}",
         )
 
@@ -531,15 +376,11 @@ __all__ = [
     "EmbedStageOutcome",
     "IndexStageOutcome",
     "MaterializeStageOutcome",
-    "RenderStageOutcome",
     "SchemaGenerationOutcome",
-    "SiteStageOutcome",
     "execute_acquire_stage",
     "execute_embed_stage",
     "execute_index_stage",
     "execute_ingest_stage",
     "execute_materialize_stage",
-    "execute_render_stage",
     "execute_schema_generation_stage",
-    "execute_site_stage",
 ]

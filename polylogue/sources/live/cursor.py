@@ -8,9 +8,12 @@ comparison rather than relying on file size alone.
 from __future__ import annotations
 
 import sqlite3
+import uuid
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any, cast
 
 from polylogue.storage.sqlite.connection_profile import open_connection
 
@@ -38,6 +41,37 @@ CREATE TABLE IF NOT EXISTS live_cursor (
 )
 """
 
+_ATTEMPT_DDL = """
+CREATE TABLE IF NOT EXISTS live_ingest_attempt (
+    attempt_id TEXT PRIMARY KEY,
+    started_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    completed_at TEXT,
+    status TEXT NOT NULL,
+    phase TEXT NOT NULL,
+    queued_file_count INTEGER NOT NULL DEFAULT 0,
+    needed_file_count INTEGER NOT NULL DEFAULT 0,
+    succeeded_file_count INTEGER NOT NULL DEFAULT 0,
+    failed_file_count INTEGER NOT NULL DEFAULT 0,
+    input_bytes INTEGER NOT NULL DEFAULT 0,
+    source_payload_read_bytes INTEGER NOT NULL DEFAULT 0,
+    cursor_fingerprint_read_bytes INTEGER NOT NULL DEFAULT 0,
+    parse_time_s REAL NOT NULL DEFAULT 0,
+    convergence_time_s REAL NOT NULL DEFAULT 0,
+    current_source TEXT,
+    current_path TEXT,
+    error TEXT,
+    rss_current_mb REAL,
+    rss_peak_self_mb REAL,
+    rss_peak_children_mb REAL,
+    cgroup_path TEXT,
+    cgroup_memory_current_mb REAL,
+    cgroup_memory_peak_mb REAL,
+    cgroup_memory_swap_current_mb REAL,
+    source_paths_json TEXT NOT NULL DEFAULT '[]'
+)
+"""
+
 
 @dataclass(frozen=True, slots=True)
 class CursorRecord:
@@ -62,6 +96,78 @@ class CursorRecord:
     excluded: bool | int = False
 
 
+@dataclass(frozen=True, slots=True)
+class LiveIngestAttempt:
+    """Durable live-ingest attempt snapshot for in-flight diagnostics."""
+
+    attempt_id: str
+    started_at: str
+    updated_at: str
+    status: str
+    phase: str
+    queued_file_count: int
+    needed_file_count: int
+    succeeded_file_count: int
+    failed_file_count: int
+    input_bytes: int
+    source_payload_read_bytes: int
+    cursor_fingerprint_read_bytes: int
+    parse_time_s: float
+    convergence_time_s: float
+    completed_at: str | None = None
+    current_source: str | None = None
+    current_path: str | None = None
+    error: str | None = None
+    rss_current_mb: float | None = None
+    rss_peak_self_mb: float | None = None
+    rss_peak_children_mb: float | None = None
+    cgroup_path: str | None = None
+    cgroup_memory_current_mb: float | None = None
+    cgroup_memory_peak_mb: float | None = None
+    cgroup_memory_swap_current_mb: float | None = None
+    source_paths_json: str = "[]"
+
+
+def _required_int(value: object) -> int:
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str | bytes | bytearray):
+        return int(value)
+    if isinstance(value, float):
+        return int(value)
+    return int(cast(Any, value))
+
+
+def _optional_int(value: object) -> int | None:
+    return None if value is None else _required_int(value)
+
+
+def _optional_str(value: object) -> str | None:
+    return value if isinstance(value, str) else None
+
+
+def _cursor_record_from_row(row: sqlite3.Row | tuple[object, ...]) -> CursorRecord:
+    return CursorRecord(
+        source_path=str(row[0]),
+        byte_size=_required_int(row[1]),
+        byte_offset=_required_int(row[2]),
+        last_complete_newline=_required_int(row[3]),
+        record_count=_required_int(row[4]),
+        updated_at=str(row[5]),
+        last_record_ts=_optional_str(row[6]),
+        parser_fingerprint=_optional_str(row[7]),
+        content_fingerprint=_optional_str(row[8]),
+        source_name=_optional_str(row[9]),
+        st_dev=_optional_int(row[10]),
+        st_ino=_optional_int(row[11]),
+        mtime_ns=_optional_int(row[12]),
+        source_generation=_required_int(row[13]) if row[13] is not None else 0,
+        failure_count=_required_int(row[14]) if row[14] is not None else 0,
+        next_retry_at=_optional_str(row[15]),
+        excluded=bool(row[16]) if row[16] is not None else False,
+    )
+
+
 class CursorStore:
     """SQLite-backed live cursor store keyed by source path."""
 
@@ -69,7 +175,9 @@ class CursorStore:
         self._db_path = db_path
         with self._connect() as conn:
             conn.execute(_DDL)
+            conn.execute(_ATTEMPT_DDL)
             self._ensure_columns(conn)
+            self._mark_interrupted_attempts(conn)
 
     def _connect(self) -> sqlite3.Connection:
         conn = open_connection(self._db_path, timeout=10.0)
@@ -95,7 +203,230 @@ class CursorStore:
         for name, definition in columns.items():
             if name not in existing:
                 conn.execute(f"ALTER TABLE live_cursor ADD COLUMN {name} {definition}")
+        conn.execute(_ATTEMPT_DDL)
+        existing_attempt = {row[1] for row in conn.execute("PRAGMA table_info(live_ingest_attempt)")}
+        attempt_columns = {
+            "cgroup_path": "TEXT",
+            "cgroup_memory_current_mb": "REAL",
+            "cgroup_memory_peak_mb": "REAL",
+            "cgroup_memory_swap_current_mb": "REAL",
+        }
+        for name, definition in attempt_columns.items():
+            if name not in existing_attempt:
+                conn.execute(f"ALTER TABLE live_ingest_attempt ADD COLUMN {name} {definition}")
         conn.commit()
+
+    def _mark_interrupted_attempts(self, conn: sqlite3.Connection) -> None:
+        """Close attempts left running by a killed daemon process."""
+        now = datetime.now(UTC).isoformat()
+        conn.execute(
+            """
+            UPDATE live_ingest_attempt
+            SET updated_at = ?,
+                completed_at = ?,
+                status = 'abandoned',
+                phase = 'interrupted',
+                error = COALESCE(error, 'daemon stopped before completing this ingest attempt')
+            WHERE status = 'running'
+            """,
+            (now, now),
+        )
+        conn.commit()
+
+    def begin_ingest_attempt(
+        self,
+        *,
+        paths: list[Path],
+        input_bytes: int,
+        queued_file_count: int,
+    ) -> str:
+        """Record a durable in-flight live-ingest attempt."""
+        import json
+
+        now = datetime.now(UTC).isoformat()
+        attempt_id = str(uuid.uuid4())
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO live_ingest_attempt (
+                    attempt_id,
+                    started_at,
+                    updated_at,
+                    status,
+                    phase,
+                    queued_file_count,
+                    needed_file_count,
+                    input_bytes,
+                    source_paths_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    attempt_id,
+                    now,
+                    now,
+                    "running",
+                    "planning",
+                    queued_file_count,
+                    len(paths),
+                    input_bytes,
+                    json.dumps([str(path) for path in paths], separators=(",", ":")),
+                ),
+            )
+            conn.commit()
+        return attempt_id
+
+    def update_ingest_attempt(
+        self,
+        attempt_id: str,
+        *,
+        phase: str,
+        status: str = "running",
+        succeeded_file_count: int | None = None,
+        failed_file_count: int | None = None,
+        source_payload_read_bytes: int | None = None,
+        cursor_fingerprint_read_bytes: int | None = None,
+        parse_time_s: float | None = None,
+        convergence_time_s: float | None = None,
+        current_source: str | None = None,
+        current_path: Path | str | None = None,
+        error: str | None = None,
+        rss_current_mb: float | None = None,
+        rss_peak_self_mb: float | None = None,
+        rss_peak_children_mb: float | None = None,
+        cgroup_path: str | None = None,
+        cgroup_memory_current_mb: float | None = None,
+        cgroup_memory_peak_mb: float | None = None,
+        cgroup_memory_swap_current_mb: float | None = None,
+    ) -> None:
+        """Update an in-flight attempt without waiting for batch completion."""
+        now = datetime.now(UTC).isoformat()
+        assignments: list[str] = ["updated_at = ?", "status = ?", "phase = ?"]
+        values: list[object] = [now, status, phase]
+        optional_fields = {
+            "succeeded_file_count": succeeded_file_count,
+            "failed_file_count": failed_file_count,
+            "source_payload_read_bytes": source_payload_read_bytes,
+            "cursor_fingerprint_read_bytes": cursor_fingerprint_read_bytes,
+            "parse_time_s": parse_time_s,
+            "convergence_time_s": convergence_time_s,
+            "current_source": current_source,
+            "current_path": str(current_path) if current_path is not None else None,
+            "error": error,
+            "rss_current_mb": rss_current_mb,
+            "rss_peak_self_mb": rss_peak_self_mb,
+            "rss_peak_children_mb": rss_peak_children_mb,
+            "cgroup_path": cgroup_path,
+            "cgroup_memory_current_mb": cgroup_memory_current_mb,
+            "cgroup_memory_peak_mb": cgroup_memory_peak_mb,
+            "cgroup_memory_swap_current_mb": cgroup_memory_swap_current_mb,
+        }
+        for field, value in optional_fields.items():
+            if value is None:
+                continue
+            assignments.append(f"{field} = ?")
+            values.append(value)
+        values.append(attempt_id)
+        with self._connect() as conn:
+            conn.execute(
+                f"UPDATE live_ingest_attempt SET {', '.join(assignments)} WHERE attempt_id = ?",
+                tuple(values),
+            )
+            conn.commit()
+
+    def finish_ingest_attempt(
+        self,
+        attempt_id: str,
+        *,
+        status: str,
+        phase: str,
+        error: str | None = None,
+    ) -> None:
+        """Mark an ingest attempt complete or failed."""
+        now = datetime.now(UTC).isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE live_ingest_attempt
+                SET updated_at = ?,
+                    completed_at = ?,
+                    status = ?,
+                    phase = ?,
+                    error = ?
+                WHERE attempt_id = ?
+                """,
+                (now, now, status, phase, error, attempt_id),
+            )
+            conn.commit()
+
+    def recent_ingest_attempts(self, *, limit: int = 5) -> list[LiveIngestAttempt]:
+        """Return recent live-ingest attempts for status/debug surfaces."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    attempt_id,
+                    started_at,
+                    updated_at,
+                    completed_at,
+                    status,
+                    phase,
+                    queued_file_count,
+                    needed_file_count,
+                    succeeded_file_count,
+                    failed_file_count,
+                    input_bytes,
+                    source_payload_read_bytes,
+                    cursor_fingerprint_read_bytes,
+                    parse_time_s,
+                    convergence_time_s,
+                    current_source,
+                    current_path,
+                    error,
+                    rss_current_mb,
+                    rss_peak_self_mb,
+                    rss_peak_children_mb,
+                    cgroup_path,
+                    cgroup_memory_current_mb,
+                    cgroup_memory_peak_mb,
+                    cgroup_memory_swap_current_mb,
+                    source_paths_json
+                FROM live_ingest_attempt
+                ORDER BY updated_at DESC, started_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [
+            LiveIngestAttempt(
+                attempt_id=str(row[0]),
+                started_at=str(row[1]),
+                updated_at=str(row[2]),
+                completed_at=row[3],
+                status=str(row[4]),
+                phase=str(row[5]),
+                queued_file_count=int(row[6] or 0),
+                needed_file_count=int(row[7] or 0),
+                succeeded_file_count=int(row[8] or 0),
+                failed_file_count=int(row[9] or 0),
+                input_bytes=int(row[10] or 0),
+                source_payload_read_bytes=int(row[11] or 0),
+                cursor_fingerprint_read_bytes=int(row[12] or 0),
+                parse_time_s=float(row[13] or 0),
+                convergence_time_s=float(row[14] or 0),
+                current_source=row[15],
+                current_path=row[16],
+                error=row[17],
+                rss_current_mb=float(row[18]) if row[18] is not None else None,
+                rss_peak_self_mb=float(row[19]) if row[19] is not None else None,
+                rss_peak_children_mb=float(row[20]) if row[20] is not None else None,
+                cgroup_path=row[21],
+                cgroup_memory_current_mb=float(row[22]) if row[22] is not None else None,
+                cgroup_memory_peak_mb=float(row[23]) if row[23] is not None else None,
+                cgroup_memory_swap_current_mb=float(row[24]) if row[24] is not None else None,
+                source_paths_json=str(row[25] or "[]"),
+            )
+            for row in rows
+        ]
 
     def get(self, path: Path) -> int:
         record = self.get_record(path)
@@ -130,25 +461,47 @@ class CursorStore:
             ).fetchone()
         if row is None:
             return None
-        return CursorRecord(
-            source_path=str(row[0]),
-            byte_size=int(row[1]),
-            byte_offset=int(row[2]),
-            last_complete_newline=int(row[3]),
-            record_count=int(row[4]),
-            updated_at=str(row[5]),
-            last_record_ts=row[6],
-            parser_fingerprint=row[7],
-            content_fingerprint=row[8],
-            source_name=row[9],
-            st_dev=row[10],
-            st_ino=row[11],
-            mtime_ns=row[12],
-            source_generation=int(row[13] or 0) if row[13] is not None else 0,
-            failure_count=int(row[14] or 0) if row[14] is not None else 0,
-            next_retry_at=row[15],
-            excluded=bool(row[16]) if row[16] is not None else False,
-        )
+        return _cursor_record_from_row(row)
+
+    def get_records(self, paths: Iterable[Path]) -> dict[Path, CursorRecord]:
+        """Return cursor records for many paths using batched SQLite reads."""
+        unique_paths = tuple(dict.fromkeys(paths))
+        if not unique_paths:
+            return {}
+        records_by_source_path: dict[str, CursorRecord] = {}
+        with self._connect() as conn:
+            for offset in range(0, len(unique_paths), 500):
+                chunk = unique_paths[offset : offset + 500]
+                placeholders = ",".join("?" for _path in chunk)
+                rows = conn.execute(
+                    f"""
+                    SELECT
+                        source_path,
+                        byte_size,
+                        byte_offset,
+                        last_complete_newline,
+                        record_count,
+                        updated_at,
+                        last_record_ts,
+                        parser_fingerprint,
+                        content_fingerprint,
+                        source_name,
+                        st_dev,
+                        st_ino,
+                        mtime_ns,
+                        source_generation,
+                        failure_count,
+                        next_retry_at,
+                        excluded
+                    FROM live_cursor
+                    WHERE source_path IN ({placeholders})
+                    """,
+                    tuple(str(path) for path in chunk),
+                ).fetchall()
+                for row in rows:
+                    record = _cursor_record_from_row(row)
+                    records_by_source_path[record.source_path] = record
+        return {path: records_by_source_path[str(path)] for path in unique_paths if str(path) in records_by_source_path}
 
     def set(
         self,
@@ -241,7 +594,27 @@ class CursorStore:
         """Increment failure count and set exponential backoff."""
         record = self.get_record(path)
         if record is None:
-            return
+            try:
+                stat = path.stat()
+                byte_size = stat.st_size
+                st_dev = stat.st_dev
+                st_ino = stat.st_ino
+                mtime_ns = stat.st_mtime_ns
+            except FileNotFoundError:
+                byte_size = 0
+                st_dev = None
+                st_ino = None
+                mtime_ns = None
+            self.set(
+                path,
+                byte_size,
+                st_dev=st_dev,
+                st_ino=st_ino,
+                mtime_ns=mtime_ns,
+            )
+            record = self.get_record(path)
+            if record is None:
+                return
         failures = record.failure_count + 1
         delay_s = min(60 * (2 ** (failures - 1)), 3600)  # cap at 1 hour
         retry_at = datetime.now(UTC).timestamp() + delay_s
@@ -287,4 +660,4 @@ class CursorStore:
         return [str(row[0]) for row in rows]
 
 
-__all__ = ["CursorRecord", "CursorStore"]
+__all__ = ["CursorRecord", "CursorStore", "LiveIngestAttempt"]

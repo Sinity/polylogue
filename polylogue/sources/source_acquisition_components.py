@@ -305,6 +305,7 @@ def read_plain_source_file(context: SourceReadContext) -> RawConversationData:
         prefix,
         context.path.name,
         context.provider_hint,
+        truncated_tail_ok=blob_size > len(prefix),
     )
     observe_acquisition(
         context.observation_callback,

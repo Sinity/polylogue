@@ -32,7 +32,7 @@ def test_write_from_fileobj_deduplicates_existing_blob(tmp_path: Path) -> None:
 
 def test_write_from_fileobj_invokes_heartbeat(tmp_path: Path) -> None:
     blob_store = BlobStore(tmp_path / "blobs")
-    payload = b"x" * (256 * 1024)
+    payload = b"x" * (2 * 1024 * 1024 + 1)
 
     beats = 0
 

@@ -1,8 +1,8 @@
 """Daemon convergence performance probe.
 
-Generates synthetic JSONL at controlled scale tiers, runs the
-DaemonConverger with real stages against a fresh DB, and measures
-per-stage timing for regression tracking.
+Generates synthetic JSONL at controlled scale tiers, runs the live watcher
+batch path with daemon post-ingest convergence stages, and measures timing
+for regression tracking.
 
 Run with:
     pytest tests/benchmarks/test_daemon_convergence.py \\
@@ -15,6 +15,8 @@ import json
 import os
 import time
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
@@ -95,18 +97,17 @@ def _run_convergence_probe(
     corpus_root: Path,
     tmp_path: Path,
 ) -> dict[str, float]:
-    """Run the DaemonConverger against a synthetic corpus.
+    """Run the canonical daemon live-ingest path against a synthetic corpus.
 
     Returns per-stage timing dict.
     """
+    import asyncio
+
     from polylogue.daemon.convergence import DaemonConverger
-    from polylogue.daemon.convergence_stages import (
-        make_acquire_check_stage,
-        make_embed_stage,
-        make_fts_stage,
-        make_ingest_stage,
-        make_insights_stage,
-    )
+    from polylogue.daemon.convergence_stages import make_default_convergence_stages
+    from polylogue.sources.live.batch import LiveBatchProcessor
+    from polylogue.sources.live.cursor import CursorStore
+    from polylogue.sources.live.watcher import WatchSource
 
     # Use a fresh DB for clean measurement.
     db_path = tmp_path / "polylogue.db"
@@ -115,31 +116,27 @@ def _run_convergence_probe(
     # Collect all JSONL files.
     files = list(corpus_root.rglob("*.jsonl"))
 
-    # Build converger with stages.
-    stages = [
-        make_acquire_check_stage(db_path),
-        make_ingest_stage(db_path),
-        make_fts_stage(db_path),
-        make_embed_stage(db_path),
-        make_insights_stage(db_path),
-    ]
-    converger = DaemonConverger(stages=stages, max_workers=4)
+    converger = DaemonConverger(stages=make_default_convergence_stages(db_path), max_workers=4)
+    polylogue = _BenchmarkPolylogue(tmp_path, db_path)
+    processor = LiveBatchProcessor(
+        cast(Any, polylogue),
+        (WatchSource(name="benchmark", root=corpus_root),),
+        cursor=CursorStore(db_path),
+        parser_fingerprint="benchmark-v1",
+        converger=converger,
+    )
 
     timings: dict[str, float] = {}
-    stage_totals: dict[str, float] = {}
 
-    # Measure per-file convergence with per-stage timing.
+    # Measure canonical batched live ingestion with post-ingest convergence.
     t_total = time.perf_counter()
-    for path in files:
-        state = converger.converge_file(path)
-        for sname, stime in state.stage_times.items():
-            stage_totals[sname] = stage_totals.get(sname, 0.0) + stime
+    metrics = asyncio.run(processor.ingest_files(files, emit_event=False))
     timings["total_s"] = time.perf_counter() - t_total
     timings["files"] = float(len(files))
-
-    # Record per-stage totals.
-    for sname, stime in stage_totals.items():
-        timings[f"stage_{sname}_s"] = round(stime, 3)
+    timings["succeeded_files"] = float(metrics.succeeded_file_count)
+    timings["failed_files"] = float(metrics.failed_file_count)
+    timings["parse_wall_s"] = metrics.parse_time_s
+    timings["convergence_wall_s"] = metrics.convergence_time_s
 
     summary = converger.summary()
     timings["converged"] = float(summary["converged"])
@@ -147,6 +144,12 @@ def _run_convergence_probe(
     timings["total_files"] = float(summary["total"])
 
     return timings
+
+
+class _BenchmarkPolylogue:
+    def __init__(self, archive_root: Path, db_path: Path) -> None:
+        self.archive_root = archive_root
+        self.backend = SimpleNamespace(db_path=db_path)
 
 
 # ── Benchmark tests ─────────────────────────────────────────────────
@@ -174,10 +177,16 @@ def test_convergence_scale_tier(benchmark, tier: str, tmp_path: Path, monkeypatc
             "total_s": round(result["total_s"], 2),
             "msgs_per_s": round(msgs_per_s, 1),
             "converged": int(result["converged"]),
+            "succeeded_files": int(result["succeeded_files"]),
+            "failed_files": int(result["failed_files"]),
+            "parse_wall_s": round(result["parse_wall_s"], 2),
+            "convergence_wall_s": round(result["convergence_wall_s"], 2),
         }
         if hasattr(benchmark, "extra_info"):
             benchmark.extra_info.update(extras)
         # Assert basic correctness.
+        assert result["succeeded_files"] == result["total_files"]
+        assert result["failed_files"] == 0
         assert result["converged"] >= result["total_files"] * 0.8, (
             f"Only {result['converged']}/{result['total_files']} converged"
         )

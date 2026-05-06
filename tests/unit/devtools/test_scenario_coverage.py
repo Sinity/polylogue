@@ -29,13 +29,12 @@ def test_build_runtime_scenario_coverage_tracks_the_current_authored_map() -> No
         "provider-analytics-query-loop",
         "session-insight-status-query-loop",
         "archive-debt-query-loop",
-        "conversation-render-loop",
-        "site-publication-loop",
         "inferred-corpus-compilation-loop",
         "schema-list-query-loop",
         "schema-explain-query-loop",
     }
-    assert all(path.complete for path in coverage.paths.values())
+    incomplete_paths = {name: path for name, path in coverage.paths.items() if not path.complete}
+    assert set(incomplete_paths) == set()
     assert "raw_validation_state" in coverage.artifacts
     assert "configured_sources" in coverage.artifacts
     assert "source_payload_stream" in coverage.artifacts
@@ -51,11 +50,6 @@ def test_build_runtime_scenario_coverage_tracks_the_current_authored_map() -> No
     assert "embedding_status_results" in coverage.artifacts
     assert "conversation_query_results" in coverage.artifacts
     assert "archive_readiness" in coverage.artifacts
-    assert "conversation_render_projection" in coverage.artifacts
-    assert "rendered_conversation_artifacts" in coverage.artifacts
-    assert "site_conversation_pages" in coverage.artifacts
-    assert "site_publication_manifest" in coverage.artifacts
-    assert "publication_records" in coverage.artifacts
     assert "session_insight_source_conversations" in coverage.artifacts
     assert "inferred_corpus_specs" in coverage.artifacts
     assert "inferred_corpus_scenarios" in coverage.artifacts
@@ -70,8 +64,6 @@ def test_build_runtime_scenario_coverage_tracks_the_current_authored_map() -> No
     assert "project-retrieval-band-readiness" in coverage.operations
     assert "query-embedding-status" in coverage.operations
     assert "query-conversations" in coverage.operations
-    assert "render-conversations" in coverage.operations
-    assert "publish-site" in coverage.operations
     assert "materialize-session-insights" in coverage.operations
     assert "project-archive-readiness" in coverage.operations
     assert "session_insights" in coverage.maintenance_targets

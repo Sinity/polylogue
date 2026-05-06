@@ -212,15 +212,18 @@ continuations = await ConversationFilter(repo).is_continuation().list()
 | `.pick()` | Interactive picker (TTY) or first match (non-TTY) |
 | `.can_use_summaries()` | Check if `list_summaries()` is valid for current filters |
 
-## Pipeline (Run)
+## Ingestion
 
 ```python
 import asyncio
-from polylogue.config import get_config
-from polylogue.pipeline.runner import run_sources
+from polylogue import Polylogue
 
-config = get_config()
-result = asyncio.run(run_sources(config=config, stage="all"))
+async def main():
+    async with Polylogue() as archive:
+        result = await archive.parse_sources()
+        return result.counts
+
+counts = asyncio.run(main())
 ```
 
 ## Async API

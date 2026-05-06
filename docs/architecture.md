@@ -48,7 +48,7 @@ These expose the archive and its insights:
 - CLI: `polylogue/cli/`
 - Python API: `polylogue/api/__init__.py`
 - MCP server: `polylogue/mcp/`
-- site generation: `polylogue/site/`
+- daemon web reader: `polylogue/daemon/web_shell.py`
 - dashboard and TUI: `polylogue/ui/`
 - renderers: `polylogue/rendering/`
 
@@ -84,8 +84,9 @@ source files (JSON/JSONL/ZIP)
              filter chain → query → storage
 ```
 
-The `all` pipeline stage runs: acquire → parse → materialize → render → site → index.
-`reprocess` runs: parse → materialize → render → index (skips acquire).
+The daemon-owned ingest path acquires source payloads, parses provider records,
+writes archive rows, and refreshes derived read models through explicit
+convergence stages.
 
 ## Provider Detection
 
@@ -156,8 +157,7 @@ Vector embeddings for semantic search, powered by Voyage AI (`voyage-4`,
 - **Storage**: `message_embeddings` (vec0), `embeddings_meta`, `embedding_status`
 - **Search**: `--similar` flag triggers pure vector search; hybrid mode combines
   FTS5 + vector via Reciprocal Rank Fusion
-- **Integration**: Currently CLI-only (`polylogue run embed`). Daemon-side
-  post-ingest embedding is designed but not yet implemented
+- **Integration**: Daemon-side post-ingest embedding is designed but not yet implemented
   ([#828](https://github.com/Sinity/polylogue/issues/828))
 
 The embedding pipeline is fully built but dormant (0 messages embedded in
@@ -191,7 +191,7 @@ attachments, exports):
 - `lib/` — domain types, invariants, shared primitives (no I/O, no storage)
 - `storage/` — SQLite backends, repositories, FTS, search providers
 - `sources/` — provider detection, parsing, acquisition
-- `pipeline/` — stage execution, ingestion, validation, rendering pipeline
+- `pipeline/` — stage execution, daemon ingestion, validation, and indexing
 - `insights/` — derived read models, session insights, analytics
 - `operations/` — operation specs, artifact graph, declared runtime contracts
 
@@ -199,9 +199,9 @@ attachments, exports):
 - `cli/` — Click commands, shared helpers, output formatting
 - `mcp/` — MCP server tools
 - `api/` — async library API
-- `site/` — static site generation
 - `rendering/` — markdown/HTML renderers
 - `ui/` — TUI, dashboard
+- `daemon/` — daemon convergence, HTTP API, and web reader
 
 ### Verification (repo health)
 - `proof/` — proof obligations, subject discovery, claim catalog, witnesses

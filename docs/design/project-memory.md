@@ -89,7 +89,7 @@ Hot files (3):
 - ...
 
 Stale warnings (1):
-- "Use polylogue run for all pipeline operations" — daemon replaced this in #717
+- "Use the root batch command for all pipeline operations" — daemon replaced this in #717
 ```
 
 The injection is capped at 250 tokens. Ranking formula:

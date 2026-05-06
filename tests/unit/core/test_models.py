@@ -19,6 +19,7 @@ from polylogue.archive.raw_payload import build_raw_payload_envelope
 from polylogue.archive.viewport.viewports import ToolCall, classify_tool
 from polylogue.core.json import JSONDocument, JSONValue, json_document
 from polylogue.core.provider_identity import (
+    canonical_acquisition_provider,
     canonical_runtime_provider,
     canonical_schema_provider,
 )
@@ -518,6 +519,12 @@ def test_canonical_runtime_provider_aliases() -> None:
 
 def test_canonical_runtime_provider_normalizes_unknowns_to_unknown() -> None:
     assert canonical_runtime_provider("my-inbox") == "unknown"
+
+
+def test_canonical_acquisition_provider_accepts_scoped_source_names() -> None:
+    assert canonical_acquisition_provider(None, source_name="codex:24") == "codex"
+    assert canonical_acquisition_provider(None, source_name="claude-code:project") == "claude-code"
+    assert canonical_acquisition_provider("unknown", source_name="codex:24") == "codex"
 
 
 def test_canonical_schema_provider_mapping() -> None:

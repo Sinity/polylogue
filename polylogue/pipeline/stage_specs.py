@@ -7,9 +7,9 @@ input was produced by an upstream stage that already executed in the
 current run. On violation it raises :class:`StageContractError`.
 
 The structural validator catches misconfigured stage sequences such as
-``[acquire, materialize]`` (parse skipped) or ``[acquire, render]``
-(parse skipped). Single-stage runs skip validation, since their inputs
-come from durable archive state rather than upstream pipeline outputs.
+``[acquire, materialize]`` (parse skipped). Single-stage runs skip
+validation, since their inputs come from durable archive state rather
+than upstream pipeline outputs.
 
 See `#447 <https://github.com/Sinity/polylogue/issues/447>`_.
 """
@@ -102,19 +102,6 @@ PIPELINE_STAGE_SPECS: dict[str, PipelineStageSpec] = {
         context_policy="requested_or_all_after_parse",
         inputs=(StageInput(name="processed_ids"),),
         outputs=("materialized",),
-    ),
-    "render": PipelineStageSpec(
-        name="render",
-        log_stage="render",
-        context_policy="requested_or_all_after_parse",
-        suspend_fts_triggers=True,
-        inputs=(StageInput(name="processed_ids"),),
-        outputs=("rendered",),
-    ),
-    "site": PipelineStageSpec(
-        name="site",
-        log_stage="site",
-        inputs=(StageInput(name="rendered", required=False),),
     ),
     "index": PipelineStageSpec(
         name="index",

@@ -9,7 +9,7 @@
 Polylogue is a local archive and analysis layer for AI conversations. It turns
 ChatGPT, Claude, Claude Code, Codex, and Gemini exports or captures into one
 SQLite archive with full-text search, materialized session insights, cost
-estimates, and static publication output.
+estimates, and a daemon web reader.
 
 **Local-first.** Everything lives under your XDG data directory. No cloud
 dependency.
@@ -42,34 +42,26 @@ eval "$(devtools lab-corpus seed --count 8 --env-only)"
 
 polylogue list --limit 5
 polylogue insights profiles --limit 5
-polylogue run site -o ./site-preview
+polylogued run --api
 ```
 
 Demo data is isolated from your normal archive. If you only installed the
 archive CLI and do not have `devtools`, skip this section and ingest a real
-export with `polylogue run --input`.
+export by placing it in a configured source and running the daemon.
 
 ## Ingest real exports
 
 Download a ChatGPT or Claude export, then:
 
-```bash
-polylogue run --input ~/Downloads/conversations.json
-polylogue run --input ~/Downloads/chatgpt.zip
-```
+Place the export under a configured source directory, then run `polylogued run`.
 
-The `--input` flag accepts files, directories, and zips. Duplicate imports are
-silently idempotent — content hashes prevent re-import of the same data.
-
-**Configured sources** (repeating paths like `~/.claude/projects/`) differ from
-one-shot inputs. Add them with `--source`:
+Configured sources such as `~/.claude/projects/` and `~/.codex/sessions/`
+are discovered from your local environment automatically. The daemon converges
+them idempotently; content hashes prevent re-import of the same data.
 
 ```bash
-polylogue run --source claude-code --source codex
+polylogued run --watch --api
 ```
-
-Sources are discovered from your local environment automatically. Use
-`polylogue run --preview` to see what work a run would perform before executing.
 
 ## CLI shape
 
@@ -86,7 +78,6 @@ polylogue --latest open
 Pipeline and maintenance verbs are explicit:
 
 ```bash
-polylogue run acquire parse materialize render index
 polylogue doctor --daemon
 polylogued run
 polylogued status
@@ -129,14 +120,14 @@ polylogued status
 Captures ChatGPT and Claude.ai browser sessions through a local receiver and
 extension. The unpacked extension source lives in `browser-extension/`.
 
-### Publication and MCP
+### Web Reader and MCP
 
 ```bash
-polylogue run site -o ./site-preview
+polylogued run --api
 polylogue-mcp --role read
 ```
 
-- Static HTML archive with search
+- Daemon web reader with live archive search
 - MCP stdio bridge for AI assistant integration
 
 ### Python API

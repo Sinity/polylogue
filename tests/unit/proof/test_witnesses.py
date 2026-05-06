@@ -41,7 +41,6 @@ def test_committed_witness_corpus_covers_high_value_surfaces() -> None:
     expected = {
         "cli.command-surface": "tests/data/witnesses/cli-command-surface.json",
         "mcp.tool-schemas": "tests/data/witnesses/mcp-tool-schemas.json",
-        "site.publication-contract": "tests/data/witnesses/site-publication-contract.json",
         "storage.blob-store-layout": "tests/data/witnesses/blob-store-layout.json",
         "browser-capture.sequence": "tests/data/witnesses/browser-capture-sequence.json",
     }

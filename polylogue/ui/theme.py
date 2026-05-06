@@ -2,7 +2,7 @@
 
 Single source of truth for provider brand colors, role colors,
 status colors, and UI theme tokens used across CLI, HTML rendering,
-and static site generation.
+and daemon web surfaces.
 """
 
 from __future__ import annotations

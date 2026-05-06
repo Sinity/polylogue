@@ -13,15 +13,16 @@ each file triggered a full source-tree rescan via ``parse_file()``.
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import time
+import os
 from collections.abc import Iterable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from polylogue.logging import get_logger
-from polylogue.sources.live.cursor import CursorStore
+from polylogue.sources.live.batch import LiveBatchEventEmitter, LiveBatchProcessor, fingerprint_file
+from polylogue.sources.live.cursor import CursorRecord, CursorStore
 
 if TYPE_CHECKING:
     from polylogue.api import Polylogue
@@ -59,11 +60,12 @@ class LiveWatcher:
         cursor: CursorStore | None = None,
         max_workers: int | None = None,
         converger: object | None = None,  # DaemonConverger | None — avoids circular import
+        event_emitter: LiveBatchEventEmitter | None = None,
     ) -> None:
         self._polylogue = polylogue
         self._sources = tuple(sources)
         self._debounce_s = debounce_s
-        self._cursor = cursor or CursorStore(polylogue.archive_root / "polylogue.sqlite")
+        self._cursor = cursor or CursorStore(_cursor_db_path(polylogue))
         self._max_workers = max_workers
         self._converger = converger
         self._pending_paths: set[Path] = set()
@@ -71,6 +73,15 @@ class LiveWatcher:
         self._last_batch_at: float = 0.0
         self._batch_lock = asyncio.Lock()
         self._stop = asyncio.Event()
+        self._batch_processor = LiveBatchProcessor(
+            polylogue,
+            self._sources,
+            cursor=self._cursor,
+            parser_fingerprint=lambda: _PARSER_FINGERPRINT,
+            converger=converger,
+            stop_requested=self._stop.is_set,
+            event_emitter=event_emitter,
+        )
 
     async def run(self) -> None:
         from watchfiles import Change, awatch
@@ -105,50 +116,36 @@ class LiveWatcher:
     async def _catch_up(self, roots: list[Path]) -> None:
         files: list[Path] = []
         for root in roots:
-            # Session files: {project}/{uuid}.jsonl
-            files.extend(p for p in root.glob("*/*.jsonl") if p.is_file())
-            # Sub-agent files: {project}/{uuid}/subagents/agent-*.jsonl
-            files.extend(p for p in root.glob("*/*/subagents/agent-*.jsonl") if p.is_file())
+            files.extend(p for p in root.rglob("*.jsonl") if p.is_file())
         if not files:
             return
         logger.info("live.watcher: catch-up scan over %d file(s)", len(files))
-
-        # Process in size-based chunks so a single 150 MB session
-        # doesn't starve the batch alongside 199 tiny files.
-        chunk_size_bytes = 50 * 1024 * 1024  # 50 MB
-        chunk: list[Path] = []
-        chunk_bytes: int = 0
-
-        for i, path in enumerate(files, start=1):
+        cursor_records = self._cursor.get_records(files)
+        needed: list[Path] = []
+        skipped = 0
+        needed_bytes = 0
+        for path in files:
             if self._stop.is_set():
                 return
-            if self._needs_work(path):
-                try:
-                    size = path.stat().st_size
-                except FileNotFoundError:
-                    size = 0
-                chunk.append(path)
-                chunk_bytes += size
+            try:
+                stat = path.stat()
+            except FileNotFoundError:
+                skipped += 1
+                continue
+            if self._needs_work_from_state(path, stat=stat, cursor=cursor_records.get(path)):
+                needed.append(path)
+                needed_bytes += stat.st_size
+            else:
+                skipped += 1
 
-            if chunk_bytes >= chunk_size_bytes and chunk:
-                logger.info(
-                    "live.watcher: chunk %d/%d — ingesting %d file(s) (%.1f MB)",
-                    i,
-                    len(files),
-                    len(chunk),
-                    chunk_bytes / 1e6,
-                )
-                await self._ingest_files(chunk)
-                chunk.clear()
-                chunk_bytes = 0
-
-        if chunk:
+        if needed:
             logger.info(
-                "live.watcher: final chunk — ingesting %d file(s) (%.1f MB)",
-                len(chunk),
-                chunk_bytes / 1e6,
+                "live.watcher: catch-up ingesting %d file(s) (%.1f MB), skipped=%d",
+                len(needed),
+                needed_bytes / 1e6,
+                skipped,
             )
-            await self._ingest_files(chunk)
+            await self._ingest_files(needed, queued_file_count=len(files), skipped_file_count=skipped)
 
     # ------------------------------------------------------------------
     # Live: debounced batch scheduling
@@ -186,12 +183,24 @@ class LiveWatcher:
             self._pending_scheduled = False
 
         # Filter to files that actually need work.
-        needed = [p for p in paths if self._needs_work(p)]
+        cursor_records = self._cursor.get_records(paths)
+        needed = []
+        for path in paths:
+            try:
+                stat = path.stat()
+            except FileNotFoundError:
+                continue
+            if self._needs_work_from_state(path, stat=stat, cursor=cursor_records.get(path)):
+                needed.append(path)
         if not needed:
             return
 
         logger.info("live.watcher: batching %d changed file(s)", len(needed))
-        await self._ingest_files(needed)
+        await self._ingest_files(
+            needed,
+            queued_file_count=len(paths),
+            skipped_file_count=len(paths) - len(needed),
+        )
 
     # ------------------------------------------------------------------
     # Shared helpers
@@ -203,77 +212,53 @@ class LiveWatcher:
             stat = path.stat()
         except FileNotFoundError:
             return False
+        cursor = self._cursor.get_record(path)
+        return self._needs_work_from_state(path, stat=stat, cursor=cursor)
+
+    def _needs_work_from_state(self, path: Path, *, stat: os.stat_result, cursor: CursorRecord | None) -> bool:
         size = stat.st_size
+        if cursor is None:
+            return True
+        if cursor.excluded:
+            return False
+        if cursor.failure_count > 0:
+            return _retry_due(cursor.next_retry_at)
+        parser_matches = cursor.parser_fingerprint == _PARSER_FINGERPRINT
+        if not parser_matches:
+            return True
+        same_inode = (cursor.st_dev is None or cursor.st_dev == stat.st_dev) and (
+            cursor.st_ino is None or cursor.st_ino == stat.st_ino
+        )
+        if same_inode and size > cursor.byte_offset:
+            return True
+        if (
+            same_inode
+            and size == cursor.byte_size
+            and cursor.mtime_ns == stat.st_mtime_ns
+            and cursor.content_fingerprint is not None
+        ):
+            return False
+        if cursor.content_fingerprint is None:
+            return True
         try:
-            fingerprint, _last_nl = _fingerprint_file(path)
+            fingerprint, _last_nl = fingerprint_file(path)
         except FileNotFoundError:
             return False
-        cursor = self._cursor.get_record(path)
-        return not (
-            cursor is not None
-            and size == cursor.byte_size
-            and fingerprint == cursor.content_fingerprint
-            and cursor.parser_fingerprint == _PARSER_FINGERPRINT
+        return not (size == cursor.byte_size and fingerprint == cursor.content_fingerprint)
+
+    async def _ingest_files(
+        self,
+        paths: list[Path],
+        *,
+        queued_file_count: int | None = None,
+        skipped_file_count: int = 0,
+    ) -> None:
+        """Ingest files through the reusable daemon live batch processor."""
+        await self._batch_processor.ingest_files(
+            paths,
+            queued_file_count=queued_file_count,
+            skipped_file_count=skipped_file_count,
         )
-
-    async def _ingest_files(self, paths: list[Path]) -> None:
-        """Ingest files in batch, then run global convergence stages once."""
-        from polylogue.config import Source
-
-        # Phase 1: batched ingest via parse_sources() — efficient.
-        by_source: dict[str, list[Path]] = {}
-        for path in paths:
-            by_source.setdefault(self._source_name_for(path), []).append(path)
-        for source_name, source_paths in by_source.items():
-            if self._stop.is_set():
-                return
-            sources = [Source(name=f"{source_name}:{p.parent.name}", path=p) for p in source_paths]
-            t0 = time.perf_counter()
-            try:
-                await self._polylogue.parse_sources(sources=sources, download_assets=False)
-            except Exception as exc:
-                logger.warning("live.watcher: batch failed for %s: %s", source_name, exc)
-                for p in source_paths:
-                    self._cursor.mark_failed(p)
-                continue
-            elapsed = time.perf_counter() - t0
-            logger.info(
-                "live.watcher: batch ingested %s — %d in %.1fs (%.1f/s)",
-                source_name,
-                len(source_paths),
-                elapsed,
-                len(source_paths) / max(elapsed, 0.01),
-            )
-
-        # Phase 2: global convergence — run once after batch ingest.
-        if self._converger is not None:
-            try:
-                hint_path = paths[0] if paths else None
-                if hint_path:
-                    self._converger.converge_file(hint_path)  # type: ignore[attr-defined]
-            except Exception as exc:
-                logger.warning("live.watcher: post-ingest converge failed: %s", exc)
-
-        # Update cursors.
-        for path in paths:
-            try:
-                stat = path.stat()
-                fp, last_nl = _fingerprint_file(path)
-            except FileNotFoundError:
-                continue
-            self._cursor.set(
-                path,
-                stat.st_size,
-                byte_offset=last_nl,
-                last_complete_newline=last_nl,
-                parser_fingerprint=_PARSER_FINGERPRINT,
-                content_fingerprint=fp,
-                source_name=self._source_name_for(path),
-                st_dev=None,
-                st_ino=None,
-                mtime_ns=None,
-            )
-            self._cursor.reset_failures(path)
 
     def _source_name_for(self, path: Path) -> str:
         resolved = path.resolve()
@@ -296,11 +281,25 @@ def default_sources() -> tuple[WatchSource, ...]:
     )
 
 
-def _fingerprint_file(path: Path) -> tuple[str, int]:
-    content = path.read_bytes()
-    newline_at = content.rfind(b"\n")
-    last_complete_newline = 0 if newline_at < 0 else newline_at + 1
-    return hashlib.sha256(content).hexdigest(), last_complete_newline
+def _cursor_db_path(polylogue: Polylogue) -> Path:
+    """Use the archive database for daemon cursor state."""
+    backend = getattr(polylogue, "backend", None)
+    db_path = getattr(backend, "db_path", None)
+    if isinstance(db_path, Path):
+        return db_path
+    return Path(polylogue.archive_root) / "polylogue.db"
+
+
+def _retry_due(next_retry_at: str | None) -> bool:
+    if not next_retry_at:
+        return True
+    try:
+        retry_at = datetime.fromisoformat(next_retry_at)
+    except ValueError:
+        return True
+    if retry_at.tzinfo is None:
+        retry_at = retry_at.replace(tzinfo=UTC)
+    return retry_at <= datetime.now(UTC)
 
 
 __all__ = ["LiveWatcher", "WatchSource", "default_sources"]

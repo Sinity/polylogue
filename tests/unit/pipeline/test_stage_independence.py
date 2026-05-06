@@ -194,38 +194,6 @@ class TestParseStageIndependence:
 
 
 # =============================================================================
-# Render stage independence
-# =============================================================================
-
-
-class TestRenderStageIndependence:
-    """The render stage generates output from conversations in DB."""
-
-    @pytest.mark.asyncio
-    async def test_render_empty_conversation_list(self, tmp_path: Path, workspace_env: dict[str, Path]) -> None:
-        """Render with empty conversation ID list completes cleanly."""
-        from polylogue.pipeline.services.rendering import RenderService
-        from polylogue.rendering.renderers import MarkdownRenderer
-
-        backend, _ = _make_backend(tmp_path)
-        render_root = tmp_path / "render"
-        render_root.mkdir()
-        archive_root = tmp_path / "archive"
-        archive_root.mkdir()
-
-        renderer = MarkdownRenderer(archive_root=archive_root)
-        service = RenderService(
-            renderer=renderer,
-            render_root=render_root,
-            backend=backend,
-        )
-        result = await service.render_conversations(conversation_ids=[])
-        assert result.rendered_count == 0
-        assert len(result.failures) == 0
-        await backend.close()
-
-
-# =============================================================================
 # Index stage independence
 # =============================================================================
 

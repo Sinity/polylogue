@@ -3,7 +3,8 @@
 Architecture:
 - CPU-bound work (decode/validate/parse/transform) in ProcessPoolExecutor
 - DB writes in main thread via sync sqlite3 (no aiosqlite async overhead)
-- as_completed yields results as workers finish; writes run after all results collected
+- as_completed yields results as workers finish; writes drain completed worker
+  results without retaining the whole parsed batch in memory
 
 Replaces: parsing_batch.py, parsing_workflow.py, validation_flow.py.
 """
@@ -14,14 +15,14 @@ import os
 import pickle
 import sqlite3
 import time
-from collections.abc import Iterable, Sequence
-from concurrent.futures import Future, as_completed
+from collections.abc import Callable, Iterable, Sequence
+from concurrent.futures import FIRST_COMPLETED, Future, wait
 from datetime import datetime, timezone
+from hashlib import sha256
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
-from polylogue.archive.write_effects import commit_archive_write_effects
-from polylogue.archive.write_gateway import WriteOperation
+from polylogue.archive.write_gateway import ArchiveWriteGateway, WriteOperation
 from polylogue.core.common import (
     SQL_ACTION_EVENT_INSERT as _ACTION_EVENT_INSERT_SQL,
 )
@@ -73,6 +74,7 @@ from polylogue.storage.sqlite.connection_profile import (
     DB_TIMEOUT,
     WRITE_CONNECTION_PRAGMA_STATEMENTS,
 )
+from polylogue.types import ContentHash
 
 if TYPE_CHECKING:
     from polylogue.pipeline.services.parsing import ParsingService
@@ -92,6 +94,15 @@ from polylogue.pipeline.services.ingest_batch._models import (
 )
 
 logger = get_logger(__name__)
+
+
+class _BlobSized(Protocol):
+    blob_size: int
+
+
+IngestHeartbeat = Callable[[], None]
+_INGEST_RESULT_WAIT_HEARTBEAT_S = 15.0
+
 
 # ---------------------------------------------------------------------------
 # SQL templates — imported from polylogue.core.common (canonical source)
@@ -128,11 +139,21 @@ def _check_content_unchanged(conn: sqlite3.Connection, cid: str, content_hash: s
     return row is not None and row[0] == content_hash
 
 
+def _stored_message_count(conn: sqlite3.Connection, conversation_id: str) -> int:
+    row = conn.execute(
+        "SELECT COUNT(*) FROM messages WHERE conversation_id = ?",
+        (conversation_id,),
+    ).fetchone()
+    return int(row[0] or 0) if row is not None else 0
+
+
 def _topo_sort_message_tuples(tuples: list[MessageTuple]) -> list[MessageTuple]:
     """Sort message tuples so parents come before children (FK constraint).
 
     message_id is at index 0, parent_message_id is at index 8.
     """
+    if not any(t[8] for t in tuples):
+        return tuples
     ids_in_batch = {t[0] for t in tuples}
     no_parent: list[MessageTuple] = []
     has_parent: list[MessageTuple] = []
@@ -255,6 +276,134 @@ def _parent_ready(
     return parent_id in materialized_ids or _conversation_exists(conn, parent_id)
 
 
+def _conversation_tuple_with_hash(conversation: ConversationTuple, content_hash: str) -> ConversationTuple:
+    return (
+        conversation[0],
+        conversation[1],
+        conversation[2],
+        conversation[3],
+        conversation[4],
+        conversation[5],
+        conversation[6],
+        ContentHash(content_hash),
+        conversation[8],
+        conversation[9],
+        conversation[10],
+        conversation[11],
+        conversation[12],
+        conversation[13],
+    )
+
+
+def _existing_message_hashes(conn: sqlite3.Connection, message_ids: Sequence[str]) -> dict[str, str]:
+    if not message_ids:
+        return {}
+    placeholders = ", ".join("?" for _ in message_ids)
+    rows = conn.execute(
+        f"SELECT message_id, content_hash FROM messages WHERE message_id IN ({placeholders})",
+        tuple(message_ids),
+    ).fetchall()
+    return {str(row["message_id"]): str(row["content_hash"]) for row in rows}
+
+
+def _append_content_hash(existing_hash: str | None, tail_hash: str) -> str:
+    if not existing_hash:
+        return tail_hash
+    return sha256(f"{existing_hash}\0{tail_hash}".encode()).hexdigest()
+
+
+def _upsert_stats_from_messages(conn: sqlite3.Connection, conversation_id: str, provider_name: str) -> None:
+    row = conn.execute(
+        """
+        SELECT
+            COUNT(*) AS message_count,
+            COALESCE(SUM(word_count), 0) AS word_count,
+            COALESCE(SUM(has_tool_use), 0) AS tool_use_count,
+            COALESCE(SUM(has_thinking), 0) AS thinking_count,
+            COALESCE(SUM(has_paste), 0) AS paste_count
+        FROM messages
+        WHERE conversation_id = ?
+        """,
+        (conversation_id,),
+    ).fetchone()
+    conn.execute(
+        _STATS_UPSERT_SQL,
+        (
+            conversation_id,
+            provider_name,
+            int(row["message_count"] or 0),
+            int(row["word_count"] or 0),
+            int(row["tool_use_count"] or 0),
+            int(row["thinking_count"] or 0),
+            int(row["paste_count"] or 0),
+        ),
+    )
+
+
+_ACTION_EVENT_INSERT_OR_IGNORE_SQL = _ACTION_EVENT_INSERT_SQL.replace("INSERT INTO", "INSERT OR IGNORE INTO", 1)
+_PROVIDER_EVENT_INSERT_OR_IGNORE_SQL = _PROVIDER_EVENT_INSERT_SQL.replace("INSERT INTO", "INSERT OR IGNORE INTO", 1)
+
+
+def _append_conversation(
+    conn: sqlite3.Connection,
+    cdata: ConversationData,
+    *,
+    existing_hash: str | None,
+) -> tuple[bool, dict[str, int]]:
+    counts: dict[str, int] = {
+        "conversations": 0,
+        "messages": 0,
+        "attachments": 0,
+        "provider_events": 0,
+        "skipped_conversations": 0,
+        "skipped_messages": 0,
+        "skipped_attachments": 0,
+        "skipped_provider_events": 0,
+    }
+    message_ids = [str(message[0]) for message in cdata.message_tuples]
+    existing_messages = _existing_message_hashes(conn, message_ids)
+    changed_messages = [
+        message for message in cdata.message_tuples if existing_messages.get(str(message[0])) != str(message[6])
+    ]
+    if not changed_messages and not cdata.attachment_tuples:
+        counts["skipped_conversations"] = 1
+        counts["skipped_messages"] = len(cdata.message_tuples)
+        counts["skipped_attachments"] = len(cdata.attachment_tuples)
+        counts["skipped_provider_events"] = len(cdata.provider_event_tuples)
+        return False, counts
+
+    merged_hash = _append_content_hash(existing_hash, cdata.content_hash)
+    conn.execute(
+        _CONVERSATION_UPSERT_SQL, _conversation_tuple_with_hash(_resolved_conversation_tuple(conn, cdata), merged_hash)
+    )
+
+    if cdata.message_tuples:
+        sorted_msgs = _topo_sort_message_tuples(cdata.message_tuples)
+        conn.executemany(_MESSAGE_UPSERT_SQL, sorted_msgs)
+        counts["messages"] = len(changed_messages)
+
+    if cdata.block_tuples:
+        conn.executemany(_CONTENT_BLOCK_UPSERT_SQL, cdata.block_tuples)
+
+    if cdata.action_event_tuples:
+        conn.executemany(_ACTION_EVENT_INSERT_OR_IGNORE_SQL, cdata.action_event_tuples)
+
+    if cdata.provider_event_tuples:
+        conn.executemany(_PROVIDER_EVENT_INSERT_OR_IGNORE_SQL, cdata.provider_event_tuples)
+        counts["provider_events"] = len(cdata.provider_event_tuples)
+
+    affected_attachment_ids = {str(attachment_id) for attachment_id, *_rest in cdata.attachment_tuples}
+    if cdata.attachment_tuples:
+        conn.executemany(_ATTACHMENT_UPSERT_SQL, cdata.attachment_tuples)
+        conn.executemany(_ATTACHMENT_REF_INSERT_SQL, cdata.attachment_ref_tuples)
+        counts["attachments"] = len(cdata.attachment_tuples)
+        recount_and_prune_attachments_sync(conn, affected_attachment_ids)
+
+    _upsert_stats_from_messages(conn, cdata.conversation_id, cdata.provider_name)
+    counts["conversations"] = 1
+    return True, counts
+
+
 def _write_conversation(
     conn: sqlite3.Connection, cdata: ConversationData, *, force_write: bool = False
 ) -> tuple[bool, dict[str, int]]:
@@ -273,9 +422,29 @@ def _write_conversation(
         "skipped_provider_events": 0,
     }
 
-    content_unchanged = _check_content_unchanged(conn, cdata.conversation_id, cdata.content_hash)
+    existing_row = conn.execute(
+        "SELECT content_hash, raw_id FROM conversations WHERE conversation_id = ?",
+        (cdata.conversation_id,),
+    ).fetchone()
+    content_unchanged = existing_row is not None and str(existing_row["content_hash"]) == cdata.content_hash
+    if cdata.append_only and existing_row is not None:
+        return _append_conversation(conn, cdata, existing_hash=str(existing_row["content_hash"]))
 
     if not force_write and content_unchanged:
+        counts["skipped_conversations"] = 1
+        counts["skipped_messages"] = len(cdata.message_tuples)
+        counts["skipped_attachments"] = len(cdata.attachment_tuples)
+        counts["skipped_provider_events"] = len(cdata.provider_event_tuples)
+        return False, counts
+
+    existing_raw_id = str(existing_row["raw_id"] or "") if existing_row is not None else ""
+    if (
+        not force_write
+        and existing_raw_id
+        and cdata.raw_id
+        and existing_raw_id != cdata.raw_id
+        and len(cdata.message_tuples) < _stored_message_count(conn, cdata.conversation_id)
+    ):
         counts["skipped_conversations"] = 1
         counts["skipped_messages"] = len(cdata.message_tuples)
         counts["skipped_attachments"] = len(cdata.attachment_tuples)
@@ -287,7 +456,8 @@ def _write_conversation(
     affected_attachment_ids: set[str] = set()
     if not content_unchanged:
         counts["conversations"] = 1
-        affected_attachment_ids = replace_conversation_runtime_state_sync(conn, cdata.conversation_id)
+        if existing_row is not None:
+            affected_attachment_ids = replace_conversation_runtime_state_sync(conn, cdata.conversation_id)
     else:
         counts["conversations"] = 0
 
@@ -483,30 +653,56 @@ def _iter_ingest_results_sync(
     *,
     request: _IngestWorkerRequest,
     worker_count: int,
+    heartbeat: IngestHeartbeat | None = None,
 ) -> Iterable[IngestRecordResult]:
     if worker_count <= 1:
         for raw_record in raw_artifacts:
+            if heartbeat is not None:
+                heartbeat()
             yield _run_ingest_record(raw_record, request)
         return
 
     try:
         with process_pool_executor(max_workers=worker_count) as executor:
+            raw_iter = iter(raw_artifacts)
             futures: dict[Future[IngestRecordResult], str] = {}
-            for raw_record in raw_artifacts:
+            max_in_flight = max(1, worker_count)
+
+            def submit_next() -> bool:
+                try:
+                    raw_record = next(raw_iter)
+                except StopIteration:
+                    return False
                 future = executor.submit(_run_ingest_record, raw_record, request)
                 futures[future] = raw_record.raw_id
+                return True
 
-            for future in as_completed(futures):
-                try:
-                    yield future.result()
-                except Exception as exc:
-                    raw_id = futures[future]
-                    yield IngestRecordResult(
-                        raw_id=raw_id,
-                        error=f"worker: {exc}",
-                    )
+            for _ in range(max_in_flight):
+                if not submit_next():
+                    break
+
+            while futures:
+                done, _pending = wait(
+                    tuple(futures),
+                    timeout=_INGEST_RESULT_WAIT_HEARTBEAT_S,
+                    return_when=FIRST_COMPLETED,
+                )
+                if not done:
+                    if heartbeat is not None:
+                        heartbeat()
+                    continue
+                for future in done:
+                    raw_id = futures.pop(future)
+                    try:
+                        result = future.result()
+                    except Exception as exc:
+                        result = IngestRecordResult(raw_id=raw_id, error=f"worker: {exc}")
+                    submit_next()
+                    yield result
     except (TypeError, pickle.PicklingError):
         for raw_record in raw_artifacts:
+            if heartbeat is not None:
+                heartbeat()
             yield _run_ingest_record(raw_record, request)
 
 
@@ -514,7 +710,17 @@ def _resolved_ingest_worker_limit(value: int | None) -> int:
     return value if value is not None else _DEFAULT_INGEST_WORKER_LIMIT
 
 
-def _select_ingest_worker_count(raw_artifacts: Sequence[object], ingest_workers: int | None) -> int:
+def _select_ingest_worker_count(raw_artifacts: Sequence[_BlobSized], ingest_workers: int | None) -> int:
+    total_blob_size = sum(record.blob_size for record in raw_artifacts)
+    if total_blob_size <= 8 * 1024 * 1024:
+        return 1
+    if total_blob_size <= 64 * 1024 * 1024:
+        return min(
+            max(len(raw_artifacts), 1),
+            os.cpu_count() or 4,
+            _resolved_ingest_worker_limit(ingest_workers),
+            4,
+        )
     return min(
         max(len(raw_artifacts), 1),
         os.cpu_count() or 4,
@@ -598,12 +804,14 @@ def _consume_ingest_results(
     materialized_ids: set[str],
     pending_by_parent: dict[str, list[_ConversationEntry]],
     force_write: bool = False,
+    heartbeat: IngestHeartbeat | None = None,
 ) -> None:
     result_iterator = iter(
         _iter_ingest_results_sync(
             raw_artifacts,
             request=worker_request,
             worker_count=summary.worker_count,
+            heartbeat=heartbeat,
         )
     )
     while True:
@@ -645,12 +853,21 @@ def _commit_ingest_results(
     summary.commit_elapsed_s = time.perf_counter() - commit_started
 
 
-def _commit_sync_ingest_side_effects(conn: sqlite3.Connection, changed_conversation_ids: Sequence[str]) -> None:
+def _commit_sync_ingest_side_effects(
+    conn: sqlite3.Connection,
+    *,
+    db_path: Path,
+    changed_conversation_ids: Sequence[str],
+    repair_action_fts: bool = True,
+) -> None:
     """Run post-ingest side effects through the canonical write-effects path."""
-    commit_archive_write_effects(
-        conn,
+    ArchiveWriteGateway(db_path).commit_write_sync(
         WriteOperation.INGEST,
-        {"changed_conversation_ids": tuple(changed_conversation_ids)},
+        {
+            "_connection": conn,
+            "changed_conversation_ids": tuple(changed_conversation_ids),
+            "repair_action_fts": repair_action_fts,
+        },
     )
 
 
@@ -664,6 +881,8 @@ def _process_ingest_batch_sync(
     ingest_workers: int | None,
     measure_ingest_result_size: bool,
     force_write: bool = False,
+    repair_action_fts: bool = True,
+    heartbeat: IngestHeartbeat | None = None,
 ) -> _IngestBatchSummary:
     from polylogue.storage.fts.fts_lifecycle import (
         suspend_fts_triggers_sync,
@@ -698,6 +917,7 @@ def _process_ingest_batch_sync(
             materialized_ids=materialized_ids,
             pending_by_parent=pending_by_parent,
             force_write=force_write,
+            heartbeat=heartbeat,
         )
         _commit_ingest_results(
             conn,
@@ -711,7 +931,12 @@ def _process_ingest_batch_sync(
         raise
     finally:
         try:
-            _commit_sync_ingest_side_effects(conn, tuple(changed_ids))
+            _commit_sync_ingest_side_effects(
+                conn,
+                db_path=db_path,
+                changed_conversation_ids=tuple(changed_ids),
+                repair_action_fts=repair_action_fts,
+            )
         except Exception:
             conn.rollback()
             raise

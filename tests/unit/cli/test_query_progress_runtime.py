@@ -31,7 +31,7 @@ def _output_spec(output_format: str) -> QueryOutputSpec:
         message_roles=(),
         transform=None,
         list_mode=False,
-        print_path=False,
+        print_url=False,
     )
 
 

@@ -1,4 +1,4 @@
-"""Orchestrate the GitHub Pages static site build.
+"""Orchestrate the GitHub Pages documentation build.
 
 Reads pages.toml, calls feeder render commands, assembles output
 through Jinja2 templates, runs Pagefind, writes _site/.
@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Build the polylogue GitHub Pages static site.",
+        description="Build the polylogue GitHub Pages documentation site.",
     )
     parser.add_argument(
         "--serve",
@@ -103,7 +103,7 @@ def main(argv: list[str] | None = None) -> int:
 
         with tempfile.TemporaryDirectory() as tmp:
             tmp_dir = Path(tmp) / "_site"
-            from polylogue.site.pages_builder import build_site
+            from devtools.pages_builder import build_site
 
             build_site(config_path=config_path, output_dir=tmp_dir)
             current_hash = _hash_directory(args.output) if args.output.exists() else ""
@@ -123,7 +123,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.verbose:
         print("  Assembling pages...", file=sys.stderr)
 
-    from polylogue.site.pages_builder import build_site, build_site_with_pagefind
+    from devtools.pages_builder import build_site, build_site_with_pagefind
 
     if args.skip_pagefind:
         build_site(config_path=config_path, output_dir=args.output)

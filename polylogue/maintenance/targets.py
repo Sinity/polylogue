@@ -111,7 +111,7 @@ class MaintenanceTargetCatalog:
     def repair_hint(self, names: tuple[str, ...], *, include_run_all: bool = False) -> str:
         commands = [f"`polylogue doctor --repair --target {spec.name}`" for spec in self.resolve(names)]
         if include_run_all:
-            commands.append("`polylogue run all`")
+            commands.append("`polylogued run`")
         if not commands:
             return "Run `polylogue doctor --repair`."
         if len(commands) == 1:

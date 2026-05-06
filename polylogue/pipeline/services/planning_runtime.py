@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from polylogue.config import Source
-from polylogue.pipeline.run_support import expand_requested_stage, normalize_stage_sequence
+from polylogue.pipeline.ingest_support import expand_requested_stage, normalize_stage_sequence
 from polylogue.pipeline.stage_models import ValidateResult
 from polylogue.protocols import ProgressCallback
 from polylogue.storage.raw.artifacts import RawIngestArtifactState
@@ -34,7 +34,6 @@ class _PlanStageFlags:
     acquire: bool
     parse: bool
     materialize: bool
-    render: bool
     index: bool
 
     @classmethod
@@ -43,13 +42,12 @@ class _PlanStageFlags:
             acquire="acquire" in stage_names,
             parse="parse" in stage_names,
             materialize="materialize" in stage_names,
-            render="render" in stage_names,
             index="index" in stage_names,
         )
 
     @property
     def has_conversation_products(self) -> bool:
-        return self.materialize or self.render or self.index
+        return self.materialize or self.index
 
 
 def _normalize_plan_stage_sequence(normalized_stage_sequence: tuple[str, ...]) -> list[PlanStage]:
@@ -73,8 +71,6 @@ def _summarize_plan_stage(
 def _apply_conversation_stage_counts(counts: PlanCounts, *, conversation_count: int, flags: _PlanStageFlags) -> None:
     if flags.materialize and conversation_count:
         counts.materialize = conversation_count
-    if flags.render and conversation_count:
-        counts.render = conversation_count
     if flags.index and conversation_count:
         counts.index = conversation_count
 

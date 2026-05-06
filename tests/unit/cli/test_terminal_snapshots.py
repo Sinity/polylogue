@@ -60,19 +60,6 @@ class TestCommandOutputs:
 
         assert output == snapshot
 
-    def test_run_help_output_snapshot(self, snapshot: object) -> None:
-        """Verify run command help renders correctly."""
-        result = run_in_pty(["run", "--help"], cols=120, rows=80)
-        assert result.exit_code == 0
-
-        grid = sanitize_grid(result.grid, strip_timestamps=False, strip_paths=True)
-        output = grid_to_text(grid)
-
-        assert output == snapshot
-        assert "Usage: polylogue run [OPTIONS] COMMAND1 [ARGS]..." in output
-        assert "Commands:" in output
-        assert "reprocess" in output
-
 
 class TestErrorOutput:
     """Test error message rendering."""
@@ -140,7 +127,7 @@ class TestPlainModeConsistency:
 
     def test_error_consistency_across_modes(self) -> None:
         """Verify Click's unknown-subcommand error is rendered in the PTY."""
-        result = run_in_pty(["run", "invalid-xyz"])
+        result = run_in_pty(["schema", "invalid-xyz"])
         assert result.exit_code != 0
 
         error_text = grid_to_text(result.grid)

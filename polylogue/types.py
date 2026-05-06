@@ -163,22 +163,6 @@ class PlanStage(str, Enum):
         return self.value
 
 
-class SearchProvider(str, Enum):
-    """Supported static-site search backends."""
-
-    PAGEFIND = "pagefind"
-    LUNR = "lunr"
-
-    @classmethod
-    def from_string(cls, value: str | SearchProvider) -> SearchProvider:
-        if isinstance(value, cls):
-            return value
-        return cls(str(value).strip().lower())
-
-    def __str__(self) -> str:
-        return self.value
-
-
 class ExerciseIOMode(str, Enum):
     """Showcase exercise input/output mutability mode."""
 
@@ -207,7 +191,6 @@ __all__ = [
     "PlanStage",
     "Provider",
     "ProviderEventId",
-    "SearchProvider",
     "SemanticBlockType",
     "ValidationMode",
     "ValidationStatus",

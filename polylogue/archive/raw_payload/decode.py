@@ -97,12 +97,13 @@ def _sample_jsonl_payload_with_detail(
     *,
     max_samples: int = 64,
     jsonl_dict_only: bool = False,
+    scan_full: bool = True,
 ) -> tuple[list[JSONValue], int, str | None]:
-    """Collect a bounded sample of valid JSONL records while scanning the full file.
+    """Collect a bounded sample of valid JSONL records.
 
     This is intended for provider/artifact/schema resolution where full-record
-    materialization is unnecessary, but malformed-line accounting must still
-    reflect the entire source.
+    materialization is unnecessary. Set ``scan_full`` when malformed-line
+    accounting must reflect the entire source, such as strict validation.
     """
     samples: list[JSONValue] = []
     malformed_lines = 0
@@ -139,6 +140,8 @@ def _sample_jsonl_payload_with_detail(
             valid_records += 1
             if len(samples) < max_samples:
                 samples.append(parsed)
+            if not scan_full and len(samples) >= max_samples:
+                break
 
     if valid_records == 0:
         raise ValueError("No valid JSONL records found")

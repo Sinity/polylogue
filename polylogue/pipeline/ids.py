@@ -218,8 +218,8 @@ def _conversation_hash_payload(
     }
 
 
-def conversation_content_hash(convo: ParsedConversation) -> ContentHash:
-    """Generate content hash for conversation.
+def conversation_content_hashes(convo: ParsedConversation) -> tuple[ContentHash, dict[str, ContentHash]]:
+    """Generate conversation and per-message content hashes in one pass.
 
     Uses sentinel values to distinguish None from empty/missing fields.
 
@@ -227,9 +227,11 @@ def conversation_content_hash(convo: ParsedConversation) -> ContentHash:
         convo: Parsed conversation object.
 
     Returns:
-        Content hash string.
+        Tuple of conversation content hash and message hashes keyed by effective
+        provider message ID.
     """
     messages_payload: list[dict[str, JSONValue]] = []
+    message_hashes: dict[str, ContentHash] = {}
     for idx, msg in enumerate(convo.messages, start=1):
         message_id = msg.provider_message_id or f"msg-{idx}"
         msg_payload: dict[str, JSONValue] = {
@@ -241,6 +243,7 @@ def conversation_content_hash(convo: ParsedConversation) -> ContentHash:
         if msg.content_blocks:
             msg_payload["content_blocks"] = [_content_block_payload(b) for b in msg.content_blocks]
         messages_payload.append(msg_payload)
+        message_hashes[message_id] = ContentHash(hash_payload(msg_payload))
     attachments_payload = [
         {
             "id": _normalize_for_hash(att.provider_attachment_id),
@@ -264,15 +267,23 @@ def conversation_content_hash(convo: ParsedConversation) -> ContentHash:
         }
         for event_index, event in enumerate(convo.provider_events)
     ]
-    return ContentHash(
-        hash_payload(
-            _conversation_hash_payload(
-                title=convo.title,
-                created_at=convo.created_at,
-                updated_at=convo.updated_at,
-                messages=messages_payload,
-                attachments=attachments_payload,
-                provider_events=provider_events_payload,
+    return (
+        ContentHash(
+            hash_payload(
+                _conversation_hash_payload(
+                    title=convo.title,
+                    created_at=convo.created_at,
+                    updated_at=convo.updated_at,
+                    messages=messages_payload,
+                    attachments=attachments_payload,
+                    provider_events=provider_events_payload,
+                )
             )
-        )
+        ),
+        message_hashes,
     )
+
+
+def conversation_content_hash(convo: ParsedConversation) -> ContentHash:
+    """Generate content hash for conversation."""
+    return conversation_content_hashes(convo)[0]

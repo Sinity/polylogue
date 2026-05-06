@@ -21,7 +21,6 @@ from polylogue.storage.runtime import (
     ConversationRecord,
     MessageRecord,
     RawConversationRecord,
-    RunRecord,
     _json_or_none,
     _make_ref_id,
 )
@@ -526,32 +525,6 @@ def upsert_attachment(conn: sqlite3.Connection, record: AttachmentRecord) -> boo
         )
         return True
     return False
-
-
-def record_run(conn: sqlite3.Connection, record: RunRecord) -> None:
-    """Record a pipeline run."""
-    conn.execute(
-        """
-        INSERT INTO runs (
-            run_id,
-            timestamp,
-            plan_snapshot,
-            counts_json,
-            drift_json,
-            indexed,
-            duration_ms
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            record.run_id,
-            record.timestamp,
-            _json_or_none(record.plan_snapshot),
-            _json_or_none(record.counts),
-            _json_or_none(record.drift),
-            int(record.indexed) if record.indexed is not None else None,
-            record.duration_ms,
-        ),
-    )
 
 
 def store_records(

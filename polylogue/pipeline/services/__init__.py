@@ -9,7 +9,6 @@ if TYPE_CHECKING:
     from .indexing import IndexService
     from .parsing import IngestPhase, IngestResult, IngestState, ParseResult, ParsingService
     from .planning import IngestPlan, PlanningService
-    from .rendering import RenderResult, RenderService
     from .validation import ValidateResult, ValidationService
 
 
@@ -25,8 +24,6 @@ def __getattr__(name: str) -> object:
         "ParseResult": ("polylogue.pipeline.services.parsing", "ParseResult"),
         "ParsingService": ("polylogue.pipeline.services.parsing", "ParsingService"),
         "PlanningService": ("polylogue.pipeline.services.planning", "PlanningService"),
-        "RenderResult": ("polylogue.pipeline.services.rendering", "RenderResult"),
-        "RenderService": ("polylogue.pipeline.services.rendering", "RenderService"),
         "ValidateResult": ("polylogue.pipeline.services.validation", "ValidateResult"),
         "ValidationService": ("polylogue.pipeline.services.validation", "ValidationService"),
     }
@@ -49,8 +46,6 @@ __all__ = [
     "ParseResult",
     "ParsingService",
     "PlanningService",
-    "RenderResult",
-    "RenderService",
     "ValidateResult",
     "ValidationService",
 ]

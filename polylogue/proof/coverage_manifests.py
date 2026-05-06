@@ -50,7 +50,6 @@ _DOMAIN_BY_GAP_AXIS = {
     "mock_depth": "test_quality",
     "performance": "performance",
     "security_privacy": "security_privacy",
-    "site_publication": "site_publication",
     "storage_correctness": "storage_correctness",
 }
 _ITEM_SECTIONS = (

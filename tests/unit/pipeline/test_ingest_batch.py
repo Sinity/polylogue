@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Callable
+from concurrent.futures import Future
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -104,6 +105,7 @@ def _conversation_data(
     conversation_id: str,
     *,
     content_hash: str,
+    raw_id: str | None = None,
     parent_conversation_id: str | None = None,
     message_tuples: list[MessageTuple] | None = None,
     block_tuples: list[ContentBlockTuple] | None = None,
@@ -111,6 +113,7 @@ def _conversation_data(
     stats_tuple: StatsTuple | None = None,
     attachment_tuples: list[AttachmentTuple] | None = None,
     attachment_ref_tuples: list[AttachmentRefTuple] | None = None,
+    append_only: bool = False,
 ) -> ConversationData:
     typed_conversation_id = ConversationId(conversation_id)
     conversation_tuple: ConversationTuple = (
@@ -127,7 +130,7 @@ def _conversation_data(
         1,
         ConversationId(parent_conversation_id) if parent_conversation_id is not None else None,
         None,
-        None,
+        raw_id,
     )
     return ConversationData(
         conversation_id=conversation_id,
@@ -140,6 +143,8 @@ def _conversation_data(
         stats_tuple=stats_tuple or (),
         attachment_tuples=list(attachment_tuples or []),
         attachment_ref_tuples=list(attachment_ref_tuples or []),
+        raw_id=raw_id,
+        append_only=append_only,
     )
 
 
@@ -444,6 +449,60 @@ def test_write_conversation_replaces_runtime_rows_on_content_change(tmp_path: Pa
         assert stats_row[0] == 1
 
 
+def test_write_conversation_append_mode_preserves_existing_messages(tmp_path: Path) -> None:
+    with open_connection(tmp_path / "ingest.db") as conn:
+        initial = _conversation_data(
+            "codex:append",
+            content_hash="hash-v1",
+            message_tuples=[
+                _message_tuple(
+                    "msg-1",
+                    "codex:append",
+                    role="user",
+                    text="first",
+                    content_hash="msg-v1-1",
+                    sort_key=1.0,
+                )
+            ],
+            stats_tuple=(ConversationId("codex:append"), "codex", 1, 1, 0, 0, 0),
+        )
+        tail = _conversation_data(
+            "codex:append",
+            content_hash="hash-tail",
+            message_tuples=[
+                _message_tuple(
+                    "msg-2",
+                    "codex:append",
+                    role="assistant",
+                    text="second",
+                    content_hash="msg-v2-2",
+                    sort_key=2.0,
+                )
+            ],
+            append_only=True,
+        )
+
+        changed_initial, _initial_counts = _write_conversation(conn, initial)
+        changed_tail, tail_counts = _write_conversation(conn, tail)
+        conn.commit()
+
+        rows = conn.execute(
+            "SELECT message_id, text FROM messages WHERE conversation_id = ? ORDER BY sort_key",
+            ("codex:append",),
+        ).fetchall()
+        stats = conn.execute(
+            "SELECT message_count, word_count FROM conversation_stats WHERE conversation_id = ?",
+            ("codex:append",),
+        ).fetchone()
+
+        assert changed_initial is True
+        assert changed_tail is True
+        assert tail_counts["messages"] == 1
+        assert [(row["message_id"], row["text"]) for row in rows] == [("msg-1", "first"), ("msg-2", "second")]
+        assert stats is not None
+        assert (stats["message_count"], stats["word_count"]) == (2, 2)
+
+
 def test_write_conversation_force_write_updates_sort_key_only(tmp_path: Path) -> None:
     """force_write with identical content updates sort_key without DELETE+INSERT cascade."""
     with open_connection(tmp_path / "ingest.db") as conn:
@@ -496,6 +555,79 @@ def test_write_conversation_force_write_updates_sort_key_only(tmp_path: Path) ->
         assert rows[0]["role"] == "user"
         assert rows[0]["text"] == "hello"
         assert rows[0]["sort_key"] == 1777636800.0
+
+
+def test_write_conversation_skips_shorter_duplicate_raw_source(tmp_path: Path) -> None:
+    """Duplicate source files for the same session must not replace fuller rows."""
+    with open_connection(tmp_path / "ingest.db") as conn:
+        conn.executemany(
+            """
+            INSERT INTO raw_conversations (
+                raw_id, provider_name, source_path, blob_size, acquired_at
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            [
+                ("raw-full", "codex", "/tmp/full.jsonl", 1, "2026-04-02T00:00:00Z"),
+                ("raw-stale", "codex", "/tmp/stale.jsonl", 1, "2026-04-02T00:00:00Z"),
+            ],
+        )
+        fuller = _conversation_data(
+            "codex:duplicate",
+            content_hash="hash-full",
+            raw_id="raw-full",
+            message_tuples=[
+                _message_tuple(
+                    "msg-1",
+                    "codex:duplicate",
+                    role="user",
+                    text="first",
+                    content_hash="msg-1",
+                    sort_key=1.0,
+                ),
+                _message_tuple(
+                    "msg-2",
+                    "codex:duplicate",
+                    role="assistant",
+                    text="second",
+                    content_hash="msg-2",
+                    sort_key=2.0,
+                ),
+            ],
+        )
+        stale = _conversation_data(
+            "codex:duplicate",
+            content_hash="hash-stale",
+            raw_id="raw-stale",
+            message_tuples=[
+                _message_tuple(
+                    "msg-1",
+                    "codex:duplicate",
+                    role="user",
+                    text="first stale",
+                    content_hash="msg-1-stale",
+                    sort_key=1.0,
+                )
+            ],
+        )
+
+        changed_full, _counts_full = _write_conversation(conn, fuller)
+        changed_stale, counts_stale = _write_conversation(conn, stale)
+        conn.commit()
+
+        messages = conn.execute(
+            "SELECT message_id, text FROM messages WHERE conversation_id = ? ORDER BY sort_key",
+            ("codex:duplicate",),
+        ).fetchall()
+        raw_id = conn.execute(
+            "SELECT raw_id FROM conversations WHERE conversation_id = ?",
+            ("codex:duplicate",),
+        ).fetchone()["raw_id"]
+
+        assert changed_full is True
+        assert changed_stale is False
+        assert counts_stale["skipped_conversations"] == 1
+        assert [row["text"] for row in messages] == ["first", "second"]
+        assert raw_id == "raw-full"
 
 
 def test_iter_ingest_results_sync_runs_inline_for_single_worker(
@@ -552,6 +684,150 @@ def test_iter_ingest_results_sync_runs_inline_for_single_worker(
 
     assert seen == ["raw-1", "raw-2"]
     assert [result.raw_id for result in results] == ["raw-1", "raw-2"]
+
+
+def test_iter_ingest_results_sync_bounds_in_flight_process_results(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_artifacts = [
+        RawConversationRecord(
+            raw_id=f"raw-{index}",
+            provider_name="codex",
+            source_path=f"/tmp/raw-{index}.jsonl",
+            blob_size=12,
+            acquired_at="2026-04-02T00:00:00Z",
+        )
+        for index in range(10)
+    ]
+    pending_sizes: list[int] = []
+
+    class FakeExecutor:
+        def __enter__(self) -> FakeExecutor:
+            return self
+
+        def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+            return None
+
+        def submit(
+            self,
+            fn: object,
+            raw_record: RawConversationRecord,
+            request: _IngestWorkerRequest,
+        ) -> Future[IngestRecordResult]:
+            del fn, request
+            future: Future[IngestRecordResult] = Future()
+            future.set_result(IngestRecordResult(raw_id=raw_record.raw_id))
+            return future
+
+    def fake_process_pool_executor(*, max_workers: int) -> FakeExecutor:
+        assert max_workers == 2
+        return FakeExecutor()
+
+    def fake_wait(
+        futures: object,
+        *,
+        timeout: float | None = None,
+        return_when: object | None = None,
+    ) -> tuple[set[Future[IngestRecordResult]], set[Future[IngestRecordResult]]]:
+        del timeout, return_when
+        pending = list(futures) if isinstance(futures, tuple) else []
+        pending_sizes.append(len(pending))
+        return set(pending[:1]), set(pending[1:])
+
+    monkeypatch.setattr(ingest_batch_core, "process_pool_executor", fake_process_pool_executor)
+    monkeypatch.setattr(ingest_batch_core, "wait", fake_wait)
+
+    results = list(
+        _iter_ingest_results_sync(
+            raw_artifacts,
+            request=_IngestWorkerRequest(
+                archive_root_str="/tmp/archive",
+                blob_root_str="/tmp/blob-store",
+                validation_mode="strict",
+                measure_ingest_result_size=False,
+            ),
+            worker_count=2,
+        )
+    )
+
+    assert [result.raw_id for result in results] == [record.raw_id for record in raw_artifacts]
+    assert max(pending_sizes) == 2
+
+
+def test_iter_ingest_results_sync_emits_heartbeat_while_workers_are_pending(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_artifacts = [
+        RawConversationRecord(
+            raw_id="raw-1",
+            provider_name="codex",
+            source_path="/tmp/raw-1.jsonl",
+            blob_size=12,
+            acquired_at="2026-04-02T00:00:00Z",
+        )
+    ]
+    future: Future[IngestRecordResult] = Future()
+    wait_calls = 0
+    heartbeat_count = 0
+
+    class FakeExecutor:
+        def __enter__(self) -> FakeExecutor:
+            return self
+
+        def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+            return None
+
+        def submit(
+            self,
+            fn: object,
+            raw_record: RawConversationRecord,
+            request: _IngestWorkerRequest,
+        ) -> Future[IngestRecordResult]:
+            del fn, raw_record, request
+            return future
+
+    def fake_process_pool_executor(*, max_workers: int) -> FakeExecutor:
+        assert max_workers == 2
+        return FakeExecutor()
+
+    def fake_wait(
+        futures: object,
+        *,
+        timeout: float | None = None,
+        return_when: object | None = None,
+    ) -> tuple[set[Future[IngestRecordResult]], set[Future[IngestRecordResult]]]:
+        nonlocal wait_calls
+        del timeout, return_when
+        pending = set(futures) if isinstance(futures, tuple) else set()
+        wait_calls += 1
+        if wait_calls == 1:
+            return set(), pending
+        future.set_result(IngestRecordResult(raw_id="raw-1"))
+        return {future}, set()
+
+    def heartbeat() -> None:
+        nonlocal heartbeat_count
+        heartbeat_count += 1
+
+    monkeypatch.setattr(ingest_batch_core, "process_pool_executor", fake_process_pool_executor)
+    monkeypatch.setattr(ingest_batch_core, "wait", fake_wait)
+
+    results = list(
+        _iter_ingest_results_sync(
+            raw_artifacts,
+            request=_IngestWorkerRequest(
+                archive_root_str="/tmp/archive",
+                blob_root_str="/tmp/blob-store",
+                validation_mode="strict",
+                measure_ingest_result_size=False,
+            ),
+            worker_count=2,
+            heartbeat=heartbeat,
+        )
+    )
+
+    assert [result.raw_id for result in results] == ["raw-1"]
+    assert heartbeat_count == 1
 
 
 def test_process_ingest_batch_sync_commits_fts_repair_and_invalidates_search_cache(
@@ -678,15 +954,33 @@ def test_process_ingest_batch_sync_commits_fts_repair_and_invalidates_search_cac
 
 def test_select_ingest_worker_count_uses_cpu_count(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("polylogue.pipeline.services.ingest_batch._core.os.cpu_count", lambda: 16)
-    raw_artifacts = [SimpleNamespace(blob_size=4 * 1024 * 1024) for _ in range(6)]
+    raw_artifacts = [SimpleNamespace(blob_size=16 * 1024 * 1024) for _ in range(6)]
     worker_count = _select_ingest_worker_count(raw_artifacts, None)
     # min(max(6,1), 16, 8) = 6 — uses all available artifacts
     assert worker_count == 6
 
 
+def test_select_ingest_worker_count_avoids_process_pool_for_tiny_batches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("polylogue.pipeline.services.ingest_batch._core.os.cpu_count", lambda: 16)
+    raw_artifacts = [SimpleNamespace(blob_size=512 * 1024) for _ in range(10)]
+    worker_count = _select_ingest_worker_count(raw_artifacts, None)
+    assert worker_count == 1
+
+
+def test_select_ingest_worker_count_caps_small_batches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("polylogue.pipeline.services.ingest_batch._core.os.cpu_count", lambda: 16)
+    raw_artifacts = [SimpleNamespace(blob_size=4 * 1024 * 1024) for _ in range(10)]
+    worker_count = _select_ingest_worker_count(raw_artifacts, None)
+    assert worker_count == 4
+
+
 def test_select_ingest_worker_count_respects_limit(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("polylogue.pipeline.services.ingest_batch._core.os.cpu_count", lambda: 16)
-    raw_artifacts = [SimpleNamespace(blob_size=4 * 1024 * 1024) for _ in range(60)]
+    raw_artifacts = [SimpleNamespace(blob_size=16 * 1024 * 1024) for _ in range(60)]
     worker_count = _select_ingest_worker_count(raw_artifacts, ingest_workers=4)
     # min(max(60,1), 16, 4) = 4 — respects explicit limit
     assert worker_count == 4

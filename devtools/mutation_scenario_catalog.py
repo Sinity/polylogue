@@ -119,7 +119,6 @@ MUTATION_CAMPAIGNS: dict[str, MutationCampaign] = {
         tests=(
             "tests/unit/pipeline/test_acquisition_streams.py",
             "tests/unit/pipeline/test_parsing_service.py",
-            "tests/unit/pipeline/test_render_service.py",
             "tests/unit/pipeline/test_indexing.py",
             "tests/unit/pipeline/test_ingest_batch.py",
             "tests/unit/pipeline/test_stage_independence.py",
@@ -142,20 +141,6 @@ MUTATION_CAMPAIGNS: dict[str, MutationCampaign] = {
             "tests/unit/cli/test_query_fmt.py",
         ),
     ),
-    "cli-run": MutationCampaign(
-        name="cli-run",
-        description="Run command execution, display, and watch contracts",
-        paths_to_mutate=("polylogue/cli/commands/run.py",),
-        tests=(
-            "tests/unit/cli/test_run.py",
-            "tests/unit/cli/test_run_int.py",
-            "tests/unit/cli/test_run_laws.py",
-        ),
-        path_targets=("conversation-render-loop",),
-        artifact_targets=("conversation_render_projection", "rendered_conversation_artifacts"),
-        operation_targets=("render-conversations",),
-        tags=("mutation", "run", "render"),
-    ),
     "ui-core": MutationCampaign(
         name="ui-core",
         description="UI prompt, progress, and facade interaction contracts",
@@ -168,24 +153,6 @@ MUTATION_CAMPAIGNS: dict[str, MutationCampaign] = {
             "tests/unit/ui/test_ui_visual.py",
             "tests/unit/ui/test_tui.py",
         ),
-    ),
-    "site-builder": MutationCampaign(
-        name="site-builder",
-        description="Static-site builder and CLI archive contracts",
-        paths_to_mutate=("polylogue/site/builder.py",),
-        tests=(
-            "tests/integration/test_site.py",
-            "tests/integration/test_site_laws.py",
-        ),
-        path_targets=("site-publication-loop",),
-        artifact_targets=(
-            "conversation_render_projection",
-            "site_conversation_pages",
-            "site_publication_manifest",
-            "publication_records",
-        ),
-        operation_targets=("publish-site",),
-        tags=("mutation", "site", "publication"),
     ),
     "drive-client": MutationCampaign(
         name="drive-client",

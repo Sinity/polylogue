@@ -126,7 +126,6 @@ dimensions:
       - tests/unit/security/test_path_sanitization.py
       - tests/unit/security/test_attachment_security.py
       - tests/unit/security/test_mcp_security.py
-      - tests/unit/security/test_observers_security.py
     unit_rendering:
       - tests/unit/rendering/test_output_snapshots.py
     integration:

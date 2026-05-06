@@ -87,7 +87,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools render-cli-reference` | Render docs/cli-reference.md from live CLI help. |
 | `devtools render-devtools-reference` | Render the command catalog inside docs/devtools.md. |
 | `devtools render-docs-surface` | Render docs/README.md and the README documentation table. |
-| `devtools render-pages` | Build the GitHub Pages static site into _site/. |
+| `devtools render-pages` | Build the GitHub Pages documentation site into _site/. |
 | `devtools render-quality-reference` | Render docs/test-quality-workflows.md from live validation, mutation, and benchmark registries. |
 | `devtools render-readme-media` | Generate README media assets (architecture diagrams, flowcharts) under docs/media/. |
 | `devtools render-topology-status` | Render docs/topology-status.md from the topology projection and realized tree. |

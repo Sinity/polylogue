@@ -1,0 +1,11 @@
+Usage: polylogue ingest [OPTIONS] PATH
+
+  Schedule a file or directory for ingestion by the daemon.
+
+  Contacts the running polylogued daemon and requests ingestion of PATH. The
+  daemon copies the file into its inbox and begins processing asynchronously.
+  Use 'polylogue status' to monitor progress.
+
+Options:
+  --daemon-url TEXT  Daemon API URL.  [default: http://127.0.0.1:8766]
+  -h, --help         Show this message and exit.

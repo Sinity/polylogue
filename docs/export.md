@@ -75,16 +75,6 @@ polylogue export <id> --no-file-reads     # Strip file read blocks
 polylogue export <id> --dialogue-only     # User/assistant messages only
 ```
 
-## Batch Export via Pipeline
-
-The `publish` pipeline stage exports all conversations to a directory:
-
-```bash
-polylogue run publish --output-dir ./exports/
-```
-
-This generates both Markdown and HTML renders for every conversation.
-
 ## Sharing Considerations
 
 - Exports contain full message content including tool inputs/outputs and

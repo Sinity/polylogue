@@ -63,11 +63,6 @@ def test_artifact_graph_contains_the_current_runtime_paths() -> None:
         "provider_analytics_results",
         "session_insight_status_results",
         "archive_debt_results",
-        "conversation_render_projection",
-        "rendered_conversation_artifacts",
-        "site_conversation_pages",
-        "site_publication_manifest",
-        "publication_records",
         "schema_packages",
         "schema_cluster_manifests",
         "inferred_corpus_specs",
@@ -117,11 +112,6 @@ def test_artifact_graph_contains_the_current_runtime_paths() -> None:
     assert nodes["parse_quarantine"].depends_on == ("raw_validation_state",)
     assert nodes["session_insight_source_conversations"].depends_on == ("archive_conversation_rows",)
     assert nodes["conversation_query_results"].depends_on == ("message_fts",)
-    assert nodes["conversation_render_projection"].depends_on == ("archive_conversation_rows",)
-    assert nodes["rendered_conversation_artifacts"].depends_on == ("conversation_render_projection",)
-    assert nodes["site_conversation_pages"].depends_on == ("conversation_render_projection",)
-    assert nodes["site_publication_manifest"].depends_on == ("site_conversation_pages",)
-    assert nodes["publication_records"].depends_on == ("site_publication_manifest",)
     assert nodes["session_profile_results"].depends_on == ("session_profile_rows", "session_profile_merged_fts")
     assert nodes["week_session_summary_results"].depends_on == ("day_session_summary_rows",)
     assert nodes["provider_analytics_results"].depends_on == ("session_insight_rows",)
@@ -159,12 +149,6 @@ def test_artifact_graph_contains_the_current_runtime_paths() -> None:
     assert operations["project-retrieval-band-readiness"].produces == ("retrieval_band_readiness",)
     assert operations["query-embedding-status"].produces == ("embedding_status_results",)
     assert operations["query-conversations"].produces == ("conversation_query_results",)
-    assert operations["render-conversations"].produces == ("rendered_conversation_artifacts",)
-    assert operations["publish-site"].produces == (
-        "site_conversation_pages",
-        "site_publication_manifest",
-        "publication_records",
-    )
     assert operations["project-action-event-readiness"].consumes == ("action_event_rows", "action_event_fts")
     assert "session_insight_rows" in operations["materialize-session-insights"].produces
     assert "session_profile_rows" in operations["materialize-session-insights"].produces
@@ -252,8 +236,6 @@ def test_artifact_graph_paths_reference_only_declared_nodes() -> None:
         "provider-analytics-query-loop",
         "session-insight-status-query-loop",
         "archive-debt-query-loop",
-        "conversation-render-loop",
-        "site-publication-loop",
         "inferred-corpus-compilation-loop",
         "schema-list-query-loop",
         "schema-explain-query-loop",
@@ -338,12 +320,6 @@ def test_artifact_graph_lists_operations_for_each_runtime_path() -> None:
     assert tuple(operation.name for operation in graph.operations_for_path("conversation-query-loop")) == (
         "index-message-fts",
         "query-conversations",
-    )
-    assert tuple(operation.name for operation in graph.operations_for_path("conversation-render-loop")) == (
-        "render-conversations",
-    )
-    assert tuple(operation.name for operation in graph.operations_for_path("site-publication-loop")) == (
-        "publish-site",
     )
     assert tuple(operation.name for operation in graph.operations_for_path("action-event-repair-loop")) == (
         "materialize-action-events",
