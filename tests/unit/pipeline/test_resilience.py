@@ -691,9 +691,15 @@ def test_ingest_record_streams_codex_jsonl_without_full_envelope_decode(tmp_path
     )
     record = _make_raw_record("codex-streaming", "codex", content, "/exports/codex.jsonl")
 
-    with patch(
-        "polylogue.archive.raw_payload.build_raw_payload_envelope",
-        side_effect=AssertionError("legacy full envelope decode should be bypassed"),
+    with (
+        patch(
+            "polylogue.archive.raw_payload.build_raw_payload_envelope",
+            side_effect=AssertionError("legacy full envelope decode should be bypassed"),
+        ),
+        patch(
+            "polylogue.archive.raw_payload.decode._sample_jsonl_payload_with_detail",
+            side_effect=AssertionError("validation-off stream ingest should not pre-sample large JSONL"),
+        ),
     ):
         result = ingest_record(record, str(tmp_path / "archive"), "off")
 

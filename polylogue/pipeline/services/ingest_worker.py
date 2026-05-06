@@ -18,7 +18,8 @@ from typing import TYPE_CHECKING, Literal
 
 from typing_extensions import TypedDict
 
-from polylogue.archive.artifact_taxonomy import ArtifactClassification, classify_artifact
+from polylogue.archive.artifact_taxonomy import ArtifactClassification, ArtifactKind, classify_artifact
+from polylogue.archive.artifact_taxonomy.support import is_subagent_path
 from polylogue.archive.conversation.branch_type import BranchType
 from polylogue.archive.message.roles import Role
 from polylogue.archive.raw_payload.decode import RawPayloadEnvelope
@@ -454,6 +455,39 @@ def _build_stream_parse_plan(
     )
 
 
+def _build_fast_stream_parse_plan(
+    context: _IngestContext,
+    *,
+    payload_provider: str | None,
+) -> _ParsePlan | None:
+    runtime_provider = Provider.from_string(payload_provider or context.raw_record.provider_name)
+    if runtime_provider not in STREAM_RECORD_PROVIDERS:
+        return None
+
+    kind = (
+        ArtifactKind.SUBAGENT_CONVERSATION_STREAM
+        if is_subagent_path(context.raw_record.source_path)
+        else ArtifactKind.CONVERSATION_RECORD_STREAM
+    )
+    artifact = ArtifactClassification(
+        provider=runtime_provider,
+        kind=kind,
+        parse_as_conversation=True,
+        schema_eligible=False,
+        default_priority=90 if kind is ArtifactKind.SUBAGENT_CONVERSATION_STREAM else 120,
+        reason="known JSONL stream provider with validation off",
+    )
+    return _build_parse_plan(
+        provider=runtime_provider,
+        payload_provider=str(runtime_provider),
+        artifact=artifact,
+        source_path=context.raw_record.source_path,
+        mode="stream",
+        schema_payload_source=None,
+        stream_name=context.raw_record.source_path or context.raw_record.raw_id,
+    )
+
+
 def _build_envelope_parse_plan(
     context: _IngestContext,
     envelope: RawPayloadEnvelope,
@@ -673,10 +707,13 @@ def ingest_record(
         fallback_timestamp=raw_record.file_mtime,
     )
 
-    if _is_stream_record_provider(raw_record.source_path, stored_payload_provider or raw_record.provider_name) and (
-        stream_plan := _build_stream_parse_plan(context, payload_provider=stored_payload_provider)
-    ):
-        return _run_parse_plan(context, stream_plan)
+    if _is_stream_record_provider(raw_record.source_path, stored_payload_provider or raw_record.provider_name):
+        if validation_mode is ValidationMode.OFF and (
+            stream_plan := _build_fast_stream_parse_plan(context, payload_provider=stored_payload_provider)
+        ):
+            return _run_parse_plan(context, stream_plan)
+        if stream_plan := _build_stream_parse_plan(context, payload_provider=stored_payload_provider):
+            return _run_parse_plan(context, stream_plan)
 
     # ── Phase 1: Decode blob (ONE decode, not two) ────────────────────
     try:
