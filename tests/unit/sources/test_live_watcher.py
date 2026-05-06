@@ -10,15 +10,39 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 
 import polylogue.sources.live.watcher as live_watcher
 from polylogue import Polylogue
 from polylogue.sources.live import LiveWatcher, WatchSource
-from polylogue.sources.live.batch import LiveBatchProcessor, last_complete_newline_from_tail
+from polylogue.sources.live.batch import LiveBatchProcessor, _FullIngestResult, last_complete_newline_from_tail
 from polylogue.sources.live.cursor import CursorRecord, CursorStore
+
+
+class _FullIngestMock:
+    def __init__(self) -> None:
+        self.await_count = 0
+        self.side_effect: BaseException | type[BaseException] | None = None
+
+    def reset_mock(self) -> None:
+        self.await_count = 0
+
+    async def __call__(self, paths: list[Path], *, source_name: str) -> _FullIngestResult:
+        del source_name
+        self.await_count += 1
+        if self.side_effect is not None:
+            if isinstance(self.side_effect, BaseException):
+                raise self.side_effect
+            if isinstance(self.side_effect, type) and issubclass(self.side_effect, BaseException):
+                raise self.side_effect()
+        return _FullIngestResult(
+            succeeded=list(paths),
+            failed=[],
+            source_payload_read_bytes=sum(path.stat().st_size for path in paths),
+        )
+
 
 # --- CursorStore ---------------------------------------------------------------
 
@@ -202,14 +226,15 @@ def _make_watcher(
     *,
     debounce_s: float = 0.01,
     event_emitter: MagicMock | None = None,
-) -> tuple[LiveWatcher, AsyncMock]:
+) -> tuple[LiveWatcher, _FullIngestMock]:
     polylogue = MagicMock()
     polylogue.archive_root = tmp_path
-    polylogue.parse_sources = AsyncMock()
     cursor = CursorStore(tmp_path / "cursor.sqlite")
     sources = (WatchSource(name="test", root=root),)
     watcher = LiveWatcher(polylogue, sources, debounce_s=debounce_s, cursor=cursor, event_emitter=event_emitter)
-    return watcher, polylogue.parse_sources
+    full_ingest = _FullIngestMock()
+    watcher._batch_processor._ingest_full_paths = full_ingest  # type: ignore[method-assign]
+    return watcher, full_ingest
 
 
 def test_watcher_default_cursor_uses_archive_database(tmp_path: Path) -> None:
@@ -221,7 +246,6 @@ def test_watcher_default_cursor_uses_archive_database(tmp_path: Path) -> None:
         SimpleNamespace(
             archive_root=tmp_path,
             backend=SimpleNamespace(db_path=db_path),
-            parse_sources=AsyncMock(),
         ),
     )
 
@@ -418,7 +442,7 @@ async def test_live_batch_processor_records_durable_attempt(tmp_path: Path) -> N
     source_path.write_text('{"type":"session_meta","payload":{"id":"s"}}\n', encoding="utf-8")
     db_path = tmp_path / "live.sqlite"
     cursor = CursorStore(db_path)
-    polylogue = SimpleNamespace(parse_sources=AsyncMock(), backend=None)
+    polylogue = SimpleNamespace(archive_root=tmp_path, backend=None)
     processor = LiveBatchProcessor(
         cast(Any, polylogue),
         (WatchSource(name="codex", root=root),),

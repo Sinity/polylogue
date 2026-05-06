@@ -1,9 +1,9 @@
 """Convergence stage implementations for the daemon pipeline.
 
 Each stage has a ``check`` that inspects current archive state and an
-``execute`` that performs the missing work. The live watcher owns
-source ingestion through its batched ``parse_sources(...)`` path; daemon
-convergence stages only repair and refresh post-ingest archive state.
+``execute`` that performs the missing work. The live watcher owns source
+ingestion through daemon-side raw-record ingest; daemon convergence stages only
+repair and refresh post-ingest archive state.
 
 - fts: rebuild FTS if messages > indexed count
 - embed: vectorize un-embedded conversations via Voyage API

@@ -12,7 +12,6 @@ from json import loads as json_loads
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
-from polylogue.config import Source
 from polylogue.core.metrics import read_current_rss_mb, read_peak_rss_children_mb, read_peak_rss_self_mb
 from polylogue.core.provider_identity import canonical_acquisition_provider
 from polylogue.logging import get_logger
@@ -86,6 +85,13 @@ class LiveBatchMetrics:
             "stage_timings_s": self.stage_timings_s,
             "failed_paths": self.failed_paths,
         }
+
+
+@dataclass(frozen=True, slots=True)
+class _FullIngestResult:
+    succeeded: list[Path]
+    failed: list[Path]
+    source_payload_read_bytes: int
 
 
 class LiveBatchProcessor:
@@ -175,7 +181,6 @@ class LiveBatchProcessor:
             for source_paths in _full_parse_progress_groups(grouped_paths):
                 if self._stop_requested():
                     break
-                sources = [Source(name=f"{source_name}:{path.parent.name}", path=path) for path in source_paths]
                 t0 = time.perf_counter()
                 try:
                     self._record_attempt_progress(
@@ -189,7 +194,7 @@ class LiveBatchProcessor:
                         current_source=source_name,
                         current_path=source_paths[0] if source_paths else None,
                     )
-                    await self._polylogue.parse_sources(sources=sources, download_assets=False)
+                    full_result = await self._ingest_full_paths(source_paths, source_name=source_name)
                 except Exception as exc:
                     logger.warning("live.watcher: batch failed for %s: %s", source_name, exc)
                     for path in source_paths:
@@ -210,14 +215,17 @@ class LiveBatchProcessor:
                     continue
                 parse_elapsed = time.perf_counter() - t0
                 parse_time_s += parse_elapsed
-                source_payload_read_bytes += sum(_path_size(path) for path in source_paths)
-                succeeded_paths.update(source_paths)
+                source_payload_read_bytes += full_result.source_payload_read_bytes
+                succeeded_paths.update(full_result.succeeded)
+                for path in full_result.failed:
+                    failed_paths.append(str(path))
+                    cursor_fingerprint_read_bytes += self._record_failed_cursor(path)
                 logger.info(
                     "live.watcher: batch ingested %s — %d in %.1fs (%.1f/s)",
                     source_name,
-                    len(source_paths),
+                    len(full_result.succeeded),
                     parse_elapsed,
-                    len(source_paths) / max(parse_elapsed, 0.01),
+                    len(full_result.succeeded) / max(parse_elapsed, 0.01),
                 )
 
         if self._converger is not None and succeeded_paths:
@@ -444,6 +452,65 @@ class LiveBatchProcessor:
         backend = getattr(self._polylogue, "backend", None)
         return isinstance(getattr(backend, "db_path", None), Path)
 
+    async def _ingest_full_paths(self, paths: list[Path], *, source_name: str) -> _FullIngestResult:
+        if not paths:
+            return _FullIngestResult(succeeded=[], failed=[], source_payload_read_bytes=0)
+        archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
+        blob_root = blob_store_root()
+        blob_store = BlobStore(blob_root)
+        raw_records: list[RawConversationRecord] = []
+        raw_by_id: dict[str, Path] = {}
+        failed: list[Path] = []
+        source_payload_read_bytes = 0
+        provider_name = canonical_acquisition_provider(source_name, source_name=source_name)
+        provider = Provider.from_string(provider_name)
+
+        for path in paths:
+            try:
+                payload = path.read_bytes()
+                stat = path.stat()
+            except OSError:
+                failed.append(path)
+                continue
+            raw_id, blob_size = blob_store.write_from_bytes(payload)
+            source_payload_read_bytes += len(payload)
+            raw_records.append(
+                RawConversationRecord(
+                    raw_id=raw_id,
+                    provider_name=provider_name,
+                    payload_provider=provider,
+                    source_name=source_name,
+                    source_path=str(path),
+                    source_index=0,
+                    blob_size=blob_size,
+                    acquired_at=datetime.now(UTC).isoformat(),
+                    file_mtime=datetime.fromtimestamp(stat.st_mtime_ns / 1_000_000_000, UTC).isoformat(),
+                )
+            )
+            raw_by_id[raw_id] = path
+
+        if raw_records:
+            self._persist_raw_records(raw_records)
+            summary = _process_ingest_batch_sync(
+                raw_records,
+                db_path=self._cursor._db_path,
+                archive_root_str=str(archive_root),
+                blob_root_str=str(blob_root),
+                validation_mode=str(getattr(getattr(self._polylogue, "config", None), "validation_mode", "advisory")),
+                ingest_workers=_full_ingest_worker_count(raw_records),
+                measure_ingest_result_size=False,
+            )
+            failed.extend(raw_by_id[raw_id] for raw_id in summary.failed_raw_ids if raw_id in raw_by_id)
+            if summary.parse_failures and not summary.failed_raw_ids:
+                failed.extend(raw_by_id.values())
+
+        failed_set = set(failed)
+        return _FullIngestResult(
+            succeeded=[path for path in paths if path not in failed_set],
+            failed=failed,
+            source_payload_read_bytes=source_payload_read_bytes,
+        )
+
     def _append_plan(self, path: Path) -> _AppendPlan | None:
         cursor = self._cursor.get_record(path)
         if cursor is None or cursor.parser_fingerprint != self._current_parser_fingerprint():
@@ -567,7 +634,7 @@ class LiveBatchProcessor:
             )
             raw_by_id[raw_id] = plan
 
-        self._persist_append_raw_records(raw_records)
+        self._persist_raw_records(raw_records)
         try:
             summary = _process_ingest_batch_sync(
                 raw_records,
@@ -589,10 +656,13 @@ class LiveBatchProcessor:
             return _AppendResult(succeeded=[], failed=plans)
         return _AppendResult(succeeded=succeeded, failed=failed)
 
-    def _persist_append_raw_records(self, records: list[RawConversationRecord]) -> None:
+    def _persist_raw_records(self, records: list[RawConversationRecord]) -> None:
         if not records:
             return
         with self._cursor._connect() as conn:
+            from polylogue.storage.sqlite.schema import _ensure_schema
+
+            _ensure_schema(conn)
             conn.executemany(
                 """
                 INSERT OR IGNORE INTO raw_conversations (
@@ -702,6 +772,13 @@ def _full_parse_progress_groups(paths: list[Path]) -> Iterable[list[Path]]:
         yield [path]
     if small_paths:
         yield small_paths
+
+
+def _full_ingest_worker_count(records: list[RawConversationRecord]) -> int:
+    total_bytes = sum(record.blob_size for record in records)
+    if len(records) <= 1 or total_bytes >= 512 * 1024 * 1024:
+        return 1
+    return min(2, len(records))
 
 
 def _path_size(path: Path) -> int:
