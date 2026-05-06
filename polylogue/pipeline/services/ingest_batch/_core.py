@@ -59,7 +59,9 @@ from polylogue.pipeline.services.ingest_worker import (
     ConversationTuple,
     IngestRecordResult,
     MessageTuple,
+    ingest_record,
 )
+from polylogue.pipeline.services.process_pool import process_pool_executor
 from polylogue.storage.conversation_replacement import (
     recount_and_prune_attachments_sync,
     replace_conversation_runtime_state_sync,
@@ -595,9 +597,7 @@ def _run_ingest_record(
     raw_record: RawConversationRecord,
     request: _IngestWorkerRequest,
 ) -> IngestRecordResult:
-    from polylogue.pipeline.services import ingest_batch as ingest_batch_package
-
-    return ingest_batch_package.ingest_record(
+    return ingest_record(
         raw_record,
         request.archive_root_str,
         request.validation_mode,
@@ -618,9 +618,7 @@ def _iter_ingest_results_sync(
         return
 
     try:
-        from polylogue.pipeline.services import ingest_batch as ingest_batch_package
-
-        with ingest_batch_package.process_pool_executor(max_workers=worker_count) as executor:
+        with process_pool_executor(max_workers=worker_count) as executor:
             futures: dict[Future[IngestRecordResult], str] = {}
             for raw_record in raw_artifacts:
                 future = executor.submit(_run_ingest_record, raw_record, request)
