@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
 from polylogue.config import Source
+from polylogue.core.metrics import read_current_rss_mb, read_peak_rss_children_mb, read_peak_rss_self_mb
 from polylogue.core.provider_identity import canonical_acquisition_provider
 from polylogue.logging import get_logger
 from polylogue.paths import blob_store_root
@@ -119,6 +120,11 @@ class LiveBatchProcessor:
         batch_started = time.perf_counter()
         db_bytes_before = _path_size(self._cursor._db_path) + _path_size(self._cursor._db_path.with_suffix(".db-wal"))
         input_bytes = sum(_path_size(path) for path in paths)
+        attempt_id = self._cursor.begin_ingest_attempt(
+            paths=paths,
+            input_bytes=input_bytes,
+            queued_file_count=queued_file_count if queued_file_count is not None else len(paths),
+        )
         source_payload_read_bytes = 0
         cursor_fingerprint_read_bytes = 0
         parse_time_s = 0.0
@@ -138,6 +144,17 @@ class LiveBatchProcessor:
                 source_payload_read_bytes += append_plan.bytes_read
 
         if append_plans:
+            self._record_attempt_progress(
+                attempt_id,
+                phase="append_parse",
+                succeeded_file_count=len(succeeded_paths),
+                failed_file_count=len(failed_paths),
+                source_payload_read_bytes=source_payload_read_bytes,
+                cursor_fingerprint_read_bytes=cursor_fingerprint_read_bytes,
+                parse_time_s=parse_time_s,
+                current_source=append_plans[0].source_name,
+                current_path=append_plans[0].path,
+            )
             t0 = time.perf_counter()
             append_result = self._ingest_append_plans(append_plans)
             parse_time_s += time.perf_counter() - t0
@@ -158,12 +175,35 @@ class LiveBatchProcessor:
             sources = [Source(name=f"{source_name}:{path.parent.name}", path=path) for path in source_paths]
             t0 = time.perf_counter()
             try:
+                self._record_attempt_progress(
+                    attempt_id,
+                    phase="full_parse",
+                    succeeded_file_count=len(succeeded_paths),
+                    failed_file_count=len(failed_paths),
+                    source_payload_read_bytes=source_payload_read_bytes,
+                    cursor_fingerprint_read_bytes=cursor_fingerprint_read_bytes,
+                    parse_time_s=parse_time_s,
+                    current_source=source_name,
+                    current_path=source_paths[0] if source_paths else None,
+                )
                 await self._polylogue.parse_sources(sources=sources, download_assets=False)
             except Exception as exc:
                 logger.warning("live.watcher: batch failed for %s: %s", source_name, exc)
                 for path in source_paths:
                     failed_paths.append(str(path))
                     cursor_fingerprint_read_bytes += self._record_failed_cursor(path)
+                self._record_attempt_progress(
+                    attempt_id,
+                    phase="full_parse_failed",
+                    succeeded_file_count=len(succeeded_paths),
+                    failed_file_count=len(failed_paths),
+                    source_payload_read_bytes=source_payload_read_bytes,
+                    cursor_fingerprint_read_bytes=cursor_fingerprint_read_bytes,
+                    parse_time_s=parse_time_s,
+                    current_source=source_name,
+                    current_path=source_paths[0] if source_paths else None,
+                    error=str(exc),
+                )
                 continue
             parse_elapsed = time.perf_counter() - t0
             parse_time_s += parse_elapsed
@@ -179,6 +219,16 @@ class LiveBatchProcessor:
 
         if self._converger is not None and succeeded_paths:
             try:
+                self._record_attempt_progress(
+                    attempt_id,
+                    phase="convergence",
+                    succeeded_file_count=len(succeeded_paths),
+                    failed_file_count=len(failed_paths),
+                    source_payload_read_bytes=source_payload_read_bytes,
+                    cursor_fingerprint_read_bytes=cursor_fingerprint_read_bytes,
+                    parse_time_s=parse_time_s,
+                    current_path=next(iter(sorted(succeeded_paths))),
+                )
                 t0 = time.perf_counter()
                 converge_batch = getattr(self._converger, "converge_batch", None)
                 if callable(converge_batch):
@@ -197,7 +247,28 @@ class LiveBatchProcessor:
                 convergence_time_s = time.perf_counter() - t0
             except Exception as exc:
                 logger.warning("live.watcher: post-ingest converge failed: %s", exc)
+                self._record_attempt_progress(
+                    attempt_id,
+                    phase="convergence_failed",
+                    succeeded_file_count=len(succeeded_paths),
+                    failed_file_count=len(failed_paths),
+                    source_payload_read_bytes=source_payload_read_bytes,
+                    cursor_fingerprint_read_bytes=cursor_fingerprint_read_bytes,
+                    parse_time_s=parse_time_s,
+                    convergence_time_s=convergence_time_s,
+                    error=str(exc),
+                )
 
+        self._record_attempt_progress(
+            attempt_id,
+            phase="cursor_update",
+            succeeded_file_count=len(succeeded_paths),
+            failed_file_count=len(failed_paths),
+            source_payload_read_bytes=source_payload_read_bytes,
+            cursor_fingerprint_read_bytes=cursor_fingerprint_read_bytes,
+            parse_time_s=parse_time_s,
+            convergence_time_s=convergence_time_s,
+        )
         for path in succeeded_paths - {plan.path for plan in append_plans}:
             try:
                 stat = path.stat()
@@ -243,7 +314,58 @@ class LiveBatchProcessor:
         )
         if emit_event and self._event_emitter is not None:
             self._event_emitter("ingestion_batch", metrics.to_payload())
+        self._record_attempt_progress(
+            attempt_id,
+            phase="completed",
+            status="completed",
+            succeeded_file_count=len(succeeded_paths),
+            failed_file_count=len(failed_paths),
+            source_payload_read_bytes=source_payload_read_bytes,
+            cursor_fingerprint_read_bytes=cursor_fingerprint_read_bytes,
+            parse_time_s=parse_time_s,
+            convergence_time_s=convergence_time_s,
+        )
+        self._cursor.finish_ingest_attempt(
+            attempt_id,
+            status="completed" if not failed_paths else "completed_with_failures",
+            phase="completed",
+            error="; ".join(failed_paths[:3]) if failed_paths else None,
+        )
         return metrics
+
+    def _record_attempt_progress(
+        self,
+        attempt_id: str,
+        *,
+        phase: str,
+        status: str = "running",
+        succeeded_file_count: int,
+        failed_file_count: int,
+        source_payload_read_bytes: int,
+        cursor_fingerprint_read_bytes: int,
+        parse_time_s: float,
+        convergence_time_s: float = 0.0,
+        current_source: str | None = None,
+        current_path: Path | None = None,
+        error: str | None = None,
+    ) -> None:
+        self._cursor.update_ingest_attempt(
+            attempt_id,
+            phase=phase,
+            status=status,
+            succeeded_file_count=succeeded_file_count,
+            failed_file_count=failed_file_count,
+            source_payload_read_bytes=source_payload_read_bytes,
+            cursor_fingerprint_read_bytes=cursor_fingerprint_read_bytes,
+            parse_time_s=round(parse_time_s, 6),
+            convergence_time_s=round(convergence_time_s, 6),
+            current_source=current_source,
+            current_path=current_path,
+            error=error,
+            rss_current_mb=read_current_rss_mb(),
+            rss_peak_self_mb=read_peak_rss_self_mb(),
+            rss_peak_children_mb=read_peak_rss_children_mb(),
+        )
 
     def _record_failed_cursor(self, path: Path) -> int:
         try:

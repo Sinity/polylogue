@@ -86,6 +86,41 @@ def test_cursor_writes_updated_at(tmp_path: Path) -> None:
     assert "T" in row[0]  # ISO 8601
 
 
+def test_cursor_records_live_ingest_attempt_progress(tmp_path: Path) -> None:
+    store = CursorStore(tmp_path / "live.sqlite")
+    source = tmp_path / "session.jsonl"
+    source.write_text('{"a":1}\n')
+
+    attempt_id = store.begin_ingest_attempt(
+        paths=[source],
+        input_bytes=source.stat().st_size,
+        queued_file_count=1,
+    )
+    store.update_ingest_attempt(
+        attempt_id,
+        phase="full_parse",
+        succeeded_file_count=0,
+        failed_file_count=0,
+        source_payload_read_bytes=0,
+        cursor_fingerprint_read_bytes=0,
+        parse_time_s=0.25,
+        current_source="codex",
+        current_path=source,
+        rss_current_mb=123.0,
+    )
+    running = store.recent_ingest_attempts(limit=1)[0]
+
+    assert running.status == "running"
+    assert running.phase == "full_parse"
+    assert running.current_path == str(source)
+    assert running.rss_current_mb == 123.0
+
+    store.finish_ingest_attempt(attempt_id, status="completed", phase="completed")
+    completed = store.recent_ingest_attempts(limit=1)[0]
+    assert completed.status == "completed"
+    assert completed.completed_at is not None
+
+
 def test_cursor_mark_failed_creates_record_for_new_path(tmp_path: Path) -> None:
     store = CursorStore(tmp_path / "live.sqlite")
     p = tmp_path / "new.jsonl"
@@ -373,6 +408,34 @@ def _codex_message(*, message_id: str, role: str, text: str, timestamp: str) -> 
             "content": [{"type": block_type, "text": text}],
         },
     }
+
+
+@pytest.mark.asyncio
+async def test_live_batch_processor_records_durable_attempt(tmp_path: Path) -> None:
+    root = tmp_path / "sessions"
+    root.mkdir()
+    source_path = root / "session.jsonl"
+    source_path.write_text('{"type":"session_meta","payload":{"id":"s"}}\n', encoding="utf-8")
+    db_path = tmp_path / "live.sqlite"
+    cursor = CursorStore(db_path)
+    polylogue = SimpleNamespace(parse_sources=AsyncMock(), backend=None)
+    processor = LiveBatchProcessor(
+        cast(Any, polylogue),
+        (WatchSource(name="codex", root=root),),
+        cursor=cursor,
+        parser_fingerprint="test-parser",
+    )
+
+    metrics = await processor.ingest_files([source_path], emit_event=False)
+    attempts = cursor.recent_ingest_attempts(limit=1)
+
+    assert metrics.succeeded_file_count == 1
+    assert len(attempts) == 1
+    assert attempts[0].status == "completed"
+    assert attempts[0].phase == "completed"
+    assert attempts[0].needed_file_count == 1
+    assert attempts[0].succeeded_file_count == 1
+    assert attempts[0].source_payload_read_bytes == source_path.stat().st_size
 
 
 @pytest.mark.asyncio

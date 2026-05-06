@@ -65,6 +65,53 @@ def test_daemon_status_payload_and_plain_output_include_failed_files(tmp_path: P
     assert f"  {failed}" in lines
 
 
+def test_daemon_status_reports_live_ingest_attempts(tmp_path: Path) -> None:
+    db = tmp_path / "polylogue.db"
+    source = tmp_path / "session.jsonl"
+    source.write_text('{"a":1}\n')
+    cursor = CursorStore(db)
+    attempt_id = cursor.begin_ingest_attempt(
+        paths=[source],
+        input_bytes=source.stat().st_size,
+        queued_file_count=1,
+    )
+    cursor.update_ingest_attempt(
+        attempt_id,
+        phase="full_parse",
+        succeeded_file_count=0,
+        failed_file_count=0,
+        source_payload_read_bytes=0,
+        cursor_fingerprint_read_bytes=0,
+        parse_time_s=0.0,
+        current_source="codex",
+        current_path=source,
+        rss_current_mb=42.0,
+    )
+
+    with (
+        patch("polylogue.daemon.status.db_path", return_value=db),
+        patch("polylogue.daemon.status._check_daemon_liveness", return_value=False),
+        patch("polylogue.daemon.status._blob_size_info", return_value=0),
+        patch("polylogue.daemon.status._fts_readiness_info", return_value={}),
+        patch("polylogue.daemon.status._insight_freshness_info", return_value={}),
+    ):
+        payload = daemon_status_payload(sources=())
+
+    attempts = payload["live_ingest_attempts"]
+    assert isinstance(attempts, dict)
+    assert attempts["running_count"] == 1
+    recent = attempts["recent"]
+    assert isinstance(recent, list)
+    latest = recent[0]
+    assert isinstance(latest, dict)
+    assert latest["phase"] == "full_parse"
+    assert latest["current_path"] == str(source)
+    assert latest["rss_current_mb"] == 42.0
+    lines = format_daemon_status_lines(payload)
+    assert "Live ingest attempts: 1 running" in lines
+    assert "  latest: running full_parse 0/1 files" in lines
+
+
 def test_daemon_status_summarizes_retry_due_and_excluded_live_cursor_files(tmp_path: Path) -> None:
     db = tmp_path / "polylogue.db"
     failed = tmp_path / "failed.jsonl"

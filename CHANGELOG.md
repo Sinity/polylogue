@@ -78,6 +78,9 @@ documentation polish do not require an entry.
   `--format json` output while retaining `--json` as a strict alias.
 - `polylogue audit` was removed from the product CLI; verification-lab audit
   workflows live under `devtools`.
+- `polylogued status` now reports recent live-ingest attempts with durable
+  phase, file-count, byte-read, timing, and RSS snapshots so interrupted
+  convergence work leaves diagnosable state in the archive DB.
 - Codex JSONL ingestion now parses hot streams directly from raw records,
   skips validation-off pre-sampling for known stream providers, and reuses
   message hash payloads during materialization, reducing daemon live-ingest

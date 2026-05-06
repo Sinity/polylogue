@@ -66,6 +66,35 @@ class LiveCursorSummary(BaseModel):
     failing_files: list[LiveCursorFileState] = Field(default_factory=list)
 
 
+class LiveIngestAttemptState(BaseModel):
+    attempt_id: str
+    started_at: str
+    updated_at: str
+    status: str
+    phase: str
+    queued_file_count: int = 0
+    needed_file_count: int = 0
+    succeeded_file_count: int = 0
+    failed_file_count: int = 0
+    input_bytes: int = 0
+    source_payload_read_bytes: int = 0
+    cursor_fingerprint_read_bytes: int = 0
+    parse_time_s: float = 0.0
+    convergence_time_s: float = 0.0
+    current_source: str | None = None
+    current_path: str | None = None
+    error: str | None = None
+    rss_current_mb: float | None = None
+    rss_peak_self_mb: float | None = None
+    rss_peak_children_mb: float | None = None
+    completed_at: str | None = None
+
+
+class LiveIngestAttemptSummary(BaseModel):
+    running_count: int = 0
+    recent: list[LiveIngestAttemptState] = Field(default_factory=list)
+
+
 # ---------------------------------------------------------------------------
 # DaemonStatus — typed model consumed by all surfaces
 # ---------------------------------------------------------------------------
@@ -82,6 +111,7 @@ class DaemonStatus(BaseModel):
     reset_queue: list[dict[str, object]] = Field(default_factory=list)
     ingestion_throughput: IngestionThroughput = Field(default_factory=IngestionThroughput)
     live_cursor: LiveCursorSummary = Field(default_factory=LiveCursorSummary)
+    live_ingest_attempts: LiveIngestAttemptSummary = Field(default_factory=LiveIngestAttemptSummary)
     db_size_bytes: int = 0
     wal_size_bytes: int = 0
     blob_dir_size_bytes: int = 0
@@ -278,6 +308,87 @@ def _live_cursor_summary_info() -> LiveCursorSummary:
     )
 
 
+def _live_ingest_attempt_summary_info() -> LiveIngestAttemptSummary:
+    """Return recent durable live-ingest attempt snapshots."""
+    dbf = db_path()
+    if not dbf.exists():
+        return LiveIngestAttemptSummary()
+    try:
+        conn = open_readonly_connection(dbf)
+        try:
+            has_table = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'live_ingest_attempt'"
+            ).fetchone()
+            if has_table is None:
+                return LiveIngestAttemptSummary()
+            rows = conn.execute(
+                """
+                SELECT
+                    attempt_id,
+                    started_at,
+                    updated_at,
+                    completed_at,
+                    status,
+                    phase,
+                    queued_file_count,
+                    needed_file_count,
+                    succeeded_file_count,
+                    failed_file_count,
+                    input_bytes,
+                    source_payload_read_bytes,
+                    cursor_fingerprint_read_bytes,
+                    parse_time_s,
+                    convergence_time_s,
+                    current_source,
+                    current_path,
+                    error,
+                    rss_current_mb,
+                    rss_peak_self_mb,
+                    rss_peak_children_mb
+                FROM live_ingest_attempt
+                ORDER BY updated_at DESC, started_at DESC
+                LIMIT 5
+                """
+            ).fetchall()
+            running_count = int(
+                conn.execute("SELECT COUNT(*) FROM live_ingest_attempt WHERE status = 'running'").fetchone()[0]
+            )
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return LiveIngestAttemptSummary()
+
+    return LiveIngestAttemptSummary(
+        running_count=running_count,
+        recent=[
+            LiveIngestAttemptState(
+                attempt_id=str(row[0]),
+                started_at=str(row[1]),
+                updated_at=str(row[2]),
+                completed_at=row[3],
+                status=str(row[4]),
+                phase=str(row[5]),
+                queued_file_count=int(row[6] or 0),
+                needed_file_count=int(row[7] or 0),
+                succeeded_file_count=int(row[8] or 0),
+                failed_file_count=int(row[9] or 0),
+                input_bytes=int(row[10] or 0),
+                source_payload_read_bytes=int(row[11] or 0),
+                cursor_fingerprint_read_bytes=int(row[12] or 0),
+                parse_time_s=float(row[13] or 0),
+                convergence_time_s=float(row[14] or 0),
+                current_source=row[15],
+                current_path=row[16],
+                error=row[17],
+                rss_current_mb=float(row[18]) if row[18] is not None else None,
+                rss_peak_self_mb=float(row[19]) if row[19] is not None else None,
+                rss_peak_children_mb=float(row[20]) if row[20] is not None else None,
+            )
+            for row in rows
+        ],
+    )
+
+
 def _retry_due(next_retry_at: str | None, *, now: datetime) -> bool:
     if not next_retry_at:
         return True
@@ -316,6 +427,7 @@ def build_daemon_status(
     fts = _fts_readiness_info()
     freshness = _insight_freshness_info()
     live_cursor = _live_cursor_summary_info()
+    live_ingest_attempts = _live_ingest_attempt_summary_info()
 
     return DaemonStatus(
         daemon_liveness=_check_daemon_liveness(),
@@ -327,6 +439,7 @@ def build_daemon_status(
         source_lag=[SourceLagItem(name=s.name, root=str(s.root), exists=s.exists()) for s in watch_sources],
         failing_files=[item.source_path for item in live_cursor.failing_files],
         live_cursor=live_cursor,
+        live_ingest_attempts=live_ingest_attempts,
         db_size_bytes=_safe_int(db_info.get("db_size_bytes", 0)),
         wal_size_bytes=_safe_int(db_info.get("wal_size_bytes", 0)),
         blob_dir_size_bytes=_blob_size_info(),
@@ -394,6 +507,7 @@ def daemon_status_payload(
             "browser_capture_active": status.browser_capture_active,
             "failing_files": status.failing_files,
             "live_cursor": status.live_cursor.model_dump(),
+            "live_ingest_attempts": status.live_ingest_attempts.model_dump(),
             "operations": status.current_operations,
             "last_ingestion_batch": last_ingestion,
             "fts_readiness": fts,
@@ -436,6 +550,18 @@ def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
         lines.append(f"Failing files: {len(failing_files)}")
         for path in failing_files:
             lines.append(f"  {path}")
+    attempts = payload.get("live_ingest_attempts")
+    if isinstance(attempts, dict):
+        recent = attempts.get("recent", [])
+        lines.append(f"Live ingest attempts: {attempts.get('running_count', 0)} running")
+        if isinstance(recent, list) and recent:
+            latest = recent[0]
+            if isinstance(latest, dict):
+                lines.append(
+                    "  latest: "
+                    f"{latest.get('status')} {latest.get('phase')} "
+                    f"{latest.get('succeeded_file_count', 0)}/{latest.get('needed_file_count', 0)} files"
+                )
     return lines
 
 
