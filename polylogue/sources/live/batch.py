@@ -10,8 +10,10 @@ from hashlib import sha256
 from json import dumps as json_dumps
 from json import loads as json_loads
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Protocol, cast
 
+from polylogue.archive.artifact_taxonomy import classify_artifact, classify_artifact_path
+from polylogue.core.json import JSONValue
 from polylogue.core.metrics import read_current_rss_mb, read_peak_rss_children_mb, read_peak_rss_self_mb
 from polylogue.core.provider_identity import canonical_acquisition_provider
 from polylogue.logging import get_logger
@@ -462,6 +464,7 @@ class LiveBatchProcessor:
         raw_records: list[RawConversationRecord] = []
         raw_by_id: dict[str, Path] = {}
         failed: list[Path] = []
+        ingested: list[Path] = []
         source_payload_read_bytes = 0
         fallback_provider = Provider.from_string(canonical_acquisition_provider(source_name, source_name=source_name))
 
@@ -472,10 +475,14 @@ class LiveBatchProcessor:
             except OSError:
                 failed.append(path)
                 continue
-            raw_id, blob_size = blob_store.write_from_bytes(payload)
-            source_payload_read_bytes += len(payload)
             provider = _detect_provider_from_raw_bytes(payload, path.name, fallback_provider)
             provider_name = provider.value
+            if not _parse_as_conversation_artifact(path, provider=provider, payload=payload):
+                self._mark_excluded_cursor(path, stat, source_name=source_name)
+                continue
+            raw_id, blob_size = blob_store.write_from_bytes(payload)
+            source_payload_read_bytes += len(payload)
+            ingested.append(path)
             raw_records.append(
                 RawConversationRecord(
                     raw_id=raw_id,
@@ -509,9 +516,25 @@ class LiveBatchProcessor:
 
         failed_set = set(failed)
         return _FullIngestResult(
-            succeeded=[path for path in paths if path not in failed_set],
+            succeeded=[path for path in ingested if path not in failed_set],
             failed=failed,
             source_payload_read_bytes=source_payload_read_bytes,
+        )
+
+    def _mark_excluded_cursor(self, path: Path, stat: object, *, source_name: str) -> None:
+        st_size = int(getattr(stat, "st_size", 0))
+        self._cursor.set(
+            path,
+            st_size,
+            byte_offset=st_size,
+            last_complete_newline=st_size,
+            parser_fingerprint=self._current_parser_fingerprint(),
+            content_fingerprint=None,
+            source_name=source_name,
+            st_dev=getattr(stat, "st_dev", None),
+            st_ino=getattr(stat, "st_ino", None),
+            mtime_ns=getattr(stat, "st_mtime_ns", None),
+            excluded=True,
         )
 
     def _append_plan(self, path: Path) -> _AppendPlan | None:
@@ -790,6 +813,31 @@ def _path_size(path: Path) -> int:
         return path.stat().st_size
     except OSError:
         return 0
+
+
+def _parse_as_conversation_artifact(path: Path, *, provider: Provider, payload: bytes) -> bool:
+    path_classification = classify_artifact_path(path, provider=provider)
+    if path_classification is not None:
+        return path_classification.parse_as_conversation
+    if path.suffix.lower() == ".jsonl":
+        records: list[JSONValue] = []
+        for line in payload.splitlines():
+            if len(records) >= 32:
+                break
+            if not line.strip():
+                continue
+            try:
+                records.append(cast(JSONValue, json_loads(line)))
+            except ValueError:
+                continue
+        if not records:
+            return False
+        return classify_artifact(records, provider=provider, source_path=path).parse_as_conversation
+    try:
+        document = cast(JSONValue, json_loads(payload))
+    except ValueError:
+        return False
+    return classify_artifact(document, provider=provider, source_path=path).parse_as_conversation
 
 
 __all__ = [

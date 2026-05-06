@@ -591,6 +591,51 @@ async def test_live_full_ingest_detects_provider_when_source_name_is_not_provide
 
 
 @pytest.mark.asyncio
+async def test_live_full_ingest_excludes_non_conversation_sidecars_before_raw_storage(
+    workspace_env: dict[str, Path],
+) -> None:
+    root = workspace_env["data_root"] / "projects"
+    project = root / "project"
+    project.mkdir(parents=True)
+    source_path = project / "sessions-index.json"
+    source_path.write_text(json.dumps({"sessions": [{"id": "metadata-only"}]}), encoding="utf-8")
+    db_path = workspace_env["data_root"] / "exclude-sidecar-live.db"
+    archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path)
+    cursor = CursorStore(db_path)
+    processor = LiveBatchProcessor(
+        archive,
+        (WatchSource(name="projects", root=root),),
+        cursor=cursor,
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+    )
+
+    try:
+        metrics = await processor.ingest_files([source_path], emit_event=False)
+        record = cursor.get_record(source_path)
+
+        with sqlite3.connect(db_path) as conn:
+            tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            raw_count = (
+                conn.execute("SELECT COUNT(*) FROM raw_conversations").fetchone()[0]
+                if "raw_conversations" in tables
+                else 0
+            )
+            conversation_count = (
+                conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0] if "conversations" in tables else 0
+            )
+
+        assert metrics.succeeded_file_count == 0
+        assert metrics.failed_file_count == 0
+        assert metrics.source_payload_read_bytes == 0
+        assert raw_count == 0
+        assert conversation_count == 0
+        assert record is not None
+        assert record.excluded is True
+    finally:
+        await archive.close()
+
+
+@pytest.mark.asyncio
 async def test_codex_append_uses_existing_session_identity_when_tail_lacks_session_meta(
     workspace_env: dict[str, Path],
 ) -> None:
