@@ -3,8 +3,9 @@ from __future__ import annotations
 import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
+from polylogue.daemon import status as status_module
 from polylogue.daemon.status import build_daemon_status, daemon_status_payload, format_daemon_status_lines
 from polylogue.sources.live.cursor import CursorStore
 
@@ -118,6 +119,77 @@ def test_daemon_status_reports_live_ingest_attempts(tmp_path: Path) -> None:
     assert "Live ingest attempts: 1 running" in lines
     assert "  latest: running full_parse 0/1 files" in lines
     assert "  memory: cgroup 2048.0 MiB peak 4096.0 MiB" in lines
+
+
+def test_daemon_status_payload_reuses_bounded_probe_results(tmp_path: Path) -> None:
+    db = tmp_path / "polylogue.db"
+    db.touch()
+    db_info = Mock(
+        return_value={
+            "db_path": str(db),
+            "db_size_bytes": 11,
+            "wal_size_bytes": 7,
+            "disk_free_bytes": 99,
+        }
+    )
+    blob_info = Mock(return_value=0)
+    fts_info = Mock(return_value={"messages_ready": True, "action_events_ready": True})
+    freshness_info = Mock(return_value={"sessions_with_profiles": 3, "total_sessions": 4})
+
+    with (
+        patch("polylogue.daemon.status.db_path", return_value=db),
+        patch("polylogue.daemon.status._check_daemon_liveness", return_value=True),
+        patch("polylogue.daemon.status._db_size_info", db_info),
+        patch("polylogue.daemon.status._blob_size_info", blob_info),
+        patch("polylogue.daemon.status._fts_readiness_info", fts_info),
+        patch("polylogue.daemon.status._insight_freshness_info", freshness_info),
+    ):
+        payload = daemon_status_payload(sources=())
+
+    assert payload["db_path"] == str(db)
+    assert payload["db_size_bytes"] == 11
+    assert payload["wal_size_bytes"] == 7
+    assert payload["blob_dir_size_bytes"] == 0
+    assert payload["disk_free_bytes"] == 99
+    assert payload["fts_readiness"] == {"messages_ready": True, "action_events_ready": True}
+    assert db_info.call_count == 1
+    assert blob_info.call_count == 1
+    assert fts_info.call_count == 1
+    assert freshness_info.call_count == 1
+
+
+def test_daemon_status_fts_readiness_uses_lightweight_table_probe(tmp_path: Path) -> None:
+    db = tmp_path / "polylogue.db"
+    with sqlite3.connect(db) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE messages_fts (text TEXT);
+            CREATE TABLE action_events_fts (text TEXT);
+            """
+        )
+
+    with patch("polylogue.daemon.status.db_path", return_value=db):
+        readiness = status_module._fts_readiness_info()
+
+    assert readiness == {"messages_ready": True, "action_events_ready": True}
+
+
+def test_daemon_status_insight_freshness_uses_lightweight_counts(tmp_path: Path) -> None:
+    db = tmp_path / "polylogue.db"
+    with sqlite3.connect(db) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE conversations (conversation_id TEXT PRIMARY KEY);
+            CREATE TABLE session_profiles (conversation_id TEXT PRIMARY KEY);
+            INSERT INTO conversations (conversation_id) VALUES ('a'), ('b');
+            INSERT INTO session_profiles (conversation_id) VALUES ('a');
+            """
+        )
+
+    with patch("polylogue.daemon.status.db_path", return_value=db):
+        freshness = status_module._insight_freshness_info()
+
+    assert freshness == {"sessions_with_profiles": 1, "total_sessions": 2}
 
 
 def test_daemon_status_flags_stale_live_ingest_attempts(tmp_path: Path) -> None:

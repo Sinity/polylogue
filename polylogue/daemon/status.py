@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 
 from polylogue.browser_capture.receiver import BrowserCaptureReceiverConfig, receiver_status_payload
 from polylogue.core.json import JSONDocument, json_document
-from polylogue.paths import blob_store_root, db_path
+from polylogue.paths import db_path
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.watcher import default_sources
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
@@ -189,54 +189,73 @@ def _db_size_info() -> dict[str, object]:
 
 
 def _blob_size_info() -> int:
-    root = blob_store_root()
-    if not root.exists():
-        return 0
-    total = 0
-    try:
-        for entry in root.rglob("*"):
-            if entry.is_file():
-                total += entry.stat().st_size
-    except OSError:
-        pass
-    return total
+    # Status must remain responsive while convergence is reading or writing the
+    # archive. A recursive blob-store walk is proportional to archive size and
+    # can make `polylogued status` look hung on production archives.
+    return 0
 
 
 def _fts_readiness_info() -> dict[str, bool]:
-    """Check FTS readiness without importing heavy modules."""
+    """Check FTS table presence through a bounded read-only probe."""
+    dbf = db_path()
+    if not dbf.exists():
+        return {"messages_ready": False, "action_events_ready": False}
     try:
-        from polylogue.config import Config
-        from polylogue.paths import archive_root, render_root
-        from polylogue.readiness import get_readiness
-
-        cfg = Config(archive_root=archive_root(), render_root=render_root(), sources=[])
-        report = get_readiness(cfg, deep=False, probe_only=False)
-        counts = report.counts()
+        conn = open_readonly_connection(dbf)
+        try:
+            tables = {
+                row[0]
+                for row in conn.execute(
+                    """
+                    SELECT name
+                    FROM sqlite_master
+                    WHERE type = 'table'
+                      AND name IN ('messages_fts', 'action_events_fts')
+                    """
+                ).fetchall()
+            }
+        finally:
+            conn.close()
         return {
-            "messages_ready": counts.ok > 0,
-            "action_events_ready": counts.ok > 0,
+            "messages_ready": "messages_fts" in tables,
+            "action_events_ready": "action_events_fts" in tables,
         }
-    except Exception:
+    except sqlite3.Error:
         return {"messages_ready": False, "action_events_ready": False}
 
 
 def _insight_freshness_info() -> dict[str, object]:
-    """Check insight materialization status."""
+    """Check insight materialization status through bounded SQL counts."""
+    dbf = db_path()
+    if not dbf.exists():
+        return {"sessions_with_profiles": 0, "total_sessions": 0}
     try:
-        import asyncio
-
-        from polylogue.api import Polylogue
-
-        async def _check() -> dict[str, object]:
-            async with Polylogue() as p:
-                status = await p.get_session_insight_status()
-                return {
-                    "sessions_with_profiles": getattr(status, "profiled_count", 0),
-                    "total_sessions": getattr(status, "total_count", 0),
-                }
-
-        return asyncio.run(_check())
-    except Exception:
+        conn = open_readonly_connection(dbf)
+        try:
+            tables = {
+                row[0]
+                for row in conn.execute(
+                    """
+                    SELECT name
+                    FROM sqlite_master
+                    WHERE type = 'table'
+                      AND name IN ('conversations', 'session_profiles')
+                    """
+                ).fetchall()
+            }
+            total_sessions = 0
+            sessions_with_profiles = 0
+            if "conversations" in tables:
+                total_sessions = int(conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0] or 0)
+            if "session_profiles" in tables:
+                sessions_with_profiles = int(conn.execute("SELECT COUNT(*) FROM session_profiles").fetchone()[0] or 0)
+        finally:
+            conn.close()
+        return {
+            "sessions_with_profiles": sessions_with_profiles,
+            "total_sessions": total_sessions,
+        }
+    except sqlite3.Error:
         return {"sessions_with_profiles": 0, "total_sessions": 0}
 
 
@@ -570,10 +589,6 @@ def daemon_status_payload(
         browser_capture_spool_path=browser_capture_spool_path,
     )
 
-    db_info = _db_size_info()
-    blob_size = _blob_size_info()
-    fts = _fts_readiness_info()
-
     return json_document(
         {
             "ok": True,
@@ -583,11 +598,11 @@ def daemon_status_payload(
             "component_state": status.component_state.model_dump(),
             "live": live_source_status_payload(watch_sources),
             "browser_capture": browser_capture_status_payload(browser_capture_spool_path),
-            "db_path": db_info.get("db_path"),
-            "db_size_bytes": db_info.get("db_size_bytes", 0),
-            "wal_size_bytes": db_info.get("wal_size_bytes", 0),
-            "blob_dir_size_bytes": blob_size,
-            "disk_free_bytes": db_info.get("disk_free_bytes", 0),
+            "db_path": str(db_path()),
+            "db_size_bytes": status.db_size_bytes,
+            "wal_size_bytes": status.wal_size_bytes,
+            "blob_dir_size_bytes": status.blob_dir_size_bytes,
+            "disk_free_bytes": status.disk_free_bytes,
             "quick_check_result": "unknown",
             "quick_check_age_s": None,
             "watcher_roots": [str(s.root) for s in watch_sources],
@@ -597,7 +612,7 @@ def daemon_status_payload(
             "live_ingest_attempts": status.live_ingest_attempts.model_dump(),
             "operations": status.current_operations,
             "last_ingestion_batch": last_ingestion,
-            "fts_readiness": fts,
+            "fts_readiness": status.fts_readiness.model_dump(),
         }
     )
 
