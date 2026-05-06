@@ -51,6 +51,19 @@ class _FullIngestMock:
         )
 
 
+class _FailingSecondPathConverger:
+    def __init__(self, failing_path: Path) -> None:
+        self.failing_path = failing_path
+
+    def converge_batch(self, paths: tuple[Path, ...]) -> tuple[dict[Path, object], dict[str, float]]:
+        if self.failing_path in paths:
+            return (
+                {path: SimpleNamespace(converged=path != self.failing_path) for path in paths},
+                {"fake": 0.001},
+            )
+        return ({path: SimpleNamespace(converged=True) for path in paths}, {"fake": 0.001})
+
+
 # --- CursorStore ---------------------------------------------------------------
 
 
@@ -150,6 +163,33 @@ def test_cursor_records_live_ingest_attempt_progress(tmp_path: Path) -> None:
     completed = store.recent_ingest_attempts(limit=1)[0]
     assert completed.status == "completed"
     assert completed.completed_at is not None
+
+
+def test_cursor_marks_running_attempts_abandoned_on_restart(tmp_path: Path) -> None:
+    db_path = tmp_path / "live.sqlite"
+    store = CursorStore(db_path)
+    source = tmp_path / "session.jsonl"
+    source.write_text('{"a":1}\n')
+    attempt_id = store.begin_ingest_attempt(
+        paths=[source],
+        input_bytes=source.stat().st_size,
+        queued_file_count=1,
+    )
+    store.update_ingest_attempt(
+        attempt_id,
+        phase="full_parse",
+        succeeded_file_count=0,
+        failed_file_count=0,
+    )
+
+    restarted = CursorStore(db_path)
+    attempt = restarted.recent_ingest_attempts(limit=1)[0]
+
+    assert attempt.attempt_id == attempt_id
+    assert attempt.status == "abandoned"
+    assert attempt.phase == "interrupted"
+    assert attempt.completed_at is not None
+    assert attempt.error == "daemon stopped before completing this ingest attempt"
 
 
 def test_cursor_mark_failed_creates_record_for_new_path(tmp_path: Path) -> None:
@@ -549,6 +589,65 @@ async def test_live_batch_processor_records_durable_attempt(tmp_path: Path) -> N
     assert attempts[0].needed_file_count == 1
     assert attempts[0].succeeded_file_count == 1
     assert attempts[0].source_payload_read_bytes == source_path.stat().st_size
+
+
+@pytest.mark.asyncio
+async def test_live_batch_processor_records_cursor_after_each_converged_group(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "sessions"
+    root.mkdir()
+    first_path = root / "first.jsonl"
+    second_path = root / "second.jsonl"
+    _write_jsonl(
+        first_path,
+        [
+            _codex_session_meta("first-session"),
+            _codex_message(
+                message_id="first-message",
+                role="user",
+                text="first converged group",
+                timestamp="2026-05-01T00:00:01Z",
+            ),
+        ],
+    )
+    _write_jsonl(
+        second_path,
+        [
+            _codex_session_meta("second-session"),
+            _codex_message(
+                message_id="second-message",
+                role="user",
+                text="second unconverged group",
+                timestamp="2026-05-01T00:00:01Z",
+            ),
+        ],
+    )
+    db_path = tmp_path / "live.sqlite"
+    cursor = CursorStore(db_path)
+    polylogue = SimpleNamespace(archive_root=tmp_path, backend=None)
+    processor = LiveBatchProcessor(
+        cast(Any, polylogue),
+        (WatchSource(name="codex", root=root),),
+        cursor=cursor,
+        parser_fingerprint="test-parser",
+        converger=_FailingSecondPathConverger(second_path),
+    )
+    monkeypatch.setattr(
+        "polylogue.sources.live.batch._full_parse_progress_groups",
+        lambda paths: ([path] for path in paths),
+    )
+
+    metrics = await processor.ingest_files([first_path, second_path], emit_event=False)
+
+    first_cursor = cursor.get_record(first_path)
+    second_cursor = cursor.get_record(second_path)
+    assert metrics.succeeded_file_count == 1
+    assert metrics.failed_file_count == 1
+    assert first_cursor is not None
+    assert first_cursor.parser_fingerprint == "test-parser"
+    assert second_cursor is None
 
 
 @pytest.mark.asyncio

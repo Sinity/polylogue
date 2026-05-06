@@ -173,9 +173,27 @@ class LiveBatchProcessor:
             t0 = time.perf_counter()
             append_result = self._ingest_append_plans(append_plans)
             parse_time_s += time.perf_counter() - t0
+            self._record_attempt_progress(
+                attempt_id,
+                phase="convergence",
+                succeeded_file_count=len(succeeded_paths),
+                failed_file_count=len(failed_paths),
+                source_payload_read_bytes=source_payload_read_bytes,
+                cursor_fingerprint_read_bytes=cursor_fingerprint_read_bytes,
+                parse_time_s=parse_time_s,
+                convergence_time_s=convergence_time_s,
+                current_source=append_plans[0].source_name,
+                current_path=append_plans[0].path,
+            )
+            converged_paths, elapsed, timings = self._converge_paths([plan.path for plan in append_result.succeeded])
+            convergence_time_s += elapsed
+            _accumulate_stage_timings(stage_timings, timings)
             for plan in append_result.succeeded:
-                succeeded_paths.add(plan.path)
-                self._record_append_cursor(plan)
+                if plan.path in converged_paths:
+                    succeeded_paths.add(plan.path)
+                    self._record_append_cursor(plan)
+                else:
+                    failed_paths.append(str(plan.path))
             for plan in append_result.failed:
                 failed_paths.append(str(plan.path))
                 cursor_fingerprint_read_bytes += self._record_failed_cursor(plan.path)
@@ -223,7 +241,27 @@ class LiveBatchProcessor:
                 parse_elapsed = time.perf_counter() - t0
                 parse_time_s += parse_elapsed
                 source_payload_read_bytes += full_result.source_payload_read_bytes
-                succeeded_paths.update(full_result.succeeded)
+                self._record_attempt_progress(
+                    attempt_id,
+                    phase="convergence",
+                    succeeded_file_count=len(succeeded_paths),
+                    failed_file_count=len(failed_paths),
+                    source_payload_read_bytes=source_payload_read_bytes,
+                    cursor_fingerprint_read_bytes=cursor_fingerprint_read_bytes,
+                    parse_time_s=parse_time_s,
+                    convergence_time_s=convergence_time_s,
+                    current_source=source_name,
+                    current_path=source_paths[0] if source_paths else None,
+                )
+                converged_paths, elapsed, timings = self._converge_paths(full_result.succeeded)
+                convergence_time_s += elapsed
+                _accumulate_stage_timings(stage_timings, timings)
+                for path in full_result.succeeded:
+                    if path in converged_paths:
+                        succeeded_paths.add(path)
+                        cursor_fingerprint_read_bytes += self._record_full_cursor(path)
+                    else:
+                        failed_paths.append(str(path))
                 for path in full_result.failed:
                     failed_paths.append(str(path))
                     cursor_fingerprint_read_bytes += self._record_failed_cursor(path)
@@ -233,48 +271,6 @@ class LiveBatchProcessor:
                     len(full_result.succeeded),
                     parse_elapsed,
                     len(full_result.succeeded) / max(parse_elapsed, 0.01),
-                )
-
-        if self._converger is not None and succeeded_paths:
-            try:
-                self._record_attempt_progress(
-                    attempt_id,
-                    phase="convergence",
-                    succeeded_file_count=len(succeeded_paths),
-                    failed_file_count=len(failed_paths),
-                    source_payload_read_bytes=source_payload_read_bytes,
-                    cursor_fingerprint_read_bytes=cursor_fingerprint_read_bytes,
-                    parse_time_s=parse_time_s,
-                    current_path=next(iter(sorted(succeeded_paths))),
-                )
-                t0 = time.perf_counter()
-                converge_batch = getattr(self._converger, "converge_batch", None)
-                if callable(converge_batch):
-                    _states, batch_stage_timings = converge_batch(sorted(succeeded_paths))
-                    stage_timings.update(
-                        {stage_name: float(elapsed) for stage_name, elapsed in batch_stage_timings.items()}
-                    )
-                else:
-                    for path in sorted(succeeded_paths):
-                        invalidate = getattr(self._converger, "invalidate_file", None)
-                        if callable(invalidate):
-                            invalidate(path)
-                        state = self._converger.converge_file(path)  # type: ignore[attr-defined]
-                        for stage_name, elapsed in getattr(state, "last_stage_times", {}).items():
-                            stage_timings[stage_name] = stage_timings.get(stage_name, 0.0) + float(elapsed)
-                convergence_time_s = time.perf_counter() - t0
-            except Exception as exc:
-                logger.warning("live.watcher: post-ingest converge failed: %s", exc)
-                self._record_attempt_progress(
-                    attempt_id,
-                    phase="convergence_failed",
-                    succeeded_file_count=len(succeeded_paths),
-                    failed_file_count=len(failed_paths),
-                    source_payload_read_bytes=source_payload_read_bytes,
-                    cursor_fingerprint_read_bytes=cursor_fingerprint_read_bytes,
-                    parse_time_s=parse_time_s,
-                    convergence_time_s=convergence_time_s,
-                    error=str(exc),
                 )
 
         self._record_attempt_progress(
@@ -287,26 +283,6 @@ class LiveBatchProcessor:
             parse_time_s=parse_time_s,
             convergence_time_s=convergence_time_s,
         )
-        for path in succeeded_paths - {plan.path for plan in append_plans}:
-            try:
-                stat = path.stat()
-            except FileNotFoundError:
-                continue
-            fp, last_nl, bytes_read = self._cursor_state_after_full_ingest(path, stat.st_size)
-            cursor_fingerprint_read_bytes += bytes_read
-            self._cursor.set(
-                path,
-                stat.st_size,
-                byte_offset=last_nl,
-                last_complete_newline=last_nl,
-                parser_fingerprint=self._current_parser_fingerprint(),
-                content_fingerprint=fp,
-                source_name=self._source_name_for(path),
-                st_dev=stat.st_dev,
-                st_ino=stat.st_ino,
-                mtime_ns=stat.st_mtime_ns,
-            )
-            self._cursor.reset_failures(path)
 
         db_bytes_after = _path_size(self._cursor._db_path) + _path_size(self._cursor._db_path.with_suffix(".db-wal"))
         metrics = LiveBatchMetrics(
@@ -410,6 +386,64 @@ class LiveBatchProcessor:
         )
         self._cursor.mark_failed(path)
         return stat.st_size
+
+    def _record_full_cursor(self, path: Path) -> int:
+        try:
+            stat = path.stat()
+        except FileNotFoundError:
+            return 0
+        fp, last_nl, bytes_read = self._cursor_state_after_full_ingest(path, stat.st_size)
+        self._cursor.set(
+            path,
+            stat.st_size,
+            byte_offset=last_nl,
+            last_complete_newline=last_nl,
+            parser_fingerprint=self._current_parser_fingerprint(),
+            content_fingerprint=fp,
+            source_name=self._source_name_for(path),
+            st_dev=stat.st_dev,
+            st_ino=stat.st_ino,
+            mtime_ns=stat.st_mtime_ns,
+        )
+        self._cursor.reset_failures(path)
+        return bytes_read
+
+    def _converge_paths(self, paths: Iterable[Path]) -> tuple[set[Path], float, dict[str, float]]:
+        unique_paths = tuple(sorted(dict.fromkeys(paths)))
+        if not unique_paths:
+            return set(), 0.0, {}
+        if self._converger is None:
+            return set(unique_paths), 0.0, {}
+
+        started = time.perf_counter()
+        try:
+            converge_batch = getattr(self._converger, "converge_batch", None)
+            if callable(converge_batch):
+                states, timings = converge_batch(unique_paths)
+                batch_completed = {
+                    path for path in unique_paths if path in states and bool(getattr(states[path], "converged", False))
+                }
+                return (
+                    batch_completed,
+                    time.perf_counter() - started,
+                    {stage_name: float(elapsed) for stage_name, elapsed in timings.items()},
+                )
+
+            per_file_completed: set[Path] = set()
+            stage_timings: dict[str, float] = {}
+            for path in unique_paths:
+                invalidate = getattr(self._converger, "invalidate_file", None)
+                if callable(invalidate):
+                    invalidate(path)
+                state = self._converger.converge_file(path)  # type: ignore[attr-defined]
+                for stage_name, elapsed in getattr(state, "last_stage_times", {}).items():
+                    stage_timings[stage_name] = stage_timings.get(stage_name, 0.0) + float(elapsed)
+                if bool(getattr(state, "converged", False)):
+                    per_file_completed.add(path)
+            return per_file_completed, time.perf_counter() - started, stage_timings
+        except Exception as exc:
+            logger.warning("live.watcher: post-ingest converge failed: %s", exc)
+            return set(), time.perf_counter() - started, {}
 
     def _cursor_state_after_full_ingest(self, path: Path, byte_size: int) -> tuple[str, int, int]:
         raw_fingerprint = self._latest_raw_fingerprint(path)
@@ -849,6 +883,11 @@ def _path_size(path: Path) -> int:
         return path.stat().st_size
     except OSError:
         return 0
+
+
+def _accumulate_stage_timings(target: dict[str, float], update: dict[str, float]) -> None:
+    for stage_name, elapsed in update.items():
+        target[stage_name] = target.get(stage_name, 0.0) + float(elapsed)
 
 
 def _jsonl_sample_from_path(path: Path, *, max_records: int = 32) -> list[JSONValue]:

@@ -127,6 +127,7 @@ class CursorStore:
             conn.execute(_DDL)
             conn.execute(_ATTEMPT_DDL)
             self._ensure_columns(conn)
+            self._mark_interrupted_attempts(conn)
 
     def _connect(self) -> sqlite3.Connection:
         conn = open_connection(self._db_path, timeout=10.0)
@@ -153,6 +154,23 @@ class CursorStore:
             if name not in existing:
                 conn.execute(f"ALTER TABLE live_cursor ADD COLUMN {name} {definition}")
         conn.execute(_ATTEMPT_DDL)
+        conn.commit()
+
+    def _mark_interrupted_attempts(self, conn: sqlite3.Connection) -> None:
+        """Close attempts left running by a killed daemon process."""
+        now = datetime.now(UTC).isoformat()
+        conn.execute(
+            """
+            UPDATE live_ingest_attempt
+            SET updated_at = ?,
+                completed_at = ?,
+                status = 'abandoned',
+                phase = 'interrupted',
+                error = COALESCE(error, 'daemon stopped before completing this ingest attempt')
+            WHERE status = 'running'
+            """,
+            (now, now),
+        )
         conn.commit()
 
     def begin_ingest_attempt(
