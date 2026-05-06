@@ -119,14 +119,10 @@ class LiveWatcher:
         if not files:
             return
         logger.info("live.watcher: catch-up scan over %d file(s)", len(files))
-
-        # Process in size-based chunks so a single 150 MB session
-        # doesn't starve the batch alongside 199 tiny files.
-        chunk_size_bytes = 50 * 1024 * 1024  # 50 MB
-        chunk: list[Path] = []
-        chunk_bytes: int = 0
-
-        for i, path in enumerate(files, start=1):
+        needed: list[Path] = []
+        skipped = 0
+        needed_bytes = 0
+        for path in files:
             if self._stop.is_set():
                 return
             if self._needs_work(path):
@@ -134,28 +130,19 @@ class LiveWatcher:
                     size = path.stat().st_size
                 except FileNotFoundError:
                     size = 0
-                chunk.append(path)
-                chunk_bytes += size
+                needed.append(path)
+                needed_bytes += size
+            else:
+                skipped += 1
 
-            if chunk_bytes >= chunk_size_bytes and chunk:
-                logger.info(
-                    "live.watcher: chunk %d/%d — ingesting %d file(s) (%.1f MB)",
-                    i,
-                    len(files),
-                    len(chunk),
-                    chunk_bytes / 1e6,
-                )
-                await self._ingest_files(chunk)
-                chunk.clear()
-                chunk_bytes = 0
-
-        if chunk:
+        if needed:
             logger.info(
-                "live.watcher: final chunk — ingesting %d file(s) (%.1f MB)",
-                len(chunk),
-                chunk_bytes / 1e6,
+                "live.watcher: catch-up ingesting %d file(s) (%.1f MB), skipped=%d",
+                len(needed),
+                needed_bytes / 1e6,
+                skipped,
             )
-            await self._ingest_files(chunk)
+            await self._ingest_files(needed, queued_file_count=len(files), skipped_file_count=skipped)
 
     # ------------------------------------------------------------------
     # Live: debounced batch scheduling
