@@ -81,7 +81,8 @@ def test_fts_stage_repairs_changed_conversations_without_full_rebuild(
     tmp_path: Path,
 ) -> None:
     db_path = tmp_path / "archive.sqlite"
-    repaired: list[list[str]] = []
+    repaired_messages: list[list[str]] = []
+    inserted_actions: list[list[str]] = []
     rebuilt = False
     committed = False
 
@@ -98,15 +99,22 @@ def test_fts_stage_repairs_changed_conversations_without_full_rebuild(
         assert timeout == 30.0
         return FakeConnection()
 
-    def fake_repair(conn: FakeConnection, conversation_ids: list[str]) -> None:
-        repaired.append(conversation_ids)
+    def fake_repair_messages(conn: FakeConnection, conversation_ids: list[str]) -> None:
+        repaired_messages.append(conversation_ids)
+
+    def fake_insert_missing_actions(conn: FakeConnection, conversation_ids: list[str]) -> None:
+        inserted_actions.append(conversation_ids)
 
     def fake_rebuild(conn: FakeConnection) -> None:
         nonlocal rebuilt
         rebuilt = True
 
     monkeypatch.setattr("polylogue.storage.sqlite.connection_profile.open_connection", fake_open_connection)
-    monkeypatch.setattr("polylogue.storage.fts.fts_lifecycle.repair_fts_index_sync", fake_repair)
+    monkeypatch.setattr("polylogue.storage.fts.fts_lifecycle.repair_message_fts_index_sync", fake_repair_messages)
+    monkeypatch.setattr(
+        "polylogue.storage.fts.fts_lifecycle.insert_missing_action_fts_index_sync",
+        fake_insert_missing_actions,
+    )
     monkeypatch.setattr("polylogue.storage.fts.fts_lifecycle.rebuild_fts_index_sync", fake_rebuild)
     monkeypatch.setattr(
         stages,
@@ -114,10 +122,12 @@ def test_fts_stage_repairs_changed_conversations_without_full_rebuild(
         lambda _conn, paths: {Path(paths[0]): ["conv-a"], Path(paths[1]): ["conv-b"]},
     )
     monkeypatch.setattr(stages, "_fts_needs_repair_for_conversations", lambda _conn, _ids: False)
+    monkeypatch.setattr(stages, "_action_fts_has_rows_for_conversations", lambda _conn, _ids: False)
 
     stage = make_fts_stage(db_path)
     assert stage.execute_many is not None
     assert stage.execute_many([tmp_path / "a.jsonl", tmp_path / "b.jsonl"]) is True
-    assert repaired == [["conv-a", "conv-b"]]
+    assert repaired_messages == [["conv-a", "conv-b"]]
+    assert inserted_actions == [["conv-a", "conv-b"]]
     assert committed is True
     assert rebuilt is False

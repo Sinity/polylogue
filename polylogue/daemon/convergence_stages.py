@@ -56,7 +56,7 @@ def make_fts_stage(db_path: Path) -> ConvergenceStage:
             return False
 
     def execute(path: Path) -> bool:
-        from polylogue.storage.fts.fts_lifecycle import rebuild_fts_index_sync, repair_fts_index_sync
+        from polylogue.storage.fts.fts_lifecycle import rebuild_fts_index_sync
         from polylogue.storage.sqlite.connection_profile import open_connection
 
         try:
@@ -64,7 +64,7 @@ def make_fts_stage(db_path: Path) -> ConvergenceStage:
             try:
                 conversation_ids = _conversation_ids_for_source_path(conn, path)
                 if conversation_ids:
-                    repair_fts_index_sync(conn, conversation_ids)
+                    _repair_changed_conversation_fts(conn, conversation_ids)
                     conn.commit()
                     logger.info("fts: repaired conversations=%d", len(conversation_ids))
                     return not _fts_needs_repair_for_conversations(conn, conversation_ids)
@@ -104,7 +104,6 @@ def make_fts_stage(db_path: Path) -> ConvergenceStage:
     def execute_many(paths: Sequence[Path]) -> bool:
         if not paths:
             return False
-        from polylogue.storage.fts.fts_lifecycle import repair_fts_index_sync
         from polylogue.storage.sqlite.connection_profile import open_connection
 
         try:
@@ -116,7 +115,7 @@ def make_fts_stage(db_path: Path) -> ConvergenceStage:
                 )
                 if not conversation_ids:
                     return execute(Path(paths[0]))
-                repair_fts_index_sync(conn, conversation_ids)
+                _repair_changed_conversation_fts(conn, conversation_ids)
                 conn.commit()
                 logger.info("fts: batch repaired paths=%d conversations=%d", len(paths), len(conversation_ids))
                 return not _fts_needs_repair_for_conversations(conn, conversation_ids)
@@ -407,6 +406,36 @@ def _fts_needs_repair_for_conversations(conn: sqlite3.Connection, conversation_i
         ).fetchone()[0]
     )
     return missing_actions > 0
+
+
+def _repair_changed_conversation_fts(conn: sqlite3.Connection, conversation_ids: Sequence[str]) -> None:
+    from polylogue.storage.fts.fts_lifecycle import (
+        insert_missing_action_fts_index_sync,
+        repair_action_fts_index_sync,
+        repair_message_fts_index_sync,
+    )
+
+    repair_message_fts_index_sync(conn, conversation_ids)
+    if _action_fts_has_rows_for_conversations(conn, conversation_ids):
+        repair_action_fts_index_sync(conn, conversation_ids)
+    else:
+        insert_missing_action_fts_index_sync(conn, conversation_ids)
+
+
+def _action_fts_has_rows_for_conversations(conn: sqlite3.Connection, conversation_ids: Sequence[str]) -> bool:
+    if not conversation_ids or not _table_exists(conn, "action_events_fts"):
+        return False
+    placeholders = ", ".join("?" for _ in conversation_ids)
+    row = conn.execute(
+        f"""
+        SELECT 1
+        FROM action_events_fts
+        WHERE conversation_id IN ({placeholders})
+        LIMIT 1
+        """,
+        tuple(conversation_ids),
+    ).fetchone()
+    return row is not None
 
 
 def _conversation_ids_missing_profiles(conn: sqlite3.Connection) -> list[str]:

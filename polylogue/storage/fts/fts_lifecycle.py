@@ -24,6 +24,7 @@ from polylogue.storage.fts.sql import (
     delete_conversation_rows_sql,
     insert_action_rows_sql,
     insert_conversation_rows_sql,
+    insert_missing_action_rows_sql,
 )
 
 _chunked = chunked
@@ -234,6 +235,16 @@ def repair_action_fts_index_sync(conn: sqlite3.Connection, conversation_ids: Seq
         params = tuple(chunk)
         conn.execute(delete_action_rows_sql(len(chunk)), params)
         conn.execute(insert_action_rows_sql(len(chunk)), params)
+
+
+def insert_missing_action_fts_index_sync(conn: sqlite3.Connection, conversation_ids: Sequence[str]) -> None:
+    """Insert action-event FTS rows that do not already exist."""
+    if not conversation_ids:
+        return
+    ensure_fts_index_sync(conn)
+    for chunk in chunked(list(conversation_ids), size=500):
+        params = tuple(chunk)
+        conn.execute(insert_missing_action_rows_sql(len(chunk)), params)
 
 
 def repair_fts_index_sync(conn: sqlite3.Connection, conversation_ids: Sequence[str]) -> None:
@@ -466,6 +477,7 @@ __all__ = [
     "repair_fts_index_async",
     "repair_fts_index_sync",
     "repair_message_fts_index_sync",
+    "insert_missing_action_fts_index_sync",
     "replace_fts_rows_for_messages_sync",
     "restore_fts_triggers_sync",
     "suspend_fts_triggers_sync",
