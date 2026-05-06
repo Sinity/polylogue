@@ -803,9 +803,14 @@ def _full_parse_progress_groups(paths: list[Path]) -> Iterable[list[Path]]:
 
 
 def _full_ingest_worker_count(records: list[RawConversationRecord]) -> int:
-    total_bytes = sum(record.blob_size for record in records)
-    if len(records) <= 1 or total_bytes >= 512 * 1024 * 1024:
+    if len(records) <= 1:
         return 1
+    total_bytes = sum(record.blob_size for record in records)
+    max_bytes = max(record.blob_size for record in records)
+    if max_bytes >= 512 * 1024 * 1024:
+        return 1
+    if total_bytes >= 512 * 1024 * 1024:
+        return min(4, len(records))
     return min(2, len(records))
 
 

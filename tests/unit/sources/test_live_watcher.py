@@ -17,8 +17,14 @@ import pytest
 import polylogue.sources.live.watcher as live_watcher
 from polylogue import Polylogue
 from polylogue.sources.live import LiveWatcher, WatchSource
-from polylogue.sources.live.batch import LiveBatchProcessor, _FullIngestResult, last_complete_newline_from_tail
+from polylogue.sources.live.batch import (
+    LiveBatchProcessor,
+    _full_ingest_worker_count,
+    _FullIngestResult,
+    last_complete_newline_from_tail,
+)
 from polylogue.sources.live.cursor import CursorRecord, CursorStore
+from polylogue.storage.runtime import RawConversationRecord
 
 
 class _FullIngestMock:
@@ -215,6 +221,29 @@ def test_cursor_migrates_size_only_rows(tmp_path: Path) -> None:
     with sqlite3.connect(db) as conn:
         columns = {row[1] for row in conn.execute("PRAGMA table_info(live_cursor)")}
     assert {"byte_offset", "content_fingerprint", "source_name"}.issubset(columns)
+
+
+def test_live_full_ingest_parallelizes_many_small_records() -> None:
+    records = [
+        RawConversationRecord(
+            raw_id=f"raw-{index}",
+            provider_name="claude-code",
+            source_path=f"/tmp/session-{index}.jsonl",
+            blob_size=2 * 1024 * 1024,
+            acquired_at="2026-05-01T00:00:00+00:00",
+        )
+        for index in range(300)
+    ]
+    giant = RawConversationRecord(
+        raw_id="raw-giant",
+        provider_name="codex",
+        source_path="/tmp/giant.jsonl",
+        blob_size=600 * 1024 * 1024,
+        acquired_at="2026-05-01T00:00:00+00:00",
+    )
+
+    assert _full_ingest_worker_count(records) == 4
+    assert _full_ingest_worker_count([giant]) == 1
 
 
 # --- LiveWatcher: needs_work + ingest_files (batched) --------------------------
