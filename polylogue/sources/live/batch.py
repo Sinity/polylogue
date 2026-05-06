@@ -27,6 +27,8 @@ if TYPE_CHECKING:
     from polylogue.api import Polylogue
 
 logger = get_logger(__name__)
+
+_LARGE_FULL_PARSE_PROGRESS_BYTES = 64 * 1024 * 1024
 LiveBatchEventEmitter = Callable[[str, dict[str, object]], None]
 
 
@@ -169,53 +171,54 @@ class LiveBatchProcessor:
         for path in full_paths:
             by_source.setdefault(self._source_name_for(path), []).append(path)
 
-        for source_name, source_paths in by_source.items():
-            if self._stop_requested():
-                break
-            sources = [Source(name=f"{source_name}:{path.parent.name}", path=path) for path in source_paths]
-            t0 = time.perf_counter()
-            try:
-                self._record_attempt_progress(
-                    attempt_id,
-                    phase="full_parse",
-                    succeeded_file_count=len(succeeded_paths),
-                    failed_file_count=len(failed_paths),
-                    source_payload_read_bytes=source_payload_read_bytes,
-                    cursor_fingerprint_read_bytes=cursor_fingerprint_read_bytes,
-                    parse_time_s=parse_time_s,
-                    current_source=source_name,
-                    current_path=source_paths[0] if source_paths else None,
+        for source_name, grouped_paths in by_source.items():
+            for source_paths in _full_parse_progress_groups(grouped_paths):
+                if self._stop_requested():
+                    break
+                sources = [Source(name=f"{source_name}:{path.parent.name}", path=path) for path in source_paths]
+                t0 = time.perf_counter()
+                try:
+                    self._record_attempt_progress(
+                        attempt_id,
+                        phase="full_parse",
+                        succeeded_file_count=len(succeeded_paths),
+                        failed_file_count=len(failed_paths),
+                        source_payload_read_bytes=source_payload_read_bytes,
+                        cursor_fingerprint_read_bytes=cursor_fingerprint_read_bytes,
+                        parse_time_s=parse_time_s,
+                        current_source=source_name,
+                        current_path=source_paths[0] if source_paths else None,
+                    )
+                    await self._polylogue.parse_sources(sources=sources, download_assets=False)
+                except Exception as exc:
+                    logger.warning("live.watcher: batch failed for %s: %s", source_name, exc)
+                    for path in source_paths:
+                        failed_paths.append(str(path))
+                        cursor_fingerprint_read_bytes += self._record_failed_cursor(path)
+                    self._record_attempt_progress(
+                        attempt_id,
+                        phase="full_parse_failed",
+                        succeeded_file_count=len(succeeded_paths),
+                        failed_file_count=len(failed_paths),
+                        source_payload_read_bytes=source_payload_read_bytes,
+                        cursor_fingerprint_read_bytes=cursor_fingerprint_read_bytes,
+                        parse_time_s=parse_time_s,
+                        current_source=source_name,
+                        current_path=source_paths[0] if source_paths else None,
+                        error=str(exc),
+                    )
+                    continue
+                parse_elapsed = time.perf_counter() - t0
+                parse_time_s += parse_elapsed
+                source_payload_read_bytes += sum(_path_size(path) for path in source_paths)
+                succeeded_paths.update(source_paths)
+                logger.info(
+                    "live.watcher: batch ingested %s — %d in %.1fs (%.1f/s)",
+                    source_name,
+                    len(source_paths),
+                    parse_elapsed,
+                    len(source_paths) / max(parse_elapsed, 0.01),
                 )
-                await self._polylogue.parse_sources(sources=sources, download_assets=False)
-            except Exception as exc:
-                logger.warning("live.watcher: batch failed for %s: %s", source_name, exc)
-                for path in source_paths:
-                    failed_paths.append(str(path))
-                    cursor_fingerprint_read_bytes += self._record_failed_cursor(path)
-                self._record_attempt_progress(
-                    attempt_id,
-                    phase="full_parse_failed",
-                    succeeded_file_count=len(succeeded_paths),
-                    failed_file_count=len(failed_paths),
-                    source_payload_read_bytes=source_payload_read_bytes,
-                    cursor_fingerprint_read_bytes=cursor_fingerprint_read_bytes,
-                    parse_time_s=parse_time_s,
-                    current_source=source_name,
-                    current_path=source_paths[0] if source_paths else None,
-                    error=str(exc),
-                )
-                continue
-            parse_elapsed = time.perf_counter() - t0
-            parse_time_s += parse_elapsed
-            source_payload_read_bytes += sum(_path_size(path) for path in source_paths)
-            succeeded_paths.update(source_paths)
-            logger.info(
-                "live.watcher: batch ingested %s — %d in %.1fs (%.1f/s)",
-                source_name,
-                len(source_paths),
-                parse_elapsed,
-                len(source_paths) / max(parse_elapsed, 0.01),
-            )
 
         if self._converger is not None and succeeded_paths:
             try:
@@ -685,6 +688,20 @@ def last_complete_newline_from_tail(path: Path, byte_size: int, *, chunk_size: i
                 return start + newline_at + 1, bytes_read
             end = start
     return 0, bytes_read
+
+
+def _full_parse_progress_groups(paths: list[Path]) -> Iterable[list[Path]]:
+    small_paths: list[Path] = []
+    for path in paths:
+        if _path_size(path) < _LARGE_FULL_PARSE_PROGRESS_BYTES:
+            small_paths.append(path)
+            continue
+        if small_paths:
+            yield small_paths
+            small_paths = []
+        yield [path]
+    if small_paths:
+        yield small_paths
 
 
 def _path_size(path: Path) -> int:
