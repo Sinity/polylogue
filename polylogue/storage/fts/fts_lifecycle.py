@@ -216,17 +216,31 @@ async def rebuild_fts_index_async(
     await conn.execute(ACTION_FTS_REBUILD_SQL)
 
 
-def repair_fts_index_sync(conn: sqlite3.Connection, conversation_ids: Sequence[str]) -> None:
-    """Repair FTS rows for the supplied conversations from persisted rows."""
-    ensure_fts_index_sync(conn)
+def repair_message_fts_index_sync(conn: sqlite3.Connection, conversation_ids: Sequence[str]) -> None:
+    """Repair message FTS rows for the supplied conversations."""
     if not conversation_ids:
         return
     for chunk in chunked(list(conversation_ids), size=500):
         params = tuple(chunk)
         conn.execute(delete_conversation_rows_sql(len(chunk)), params)
         conn.execute(insert_conversation_rows_sql(len(chunk)), params)
+
+
+def repair_action_fts_index_sync(conn: sqlite3.Connection, conversation_ids: Sequence[str]) -> None:
+    """Repair action-event FTS rows for the supplied conversations."""
+    if not conversation_ids:
+        return
+    for chunk in chunked(list(conversation_ids), size=500):
+        params = tuple(chunk)
         conn.execute(delete_action_rows_sql(len(chunk)), params)
         conn.execute(insert_action_rows_sql(len(chunk)), params)
+
+
+def repair_fts_index_sync(conn: sqlite3.Connection, conversation_ids: Sequence[str]) -> None:
+    """Repair FTS rows for the supplied conversations from persisted rows."""
+    ensure_fts_index_sync(conn)
+    repair_message_fts_index_sync(conn, conversation_ids)
+    repair_action_fts_index_sync(conn, conversation_ids)
 
 
 async def repair_fts_index_async(
@@ -448,8 +462,10 @@ __all__ = [
     "message_fts_readiness_sync",
     "rebuild_fts_index_async",
     "rebuild_fts_index_sync",
+    "repair_action_fts_index_sync",
     "repair_fts_index_async",
     "repair_fts_index_sync",
+    "repair_message_fts_index_sync",
     "replace_fts_rows_for_messages_sync",
     "restore_fts_triggers_sync",
     "suspend_fts_triggers_sync",

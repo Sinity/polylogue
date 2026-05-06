@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+import time
 from collections.abc import Sequence
 from typing import Any
 from uuid import uuid4
@@ -54,7 +55,8 @@ def commit_archive_write_effects(
     WriteResult with status, rows_affected, and operation_id.
     """
     from polylogue.storage.fts.fts_lifecycle import (
-        repair_fts_index_sync,
+        repair_action_fts_index_sync,
+        repair_message_fts_index_sync,
         restore_fts_triggers_sync,
     )
 
@@ -73,10 +75,34 @@ def commit_archive_write_effects(
 
         acquire_blob_leases(db_path, blob_hashes, operation_id)
 
+    t_restore = time.perf_counter()
     restore_fts_triggers_sync(conn)
+    restore_elapsed_s = time.perf_counter() - t_restore
+    message_fts_elapsed_s = 0.0
+    action_fts_elapsed_s = 0.0
     if sorted_ids:
-        repair_fts_index_sync(conn, sorted_ids)
+        t_message = time.perf_counter()
+        repair_message_fts_index_sync(conn, sorted_ids)
+        message_fts_elapsed_s = time.perf_counter() - t_message
+        t_action = time.perf_counter()
+        repair_action_fts_index_sync(conn, sorted_ids)
+        action_fts_elapsed_s = time.perf_counter() - t_action
+    t_commit = time.perf_counter()
     conn.commit()
+    commit_elapsed_s = time.perf_counter() - t_commit
+    total_effect_elapsed_s = restore_elapsed_s + message_fts_elapsed_s + action_fts_elapsed_s + commit_elapsed_s
+    if total_effect_elapsed_s >= 1.0:
+        logger.info(
+            "slow_archive_write_effects operation=%s conversations=%d restore_fts_s=%.3f "
+            "message_fts_s=%.3f action_fts_s=%.3f commit_s=%.3f total_s=%.3f",
+            op.value,
+            len(sorted_ids),
+            restore_elapsed_s,
+            message_fts_elapsed_s,
+            action_fts_elapsed_s,
+            commit_elapsed_s,
+            total_effect_elapsed_s,
+        )
 
     # Release blob GC leases after successful commit — the blob references
     # are now durable and the GC can safely clean unreferenced blobs.
