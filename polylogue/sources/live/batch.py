@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
@@ -34,6 +35,8 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 _LARGE_FULL_PARSE_PROGRESS_BYTES = 64 * 1024 * 1024
+_SMALL_FULL_PARSE_PROGRESS_MAX_BYTES = 256 * 1024 * 1024
+_SMALL_FULL_PARSE_PROGRESS_MAX_FILES = 256
 _STREAMING_FULL_INGEST_BYTES = 8 * 1024 * 1024
 LiveBatchEventEmitter = Callable[[str, dict[str, object]], None]
 
@@ -176,7 +179,7 @@ class LiveBatchProcessor:
                 current_path=append_plans[0].path,
             )
             t0 = time.perf_counter()
-            append_result = self._ingest_append_plans(append_plans)
+            append_result = await asyncio.to_thread(self._ingest_append_plans, append_plans)
             ingest_worker_count_max = max(ingest_worker_count_max, append_result.worker_count)
             parse_time_s += time.perf_counter() - t0
             self._record_attempt_progress(
@@ -191,7 +194,10 @@ class LiveBatchProcessor:
                 current_source=append_plans[0].source_name,
                 current_path=append_plans[0].path,
             )
-            converged_paths, elapsed, timings = self._converge_paths([plan.path for plan in append_result.succeeded])
+            converged_paths, elapsed, timings = await asyncio.to_thread(
+                self._converge_paths,
+                [plan.path for plan in append_result.succeeded],
+            )
             convergence_time_s += elapsed
             _accumulate_stage_timings(stage_timings, timings)
             for plan in append_result.succeeded:
@@ -260,7 +266,10 @@ class LiveBatchProcessor:
                     current_source=source_name,
                     current_path=source_paths[0] if source_paths else None,
                 )
-                converged_paths, elapsed, timings = self._converge_paths(full_result.succeeded)
+                converged_paths, elapsed, timings = await asyncio.to_thread(
+                    self._converge_paths,
+                    full_result.succeeded,
+                )
                 convergence_time_s += elapsed
                 _accumulate_stage_timings(stage_timings, timings)
                 for path in full_result.succeeded:
@@ -515,6 +524,9 @@ class LiveBatchProcessor:
         return isinstance(getattr(backend, "db_path", None), Path)
 
     async def _ingest_full_paths(self, paths: list[Path], *, source_name: str) -> _FullIngestResult:
+        return await asyncio.to_thread(self._ingest_full_paths_sync, paths, source_name=source_name)
+
+    def _ingest_full_paths_sync(self, paths: list[Path], *, source_name: str) -> _FullIngestResult:
         if not paths:
             return _FullIngestResult(succeeded=[], failed=[], source_payload_read_bytes=0)
         archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
@@ -878,13 +890,24 @@ def last_complete_newline_from_tail(path: Path, byte_size: int, *, chunk_size: i
 
 def _full_parse_progress_groups(paths: list[Path]) -> Iterable[list[Path]]:
     small_paths: list[Path] = []
+    small_bytes = 0
     for path in paths:
-        if _path_size(path) < _LARGE_FULL_PARSE_PROGRESS_BYTES:
+        byte_size = _path_size(path)
+        if byte_size < _LARGE_FULL_PARSE_PROGRESS_BYTES:
+            if small_paths and (
+                len(small_paths) >= _SMALL_FULL_PARSE_PROGRESS_MAX_FILES
+                or small_bytes + byte_size > _SMALL_FULL_PARSE_PROGRESS_MAX_BYTES
+            ):
+                yield small_paths
+                small_paths = []
+                small_bytes = 0
             small_paths.append(path)
+            small_bytes += byte_size
             continue
         if small_paths:
             yield small_paths
             small_paths = []
+            small_bytes = 0
         yield [path]
     if small_paths:
         yield small_paths

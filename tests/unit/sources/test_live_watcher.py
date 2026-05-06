@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
+import time
 from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -19,9 +20,13 @@ import polylogue.sources.live.watcher as live_watcher
 from polylogue import Polylogue
 from polylogue.sources.live import LiveWatcher, WatchSource
 from polylogue.sources.live.batch import (
+    _LARGE_FULL_PARSE_PROGRESS_BYTES,
+    _SMALL_FULL_PARSE_PROGRESS_MAX_BYTES,
+    _SMALL_FULL_PARSE_PROGRESS_MAX_FILES,
     _STREAMING_FULL_INGEST_BYTES,
     LiveBatchProcessor,
     _full_ingest_worker_count,
+    _full_parse_progress_groups,
     _FullIngestResult,
     last_complete_newline_from_tail,
 )
@@ -772,6 +777,70 @@ async def test_live_batch_processor_records_cursor_after_each_converged_group(
     assert first_cursor is not None
     assert first_cursor.parser_fingerprint == "test-parser"
     assert second_cursor is None
+
+
+def test_full_parse_progress_groups_bounds_small_files_by_count(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = [tmp_path / f"{index}.jsonl" for index in range(_SMALL_FULL_PARSE_PROGRESS_MAX_FILES + 1)]
+    monkeypatch.setattr("polylogue.sources.live.batch._path_size", lambda path: 1)
+
+    groups = list(_full_parse_progress_groups(paths))
+
+    assert groups == [paths[:_SMALL_FULL_PARSE_PROGRESS_MAX_FILES], paths[_SMALL_FULL_PARSE_PROGRESS_MAX_FILES:]]
+
+
+def test_full_parse_progress_groups_bounds_small_files_by_bytes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = [tmp_path / f"{index}.jsonl" for index in range(5)]
+    byte_size = _LARGE_FULL_PARSE_PROGRESS_BYTES - 1
+    monkeypatch.setattr("polylogue.sources.live.batch._path_size", lambda path: byte_size)
+
+    groups = list(_full_parse_progress_groups(paths))
+
+    assert sum(byte_size for _ in groups[0]) <= _SMALL_FULL_PARSE_PROGRESS_MAX_BYTES
+    assert groups == [paths[:4], paths[4:]]
+
+
+@pytest.mark.asyncio
+async def test_live_full_ingest_offloads_sync_work_to_keep_loop_responsive(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "sessions"
+    root.mkdir()
+    source_path = root / "session.jsonl"
+    source_path.write_text('{"type":"session_meta","payload":{"id":"responsive"}}\n', encoding="utf-8")
+    cursor = CursorStore(tmp_path / "live.sqlite")
+    polylogue = SimpleNamespace(archive_root=tmp_path, backend=None)
+    processor = LiveBatchProcessor(
+        cast(Any, polylogue),
+        (WatchSource(name="codex", root=root),),
+        cursor=cursor,
+        parser_fingerprint="test-parser",
+    )
+
+    def slow_full_ingest(paths: list[Path], *, source_name: str) -> _FullIngestResult:
+        del source_name
+        time.sleep(0.2)
+        return _FullIngestResult(
+            succeeded=list(paths),
+            failed=[],
+            source_payload_read_bytes=sum(path.stat().st_size for path in paths),
+            raw_fingerprints={path: f"raw:{path.name}" for path in paths},
+        )
+
+    monkeypatch.setattr(processor, "_ingest_full_paths_sync", slow_full_ingest)
+
+    ingest_task = asyncio.create_task(processor.ingest_files([source_path], emit_event=False))
+    await asyncio.sleep(0.02)
+
+    assert not ingest_task.done()
+    metrics = await ingest_task
+    assert metrics.succeeded_file_count == 1
 
 
 @pytest.mark.asyncio

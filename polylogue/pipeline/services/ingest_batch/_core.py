@@ -3,7 +3,8 @@
 Architecture:
 - CPU-bound work (decode/validate/parse/transform) in ProcessPoolExecutor
 - DB writes in main thread via sync sqlite3 (no aiosqlite async overhead)
-- as_completed yields results as workers finish; writes run after all results collected
+- as_completed yields results as workers finish; writes drain completed worker
+  results without retaining the whole parsed batch in memory
 
 Replaces: parsing_batch.py, parsing_workflow.py, validation_flow.py.
 """
@@ -656,20 +657,35 @@ def _iter_ingest_results_sync(
 
     try:
         with process_pool_executor(max_workers=worker_count) as executor:
+            raw_iter = iter(raw_artifacts)
             futures: dict[Future[IngestRecordResult], str] = {}
-            for raw_record in raw_artifacts:
+            max_in_flight = max(1, worker_count * 2)
+
+            def submit_next() -> bool:
+                try:
+                    raw_record = next(raw_iter)
+                except StopIteration:
+                    return False
                 future = executor.submit(_run_ingest_record, raw_record, request)
                 futures[future] = raw_record.raw_id
+                return True
 
-            for future in as_completed(futures):
+            for _ in range(max_in_flight):
+                if not submit_next():
+                    break
+
+            while futures:
+                future = next(as_completed(tuple(futures)))
+                raw_id = futures.pop(future)
                 try:
-                    yield future.result()
+                    result = future.result()
                 except Exception as exc:
-                    raw_id = futures[future]
-                    yield IngestRecordResult(
+                    result = IngestRecordResult(
                         raw_id=raw_id,
                         error=f"worker: {exc}",
                     )
+                submit_next()
+                yield result
     except (TypeError, pickle.PicklingError):
         for raw_record in raw_artifacts:
             yield _run_ingest_record(raw_record, request)

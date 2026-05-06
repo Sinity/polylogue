@@ -32,10 +32,11 @@ from polylogue.storage.insights.session.profiles import (
 )
 from polylogue.storage.insights.session.runtime import SessionInsightCounts
 from polylogue.storage.insights.session.storage import (
-    replace_session_phases_sync,
-    replace_session_profile_sync,
-    replace_session_work_events_sync,
+    replace_session_phases_bulk_sync,
+    replace_session_profiles_bulk_sync,
+    replace_session_work_events_bulk_sync,
     replace_work_thread_sync,
+    replace_work_threads_bulk_sync,
 )
 from polylogue.storage.insights.session.threads import (
     build_thread_records_for_roots_async,
@@ -493,15 +494,8 @@ def _refresh_thread_roots_sync(
     if not normalized_root_ids:
         return 0
     records_by_root = build_thread_records_for_roots_sync(conn, normalized_root_ids)
-    refreshed = 0
-    for root_id in normalized_root_ids:
-        replace_work_thread_sync(
-            conn,
-            root_id,
-            records_by_root.get(root_id),
-        )
-        refreshed += 1
-    return refreshed
+    replace_work_threads_bulk_sync(conn, {root_id: records_by_root.get(root_id) for root_id in normalized_root_ids})
+    return len(normalized_root_ids)
 
 
 def rebuild_session_insights_sync(
@@ -545,18 +539,16 @@ def rebuild_session_insights_sync(
             compaction_counts_by_conversation=batch.compaction_counts_by_conversation,
         )
         chunk_profiles, chunk_work_events, chunk_phases = _count_record_bundles(record_bundles)
+        replace_session_profiles_bulk_sync(conn, [bundle.profile_record for bundle in record_bundles])
+        replace_session_work_events_bulk_sync(
+            conn,
+            {bundle.conversation_id: bundle.work_event_records for bundle in record_bundles},
+        )
+        replace_session_phases_bulk_sync(
+            conn,
+            {bundle.conversation_id: bundle.phase_records for bundle in record_bundles},
+        )
         for bundle in record_bundles:
-            replace_session_profile_sync(conn, bundle.profile_record)
-            replace_session_work_events_sync(
-                conn,
-                bundle.conversation_id,
-                bundle.work_event_records,
-            )
-            replace_session_phases_sync(
-                conn,
-                bundle.conversation_id,
-                bundle.phase_records,
-            )
             group = profile_provider_day(bundle.profile_record)
             if group is not None:
                 refreshed_profile_groups.add(group)

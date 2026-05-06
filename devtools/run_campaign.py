@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import shutil
 import sys
 from pathlib import Path
 
@@ -96,6 +97,8 @@ async def _run(args: argparse.Namespace) -> int:
         archive_dir = args.output / f"archive-{args.scale}"
         db_path = archive_dir / "benchmark.db"
         if args.campaign == "daemon-live-convergence":
+            if archive_dir.exists():
+                shutil.rmtree(archive_dir)
             archive_dir.mkdir(parents=True, exist_ok=True)
         else:
             level = ScaleLevel(args.scale)

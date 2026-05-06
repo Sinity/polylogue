@@ -143,12 +143,17 @@ async def test_run_benchmark_campaigns_skips_seed_archive_for_daemon_live(
 ) -> None:
     from devtools import run_campaign
 
+    stale_file = tmp_path / "archive-large" / "stale.db"
+    stale_file.parent.mkdir(parents=True)
+    stale_file.write_text("old benchmark state", encoding="utf-8")
+
     async def fail_generate_archive(*_args: object, **_kwargs: object) -> ArchiveMetrics:
         raise AssertionError("daemon-live-convergence should generate its own live workload")
 
     async def fake_run_campaign(name: str, db_path: Path) -> CampaignResult:
         assert name == "daemon-live-convergence"
         assert db_path == tmp_path / "archive-large" / "benchmark.db"
+        assert not stale_file.exists()
         return CampaignResult(campaign_name=name, scale_level="", metrics={"total_wall_s": 1.0}, db_stats={})
 
     saved_results: list[CampaignResult] = []

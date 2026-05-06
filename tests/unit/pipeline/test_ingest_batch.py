@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Iterable
+from concurrent.futures import Future
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -683,6 +684,68 @@ def test_iter_ingest_results_sync_runs_inline_for_single_worker(
 
     assert seen == ["raw-1", "raw-2"]
     assert [result.raw_id for result in results] == ["raw-1", "raw-2"]
+
+
+def test_iter_ingest_results_sync_bounds_in_flight_process_results(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_artifacts = [
+        RawConversationRecord(
+            raw_id=f"raw-{index}",
+            provider_name="codex",
+            source_path=f"/tmp/raw-{index}.jsonl",
+            blob_size=12,
+            acquired_at="2026-04-02T00:00:00Z",
+        )
+        for index in range(10)
+    ]
+    pending_sizes: list[int] = []
+
+    class FakeExecutor:
+        def __enter__(self) -> FakeExecutor:
+            return self
+
+        def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+            return None
+
+        def submit(
+            self,
+            fn: object,
+            raw_record: RawConversationRecord,
+            request: _IngestWorkerRequest,
+        ) -> Future[IngestRecordResult]:
+            del fn, request
+            future: Future[IngestRecordResult] = Future()
+            future.set_result(IngestRecordResult(raw_id=raw_record.raw_id))
+            return future
+
+    def fake_process_pool_executor(*, max_workers: int) -> FakeExecutor:
+        assert max_workers == 2
+        return FakeExecutor()
+
+    def fake_as_completed(futures: object) -> Iterable[Future[IngestRecordResult]]:
+        pending = list(futures) if isinstance(futures, tuple) else []
+        pending_sizes.append(len(pending))
+        return iter(pending[:1])
+
+    monkeypatch.setattr(ingest_batch_core, "process_pool_executor", fake_process_pool_executor)
+    monkeypatch.setattr(ingest_batch_core, "as_completed", fake_as_completed)
+
+    results = list(
+        _iter_ingest_results_sync(
+            raw_artifacts,
+            request=_IngestWorkerRequest(
+                archive_root_str="/tmp/archive",
+                blob_root_str="/tmp/blob-store",
+                validation_mode="strict",
+                measure_ingest_result_size=False,
+            ),
+            worker_count=2,
+        )
+    )
+
+    assert [result.raw_id for result in results] == [record.raw_id for record in raw_artifacts]
+    assert max(pending_sizes) == 4
 
 
 def test_process_ingest_batch_sync_commits_fts_repair_and_invalidates_search_cache(

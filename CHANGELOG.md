@@ -91,6 +91,9 @@ documentation polish do not require an entry.
 - Daemon live catch-up no longer pre-hashes uncursored files, reads cursor
   state in bulk, and reports the max ingest worker count in live benchmark
   metrics so many-file convergence throughput is observable.
+- Daemon live ingest bounds small-file convergence groups, offloads sync
+  parse/write work from the event loop, and drains process-pool results without
+  retaining the whole parsed batch in memory.
 - Live watching is no longer exposed through root `polylogue watch` or
   `polylogue run --watch`; use `polylogued watch` for the long-running source
   watcher.
