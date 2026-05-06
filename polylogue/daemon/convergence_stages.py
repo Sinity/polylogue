@@ -268,6 +268,15 @@ def make_insights_stage(db_path: Path) -> ConvergenceStage:
     )
 
 
+def make_default_convergence_stages(db_path: Path) -> tuple[ConvergenceStage, ...]:
+    """Build the daemon's default post-ingest convergence stage set."""
+    return (
+        make_fts_stage(db_path),
+        make_embed_stage(db_path),
+        make_insights_stage(db_path),
+    )
+
+
 # ── Helpers ────────────────────────────────────────────────────────
 
 
@@ -324,6 +333,7 @@ def _conversation_ids_missing_profiles(conn: sqlite3.Connection) -> list[str]:
 
 
 __all__ = [
+    "make_default_convergence_stages",
     "make_embed_stage",
     "make_fts_stage",
     "make_insights_stage",

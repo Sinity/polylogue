@@ -104,11 +104,7 @@ def _run_convergence_probe(
     import asyncio
 
     from polylogue.daemon.convergence import DaemonConverger
-    from polylogue.daemon.convergence_stages import (
-        make_embed_stage,
-        make_fts_stage,
-        make_insights_stage,
-    )
+    from polylogue.daemon.convergence_stages import make_default_convergence_stages
     from polylogue.sources.live.batch import LiveBatchProcessor
     from polylogue.sources.live.cursor import CursorStore
     from polylogue.sources.live.watcher import WatchSource
@@ -120,13 +116,7 @@ def _run_convergence_probe(
     # Collect all JSONL files.
     files = list(corpus_root.rglob("*.jsonl"))
 
-    # Build converger with stages.
-    stages = [
-        make_fts_stage(db_path),
-        make_embed_stage(db_path),
-        make_insights_stage(db_path),
-    ]
-    converger = DaemonConverger(stages=stages, max_workers=4)
+    converger = DaemonConverger(stages=make_default_convergence_stages(db_path), max_workers=4)
     polylogue = _BenchmarkPolylogue(tmp_path, db_path)
     processor = LiveBatchProcessor(
         cast(Any, polylogue),

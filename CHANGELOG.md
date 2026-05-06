@@ -79,7 +79,9 @@ documentation polish do not require an entry.
 - `polylogue audit` was removed from the product CLI; verification-lab audit
   workflows live under `devtools`.
 - Codex JSONL ingestion now parses hot streams directly from raw records,
-  reducing daemon live-ingest parse overhead for large Codex sessions.
+  skips validation-off pre-sampling for known stream providers, and reuses
+  message hash payloads during materialization, reducing daemon live-ingest
+  parse overhead for large Codex sessions.
 - Daemon live convergence refreshes affected insight rows in batches and avoids
   process-pool startup for tiny ingest batches, reducing convergence and parse
   overhead for live JSONL workloads.

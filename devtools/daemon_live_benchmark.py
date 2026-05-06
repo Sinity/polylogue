@@ -166,21 +166,14 @@ async def run_daemon_live_convergence_workload(db_path: Path) -> tuple[dict[str,
     """Run live batch ingestion in-process and return normalized metrics/stats."""
     from polylogue.api import Polylogue
     from polylogue.daemon.convergence import DaemonConverger
-    from polylogue.daemon.convergence_stages import make_embed_stage, make_fts_stage, make_insights_stage
+    from polylogue.daemon.convergence_stages import make_default_convergence_stages
     from polylogue.sources.live.batch import LiveBatchProcessor
     from polylogue.sources.live.cursor import CursorStore
     from polylogue.sources.live.watcher import WatchSource
 
     scale = scale_from_db_path(db_path)
     workload = generate_daemon_live_workload(db_path.parent, scale=scale)
-    converger = DaemonConverger(
-        stages=(
-            make_fts_stage(db_path),
-            make_embed_stage(db_path),
-            make_insights_stage(db_path),
-        ),
-        max_workers=2,
-    )
+    converger = DaemonConverger(stages=make_default_convergence_stages(db_path), max_workers=2)
     await converger.start()
     try:
         async with Polylogue(archive_root=db_path.parent, db_path=db_path) as polylogue:

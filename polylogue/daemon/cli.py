@@ -305,21 +305,13 @@ async def run_daemon_services(
         # batched source ingestion; these stages repair archive indexes and
         # refresh derived state after successful writes.
         from polylogue.daemon.convergence import DaemonConverger
-        from polylogue.daemon.convergence_stages import (
-            make_embed_stage,
-            make_fts_stage,
-            make_insights_stage,
-        )
+        from polylogue.daemon.convergence_stages import make_default_convergence_stages
         from polylogue.paths import archive_root, db_path
 
         _db = db_path() or Path(archive_root()) / "polylogue.db"
 
         converger = DaemonConverger(
-            stages=(
-                make_fts_stage(_db),
-                make_embed_stage(_db),
-                make_insights_stage(_db),
-            ),
+            stages=make_default_convergence_stages(_db),
             max_workers=2,
         )
         await converger.start()
