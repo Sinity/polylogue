@@ -208,6 +208,10 @@ ARCHIVE_STORAGE_DDL = """
         CREATE INDEX IF NOT EXISTS idx_attachment_refs_attachment
         ON attachment_refs(attachment_id);
 
+        CREATE INDEX IF NOT EXISTS idx_attachment_refs_message
+        ON attachment_refs(message_id)
+        WHERE message_id IS NOT NULL;
+
         CREATE INDEX IF NOT EXISTS idx_attachments_provider_meta_id
         ON attachments(json_extract(provider_meta, '$.id'))
         WHERE provider_meta IS NOT NULL;

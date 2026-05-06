@@ -31,10 +31,13 @@ _RAW_SOURCE_MTIME_INDEX_SQL = (
     "ON raw_conversations(source_path, file_mtime) "
     "WHERE file_mtime IS NOT NULL"
 )
-
 _MESSAGE_TYPE_INDEX_SQL = (
     "CREATE INDEX IF NOT EXISTS idx_messages_conversation_message_type ON messages(conversation_id, message_type)"
 )
+_ATTACHMENT_REFS_MESSAGE_INDEX_SQL = (
+    "CREATE INDEX IF NOT EXISTS idx_attachment_refs_message ON attachment_refs(message_id) WHERE message_id IS NOT NULL"
+)
+_PROVIDER_EVENTS_SOURCE_MESSAGE_INDEX_SQL = "CREATE INDEX IF NOT EXISTS idx_provider_events_source_message ON provider_events(source_message_id) WHERE source_message_id IS NOT NULL"
 
 
 @dataclass(frozen=True)
@@ -77,6 +80,7 @@ class SchemaBootstrapDecision:
         "upgrade_v5_to_v6",
         "upgrade_v6_to_v7",
         "upgrade_v7_to_v8",
+        "upgrade_v8_to_v9",
         "version_mismatch",
     ]
     extension_plan: SchemaExtensionPlan | None = None
@@ -307,6 +311,16 @@ _SCHEMA_EXTENSION_DESCRIPTORS: tuple[SchemaExtensionDescriptor, ...] = (
                 ON attachments(json_extract(provider_meta, '$.driveId'))
                 WHERE provider_meta IS NOT NULL
                 """,
+    ),
+    SchemaIndexExtensionDescriptor(
+        table_name="attachment_refs",
+        index_name="idx_attachment_refs_message",
+        ddl=_ATTACHMENT_REFS_MESSAGE_INDEX_SQL,
+    ),
+    SchemaIndexExtensionDescriptor(
+        table_name="provider_events",
+        index_name="idx_provider_events_source_message",
+        ddl=_PROVIDER_EVENTS_SOURCE_MESSAGE_INDEX_SQL,
     ),
     SchemaIndexExtensionDescriptor(
         table_name="attachment_refs",
@@ -810,20 +824,7 @@ def build_v2_to_current_upgrade_plan(snapshot: SchemaSnapshot) -> SchemaExtensio
     """Build the declared v2 upgrade path to the current archive version."""
     v2_to_v3 = build_v2_to_v3_upgrade_plan(snapshot)
     v3_to_v4 = build_v3_to_v4_upgrade_plan(snapshot)
-    extra_statements: tuple[str, ...] = ()
-    if SCHEMA_VERSION >= 5:
-        from polylogue.storage.sqlite.schema_ddl_archive import BLOB_LEASE_DDL, TAGS_M2M_DDL
-        from polylogue.storage.sqlite.schema_ddl_cursor import SOURCE_FILE_CURSOR_DDL
-
-        extra_statements = _split_ddl_into_statements(SOURCE_FILE_CURSOR_DDL, TAGS_M2M_DDL, BLOB_LEASE_DDL)
-    if SCHEMA_VERSION >= 6:
-        from polylogue.storage.sqlite.schema_ddl_identity import IDENTITY_DDL
-
-        extra_statements = (*extra_statements, *_split_ddl_into_statements(IDENTITY_DDL))
-    if SCHEMA_VERSION >= 7:
-        extra_statements = (*extra_statements, *build_v6_to_v7_upgrade_plan(snapshot).statements)
-    if SCHEMA_VERSION >= 8:
-        extra_statements = (*extra_statements, *build_v7_to_v8_upgrade_plan(snapshot).statements)
+    extra_statements = _upgrade_tail_statements(snapshot, from_version=4)
     return SchemaExtensionPlan(
         statements=(*v2_to_v3.statements, *v3_to_v4.statements, *extra_statements),
         scripts=(),
@@ -854,6 +855,38 @@ def build_v7_to_v8_upgrade_plan(snapshot: SchemaSnapshot) -> SchemaExtensionPlan
     )
 
 
+def build_v8_to_v9_upgrade_plan(snapshot: SchemaSnapshot) -> SchemaExtensionPlan:
+    """Add foreign-key support indexes needed for fast conversation replacement."""
+    assert_supported_archive_layout_snapshot(snapshot)
+
+    statements: list[str] = []
+    if snapshot.has_table("attachment_refs"):
+        statements.append(_ATTACHMENT_REFS_MESSAGE_INDEX_SQL)
+    if snapshot.has_table("provider_events"):
+        statements.append(_PROVIDER_EVENTS_SOURCE_MESSAGE_INDEX_SQL)
+    return SchemaExtensionPlan(statements=tuple(statements), scripts=())
+
+
+def _upgrade_tail_statements(snapshot: SchemaSnapshot, *, from_version: int) -> tuple[str, ...]:
+    statements: tuple[str, ...] = ()
+    if from_version < 5 <= SCHEMA_VERSION:
+        from polylogue.storage.sqlite.schema_ddl_archive import BLOB_LEASE_DDL, TAGS_M2M_DDL
+        from polylogue.storage.sqlite.schema_ddl_cursor import SOURCE_FILE_CURSOR_DDL
+
+        statements = _split_ddl_into_statements(SOURCE_FILE_CURSOR_DDL, TAGS_M2M_DDL, BLOB_LEASE_DDL)
+    if from_version < 6 <= SCHEMA_VERSION:
+        from polylogue.storage.sqlite.schema_ddl_identity import IDENTITY_DDL
+
+        statements = (*statements, *_split_ddl_into_statements(IDENTITY_DDL))
+    if from_version < 7 <= SCHEMA_VERSION:
+        statements = (*statements, *build_v6_to_v7_upgrade_plan(snapshot).statements)
+    if from_version < 8 <= SCHEMA_VERSION:
+        statements = (*statements, *build_v7_to_v8_upgrade_plan(snapshot).statements)
+    if from_version < 9 <= SCHEMA_VERSION:
+        statements = (*statements, *build_v8_to_v9_upgrade_plan(snapshot).statements)
+    return statements
+
+
 def decide_schema_bootstrap(snapshot: SchemaSnapshot) -> SchemaBootstrapDecision:
     """Choose the canonical schema bootstrap path for sync and async backends."""
     if snapshot.current_version == 0:
@@ -870,19 +903,8 @@ def decide_schema_bootstrap(snapshot: SchemaSnapshot) -> SchemaBootstrapDecision
 
     if snapshot.current_version == 3 and SCHEMA_VERSION >= 4:
         plan = build_v3_to_v4_upgrade_plan(snapshot)
-        if SCHEMA_VERSION >= 5:
-            from polylogue.storage.sqlite.schema_ddl_archive import BLOB_LEASE_DDL, TAGS_M2M_DDL
-            from polylogue.storage.sqlite.schema_ddl_cursor import SOURCE_FILE_CURSOR_DDL
-
-            extra_stmts = _split_ddl_into_statements(SOURCE_FILE_CURSOR_DDL, TAGS_M2M_DDL, BLOB_LEASE_DDL)
-            if SCHEMA_VERSION >= 6:
-                from polylogue.storage.sqlite.schema_ddl_identity import IDENTITY_DDL
-
-                extra_stmts = (*extra_stmts, *_split_ddl_into_statements(IDENTITY_DDL))
-            if SCHEMA_VERSION >= 7:
-                extra_stmts = (*extra_stmts, *build_v6_to_v7_upgrade_plan(snapshot).statements)
-            if SCHEMA_VERSION >= 8:
-                extra_stmts = (*extra_stmts, *build_v7_to_v8_upgrade_plan(snapshot).statements)
+        extra_stmts = _upgrade_tail_statements(snapshot, from_version=4)
+        if extra_stmts:
             plan = SchemaExtensionPlan(
                 statements=(*plan.statements, *extra_stmts),
                 scripts=(),
@@ -894,20 +916,8 @@ def decide_schema_bootstrap(snapshot: SchemaSnapshot) -> SchemaBootstrapDecision
         )
 
     if snapshot.current_version == 4 and SCHEMA_VERSION >= 5:
-        from polylogue.storage.sqlite.schema_ddl_archive import BLOB_LEASE_DDL, TAGS_M2M_DDL
-        from polylogue.storage.sqlite.schema_ddl_cursor import SOURCE_FILE_CURSOR_DDL
-
-        plan_stmts = _split_ddl_into_statements(SOURCE_FILE_CURSOR_DDL, TAGS_M2M_DDL, BLOB_LEASE_DDL)
-        if SCHEMA_VERSION >= 6:
-            from polylogue.storage.sqlite.schema_ddl_identity import IDENTITY_DDL
-
-            plan_stmts = (*plan_stmts, *_split_ddl_into_statements(IDENTITY_DDL))
-        if SCHEMA_VERSION >= 7:
-            plan_stmts = (*plan_stmts, *build_v6_to_v7_upgrade_plan(snapshot).statements)
-        if SCHEMA_VERSION >= 8:
-            plan_stmts = (*plan_stmts, *build_v7_to_v8_upgrade_plan(snapshot).statements)
         plan = SchemaExtensionPlan(
-            statements=plan_stmts,
+            statements=_upgrade_tail_statements(snapshot, from_version=4),
             scripts=(),
         )
         return SchemaBootstrapDecision(
@@ -917,15 +927,8 @@ def decide_schema_bootstrap(snapshot: SchemaSnapshot) -> SchemaBootstrapDecision
         )
 
     if snapshot.current_version == 5 and SCHEMA_VERSION >= 6:
-        from polylogue.storage.sqlite.schema_ddl_identity import IDENTITY_DDL
-
-        plan_statements = _split_ddl_into_statements(IDENTITY_DDL)
-        if SCHEMA_VERSION >= 7:
-            plan_statements = (*plan_statements, *build_v6_to_v7_upgrade_plan(snapshot).statements)
-        if SCHEMA_VERSION >= 8:
-            plan_statements = (*plan_statements, *build_v7_to_v8_upgrade_plan(snapshot).statements)
         plan = SchemaExtensionPlan(
-            statements=plan_statements,
+            statements=_upgrade_tail_statements(snapshot, from_version=5),
             scripts=(),
         )
         return SchemaBootstrapDecision(
@@ -935,22 +938,29 @@ def decide_schema_bootstrap(snapshot: SchemaSnapshot) -> SchemaBootstrapDecision
         )
 
     if snapshot.current_version == 6 and SCHEMA_VERSION >= 7:
-        plan = build_v6_to_v7_upgrade_plan(snapshot)
-        if SCHEMA_VERSION >= 8:
-            plan = SchemaExtensionPlan(
-                statements=(*plan.statements, *build_v7_to_v8_upgrade_plan(snapshot).statements),
-                scripts=(),
-            )
         return SchemaBootstrapDecision(
             action="upgrade_v6_to_v7",
-            extension_plan=plan,
+            extension_plan=SchemaExtensionPlan(
+                statements=_upgrade_tail_statements(snapshot, from_version=6),
+                scripts=(),
+            ),
             current_version=snapshot.current_version,
         )
 
     if snapshot.current_version == 7 and SCHEMA_VERSION >= 8:
         return SchemaBootstrapDecision(
             action="upgrade_v7_to_v8",
-            extension_plan=build_v7_to_v8_upgrade_plan(snapshot),
+            extension_plan=SchemaExtensionPlan(
+                statements=_upgrade_tail_statements(snapshot, from_version=7),
+                scripts=(),
+            ),
+            current_version=snapshot.current_version,
+        )
+
+    if snapshot.current_version == 8 and SCHEMA_VERSION >= 9:
+        return SchemaBootstrapDecision(
+            action="upgrade_v8_to_v9",
+            extension_plan=build_v8_to_v9_upgrade_plan(snapshot),
             current_version=snapshot.current_version,
         )
 
@@ -1078,6 +1088,7 @@ __all__ = [
     "build_v2_to_v3_upgrade_plan",
     "build_v3_to_v4_upgrade_plan",
     "build_v7_to_v8_upgrade_plan",
+    "build_v8_to_v9_upgrade_plan",
     "capture_schema_snapshot",
     "capture_schema_snapshot_async",
     "decide_schema_bootstrap",

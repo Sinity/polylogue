@@ -67,6 +67,35 @@ def test_daemon_status_payload_and_plain_output_include_failed_files(tmp_path: P
     assert f"  {failed}" in lines
 
 
+def test_daemon_status_caps_failed_file_samples(tmp_path: Path) -> None:
+    db = tmp_path / "polylogue.db"
+    cursor = CursorStore(db)
+    for index in range(55):
+        failed = tmp_path / f"failed-{index:02d}.jsonl"
+        failed.write_text('{"bad":true}\n')
+        cursor.mark_failed(failed)
+
+    with (
+        patch("polylogue.daemon.status.db_path", return_value=db),
+        patch("polylogue.daemon.status._check_daemon_liveness", return_value=False),
+        patch("polylogue.daemon.status._blob_size_info", return_value=0),
+        patch("polylogue.daemon.status._fts_readiness_info", return_value={}),
+        patch("polylogue.daemon.status._insight_freshness_info", return_value={}),
+    ):
+        payload = daemon_status_payload(sources=())
+
+    failing_files = payload["failing_files"]
+    assert isinstance(failing_files, list)
+    assert len(failing_files) == 50
+    live_cursor = payload["live_cursor"]
+    assert isinstance(live_cursor, dict)
+    assert live_cursor["failed_file_count"] == 55
+    assert live_cursor["sampled_file_count"] == 50
+    assert live_cursor["omitted_file_count"] == 5
+    lines = format_daemon_status_lines(payload)
+    assert "Failing files: 50 shown, 5 omitted" in lines
+
+
 def test_daemon_status_reports_live_ingest_attempts(tmp_path: Path) -> None:
     db = tmp_path / "polylogue.db"
     source = tmp_path / "session.jsonl"

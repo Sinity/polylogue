@@ -785,7 +785,7 @@ def test_full_parse_progress_groups_bounds_small_files_by_count(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     paths = [tmp_path / f"{index}.jsonl" for index in range(_SMALL_FULL_PARSE_PROGRESS_MAX_FILES + 1)]
-    monkeypatch.setattr("polylogue.sources.live.batch._path_size", lambda path: 1)
+    monkeypatch.setattr("polylogue.sources.live.batch_support._path_size", lambda path: 1)
 
     groups = list(_full_parse_progress_groups(paths))
 
@@ -798,7 +798,7 @@ def test_full_parse_progress_groups_bounds_small_files_by_bytes(
 ) -> None:
     paths = [tmp_path / f"{index}.jsonl" for index in range(5)]
     byte_size = _LARGE_FULL_PARSE_PROGRESS_BYTES - 1
-    monkeypatch.setattr("polylogue.sources.live.batch._path_size", lambda path: byte_size)
+    monkeypatch.setattr("polylogue.sources.live.batch_support._path_size", lambda path: byte_size)
 
     groups = list(_full_parse_progress_groups(paths))
 
