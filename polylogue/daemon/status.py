@@ -17,6 +17,7 @@ from polylogue.sources.live.watcher import default_sources
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 _LIVE_INGEST_ATTEMPT_STALE_AFTER_S = 180.0
+_LIVE_CURSOR_FAILURE_SAMPLE_LIMIT = 50
 
 # ---------------------------------------------------------------------------
 # Typed sub-models
@@ -65,6 +66,8 @@ class LiveCursorSummary(BaseModel):
     excluded_file_count: int = 0
     retry_due_file_count: int = 0
     in_backoff_file_count: int = 0
+    sampled_file_count: int = 0
+    omitted_file_count: int = 0
     failing_files: list[LiveCursorFileState] = Field(default_factory=list)
 
 
@@ -318,12 +321,28 @@ def _live_cursor_summary_info() -> LiveCursorSummary:
             if has_table is None:
                 return LiveCursorSummary()
             tracked_file_count = int(conn.execute("SELECT COUNT(*) FROM live_cursor").fetchone()[0])
+            failed_file_count = int(
+                conn.execute("SELECT COUNT(*) FROM live_cursor WHERE failure_count > 0").fetchone()[0]
+            )
+            excluded_file_count = int(conn.execute("SELECT COUNT(*) FROM live_cursor WHERE excluded = 1").fetchone()[0])
+            attention_file_count = int(
+                conn.execute("SELECT COUNT(*) FROM live_cursor WHERE failure_count > 0 OR excluded = 1").fetchone()[0]
+            )
             rows = conn.execute(
                 """
                 SELECT source_path, failure_count, next_retry_at, excluded
                 FROM live_cursor
                 WHERE failure_count > 0 OR excluded = 1
                 ORDER BY source_path
+                LIMIT ?
+                """,
+                (_LIVE_CURSOR_FAILURE_SAMPLE_LIMIT,),
+            ).fetchall()
+            retry_rows = conn.execute(
+                """
+                SELECT next_retry_at
+                FROM live_cursor
+                WHERE failure_count > 0
                 """
             ).fetchall()
         finally:
@@ -333,23 +352,15 @@ def _live_cursor_summary_info() -> LiveCursorSummary:
 
     now = datetime.now(UTC)
     failing_files: list[LiveCursorFileState] = []
-    failed_file_count = 0
-    excluded_file_count = 0
     retry_due_file_count = 0
-    in_backoff_file_count = 0
+    for row in retry_rows:
+        if _retry_due(row[0], now=now):
+            retry_due_file_count += 1
+    in_backoff_file_count = max(0, failed_file_count - retry_due_file_count)
     for row in rows:
-        failure_count = int(row[1] or 0)
+        failure_count = _row_int(row[1])
         excluded = bool(row[3])
-        retry_due = False
-        if failure_count > 0:
-            failed_file_count += 1
-            retry_due = _retry_due(row[2], now=now)
-            if retry_due:
-                retry_due_file_count += 1
-            else:
-                in_backoff_file_count += 1
-        if excluded:
-            excluded_file_count += 1
+        retry_due = failure_count > 0 and _retry_due(row[2], now=now)
         failing_files.append(
             LiveCursorFileState(
                 source_path=str(row[0]),
@@ -366,6 +377,8 @@ def _live_cursor_summary_info() -> LiveCursorSummary:
         excluded_file_count=excluded_file_count,
         retry_due_file_count=retry_due_file_count,
         in_backoff_file_count=in_backoff_file_count,
+        sampled_file_count=len(failing_files),
+        omitted_file_count=max(0, attention_file_count - len(failing_files)),
         failing_files=failing_files,
     )
 
@@ -649,7 +662,11 @@ def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
             f"{live_cursor.get('in_backoff_file_count', 0)} in backoff"
         )
     if isinstance(failing_files, list) and failing_files:
-        lines.append(f"Failing files: {len(failing_files)}")
+        omitted = _row_int(live_cursor.get("omitted_file_count")) if isinstance(live_cursor, dict) else 0
+        if omitted:
+            lines.append(f"Failing files: {len(failing_files)} shown, {omitted} omitted")
+        else:
+            lines.append(f"Failing files: {len(failing_files)}")
         for path in failing_files:
             lines.append(f"  {path}")
     attempts = payload.get("live_ingest_attempts")

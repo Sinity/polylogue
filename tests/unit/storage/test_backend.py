@@ -384,7 +384,9 @@ def test_schema_extension_catalog_declares_snapshot_scope() -> None:
         "idx_raw_conv_effective_provider",
         "idx_content_blocks_tool_use_conversation",
         "idx_attachments_provider_meta_file_id",
+        "idx_attachment_refs_message",
         "idx_attachment_refs_provider_meta_drive_id",
+        "idx_provider_events_source_message",
     }.issubset(index_names)
 
 

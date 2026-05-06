@@ -869,7 +869,7 @@ files:
     target: polylogue/daemon/convergence.py
     owner: stable
   - path: polylogue/daemon/convergence_stages.py
-    loc: 496
+    loc: 590
     target: polylogue/daemon/convergence_stages.py
     owner: stable
   - path: polylogue/daemon/events.py
@@ -881,7 +881,7 @@ files:
     target: polylogue/daemon/http.py
     owner: stable
   - path: polylogue/daemon/status.py
-    loc: 675
+    loc: 707
     target: polylogue/daemon/status.py
     owner: stable
   - path: polylogue/daemon/web_shell.py
@@ -2037,8 +2037,12 @@ files:
     target: polylogue/sources/live/__init__.py
     owner: stable
   - path: polylogue/sources/live/batch.py
-    loc: 1095
+    loc: 988
     target: polylogue/sources/live/batch.py
+    owner: stable
+  - path: polylogue/sources/live/batch_support.py
+    loc: 268
+    target: polylogue/sources/live/batch_support.py
     owner: stable
   - path: polylogue/sources/live/cursor.py
     loc: 663
@@ -2832,11 +2836,11 @@ files:
     target: polylogue/storage/sqlite/query_store_maintenance.py
     owner: stable
   - path: polylogue/storage/sqlite/schema.py
-    loc: 228
+    loc: 232
     target: polylogue/storage/sqlite/schema.py
     owner: stable
   - path: polylogue/storage/sqlite/schema_bootstrap.py
-    loc: 1053
+    loc: 1100
     target: polylogue/storage/sqlite/schema_bootstrap.py
     owner: stable
   - path: polylogue/storage/sqlite/schema_ddl.py
@@ -2848,7 +2852,7 @@ files:
     target: polylogue/storage/sqlite/schema_ddl_actions.py
     owner: stable
   - path: polylogue/storage/sqlite/schema_ddl_archive.py
-    loc: 323
+    loc: 327
     target: polylogue/storage/sqlite/schema_ddl_archive.py
     owner: stable
   - path: polylogue/storage/sqlite/schema_ddl_aux.py
@@ -2876,7 +2880,7 @@ files:
     target: polylogue/storage/sqlite/schema_ddl_insight_timelines.py
     owner: stable
   - path: polylogue/storage/sqlite/schema_ddl_provider_events.py
-    loc: 36
+    loc: 40
     target: polylogue/storage/sqlite/schema_ddl_provider_events.py
     owner: stable
   - path: polylogue/storage/sqlite/sqlite_vec_extension.py
