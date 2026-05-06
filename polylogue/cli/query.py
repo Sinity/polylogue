@@ -381,7 +381,7 @@ async def _execute_query_plan(
 
     if plan.selection.similar_text and vector_provider is None:
         click.echo(
-            "Error: --similar requires vector search support, but vector provider initialization failed or is disabled. Check VOYAGE_API_KEY and daemon embedding convergence.",
+            "Error: --similar requires vector search support, but vector provider initialization failed or is disabled. Check VOYAGE_API_KEY and POLYLOGUE_DAEMON_ENABLE_EMBEDDINGS=1/true/yes.",
             err=True,
         )
         raise SystemExit(1)
@@ -389,7 +389,7 @@ async def _execute_query_plan(
         archive_stats = await repo.get_archive_stats()
         if archive_stats.embedded_messages <= 0:
             click.echo(
-                "Error: --similar requires existing embeddings. Enable daemon embedding convergence and let embeddings build before querying.",
+                "Error: --similar requires existing embeddings. Set POLYLOGUE_DAEMON_ENABLE_EMBEDDINGS=1/true/yes and let embeddings build before querying.",
                 err=True,
             )
             raise SystemExit(1)
