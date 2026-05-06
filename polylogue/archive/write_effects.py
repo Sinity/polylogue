@@ -65,6 +65,7 @@ def commit_archive_write_effects(
     blob_hashes: list[str] = payload.get("_blob_hashes", [])
     operation_id: str = payload.get("_operation_id", "")
     db_path: str | None = payload.get("_db_path")
+    repair_action_fts = bool(payload.get("repair_action_fts", True))
 
     # Acquire blob GC leases before the main data commit so a concurrent GC
     # run sees them. Uses a separate connection (immediate commit) because
@@ -84,9 +85,10 @@ def commit_archive_write_effects(
         t_message = time.perf_counter()
         repair_message_fts_index_sync(conn, sorted_ids)
         message_fts_elapsed_s = time.perf_counter() - t_message
-        t_action = time.perf_counter()
-        repair_action_fts_index_sync(conn, sorted_ids)
-        action_fts_elapsed_s = time.perf_counter() - t_action
+        if repair_action_fts:
+            t_action = time.perf_counter()
+            repair_action_fts_index_sync(conn, sorted_ids)
+            action_fts_elapsed_s = time.perf_counter() - t_action
     t_commit = time.perf_counter()
     conn.commit()
     commit_elapsed_s = time.perf_counter() - t_commit

@@ -499,6 +499,7 @@ class LiveBatchProcessor:
                 validation_mode=str(getattr(getattr(self._polylogue, "config", None), "validation_mode", "advisory")),
                 ingest_workers=_full_ingest_worker_count(raw_records),
                 measure_ingest_result_size=False,
+                repair_action_fts=False,
             )
             failed.extend(raw_by_id[raw_id] for raw_id in summary.failed_raw_ids if raw_id in raw_by_id)
             if summary.parse_failures and not summary.failed_raw_ids:
@@ -644,6 +645,7 @@ class LiveBatchProcessor:
                 validation_mode=str(getattr(getattr(self._polylogue, "config", None), "validation_mode", "advisory")),
                 ingest_workers=1,
                 measure_ingest_result_size=False,
+                repair_action_fts=False,
             )
         except Exception as exc:
             logger.warning("live.watcher: append ingest failed: %s", exc)

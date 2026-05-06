@@ -804,6 +804,7 @@ def _commit_sync_ingest_side_effects(
     *,
     db_path: Path,
     changed_conversation_ids: Sequence[str],
+    repair_action_fts: bool = True,
 ) -> None:
     """Run post-ingest side effects through the canonical write-effects path."""
     ArchiveWriteGateway(db_path).commit_write_sync(
@@ -811,6 +812,7 @@ def _commit_sync_ingest_side_effects(
         {
             "_connection": conn,
             "changed_conversation_ids": tuple(changed_conversation_ids),
+            "repair_action_fts": repair_action_fts,
         },
     )
 
@@ -825,6 +827,7 @@ def _process_ingest_batch_sync(
     ingest_workers: int | None,
     measure_ingest_result_size: bool,
     force_write: bool = False,
+    repair_action_fts: bool = True,
 ) -> _IngestBatchSummary:
     from polylogue.storage.fts.fts_lifecycle import (
         suspend_fts_triggers_sync,
@@ -872,7 +875,12 @@ def _process_ingest_batch_sync(
         raise
     finally:
         try:
-            _commit_sync_ingest_side_effects(conn, db_path=db_path, changed_conversation_ids=tuple(changed_ids))
+            _commit_sync_ingest_side_effects(
+                conn,
+                db_path=db_path,
+                changed_conversation_ids=tuple(changed_ids),
+                repair_action_fts=repair_action_fts,
+            )
         except Exception:
             conn.rollback()
             raise

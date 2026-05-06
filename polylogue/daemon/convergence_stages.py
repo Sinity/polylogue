@@ -40,7 +40,13 @@ def make_fts_stage(db_path: Path) -> ConvergenceStage:
                 if total == 0:
                     return False
                 fts_count = int(conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0])
-                return fts_count < total
+                if fts_count < total:
+                    return True
+                if _table_exists(conn, "action_events") and _table_exists(conn, "action_events_fts"):
+                    action_total = int(conn.execute("SELECT COUNT(*) FROM action_events").fetchone()[0])
+                    action_fts_count = int(conn.execute("SELECT COUNT(*) FROM action_events_fts").fetchone()[0])
+                    return action_fts_count < action_total
+                return False
             finally:
                 conn.close()
         except Exception:
