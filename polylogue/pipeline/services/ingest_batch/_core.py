@@ -428,7 +428,8 @@ def _write_conversation(
     affected_attachment_ids: set[str] = set()
     if not content_unchanged:
         counts["conversations"] = 1
-        affected_attachment_ids = replace_conversation_runtime_state_sync(conn, cdata.conversation_id)
+        if existing_row is not None:
+            affected_attachment_ids = replace_conversation_runtime_state_sync(conn, cdata.conversation_id)
     else:
         counts["conversations"] = 0
 
