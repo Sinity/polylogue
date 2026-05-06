@@ -26,6 +26,7 @@ if TYPE_CHECKING:
     from polylogue.api import Polylogue
 
 logger = get_logger(__name__)
+LiveBatchEventEmitter = Callable[[str, dict[str, object]], None]
 
 
 class LiveSourceRoot(Protocol):
@@ -96,6 +97,7 @@ class LiveBatchProcessor:
         parser_fingerprint: str | Callable[[], str],
         converger: object | None = None,
         stop_requested: Callable[[], bool] | None = None,
+        event_emitter: LiveBatchEventEmitter | None = None,
     ) -> None:
         self._polylogue = polylogue
         self._sources = tuple(sources)
@@ -103,6 +105,7 @@ class LiveBatchProcessor:
         self._parser_fingerprint = parser_fingerprint
         self._converger = converger
         self._stop_requested = stop_requested or (lambda: False)
+        self._event_emitter = event_emitter
 
     async def ingest_files(
         self,
@@ -113,8 +116,6 @@ class LiveBatchProcessor:
         emit_event: bool = True,
     ) -> LiveBatchMetrics:
         """Ingest files in batch, run post-ingest convergence, and return metrics."""
-        from polylogue.daemon.events import emit_daemon_event
-
         batch_started = time.perf_counter()
         db_bytes_before = _path_size(self._cursor._db_path) + _path_size(self._cursor._db_path.with_suffix(".db-wal"))
         input_bytes = sum(_path_size(path) for path in paths)
@@ -229,8 +230,8 @@ class LiveBatchProcessor:
             stage_timings_s={name: round(elapsed, 6) for name, elapsed in stage_timings.items()},
             failed_paths=failed_paths,
         )
-        if emit_event:
-            emit_daemon_event("ingestion_batch", payload=metrics.to_payload())
+        if emit_event and self._event_emitter is not None:
+            self._event_emitter("ingestion_batch", metrics.to_payload())
         return metrics
 
     def _record_failed_cursor(self, path: Path) -> int:
@@ -513,4 +514,4 @@ def _path_size(path: Path) -> int:
         return 0
 
 
-__all__ = ["LiveBatchMetrics", "LiveBatchProcessor", "fingerprint_file"]
+__all__ = ["LiveBatchEventEmitter", "LiveBatchMetrics", "LiveBatchProcessor", "fingerprint_file"]

@@ -119,7 +119,6 @@ MUTATION_CAMPAIGNS: dict[str, MutationCampaign] = {
         tests=(
             "tests/unit/pipeline/test_acquisition_streams.py",
             "tests/unit/pipeline/test_parsing_service.py",
-            "tests/unit/pipeline/test_render_service.py",
             "tests/unit/pipeline/test_indexing.py",
             "tests/unit/pipeline/test_ingest_batch.py",
             "tests/unit/pipeline/test_stage_independence.py",

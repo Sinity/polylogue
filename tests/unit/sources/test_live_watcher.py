@@ -10,7 +10,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -161,13 +161,19 @@ def test_cursor_migrates_size_only_rows(tmp_path: Path) -> None:
 # --- LiveWatcher: needs_work + ingest_files (batched) --------------------------
 
 
-def _make_watcher(tmp_path: Path, root: Path, *, debounce_s: float = 0.01) -> tuple[LiveWatcher, AsyncMock]:
+def _make_watcher(
+    tmp_path: Path,
+    root: Path,
+    *,
+    debounce_s: float = 0.01,
+    event_emitter: MagicMock | None = None,
+) -> tuple[LiveWatcher, AsyncMock]:
     polylogue = MagicMock()
     polylogue.archive_root = tmp_path
     polylogue.parse_sources = AsyncMock()
     cursor = CursorStore(tmp_path / "cursor.sqlite")
     sources = (WatchSource(name="test", root=root),)
-    watcher = LiveWatcher(polylogue, sources, debounce_s=debounce_s, cursor=cursor)
+    watcher = LiveWatcher(polylogue, sources, debounce_s=debounce_s, cursor=cursor, event_emitter=event_emitter)
     return watcher, polylogue.parse_sources
 
 
@@ -593,14 +599,14 @@ def test_ingest_files_emits_observable_batch_metrics(tmp_path: Path) -> None:
     root.mkdir()
     f = root / "session.jsonl"
     f.write_text('{"role":"user","content":"a"}\n')
-    watcher, _parse_sources = _make_watcher(tmp_path, root)
+    emit = MagicMock()
+    watcher, _parse_sources = _make_watcher(tmp_path, root, event_emitter=emit)
 
-    with patch("polylogue.daemon.events.emit_daemon_event") as emit:
-        asyncio.run(watcher._ingest_files([f], queued_file_count=3, skipped_file_count=2))
+    asyncio.run(watcher._ingest_files([f], queued_file_count=3, skipped_file_count=2))
 
     emit.assert_called_once()
     kind = emit.call_args.args[0]
-    payload = emit.call_args.kwargs["payload"]
+    payload = emit.call_args.args[1]
     assert kind == "ingestion_batch"
     assert payload["queued_file_count"] == 3
     assert payload["needed_file_count"] == 1

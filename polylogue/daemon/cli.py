@@ -216,13 +216,19 @@ def _acquire_pidfile(pidfile: Path) -> int:
     return fd
 
 
+def _emit_live_batch_event(kind: str, payload: dict[str, object]) -> None:
+    from polylogue.daemon.events import emit_daemon_event
+
+    emit_daemon_event(kind, payload=payload)
+
+
 async def run_live_watcher(
     *,
     sources: tuple[WatchSource, ...],
     debounce_s: float,
 ) -> None:
     async with Polylogue() as polylogue:
-        watcher = LiveWatcher(polylogue, sources, debounce_s=debounce_s)
+        watcher = LiveWatcher(polylogue, sources, debounce_s=debounce_s, event_emitter=_emit_live_batch_event)
         try:
             await watcher.run()
         except KeyboardInterrupt:
@@ -347,7 +353,13 @@ async def run_daemon_services(
 
         if enable_watch:
             async with Polylogue() as polylogue:
-                watcher = LiveWatcher(polylogue, sources, debounce_s=debounce_s, converger=converger)
+                watcher = LiveWatcher(
+                    polylogue,
+                    sources,
+                    debounce_s=debounce_s,
+                    converger=converger,
+                    event_emitter=_emit_live_batch_event,
+                )
                 watcher_task = asyncio.create_task(watcher.run())
                 tasks.append(watcher_task)
                 all_tasks = tasks + maintenance_tasks

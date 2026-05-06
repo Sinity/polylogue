@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from polylogue.logging import get_logger
-from polylogue.sources.live.batch import LiveBatchProcessor, fingerprint_file
+from polylogue.sources.live.batch import LiveBatchEventEmitter, LiveBatchProcessor, fingerprint_file
 from polylogue.sources.live.cursor import CursorStore
 
 if TYPE_CHECKING:
@@ -59,6 +59,7 @@ class LiveWatcher:
         cursor: CursorStore | None = None,
         max_workers: int | None = None,
         converger: object | None = None,  # DaemonConverger | None — avoids circular import
+        event_emitter: LiveBatchEventEmitter | None = None,
     ) -> None:
         self._polylogue = polylogue
         self._sources = tuple(sources)
@@ -78,6 +79,7 @@ class LiveWatcher:
             parser_fingerprint=lambda: _PARSER_FINGERPRINT,
             converger=converger,
             stop_requested=self._stop.is_set,
+            event_emitter=event_emitter,
         )
 
     async def run(self) -> None:
