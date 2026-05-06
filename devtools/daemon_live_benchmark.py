@@ -70,7 +70,7 @@ def generate_daemon_live_workload(root: Path, *, scale: str) -> DaemonLiveGenera
             messages_min=spec.messages_per_file,
             messages_max=spec.messages_per_file,
             seed=_seed_for_scale(scale) + provider_index * 10_000,
-            style="default",
+            style="tool-heavy",
         )
         batch = SyntheticCorpus.generate_batch_for_spec(corpus_spec)
         provider_files: list[Path] = []
@@ -157,7 +157,7 @@ def _make_generated_append_record(
         messages_min=1,
         messages_max=1,
         seed=945_000 + message_index * 10_000 + seed,
-        style="default",
+        style="tool-heavy",
     )
     artifact = SyntheticCorpus.generate_batch_for_spec(corpus_spec).artifacts[0]
     record = _read_generated_record(artifact.raw_bytes, path)

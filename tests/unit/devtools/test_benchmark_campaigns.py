@@ -82,7 +82,23 @@ def test_daemon_live_workload_uses_synthetic_provider_wire_formats(tmp_path: Pat
         for record in claude_records
         if isinstance(record.get("message"), dict)
     )
+    assert _count_tool_use_blocks(claude_records, provider="claude-code") > 0
     assert all(record.get("type") == "message" for record in codex_records)
+    assert _count_tool_use_blocks(codex_records, provider="codex") > 0
+
+
+def _count_tool_use_blocks(records: list[dict[str, object]], *, provider: str) -> int:
+    count = 0
+    for record in records:
+        if provider == "claude-code":
+            message = record.get("message")
+            content = message.get("content") if isinstance(message, dict) else None
+        else:
+            content = record.get("content")
+        if not isinstance(content, list):
+            continue
+        count += sum(1 for block in content if isinstance(block, dict) and block.get("type") == "tool_use")
+    return count
 
 
 def test_daemon_live_append_preserves_generated_session_identity(tmp_path: Path) -> None:

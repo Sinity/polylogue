@@ -124,10 +124,14 @@ def test_build_quality_registry_exposes_live_catalogs() -> None:
         "archive_conversation_rows",
         "message_source_rows",
         "message_fts",
+        "tool_use_source_blocks",
+        "action_event_rows",
+        "action_event_fts",
     )
     assert daemon_live.operation_targets == (
         "ingest-archive-runtime",
         "index-message-fts",
+        "materialize-action-events",
         "materialize-session-insights",
     )
     assert daemon_live.tags == ("benchmark", "synthetic", "daemon", "live", "convergence")

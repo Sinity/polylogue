@@ -62,6 +62,8 @@ def _resolve_style(style: str) -> SyntheticStyle:
         return "default"
     if style == "showcase":
         return "showcase"
+    if style == "tool-heavy":
+        return "tool-heavy"
     raise ValueError(f"Unknown synthetic style: {style}")
 
 
@@ -88,6 +90,8 @@ def generate_batch(
         n_messages = rng.choice(messages_per_conversation)
         theme = rng.choice(_SHOWCASE_THEMES) if resolved_style == "showcase" else None
         data = _generate_conversation(self, n_messages, rng, theme=theme)
+        if resolved_style == "tool-heavy":
+            data = _add_tool_heavy_blocks(self.provider, data)
         artifacts.append(
             SyntheticArtifact(
                 raw_bytes=self._serialize(data),
@@ -107,6 +111,66 @@ def generate_batch(
         seed=seed,
     )
     return SyntheticGenerationBatch(artifacts=artifacts, report=report)
+
+
+def _tool_use_blocks(provider: str, index: int) -> list[JSONValue]:
+    read_id = f"{provider}-read-{index:04d}"
+    bash_id = f"{provider}-bash-{index:04d}"
+    return [
+        {"type": "text", "text": f"Inspecting generated workload record {index}."},
+        {
+            "type": "tool_use",
+            "id": read_id,
+            "name": "Read",
+            "input": {"file_path": f"/tmp/polylogue/generated-{index:04d}.jsonl"},
+        },
+        {
+            "type": "tool_use",
+            "id": bash_id,
+            "name": "Bash",
+            "input": {"command": f"python -m pytest tests/generated/test_{index:04d}.py -q"},
+        },
+        {"type": "tool_result", "tool_use_id": read_id, "content": "read 4096 bytes"},
+        {"type": "tool_result", "tool_use_id": bash_id, "content": "1 passed"},
+    ]
+
+
+def _add_tool_heavy_blocks(provider: str, data: JSONValue) -> JSONValue:
+    if provider not in {"claude-code", "codex"} or not isinstance(data, list):
+        return data
+    for index, record in enumerate(data):
+        if not isinstance(record, dict):
+            continue
+        role = _record_role(provider, record)
+        if role not in {"assistant", "model"}:
+            continue
+        blocks = _tool_use_blocks(provider, index)
+        if provider == "claude-code":
+            message = record.get("message")
+            if not isinstance(message, dict):
+                message = {}
+                record["message"] = message
+            message["content"] = blocks
+            message["role"] = "assistant"
+            record["type"] = "assistant"
+            continue
+        record["content"] = blocks
+        record["role"] = "assistant"
+        record["type"] = "message"
+    return data
+
+
+def _record_role(provider: str, record: dict[str, JSONValue]) -> str | None:
+    if provider == "claude-code":
+        message = record.get("message")
+        if isinstance(message, dict):
+            role = message.get("role")
+            if isinstance(role, str):
+                return role
+        role = record.get("type")
+        return role if isinstance(role, str) else None
+    role = record.get("role")
+    return role if isinstance(role, str) else None
 
 
 def _generate_conversation(
