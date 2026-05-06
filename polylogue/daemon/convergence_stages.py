@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 from polylogue.daemon.convergence import ConvergenceStage
@@ -22,6 +23,16 @@ from polylogue.logging import get_logger
 logger = get_logger(__name__)
 
 _DAEMON_INSIGHT_REBUILD_PAGE_SIZE = 10
+
+
+@dataclass(frozen=True, slots=True)
+class _FtsRepairNeeds:
+    messages: bool = False
+    actions: bool = False
+
+    @property
+    def any(self) -> bool:
+        return self.messages or self.actions
 
 
 # ── Stage: FTS ─────────────────────────────────────────────────────
@@ -66,7 +77,8 @@ def make_fts_stage(db_path: Path) -> ConvergenceStage:
             try:
                 conversation_ids = _conversation_ids_for_source_path(conn, path)
                 if conversation_ids:
-                    _repair_changed_conversation_fts(conn, conversation_ids)
+                    needs = _fts_repair_needs_for_conversations(conn, conversation_ids)
+                    _repair_changed_conversation_fts(conn, conversation_ids, needs=needs)
                     conn.commit()
                     logger.info("fts: repaired conversations=%d", len(conversation_ids))
                     return not _fts_needs_repair_for_conversations(conn, conversation_ids)
@@ -96,7 +108,7 @@ def make_fts_stage(db_path: Path) -> ConvergenceStage:
                 return {
                     path
                     for path, conversation_ids in by_path.items()
-                    if conversation_ids and _fts_needs_repair_for_conversations(conn, conversation_ids)
+                    if conversation_ids and _fts_repair_needs_for_conversations(conn, conversation_ids).any
                 }
             finally:
                 conn.close()
@@ -117,7 +129,8 @@ def make_fts_stage(db_path: Path) -> ConvergenceStage:
                 )
                 if not conversation_ids:
                     return execute(Path(paths[0]))
-                _repair_changed_conversation_fts(conn, conversation_ids)
+                needs = _fts_repair_needs_for_conversations(conn, conversation_ids)
+                _repair_changed_conversation_fts(conn, conversation_ids, needs=needs)
                 conn.commit()
                 logger.info("fts: batch repaired paths=%d conversations=%d", len(paths), len(conversation_ids))
                 return not _fts_needs_repair_for_conversations(conn, conversation_ids)
@@ -381,9 +394,12 @@ def _conversation_ids_for_source_paths(
     return result
 
 
-def _fts_needs_repair_for_conversations(conn: sqlite3.Connection, conversation_ids: Sequence[str]) -> bool:
+def _fts_repair_needs_for_conversations(
+    conn: sqlite3.Connection,
+    conversation_ids: Sequence[str],
+) -> _FtsRepairNeeds:
     if not conversation_ids:
-        return False
+        return _FtsRepairNeeds()
     placeholders = ", ".join("?" for _ in conversation_ids)
     params = tuple(conversation_ids)
     missing_messages = int(
@@ -399,10 +415,9 @@ def _fts_needs_repair_for_conversations(conn: sqlite3.Connection, conversation_i
             params,
         ).fetchone()[0]
     )
-    if missing_messages:
-        return True
+    messages_missing = missing_messages > 0
     if not _table_exists(conn, "action_events") or not _table_exists(conn, "action_events_fts"):
-        return False
+        return _FtsRepairNeeds(messages=messages_missing)
     missing_actions = int(
         conn.execute(
             f"""
@@ -415,21 +430,33 @@ def _fts_needs_repair_for_conversations(conn: sqlite3.Connection, conversation_i
             params,
         ).fetchone()[0]
     )
-    return missing_actions > 0
+    return _FtsRepairNeeds(messages=messages_missing, actions=missing_actions > 0)
 
 
-def _repair_changed_conversation_fts(conn: sqlite3.Connection, conversation_ids: Sequence[str]) -> None:
+def _fts_needs_repair_for_conversations(conn: sqlite3.Connection, conversation_ids: Sequence[str]) -> bool:
+    return _fts_repair_needs_for_conversations(conn, conversation_ids).any
+
+
+def _repair_changed_conversation_fts(
+    conn: sqlite3.Connection,
+    conversation_ids: Sequence[str],
+    *,
+    needs: _FtsRepairNeeds | None = None,
+) -> None:
     from polylogue.storage.fts.fts_lifecycle import (
         insert_missing_action_fts_index_sync,
         repair_action_fts_index_sync,
         repair_message_fts_index_sync,
     )
 
-    repair_message_fts_index_sync(conn, conversation_ids)
-    if _action_fts_has_rows_for_conversations(conn, conversation_ids):
-        repair_action_fts_index_sync(conn, conversation_ids)
-    else:
-        insert_missing_action_fts_index_sync(conn, conversation_ids)
+    needs = needs or _fts_repair_needs_for_conversations(conn, conversation_ids)
+    if needs.messages:
+        repair_message_fts_index_sync(conn, conversation_ids)
+    if needs.actions:
+        if _action_fts_has_rows_for_conversations(conn, conversation_ids):
+            repair_action_fts_index_sync(conn, conversation_ids)
+        else:
+            insert_missing_action_fts_index_sync(conn, conversation_ids)
 
 
 def _action_fts_has_rows_for_conversations(conn: sqlite3.Connection, conversation_ids: Sequence[str]) -> bool:

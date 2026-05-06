@@ -10,7 +10,7 @@ after creation. Deduplication is free: identical content produces the
 same hash, so the second write is a no-op.
 
 The primary motivation is to avoid loading multi-GB files into Python
-memory. ``write_from_path`` streams the file in 128 KB chunks, hashing
+memory. ``write_from_path`` streams the file in 1 MiB chunks, hashing
 as it goes, then copies to the store — peak memory is one chunk.
 """
 
@@ -25,7 +25,7 @@ from contextlib import suppress
 from pathlib import Path
 from typing import IO, BinaryIO
 
-_CHUNK_SIZE = 128 * 1024  # 128 KB
+_CHUNK_SIZE = 1024 * 1024  # 1 MiB
 
 # Valid blob hash: lowercase hex only
 _VALID_HEX = re.compile(r"^[0-9a-f]+$")
@@ -71,7 +71,7 @@ class BlobStore:
     ) -> tuple[str, int]:
         """Stream-hash a file and copy it to the store.
 
-        Reads the source in 128 KB chunks — never loads the full file into
+        Reads the source in 1 MiB chunks — never loads the full file into
         Python memory. Returns ``(sha256_hex, byte_count)``.
 
         If a blob with the same hash already exists, the write is skipped
@@ -133,7 +133,7 @@ class BlobStore:
     ) -> tuple[str, int]:
         """Stream-hash an open binary file-like object into the store.
 
-        Reads from ``source`` in 128 KB chunks, hashing and writing to a
+        Reads from ``source`` in 1 MiB chunks, hashing and writing to a
         temporary file in one pass. Returns ``(sha256_hex, byte_count)``.
         """
         hasher = hashlib.sha256()

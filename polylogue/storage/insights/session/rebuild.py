@@ -88,6 +88,7 @@ ORDER BY COALESCE(source_sort_key, 0) DESC, conversation_id
 # very large conversation payloads without letting a single chunk inflate RSS
 # into multi-GB territory.
 _SESSION_INSIGHT_REBUILD_PAGE_SIZE = 1
+_SESSION_INSIGHT_REBUILD_MESSAGE_BUDGET = 5_000
 _SESSION_INSIGHT_CONVERSATION_SQL_TEMPLATE = """
 SELECT
     conversation_id,
@@ -138,6 +139,13 @@ class SessionInsightRecordBundle:
     @property
     def phase_count(self) -> int:
         return len(self.phase_records)
+
+
+@dataclass(slots=True, frozen=True)
+class _SessionInsightRebuildChunk:
+    conversation_ids: tuple[str, ...]
+    estimated_message_count: int
+    max_estimated_conversation_messages: int
 
 
 def iter_conversation_id_pages_sync(
@@ -212,6 +220,66 @@ def _row_to_session_insight_conversation(row: sqlite3.Row) -> ConversationRecord
         branch_type=BranchType(branch_type) if branch_type is not None else None,
         raw_id=_row_text(row, "raw_id"),
     )
+
+
+def _load_message_counts_sync(
+    conn: sqlite3.Connection,
+    conversation_ids: Sequence[str],
+) -> dict[str, int]:
+    if not conversation_ids:
+        return {}
+    placeholders = ", ".join("?" for _ in conversation_ids)
+    rows = conn.execute(
+        f"""
+        SELECT conversation_id, message_count
+        FROM conversation_stats
+        WHERE conversation_id IN ({placeholders})
+        """,
+        tuple(conversation_ids),
+    ).fetchall()
+    return {str(row["conversation_id"]): int(row["message_count"] or 0) for row in rows}
+
+
+def _chunk_conversation_ids_by_message_budget_sync(
+    conversation_ids: Sequence[str],
+    *,
+    message_counts: dict[str, int],
+    page_size: int,
+    message_budget: int,
+) -> list[_SessionInsightRebuildChunk]:
+    chunks: list[_SessionInsightRebuildChunk] = []
+    current_chunk: list[str] = []
+    current_messages = 0
+    current_max_messages = 0
+
+    for conversation_id in conversation_ids:
+        estimated_messages = max(int(message_counts.get(conversation_id, 0) or 0), 1)
+        if current_chunk and (
+            len(current_chunk) >= page_size or current_messages + estimated_messages > message_budget
+        ):
+            chunks.append(
+                _SessionInsightRebuildChunk(
+                    conversation_ids=tuple(current_chunk),
+                    estimated_message_count=current_messages,
+                    max_estimated_conversation_messages=current_max_messages,
+                )
+            )
+            current_chunk = []
+            current_messages = 0
+            current_max_messages = 0
+        current_chunk.append(conversation_id)
+        current_messages += estimated_messages
+        current_max_messages = max(current_max_messages, estimated_messages)
+
+    if current_chunk:
+        chunks.append(
+            _SessionInsightRebuildChunk(
+                conversation_ids=tuple(current_chunk),
+                estimated_message_count=current_messages,
+                max_estimated_conversation_messages=current_max_messages,
+            )
+        )
+    return chunks
 
 
 def sync_attachment_batch(
@@ -521,7 +589,16 @@ def rebuild_session_insights_sync(
             for record in _session_profile_records_for_conversation_ids_sync(conn, conversation_ids)
             if (group := profile_provider_day(record)) is not None
         }
-        conversation_chunks = chunked(conversation_ids, size=page_size)
+        message_counts = _load_message_counts_sync(conn, conversation_ids)
+        conversation_chunks = (
+            chunk.conversation_ids
+            for chunk in _chunk_conversation_ids_by_message_budget_sync(
+                conversation_ids,
+                message_counts=message_counts,
+                page_size=page_size,
+                message_budget=_SESSION_INSIGHT_REBUILD_MESSAGE_BUDGET,
+            )
+        )
     if conversation_ids is not None and not conversation_ids:
         conn.commit()
         return _empty_rebuild_counts()

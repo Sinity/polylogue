@@ -83,7 +83,7 @@ def test_insights_stage_rebuilds_sync_against_configured_db(
     assert rebuilt is True
 
 
-def test_fts_stage_repairs_changed_conversations_without_full_rebuild(
+def test_fts_stage_repairs_only_missing_action_index_when_messages_current(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -116,6 +116,12 @@ def test_fts_stage_repairs_changed_conversations_without_full_rebuild(
         nonlocal rebuilt
         rebuilt = True
 
+    needs_calls: list[list[str]] = []
+
+    def fake_repair_needs(_conn: FakeConnection, conversation_ids: list[str]) -> stages._FtsRepairNeeds:
+        needs_calls.append(conversation_ids)
+        return stages._FtsRepairNeeds(actions=len(needs_calls) == 1)
+
     monkeypatch.setattr("polylogue.storage.sqlite.connection_profile.open_connection", fake_open_connection)
     monkeypatch.setattr("polylogue.storage.fts.fts_lifecycle.repair_message_fts_index_sync", fake_repair_messages)
     monkeypatch.setattr(
@@ -128,14 +134,15 @@ def test_fts_stage_repairs_changed_conversations_without_full_rebuild(
         "_conversation_ids_for_source_paths",
         lambda _conn, paths: {Path(paths[0]): ["conv-a"], Path(paths[1]): ["conv-b"]},
     )
-    monkeypatch.setattr(stages, "_fts_needs_repair_for_conversations", lambda _conn, _ids: False)
+    monkeypatch.setattr(stages, "_fts_repair_needs_for_conversations", fake_repair_needs)
     monkeypatch.setattr(stages, "_action_fts_has_rows_for_conversations", lambda _conn, _ids: False)
 
     stage = make_fts_stage(db_path)
     assert stage.execute_many is not None
     assert stage.execute_many([tmp_path / "a.jsonl", tmp_path / "b.jsonl"]) is True
-    assert repaired_messages == [["conv-a", "conv-b"]]
+    assert repaired_messages == []
     assert inserted_actions == [["conv-a", "conv-b"]]
+    assert needs_calls == [["conv-a", "conv-b"], ["conv-a", "conv-b"]]
     assert committed is True
     assert rebuilt is False
 

@@ -546,10 +546,10 @@ class LiveBatchProcessor:
                 failed.append(path)
                 continue
             jsonl_like = path.suffix.lower() == ".jsonl"
-            if jsonl_like or stat.st_size >= _STREAMING_FULL_INGEST_BYTES:
-                provider = _detect_provider_from_path_sample(path, fallback_provider)
+            if jsonl_like:
+                provider, parse_as_conversation = _jsonl_provider_and_conversation_artifact(path, fallback_provider)
                 provider_name = provider.value
-                if not _parse_path_as_conversation_artifact(path, provider=provider):
+                if not parse_as_conversation:
                     self._mark_excluded_cursor(path, stat, source_name=source_name)
                     continue
                 if stat.st_size >= _STREAMING_FULL_INGEST_BYTES:
@@ -567,6 +567,18 @@ class LiveBatchProcessor:
                         continue
                     raw_id, blob_size = blob_store.write_from_bytes(payload)
                     source_payload_read_bytes += len(payload)
+            elif stat.st_size >= _STREAMING_FULL_INGEST_BYTES:
+                provider = _detect_provider_from_path_sample(path, fallback_provider)
+                provider_name = provider.value
+                if not _parse_path_as_conversation_artifact(path, provider=provider):
+                    self._mark_excluded_cursor(path, stat, source_name=source_name)
+                    continue
+                try:
+                    raw_id, blob_size = blob_store.write_from_path(path)
+                except OSError:
+                    failed.append(path)
+                    continue
+                source_payload_read_bytes += blob_size
             else:
                 try:
                     payload = path.read_bytes()
@@ -956,6 +968,20 @@ def _detect_provider_from_path_sample(path: Path, fallback_provider: Provider) -
     except OSError:
         return fallback_provider
     return _detect_provider_from_raw_bytes(payload, path.name, fallback_provider)
+
+
+def _jsonl_provider_and_conversation_artifact(
+    path: Path,
+    fallback_provider: Provider,
+) -> tuple[Provider, bool]:
+    records = _jsonl_sample_from_path(path)
+    provider = (detect_provider(records) if records else None) or fallback_provider
+    path_classification = classify_artifact_path(path, provider=provider)
+    if path_classification is not None:
+        return provider, path_classification.parse_as_conversation
+    if not records:
+        return provider, False
+    return provider, classify_artifact(records, provider=provider, source_path=path).parse_as_conversation
 
 
 def _parse_path_as_conversation_artifact(path: Path, *, provider: Provider) -> bool:

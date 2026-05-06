@@ -257,6 +257,63 @@ def test_session_insight_load_skips_plain_text_blocks(tmp_path: Path) -> None:
     assert [str(block.message_id) for block in batch.blocks] == ["conv-blocks:msg-2"]
 
 
+def test_targeted_session_insight_rebuild_splits_large_message_batches(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "rebuild-message-budget.db"
+    conversation_ids: list[str] = []
+    with open_connection(db_path) as conn:
+        for index in range(3):
+            conversation_id = f"conv-rebuild-budget-{index:02d}"
+            conversation_ids.append(conversation_id)
+            store_records(
+                conversation=make_conversation(conversation_id, title=f"Rebuild Budget {index:02d}"),
+                messages=[
+                    make_message(
+                        f"{conversation_id}:msg-1",
+                        conversation_id,
+                        text=f"Message for {conversation_id}",
+                    )
+                ],
+                attachments=[],
+                conn=conn,
+            )
+        conn.executemany(
+            """
+            INSERT OR REPLACE INTO conversation_stats (
+                conversation_id,
+                provider_name,
+                message_count,
+                word_count,
+                tool_use_count,
+                thinking_count
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            [
+                ("conv-rebuild-budget-00", "chatgpt", 4_000, 4_000, 0, 0),
+                ("conv-rebuild-budget-01", "chatgpt", 4_000, 4_000, 0, 0),
+                ("conv-rebuild-budget-02", "chatgpt", 100, 100, 0, 0),
+            ],
+        )
+        conn.commit()
+
+        chunk_profile_counts: list[int] = []
+
+        def record_progress(amount: int, desc: str | None = None) -> None:
+            del desc
+            chunk_profile_counts.append(amount)
+
+        counts = rebuild_session_insights_sync(
+            conn,
+            conversation_ids=conversation_ids,
+            page_size=10,
+            progress_callback=record_progress,
+        )
+
+    assert counts.profiles == 3
+    assert chunk_profile_counts == [1, 2]
+
+
 @pytest.mark.asyncio
 async def test_apply_session_insight_conversation_updates_async_preserves_thread_roots_for_children(
     tmp_path: Path,

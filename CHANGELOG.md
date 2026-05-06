@@ -94,6 +94,9 @@ documentation polish do not require an entry.
 - Daemon live ingest bounds small-file convergence groups, offloads sync
   parse/write work from the event loop, and drains process-pool results without
   retaining the whole parsed batch in memory.
+- Daemon live convergence avoids duplicate message-FTS repair, chunks sync
+  insight rebuilds by message budget, samples each JSONL once before raw
+  storage, and streams raw blobs in 1 MiB chunks for large catch-up workloads.
 - Daemon live ingest now excludes relationship-index JSONL sidecars before raw
   storage instead of treating scalar `conversation`/`parent`/`child` records as
   provider conversation streams.
