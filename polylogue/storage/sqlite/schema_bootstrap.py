@@ -35,6 +35,14 @@ _RAW_SOURCE_MTIME_INDEX_SQL = (
 _MESSAGE_TYPE_INDEX_SQL = (
     "CREATE INDEX IF NOT EXISTS idx_messages_conversation_message_type ON messages(conversation_id, message_type)"
 )
+_ATTACHMENT_REFS_MESSAGE_INDEX_SQL = (
+    "CREATE INDEX IF NOT EXISTS idx_attachment_refs_message ON attachment_refs(message_id) WHERE message_id IS NOT NULL"
+)
+_PROVIDER_EVENTS_SOURCE_MESSAGE_INDEX_SQL = (
+    "CREATE INDEX IF NOT EXISTS idx_provider_events_source_message "
+    "ON provider_events(source_message_id) "
+    "WHERE source_message_id IS NOT NULL"
+)
 
 
 @dataclass(frozen=True)
@@ -77,6 +85,7 @@ class SchemaBootstrapDecision:
         "upgrade_v5_to_v6",
         "upgrade_v6_to_v7",
         "upgrade_v7_to_v8",
+        "upgrade_v8_to_v9",
         "version_mismatch",
     ]
     extension_plan: SchemaExtensionPlan | None = None
@@ -307,6 +316,16 @@ _SCHEMA_EXTENSION_DESCRIPTORS: tuple[SchemaExtensionDescriptor, ...] = (
                 ON attachments(json_extract(provider_meta, '$.driveId'))
                 WHERE provider_meta IS NOT NULL
                 """,
+    ),
+    SchemaIndexExtensionDescriptor(
+        table_name="attachment_refs",
+        index_name="idx_attachment_refs_message",
+        ddl=_ATTACHMENT_REFS_MESSAGE_INDEX_SQL,
+    ),
+    SchemaIndexExtensionDescriptor(
+        table_name="provider_events",
+        index_name="idx_provider_events_source_message",
+        ddl=_PROVIDER_EVENTS_SOURCE_MESSAGE_INDEX_SQL,
     ),
     SchemaIndexExtensionDescriptor(
         table_name="attachment_refs",
@@ -824,6 +843,8 @@ def build_v2_to_current_upgrade_plan(snapshot: SchemaSnapshot) -> SchemaExtensio
         extra_statements = (*extra_statements, *build_v6_to_v7_upgrade_plan(snapshot).statements)
     if SCHEMA_VERSION >= 8:
         extra_statements = (*extra_statements, *build_v7_to_v8_upgrade_plan(snapshot).statements)
+    if SCHEMA_VERSION >= 9:
+        extra_statements = (*extra_statements, *build_v8_to_v9_upgrade_plan(snapshot).statements)
     return SchemaExtensionPlan(
         statements=(*v2_to_v3.statements, *v3_to_v4.statements, *extra_statements),
         scripts=(),
@@ -852,6 +873,18 @@ def build_v7_to_v8_upgrade_plan(snapshot: SchemaSnapshot) -> SchemaExtensionPlan
         ),
         scripts=(),
     )
+
+
+def build_v8_to_v9_upgrade_plan(snapshot: SchemaSnapshot) -> SchemaExtensionPlan:
+    """Add foreign-key support indexes needed for fast conversation replacement."""
+    assert_supported_archive_layout_snapshot(snapshot)
+
+    statements: list[str] = []
+    if snapshot.has_table("attachment_refs"):
+        statements.append(_ATTACHMENT_REFS_MESSAGE_INDEX_SQL)
+    if snapshot.has_table("provider_events"):
+        statements.append(_PROVIDER_EVENTS_SOURCE_MESSAGE_INDEX_SQL)
+    return SchemaExtensionPlan(statements=tuple(statements), scripts=())
 
 
 def decide_schema_bootstrap(snapshot: SchemaSnapshot) -> SchemaBootstrapDecision:
@@ -883,6 +916,8 @@ def decide_schema_bootstrap(snapshot: SchemaSnapshot) -> SchemaBootstrapDecision
                 extra_stmts = (*extra_stmts, *build_v6_to_v7_upgrade_plan(snapshot).statements)
             if SCHEMA_VERSION >= 8:
                 extra_stmts = (*extra_stmts, *build_v7_to_v8_upgrade_plan(snapshot).statements)
+            if SCHEMA_VERSION >= 9:
+                extra_stmts = (*extra_stmts, *build_v8_to_v9_upgrade_plan(snapshot).statements)
             plan = SchemaExtensionPlan(
                 statements=(*plan.statements, *extra_stmts),
                 scripts=(),
@@ -906,6 +941,8 @@ def decide_schema_bootstrap(snapshot: SchemaSnapshot) -> SchemaBootstrapDecision
             plan_stmts = (*plan_stmts, *build_v6_to_v7_upgrade_plan(snapshot).statements)
         if SCHEMA_VERSION >= 8:
             plan_stmts = (*plan_stmts, *build_v7_to_v8_upgrade_plan(snapshot).statements)
+        if SCHEMA_VERSION >= 9:
+            plan_stmts = (*plan_stmts, *build_v8_to_v9_upgrade_plan(snapshot).statements)
         plan = SchemaExtensionPlan(
             statements=plan_stmts,
             scripts=(),
@@ -924,6 +961,8 @@ def decide_schema_bootstrap(snapshot: SchemaSnapshot) -> SchemaBootstrapDecision
             plan_statements = (*plan_statements, *build_v6_to_v7_upgrade_plan(snapshot).statements)
         if SCHEMA_VERSION >= 8:
             plan_statements = (*plan_statements, *build_v7_to_v8_upgrade_plan(snapshot).statements)
+        if SCHEMA_VERSION >= 9:
+            plan_statements = (*plan_statements, *build_v8_to_v9_upgrade_plan(snapshot).statements)
         plan = SchemaExtensionPlan(
             statements=plan_statements,
             scripts=(),
@@ -941,6 +980,11 @@ def decide_schema_bootstrap(snapshot: SchemaSnapshot) -> SchemaBootstrapDecision
                 statements=(*plan.statements, *build_v7_to_v8_upgrade_plan(snapshot).statements),
                 scripts=(),
             )
+        if SCHEMA_VERSION >= 9:
+            plan = SchemaExtensionPlan(
+                statements=(*plan.statements, *build_v8_to_v9_upgrade_plan(snapshot).statements),
+                scripts=(),
+            )
         return SchemaBootstrapDecision(
             action="upgrade_v6_to_v7",
             extension_plan=plan,
@@ -948,9 +992,22 @@ def decide_schema_bootstrap(snapshot: SchemaSnapshot) -> SchemaBootstrapDecision
         )
 
     if snapshot.current_version == 7 and SCHEMA_VERSION >= 8:
+        plan = build_v7_to_v8_upgrade_plan(snapshot)
+        if SCHEMA_VERSION >= 9:
+            plan = SchemaExtensionPlan(
+                statements=(*plan.statements, *build_v8_to_v9_upgrade_plan(snapshot).statements),
+                scripts=(),
+            )
         return SchemaBootstrapDecision(
             action="upgrade_v7_to_v8",
-            extension_plan=build_v7_to_v8_upgrade_plan(snapshot),
+            extension_plan=plan,
+            current_version=snapshot.current_version,
+        )
+
+    if snapshot.current_version == 8 and SCHEMA_VERSION >= 9:
+        return SchemaBootstrapDecision(
+            action="upgrade_v8_to_v9",
+            extension_plan=build_v8_to_v9_upgrade_plan(snapshot),
             current_version=snapshot.current_version,
         )
 
@@ -1078,6 +1135,7 @@ __all__ = [
     "build_v2_to_v3_upgrade_plan",
     "build_v3_to_v4_upgrade_plan",
     "build_v7_to_v8_upgrade_plan",
+    "build_v8_to_v9_upgrade_plan",
     "capture_schema_snapshot",
     "capture_schema_snapshot_async",
     "decide_schema_bootstrap",
