@@ -8,7 +8,12 @@ from pathlib import Path
 import pytest
 
 import polylogue.daemon.convergence_stages as stages
-from polylogue.daemon.convergence_stages import make_embed_stage, make_fts_stage, make_insights_stage
+from polylogue.daemon.convergence_stages import (
+    make_default_convergence_stages,
+    make_embed_stage,
+    make_fts_stage,
+    make_insights_stage,
+)
 from polylogue.storage.insights.session.runtime import SessionInsightCounts
 
 
@@ -177,6 +182,7 @@ def test_embed_stage_scopes_changed_conversations_without_asyncio_run(
         return True
 
     monkeypatch.setenv("VOYAGE_API_KEY", "key")
+    monkeypatch.setenv("POLYLOGUE_DAEMON_ENABLE_EMBEDDINGS", "1")
     monkeypatch.setattr(asyncio, "run", fail_if_used)
     monkeypatch.setattr("polylogue.storage.sqlite.connection_profile.open_connection", fake_open_connection)
     monkeypatch.setattr(
@@ -193,6 +199,30 @@ def test_embed_stage_scopes_changed_conversations_without_asyncio_run(
     assert stage.check_many([path_a, path_b]) == {path_a, path_b}
     assert stage.execute_many([path_a, path_b]) is True
     assert embedded_calls == [["conv-a", "conv-c"]]
+
+
+def test_default_convergence_stages_do_not_embed_without_opt_in(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("VOYAGE_API_KEY", "key")
+    monkeypatch.delenv("POLYLOGUE_DAEMON_ENABLE_EMBEDDINGS", raising=False)
+
+    stage_names = [stage.name for stage in make_default_convergence_stages(tmp_path / "archive.sqlite")]
+
+    assert stage_names == ["fts", "insights"]
+
+
+def test_default_convergence_stages_include_embed_when_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("VOYAGE_API_KEY", "key")
+    monkeypatch.setenv("POLYLOGUE_DAEMON_ENABLE_EMBEDDINGS", "true")
+
+    stage_names = [stage.name for stage in make_default_convergence_stages(tmp_path / "archive.sqlite")]
+
+    assert stage_names == ["fts", "embed", "insights"]
 
 
 def test_insights_stage_batches_sync_rebuild_chunks(

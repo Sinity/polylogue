@@ -186,10 +186,11 @@ locking to prevent concurrent instances.
 
 ## Embeddings
 
-When the `VOYAGE_API_KEY` environment variable is set, the daemon can generate
-vector embeddings for message content. Embeddings are stored in the
-`message_embeddings` vec0 virtual table and used by the `--similar` search and
-`hybrid` retrieval lane.
+When `VOYAGE_API_KEY` is set and `POLYLOGUE_DAEMON_ENABLE_EMBEDDINGS=1`, the
+daemon can generate vector embeddings for message content. Embeddings are stored
+in the `message_embeddings` vec0 virtual table and used by the `--similar`
+search and `hybrid` retrieval lane. Embedding convergence is opt-in so ordinary
+daemon catch-up does not make provider API calls.
 
 Check embedding coverage:
 
