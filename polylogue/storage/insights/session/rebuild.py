@@ -277,9 +277,19 @@ def load_sync_batch(
             SELECT *
             FROM content_blocks
             WHERE conversation_id IN ({placeholders})
+              AND message_id IN (
+                  SELECT message_id
+                  FROM messages
+                  WHERE conversation_id IN ({placeholders})
+                    AND (
+                        has_tool_use != 0
+                        OR has_thinking != 0
+                        OR message_type IN ('tool_use', 'tool_result', 'thinking')
+                    )
+              )
             ORDER BY conversation_id, message_id, block_index
             """,
-            tuple(conversation_ids),
+            tuple(conversation_ids) + tuple(conversation_ids),
         ).fetchall()
     ]
     return SessionInsightArchiveBatch(
@@ -328,9 +338,19 @@ async def load_async_batch(
                 SELECT *
                 FROM content_blocks
                 WHERE conversation_id IN ({placeholders})
+                  AND message_id IN (
+                      SELECT message_id
+                      FROM messages
+                      WHERE conversation_id IN ({placeholders})
+                        AND (
+                            has_tool_use != 0
+                            OR has_thinking != 0
+                            OR message_type IN ('tool_use', 'tool_result', 'thinking')
+                        )
+                  )
                 ORDER BY conversation_id, message_id, block_index
                 """,
-                tuple(conversation_ids),
+                tuple(conversation_ids) + tuple(conversation_ids),
             )
         ).fetchall()
     ]

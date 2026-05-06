@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.storage.insights.session.aggregates import refresh_async_provider_day_aggregates
-from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
+from polylogue.storage.insights.session.rebuild import load_sync_batch, rebuild_session_insights_sync
 from polylogue.storage.insights.session.refresh import (
     _apply_session_insight_conversation_updates_async,
     _refresh_thread_roots_async,
@@ -220,6 +220,41 @@ def test_targeted_session_insight_rebuild_refreshes_only_affected_groups_and_roo
     assert [row["search_text"] for row in day_rows if row["provider_name"] == "claude-ai"] == ["sentinel day untouched"]
     assert claude_thread is not None
     assert claude_thread["search_text"] == "sentinel thread untouched"
+
+
+def test_session_insight_load_skips_plain_text_blocks(tmp_path: Path) -> None:
+    db_path = tmp_path / "refresh-block-filter.db"
+    with open_connection(db_path) as conn:
+        store_records(
+            conversation=make_conversation("conv-blocks", provider_name="codex", title="Block Filter"),
+            messages=[
+                make_message(
+                    "conv-blocks:msg-1",
+                    "conv-blocks",
+                    text="Plain text is already stored on the message row.",
+                    content_blocks=[{"type": "text", "text": "Plain text is already stored on the message row."}],
+                ),
+                make_message(
+                    "conv-blocks:msg-2",
+                    "conv-blocks",
+                    role="assistant",
+                    text="exec_command",
+                    content_blocks=[
+                        {
+                            "type": "tool_use",
+                            "name": "exec_command",
+                            "id": "call-1",
+                            "input": {"cmd": "git status"},
+                        }
+                    ],
+                ),
+            ],
+            attachments=[],
+            conn=conn,
+        )
+        batch = load_sync_batch(conn, ["conv-blocks"])
+
+    assert [str(block.message_id) for block in batch.blocks] == ["conv-blocks:msg-2"]
 
 
 @pytest.mark.asyncio
