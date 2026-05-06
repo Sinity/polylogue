@@ -26,6 +26,7 @@ from polylogue.pipeline.services.ingest_batch._models import (
     _IngestWorkerRequest,
     _RawIngestOutcome,
 )
+from polylogue.storage.sqlite.connection_profile import WRITE_CONNECTION_PRAGMA_STATEMENTS
 
 __all__ = [
     "_ConversationEntry",
@@ -43,6 +44,7 @@ __all__ = [
     "_topo_sort_conversation_entries",
     "_unattributed_batch_elapsed_s",
     "_write_conversation",
+    "WRITE_CONNECTION_PRAGMA_STATEMENTS",
     "process_ingest_batch",
     "refresh_session_insights_bulk",
 ]

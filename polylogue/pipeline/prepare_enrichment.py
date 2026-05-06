@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from polylogue.pipeline.ids import conversation_id as make_conversation_id
+from polylogue.pipeline.ids import provider_event_id
 from polylogue.pipeline.prepare_models import (
     PrepareCache,
     PreparedBundle,
@@ -11,7 +12,13 @@ from polylogue.pipeline.prepare_models import (
 )
 from polylogue.sources.parsers.base import ParsedConversation
 from polylogue.storage.archive_views import ExistingConversation
-from polylogue.storage.runtime import AttachmentRecord, ContentBlockRecord, ConversationRecord, MessageRecord
+from polylogue.storage.runtime import (
+    AttachmentRecord,
+    ContentBlockRecord,
+    ConversationRecord,
+    MessageRecord,
+    ProviderEventRecord,
+)
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.types import ConversationId, MessageId
 
@@ -134,12 +141,34 @@ def enrich_bundle_from_db(
             )
         )
 
+    patched_provider_events = [
+        ProviderEventRecord(
+            event_id=provider_event_id(cid, event.event_index),
+            conversation_id=cid,
+            provider_name=event.provider_name,
+            event_index=event.event_index,
+            event_type=event.event_type,
+            timestamp=event.timestamp,
+            sort_key=event.sort_key,
+            payload=event.payload,
+            source_message_id=(
+                reverse_mid.get(event.source_message_id, event.source_message_id)
+                if event.source_message_id is not None
+                else None
+            ),
+            raw_id=raw_id,
+            materializer_version=event.materializer_version,
+        )
+        for event in transform.bundle.provider_events
+    ]
+
     return PreparedBundle(
         bundle=RecordBundle(
             conversation=conversation_record,
             messages=patched_messages,
             attachments=patched_attachments,
             content_blocks=patched_blocks,
+            provider_events=patched_provider_events,
         ),
         materialization_plan=transform.materialization_plan,
         cid=cid,

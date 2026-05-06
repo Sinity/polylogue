@@ -10,6 +10,7 @@ from polylogue.archive.conversation.branch_type import BranchType
 from polylogue.archive.conversation.runtime import ConversationRuntimeMixin
 from polylogue.archive.conversation.summary_runtime import ConversationSummaryRuntimeMixin
 from polylogue.archive.message.messages import MessageCollection
+from polylogue.archive.provider.events import ProviderEvent
 from polylogue.types import ConversationId, Provider
 
 
@@ -47,6 +48,7 @@ class Conversation(ConversationRuntimeMixin, BaseModel):
     updated_at: datetime | None = None
     provider_meta: dict[str, object] | None = None
     metadata: dict[str, object] = Field(default_factory=dict)
+    provider_events: tuple[ProviderEvent, ...] = ()
     parent_id: ConversationId | None = None
     branch_type: BranchType | None = None
 

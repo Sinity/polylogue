@@ -656,7 +656,6 @@ def test_session_insight_rebuild_preserves_profile_semantics_without_loading_ful
             "branch": "master",
             "repository_url": "git@github.com:Sinity/sinex.git",
         },
-        "context_compactions": [{"summary": "Earlier context collapsed."}],
         "raw": {"payload": "x" * 200_000},
     }
 
@@ -664,6 +663,32 @@ def test_session_insight_rebuild_preserves_profile_semantics_without_loading_ful
         conn.execute(
             "UPDATE conversations SET provider_meta = ? WHERE conversation_id = ?",
             (json.dumps(huge_provider_meta), "conv-heavy"),
+        )
+        conn.execute(
+            """
+            INSERT INTO provider_events (
+                event_id,
+                conversation_id,
+                provider_name,
+                event_index,
+                event_type,
+                timestamp,
+                sort_key,
+                payload_json,
+                materializer_version
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "conv-heavy:provider-event:000000",
+                "conv-heavy",
+                "codex",
+                0,
+                "compaction",
+                "2026-03-01T10:04:00+00:00",
+                None,
+                json.dumps({"summary": "Earlier context collapsed."}),
+                1,
+            ),
         )
         counts = rebuild_session_insights_sync(conn, page_size=1)
         row = conn.execute(

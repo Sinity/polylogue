@@ -8,6 +8,7 @@ from polylogue.storage.sqlite.queries.mappers_archive import (
     _row_to_content_block,
     _row_to_conversation,
     _row_to_message,
+    _row_to_provider_event,
     _row_to_raw_conversation,
 )
 from polylogue.storage.sqlite.queries.mappers_insight_aggregates import (
@@ -48,6 +49,7 @@ __all__ = [
     "_row_to_conversation",
     "_row_to_day_session_summary_record",
     "_row_to_message",
+    "_row_to_provider_event",
     "_row_to_raw_conversation",
     "_row_to_session_phase_record",
     "_row_to_session_profile_record",

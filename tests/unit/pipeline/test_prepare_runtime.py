@@ -39,6 +39,7 @@ async def test_save_bundle_passes_records_to_repository_and_wraps_counts() -> No
         messages=["message-record"],
         attachments=["attachment-record"],
         content_blocks=["content-block-record"],
+        provider_events=["provider-event-record"],
     )
     repository = SimpleNamespace(
         save_conversation=AsyncMock(
@@ -68,6 +69,7 @@ async def test_save_bundle_passes_records_to_repository_and_wraps_counts() -> No
         messages=["message-record"],
         attachments=["attachment-record"],
         content_blocks=["content-block-record"],
+        provider_events=["provider-event-record"],
     )
 
 

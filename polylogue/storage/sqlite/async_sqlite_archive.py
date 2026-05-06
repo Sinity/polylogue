@@ -8,7 +8,13 @@ from typing import TYPE_CHECKING
 
 from polylogue.archive.message.roles import MessageRoleFilter
 from polylogue.storage.insights.session.runtime import SessionInsightStatusSnapshot
-from polylogue.storage.runtime import AttachmentRecord, ContentBlockRecord, ConversationRecord, MessageRecord
+from polylogue.storage.runtime import (
+    AttachmentRecord,
+    ContentBlockRecord,
+    ConversationRecord,
+    MessageRecord,
+    ProviderEventRecord,
+)
 from polylogue.storage.search.models import ConversationSearchResult
 from polylogue.storage.sqlite.queries import attachments as attachments_q
 from polylogue.storage.sqlite.queries import conversations as conversations_q
@@ -118,6 +124,17 @@ class SQLiteArchiveMixin:
     async def get_attachments_batch(self, conversation_ids: list[str]) -> dict[str, list[AttachmentRecord]]:
         """Get attachments for multiple conversations in a single query."""
         return await self.queries.get_attachments_batch(conversation_ids)
+
+    async def get_provider_events(self, conversation_id: str) -> list[ProviderEventRecord]:
+        """Get provider-level events for a conversation."""
+        return await self.queries.get_provider_events(conversation_id)
+
+    async def get_provider_events_batch(
+        self,
+        conversation_ids: list[str],
+    ) -> dict[str, list[ProviderEventRecord]]:
+        """Get provider-level events for multiple conversations."""
+        return await self.queries.get_provider_events_batch(conversation_ids)
 
     async def save_attachments(self, records: list[AttachmentRecord]) -> None:
         """Persist attachment records with reference counting."""

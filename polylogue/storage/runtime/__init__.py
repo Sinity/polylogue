@@ -20,6 +20,7 @@ from polylogue.storage.runtime.archive.records import (
     ContentBlockRecord,
     ConversationRecord,
     MessageRecord,
+    ProviderEventRecord,
     PublicationRecord,
     RunRecord,
 )
@@ -29,6 +30,7 @@ from polylogue.storage.runtime.raw.records import (
 )
 from polylogue.storage.runtime.store_constants import (
     ACTION_EVENT_MATERIALIZER_VERSION,
+    PROVIDER_EVENT_MATERIALIZER_VERSION,
     SESSION_ENRICHMENT_FAMILY,
     SESSION_ENRICHMENT_VERSION,
     SESSION_INFERENCE_FAMILY,
@@ -68,6 +70,8 @@ __all__ = [
     "DaySessionSummaryRecord",
     "MessageRecord",
     "PublicationRecord",
+    "PROVIDER_EVENT_MATERIALIZER_VERSION",
+    "ProviderEventRecord",
     "RawConversationRecord",
     "RunRecord",
     "SESSION_ENRICHMENT_FAMILY",

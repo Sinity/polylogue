@@ -1284,9 +1284,9 @@ def test_parse_code_semantic_projection_contract() -> None:
     assert bash_blocks[0].tool_input is not None
     assert bash_blocks[0].tool_input.get("command") == "git commit -m 'Fix bug'"
     assert result.provider_meta is not None
-    context_compactions = result.provider_meta.get("context_compactions")
-    assert isinstance(context_compactions, list)
-    assert len(context_compactions) == 1
+    assert "context_compactions" not in result.provider_meta
+    assert len(result.provider_events) == 1
+    assert result.provider_events[0].event_type == "compaction"
     assert result.provider_meta["total_cost_usd"] == pytest.approx(0.03)
     assert result.provider_meta["total_duration_ms"] == 3000
 

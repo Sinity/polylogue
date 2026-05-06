@@ -51,6 +51,7 @@ from polylogue.storage.runtime import (
     ContentBlockRecord,
     ConversationRecord,
     MessageRecord,
+    ProviderEventRecord,
     SessionPhaseRecord,
     SessionProfileRecord,
     SessionWorkEventRecord,
@@ -65,6 +66,10 @@ from polylogue.storage.sqlite.queries.mappers import (
     _row_to_content_block,
     _row_to_message,
     _row_to_session_profile_record,
+)
+from polylogue.storage.sqlite.queries.provider_events import (
+    get_provider_event_compaction_counts,
+    sync_provider_event_compaction_counts,
 )
 from polylogue.types import ConversationId
 
@@ -97,8 +102,7 @@ SELECT
     raw_id,
     json_extract(provider_meta, '$.cwd') AS provider_meta_cwd,
     json_extract(provider_meta, '$.gitBranch') AS provider_meta_git_branch,
-    json_extract(provider_meta, '$.git') AS provider_meta_git,
-    json_extract(provider_meta, '$.context_compactions') AS provider_meta_context_compactions
+    json_extract(provider_meta, '$.git') AS provider_meta_git
 FROM conversations
 WHERE conversation_id IN ({placeholders})
 """
@@ -109,6 +113,8 @@ class SessionInsightArchiveBatch:
     conversations: list[ConversationRecord]
     messages: list[MessageRecord]
     attachments_by_conversation: dict[str, list[AttachmentRecord]]
+    provider_events_by_conversation: dict[str, list[ProviderEventRecord]]
+    compaction_counts_by_conversation: dict[str, int]
     blocks: list[ContentBlockRecord]
 
 
@@ -184,16 +190,6 @@ def _row_to_session_insight_conversation(row: sqlite3.Row) -> ConversationRecord
         parsed_git = _parse_json(git_raw, field="provider_meta.git", record_id=row["conversation_id"])
         if isinstance(parsed_git, dict) and parsed_git:
             provider_meta["git"] = parsed_git
-    compactions_raw = _row_get(row, "provider_meta_context_compactions")
-    if isinstance(compactions_raw, str) and compactions_raw:
-        parsed_compactions = _parse_json(
-            compactions_raw,
-            field="provider_meta.context_compactions",
-            record_id=row["conversation_id"],
-        )
-        if isinstance(parsed_compactions, list) and parsed_compactions:
-            provider_meta["context_compactions"] = parsed_compactions
-
     parent_conversation_id = _row_text(row, "parent_conversation_id")
     branch_type = _row_text(row, "branch_type")
 
@@ -288,6 +284,8 @@ def load_sync_batch(
         conversations=conversations,
         messages=messages,
         attachments_by_conversation=sync_attachment_batch(conn, conversation_ids),
+        provider_events_by_conversation={conversation_id: [] for conversation_id in conversation_ids},
+        compaction_counts_by_conversation=sync_provider_event_compaction_counts(conn, conversation_ids),
         blocks=blocks,
     )
 
@@ -335,10 +333,13 @@ async def load_async_batch(
         ).fetchall()
     ]
     attachments = await get_attachments_batch(conn, list(conversation_ids))
+    compaction_counts = await get_provider_event_compaction_counts(conn, list(conversation_ids))
     return SessionInsightArchiveBatch(
         conversations=conversations,
         messages=messages,
         attachments_by_conversation=attachments,
+        provider_events_by_conversation={conversation_id: [] for conversation_id in conversation_ids},
+        compaction_counts_by_conversation=compaction_counts,
         blocks=blocks,
     )
 
@@ -365,6 +366,7 @@ def hydrate_conversations(
                 conversation,
                 attached_messages,
                 batch.attachments_by_conversation.get(conversation_id, []),
+                batch.provider_events_by_conversation.get(conversation_id, []),
             )
         )
     return hydrated
@@ -372,9 +374,11 @@ def hydrate_conversations(
 
 def build_session_insight_records(
     conversation: Conversation,
+    *,
+    compaction_count: int | None = None,
 ) -> SessionInsightRecordBundle:
     analysis = build_session_analysis(conversation)
-    profile = build_session_profile(conversation, analysis=analysis)
+    profile = build_session_profile(conversation, analysis=analysis, compaction_count=compaction_count)
     materialized_at = now_iso()
     return SessionInsightRecordBundle(
         profile_record=build_session_profile_record(
@@ -389,8 +393,17 @@ def build_session_insight_records(
 
 def build_session_insight_record_bundles(
     conversations: Iterable[Conversation],
+    *,
+    compaction_counts_by_conversation: dict[str, int] | None = None,
 ) -> list[SessionInsightRecordBundle]:
-    return [build_session_insight_records(conversation) for conversation in conversations]
+    compaction_counts = compaction_counts_by_conversation or {}
+    return [
+        build_session_insight_records(
+            conversation,
+            compaction_count=compaction_counts.get(str(conversation.id)),
+        )
+        for conversation in conversations
+    ]
 
 
 def _count_record_bundles(
@@ -469,7 +482,10 @@ def rebuild_session_insights_sync(
     for chunk in conversation_chunks:
         saw_conversation_ids = True
         batch = load_sync_batch(conn, chunk)
-        record_bundles = build_session_insight_record_bundles(hydrate_conversations(batch))
+        record_bundles = build_session_insight_record_bundles(
+            hydrate_conversations(batch),
+            compaction_counts_by_conversation=batch.compaction_counts_by_conversation,
+        )
         chunk_profiles, chunk_work_events, chunk_phases = _count_record_bundles(record_bundles)
         for bundle in record_bundles:
             replace_session_profile_sync(conn, bundle.profile_record)
@@ -566,7 +582,10 @@ async def rebuild_session_insights_async(
     if conversation_ids is None:
         async for chunk in iter_conversation_id_pages_async(conn, page_size=page_size):
             batch = await load_async_batch(conn, chunk)
-            record_bundles = build_session_insight_record_bundles(hydrate_conversations(batch))
+            record_bundles = build_session_insight_record_bundles(
+                hydrate_conversations(batch),
+                compaction_counts_by_conversation=batch.compaction_counts_by_conversation,
+            )
             chunk_profiles, chunk_work_events, chunk_phases = _count_record_bundles(record_bundles)
             for bundle in record_bundles:
                 await replace_session_profile(conn, bundle.profile_record, transaction_depth)
@@ -596,7 +615,10 @@ async def rebuild_session_insights_async(
     else:
         for chunk_ids in chunked(list(conversation_ids), size=page_size):
             batch = await load_async_batch(conn, chunk_ids)
-            record_bundles = build_session_insight_record_bundles(hydrate_conversations(batch))
+            record_bundles = build_session_insight_record_bundles(
+                hydrate_conversations(batch),
+                compaction_counts_by_conversation=batch.compaction_counts_by_conversation,
+            )
             chunk_profiles, chunk_work_events, chunk_phases = _count_record_bundles(record_bundles)
             for bundle in record_bundles:
                 await replace_session_profile(conn, bundle.profile_record, transaction_depth)

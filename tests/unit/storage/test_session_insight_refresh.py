@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -59,6 +60,71 @@ async def test_apply_session_insight_conversation_updates_async_batches_hydrated
     assert _chunk_metric(update.chunk_observations[0], "hydrate_ms") >= 0.0
     assert _chunk_metric(update.chunk_observations[0], "build_ms") >= 0.0
     assert _chunk_metric(update.chunk_observations[0], "write_ms") >= 0.0
+
+
+@pytest.mark.asyncio
+async def test_apply_session_insight_conversation_updates_async_counts_provider_event_compactions(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "refresh-provider-events.db"
+    with open_connection(db_path) as conn:
+        store_records(
+            conversation=make_conversation("conv-provider-event", provider_name="codex", title="Compaction Test"),
+            messages=[
+                make_message(
+                    "conv-provider-event:msg-1",
+                    "conv-provider-event",
+                    text="Continue after compaction",
+                )
+            ],
+            attachments=[],
+            conn=conn,
+        )
+        conn.execute(
+            """
+            INSERT INTO provider_events (
+                event_id,
+                conversation_id,
+                provider_name,
+                event_index,
+                event_type,
+                timestamp,
+                payload_json,
+                materializer_version
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "conv-provider-event:provider-event:000000",
+                "conv-provider-event",
+                "codex",
+                0,
+                "compaction",
+                "2026-04-01T10:05:00+00:00",
+                '{"summary":"Earlier context"}',
+                1,
+            ),
+        )
+        conn.commit()
+
+    backend = SQLiteBackend(db_path=db_path)
+    async with backend.connection() as conn:
+        update = await _apply_session_insight_conversation_updates_async(
+            conn,
+            ["conv-provider-event"],
+            transaction_depth=1,
+            page_size=10,
+        )
+        await conn.commit()
+
+    assert update.counts.profiles == 1
+    with open_connection(db_path) as conn:
+        row = conn.execute(
+            "SELECT evidence_payload_json FROM session_profiles WHERE conversation_id = ?",
+            ("conv-provider-event",),
+        ).fetchone()
+
+    assert row is not None
+    assert json.loads(row["evidence_payload_json"])["compaction_count"] == 1
 
 
 @pytest.mark.asyncio

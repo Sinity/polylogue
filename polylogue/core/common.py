@@ -122,6 +122,14 @@ INSERT INTO action_events (
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
 
+_PROVIDER_EVENT_INSERT_SQL = """
+INSERT INTO provider_events (
+    event_id, conversation_id, provider_name, event_index, event_type,
+    timestamp, sort_key, payload_json, source_message_id, raw_id,
+    materializer_version
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+"""
+
 _ATTACHMENT_UPSERT_SQL = """
 INSERT INTO attachments (
     attachment_id, mime_type, size_bytes, path, ref_count, provider_meta
@@ -152,6 +160,7 @@ SQL_MESSAGE_UPSERT = _MESSAGE_UPSERT_SQL
 SQL_CONTENT_BLOCK_UPSERT = _CONTENT_BLOCK_UPSERT_SQL
 SQL_STATS_UPSERT = _STATS_UPSERT_SQL
 SQL_ACTION_EVENT_INSERT = _ACTION_EVENT_INSERT_SQL
+SQL_PROVIDER_EVENT_INSERT = _PROVIDER_EVENT_INSERT_SQL
 SQL_ATTACHMENT_UPSERT = _ATTACHMENT_UPSERT_SQL
 SQL_ATTACHMENT_REF_INSERT = _ATTACHMENT_REF_INSERT_SQL
 
@@ -194,6 +203,7 @@ __all__ = [
     "SQL_CONTENT_BLOCK_UPSERT",
     "SQL_CONVERSATION_UPSERT",
     "SQL_MESSAGE_UPSERT",
+    "SQL_PROVIDER_EVENT_INSERT",
     "SQL_STATS_UPSERT",
     "chunked",
     "format_malformed_jsonl_error",
