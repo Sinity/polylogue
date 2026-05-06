@@ -304,9 +304,9 @@ def _conversation_ids_for_source_paths(
         tuple(paths_by_text),
     ).fetchall()
     for row in rows:
-        path = paths_by_text.get(str(row["source_path"]))
+        path = paths_by_text.get(str(row[0]))
         if path is not None:
-            result[path].append(str(row["conversation_id"]))
+            result[path].append(str(row[1]))
     return result
 
 
@@ -320,7 +320,7 @@ def _conversation_ids_missing_profiles(conn: sqlite3.Connection) -> list[str]:
         ORDER BY COALESCE(c.sort_key, 0) DESC, c.conversation_id
         """,
     ).fetchall()
-    return [str(row["conversation_id"]) for row in rows]
+    return [str(row[0]) for row in rows]
 
 
 __all__ = [

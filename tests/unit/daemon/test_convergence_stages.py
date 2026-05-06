@@ -24,7 +24,7 @@ def test_insights_stage_rebuilds_sync_against_configured_db(
             if "sqlite_master" in sql:
                 return _FakeCursor([(1,)])
             if "raw_conversations" in sql:
-                return _FakeCursor([{"source_path": params[0], "conversation_id": "conv-1"}])
+                return _FakeCursor([(params[0], "conv-1")])
             if "session_profiles" in sql:
                 return _FakeCursor([])
             raise AssertionError(f"unexpected SQL: {sql} {params}")
