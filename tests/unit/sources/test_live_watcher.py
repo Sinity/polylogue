@@ -390,25 +390,47 @@ async def test_live_append_merges_tail_visible_through_public_archive_read(works
                     role="user",
                     text="first live message",
                     timestamp="2026-05-01T00:00:00Z",
-                )
+                ),
+                _claude_code_message(
+                    session_id="session-public-read",
+                    uuid="msg-2",
+                    parent_uuid="msg-1",
+                    role="assistant",
+                    text="second live reply",
+                    timestamp="2026-05-01T00:00:01Z",
+                ),
+                _claude_code_message(
+                    session_id="session-public-read",
+                    uuid="msg-3",
+                    parent_uuid="msg-2",
+                    role="user",
+                    text="third live followup",
+                    timestamp="2026-05-01T00:00:02Z",
+                ),
             ],
         )
         initial_metrics = await processor.ingest_files([source_path], emit_event=False)
 
         with source_path.open("a", encoding="utf-8") as handle:
-            handle.write(
-                json.dumps(
-                    _claude_code_message(
-                        session_id="session-public-read",
-                        uuid="msg-2",
-                        parent_uuid="msg-1",
-                        role="assistant",
-                        text="second live reply",
-                        timestamp="2026-05-01T00:00:01Z",
-                    )
-                )
-                + "\n"
-            )
+            for record in (
+                _claude_code_message(
+                    session_id="session-public-read",
+                    uuid="msg-4",
+                    parent_uuid="msg-3",
+                    role="assistant",
+                    text="fourth appended reply",
+                    timestamp="2026-05-01T00:00:03Z",
+                ),
+                _claude_code_message(
+                    session_id="session-public-read",
+                    uuid="msg-5",
+                    parent_uuid="msg-4",
+                    role="user",
+                    text="fifth appended followup",
+                    timestamp="2026-05-01T00:00:04Z",
+                ),
+            ):
+                handle.write(json.dumps(record) + "\n")
         append_metrics = await processor.ingest_files([source_path], emit_event=False)
 
         conversation = await archive.get_conversation("claude-code:session-public-read")
@@ -417,7 +439,13 @@ async def test_live_append_merges_tail_visible_through_public_archive_read(works
         assert append_metrics.full_file_count == 0
         assert append_metrics.source_payload_read_bytes < append_metrics.input_bytes
         assert conversation is not None
-        assert [message.text for message in conversation.messages] == ["first live message", "second live reply"]
+        assert [message.text for message in conversation.messages] == [
+            "first live message",
+            "second live reply",
+            "third live followup",
+            "fourth appended reply",
+            "fifth appended followup",
+        ]
     finally:
         await archive.close()
 
