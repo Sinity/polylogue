@@ -21,9 +21,9 @@ from typing import Literal, Protocol, TypeAlias
 
 import pytest
 
+from polylogue.api import Polylogue
 from polylogue.config import Config, Source
 from polylogue.core.json import JSONDocument
-from polylogue.pipeline.runner import run_sources
 from polylogue.pipeline.services.parsing import ParsingService
 from polylogue.storage.repository import ConversationRepository
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
@@ -33,7 +33,6 @@ pytestmark = pytest.mark.slow
 WorkflowRepos: TypeAlias = tuple[Config, ConversationRepository, ConversationRepository, Path, Path]
 ProviderName: TypeAlias = Literal["chatgpt", "claude-ai", "claude-code", "codex", "gemini"]
 RenderFormat: TypeAlias = Literal["markdown", "html"]
-PipelineStage: TypeAlias = Literal["all", "parse"]
 
 
 class SyntheticSourceFactory(Protocol):
@@ -688,30 +687,23 @@ async def test_search_with_special_characters(temp_config_and_repo: WorkflowRepo
 
 
 # =============================================================================
-# PIPELINE RUNNER TESTS (2 tests)
+# API INGEST TESTS
 # =============================================================================
 
 
-@pytest.mark.parametrize(
-    "stage",
-    ["all", "parse"],
-)
-async def test_pipeline_runner_stage_matrix(
-    workspace_env: dict[str, Path], chatgpt_sample_source: Source, stage: PipelineStage
+async def test_daemon_owned_api_ingest_lands_source_conversation(
+    workspace_env: dict[str, Path], chatgpt_sample_source: Source
 ) -> None:
-    """run_sources handles both full and parse-only execution modes."""
+    """The daemon-owned API ingest path lands source conversations in the archive."""
     from polylogue.config import get_config
 
     config = get_config()
     config.sources = [chatgpt_sample_source]
 
-    if stage == "parse":
-        # Parse-only runs consume the persisted raw-record backlog; they do not
-        # re-scan source paths implicitly.
-        await run_sources(config=config, stage="acquire", source_names=[chatgpt_sample_source.name])
-
-    result = await run_sources(config=config, stage=stage, source_names=[chatgpt_sample_source.name])
+    async with Polylogue(archive_root=config.archive_root, db_path=config.db_path) as polylogue:
+        result = await polylogue.parse_sources([chatgpt_sample_source])
+        stored = await polylogue.list_conversations(limit=5)
 
     assert result is not None
     assert result.counts["conversations"] > 0
-    assert result.counts.int_value("materialized") >= 1
+    assert len(stored) == 1

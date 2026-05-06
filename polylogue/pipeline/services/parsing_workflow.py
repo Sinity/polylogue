@@ -13,8 +13,8 @@ from collections.abc import AsyncIterator, Iterable, Iterator
 from typing import TYPE_CHECKING
 
 from polylogue.logging import get_logger
+from polylogue.pipeline.ingest_support import PARSE_STAGES
 from polylogue.pipeline.payload_types import ParseBatchObservation, ParseBatchObservationSummary
-from polylogue.pipeline.run_support import PARSE_STAGES
 from polylogue.pipeline.services.parsing_models import IngestResult, IngestState, ParseResult
 
 if TYPE_CHECKING:

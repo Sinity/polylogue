@@ -2,12 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock, PropertyMock, patch
+from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
 
+from polylogue.config import Source
 from polylogue.core.outcomes import OutcomeStatus
-from polylogue.pipeline.run_support import RUN_STAGE_SEQUENCES
 from polylogue.scenarios import polylogue_execution
 from polylogue.showcase.exercise_models import Exercise
 from polylogue.showcase.qa_runner_models import QAResult
@@ -48,6 +48,22 @@ def _make_showcase_result() -> ShowcaseResult:
         )
     ]
     return result
+
+
+class _RecordingPolylogue:
+    instances: list[_RecordingPolylogue] = []
+
+    def __init__(self, *, archive_root: Path, db_path: Path) -> None:
+        self.archive_root = archive_root
+        self.db_path = db_path
+        self.parse_sources = AsyncMock()
+        self.__class__.instances.append(self)
+
+    async def __aenter__(self) -> _RecordingPolylogue:
+        return self
+
+    async def __aexit__(self, *_exc_info: object) -> None:
+        return None
 
 
 def test_prepare_runtime_returns_existing_context_when_workspace_not_needed(tmp_path: Path) -> None:
@@ -154,20 +170,33 @@ def test_run_live_ingest_uses_schema_stage_sequence_when_regenerating() -> None:
         source_names=("chatgpt", "codex"),
     )
 
+    config = SimpleNamespace(
+        archive_root=Path("/archive"),
+        db_path=Path("/archive/polylogue.sqlite"),
+        sources=[
+            Source(name="chatgpt", path=Path("/sources/chatgpt")),
+            Source(name="codex", path=Path("/sources/codex")),
+            Source(name="claude", path=Path("/sources/claude")),
+        ],
+    )
+    schema_stage = AsyncMock()
+
+    _RecordingPolylogue.instances.clear()
     with (
-        patch("polylogue.pipeline.runner.run_sources", new=MagicMock(return_value="coro")) as mock_run_sources,
-        patch("polylogue.showcase.qa_runner_workflow.run_coroutine_sync") as mock_sync,
-        patch("polylogue.config.get_config", return_value=SimpleNamespace(name="config")) as mock_get_config,
+        patch("polylogue.api.Polylogue", _RecordingPolylogue),
+        patch("polylogue.pipeline.run_stages.execute_schema_generation_stage", schema_stage),
+        patch("polylogue.config.get_config", return_value=config) as mock_get_config,
     ):
         _run_live_ingest(request)
 
     mock_get_config.assert_called_once_with()
-    mock_run_sources.assert_called_once()
-    assert mock_run_sources.call_args.kwargs["config"].name == "config"
-    assert mock_run_sources.call_args.kwargs["stage"] == "all"
-    assert mock_run_sources.call_args.kwargs["stage_sequence"] == ("schema", *RUN_STAGE_SEQUENCES["all"])
-    assert mock_run_sources.call_args.kwargs["source_names"] == ["chatgpt", "codex"]
-    mock_sync.assert_called_once_with("coro")
+    schema_stage.assert_awaited_once_with()
+    polylogue = _RecordingPolylogue.instances[-1]
+    assert polylogue.archive_root == Path("/archive")
+    assert polylogue.db_path == Path("/archive/polylogue.sqlite")
+    parse_args = polylogue.parse_sources.await_args
+    assert parse_args is not None
+    assert [source.name for source in parse_args.args[0]] == ["chatgpt", "codex"]
 
 
 def test_run_audit_stage_marks_skip_without_running_audit() -> None:

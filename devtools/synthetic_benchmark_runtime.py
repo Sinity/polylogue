@@ -255,15 +255,11 @@ async def run_startup_readiness_campaign(db_path: Path) -> CampaignResult:
         elapsed, _ = await _ameasure(backend.get_provider_metrics_rows())
         metrics["provider_metrics_s"] = round(elapsed, 4)
 
-        elapsed, _ = await _ameasure(backend.queries.get_latest_run())
-        metrics["latest_run_s"] = round(elapsed, 4)
-
         metrics["total_readiness_s"] = round(
             metrics["backend_init_s"]
             + metrics["count_convs_s"]
             + metrics["stats_by_provider_s"]
-            + metrics["provider_metrics_s"]
-            + metrics["latest_run_s"],
+            + metrics["provider_metrics_s"],
             4,
         )
 

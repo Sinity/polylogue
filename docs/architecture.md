@@ -84,8 +84,9 @@ source files (JSON/JSONL/ZIP)
              filter chain → query → storage
 ```
 
-The `all` pipeline stage runs: acquire → parse → materialize → index.
-`reprocess` runs: parse → materialize → index (skips acquire).
+The daemon-owned ingest path acquires source payloads, parses provider records,
+writes archive rows, and refreshes derived read models through explicit
+convergence stages.
 
 ## Provider Detection
 

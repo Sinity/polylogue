@@ -21,7 +21,6 @@ from polylogue.storage.runtime.archive.records import (
     ConversationRecord,
     MessageRecord,
     ProviderEventRecord,
-    RunRecord,
 )
 from polylogue.storage.runtime.raw.records import (
     ArtifactObservationRecord,
@@ -71,7 +70,6 @@ __all__ = [
     "PROVIDER_EVENT_MATERIALIZER_VERSION",
     "ProviderEventRecord",
     "RawConversationRecord",
-    "RunRecord",
     "SESSION_ENRICHMENT_FAMILY",
     "SESSION_ENRICHMENT_VERSION",
     "SESSION_INFERENCE_FAMILY",

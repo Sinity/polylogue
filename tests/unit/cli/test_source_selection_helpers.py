@@ -251,7 +251,7 @@ def config() -> Config:
     )
 
 
-class SummaryRunResult(TypedDict):
+class SummaryResult(TypedDict):
     title: str
     lines: list[str]
     console: str
@@ -354,14 +354,13 @@ def _run_summary(
     *,
     verbose: bool,
     plain: bool,
-    last_run: object | None = None,
     quick_health: str = "OK",
     health: SimpleNamespace | None = None,
     counts: list[tuple[str, int]] | None = None,
     metrics: list[SimpleNamespace] | None = None,
     archive_stats: SimpleNamespace | None = None,
     analytics_error: Exception | None = None,
-) -> SummaryRunResult:
+) -> SummaryResult:
     from polylogue.cli.shared.helpers import print_summary
 
     env, buffer, ui = _make_env(config, plain=plain)
@@ -384,7 +383,6 @@ def _run_summary(
 
     with (
         patch.object(env.repository, "get_archive_stats", new=AsyncMock(return_value=archive_stats)),
-        patch("polylogue.cli.shared.helpers.latest_run", new_callable=AsyncMock, return_value=last_run),
         patch("polylogue.cli.shared.helpers.quick_readiness_summary", return_value=quick_health) as mock_quick,
         patch("polylogue.cli.shared.helpers.get_readiness", return_value=health) as mock_get_readiness,
         patch("polylogue.cli.shared.helpers.format_sources_summary", return_value="inbox"),
@@ -404,12 +402,10 @@ def _run_summary(
 
 
 def test_print_summary_basic_contract(config: Config) -> None:
-    last_run = SimpleNamespace(run_id="run-123", timestamp="2025-01-15T12:30:45Z")
     result = _run_summary(
         config,
         verbose=False,
         plain=False,
-        last_run=last_run,
         counts=[("claude-ai", 7), ("chatgpt", 3)],
     )
 
@@ -418,7 +414,7 @@ def test_print_summary_basic_contract(config: Config) -> None:
         "Archive: /data/archive",
         "Render: /data/archive/rendered",
         "Sources: inbox",
-        "Last run: run-123 (2025-01-15T12:30:45Z)",
+        "Ingestion: owned by polylogued",
         "Embeddings: 0/10 convs, 0 msgs (0.0%)",
         "Readiness: OK",
     ]
@@ -449,7 +445,7 @@ def test_print_summary_verbose_health_matrix(config: Config, plain: bool, status
         "Archive: /data/archive",
         "Render: /data/archive/rendered",
         "Sources: inbox",
-        "Last run: none",
+        "Ingestion: owned by polylogued",
     ]
     assert result["lines"][4] == "Embeddings: 0/0 convs, 0 msgs (0.0%)"
     assert result["lines"][5] == "Readiness (source=live)"

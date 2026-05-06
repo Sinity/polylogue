@@ -154,7 +154,6 @@ def test_ensure_schema_contract(tmp_path: Path) -> None:
         "messages",
         "attachments",
         "attachment_refs",
-        "runs",
     }.issubset(_table_names(conn))
     assert "message_meta" not in _table_names(conn)
     raw_columns = {row[1] for row in conn.execute("PRAGMA table_info(raw_conversations)").fetchall()}

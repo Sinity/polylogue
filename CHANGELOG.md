@@ -84,6 +84,8 @@ documentation polish do not require an entry.
 - Root `polylogue run` and its stage subcommands were removed; ingestion is
   daemon-owned through `polylogued run` and explicit `polylogue ingest PATH`
   requests.
+- Legacy batch-run state, JSON run artifacts, run observers, and the `runs`
+  schema table were removed; schema v8 archives are fresh-only.
 - Browser-capture receiver serving/status moved from root `polylogue
   browser-capture` to `polylogued browser-capture`.
 - `polylogued status` now reports configured daemon components, including live
@@ -126,9 +128,6 @@ documentation polish do not require an entry.
 - Schema v3 archives now upgrade to v4 by rebuilding action-event FTS rows
   with base-table rowids, enabling targeted incremental FTS repairs instead
   of archive-wide FTS scans.
-- Explicit `polylogue run ... index` sequences now repair only conversations
-  processed earlier in the same run when the FTS index already exists, avoiding
-  a full archive index rebuild after ordinary catch-up runs.
 - `sanitize_path` symlink probe narrowed to `OSError` and treats
   uncertainty as suspicious (previously a `PermissionError` on an
   unreadable directory could mask a traversal attempt).

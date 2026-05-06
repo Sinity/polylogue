@@ -272,7 +272,7 @@ async def test_run_probe_emits_real_pipeline_summary(tmp_path: Path) -> None:
     assert _json_path(summary, "probe", "provider") == "chatgpt"
     assert _json_path(summary, "probe", "corpus_source") == "default"
     assert _json_path(summary, "probe", "stage_sequence") == ["acquire", "parse"]
-    assert _json_path(summary, "result", "run_path") is not None
+    assert _json_path(summary, "result", "duration_ms") is not None
     assert metrics["total_duration_ms"] is not None
     assert metrics["peak_rss_self_mb"] is not None
     assert metrics["peak_rss_children_mb"] is not None
@@ -484,7 +484,7 @@ def test_main_writes_json_summary(tmp_path: Path, capsys: pytest.CaptureFixture[
 
     assert exit_code == 0
     assert _json_path(printed, "paths", "workdir") == str(workdir.resolve())
-    assert _json_path(written, "result", "run_path") is not None
+    assert _json_path(written, "result", "duration_ms") is not None
 
 
 def test_main_runs_source_subset_mode(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -542,7 +542,7 @@ def test_main_uses_ephemeral_workdir_when_omitted(capsys: pytest.CaptureFixture[
 
     assert exit_code == 0
     assert "polylogue-pipeline-probe-" in _require_str(_json_path(printed, "paths", "workdir"))
-    assert _json_path(printed, "result", "run_path") is not None
+    assert _json_path(printed, "result", "duration_ms") is not None
 
 
 def test_main_returns_nonzero_when_budget_is_exceeded(capsys: pytest.CaptureFixture[str]) -> None:

@@ -20,7 +20,6 @@ from polylogue.scenarios import (
     flatten_corpus_specs,
 )
 from polylogue.schemas.synthetic.models import SyntheticWrittenBatch
-from polylogue.storage.run_state import RunResult
 
 
 def _resolved_corpus_request(
@@ -235,9 +234,9 @@ def seed_workspace_from_specs(
     corpus_specs: tuple[CorpusSpec, ...],
     regenerate_schemas: bool = False,
     prefix: str = "showcase",
-) -> RunResult:
+) -> None:
     """Generate fixtures from explicit specs and ingest them into the workspace."""
-    return seed_workspace_from_scenarios(
+    seed_workspace_from_scenarios(
         workspace,
         corpus_scenarios=build_corpus_scenarios(
             corpus_specs,
@@ -255,14 +254,14 @@ def seed_workspace_from_scenarios(
     corpus_scenarios: tuple[CorpusScenario, ...],
     regenerate_schemas: bool = False,
     prefix: str = "showcase",
-) -> RunResult:
+) -> None:
     """Generate fixtures from explicit corpus scenarios and ingest them into the workspace."""
     generate_synthetic_fixtures_from_scenarios(
         workspace.fixture_dir,
         corpus_scenarios=corpus_scenarios,
         prefix=prefix,
     )
-    return run_pipeline_for_fixture_workspace(
+    run_pipeline_for_fixture_workspace(
         workspace,
         regenerate_schemas=regenerate_schemas,
     )
@@ -274,10 +273,10 @@ def seed_workspace_from_corpus_request(
     request: CorpusRequest,
     regenerate_schemas: bool = False,
     prefix: str = "showcase",
-) -> RunResult:
+) -> None:
     """Resolve corpus specs, generate fixtures, and ingest them into the workspace."""
     scenarios = build_synthetic_corpus_scenarios(request=request)
-    return seed_workspace_from_scenarios(
+    seed_workspace_from_scenarios(
         workspace,
         corpus_scenarios=scenarios,
         regenerate_schemas=regenerate_schemas,
@@ -297,9 +296,9 @@ def seed_workspace_from_corpus_options(
     seed: int = 42,
     regenerate_schemas: bool = False,
     prefix: str = "showcase",
-) -> RunResult:
+) -> None:
     """Resolve corpus specs, generate fixtures, and ingest them into the workspace."""
-    return seed_workspace_from_corpus_request(
+    seed_workspace_from_corpus_request(
         workspace,
         request=CorpusRequest(
             providers=providers,
@@ -350,7 +349,7 @@ def run_pipeline_for_fixture_workspace(
     workspace: VerificationWorkspace,
     *,
     regenerate_schemas: bool = False,
-) -> RunResult:
+) -> None:
     """Ingest synthetic fixtures inside an isolated workspace."""
     mirror_fixtures_to_inbox(workspace.fixture_dir, workspace.inbox_dir)
 
@@ -360,7 +359,7 @@ def run_pipeline_for_fixture_workspace(
             if provider_dir.is_dir():
                 sources.append(Source(name=provider_dir.name, path=provider_dir))
 
-    return _run_pipeline_with_sources(
+    _run_pipeline_with_sources(
         workspace,
         sources=sources,
         regenerate_schemas=regenerate_schemas,
@@ -372,7 +371,7 @@ def run_pipeline_for_configured_sources(
     *,
     source_names: list[str] | None = None,
     regenerate_schemas: bool = False,
-) -> RunResult:
+) -> None:
     """Ingest configured user sources inside an isolated workspace."""
     configured_sources = get_config().sources
     if source_names is None:
@@ -381,7 +380,7 @@ def run_pipeline_for_configured_sources(
         names = set(source_names)
         sources = [source for source in configured_sources if source.name in names]
 
-    return _run_pipeline_with_sources(
+    _run_pipeline_with_sources(
         workspace,
         sources=sources,
         regenerate_schemas=regenerate_schemas,
@@ -393,31 +392,25 @@ def _run_pipeline_with_sources(
     *,
     sources: list[Source],
     regenerate_schemas: bool,
-) -> RunResult:
-    """Run the ingestion pipeline under a workspace environment."""
-    from polylogue.pipeline.run_support import RUN_STAGE_SEQUENCES
-    from polylogue.pipeline.runner import run_sources
+) -> None:
+    """Ingest sources through the daemon-owned parsing path in a workspace."""
+    from polylogue.api import Polylogue
+    from polylogue.pipeline.run_stages import execute_schema_generation_stage
 
     config = Config(
         archive_root=workspace.archive_root,
         render_root=workspace.render_root,
         sources=sources,
     )
-    stage_sequence = None
-    if regenerate_schemas:
-        stage_sequence = ("schema", *RUN_STAGE_SEQUENCES["all"])
+
+    async def _ingest() -> None:
+        if regenerate_schemas:
+            await execute_schema_generation_stage()
+        async with Polylogue(archive_root=config.archive_root, db_path=workspace.db_path) as polylogue:
+            await polylogue.parse_sources(config.sources)
 
     with override_workspace_env(workspace.env_vars):
-        return run_coroutine_sync(
-            run_sources(
-                config=config,
-                stage="all",
-                stage_sequence=stage_sequence,
-                plan=None,
-                ui=None,
-                source_names=None,
-            )
-        )
+        run_coroutine_sync(_ingest())
 
 
 __all__ = [

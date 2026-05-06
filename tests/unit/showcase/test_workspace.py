@@ -24,6 +24,22 @@ from polylogue.showcase.workspace import (
 )
 
 
+class _RecordingPolylogue:
+    instances: list[_RecordingPolylogue] = []
+
+    def __init__(self, *, archive_root: Path, db_path: Path) -> None:
+        self.archive_root = archive_root
+        self.db_path = db_path
+        self.parse_sources = AsyncMock()
+        self.__class__.instances.append(self)
+
+    async def __aenter__(self) -> _RecordingPolylogue:
+        return self
+
+    async def __aexit__(self, *_exc_info: object) -> None:
+        return None
+
+
 def test_create_verification_workspace_exposes_full_xdg_layout(tmp_path: Path) -> None:
     workspace = create_verification_workspace(tmp_path / "workspace")
 
@@ -46,13 +62,14 @@ def test_run_pipeline_for_configured_sources_uses_all_sources(tmp_path: Path) ->
         sources=sources,
     )
 
+    _RecordingPolylogue.instances.clear()
     with patch("polylogue.showcase.workspace.get_config", return_value=config):
-        with patch("polylogue.pipeline.runner.run_sources", new_callable=AsyncMock) as mock_run:
+        with patch("polylogue.api.Polylogue", _RecordingPolylogue):
             run_pipeline_for_configured_sources(workspace)
 
-    await_args = mock_run.await_args
+    await_args = _RecordingPolylogue.instances[-1].parse_sources.await_args
     assert await_args is not None
-    selected = await_args.kwargs["config"].sources
+    selected = await_args.args[0]
     assert [source.name for source in selected] == ["chatgpt", "codex"]
 
 
@@ -68,13 +85,14 @@ def test_run_pipeline_for_configured_sources_filters_named_sources(tmp_path: Pat
         sources=sources,
     )
 
+    _RecordingPolylogue.instances.clear()
     with patch("polylogue.showcase.workspace.get_config", return_value=config):
-        with patch("polylogue.pipeline.runner.run_sources", new_callable=AsyncMock) as mock_run:
+        with patch("polylogue.api.Polylogue", _RecordingPolylogue):
             run_pipeline_for_configured_sources(workspace, source_names=["codex"])
 
-    await_args = mock_run.await_args
+    await_args = _RecordingPolylogue.instances[-1].parse_sources.await_args
     assert await_args is not None
-    selected = await_args.kwargs["config"].sources
+    selected = await_args.args[0]
     assert [source.name for source in selected] == ["codex"]
 
 
@@ -84,13 +102,14 @@ def test_run_pipeline_for_fixture_workspace_mirrors_fixtures_to_inbox(tmp_path: 
     fixture_dir.mkdir(parents=True, exist_ok=True)
     (fixture_dir / "sample.json").write_text("{}")
 
-    with patch("polylogue.pipeline.runner.run_sources", new_callable=AsyncMock) as mock_run:
+    _RecordingPolylogue.instances.clear()
+    with patch("polylogue.api.Polylogue", _RecordingPolylogue):
         run_pipeline_for_fixture_workspace(workspace)
 
     assert (workspace.inbox_dir / "claude-ai" / "sample.json").exists()
-    await_args = mock_run.await_args
+    await_args = _RecordingPolylogue.instances[-1].parse_sources.await_args
     assert await_args is not None
-    selected = await_args.kwargs["config"].sources
+    selected = await_args.args[0]
     assert [source.name for source in selected] == ["claude-ai"]
     assert [source.path for source in selected] == [fixture_dir]
 
@@ -199,29 +218,31 @@ def test_generate_synthetic_fixtures_from_scenarios_writes_grouped_specs(tmp_pat
 def test_seed_workspace_from_corpus_request_routes_through_pipeline(tmp_path: Path) -> None:
     workspace = create_verification_workspace(tmp_path / "workspace")
 
-    with patch("polylogue.pipeline.runner.run_sources", new_callable=AsyncMock) as mock_run:
+    _RecordingPolylogue.instances.clear()
+    with patch("polylogue.api.Polylogue", _RecordingPolylogue):
         seed_workspace_from_corpus_request(
             workspace,
             request=CorpusRequest(providers=("chatgpt",), count=1, style="showcase", messages_min=6, messages_max=19),
         )
 
     assert (workspace.inbox_dir / "chatgpt").exists()
-    await_args = mock_run.await_args
+    await_args = _RecordingPolylogue.instances[-1].parse_sources.await_args
     assert await_args is not None
-    selected = await_args.kwargs["config"].sources
+    selected = await_args.args[0]
     assert [source.name for source in selected] == ["chatgpt"]
 
 
 def test_seed_workspace_from_corpus_options_builds_request_routes_through_pipeline(tmp_path: Path) -> None:
     workspace = create_verification_workspace(tmp_path / "workspace")
 
-    with patch("polylogue.pipeline.runner.run_sources", new_callable=AsyncMock) as mock_run:
+    _RecordingPolylogue.instances.clear()
+    with patch("polylogue.api.Polylogue", _RecordingPolylogue):
         seed_workspace_from_corpus_options(workspace, providers=("chatgpt",), count=1, style="showcase")
 
     assert (workspace.inbox_dir / "chatgpt").exists()
-    await_args = mock_run.await_args
+    await_args = _RecordingPolylogue.instances[-1].parse_sources.await_args
     assert await_args is not None
-    selected = await_args.kwargs["config"].sources
+    selected = await_args.args[0]
     assert [source.name for source in selected] == ["chatgpt"]
 
 
@@ -236,13 +257,14 @@ def test_seed_workspace_from_scenarios_routes_through_pipeline(tmp_path: Path) -
         seed=9,
     )[0]
 
-    with patch("polylogue.pipeline.runner.run_sources", new_callable=AsyncMock) as mock_run:
+    _RecordingPolylogue.instances.clear()
+    with patch("polylogue.api.Polylogue", _RecordingPolylogue):
         seed_workspace_from_scenarios(workspace, corpus_scenarios=(scenario,), prefix="demo")
 
     assert (workspace.inbox_dir / "chatgpt").exists()
-    await_args = mock_run.await_args
+    await_args = _RecordingPolylogue.instances[-1].parse_sources.await_args
     assert await_args is not None
-    selected = await_args.kwargs["config"].sources
+    selected = await_args.args[0]
     assert [source.name for source in selected] == ["chatgpt"]
 
 

@@ -10,7 +10,6 @@ if TYPE_CHECKING:
         AttachmentRecord,
         ConversationRecord,
         MessageRecord,
-        RunRecord,
     )
     from polylogue.storage.search import SearchResult
     from polylogue.storage.sqlite import SQLiteBackend
@@ -24,7 +23,6 @@ def __getattr__(name: str) -> object:
         "AttachmentRecord": ("polylogue.storage.runtime", "AttachmentRecord"),
         "ConversationRecord": ("polylogue.storage.runtime", "ConversationRecord"),
         "MessageRecord": ("polylogue.storage.runtime", "MessageRecord"),
-        "RunRecord": ("polylogue.storage.runtime", "RunRecord"),
     }
     module_spec = lazy_exports.get(name)
     if module_spec is not None:
@@ -39,7 +37,6 @@ __all__ = [
     "ConversationRecord",
     "ConversationRepository",
     "MessageRecord",
-    "RunRecord",
     "SQLiteBackend",
     "SearchResult",
 ]

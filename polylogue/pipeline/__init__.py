@@ -3,7 +3,6 @@
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from polylogue.pipeline.runner import latest_run, plan_sources, run_sources
     from polylogue.pipeline.services.indexing import IndexService
     from polylogue.pipeline.services.parsing import ParsingService
 
@@ -12,9 +11,6 @@ def __getattr__(name: str) -> object:
     lazy_exports = {
         "IndexService": ("polylogue.pipeline.services.indexing", "IndexService"),
         "ParsingService": ("polylogue.pipeline.services.parsing", "ParsingService"),
-        "latest_run": ("polylogue.pipeline.runner", "latest_run"),
-        "plan_sources": ("polylogue.pipeline.runner", "plan_sources"),
-        "run_sources": ("polylogue.pipeline.runner", "run_sources"),
     }
     module_spec = lazy_exports.get(name)
     if module_spec is not None:
@@ -27,7 +23,4 @@ def __getattr__(name: str) -> object:
 __all__ = [
     "IndexService",
     "ParsingService",
-    "latest_run",
-    "plan_sources",
-    "run_sources",
 ]

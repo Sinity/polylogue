@@ -69,24 +69,21 @@ def _prepare_runtime(request: QASessionRequest) -> PreparedQARuntime:
 
 def _run_live_ingest(request: QASessionRequest) -> None:
     """Run the live archive ingest pass requested by the QA session."""
+    from polylogue.api import Polylogue
     from polylogue.config import get_config
-    from polylogue.pipeline.run_support import RUN_STAGE_SEQUENCES
-    from polylogue.pipeline.runner import run_sources
+    from polylogue.pipeline.run_stages import execute_schema_generation_stage
 
-    names = list(request.source_names) if request.source_names else None
-    stage_sequence = None
-    if request.regenerate_schemas:
-        stage_sequence = ("schema", *RUN_STAGE_SEQUENCES["all"])
-    run_coroutine_sync(
-        run_sources(
-            config=get_config(),
-            stage="all",
-            stage_sequence=stage_sequence,
-            plan=None,
-            ui=None,
-            source_names=names,
-        )
-    )
+    config = get_config()
+    names = set(request.source_names) if request.source_names else None
+    sources = [source for source in config.sources if names is None or source.name in names]
+
+    async def _ingest() -> None:
+        if request.regenerate_schemas:
+            await execute_schema_generation_stage()
+        async with Polylogue(archive_root=config.archive_root, db_path=config.db_path) as polylogue:
+            await polylogue.parse_sources(sources)
+
+    run_coroutine_sync(_ingest())
 
 
 def _run_audit_stage(

@@ -113,7 +113,6 @@ Used for pushdown filters (`--min-messages`, `--min-words`, `--has-tool-use`,
 | `attachments` / `attachment_refs` | File attachments with M:N message refs |
 | `tags` / `conversation_tags` | M:N tag assignments (replaced JSON `metadata.tags`) |
 | `raw_conversations` | Raw import records before parsing |
-| `runs` | Pipeline run history with state snapshots |
 
 ## FTS5 Tables
 

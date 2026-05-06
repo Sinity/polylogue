@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from polylogue.config import Source
-from polylogue.pipeline.run_support import expand_requested_stage, normalize_stage_sequence
+from polylogue.pipeline.ingest_support import expand_requested_stage, normalize_stage_sequence
 from polylogue.pipeline.stage_models import ValidateResult
 from polylogue.protocols import ProgressCallback
 from polylogue.storage.raw.artifacts import RawIngestArtifactState

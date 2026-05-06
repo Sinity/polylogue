@@ -240,18 +240,6 @@ ARCHIVE_STORAGE_DDL = """
         ON attachment_refs(json_extract(provider_meta, '$.driveId'))
         WHERE provider_meta IS NOT NULL;
 
-        CREATE TABLE IF NOT EXISTS runs (
-            run_id TEXT PRIMARY KEY,
-            timestamp TEXT NOT NULL,
-            plan_snapshot TEXT,
-            counts_json TEXT,
-            drift_json TEXT,
-            indexed INTEGER,
-            duration_ms INTEGER
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_runs_timestamp
-        ON runs(timestamp DESC);
 """
 
 

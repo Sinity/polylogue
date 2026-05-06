@@ -1,23 +1,11 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from pathlib import Path
 
 from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.config import Config, Source
-from polylogue.core.json import JSONDocument, dumps
 
-RUN_STAGE_CHOICES: tuple[str, ...] = (
-    "acquire",
-    "parse",
-    "materialize",
-    "index",
-    "embed",
-    "schema",
-    "reprocess",
-    "all",
-)
-RUN_STAGE_SEQUENCES: dict[str, tuple[str, ...]] = {
+INGEST_STAGE_SEQUENCES: dict[str, tuple[str, ...]] = {
     "acquire": ("acquire",),
     "parse": ("parse",),
     "materialize": ("materialize",),
@@ -27,7 +15,7 @@ RUN_STAGE_SEQUENCES: dict[str, tuple[str, ...]] = {
     "reprocess": ("parse", "materialize", "index"),
     "all": ("acquire", "parse", "materialize", "index"),
 }
-RUN_LEAF_STAGES = frozenset({stage for sequence in RUN_STAGE_SEQUENCES.values() for stage in sequence})
+INGEST_LEAF_STAGES = frozenset({stage for sequence in INGEST_STAGE_SEQUENCES.values() for stage in sequence})
 INGEST_STAGES = frozenset({"parse", "reprocess", "all"})
 PARSE_STAGES = frozenset({"parse", "reprocess", "all"})
 MATERIALIZE_STAGES = frozenset({"materialize", "reprocess", "all"})
@@ -42,8 +30,8 @@ def select_sources(config: Config, source_names: Sequence[str] | None) -> list[S
 
 
 def expand_requested_stage(stage: str) -> tuple[str, ...]:
-    """Expand a requested stage/composite into the leaf execution sequence."""
-    return RUN_STAGE_SEQUENCES[stage]
+    """Expand a requested ingest stage/composite into the leaf execution sequence."""
+    return INGEST_STAGE_SEQUENCES[stage]
 
 
 def normalize_stage_sequence(
@@ -51,11 +39,11 @@ def normalize_stage_sequence(
     stage: str,
     stage_sequence: Sequence[str] | None = None,
 ) -> tuple[str, ...]:
-    """Return the leaf stage sequence for a run request."""
+    """Return the leaf stage sequence for an ingest request."""
     if stage_sequence is None:
         return expand_requested_stage(stage)
     normalized = tuple(stage_sequence)
-    invalid = [stage_name for stage_name in normalized if stage_name not in RUN_LEAF_STAGES]
+    invalid = [stage_name for stage_name in normalized if stage_name not in INGEST_LEAF_STAGES]
     if invalid:
         raise ValueError(f"Unknown leaf stage(s): {', '.join(invalid)}")
     duplicates: list[str] = []
@@ -69,29 +57,14 @@ def normalize_stage_sequence(
     return normalized
 
 
-def write_run_json(archive_root: Path, payload: JSONDocument) -> Path:
-    """Write run result JSON to the runs directory."""
-    runs_dir = archive_root / "runs"
-    runs_dir.mkdir(parents=True, exist_ok=True)
-    run_id_value = payload.get("run_id")
-    run_id = run_id_value if isinstance(run_id_value, str) and run_id_value else "unknown"
-    timestamp_value = payload.get("timestamp")
-    timestamp = int(timestamp_value) if isinstance(timestamp_value, int) else 0
-    run_path = runs_dir / f"run-{timestamp}-{run_id}.json"
-    run_path.write_text(dumps(payload, option=None), encoding="utf-8")
-    return run_path
-
-
 __all__ = [
+    "INGEST_LEAF_STAGES",
+    "INGEST_STAGE_SEQUENCES",
     "INGEST_STAGES",
     "MATERIALIZE_STAGES",
     "PARSE_STAGES",
-    "RUN_STAGE_CHOICES",
-    "RUN_LEAF_STAGES",
-    "RUN_STAGE_SEQUENCES",
     "expand_requested_stage",
     "normalize_stage_sequence",
     "run_coroutine_sync",
     "select_sources",
-    "write_run_json",
 ]

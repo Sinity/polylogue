@@ -46,7 +46,7 @@ debugging landmarks. For the conceptual system shape, see
 | --- | --- |
 | `sources/dispatch.py` | Provider detection and parser routing |
 | `sources/parsers/*.py` | Per-provider parsing |
-| `pipeline/run_support.py` | Stage definitions and sequences |
+| `pipeline/ingest_support.py` | Ingest stage definitions and source selection helpers |
 | `pipeline/ids.py` | Content hashing and ID generation |
 | `pipeline/services/ingest_batch.py` | Batch ingest (largest pipeline file) |
 

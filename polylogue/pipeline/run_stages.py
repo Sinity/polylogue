@@ -6,10 +6,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from polylogue.config import Config
+from polylogue.pipeline.ingest_support import PARSE_STAGES
 from polylogue.pipeline.payload_types import (
     MaterializeStageObservation,
 )
-from polylogue.pipeline.run_support import PARSE_STAGES
 
 if TYPE_CHECKING:
     from collections.abc import Sequence

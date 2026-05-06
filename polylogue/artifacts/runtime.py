@@ -8,13 +8,13 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
     ArtifactNode(
         name="configured_sources",
         layer=ArtifactLayer.SOURCE,
-        description="Configured filesystem and Drive source descriptors selected for an archive run.",
+        description="Configured filesystem and Drive source descriptors selected for daemon ingestion.",
         code_refs=(
             "polylogue.config.Source",
-            "polylogue.pipeline.run_planning.plan_sources",
+            "polylogue.pipeline.services.planning.PlanningService.build_plan",
             "polylogue.cli.shared.helpers.resolve_sources",
         ),
-        readiness_surfaces=("run", "sources"),
+        readiness_surfaces=("polylogued", "sources"),
     ),
     ArtifactNode(
         name="source_payload_stream",
@@ -25,7 +25,7 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
             "polylogue.sources.source_acquisition.iter_source_raw_data",
             "polylogue.pipeline.services.acquisition.AcquisitionService.visit_sources",
         ),
-        readiness_surfaces=("run", "sources"),
+        readiness_surfaces=("polylogued", "sources"),
     ),
     ArtifactNode(
         name="raw_validation_state",

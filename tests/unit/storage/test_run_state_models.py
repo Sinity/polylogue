@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from polylogue.storage.run_state import DriftBucket, PlanCounts, PlanResult, RunCounts, RunDrift, RunResult
+from polylogue.storage.run_state import DriftBucket, PlanCounts, PlanResult, RunCounts, RunDrift
 from polylogue.types import PlanStage
 
 
@@ -79,7 +79,7 @@ def test_int_payload_models_expose_mapping_contracts() -> None:
         counts["missing"]
 
 
-def test_run_counts_drift_and_result_payloads_cover_all_fields() -> None:
+def test_run_counts_and_drift_payloads_cover_all_fields() -> None:
     run_counts = RunCounts(
         conversations=1,
         messages=2,
@@ -125,15 +125,3 @@ def test_run_counts_drift_and_result_payloads_cover_all_fields() -> None:
     assert drift == drift.to_payload()
     with pytest.raises(KeyError):
         drift["missing"]
-
-    result = RunResult.model_validate(
-        {
-            "run_id": "run-1",
-            "counts": run_counts.to_payload(),
-            "drift": drift.to_payload(),
-            "indexed": True,
-            "index_error": None,
-            "duration_ms": 12,
-        }
-    )
-    assert result.counts.messages == 2

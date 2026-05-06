@@ -1,4 +1,4 @@
-"""Non-durable planning and run-result views layered above archive storage."""
+"""Non-durable planning and ingest-count views layered above archive storage."""
 
 from __future__ import annotations
 
@@ -410,26 +410,6 @@ class PlanResult(BaseModel):
         return _coerce_cursor_state_payload(v)
 
 
-class RunResult(BaseModel):
-    run_id: str
-    counts: RunCounts = Field(default_factory=RunCounts)
-    drift: RunDrift = Field(default_factory=RunDrift)
-    indexed: bool
-    index_error: str | None
-    duration_ms: int
-    run_path: str | None = None
-
-    @field_validator("counts", mode="before")
-    @classmethod
-    def coerce_run_counts(cls, v: object) -> RunCounts:
-        return _coerce_model(v, RunCounts)
-
-    @field_validator("drift", mode="before")
-    @classmethod
-    def coerce_run_drift(cls, v: object) -> RunDrift:
-        return _coerce_model(v, RunDrift)
-
-
 __all__ = [
     "DriftBucket",
     "DriftBucketPayload",
@@ -442,5 +422,4 @@ __all__ = [
     "RunCountsPayload",
     "RunDrift",
     "RunDriftPayload",
-    "RunResult",
 ]
