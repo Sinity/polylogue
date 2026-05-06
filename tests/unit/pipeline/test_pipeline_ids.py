@@ -11,6 +11,7 @@ from polylogue.assets import asset_path
 from polylogue.pipeline.ids import (
     attachment_content_id,
     conversation_content_hash,
+    conversation_content_hashes,
     conversation_id,
     materialize_attachment_path,
     message_content_hash,
@@ -165,6 +166,26 @@ def test_message_hash_empty_text_is_deterministic() -> None:
 def test_message_hash_different_provider_id_produces_different_hash() -> None:
     message = _parsed_message("msg-1", "user", "hello", "2024-01-01")
     assert message_content_hash(message, "msg-1") != message_content_hash(message, "msg-2")
+
+
+def test_conversation_content_hashes_include_existing_message_hashes() -> None:
+    first = _parsed_message("m1", "user", "hi", "2024-01-01")
+    second = _parsed_message("", "assistant", "hello", None)
+    conversation = _parsed_conversation(
+        "conv-1",
+        "Test",
+        [first, second],
+        created_at="2024-01-01",
+        updated_at="2024-01-02",
+    )
+
+    conversation_hash, message_hashes = conversation_content_hashes(conversation)
+
+    assert conversation_hash == conversation_content_hash(conversation)
+    assert message_hashes == {
+        "m1": message_content_hash(first, "m1"),
+        "msg-2": message_content_hash(second, "msg-2"),
+    }
 
 
 def test_conversation_hash_empty_messages_is_valid() -> None:

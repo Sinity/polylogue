@@ -16,7 +16,7 @@ from polylogue.core.json import dumps as json_dumps
 from polylogue.core.timestamps import parse_timestamp
 from polylogue.pipeline.ids import (
     attachment_content_id,
-    conversation_content_hash,
+    conversation_content_hashes,
     message_content_hash,
     provider_event_id,
 )
@@ -268,7 +268,7 @@ def materialize_conversation(
     archive_root: Path,
 ) -> MaterializedConversation:
     normalized_convo = canonicalize_conversation_content(convo)
-    content_hash = conversation_content_hash(normalized_convo)
+    content_hash, message_hashes = conversation_content_hashes(normalized_convo)
     conversation_id = make_conversation_id(
         normalized_convo.provider_name,
         normalized_convo.provider_conversation_id,
@@ -325,7 +325,7 @@ def materialize_conversation(
                 role=msg.role,
                 text=msg.text,
                 sort_key=_timestamp_sort_key(msg.timestamp),
-                content_hash=message_content_hash(msg, provider_message_id),
+                content_hash=message_hashes.get(provider_message_id) or message_content_hash(msg, provider_message_id),
                 parent_message_id=parent_message_id,
                 branch_index=msg.branch_index,
                 word_count=word_count,
