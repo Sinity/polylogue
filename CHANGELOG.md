@@ -98,6 +98,9 @@ documentation polish do not require an entry.
 - Daemon live convergence avoids duplicate message-FTS repair, chunks sync
   insight rebuilds by message budget, samples each JSONL once before raw
   storage, and streams raw blobs in 1 MiB chunks for large catch-up workloads.
+- Daemon convergence now scopes embedding work to changed conversations and
+  avoids starting an async embedding runner from the synchronous convergence
+  stage.
 - Daemon live ingest now excludes relationship-index JSONL sidecars before raw
   storage instead of treating scalar `conversation`/`parent`/`child` records as
   provider conversation streams.

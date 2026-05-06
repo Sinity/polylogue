@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 import polylogue.daemon.convergence_stages as stages
-from polylogue.daemon.convergence_stages import make_fts_stage, make_insights_stage
+from polylogue.daemon.convergence_stages import make_embed_stage, make_fts_stage, make_insights_stage
 from polylogue.storage.insights.session.runtime import SessionInsightCounts
 
 
@@ -145,6 +145,54 @@ def test_fts_stage_repairs_only_missing_action_index_when_messages_current(
     assert needs_calls == [["conv-a", "conv-b"], ["conv-a", "conv-b"]]
     assert committed is True
     assert rebuilt is False
+
+
+def test_embed_stage_scopes_changed_conversations_without_asyncio_run(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "archive.sqlite"
+    db_path.touch()
+    path_a = tmp_path / "a.jsonl"
+    path_b = tmp_path / "b.jsonl"
+    embedded_calls: list[list[str]] = []
+
+    class FakeConnection:
+        def close(self) -> None:
+            pass
+
+    def fake_open_connection(path: Path, *, timeout: float) -> FakeConnection:
+        assert path == db_path
+        assert timeout == 5.0
+        return FakeConnection()
+
+    def fail_if_used(coro: object) -> object:
+        raise AssertionError("embed stage should not open an asyncio runner")
+
+    def fake_pending(_conn: FakeConnection, conversation_ids: list[str]) -> list[str]:
+        return [conversation_id for conversation_id in conversation_ids if conversation_id in {"conv-a", "conv-c"}]
+
+    def fake_embed(_db_path: Path, conversation_ids: list[str]) -> bool:
+        embedded_calls.append(list(conversation_ids))
+        return True
+
+    monkeypatch.setenv("VOYAGE_API_KEY", "key")
+    monkeypatch.setattr(asyncio, "run", fail_if_used)
+    monkeypatch.setattr("polylogue.storage.sqlite.connection_profile.open_connection", fake_open_connection)
+    monkeypatch.setattr(
+        stages,
+        "_conversation_ids_for_source_paths",
+        lambda _conn, paths: {Path(paths[0]): ["conv-a", "conv-b"], Path(paths[1]): ["conv-c"]},
+    )
+    monkeypatch.setattr(stages, "_pending_embedding_conversation_ids", fake_pending)
+    monkeypatch.setattr(stages, "_embed_conversations_sync", fake_embed)
+
+    stage = make_embed_stage(db_path)
+    assert stage.check_many is not None
+    assert stage.execute_many is not None
+    assert stage.check_many([path_a, path_b]) == {path_a, path_b}
+    assert stage.execute_many([path_a, path_b]) is True
+    assert embedded_calls == [["conv-a", "conv-c"]]
 
 
 def test_insights_stage_batches_sync_rebuild_chunks(

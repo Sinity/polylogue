@@ -155,12 +155,10 @@ def make_fts_stage(db_path: Path) -> ConvergenceStage:
 
 
 def make_embed_stage(db_path: Path) -> ConvergenceStage:
-    """Generate vector embeddings for un-embedded conversations."""
+    """Generate vector embeddings for changed conversations that need them."""
 
-    def check(path: Path) -> bool:  # noqa: ARG001
-        import os
-
-        if not os.environ.get("VOYAGE_API_KEY"):
+    def check(path: Path) -> bool:
+        if not _embedding_env_enabled():
             return False
         if not db_path.exists():
             return False
@@ -169,51 +167,84 @@ def make_embed_stage(db_path: Path) -> ConvergenceStage:
         try:
             conn = open_connection(db_path, timeout=5.0)
             try:
-                if not _table_exists(conn, "embedding_status"):
-                    return False
-                total = int(conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0])
-                if total == 0:
-                    return False
-                embedded = int(conn.execute("SELECT COUNT(*) FROM embedding_status").fetchone()[0])
-                return embedded < total
+                conversation_ids = _conversation_ids_for_source_path(conn, path)
+                return bool(_pending_embedding_conversation_ids(conn, conversation_ids))
             finally:
                 conn.close()
         except Exception:
             return False
 
-    def execute(path: Path) -> bool:  # noqa: ARG001
-        import asyncio
+    def execute(path: Path) -> bool:
+        if not _embedding_env_enabled():
+            return True
+        from polylogue.storage.sqlite.connection_profile import open_connection
 
-        from polylogue.api import Polylogue
-        from polylogue.pipeline.run_stages import execute_embed_stage
-
-        async def _embed() -> bool:
-            async with Polylogue(archive_root=db_path.parent, db_path=db_path) as poly:
-                try:
-                    result = await execute_embed_stage(
-                        config=poly._config,
-                        backend=poly.backend,
-                        model="voyage-4",
-                    )
-                    logger.info("embed: %d done, %d errors", result.embedded_count, result.error_count)
-                    return result.error_count == 0
-                except Exception:
-                    logger.warning("embed: failed", exc_info=True)
-                    return False
-
-        return asyncio.run(_embed())
+        try:
+            conn = open_connection(db_path, timeout=5.0)
+            try:
+                conversation_ids = _pending_embedding_conversation_ids(
+                    conn,
+                    _conversation_ids_for_source_path(conn, path),
+                )
+            finally:
+                conn.close()
+            if not conversation_ids:
+                return True
+            return _embed_conversations_sync(db_path, conversation_ids)
+        except Exception:
+            logger.warning("embed: failed", exc_info=True)
+            return False
 
     def check_many(paths: Sequence[Path]) -> set[Path]:
-        if not paths:
+        if not paths or not _embedding_env_enabled() or not db_path.exists():
             return set()
-        return {Path(paths[0])} if check(Path(paths[0])) else set()
+        from polylogue.storage.sqlite.connection_profile import open_connection
+
+        try:
+            conn = open_connection(db_path, timeout=5.0)
+            try:
+                by_path = _conversation_ids_for_source_paths(conn, paths)
+                all_conversation_ids = list(
+                    dict.fromkeys(conversation_id for ids in by_path.values() for conversation_id in ids)
+                )
+                pending_ids = set(_pending_embedding_conversation_ids(conn, all_conversation_ids))
+                if not pending_ids:
+                    return set()
+                return {
+                    path
+                    for path, conversation_ids in by_path.items()
+                    if any(conversation_id in pending_ids for conversation_id in conversation_ids)
+                }
+            finally:
+                conn.close()
+        except Exception:
+            return set()
 
     def execute_many(paths: Sequence[Path]) -> bool:
-        return bool(paths) and execute(Path(paths[0]))
+        if not paths or not _embedding_env_enabled():
+            return True
+        from polylogue.storage.sqlite.connection_profile import open_connection
+
+        try:
+            conn = open_connection(db_path, timeout=5.0)
+            try:
+                by_path = _conversation_ids_for_source_paths(conn, paths)
+                conversation_ids = list(
+                    dict.fromkeys(conversation_id for ids in by_path.values() for conversation_id in ids)
+                )
+                pending_ids = _pending_embedding_conversation_ids(conn, conversation_ids)
+            finally:
+                conn.close()
+            if not pending_ids:
+                return True
+            return _embed_conversations_sync(db_path, pending_ids)
+        except Exception:
+            logger.warning("embed: batch failed", exc_info=True)
+            return False
 
     return ConvergenceStage(
         name="embed",
-        description="Generate vector embeddings for un-embedded conversations",
+        description="Generate vector embeddings for changed conversations",
         check=check,
         execute=execute,
         check_many=check_many,
@@ -435,6 +466,69 @@ def _fts_repair_needs_for_conversations(
 
 def _fts_needs_repair_for_conversations(conn: sqlite3.Connection, conversation_ids: Sequence[str]) -> bool:
     return _fts_repair_needs_for_conversations(conn, conversation_ids).any
+
+
+def _embedding_env_enabled() -> bool:
+    import os
+
+    return bool(os.environ.get("VOYAGE_API_KEY"))
+
+
+def _pending_embedding_conversation_ids(
+    conn: sqlite3.Connection,
+    conversation_ids: Sequence[str],
+) -> list[str]:
+    if not conversation_ids or not _table_exists(conn, "embedding_status"):
+        return []
+    unique_ids = tuple(dict.fromkeys(conversation_ids))
+    placeholders = ", ".join("?" for _ in unique_ids)
+    rows = conn.execute(
+        f"""
+        SELECT c.conversation_id
+        FROM conversations AS c
+        LEFT JOIN embedding_status AS e ON e.conversation_id = c.conversation_id
+        WHERE c.conversation_id IN ({placeholders})
+          AND (e.conversation_id IS NULL OR e.needs_reindex = 1)
+        ORDER BY COALESCE(c.updated_at, ''), c.conversation_id
+        """,
+        unique_ids,
+    ).fetchall()
+    return [str(row[0]) for row in rows]
+
+
+def _embed_conversations_sync(db_path: Path, conversation_ids: Sequence[str]) -> bool:
+    import os
+
+    from polylogue.api.sync.bridge import run_coroutine_sync
+    from polylogue.storage.embeddings.materialization import embed_conversation_sync
+    from polylogue.storage.repository import ConversationRepository
+    from polylogue.storage.search_providers import create_vector_provider
+    from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
+
+    voyage_key = os.environ.get("VOYAGE_API_KEY")
+    if not voyage_key:
+        return True
+
+    vec_provider = create_vector_provider(voyage_api_key=voyage_key, db_path=db_path)
+    if vec_provider is None:
+        logger.warning("embed: vector provider unavailable")
+        return False
+
+    repo = ConversationRepository(backend=SQLiteBackend(db_path=db_path))
+    errors = 0
+    embedded = 0
+    try:
+        for conversation_id in dict.fromkeys(conversation_ids):
+            outcome = embed_conversation_sync(repo, vec_provider, conversation_id)
+            if outcome.status == "embedded":
+                embedded += 1
+            elif outcome.status == "error":
+                errors += 1
+                logger.warning("embed: %s failed: %s", conversation_id, outcome.error)
+        logger.info("embed: %d done, %d errors", embedded, errors)
+        return errors == 0
+    finally:
+        run_coroutine_sync(repo.close())
 
 
 def _repair_changed_conversation_fts(
