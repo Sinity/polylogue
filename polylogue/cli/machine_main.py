@@ -30,6 +30,8 @@ def run_machine_entry(
     if not wants_json(argv):
         try:
             cli()
+        except click.ClickException:
+            raise
         except PolylogueError as exc:
             click.ClickException(str(exc)).show()
             raise SystemExit(1) from exc

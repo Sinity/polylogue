@@ -111,15 +111,19 @@ class TestUnicodeHandling:
     @pytest.mark.asyncio
     async def test_empty_query(self, mcp_server: MCPServerUnderTest) -> None:
         """Empty query string doesn't crash search."""
-        from tests.infra.mcp import make_mock_filter, make_query_store_mock
+        from polylogue.archive.query.miss_diagnostics import QueryMissDiagnostics
+        from tests.infra.mcp import make_mock_filter
 
         with (
-            patch("polylogue.mcp.server._get_query_store") as mock_get_query_store,
+            patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops,
             patch("polylogue.archive.filter.filters.ConversationFilter") as mock_filter_cls,
         ):
-            mock_query_store = make_query_store_mock()
-            mock_query_store.search = AsyncMock(return_value=[])
-            mock_get_query_store.return_value = mock_query_store
+            mock_ops = AsyncMock()
+            mock_ops.search_conversation_hits = AsyncMock(return_value=[])
+            mock_ops.diagnose_query_miss = AsyncMock(
+                return_value=QueryMissDiagnostics(message="No conversations matched.", filters=(), reasons=())
+            )
+            mock_get_archive_ops.return_value = mock_ops
             mock_filter_cls.return_value = make_mock_filter(results=[])
 
             result = await _invoke_tool(
