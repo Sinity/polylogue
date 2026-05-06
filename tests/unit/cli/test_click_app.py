@@ -522,13 +522,11 @@ class TestCliMetadata:
             "auth",
             "completions",
             "dashboard",
-            "ingest",
             "neighbors",
             "export",
             "resume",
             "insights",
             "schema",
-            "status",
             "tags",
             "diagnostics",
             # Query verbs

@@ -130,15 +130,18 @@ def _run_convergence_probe(
 
     # Measure canonical batched live ingestion with post-ingest convergence.
     t_total = time.perf_counter()
-    asyncio.run(processor.ingest_files(files, emit_event=False))
+    metrics = asyncio.run(processor.ingest_files(files, emit_event=False))
     timings["total_s"] = time.perf_counter() - t_total
     timings["files"] = float(len(files))
+    timings["succeeded_files"] = float(metrics.succeeded_file_count)
+    timings["failed_files"] = float(metrics.failed_file_count)
+    timings["parse_wall_s"] = metrics.parse_time_s
+    timings["convergence_wall_s"] = metrics.convergence_time_s
 
     summary = converger.summary()
     timings["converged"] = float(summary["converged"])
     timings["failed"] = float(summary["failed"])
     timings["total_files"] = float(summary["total"])
-    timings["parse_source_calls"] = float(polylogue.parse_source_calls)
 
     return timings
 
@@ -147,10 +150,6 @@ class _BenchmarkPolylogue:
     def __init__(self, archive_root: Path, db_path: Path) -> None:
         self.archive_root = archive_root
         self.backend = SimpleNamespace(db_path=db_path)
-        self.parse_source_calls = 0
-
-    async def parse_sources(self, *, sources: list[Any], download_assets: bool) -> None:  # noqa: ARG002
-        self.parse_source_calls += 1
 
 
 # ── Benchmark tests ─────────────────────────────────────────────────
@@ -178,12 +177,16 @@ def test_convergence_scale_tier(benchmark, tier: str, tmp_path: Path, monkeypatc
             "total_s": round(result["total_s"], 2),
             "msgs_per_s": round(msgs_per_s, 1),
             "converged": int(result["converged"]),
-            "parse_source_calls": int(result["parse_source_calls"]),
+            "succeeded_files": int(result["succeeded_files"]),
+            "failed_files": int(result["failed_files"]),
+            "parse_wall_s": round(result["parse_wall_s"], 2),
+            "convergence_wall_s": round(result["convergence_wall_s"], 2),
         }
         if hasattr(benchmark, "extra_info"):
             benchmark.extra_info.update(extras)
         # Assert basic correctness.
-        assert result["parse_source_calls"] == 1
+        assert result["succeeded_files"] == result["total_files"]
+        assert result["failed_files"] == 0
         assert result["converged"] >= result["total_files"] * 0.8, (
             f"Only {result['converged']}/{result['total_files']} converged"
         )

@@ -103,37 +103,6 @@ areas:
       inputs. TestSanitizePathTraversal covers traversal, control
       chars, absolute paths, symlink OSError handling.
 
-  command_injection:
-    description: Shell command injection prevention in pipeline observers
-    implemented: true
-    controls:
-      - validate_exec_command: >
-          polylogue/pipeline/observers.py::_validate_exec_command()
-          rejects shell metacharacters (;, &&, |, backtick, $(),
-          >, <, &, !, \n). Returns argv list on success.
-    test_coverage:
-      location: tests/unit/security/test_observers_security.py
-      hypothesis: false
-    notes: >
-      10 parametrized shell metacharacter attack vectors tested.
-      Empty and whitespace-only commands also rejected.
-
-  ssrf_prevention:
-    description: Server-side request forgery prevention in webhooks
-    implemented: true
-    controls:
-      - validate_webhook_url: >
-          polylogue/pipeline/observers.py::_validate_webhook_url()
-          rejects non-HTTP(S) schemes, empty hostnames, loopback
-          addresses, private IP ranges, and cloud metadata
-          endpoints (169.254.169.254).
-    test_coverage:
-      location: tests/unit/security/test_observers_security.py
-      hypothesis: false
-    notes: >
-      SSRF tests cover FTP, file:// schemes, loopback (IPv4/IPv6),
-      private RFC1918 ranges, and GCP/AWS metadata endpoint.
-
   mcp_traceback_exposure:
     description: Traceback and internal path exposure in MCP error responses
     implemented: true
