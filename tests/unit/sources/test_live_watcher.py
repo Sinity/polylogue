@@ -42,8 +42,8 @@ class _FullIngestMock:
     def reset_mock(self) -> None:
         self.await_count = 0
 
-    async def __call__(self, paths: list[Path], *, source_name: str) -> _FullIngestResult:
-        del source_name
+    async def __call__(self, paths: list[Path], *, source_name: str, heartbeat: object = None) -> _FullIngestResult:
+        del source_name, heartbeat
         self.await_count += 1
         if self.side_effect is not None:
             if isinstance(self.side_effect, BaseException):
@@ -348,7 +348,8 @@ async def test_live_full_ingest_streams_large_paths_before_processing(
 
     calls: list[str] = []
 
-    def fake_write_from_path(_store: object, path: Path) -> tuple[str, int]:
+    def fake_write_from_path(_store: object, path: Path, *, heartbeat: object = None) -> tuple[str, int]:
+        del heartbeat
         calls.append(f"path:{path.name}")
         return "a" * 64, path.stat().st_size
 
@@ -823,8 +824,8 @@ async def test_live_full_ingest_offloads_sync_work_to_keep_loop_responsive(
         parser_fingerprint="test-parser",
     )
 
-    def slow_full_ingest(paths: list[Path], *, source_name: str) -> _FullIngestResult:
-        del source_name
+    def slow_full_ingest(paths: list[Path], *, source_name: str, heartbeat: object = None) -> _FullIngestResult:
+        del source_name, heartbeat
         time.sleep(0.2)
         return _FullIngestResult(
             succeeded=list(paths),

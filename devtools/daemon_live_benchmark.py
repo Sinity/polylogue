@@ -196,6 +196,11 @@ def _read_generated_record(raw_bytes: bytes, path: Path) -> dict[str, object]:
     return value
 
 
+def _max_metric(*values: float | None) -> float:
+    present = [value for value in values if value is not None]
+    return max(present) if present else 0.0
+
+
 async def run_daemon_live_convergence_workload(db_path: Path) -> tuple[dict[str, float], dict[str, int]]:
     """Run live batch ingestion in-process and return normalized metrics/stats."""
     from polylogue.api import Polylogue
@@ -259,6 +264,19 @@ async def run_daemon_live_convergence_workload(db_path: Path) -> tuple[dict[str,
         "failed_files": float(initial_metrics.failed_file_count + append_metrics.failed_file_count),
         "append_files": float(append_metrics.append_file_count),
         "full_files": float(initial_metrics.full_file_count + append_metrics.full_file_count),
+        "rss_peak_self_mb": _max_metric(initial_metrics.rss_peak_self_mb, append_metrics.rss_peak_self_mb),
+        "rss_peak_children_mb": _max_metric(
+            initial_metrics.rss_peak_children_mb,
+            append_metrics.rss_peak_children_mb,
+        ),
+        "cgroup_memory_peak_mb": _max_metric(
+            initial_metrics.cgroup_memory_peak_mb,
+            append_metrics.cgroup_memory_peak_mb,
+        ),
+        "cgroup_memory_swap_current_mb": _max_metric(
+            initial_metrics.cgroup_memory_swap_current_mb,
+            append_metrics.cgroup_memory_swap_current_mb,
+        ),
     }
     normalized_metrics.update(
         {f"stage_initial_{name}_wall_s": elapsed for name, elapsed in initial_metrics.stage_timings_s.items()}

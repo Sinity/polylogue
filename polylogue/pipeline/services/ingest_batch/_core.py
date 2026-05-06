@@ -15,8 +15,8 @@ import os
 import pickle
 import sqlite3
 import time
-from collections.abc import Iterable, Sequence
-from concurrent.futures import Future, as_completed
+from collections.abc import Callable, Iterable, Sequence
+from concurrent.futures import FIRST_COMPLETED, Future, wait
 from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
@@ -98,6 +98,10 @@ logger = get_logger(__name__)
 
 class _BlobSized(Protocol):
     blob_size: int
+
+
+IngestHeartbeat = Callable[[], None]
+_INGEST_RESULT_WAIT_HEARTBEAT_S = 15.0
 
 
 # ---------------------------------------------------------------------------
@@ -649,9 +653,12 @@ def _iter_ingest_results_sync(
     *,
     request: _IngestWorkerRequest,
     worker_count: int,
+    heartbeat: IngestHeartbeat | None = None,
 ) -> Iterable[IngestRecordResult]:
     if worker_count <= 1:
         for raw_record in raw_artifacts:
+            if heartbeat is not None:
+                heartbeat()
             yield _run_ingest_record(raw_record, request)
         return
 
@@ -659,7 +666,7 @@ def _iter_ingest_results_sync(
         with process_pool_executor(max_workers=worker_count) as executor:
             raw_iter = iter(raw_artifacts)
             futures: dict[Future[IngestRecordResult], str] = {}
-            max_in_flight = max(1, worker_count * 2)
+            max_in_flight = max(1, worker_count)
 
             def submit_next() -> bool:
                 try:
@@ -675,19 +682,27 @@ def _iter_ingest_results_sync(
                     break
 
             while futures:
-                future = next(as_completed(tuple(futures)))
-                raw_id = futures.pop(future)
-                try:
-                    result = future.result()
-                except Exception as exc:
-                    result = IngestRecordResult(
-                        raw_id=raw_id,
-                        error=f"worker: {exc}",
-                    )
-                submit_next()
-                yield result
+                done, _pending = wait(
+                    tuple(futures),
+                    timeout=_INGEST_RESULT_WAIT_HEARTBEAT_S,
+                    return_when=FIRST_COMPLETED,
+                )
+                if not done:
+                    if heartbeat is not None:
+                        heartbeat()
+                    continue
+                for future in done:
+                    raw_id = futures.pop(future)
+                    try:
+                        result = future.result()
+                    except Exception as exc:
+                        result = IngestRecordResult(raw_id=raw_id, error=f"worker: {exc}")
+                    submit_next()
+                    yield result
     except (TypeError, pickle.PicklingError):
         for raw_record in raw_artifacts:
+            if heartbeat is not None:
+                heartbeat()
             yield _run_ingest_record(raw_record, request)
 
 
@@ -789,12 +804,14 @@ def _consume_ingest_results(
     materialized_ids: set[str],
     pending_by_parent: dict[str, list[_ConversationEntry]],
     force_write: bool = False,
+    heartbeat: IngestHeartbeat | None = None,
 ) -> None:
     result_iterator = iter(
         _iter_ingest_results_sync(
             raw_artifacts,
             request=worker_request,
             worker_count=summary.worker_count,
+            heartbeat=heartbeat,
         )
     )
     while True:
@@ -865,6 +882,7 @@ def _process_ingest_batch_sync(
     measure_ingest_result_size: bool,
     force_write: bool = False,
     repair_action_fts: bool = True,
+    heartbeat: IngestHeartbeat | None = None,
 ) -> _IngestBatchSummary:
     from polylogue.storage.fts.fts_lifecycle import (
         suspend_fts_triggers_sync,
@@ -899,6 +917,7 @@ def _process_ingest_batch_sync(
             materialized_ids=materialized_ids,
             pending_by_parent=pending_by_parent,
             force_write=force_write,
+            heartbeat=heartbeat,
         )
         _commit_ingest_results(
             conn,

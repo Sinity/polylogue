@@ -18,13 +18,22 @@ import orjson
 
 from polylogue.archive.artifact_taxonomy import classify_artifact, classify_artifact_path
 from polylogue.core.json import JSONValue
-from polylogue.core.metrics import read_current_rss_mb, read_peak_rss_children_mb, read_peak_rss_self_mb
+from polylogue.core.metrics import (
+    read_cgroup_memory_current_mb,
+    read_cgroup_memory_peak_mb,
+    read_cgroup_memory_swap_current_mb,
+    read_cgroup_path,
+    read_current_rss_mb,
+    read_peak_rss_children_mb,
+    read_peak_rss_self_mb,
+)
 from polylogue.core.provider_identity import canonical_acquisition_provider
 from polylogue.logging import get_logger
 from polylogue.paths import blob_store_root
 from polylogue.pipeline.services.ingest_batch._core import _process_ingest_batch_sync, _select_ingest_worker_count
 from polylogue.sources.dispatch import _detect_provider_from_raw_bytes, detect_provider
 from polylogue.sources.live.cursor import CursorStore
+from polylogue.sources.live.metrics import LiveBatchMetrics
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.runtime import RawConversationRecord
 from polylogue.types import Provider
@@ -39,6 +48,7 @@ _SMALL_FULL_PARSE_PROGRESS_MAX_BYTES = 256 * 1024 * 1024
 _SMALL_FULL_PARSE_PROGRESS_MAX_FILES = 256
 _STREAMING_FULL_INGEST_BYTES = 8 * 1024 * 1024
 LiveBatchEventEmitter = Callable[[str, dict[str, object]], None]
+_FullIngestHeartbeat = Callable[[str], None]
 
 
 class LiveSourceRoot(Protocol):
@@ -47,56 +57,6 @@ class LiveSourceRoot(Protocol):
 
     @property
     def root(self) -> Path: ...
-
-
-@dataclass(frozen=True, slots=True)
-class LiveBatchMetrics:
-    """Observable counters and timings for one live ingest batch."""
-
-    queued_file_count: int
-    needed_file_count: int
-    skipped_file_count: int
-    succeeded_file_count: int
-    failed_file_count: int
-    source_group_count: int
-    input_bytes: int
-    source_payload_read_bytes: int
-    cursor_fingerprint_read_bytes: int
-    ingest_worker_count_max: int
-    append_file_count: int
-    full_file_count: int
-    archive_bytes_before: int
-    archive_bytes_after: int
-    archive_write_bytes_delta: int
-    parse_time_s: float
-    convergence_time_s: float
-    total_time_s: float
-    stage_timings_s: dict[str, float] = field(default_factory=dict)
-    failed_paths: list[str] = field(default_factory=list)
-
-    def to_payload(self) -> dict[str, object]:
-        return {
-            "queued_file_count": self.queued_file_count,
-            "needed_file_count": self.needed_file_count,
-            "skipped_file_count": self.skipped_file_count,
-            "succeeded_file_count": self.succeeded_file_count,
-            "failed_file_count": self.failed_file_count,
-            "source_group_count": self.source_group_count,
-            "input_bytes": self.input_bytes,
-            "source_payload_read_bytes": self.source_payload_read_bytes,
-            "cursor_fingerprint_read_bytes": self.cursor_fingerprint_read_bytes,
-            "ingest_worker_count_max": self.ingest_worker_count_max,
-            "append_file_count": self.append_file_count,
-            "full_file_count": self.full_file_count,
-            "archive_bytes_before": self.archive_bytes_before,
-            "archive_bytes_after": self.archive_bytes_after,
-            "archive_write_bytes_delta": self.archive_write_bytes_delta,
-            "parse_time_s": self.parse_time_s,
-            "convergence_time_s": self.convergence_time_s,
-            "total_time_s": self.total_time_s,
-            "stage_timings_s": self.stage_timings_s,
-            "failed_paths": self.failed_paths,
-        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -231,7 +191,22 @@ class LiveBatchProcessor:
                         current_source=source_name,
                         current_path=source_paths[0] if source_paths else None,
                     )
-                    full_result = await self._ingest_full_paths(source_paths, source_name=source_name)
+                    current_path = source_paths[0] if source_paths else None
+                    full_result = await self._ingest_full_paths(
+                        source_paths,
+                        source_name=source_name,
+                        heartbeat=self._full_ingest_heartbeat(
+                            attempt_id,
+                            source_name=source_name,
+                            current_path=current_path,
+                            succeeded_file_count=len(succeeded_paths),
+                            failed_file_count=len(failed_paths),
+                            source_payload_read_bytes=source_payload_read_bytes,
+                            cursor_fingerprint_read_bytes=cursor_fingerprint_read_bytes,
+                            parse_time_s=parse_time_s,
+                            convergence_time_s=convergence_time_s,
+                        ),
+                    )
                     ingest_worker_count_max = max(ingest_worker_count_max, full_result.worker_count)
                 except Exception as exc:
                     logger.warning("live.watcher: batch failed for %s: %s", source_name, exc)
@@ -323,6 +298,13 @@ class LiveBatchProcessor:
             parse_time_s=round(parse_time_s, 6),
             convergence_time_s=round(convergence_time_s, 6),
             total_time_s=round(time.perf_counter() - batch_started, 6),
+            rss_current_mb=read_current_rss_mb(),
+            rss_peak_self_mb=read_peak_rss_self_mb(),
+            rss_peak_children_mb=read_peak_rss_children_mb(),
+            cgroup_path=read_cgroup_path(),
+            cgroup_memory_current_mb=read_cgroup_memory_current_mb(),
+            cgroup_memory_peak_mb=read_cgroup_memory_peak_mb(),
+            cgroup_memory_swap_current_mb=read_cgroup_memory_swap_current_mb(),
             stage_timings_s={name: round(elapsed, 6) for name, elapsed in stage_timings.items()},
             failed_paths=failed_paths,
         )
@@ -379,6 +361,38 @@ class LiveBatchProcessor:
             rss_current_mb=read_current_rss_mb(),
             rss_peak_self_mb=read_peak_rss_self_mb(),
             rss_peak_children_mb=read_peak_rss_children_mb(),
+            cgroup_path=read_cgroup_path(),
+            cgroup_memory_current_mb=read_cgroup_memory_current_mb(),
+            cgroup_memory_peak_mb=read_cgroup_memory_peak_mb(),
+            cgroup_memory_swap_current_mb=read_cgroup_memory_swap_current_mb(),
+        )
+
+    def _full_ingest_heartbeat(
+        self,
+        attempt_id: str,
+        *,
+        source_name: str,
+        current_path: Path | None,
+        succeeded_file_count: int,
+        failed_file_count: int,
+        source_payload_read_bytes: int,
+        cursor_fingerprint_read_bytes: int,
+        parse_time_s: float,
+        convergence_time_s: float,
+    ) -> _FullIngestHeartbeat:
+        return _throttled_phase_heartbeat(
+            lambda phase: self._record_attempt_progress(
+                attempt_id,
+                phase=phase,
+                succeeded_file_count=succeeded_file_count,
+                failed_file_count=failed_file_count,
+                source_payload_read_bytes=source_payload_read_bytes,
+                cursor_fingerprint_read_bytes=cursor_fingerprint_read_bytes,
+                parse_time_s=parse_time_s,
+                convergence_time_s=convergence_time_s,
+                current_source=source_name,
+                current_path=current_path,
+            )
         )
 
     def _record_failed_cursor(self, path: Path) -> int:
@@ -523,10 +537,24 @@ class LiveBatchProcessor:
         backend = getattr(self._polylogue, "backend", None)
         return isinstance(getattr(backend, "db_path", None), Path)
 
-    async def _ingest_full_paths(self, paths: list[Path], *, source_name: str) -> _FullIngestResult:
-        return await asyncio.to_thread(self._ingest_full_paths_sync, paths, source_name=source_name)
+    async def _ingest_full_paths(
+        self,
+        paths: list[Path],
+        *,
+        source_name: str,
+        heartbeat: _FullIngestHeartbeat | None = None,
+    ) -> _FullIngestResult:
+        return await asyncio.to_thread(
+            self._ingest_full_paths_sync, paths, source_name=source_name, heartbeat=heartbeat
+        )
 
-    def _ingest_full_paths_sync(self, paths: list[Path], *, source_name: str) -> _FullIngestResult:
+    def _ingest_full_paths_sync(
+        self,
+        paths: list[Path],
+        *,
+        source_name: str,
+        heartbeat: _FullIngestHeartbeat | None = None,
+    ) -> _FullIngestResult:
         if not paths:
             return _FullIngestResult(succeeded=[], failed=[], source_payload_read_bytes=0)
         archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
@@ -554,7 +582,12 @@ class LiveBatchProcessor:
                     continue
                 if stat.st_size >= _STREAMING_FULL_INGEST_BYTES:
                     try:
-                        raw_id, blob_size = blob_store.write_from_path(path)
+                        if heartbeat is not None:
+                            heartbeat("full_blob_copy")
+                        raw_id, blob_size = blob_store.write_from_path(
+                            path,
+                            heartbeat=None if heartbeat is None else lambda: heartbeat("full_blob_copy"),
+                        )
                     except OSError:
                         failed.append(path)
                         continue
@@ -574,7 +607,12 @@ class LiveBatchProcessor:
                     self._mark_excluded_cursor(path, stat, source_name=source_name)
                     continue
                 try:
-                    raw_id, blob_size = blob_store.write_from_path(path)
+                    if heartbeat is not None:
+                        heartbeat("full_blob_copy")
+                    raw_id, blob_size = blob_store.write_from_path(
+                        path,
+                        heartbeat=None if heartbeat is None else lambda: heartbeat("full_blob_copy"),
+                    )
                 except OSError:
                     failed.append(path)
                     continue
@@ -610,6 +648,8 @@ class LiveBatchProcessor:
 
         if raw_records:
             self._persist_raw_records(raw_records)
+            if heartbeat is not None:
+                heartbeat("full_worker_wait")
             summary = _process_ingest_batch_sync(
                 raw_records,
                 db_path=self._cursor._db_path,
@@ -619,6 +659,7 @@ class LiveBatchProcessor:
                 ingest_workers=_full_ingest_worker_count(raw_records),
                 measure_ingest_result_size=False,
                 repair_action_fts=False,
+                heartbeat=None if heartbeat is None else lambda: heartbeat("full_worker_wait"),
             )
             failed.extend(raw_by_id[raw_id] for raw_id in summary.failed_raw_ids if raw_id in raw_by_id)
             if summary.parse_failures and not summary.failed_raw_ids:
@@ -927,6 +968,25 @@ def _full_parse_progress_groups(paths: list[Path]) -> Iterable[list[Path]]:
 
 def _full_ingest_worker_count(records: list[RawConversationRecord]) -> int:
     return _select_ingest_worker_count(records, None)
+
+
+def _throttled_phase_heartbeat(
+    emit: Callable[[str], None],
+    *,
+    interval_s: float = 15.0,
+) -> _FullIngestHeartbeat:
+    """Throttle durable attempt updates while long file/worker phases run."""
+    last_emitted = -interval_s
+
+    def heartbeat(phase: str) -> None:
+        nonlocal last_emitted
+        now = time.perf_counter()
+        if now - last_emitted < interval_s:
+            return
+        last_emitted = now
+        emit(phase)
+
+    return heartbeat
 
 
 def _path_size(path: Path) -> int:

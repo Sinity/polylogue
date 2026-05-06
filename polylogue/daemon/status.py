@@ -16,6 +16,8 @@ from polylogue.sources.live import WatchSource
 from polylogue.sources.live.watcher import default_sources
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
+_LIVE_INGEST_ATTEMPT_STALE_AFTER_S = 180.0
+
 # ---------------------------------------------------------------------------
 # Typed sub-models
 # ---------------------------------------------------------------------------
@@ -87,11 +89,18 @@ class LiveIngestAttemptState(BaseModel):
     rss_current_mb: float | None = None
     rss_peak_self_mb: float | None = None
     rss_peak_children_mb: float | None = None
+    cgroup_path: str | None = None
+    cgroup_memory_current_mb: float | None = None
+    cgroup_memory_peak_mb: float | None = None
+    cgroup_memory_swap_current_mb: float | None = None
+    updated_age_s: float | None = None
+    stale: bool = False
     completed_at: str | None = None
 
 
 class LiveIngestAttemptSummary(BaseModel):
     running_count: int = 0
+    stale_running_count: int = 0
     recent: list[LiveIngestAttemptState] = Field(default_factory=list)
 
 
@@ -237,6 +246,40 @@ def _safe_int(value: object) -> int:
     return 0
 
 
+def _required_str(value: object) -> str:
+    return value if isinstance(value, str) else str(value)
+
+
+def _optional_str(value: object) -> str | None:
+    return value if isinstance(value, str) else None
+
+
+def _row_int(value: object) -> int:
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, int | float):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return 0
+    return 0
+
+
+def _row_float(value: object) -> float | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int | float):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return None
+    return None
+
+
 def _failing_files_info() -> list[str]:
     """Return live-source files currently marked failed or excluded."""
     return [item.source_path for item in _live_cursor_summary_info().failing_files]
@@ -321,8 +364,13 @@ def _live_ingest_attempt_summary_info() -> LiveIngestAttemptSummary:
             ).fetchone()
             if has_table is None:
                 return LiveIngestAttemptSummary()
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(live_ingest_attempt)")}
+            cgroup_path_expr = "cgroup_path" if "cgroup_path" in columns else "NULL"
+            cgroup_current_expr = "cgroup_memory_current_mb" if "cgroup_memory_current_mb" in columns else "NULL"
+            cgroup_peak_expr = "cgroup_memory_peak_mb" if "cgroup_memory_peak_mb" in columns else "NULL"
+            cgroup_swap_expr = "cgroup_memory_swap_current_mb" if "cgroup_memory_swap_current_mb" in columns else "NULL"
             rows = conn.execute(
-                """
+                f"""
                 SELECT
                     attempt_id,
                     started_at,
@@ -344,49 +392,88 @@ def _live_ingest_attempt_summary_info() -> LiveIngestAttemptSummary:
                     error,
                     rss_current_mb,
                     rss_peak_self_mb,
-                    rss_peak_children_mb
+                    rss_peak_children_mb,
+                    {cgroup_path_expr},
+                    {cgroup_current_expr},
+                    {cgroup_peak_expr},
+                    {cgroup_swap_expr}
                 FROM live_ingest_attempt
                 ORDER BY updated_at DESC, started_at DESC
                 LIMIT 5
                 """
             ).fetchall()
-            running_count = int(
-                conn.execute("SELECT COUNT(*) FROM live_ingest_attempt WHERE status = 'running'").fetchone()[0]
-            )
+            running_rows = conn.execute(
+                "SELECT updated_at FROM live_ingest_attempt WHERE status = 'running'"
+            ).fetchall()
         finally:
             conn.close()
     except sqlite3.Error:
         return LiveIngestAttemptSummary()
 
-    return LiveIngestAttemptSummary(
-        running_count=running_count,
-        recent=[
-            LiveIngestAttemptState(
-                attempt_id=str(row[0]),
-                started_at=str(row[1]),
-                updated_at=str(row[2]),
-                completed_at=row[3],
-                status=str(row[4]),
-                phase=str(row[5]),
-                queued_file_count=int(row[6] or 0),
-                needed_file_count=int(row[7] or 0),
-                succeeded_file_count=int(row[8] or 0),
-                failed_file_count=int(row[9] or 0),
-                input_bytes=int(row[10] or 0),
-                source_payload_read_bytes=int(row[11] or 0),
-                cursor_fingerprint_read_bytes=int(row[12] or 0),
-                parse_time_s=float(row[13] or 0),
-                convergence_time_s=float(row[14] or 0),
-                current_source=row[15],
-                current_path=row[16],
-                error=row[17],
-                rss_current_mb=float(row[18]) if row[18] is not None else None,
-                rss_peak_self_mb=float(row[19]) if row[19] is not None else None,
-                rss_peak_children_mb=float(row[20]) if row[20] is not None else None,
-            )
-            for row in rows
-        ],
+    now = datetime.now(UTC)
+    recent_attempts = [_live_ingest_attempt_state_from_row(row, now=now) for row in rows]
+    stale_running_count = sum(
+        1
+        for row in running_rows
+        if (age_s := _attempt_updated_age_s(_required_str(row[0]), now=now)) is not None
+        and age_s >= _LIVE_INGEST_ATTEMPT_STALE_AFTER_S
     )
+    return LiveIngestAttemptSummary(
+        running_count=len(running_rows),
+        stale_running_count=stale_running_count,
+        recent=recent_attempts,
+    )
+
+
+def _live_ingest_attempt_state_from_row(
+    row: sqlite3.Row | tuple[object, ...], *, now: datetime
+) -> LiveIngestAttemptState:
+    updated_at = _required_str(row[2])
+    updated_age_s = _attempt_updated_age_s(updated_at, now=now)
+    stale = (
+        _required_str(row[4]) == "running"
+        and updated_age_s is not None
+        and updated_age_s >= _LIVE_INGEST_ATTEMPT_STALE_AFTER_S
+    )
+    return LiveIngestAttemptState(
+        attempt_id=_required_str(row[0]),
+        started_at=_required_str(row[1]),
+        updated_at=updated_at,
+        completed_at=_optional_str(row[3]),
+        status=_required_str(row[4]),
+        phase=_required_str(row[5]),
+        queued_file_count=_row_int(row[6]),
+        needed_file_count=_row_int(row[7]),
+        succeeded_file_count=_row_int(row[8]),
+        failed_file_count=_row_int(row[9]),
+        input_bytes=_row_int(row[10]),
+        source_payload_read_bytes=_row_int(row[11]),
+        cursor_fingerprint_read_bytes=_row_int(row[12]),
+        parse_time_s=_row_float(row[13]) or 0.0,
+        convergence_time_s=_row_float(row[14]) or 0.0,
+        current_source=_optional_str(row[15]),
+        current_path=_optional_str(row[16]),
+        error=_optional_str(row[17]),
+        rss_current_mb=_row_float(row[18]),
+        rss_peak_self_mb=_row_float(row[19]),
+        rss_peak_children_mb=_row_float(row[20]),
+        cgroup_path=_optional_str(row[21]),
+        cgroup_memory_current_mb=_row_float(row[22]),
+        cgroup_memory_peak_mb=_row_float(row[23]),
+        cgroup_memory_swap_current_mb=_row_float(row[24]),
+        updated_age_s=updated_age_s,
+        stale=stale,
+    )
+
+
+def _attempt_updated_age_s(updated_at: str, *, now: datetime) -> float | None:
+    try:
+        updated = datetime.fromisoformat(updated_at)
+    except ValueError:
+        return None
+    if updated.tzinfo is None:
+        updated = updated.replace(tzinfo=UTC)
+    return max(0.0, round((now - updated.astimezone(UTC)).total_seconds(), 3))
 
 
 def _retry_due(next_retry_at: str | None, *, now: datetime) -> bool:
@@ -553,15 +640,28 @@ def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
     attempts = payload.get("live_ingest_attempts")
     if isinstance(attempts, dict):
         recent = attempts.get("recent", [])
-        lines.append(f"Live ingest attempts: {attempts.get('running_count', 0)} running")
+        running_count = attempts.get("running_count", 0)
+        stale_count = attempts.get("stale_running_count", 0)
+        if stale_count:
+            lines.append(f"Live ingest attempts: {running_count} running, {stale_count} stale")
+        else:
+            lines.append(f"Live ingest attempts: {running_count} running")
         if isinstance(recent, list) and recent:
             latest = recent[0]
             if isinstance(latest, dict):
+                stale_marker = " stale" if latest.get("stale") else ""
                 lines.append(
                     "  latest: "
-                    f"{latest.get('status')} {latest.get('phase')} "
+                    f"{latest.get('status')}{stale_marker} {latest.get('phase')} "
                     f"{latest.get('succeeded_file_count', 0)}/{latest.get('needed_file_count', 0)} files"
                 )
+                cgroup_current = latest.get("cgroup_memory_current_mb")
+                if cgroup_current is not None:
+                    cgroup_peak = latest.get("cgroup_memory_peak_mb")
+                    cgroup_text = f"  memory: cgroup {cgroup_current} MiB"
+                    if cgroup_peak is not None:
+                        cgroup_text += f" peak {cgroup_peak} MiB"
+                    lines.append(cgroup_text)
     return lines
 
 

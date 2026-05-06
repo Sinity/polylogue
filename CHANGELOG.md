@@ -62,7 +62,7 @@ documentation polish do not require an entry.
 - `devtools run-benchmark-campaigns` now includes a
   `daemon-live-convergence` synthetic campaign that reports live-ingest file
   counts, read/write byte shape, append-tail byte shape, stage timings, and
-  archive row counts.
+  archive row counts, plus process and cgroup memory peaks.
 
 ### Changed
 
@@ -79,8 +79,9 @@ documentation polish do not require an entry.
 - `polylogue audit` was removed from the product CLI; verification-lab audit
   workflows live under `devtools`.
 - `polylogued status` now reports recent live-ingest attempts with durable
-  phase, file-count, byte-read, timing, and RSS snapshots so interrupted
-  convergence work leaves diagnosable state in the archive DB.
+  phase, file-count, byte-read, timing, RSS, cgroup memory, and stale-heartbeat
+  snapshots so interrupted convergence work leaves diagnosable state in the
+  archive DB.
 - Codex JSONL ingestion now parses hot streams directly from raw records,
   skips validation-off pre-sampling for known stream providers, and reuses
   message hash payloads during materialization, reducing daemon live-ingest

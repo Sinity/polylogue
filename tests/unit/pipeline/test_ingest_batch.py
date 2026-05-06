@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Callable, Iterable
+from collections.abc import AsyncIterator, Callable
 from concurrent.futures import Future
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from pathlib import Path
@@ -723,13 +723,19 @@ def test_iter_ingest_results_sync_bounds_in_flight_process_results(
         assert max_workers == 2
         return FakeExecutor()
 
-    def fake_as_completed(futures: object) -> Iterable[Future[IngestRecordResult]]:
+    def fake_wait(
+        futures: object,
+        *,
+        timeout: float | None = None,
+        return_when: object | None = None,
+    ) -> tuple[set[Future[IngestRecordResult]], set[Future[IngestRecordResult]]]:
+        del timeout, return_when
         pending = list(futures) if isinstance(futures, tuple) else []
         pending_sizes.append(len(pending))
-        return iter(pending[:1])
+        return set(pending[:1]), set(pending[1:])
 
     monkeypatch.setattr(ingest_batch_core, "process_pool_executor", fake_process_pool_executor)
-    monkeypatch.setattr(ingest_batch_core, "as_completed", fake_as_completed)
+    monkeypatch.setattr(ingest_batch_core, "wait", fake_wait)
 
     results = list(
         _iter_ingest_results_sync(
@@ -745,7 +751,83 @@ def test_iter_ingest_results_sync_bounds_in_flight_process_results(
     )
 
     assert [result.raw_id for result in results] == [record.raw_id for record in raw_artifacts]
-    assert max(pending_sizes) == 4
+    assert max(pending_sizes) == 2
+
+
+def test_iter_ingest_results_sync_emits_heartbeat_while_workers_are_pending(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_artifacts = [
+        RawConversationRecord(
+            raw_id="raw-1",
+            provider_name="codex",
+            source_path="/tmp/raw-1.jsonl",
+            blob_size=12,
+            acquired_at="2026-04-02T00:00:00Z",
+        )
+    ]
+    future: Future[IngestRecordResult] = Future()
+    wait_calls = 0
+    heartbeat_count = 0
+
+    class FakeExecutor:
+        def __enter__(self) -> FakeExecutor:
+            return self
+
+        def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+            return None
+
+        def submit(
+            self,
+            fn: object,
+            raw_record: RawConversationRecord,
+            request: _IngestWorkerRequest,
+        ) -> Future[IngestRecordResult]:
+            del fn, raw_record, request
+            return future
+
+    def fake_process_pool_executor(*, max_workers: int) -> FakeExecutor:
+        assert max_workers == 2
+        return FakeExecutor()
+
+    def fake_wait(
+        futures: object,
+        *,
+        timeout: float | None = None,
+        return_when: object | None = None,
+    ) -> tuple[set[Future[IngestRecordResult]], set[Future[IngestRecordResult]]]:
+        nonlocal wait_calls
+        del timeout, return_when
+        pending = set(futures) if isinstance(futures, tuple) else set()
+        wait_calls += 1
+        if wait_calls == 1:
+            return set(), pending
+        future.set_result(IngestRecordResult(raw_id="raw-1"))
+        return {future}, set()
+
+    def heartbeat() -> None:
+        nonlocal heartbeat_count
+        heartbeat_count += 1
+
+    monkeypatch.setattr(ingest_batch_core, "process_pool_executor", fake_process_pool_executor)
+    monkeypatch.setattr(ingest_batch_core, "wait", fake_wait)
+
+    results = list(
+        _iter_ingest_results_sync(
+            raw_artifacts,
+            request=_IngestWorkerRequest(
+                archive_root_str="/tmp/archive",
+                blob_root_str="/tmp/blob-store",
+                validation_mode="strict",
+                measure_ingest_result_size=False,
+            ),
+            worker_count=2,
+            heartbeat=heartbeat,
+        )
+    )
+
+    assert [result.raw_id for result in results] == ["raw-1"]
+    assert heartbeat_count == 1
 
 
 def test_process_ingest_batch_sync_commits_fts_repair_and_invalidates_search_cache(

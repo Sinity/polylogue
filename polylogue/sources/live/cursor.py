@@ -64,6 +64,10 @@ CREATE TABLE IF NOT EXISTS live_ingest_attempt (
     rss_current_mb REAL,
     rss_peak_self_mb REAL,
     rss_peak_children_mb REAL,
+    cgroup_path TEXT,
+    cgroup_memory_current_mb REAL,
+    cgroup_memory_peak_mb REAL,
+    cgroup_memory_swap_current_mb REAL,
     source_paths_json TEXT NOT NULL DEFAULT '[]'
 )
 """
@@ -117,6 +121,10 @@ class LiveIngestAttempt:
     rss_current_mb: float | None = None
     rss_peak_self_mb: float | None = None
     rss_peak_children_mb: float | None = None
+    cgroup_path: str | None = None
+    cgroup_memory_current_mb: float | None = None
+    cgroup_memory_peak_mb: float | None = None
+    cgroup_memory_swap_current_mb: float | None = None
     source_paths_json: str = "[]"
 
 
@@ -196,6 +204,16 @@ class CursorStore:
             if name not in existing:
                 conn.execute(f"ALTER TABLE live_cursor ADD COLUMN {name} {definition}")
         conn.execute(_ATTEMPT_DDL)
+        existing_attempt = {row[1] for row in conn.execute("PRAGMA table_info(live_ingest_attempt)")}
+        attempt_columns = {
+            "cgroup_path": "TEXT",
+            "cgroup_memory_current_mb": "REAL",
+            "cgroup_memory_peak_mb": "REAL",
+            "cgroup_memory_swap_current_mb": "REAL",
+        }
+        for name, definition in attempt_columns.items():
+            if name not in existing_attempt:
+                conn.execute(f"ALTER TABLE live_ingest_attempt ADD COLUMN {name} {definition}")
         conn.commit()
 
     def _mark_interrupted_attempts(self, conn: sqlite3.Connection) -> None:
@@ -275,6 +293,10 @@ class CursorStore:
         rss_current_mb: float | None = None,
         rss_peak_self_mb: float | None = None,
         rss_peak_children_mb: float | None = None,
+        cgroup_path: str | None = None,
+        cgroup_memory_current_mb: float | None = None,
+        cgroup_memory_peak_mb: float | None = None,
+        cgroup_memory_swap_current_mb: float | None = None,
     ) -> None:
         """Update an in-flight attempt without waiting for batch completion."""
         now = datetime.now(UTC).isoformat()
@@ -293,6 +315,10 @@ class CursorStore:
             "rss_current_mb": rss_current_mb,
             "rss_peak_self_mb": rss_peak_self_mb,
             "rss_peak_children_mb": rss_peak_children_mb,
+            "cgroup_path": cgroup_path,
+            "cgroup_memory_current_mb": cgroup_memory_current_mb,
+            "cgroup_memory_peak_mb": cgroup_memory_peak_mb,
+            "cgroup_memory_swap_current_mb": cgroup_memory_swap_current_mb,
         }
         for field, value in optional_fields.items():
             if value is None:
@@ -359,6 +385,10 @@ class CursorStore:
                     rss_current_mb,
                     rss_peak_self_mb,
                     rss_peak_children_mb,
+                    cgroup_path,
+                    cgroup_memory_current_mb,
+                    cgroup_memory_peak_mb,
+                    cgroup_memory_swap_current_mb,
                     source_paths_json
                 FROM live_ingest_attempt
                 ORDER BY updated_at DESC, started_at DESC
@@ -389,7 +419,11 @@ class CursorStore:
                 rss_current_mb=float(row[18]) if row[18] is not None else None,
                 rss_peak_self_mb=float(row[19]) if row[19] is not None else None,
                 rss_peak_children_mb=float(row[20]) if row[20] is not None else None,
-                source_paths_json=str(row[21] or "[]"),
+                cgroup_path=row[21],
+                cgroup_memory_current_mb=float(row[22]) if row[22] is not None else None,
+                cgroup_memory_peak_mb=float(row[23]) if row[23] is not None else None,
+                cgroup_memory_swap_current_mb=float(row[24]) if row[24] is not None else None,
+                source_paths_json=str(row[25] or "[]"),
             )
             for row in rows
         ]
