@@ -13,6 +13,7 @@ convergence stages only repair and refresh post-ingest archive state.
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Sequence
 from pathlib import Path
 
 from polylogue.daemon.convergence import ConvergenceStage
@@ -64,11 +65,21 @@ def make_fts_stage(db_path: Path) -> ConvergenceStage:
             logger.warning("fts: rebuild failed", exc_info=True)
             return False
 
+    def check_many(paths: Sequence[Path]) -> set[Path]:
+        if not paths:
+            return set()
+        return {Path(paths[0])} if check(Path(paths[0])) else set()
+
+    def execute_many(paths: Sequence[Path]) -> bool:
+        return bool(paths) and execute(Path(paths[0]))
+
     return ConvergenceStage(
         name="fts",
         description="Verify FTS coverage and repair gaps",
         check=check,
         execute=execute,
+        check_many=check_many,
+        execute_many=execute_many,
         cpu_bound=False,
     )
 
@@ -125,11 +136,21 @@ def make_embed_stage(db_path: Path) -> ConvergenceStage:
 
         return asyncio.run(_embed())
 
+    def check_many(paths: Sequence[Path]) -> set[Path]:
+        if not paths:
+            return set()
+        return {Path(paths[0])} if check(Path(paths[0])) else set()
+
+    def execute_many(paths: Sequence[Path]) -> bool:
+        return bool(paths) and execute(Path(paths[0]))
+
     return ConvergenceStage(
         name="embed",
         description="Generate vector embeddings for un-embedded conversations",
         check=check,
         execute=execute,
+        check_many=check_many,
+        execute_many=execute_many,
         cpu_bound=False,
     )
 
@@ -150,6 +171,8 @@ def make_insights_stage(db_path: Path) -> ConvergenceStage:
             try:
                 if not _table_exists(conn, "session_profiles"):
                     return False
+                if _conversation_ids_for_source_path(conn, path):
+                    return True
                 total_conv = int(conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0])
                 if total_conv == 0:
                     return False
@@ -166,10 +189,14 @@ def make_insights_stage(db_path: Path) -> ConvergenceStage:
 
         try:
             with open_connection(db_path) as conn:
-                counts = rebuild_session_insights_sync(conn)
+                conversation_ids = _conversation_ids_for_source_path(conn, path) or _conversation_ids_missing_profiles(
+                    conn
+                )
+                counts = rebuild_session_insights_sync(conn, conversation_ids=conversation_ids)
                 conn.commit()
                 logger.info(
-                    "insights: rebuilt profiles=%d work_events=%d phases=%d threads=%d",
+                    "insights: refreshed conversations=%d profiles=%d work_events=%d phases=%d threads=%d",
+                    len(conversation_ids),
                     counts.profiles,
                     counts.work_events,
                     counts.phases,
@@ -180,11 +207,63 @@ def make_insights_stage(db_path: Path) -> ConvergenceStage:
             logger.warning("insights: rebuild failed", exc_info=True)
             return False
 
+    def check_many(paths: Sequence[Path]) -> set[Path]:
+        if not db_path.exists() or not paths:
+            return set()
+        from polylogue.storage.sqlite.connection_profile import open_connection
+
+        try:
+            conn = open_connection(db_path, timeout=5.0)
+            try:
+                if not _table_exists(conn, "session_profiles"):
+                    return set()
+                by_path = _conversation_ids_for_source_paths(conn, paths)
+                paths_with_conversations = {path for path, conversation_ids in by_path.items() if conversation_ids}
+                if paths_with_conversations:
+                    return paths_with_conversations
+                if _conversation_ids_missing_profiles(conn):
+                    return {Path(paths[0])}
+                return set()
+            finally:
+                conn.close()
+        except Exception:
+            return set()
+
+    def execute_many(paths: Sequence[Path]) -> bool:
+        from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
+        from polylogue.storage.sqlite.connection import open_connection
+
+        try:
+            with open_connection(db_path) as conn:
+                by_path = _conversation_ids_for_source_paths(conn, paths)
+                conversation_ids = list(
+                    dict.fromkeys(conversation_id for ids in by_path.values() for conversation_id in ids)
+                )
+                if not conversation_ids:
+                    conversation_ids = _conversation_ids_missing_profiles(conn)
+                counts = rebuild_session_insights_sync(conn, conversation_ids=conversation_ids)
+                conn.commit()
+                logger.info(
+                    "insights: batch refreshed paths=%d conversations=%d profiles=%d work_events=%d phases=%d threads=%d",
+                    len(paths),
+                    len(conversation_ids),
+                    counts.profiles,
+                    counts.work_events,
+                    counts.phases,
+                    counts.threads,
+                )
+            return True
+        except Exception:
+            logger.warning("insights: batch rebuild failed", exc_info=True)
+            return False
+
     return ConvergenceStage(
         name="insights",
         description="Refresh session insights for new conversations",
         check=check,
         execute=execute,
+        check_many=check_many,
+        execute_many=execute_many,
         cpu_bound=False,
     )
 
@@ -198,6 +277,50 @@ def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
         (table,),
     ).fetchone()
     return row is not None
+
+
+def _conversation_ids_for_source_path(conn: sqlite3.Connection, path: Path) -> list[str]:
+    return _conversation_ids_for_source_paths(conn, [path]).get(path, [])
+
+
+def _conversation_ids_for_source_paths(
+    conn: sqlite3.Connection,
+    paths: Sequence[Path],
+) -> dict[Path, list[str]]:
+    normalized_paths = tuple(dict.fromkeys(Path(path) for path in paths))
+    if not normalized_paths or not _table_exists(conn, "raw_conversations") or not _table_exists(conn, "conversations"):
+        return {}
+    result: dict[Path, list[str]] = {path: [] for path in normalized_paths}
+    paths_by_text = {str(path): path for path in normalized_paths}
+    placeholders = ", ".join("?" for _ in normalized_paths)
+    rows = conn.execute(
+        f"""
+        SELECT DISTINCT r.source_path, c.conversation_id
+        FROM conversations AS c
+        JOIN raw_conversations AS r ON r.raw_id = c.raw_id
+        WHERE r.source_path IN ({placeholders})
+        ORDER BY r.source_path, c.conversation_id
+        """,
+        tuple(paths_by_text),
+    ).fetchall()
+    for row in rows:
+        path = paths_by_text.get(str(row["source_path"]))
+        if path is not None:
+            result[path].append(str(row["conversation_id"]))
+    return result
+
+
+def _conversation_ids_missing_profiles(conn: sqlite3.Connection) -> list[str]:
+    rows = conn.execute(
+        """
+        SELECT c.conversation_id
+        FROM conversations AS c
+        LEFT JOIN session_profiles AS sp ON sp.conversation_id = c.conversation_id
+        WHERE sp.conversation_id IS NULL
+        ORDER BY COALESCE(c.sort_key, 0) DESC, c.conversation_id
+        """,
+    ).fetchall()
+    return [str(row["conversation_id"]) for row in rows]
 
 
 __all__ = [

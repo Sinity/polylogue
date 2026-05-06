@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.storage.insights.session.aggregates import refresh_async_provider_day_aggregates
+from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
 from polylogue.storage.insights.session.refresh import (
     _apply_session_insight_conversation_updates_async,
     _refresh_thread_roots_async,
@@ -125,6 +126,100 @@ async def test_apply_session_insight_conversation_updates_async_counts_provider_
 
     assert row is not None
     assert json.loads(row["evidence_payload_json"])["compaction_count"] == 1
+
+
+def test_targeted_session_insight_rebuild_refreshes_only_affected_groups_and_roots(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "refresh-sync-targeted.db"
+    with open_connection(db_path) as conn:
+        store_records(
+            conversation=make_conversation(
+                "conv-chatgpt-a",
+                provider_name="chatgpt",
+                title="ChatGPT A",
+                created_at="2026-04-02T10:00:00+00:00",
+                updated_at="2026-04-02T10:05:00+00:00",
+            ),
+            messages=[
+                make_message(
+                    "conv-chatgpt-a:msg-1",
+                    "conv-chatgpt-a",
+                    text="ChatGPT A message",
+                    timestamp="2026-04-02T10:00:00+00:00",
+                )
+            ],
+            attachments=[],
+            conn=conn,
+        )
+        store_records(
+            conversation=make_conversation(
+                "conv-claude-a",
+                provider_name="claude-ai",
+                title="Claude A",
+                created_at="2026-04-03T09:00:00+00:00",
+                updated_at="2026-04-03T09:05:00+00:00",
+            ),
+            messages=[
+                make_message(
+                    "conv-claude-a:msg-1",
+                    "conv-claude-a",
+                    text="Claude A message",
+                    timestamp="2026-04-03T09:00:00+00:00",
+                )
+            ],
+            attachments=[],
+            conn=conn,
+        )
+        rebuild_session_insights_sync(conn)
+        conn.execute(
+            "UPDATE day_session_summaries SET search_text = ? WHERE provider_name = ?",
+            ("sentinel day untouched", "claude-ai"),
+        )
+        conn.execute(
+            "UPDATE work_threads SET search_text = ? WHERE thread_id = ?",
+            ("sentinel thread untouched", "conv-claude-a"),
+        )
+        store_records(
+            conversation=make_conversation(
+                "conv-chatgpt-b",
+                provider_name="chatgpt",
+                title="ChatGPT B",
+                created_at="2026-04-02T11:00:00+00:00",
+                updated_at="2026-04-02T11:05:00+00:00",
+            ),
+            messages=[
+                make_message(
+                    "conv-chatgpt-b:msg-1",
+                    "conv-chatgpt-b",
+                    text="ChatGPT B message",
+                    timestamp="2026-04-02T11:00:00+00:00",
+                )
+            ],
+            attachments=[],
+            conn=conn,
+        )
+        counts = rebuild_session_insights_sync(conn, conversation_ids=["conv-chatgpt-b"])
+        day_rows = conn.execute(
+            """
+            SELECT provider_name, day, conversation_count, search_text
+            FROM day_session_summaries
+            ORDER BY provider_name, day
+            """
+        ).fetchall()
+        claude_thread = conn.execute(
+            "SELECT search_text FROM work_threads WHERE thread_id = ?",
+            ("conv-claude-a",),
+        ).fetchone()
+
+    assert counts.profiles == 1
+    assert [(row["provider_name"], row["day"], row["conversation_count"]) for row in day_rows] == [
+        ("chatgpt", "2026-04-02", 2),
+        ("claude-ai", "2026-04-03", 1),
+    ]
+    assert [row["search_text"] for row in day_rows if row["provider_name"] == "claude-ai"] == ["sentinel day untouched"]
+    assert claude_thread is not None
+    assert claude_thread["search_text"] == "sentinel thread untouched"
 
 
 @pytest.mark.asyncio

@@ -6,15 +6,12 @@ import re
 from collections.abc import Iterable, Sequence
 from typing import TypeAlias
 
-from pydantic import ValidationError
-
 from polylogue.archive.conversation.branch_type import BranchType
 from polylogue.archive.message.artifacts import classify_text_message_type
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
 from polylogue.logging import get_logger
 from polylogue.pipeline.semantic_capture import detect_context_compaction
-from polylogue.sources.providers.claude_code import ClaudeCodeRecord
 from polylogue.types import ContentBlockType, Provider
 
 from ..base import (
@@ -69,23 +66,52 @@ def _safe_int(value: object) -> int:
         return 0
 
 
-def _content_blocks_from_record(record: ClaudeCodeRecord, text: str | None) -> list[ParsedContentBlock]:
-    raw_msg_content = (
-        record.message.get("content") if isinstance(record.message, dict) else getattr(record.message, "content", None)
-    )
+def _content_blocks_from_record(message: object, text: str | None) -> list[ParsedContentBlock]:
+    raw_msg_content = message.get("content") if isinstance(message, dict) else None
     content_blocks = content_blocks_from_segments(raw_msg_content) if raw_msg_content else []
     if not content_blocks and text:
         return [ParsedContentBlock(type=ContentBlockType.TEXT, text=text)]
     return content_blocks
 
 
-def _message_type_from_code_record(record: ClaudeCodeRecord, text: str | None) -> MessageType:
+def _message_type_from_code_record(item: dict[str, object], text: str | None) -> MessageType:
     artifact_type = classify_text_message_type(text)
     if artifact_type is not None:
         return artifact_type
-    if record.isMeta:
+    if item.get("isMeta"):
         return MessageType.CONTEXT
     return MessageType.MESSAGE
+
+
+def _record_role(item: dict[str, object], message: object) -> Role:
+    if isinstance(message, dict):
+        message_role = message.get("role")
+        if isinstance(message_role, str) and message_role:
+            normalized = Role.normalize(message_role)
+            if normalized is not Role.UNKNOWN:
+                return normalized
+
+    record_role = item.get("role")
+    if isinstance(record_role, str) and record_role:
+        normalized = Role.normalize(record_role)
+        if normalized is not Role.UNKNOWN:
+            return normalized
+
+    record_type = item.get("type")
+    if record_type == "user":
+        return Role.USER
+    if record_type == "assistant":
+        return Role.ASSISTANT
+    if record_type in {"summary", "system", "file-history-snapshot", "queue-operation"}:
+        return Role.SYSTEM
+    if record_type in {"progress", "result"}:
+        return Role.TOOL
+    return Role.UNKNOWN
+
+
+def _string_field(item: dict[str, object], key: str) -> str | None:
+    value = item.get(key)
+    return value if isinstance(value, str) and value else None
 
 
 def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedConversation:
@@ -136,43 +162,44 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedCo
             )
             continue
 
-        try:
-            record = ClaudeCodeRecord.model_validate(item)
-        except ValidationError as exc:
-            logger.debug("Skipping invalid record at index %d: %s", index, exc)
+        record_type = item.get("type")
+        if not isinstance(record_type, str):
+            logger.debug("Skipping invalid record at index %d: missing type", index)
             continue
 
-        if record.uuid:
-            if record.uuid in seen_record_uuids:
-                logger.debug("Skipping repeated Claude Code record uuid at index %d: %s", index, record.uuid)
+        record_uuid = _string_field(item, "uuid")
+        if record_uuid:
+            if record_uuid in seen_record_uuids:
+                logger.debug("Skipping repeated Claude Code record uuid at index %d: %s", index, record_uuid)
                 continue
-            seen_record_uuids.add(record.uuid)
+            seen_record_uuids.add(record_uuid)
 
-        if record.type in {"init", "file-history-snapshot", "queue-operation"}:
+        if record_type in {"init", "file-history-snapshot", "queue-operation"}:
             continue
 
         if not session_id:
-            session_id = record.sessionId
+            session_id = _string_field(item, "sessionId")
 
-        timestamp = normalize_timestamp(record.timestamp)
+        raw_timestamp = item.get("timestamp")
+        timestamp = normalize_timestamp(raw_timestamp if isinstance(raw_timestamp, (str, int, float)) else None)
         if timestamp:
             timestamps.append(timestamp)
 
-        text = record.text_content or extract_message_text(
-            record.message.get("content") if isinstance(record.message, dict) else None
-        )
-        envelope_role = Role.normalize(record.role) if record.role else Role.UNKNOWN
-        content_blocks = _content_blocks_from_record(record, text)
-        message_type = _message_type_from_code_record(record, text)
+        message = item.get("message")
+        raw_content = message.get("content") if isinstance(message, dict) else item.get("content")
+        text = extract_message_text(raw_content)
+        envelope_role = _record_role(item, message)
+        content_blocks = _content_blocks_from_record(message, text)
+        message_type = _message_type_from_code_record(item, text)
         messages.append(
             ParsedMessage(
-                provider_message_id=str(record.uuid or f"msg-{index}"),
+                provider_message_id=str(record_uuid or f"msg-{index}"),
                 role=reclassify_tool_result_envelope(envelope_role, content_blocks),
                 text=text or "",
                 timestamp=timestamp,
                 content_blocks=content_blocks,
                 message_type=message_type,
-                parent_message_provider_id=record.parentUuid,
+                parent_message_provider_id=_string_field(item, "parentUuid"),
             )
         )
 
@@ -187,7 +214,7 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedCo
         cwd = item.get("cwd")
         if isinstance(cwd, str):
             cwds.add(cwd)
-        message_payload = record.message if isinstance(record.message, dict) else {}
+        message_payload = message if isinstance(message, dict) else {}
         model_name = message_payload.get("model")
         if isinstance(model_name, str):
             models.add(model_name)

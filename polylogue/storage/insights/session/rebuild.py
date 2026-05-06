@@ -21,6 +21,7 @@ from polylogue.storage.hydrators import conversation_from_records
 from polylogue.storage.insights.session.aggregates import (
     list_async_provider_day_groups,
     list_sync_provider_day_groups,
+    profile_provider_day,
     refresh_async_provider_day_aggregates,
     refresh_sync_provider_day_aggregates,
 )
@@ -41,6 +42,7 @@ from polylogue.storage.insights.session.threads import (
     build_thread_records_for_roots_sync,
     iter_root_id_pages_async,
     iter_root_id_pages_sync,
+    thread_root_ids_sync,
 )
 from polylogue.storage.insights.session.timeline_rows import (
     build_session_phase_records,
@@ -449,6 +451,39 @@ def _finalize_rebuild_counts(
     )
 
 
+def _session_profile_records_for_conversation_ids_sync(
+    conn: sqlite3.Connection,
+    conversation_ids: Sequence[str],
+) -> list[SessionProfileRecord]:
+    if not conversation_ids:
+        return []
+    placeholders = ", ".join("?" for _ in conversation_ids)
+    rows = conn.execute(
+        f"SELECT * FROM session_profiles WHERE conversation_id IN ({placeholders})",
+        tuple(conversation_ids),
+    ).fetchall()
+    return [_row_to_session_profile_record(row) for row in rows]
+
+
+def _refresh_thread_roots_sync(
+    conn: sqlite3.Connection,
+    root_ids: Sequence[str],
+) -> int:
+    normalized_root_ids = tuple(dict.fromkeys(str(root_id) for root_id in root_ids if str(root_id)))
+    if not normalized_root_ids:
+        return 0
+    records_by_root = build_thread_records_for_roots_sync(conn, normalized_root_ids)
+    refreshed = 0
+    for root_id in normalized_root_ids:
+        replace_work_thread_sync(
+            conn,
+            root_id,
+            records_by_root.get(root_id),
+        )
+        refreshed += 1
+    return refreshed
+
+
 def rebuild_session_insights_sync(
     conn: sqlite3.Connection,
     *,
@@ -466,18 +501,21 @@ def rebuild_session_insights_sync(
         conn.execute("DELETE FROM day_session_summaries")
         conversation_chunks = iter_conversation_id_pages_sync(conn, page_size=page_size)
     else:
+        conversation_ids = tuple(dict.fromkeys(str(conversation_id) for conversation_id in conversation_ids))
+        previous_profile_groups = {
+            group
+            for record in _session_profile_records_for_conversation_ids_sync(conn, conversation_ids)
+            if (group := profile_provider_day(record)) is not None
+        }
         conversation_chunks = chunked(conversation_ids, size=page_size)
     if conversation_ids is not None and not conversation_ids:
-        conn.execute("DELETE FROM work_threads")
-        conn.execute("DELETE FROM session_phases")
-        conn.execute("DELETE FROM session_tag_rollups")
-        conn.execute("DELETE FROM day_session_summaries")
         conn.commit()
         return _empty_rebuild_counts()
 
     profile_count = 0
     work_event_count = 0
     phase_count = 0
+    refreshed_profile_groups: set[tuple[str, str]] = set()
     saw_conversation_ids = False
     for chunk in conversation_chunks:
         saw_conversation_ids = True
@@ -499,6 +537,9 @@ def rebuild_session_insights_sync(
                 bundle.conversation_id,
                 bundle.phase_records,
             )
+            group = profile_provider_day(bundle.profile_record)
+            if group is not None:
+                refreshed_profile_groups.add(group)
         profile_count += chunk_profiles
         work_event_count += chunk_work_events
         phase_count += chunk_phases
@@ -511,12 +552,32 @@ def rebuild_session_insights_sync(
                 ),
             )
     if not saw_conversation_ids:
-        conn.execute("DELETE FROM work_threads")
-        conn.execute("DELETE FROM session_phases")
-        conn.execute("DELETE FROM session_tag_rollups")
-        conn.execute("DELETE FROM day_session_summaries")
+        if conversation_ids is None:
+            conn.execute("DELETE FROM work_threads")
+            conn.execute("DELETE FROM session_phases")
+            conn.execute("DELETE FROM session_tag_rollups")
+            conn.execute("DELETE FROM day_session_summaries")
         conn.commit()
         return _empty_rebuild_counts()
+
+    if conversation_ids is not None:
+        affected_roots = tuple(thread_root_ids_sync(conn, conversation_ids).values())
+        thread_count = _refresh_thread_roots_sync(conn, affected_roots)
+        refresh_sync_provider_day_aggregates(
+            conn,
+            previous_profile_groups | refreshed_profile_groups,
+        )
+        tag_rollup_count = conn.execute("SELECT COUNT(*) FROM session_tag_rollups").fetchone()[0]
+        day_summary_count = conn.execute("SELECT COUNT(*) FROM day_session_summaries").fetchone()[0]
+        conn.commit()
+        return _finalize_rebuild_counts(
+            profiles=profile_count,
+            work_events=work_event_count,
+            phases=phase_count,
+            threads=thread_count,
+            tag_rollups=int(tag_rollup_count),
+            day_summaries=int(day_summary_count),
+        )
 
     conn.execute("DELETE FROM work_threads")
     thread_count = 0

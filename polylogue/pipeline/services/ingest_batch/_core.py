@@ -19,7 +19,7 @@ from concurrent.futures import Future, as_completed
 from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 from polylogue.archive.write_gateway import ArchiveWriteGateway, WriteOperation
 from polylogue.core.common import (
@@ -93,6 +93,11 @@ from polylogue.pipeline.services.ingest_batch._models import (
 )
 
 logger = get_logger(__name__)
+
+
+class _BlobSized(Protocol):
+    blob_size: int
+
 
 # ---------------------------------------------------------------------------
 # SQL templates — imported from polylogue.core.common (canonical source)
@@ -650,7 +655,17 @@ def _resolved_ingest_worker_limit(value: int | None) -> int:
     return value if value is not None else _DEFAULT_INGEST_WORKER_LIMIT
 
 
-def _select_ingest_worker_count(raw_artifacts: Sequence[object], ingest_workers: int | None) -> int:
+def _select_ingest_worker_count(raw_artifacts: Sequence[_BlobSized], ingest_workers: int | None) -> int:
+    total_blob_size = sum(record.blob_size for record in raw_artifacts)
+    if total_blob_size <= 8 * 1024 * 1024:
+        return 1
+    if total_blob_size <= 64 * 1024 * 1024:
+        return min(
+            max(len(raw_artifacts), 1),
+            os.cpu_count() or 4,
+            _resolved_ingest_worker_limit(ingest_workers),
+            4,
+        )
     return min(
         max(len(raw_artifacts), 1),
         os.cpu_count() or 4,

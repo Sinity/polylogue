@@ -20,20 +20,40 @@ def test_insights_stage_rebuilds_sync_against_configured_db(
     rebuilt = False
 
     class FakeConnection:
+        def execute(self, sql: str, params: tuple[str, ...] = ()) -> object:
+            if "sqlite_master" in sql:
+                return _FakeCursor([(1,)])
+            if "raw_conversations" in sql:
+                return _FakeCursor([{"source_path": params[0], "conversation_id": "conv-1"}])
+            if "session_profiles" in sql:
+                return _FakeCursor([])
+            raise AssertionError(f"unexpected SQL: {sql} {params}")
+
         def commit(self) -> None:
             pass
 
         def close(self) -> None:
             pass
 
+    class _FakeCursor:
+        def __init__(self, rows: list[object]) -> None:
+            self._rows = rows
+
+        def fetchone(self) -> object | None:
+            return self._rows[0] if self._rows else None
+
+        def fetchall(self) -> list[object]:
+            return self._rows
+
     @contextmanager
     def fake_open_connection(path: Path) -> Iterator[FakeConnection]:
         opened_paths.append(path)
         yield FakeConnection()
 
-    def fake_rebuild(conn: FakeConnection) -> SessionInsightCounts:
+    def fake_rebuild(conn: FakeConnection, *, conversation_ids: list[str]) -> SessionInsightCounts:
         nonlocal rebuilt
         rebuilt = True
+        assert conversation_ids == ["conv-1"]
         return SessionInsightCounts(
             profiles=1,
             work_events=2,

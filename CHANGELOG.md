@@ -78,6 +78,9 @@ documentation polish do not require an entry.
   `--format json` output while retaining `--json` as a strict alias.
 - `polylogue audit` was removed from the product CLI; verification-lab audit
   workflows live under `devtools`.
+- Daemon live convergence refreshes affected insight rows in batches and avoids
+  process-pool startup for tiny ingest batches, reducing convergence and parse
+  overhead for live JSONL workloads.
 - Live watching is no longer exposed through root `polylogue watch` or
   `polylogue run --watch`; use `polylogued watch` for the long-running source
   watcher.

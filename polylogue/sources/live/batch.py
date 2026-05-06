@@ -179,11 +179,22 @@ class LiveBatchProcessor:
 
         if self._converger is not None and succeeded_paths:
             try:
-                hint_path = next(iter(succeeded_paths))
                 t0 = time.perf_counter()
-                state = self._converger.converge_file(hint_path)  # type: ignore[attr-defined]
+                converge_batch = getattr(self._converger, "converge_batch", None)
+                if callable(converge_batch):
+                    _states, batch_stage_timings = converge_batch(sorted(succeeded_paths))
+                    stage_timings.update(
+                        {stage_name: float(elapsed) for stage_name, elapsed in batch_stage_timings.items()}
+                    )
+                else:
+                    for path in sorted(succeeded_paths):
+                        invalidate = getattr(self._converger, "invalidate_file", None)
+                        if callable(invalidate):
+                            invalidate(path)
+                        state = self._converger.converge_file(path)  # type: ignore[attr-defined]
+                        for stage_name, elapsed in getattr(state, "last_stage_times", {}).items():
+                            stage_timings[stage_name] = stage_timings.get(stage_name, 0.0) + float(elapsed)
                 convergence_time_s = time.perf_counter() - t0
-                stage_timings = dict(getattr(state, "last_stage_times", {}))
             except Exception as exc:
                 logger.warning("live.watcher: post-ingest converge failed: %s", exc)
 

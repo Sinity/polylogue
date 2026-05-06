@@ -15,7 +15,7 @@ so we skip unchanged files entirely.
 from __future__ import annotations
 
 import time
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
 from enum import Enum
@@ -44,6 +44,10 @@ class ConvergenceStage:
     check: Callable[[Path], bool]
     # Execute performs the work. Returns True on success.
     execute: Callable[[Path], bool]
+    # Optional batch check/execute pair for stages that can collapse many
+    # changed source paths into one repair transaction.
+    check_many: Callable[[Sequence[Path]], set[Path]] | None = None
+    execute_many: Callable[[Sequence[Path]], bool] | None = None
     # Can run in a worker process (CPU-bound, no SQLite write).
     cpu_bound: bool = False
 
@@ -169,6 +173,115 @@ class DaemonConverger:
                 state.last_error = f"stage {stage_name} returned False"
 
         return state
+
+    def invalidate_file(self, path: Path) -> None:
+        """Mark a changed file as needing stage checks again."""
+        state = self._file_states.get(path)
+        if state is None:
+            return
+        state.stages.clear()
+        state.last_stage_times.clear()
+
+    def converge_batch(self, files: Iterable[Path]) -> tuple[dict[Path, FileState], dict[str, float]]:
+        """Converge a changed source batch and return per-stage batch timings."""
+        paths = tuple(dict.fromkeys(files))
+        if not paths:
+            return {}, {}
+
+        for path in paths:
+            if path not in self._file_states:
+                self._file_states[path] = FileState(path=path)
+            state = self._file_states[path]
+            state.stages.clear()
+            state.last_stage_times.clear()
+
+        batch_stage_times: dict[str, float] = {}
+        for stage_name, stage in self._stages.items():
+            if stage.check_many is None or stage.execute_many is None or stage.cpu_bound:
+                for path in paths:
+                    state = self._file_states[path]
+                    try:
+                        needs_work = stage.check(path)
+                    except Exception:
+                        logger.warning(
+                            "converger: check failed for %s stage=%s",
+                            path,
+                            stage_name,
+                            exc_info=True,
+                        )
+                        state.stages[stage_name] = StageState.FAILED
+                        state.error_count += 1
+                        continue
+
+                    if not needs_work:
+                        state.stages[stage_name] = StageState.DONE
+                        continue
+
+                    state.stages[stage_name] = StageState.IN_PROGRESS
+                    t_stage = time.perf_counter()
+                    try:
+                        success = stage.execute(path)
+                    except Exception as exc:
+                        logger.warning(
+                            "converger: execute failed for %s stage=%s: %s",
+                            path,
+                            stage_name,
+                            exc,
+                        )
+                        state.stages[stage_name] = StageState.FAILED
+                        state.error_count += 1
+                        state.last_error = str(exc)
+                        continue
+
+                    elapsed = time.perf_counter() - t_stage
+                    batch_stage_times[stage_name] = batch_stage_times.get(stage_name, 0.0) + elapsed
+                    state.stage_times[stage_name] = elapsed
+                    state.last_stage_times[stage_name] = elapsed
+                    state.stages[stage_name] = StageState.DONE if success else StageState.FAILED
+                    if not success:
+                        state.error_count += 1
+                        state.last_error = f"stage {stage_name} returned False"
+                continue
+
+            try:
+                batch_needs_work = stage.check_many(paths)
+            except Exception:
+                logger.warning("converger: batch check failed stage=%s", stage_name, exc_info=True)
+                for path in paths:
+                    state = self._file_states[path]
+                    state.stages[stage_name] = StageState.FAILED
+                    state.error_count += 1
+                continue
+
+            for path in paths:
+                if path not in batch_needs_work:
+                    self._file_states[path].stages[stage_name] = StageState.DONE
+
+            if not batch_needs_work:
+                continue
+
+            for path in batch_needs_work:
+                self._file_states[path].stages[stage_name] = StageState.IN_PROGRESS
+
+            t_stage = time.perf_counter()
+            try:
+                success = stage.execute_many(tuple(batch_needs_work))
+            except Exception as exc:
+                logger.warning("converger: batch execute failed stage=%s: %s", stage_name, exc)
+                success = False
+
+            elapsed = time.perf_counter() - t_stage
+            batch_stage_times[stage_name] = elapsed
+            for path in batch_needs_work:
+                state = self._file_states[path]
+                state.stage_times[stage_name] = elapsed
+                state.last_stage_times[stage_name] = elapsed
+                state.stages[stage_name] = StageState.DONE if success else StageState.FAILED
+                if not success:
+                    state.error_count += 1
+                    state.last_error = f"batch stage {stage_name} returned False"
+
+        return {path: self._file_states[path] for path in paths}, batch_stage_times
 
     def converge_all(
         self,

@@ -734,15 +734,33 @@ def test_process_ingest_batch_sync_commits_fts_repair_and_invalidates_search_cac
 
 def test_select_ingest_worker_count_uses_cpu_count(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("polylogue.pipeline.services.ingest_batch._core.os.cpu_count", lambda: 16)
-    raw_artifacts = [SimpleNamespace(blob_size=4 * 1024 * 1024) for _ in range(6)]
+    raw_artifacts = [SimpleNamespace(blob_size=16 * 1024 * 1024) for _ in range(6)]
     worker_count = _select_ingest_worker_count(raw_artifacts, None)
     # min(max(6,1), 16, 8) = 6 — uses all available artifacts
     assert worker_count == 6
 
 
+def test_select_ingest_worker_count_avoids_process_pool_for_tiny_batches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("polylogue.pipeline.services.ingest_batch._core.os.cpu_count", lambda: 16)
+    raw_artifacts = [SimpleNamespace(blob_size=512 * 1024) for _ in range(10)]
+    worker_count = _select_ingest_worker_count(raw_artifacts, None)
+    assert worker_count == 1
+
+
+def test_select_ingest_worker_count_caps_small_batches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("polylogue.pipeline.services.ingest_batch._core.os.cpu_count", lambda: 16)
+    raw_artifacts = [SimpleNamespace(blob_size=4 * 1024 * 1024) for _ in range(10)]
+    worker_count = _select_ingest_worker_count(raw_artifacts, None)
+    assert worker_count == 4
+
+
 def test_select_ingest_worker_count_respects_limit(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("polylogue.pipeline.services.ingest_batch._core.os.cpu_count", lambda: 16)
-    raw_artifacts = [SimpleNamespace(blob_size=4 * 1024 * 1024) for _ in range(60)]
+    raw_artifacts = [SimpleNamespace(blob_size=16 * 1024 * 1024) for _ in range(60)]
     worker_count = _select_ingest_worker_count(raw_artifacts, ingest_workers=4)
     # min(max(60,1), 16, 4) = 4 — respects explicit limit
     assert worker_count == 4
