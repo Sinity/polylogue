@@ -48,7 +48,27 @@ _SMALL_FULL_PARSE_PROGRESS_MAX_BYTES = 256 * 1024 * 1024
 _SMALL_FULL_PARSE_PROGRESS_MAX_FILES = 256
 _STREAMING_FULL_INGEST_BYTES = 8 * 1024 * 1024
 LiveBatchEventEmitter = Callable[[str, dict[str, object]], None]
-_FullIngestHeartbeat = Callable[[str], None]
+
+
+class _FullIngestHeartbeat(Protocol):
+    def __call__(
+        self,
+        phase: str,
+        *,
+        current_path: Path | None = None,
+        source_payload_read_bytes: int | None = None,
+        force: bool = False,
+    ) -> None: ...
+
+
+class _AttemptProgressEmitter(Protocol):
+    def __call__(
+        self,
+        phase: str,
+        *,
+        current_path_override: Path | None = None,
+        payload_read_bytes: int | None = None,
+    ) -> None: ...
 
 
 class LiveSourceRoot(Protocol):
@@ -380,20 +400,28 @@ class LiveBatchProcessor:
         parse_time_s: float,
         convergence_time_s: float,
     ) -> _FullIngestHeartbeat:
-        return _throttled_phase_heartbeat(
-            lambda phase: self._record_attempt_progress(
+        def emit(
+            phase: str,
+            *,
+            current_path_override: Path | None = None,
+            payload_read_bytes: int | None = None,
+        ) -> None:
+            self._record_attempt_progress(
                 attempt_id,
                 phase=phase,
                 succeeded_file_count=succeeded_file_count,
                 failed_file_count=failed_file_count,
-                source_payload_read_bytes=source_payload_read_bytes,
+                source_payload_read_bytes=(
+                    source_payload_read_bytes if payload_read_bytes is None else payload_read_bytes
+                ),
                 cursor_fingerprint_read_bytes=cursor_fingerprint_read_bytes,
                 parse_time_s=parse_time_s,
                 convergence_time_s=convergence_time_s,
                 current_source=source_name,
-                current_path=current_path,
+                current_path=current_path if current_path_override is None else current_path_override,
             )
-        )
+
+        return _throttled_phase_heartbeat(emit)
 
     def _record_failed_cursor(self, path: Path) -> int:
         try:
@@ -573,6 +601,12 @@ class LiveBatchProcessor:
             except OSError:
                 failed.append(path)
                 continue
+            if heartbeat is not None:
+                heartbeat(
+                    "full_file_scan",
+                    current_path=path,
+                    source_payload_read_bytes=source_payload_read_bytes,
+                )
             jsonl_like = path.suffix.lower() == ".jsonl"
             if jsonl_like:
                 provider, parse_as_conversation = _jsonl_provider_and_conversation_artifact(path, fallback_provider)
@@ -583,15 +617,29 @@ class LiveBatchProcessor:
                 if stat.st_size >= _STREAMING_FULL_INGEST_BYTES:
                     try:
                         if heartbeat is not None:
-                            heartbeat("full_blob_copy")
+                            heartbeat(
+                                "full_blob_copy",
+                                current_path=path,
+                                source_payload_read_bytes=source_payload_read_bytes,
+                            )
                         raw_id, blob_size = blob_store.write_from_path(
                             path,
-                            heartbeat=None if heartbeat is None else lambda: heartbeat("full_blob_copy"),
+                            heartbeat=_blob_copy_heartbeat(
+                                heartbeat,
+                                path=path,
+                                source_payload_read_bytes=source_payload_read_bytes,
+                            ),
                         )
                     except OSError:
                         failed.append(path)
                         continue
                     source_payload_read_bytes += blob_size
+                    if heartbeat is not None:
+                        heartbeat(
+                            "full_blob_copy",
+                            current_path=path,
+                            source_payload_read_bytes=source_payload_read_bytes,
+                        )
                 else:
                     try:
                         payload = path.read_bytes()
@@ -600,6 +648,12 @@ class LiveBatchProcessor:
                         continue
                     raw_id, blob_size = blob_store.write_from_bytes(payload)
                     source_payload_read_bytes += len(payload)
+                    if heartbeat is not None:
+                        heartbeat(
+                            "full_blob_copy",
+                            current_path=path,
+                            source_payload_read_bytes=source_payload_read_bytes,
+                        )
             elif stat.st_size >= _STREAMING_FULL_INGEST_BYTES:
                 provider = _detect_provider_from_path_sample(path, fallback_provider)
                 provider_name = provider.value
@@ -608,15 +662,29 @@ class LiveBatchProcessor:
                     continue
                 try:
                     if heartbeat is not None:
-                        heartbeat("full_blob_copy")
+                        heartbeat(
+                            "full_blob_copy",
+                            current_path=path,
+                            source_payload_read_bytes=source_payload_read_bytes,
+                        )
                     raw_id, blob_size = blob_store.write_from_path(
                         path,
-                        heartbeat=None if heartbeat is None else lambda: heartbeat("full_blob_copy"),
+                        heartbeat=_blob_copy_heartbeat(
+                            heartbeat,
+                            path=path,
+                            source_payload_read_bytes=source_payload_read_bytes,
+                        ),
                     )
                 except OSError:
                     failed.append(path)
                     continue
                 source_payload_read_bytes += blob_size
+                if heartbeat is not None:
+                    heartbeat(
+                        "full_blob_copy",
+                        current_path=path,
+                        source_payload_read_bytes=source_payload_read_bytes,
+                    )
             else:
                 try:
                     payload = path.read_bytes()
@@ -630,6 +698,12 @@ class LiveBatchProcessor:
                     continue
                 raw_id, blob_size = blob_store.write_from_bytes(payload)
                 source_payload_read_bytes += len(payload)
+                if heartbeat is not None:
+                    heartbeat(
+                        "full_blob_copy",
+                        current_path=path,
+                        source_payload_read_bytes=source_payload_read_bytes,
+                    )
             ingested.append(path)
             raw_records.append(
                 RawConversationRecord(
@@ -649,7 +723,12 @@ class LiveBatchProcessor:
         if raw_records:
             self._persist_raw_records(raw_records)
             if heartbeat is not None:
-                heartbeat("full_worker_wait")
+                heartbeat(
+                    "full_worker_wait",
+                    current_path=ingested[-1] if ingested else None,
+                    source_payload_read_bytes=source_payload_read_bytes,
+                    force=True,
+                )
             summary = _process_ingest_batch_sync(
                 raw_records,
                 db_path=self._cursor._db_path,
@@ -659,7 +738,13 @@ class LiveBatchProcessor:
                 ingest_workers=_full_ingest_worker_count(raw_records),
                 measure_ingest_result_size=False,
                 repair_action_fts=False,
-                heartbeat=None if heartbeat is None else lambda: heartbeat("full_worker_wait"),
+                heartbeat=None
+                if heartbeat is None
+                else lambda: heartbeat(
+                    "full_worker_wait",
+                    current_path=ingested[-1] if ingested else None,
+                    source_payload_read_bytes=source_payload_read_bytes,
+                ),
             )
             failed.extend(raw_by_id[raw_id] for raw_id in summary.failed_raw_ids if raw_id in raw_by_id)
             if summary.parse_failures and not summary.failed_raw_ids:
@@ -970,21 +1055,50 @@ def _full_ingest_worker_count(records: list[RawConversationRecord]) -> int:
     return _select_ingest_worker_count(records, None)
 
 
+def _blob_copy_heartbeat(
+    heartbeat: _FullIngestHeartbeat | None,
+    *,
+    path: Path,
+    source_payload_read_bytes: int,
+) -> Callable[[], None] | None:
+    if heartbeat is None:
+        return None
+
+    def emit() -> None:
+        heartbeat(
+            "full_blob_copy",
+            current_path=path,
+            source_payload_read_bytes=source_payload_read_bytes,
+        )
+
+    return emit
+
+
 def _throttled_phase_heartbeat(
-    emit: Callable[[str], None],
+    emit: _AttemptProgressEmitter,
     *,
     interval_s: float = 15.0,
 ) -> _FullIngestHeartbeat:
     """Throttle durable attempt updates while long file/worker phases run."""
     last_emitted = -interval_s
 
-    def heartbeat(phase: str) -> None:
+    def heartbeat(
+        phase: str,
+        *,
+        current_path: Path | None = None,
+        source_payload_read_bytes: int | None = None,
+        force: bool = False,
+    ) -> None:
         nonlocal last_emitted
         now = time.perf_counter()
-        if now - last_emitted < interval_s:
+        if not force and now - last_emitted < interval_s:
             return
         last_emitted = now
-        emit(phase)
+        emit(
+            phase,
+            current_path_override=current_path,
+            payload_read_bytes=source_payload_read_bytes,
+        )
 
     return heartbeat
 

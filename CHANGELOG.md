@@ -78,6 +78,8 @@ documentation polish do not require an entry.
   `--format json` output while retaining `--json` as a strict alias.
 - `polylogue audit` was removed from the product CLI; verification-lab audit
   workflows live under `devtools`.
+- Daemon status now caps live cursor file samples while preserving exact
+  counts, and full-ingest attempts heartbeat during long storage-write phases.
 - `polylogued status` now reports recent live-ingest attempts with durable
   phase, file-count, byte-read, timing, RSS, cgroup memory, and stale-heartbeat
   snapshots so interrupted convergence work leaves diagnosable state in the
