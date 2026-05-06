@@ -478,18 +478,28 @@ class LiveBatchProcessor:
             except OSError:
                 failed.append(path)
                 continue
-            if stat.st_size >= _STREAMING_FULL_INGEST_BYTES:
+            jsonl_like = path.suffix.lower() == ".jsonl"
+            if jsonl_like or stat.st_size >= _STREAMING_FULL_INGEST_BYTES:
                 provider = _detect_provider_from_path_sample(path, fallback_provider)
                 provider_name = provider.value
                 if not _parse_path_as_conversation_artifact(path, provider=provider):
                     self._mark_excluded_cursor(path, stat, source_name=source_name)
                     continue
-                try:
-                    raw_id, blob_size = blob_store.write_from_path(path)
-                except OSError:
-                    failed.append(path)
-                    continue
-                source_payload_read_bytes += blob_size
+                if stat.st_size >= _STREAMING_FULL_INGEST_BYTES:
+                    try:
+                        raw_id, blob_size = blob_store.write_from_path(path)
+                    except OSError:
+                        failed.append(path)
+                        continue
+                    source_payload_read_bytes += blob_size
+                else:
+                    try:
+                        payload = path.read_bytes()
+                    except OSError:
+                        failed.append(path)
+                        continue
+                    raw_id, blob_size = blob_store.write_from_bytes(payload)
+                    source_payload_read_bytes += len(payload)
             else:
                 try:
                     payload = path.read_bytes()
