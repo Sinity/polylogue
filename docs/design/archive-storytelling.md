@@ -251,7 +251,7 @@ Example output (Feature Birth):
 First mentioned in a session with Claude Code while debugging
 duplicate ingestion. The user asked:
 
-> "Why does `polylogue run` re-import the same conversation twice?"
+> "Why does ingestion re-import the same conversation twice?"
 
 [See full session →](polylogue://conversation/claude-code:abc123)
 

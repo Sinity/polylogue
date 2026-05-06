@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -35,6 +36,18 @@ class SeededDemoResult:
     output_dir: Path
     counts: dict[str, int]
     env_vars: dict[str, str]
+
+
+def _seeded_archive_counts(db_path: Path) -> dict[str, int]:
+    if not db_path.exists():
+        return {}
+    counts: dict[str, int] = {}
+    with sqlite3.connect(db_path) as conn:
+        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        for table in ("raw_conversations", "conversations", "messages"):
+            if table in tables:
+                counts[table] = int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+    return counts
 
 
 def resolve_lab_corpus_providers(
@@ -129,10 +142,10 @@ def seed_lab_demo(
     if not scenarios:
         raise ValueError("No corpus scenarios matched the selected source/providers.")
 
-    result = seed_workspace_from_scenarios(workspace, corpus_scenarios=scenarios, prefix="demo")
+    seed_workspace_from_scenarios(workspace, corpus_scenarios=scenarios, prefix="demo")
     return SeededDemoResult(
         output_dir=out,
-        counts=dict(result.counts),
+        counts=_seeded_archive_counts(workspace.db_path),
         env_vars=dict(workspace.env_vars),
     )
 

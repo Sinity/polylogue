@@ -10,14 +10,7 @@ Polylogue follows XDG Base Directory specification:
 ~/.local/share/polylogue/           # XDG_DATA_HOME/polylogue
 ├── polylogue.db                    # SQLite database
 ├── blobs/                          # Stored attachment/blob payloads
-├── browser-capture/                # Browser-capture artifact spool
-└── render/                         # Rendered output
-    ├── html/
-    │   └── claude/
-    │       └── abc123.html
-    └── md/
-        └── claude/
-            └── abc123.md
+└── browser-capture/                # Browser-capture artifact spool
 
 ~/.claude/projects/                  # Auto-discovered: Claude Code sessions
 ~/.codex/sessions/                   # Auto-discovered: Codex sessions
@@ -31,12 +24,11 @@ Polylogue follows XDG Base Directory specification:
 
 ## Input Conventions
 
-- Import downloaded exports with `polylogue run --input PATH`
-- `--input` accepts files, directories, and archives
-- Directory names are for organization only; providers are detected from content
-- Symlinks are followed
-- Files are processed recursively
-- Supported formats: `.json`, `.jsonl`, `.zip`
+- `polylogued run` watches configured source roots and owns ingestion.
+- Use `polylogue ingest PATH` to ask the running daemon to ingest an explicit
+  file or directory.
+- Directory names are for organization only; providers are detected from content.
+- Supported source formats include `.json`, `.jsonl`, and `.zip`.
 
 ## Configuration Model
 
@@ -60,8 +52,8 @@ Environment variable precedence is:
    auth files.
 4. Drive authentication may override credential and token files through the
    Drive-specific environment variables below.
-5. Vector indexing reads `VOYAGE_API_KEY` when building index configuration or
-   dispatching embedding commands.
+5. Vector indexing reads `VOYAGE_API_KEY` when daemon-managed embedding work is
+   enabled.
 
 These are the supported runtime overrides:
 
@@ -110,13 +102,10 @@ Polylogue syncs the fixed `Google AI Studio` folder name used by Gemini exports.
 
 ## Observability
 
-Polylogue writes run metadata to disk and keeps a SQLite history so automation can consume results without scraping terminal output.
-
-### Run Ledger
-
-- Every `run` writes `archive_root/runs/run-<timestamp>-<run_id>.json`.
-- The same run records are stored in `$XDG_DATA_HOME/polylogue/polylogue.db` (table: `runs`).
-- Render output lives under `render_root` (defaults to `archive_root/render`).
+Polylogue exposes daemon health through `polylogued status` and
+`polylogue status`. The archive database stores ingestion state, live cursors,
+and derived read-model freshness so automation does not need to scrape terminal
+output.
 
 ### Health Checks
 
@@ -125,10 +114,6 @@ Polylogue writes run metadata to disk and keeps a SQLite history so automation c
 - `polylogue doctor --cleanup` runs destructive archive cleanup; preview it first.
 - `polylogue doctor --repair --vacuum` compacts the database after maintenance.
 - Workstation-specific policy such as cgroup slice placement and hard caps belongs in the host environment, not in the product CLI.
-
-### Path Inspection
-
-- `polylogue run --preview` prints resolved sources and output paths.
 
 ---
 

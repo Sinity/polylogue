@@ -267,7 +267,6 @@ def test_lazy_package_exports_cover_pipeline_services_storage_and_mcp() -> None:
     import polylogue.storage
 
     assert polylogue.mcp.server.__name__.endswith("server")
-    assert polylogue.pipeline.run_sources.__name__ == "run_sources"
     assert polylogue.pipeline.services.ValidationService.__name__ == "ValidationService"
     assert polylogue.storage.ConversationRepository.__name__ == "ConversationRepository"
 

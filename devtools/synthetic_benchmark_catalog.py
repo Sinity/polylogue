@@ -100,6 +100,33 @@ SYNTHETIC_BENCHMARK_SCENARIOS: tuple[BenchmarkCampaignEntry, ...] = (
         tags=("benchmark", "synthetic", "session-insights"),
         projection_kind=ScenarioProjectionSourceKind.SYNTHETIC_BENCHMARK,
     ),
+    BenchmarkCampaignEntry(
+        name="daemon-live-convergence",
+        description="Benchmark daemon live batch convergence over generated JSONL source workloads",
+        execution=runner_execution("daemon-live-convergence"),
+        summary_metric="total_wall_s",
+        summary_label="s",
+        scale_targets=("small", "medium", "large", "stretch"),
+        origin="authored.synthetic-benchmark",
+        artifact_targets=(
+            "configured_sources",
+            "source_payload_stream",
+            "archive_conversation_rows",
+            "message_source_rows",
+            "message_fts",
+            "tool_use_source_blocks",
+            "action_event_rows",
+            "action_event_fts",
+        ),
+        operation_targets=(
+            "ingest-archive-runtime",
+            "index-message-fts",
+            "materialize-action-events",
+            "materialize-session-insights",
+        ),
+        tags=("benchmark", "synthetic", "daemon", "live", "convergence"),
+        projection_kind=ScenarioProjectionSourceKind.SYNTHETIC_BENCHMARK,
+    ),
 )
 
 SYNTHETIC_BENCHMARK_REGISTRY: dict[str, BenchmarkCampaignEntry] = compile_benchmark_campaigns(

@@ -27,13 +27,12 @@ def runner() -> CliRunner:
 # =============================================================================
 
 SUBCOMMANDS = [
-    "run",
     "doctor",
     "reset",
     "auth",
     "completions",
     "dashboard",
-    "audit",
+    "ingest",
     "schema",
     "tags",
     "list",
@@ -133,8 +132,8 @@ class TestInvalidDates:
 
 class TestNonexistentPaths:
     def test_nonexistent_source_path(self, runner: CliRunner) -> None:
-        """Non-existent --source should not produce traceback."""
-        result = runner.invoke(cli, ["run", "--source", "/nonexistent/path"])
+        """Non-existent ingest path should not produce traceback."""
+        result = runner.invoke(cli, ["ingest", "/nonexistent/path"])
         assert TRACEBACK_SENTINEL not in result.output
 
     def test_nonexistent_output_path(self, runner: CliRunner, workspace_env: Mapping[str, Path]) -> None:
@@ -161,7 +160,7 @@ class TestUnknownInputs:
 
     def test_unknown_flag_with_subcommand(self, runner: CliRunner) -> None:
         """Unknown flag in subcommand should not produce traceback."""
-        result = runner.invoke(cli, ["run", "--fake-flag"])
+        result = runner.invoke(cli, ["doctor", "--fake-flag"])
         assert TRACEBACK_SENTINEL not in result.output
 
 

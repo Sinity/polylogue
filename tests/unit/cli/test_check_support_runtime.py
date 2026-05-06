@@ -134,8 +134,6 @@ def test_formatting_helpers_cover_plan_counts_details_and_run_sections(monkeypat
         "validation_errors": 1,
         "parse_failures": 2,
         "materialized": 3,
-        "rendered": 2,
-        "render_failures": 1,
         "schemas_generated": 1,
         "schemas_failed": 1,
     }
@@ -146,12 +144,11 @@ def test_formatting_helpers_cover_plan_counts_details_and_run_sections(monkeypat
         "Conversations: 2 new, 1 changed",
         "Parse: 2 failures",
         "Materialize: 3 conversations",
-        "Render: 2 rendered, 1 failures",
         "Schemas: 1 generated, 1 failed",
     ]
     assert formatting.format_run_details({"conversations": 2}) == ["Conversations: 2 new"]
 
-    assert formatting.format_plan_counts({"scan": 2, "render": 1}) == "2 scan, 1 render"
+    assert formatting.format_plan_counts({"scan": 2, "index": 1}) == "2 scan, 1 index"
     assert formatting.format_plan_counts({}) == "no pipeline actions"
     assert formatting.format_plan_details({"new_raw": 2, "preview_invalid": 1}) == (
         "2 new raw, 1 would fail validation"

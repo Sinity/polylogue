@@ -24,7 +24,6 @@ class SearchCacheKey:
 
     query: str
     archive_root: str
-    render_root_path: str | None
     db_path: str | None
     limit: int
     source: str | None
@@ -36,7 +35,6 @@ class SearchCacheKey:
         cls,
         query: str,
         archive_root: Path,
-        render_root_path: Path | None = None,
         db_path: Path | None = None,
         limit: int = 20,
         source: str | None = None,
@@ -47,7 +45,6 @@ class SearchCacheKey:
         Args:
             query: Search query string
             archive_root: Archive root path
-            render_root_path: Optional render root path
             db_path: Optional database path (for testing isolation)
             limit: Maximum results
             source: Optional source filter
@@ -62,7 +59,6 @@ class SearchCacheKey:
         return cls(
             query=query,
             archive_root=str(archive_root),
-            render_root_path=str(render_root_path) if render_root_path else None,
             db_path=str(db_path) if db_path else None,
             limit=limit,
             source=source,

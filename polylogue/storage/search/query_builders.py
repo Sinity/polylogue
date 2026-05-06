@@ -5,10 +5,9 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
 from typing import TypeAlias
+from urllib.parse import quote
 
-from polylogue.paths.sanitize import conversation_render_root
 from polylogue.storage.search.query_support import normalize_fts5_query
 from polylogue.storage.sqlite.connection import _build_provider_scope_filter
 
@@ -28,16 +27,9 @@ class RankedSearchShape:
     final_select_sql: str
 
 
-def resolve_conversation_path(
-    archive_root: Path,
-    render_root_path: Path | None,
-    provider_name: str,
-    conversation_id: str,
-) -> Path:
-    """Resolve the path to a conversation's rendered markdown file."""
-    output_root = render_root_path or (archive_root / "render")
-    safe_root = conversation_render_root(output_root, provider_name, conversation_id)
-    return safe_root / "conversation.md"
+def conversation_web_url(conversation_id: str) -> str:
+    """Return the daemon web reader URL path for a conversation."""
+    return f"/?conversation={quote(conversation_id, safe='')}"
 
 
 def build_ranked_conversation_search_query(
@@ -198,5 +190,5 @@ __all__ = [
     "RankedSearchQuery",
     "build_ranked_action_search_query",
     "build_ranked_conversation_search_query",
-    "resolve_conversation_path",
+    "conversation_web_url",
 ]

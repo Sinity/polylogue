@@ -1,6 +1,0 @@
-Usage: polylogue run reprocess [OPTIONS]
-
-  Skip acquisition and rerun downstream stages.
-
-Options:
-  -h, --help  Show this message and exit.

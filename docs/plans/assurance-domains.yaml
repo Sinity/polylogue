@@ -1,6 +1,6 @@
 # Assurance-domains coverage matrix.
 #
-# Declares all 26 assurance domains and their current maturity as seed
+# Declares all 25 assurance domains and their current maturity as seed
 # manifests. Each domain documents its verification maturity, whether an
 # oracle is present (`oracle_present`), and the primary evidence type
 # (`oracle`). Maturity levels: seed, nascent, growing, established,
@@ -9,7 +9,7 @@
 # Updated 2026-04-29 from realized codebase state.
 
 description: >
-  Complete coverage matrix for the 26 polylogue assurance domains.
+  Complete coverage matrix for the 25 polylogue assurance domains.
   Seed maturity reflects the absence of automated verification gates;
   nascent maturity indicates partial coverage with gaps.
 
@@ -125,16 +125,6 @@ domains:
       Hybrid search fixes documented (limit=0 edge case, RRF
       dedup, providers=[] semantics). FTS5 unicode61 tokenizer.
       SQLite vec extension integration.
-
-  site_publication:
-    description: Static site generation and publication flow
-    maturity: seed
-    oracle_present: false
-    oracle: null
-    notes: >
-      Site builder, conversation pages, index pages, search page exist
-      in polylogue/site/. No automated verification of generated site
-      correctness.
 
   mcp_surface:
     description: MCP tool contracts, server, and tool bindings

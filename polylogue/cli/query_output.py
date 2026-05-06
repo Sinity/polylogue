@@ -10,8 +10,8 @@ import webbrowser
 from collections.abc import Sequence
 from datetime import datetime
 from html import escape as html_escape
-from pathlib import Path
 from typing import TYPE_CHECKING, TypeAlias
+from urllib.parse import quote
 
 import click
 
@@ -283,51 +283,17 @@ def open_result(
 
     conv = results[0]
 
-    from polylogue.cli.shared.helpers import latest_render_path, load_effective_config
-
-    try:
-        config = load_effective_config(env)
-    except Exception as exc:
-        logger.warning("Config load failed, falling back to defaults: %s", exc)
-        config = None
-
-    from polylogue.paths import render_root as default_render_root
-
-    render_root = None
-    if config and hasattr(config, "render_root") and config.render_root:
-        render_root = Path(config.render_root)
-    else:
-        render_root = default_render_root()
-
-    if not render_root or not render_root.exists():
-        click.echo("No rendered outputs found.", err=True)
-        click.echo("Run 'polylogue run' first to render conversations.", err=True)
-        raise SystemExit(1)
-
-    from polylogue.paths.sanitize import conversation_render_root
-
-    render_dir = conversation_render_root(render_root, str(conv.provider), str(conv.id))
-    html_file = render_dir / "conversation.html"
-    md_file = render_dir / "conversation.md"
-
-    render_file = html_file if html_file.exists() else md_file if md_file.exists() else None
-    if render_file is None:
-        render_file = latest_render_path(render_root)
-
-    if not render_file:
-        click.echo("No rendered output found for this conversation.", err=True)
-        click.echo("Run 'polylogue run' to render conversations.", err=True)
-        raise SystemExit(1)
-
-    if output.print_path:
+    daemon_url = str(getattr(env, "daemon_url", None) or "http://127.0.0.1:8766").rstrip("/")
+    web_url = f"{daemon_url}/?conversation={quote(str(conv.id), safe='')}"
+    if output.print_url:
         if output.output_format == "json":
-            click.echo(json.dumps({"path": str(render_file)}, indent=2))
+            click.echo(json.dumps({"url": web_url}, indent=2))
         else:
-            click.echo(str(render_file))
+            click.echo(web_url)
         return
 
-    webbrowser.open(f"file://{render_file}")
-    env.ui.console.print(f"Opened: {render_file}")
+    webbrowser.open(web_url)
+    env.ui.console.print(f"Opened: {web_url}")
 
 
 # ---------------------------------------------------------------------------

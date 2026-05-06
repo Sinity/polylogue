@@ -51,8 +51,6 @@ class TestSchemaDDLParity:
             "conversations",
             "messages",
             "attachments",
-            "runs",
-            "publications",
         ]
         ddl_lower = SCHEMA_DDL.lower()
         for table in required_tables:
@@ -83,8 +81,6 @@ class TestSchemaDDLParity:
             tables = {row[0] for row in cursor.fetchall()}
             assert "conversations" in tables
             assert "messages" in tables
-            assert "runs" in tables
-            assert "publications" in tables
         finally:
             conn.close()
 

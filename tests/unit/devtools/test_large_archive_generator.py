@@ -39,6 +39,7 @@ def test_archive_spec_compiles_per_provider_corpus_specs() -> None:
     assert all(corpus.messages_min >= 2 for corpus in corpus_specs)
     assert all(corpus.seed == 9 for corpus in corpus_specs)
     assert all(corpus.origin == "generated.large-archive" for corpus in corpus_specs)
+    assert {corpus.provider: corpus.style for corpus in corpus_specs} == {"chatgpt": "default", "codex": "tool-heavy"}
 
 
 def test_archive_spec_flattens_scenario_compilation_into_corpus_specs() -> None:

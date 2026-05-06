@@ -19,8 +19,6 @@ def test_runtime_operation_catalog_covers_the_current_runtime_paths() -> None:
         "materialize-transcript-embeddings",
         "materialize-action-events",
         "query-conversations",
-        "render-conversations",
-        "publish-site",
         "project-action-event-readiness",
         "materialize-session-insights",
         "project-retrieval-band-readiness",
@@ -65,18 +63,6 @@ def test_runtime_operation_catalog_covers_the_current_runtime_paths() -> None:
         "message_embedding_vectors",
     )
     assert specs["materialize-transcript-embeddings"].path_targets == ("embedding-materialization-loop",)
-    assert specs["render-conversations"].kind is OperationKind.MATERIALIZATION
-    assert specs["render-conversations"].mutates_state is True
-    assert specs["render-conversations"].produces == ("rendered_conversation_artifacts",)
-    assert specs["render-conversations"].path_targets == ("conversation-render-loop",)
-    assert specs["publish-site"].kind is OperationKind.MATERIALIZATION
-    assert specs["publish-site"].mutates_state is True
-    assert specs["publish-site"].produces == (
-        "site_conversation_pages",
-        "site_publication_manifest",
-        "publication_records",
-    )
-    assert specs["publish-site"].path_targets == ("site-publication-loop",)
     assert specs["materialize-session-insights"].kind is OperationKind.MATERIALIZATION
     assert specs["materialize-session-insights"].mutates_state is True
     assert "session_insight_rows" in specs["materialize-session-insights"].produces

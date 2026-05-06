@@ -95,12 +95,12 @@ def show_verb(ctx: click.Context, target_terms: tuple[str, ...]) -> None:
 
 
 @click.command("open")
-@click.option("--print-path", is_flag=True, help="Print the matched render path instead of opening it")
+@click.option("--print-url", is_flag=True, help="Print the matched daemon web URL instead of opening it")
 @click.argument("target_terms", nargs=-1, shell_complete=complete_open_targets)
 @click.pass_context
-def open_verb(ctx: click.Context, print_path: bool, target_terms: tuple[str, ...]) -> None:
-    """Open matched conversation in browser/editor."""
-    request = _parent_request(ctx).with_param_updates(open_result=True, print_path=print_path)
+def open_verb(ctx: click.Context, print_url: bool, target_terms: tuple[str, ...]) -> None:
+    """Open matched conversation in the daemon web reader."""
+    request = _parent_request(ctx).with_param_updates(open_result=True, print_url=print_url)
     parent_terms = _parent_query_terms(ctx)
     candidates = parent_terms + target_terms
     if len(candidates) == 1 and ":" in candidates[0]:

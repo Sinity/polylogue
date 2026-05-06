@@ -4,10 +4,10 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.api import Polylogue
 from polylogue.browser_capture.models import BrowserCaptureEnvelope
 from polylogue.browser_capture.receiver import write_capture_envelope
 from polylogue.config import Source, get_config
-from polylogue.pipeline.runner import run_sources
 from polylogue.sources.dispatch import detect_provider, parse_payload
 from polylogue.storage.sqlite.connection import open_connection
 from polylogue.types import Provider
@@ -97,8 +97,8 @@ async def test_browser_capture_receiver_artifact_lands_in_archive(
     config = get_config()
     config.sources = [Source(name="inbox", path=artifact)]
 
-    await run_sources(config=config, stage="acquire")
-    await run_sources(config=config, stage="parse")
+    async with Polylogue(archive_root=config.archive_root, db_path=config.db_path) as polylogue:
+        await polylogue.parse_sources(config.sources)
 
     with open_connection(None) as conn:
         row = conn.execute(

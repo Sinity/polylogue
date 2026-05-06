@@ -8,10 +8,11 @@ import os
 import random
 import shutil
 import subprocess
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, cast
 
 from devtools.pipeline_probe.request import (
     _INPUT_MODES,
@@ -22,7 +23,6 @@ from devtools.pipeline_probe.request import (
     ProbeProvenance,
     ProbeSummary,
     SourceInputsSummary,
-    _load_run_payload,
     _paths,
     _probe_mode,
     _resolve_synthetic_provider,
@@ -32,7 +32,6 @@ from devtools.pipeline_probe.result import (
     _db_raw_fanout,
     _db_row_counts,
     _json_string_sequence,
-    _run_result_payload,
 )
 from devtools.pipeline_probe.staging import (
     _fingerprint_path,
@@ -42,8 +41,10 @@ from devtools.pipeline_probe.staging import (
 )
 from polylogue.config import Config, Source
 from polylogue.core.json import JSONDocument, is_json_document, loads, require_json_document
+from polylogue.core.metrics import PipelineMetrics
 from polylogue.paths import blob_store_root, db_path
-from polylogue.pipeline.runner import run_sources
+from polylogue.pipeline.run_stages import execute_index_stage, execute_materialize_stage
+from polylogue.pipeline.services.parsing import ParsingService
 from polylogue.scenarios import (
     PipelineProbeInputMode,
     PipelineProbeRequest,
@@ -51,7 +52,6 @@ from polylogue.scenarios import (
 from polylogue.showcase.workspace import VerificationWorkspace, create_verification_workspace
 from polylogue.storage.blob_store import BlobStore, reset_blob_store
 from polylogue.storage.repository import ConversationRepository
-from polylogue.storage.run_state import RunResult
 from polylogue.storage.runtime import RawConversationRecord
 from polylogue.storage.sqlite import SQLiteBackend, create_backend
 from polylogue.storage.sqlite.connection import (
@@ -532,19 +532,90 @@ async def _run_probe_pipeline(
     source_names: list[str] | None,
     backend: SQLiteBackend | None = None,
     repository: ConversationRepository | None = None,
-) -> tuple[RunResult, JSONDocument]:
-    result = await run_sources(
-        config=config,
-        stage=request.stage,
-        stage_sequence=stage_sequence,
-        source_names=source_names,
-        raw_batch_size=request.raw_batch_size or 50,
-        ingest_workers=request.ingest_workers,
-        measure_ingest_result_size=request.measure_ingest_result_size,
-        backend=backend,
-        repository=repository,
-    )
-    return result, _load_run_payload(result.run_path)
+) -> tuple[JSONDocument, JSONDocument]:
+    owns_backend = backend is None
+    active_backend = backend or create_backend(db_path=config.db_path)
+    owns_repository = repository is None
+    active_repository = repository or ConversationRepository(backend=active_backend)
+    metrics = PipelineMetrics()
+    started = time.perf_counter()
+    indexed = False
+    index_error: str | None = None
+
+    try:
+        selected_sources = [
+            source for source in config.sources if source_names is None or source.name in set(source_names)
+        ]
+        parser = ParsingService(
+            repository=active_repository,
+            archive_root=config.archive_root,
+            config=config,
+            raw_batch_size=request.raw_batch_size or 50,
+            ingest_workers=request.ingest_workers,
+            measure_ingest_result_size=request.measure_ingest_result_size,
+        )
+        ingest_stage = metrics.start_stage("ingest")
+        if selected_sources:
+            ingest_result = await parser.ingest_sources(
+                sources=selected_sources,
+                stage="all",
+                parse_records=True,
+            )
+            parse_result = ingest_result.parse_result
+            ingest_stage.sub_timings.update({f"{k}_s": v for k, v in ingest_result.timings.items()})
+            ingest_stage.details.update(cast(JSONDocument, ingest_result.diagnostics))
+            ingest_stage.stop(items=len(ingest_result.parse_raw_ids))
+        else:
+            parse_started = time.perf_counter()
+            parse_result = await parser.parse_from_raw()
+            ingest_stage.sub_timings["parse_s"] = time.perf_counter() - parse_started
+            ingest_stage.stop(items=len(parse_result.processed_ids))
+
+        if stage_sequence is not None and "materialize" in stage_sequence:
+            materialize_stage = metrics.start_stage("materialize")
+            materialize_outcome = await execute_materialize_stage(
+                stage=request.stage,
+                source_names=source_names,
+                processed_ids=parse_result.processed_ids,
+                backend=active_backend,
+            )
+            materialize_stage.stop(items=materialize_outcome.item_count)
+
+        if stage_sequence is not None and "index" in stage_sequence:
+            index_stage = metrics.start_stage("index")
+            index_outcome = await execute_index_stage(
+                config=config,
+                stage=request.stage,
+                source_names=source_names,
+                processed_ids=parse_result.processed_ids,
+                backend=active_backend,
+            )
+            indexed = index_outcome.indexed
+            index_error = index_outcome.error
+            index_stage.stop(items=index_outcome.item_count)
+
+        duration_ms = int((time.perf_counter() - started) * 1000)
+        result_payload: JSONDocument = {
+            "run_id": "probe",
+            "counts": dict(parse_result.counts),
+            "changed_counts": dict(parse_result.changed_counts),
+            "processed_ids": len(parse_result.processed_ids),
+            "parse_failures": parse_result.parse_failures,
+            "indexed": indexed,
+            "index_error": index_error,
+            "duration_ms": duration_ms,
+        }
+        run_payload: JSONDocument = {
+            "run_id": "probe",
+            "duration_ms": duration_ms,
+            "metrics": metrics.to_summary(),
+        }
+        return result_payload, run_payload
+    finally:
+        if owns_repository:
+            await active_repository.close()
+        if owns_backend:
+            await active_backend.close()
 
 
 def _probe_stage_sequence(probe_mode: str, stage: str) -> list[str] | None:
@@ -593,13 +664,12 @@ async def run_probe(request: PipelineProbeRequest) -> ProbeSummary:
                 render_root=render_root,
             )
             db_path_val = config.db_path
-            result, run_payload = await _run_probe_pipeline(
+            result_payload, run_payload = await _run_probe_pipeline(
                 config=config,
                 request=request,
                 stage_sequence=stage_sequence,
                 source_names=[provider_name],
             )
-        result_payload = _run_result_payload(result)
 
         summary = {
             "probe": {
@@ -624,7 +694,6 @@ async def run_probe(request: PipelineProbeRequest) -> ProbeSummary:
                 "archive_root": str(archive_root),
                 "render_root": str(render_root),
                 "db_path": str(db_path_val),
-                "run_path": result.run_path,
             },
             "source_files": {
                 "count": len(files),
@@ -656,13 +725,12 @@ async def run_probe(request: PipelineProbeRequest) -> ProbeSummary:
                 render_root=render_root,
             )
             db_path_val = config.db_path
-            result, run_payload = await _run_probe_pipeline(
+            result_payload, run_payload = await _run_probe_pipeline(
                 config=config,
                 request=request,
                 stage_sequence=stage_sequence,
                 source_names=[source_name],
             )
-        result_payload = _run_result_payload(result)
 
         summary = {
             "probe": {
@@ -680,7 +748,6 @@ async def run_probe(request: PipelineProbeRequest) -> ProbeSummary:
                 "archive_root": str(archive_root),
                 "render_root": str(render_root),
                 "db_path": str(db_path_val),
-                "run_path": result.run_path,
             },
             "source_inputs": source_inputs,
             "provenance": _build_probe_provenance(source_inputs=source_inputs),
@@ -726,7 +793,7 @@ async def run_probe(request: PipelineProbeRequest) -> ProbeSummary:
                     repository=repository,
                     target_blob_store=target_blob_store,
                 )
-                result, run_payload = await _run_probe_pipeline(
+                result_payload, run_payload = await _run_probe_pipeline(
                     config=config,
                     request=request,
                     stage_sequence=None,
@@ -736,7 +803,6 @@ async def run_probe(request: PipelineProbeRequest) -> ProbeSummary:
                 )
             finally:
                 await repository.close()
-        result_payload = _run_result_payload(result)
 
         summary = {
             "probe": {
@@ -755,7 +821,6 @@ async def run_probe(request: PipelineProbeRequest) -> ProbeSummary:
                 "archive_root": str(archive_root),
                 "render_root": str(render_root),
                 "db_path": str(db_path_val),
-                "run_path": result.run_path,
                 "manifest_path": str(manifest_path),
                 "source_db": str(manifest["source_db"]),
                 "source_blob_root": str(manifest["source_blob_root"]),

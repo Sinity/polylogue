@@ -161,13 +161,13 @@ def test_internal_diffing_helpers_cover_classification_and_reason_paths() -> Non
     assert _provider_for_schema_path("polylogue/schemas/providers/codex/messages.json") == "codex"
     assert _provider_for_schema_path("polylogue/schemas/messages.json") is None
     assert _normalize_path(".\\polylogue\\cli\\query.py") == "polylogue/cli/query.py"
-    assert _path_for_code_ref("polylogue.cli.commands.run.run_command") == "polylogue/cli/commands/run.py"
+    assert _path_for_code_ref("polylogue.cli.commands.status.status_command") == "polylogue/cli/commands/status.py"
     assert _operations_by_code_path(
         (
-            type("Spec", (), {"name": "run", "code_refs": ("polylogue.cli.commands.run.run_command",)})(),
+            type("Spec", (), {"name": "status", "code_refs": ("polylogue.cli.commands.status.status_command",)})(),
             type("Spec", (), {"name": "missing", "code_refs": ("no.such.module",)})(),
         )
-    )["polylogue/cli/commands/run.py"] == ("run",)
+    )["polylogue/cli/commands/status.py"] == ("status",)
     assert _checks_for_change("workflow", path="AGENTS.md")[0].rendered_command == (
         "pytest tests/unit/devtools/test_command_catalog.py"
     )

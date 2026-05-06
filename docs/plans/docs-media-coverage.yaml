@@ -189,12 +189,3 @@ coverage_gaps:
     review_after: "2026-08-01"
     issue: 590
     next_evidence: devtools render-docs-surface --check
-  - id: docs-media.site-publication-integrity
-    domain: site_publication
-    gap: Static-site publication has no visual or hyperlink integrity gate.
-    owner: docs-media
-    severity: major
-    declared_at: "2026-05-02"
-    review_after: "2026-08-01"
-    issue: 590
-    next_evidence: devtools render-docs-surface --check

@@ -44,7 +44,6 @@ def test_render_artifact_graph_text_mentions_the_current_runtime_paths() -> None
     assert "project-archive-readiness" in rendered
     assert "json-doctor-action-event-preview" in rendered
     assert "json-doctor-session-insights-preview" in rendered
-    assert "run-preview-reparse" in rendered
     assert "startup-readiness" in rendered
     assert "retrieval-checks" in rendered
     assert "synthetic-benchmark:action-event-materialization" in rendered
@@ -143,22 +142,6 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
     ) in {
         (ref["source"], ref["name"], ref["origin"])
         for ref in payload["scenario_coverage"]["maintenance_targets"]["session_insights"]
-    }
-    assert (
-        "exercise",
-        "run-preview-reparse",
-        "authored.showcase-catalog",
-    ) in {
-        (ref["source"], ref["name"], ref["origin"])
-        for ref in payload["scenario_coverage"]["artifacts"]["raw_validation_state"]
-    }
-    assert (
-        "exercise",
-        "run-preview-reparse",
-        "authored.showcase-catalog",
-    ) in {
-        (ref["source"], ref["name"], ref["origin"])
-        for ref in payload["scenario_coverage"]["operations"]["plan-validation-backlog"]
     }
     assert {
         (ref["source"], ref["name"], ref["origin"])

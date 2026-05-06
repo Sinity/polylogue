@@ -183,6 +183,7 @@ def cli_runner() -> CliRunner:
 
 def test_tags_command_plain_paths_cover_empty_hint_and_tabular_counts(cli_runner: CliRunner) -> None:
     env = MagicMock()
+    env.ui = MagicMock()
     env.polylogue = MagicMock()
     env.polylogue.list_tags = AsyncMock(return_value={})
 
@@ -194,9 +195,10 @@ def test_tags_command_plain_paths_cover_empty_hint_and_tabular_counts(cli_runner
     env.polylogue.list_tags = AsyncMock(return_value={"alpha": 5, "beta": 2})
     table = cli_runner.invoke(tags_command, ["--count", "1"], obj=env, catch_exceptions=False)
     assert table.exit_code == 0
-    assert "Tags (all providers, 1 total):" in table.output
-    assert "alpha" in table.output
-    assert "beta" not in table.output
+    rendered_table = env.ui.print.call_args.args[0]
+    assert rendered_table.title == "Tags (all providers, 1 total)"
+    assert list(rendered_table.columns[0].cells) == ["alpha"]
+    assert list(rendered_table.columns[1].cells) == ["5"]
 
     env.polylogue.list_tags = AsyncMock(return_value={"alpha": 5})
     with patch("polylogue.cli.commands.tags.emit_success") as emit_success:
@@ -224,8 +226,8 @@ def test_neighbor_helpers_and_command_cover_plain_rendering_and_errors(cli_runne
     assert any("same_title: same normalized title (message-1)" in line for line in echoed)
 
     env = MagicMock()
-    env.operations = MagicMock()
-    env.operations.neighbor_candidates = AsyncMock(return_value=[_candidate()])
+    env.polylogue = MagicMock()
+    env.polylogue.neighbor_candidates = AsyncMock(return_value=[_candidate()])
     plain = cli_runner.invoke(
         neighbors_command,
         ["--query", "lock retries", "--limit", "0", "--window-hours", "0"],
@@ -234,7 +236,7 @@ def test_neighbor_helpers_and_command_cover_plain_rendering_and_errors(cli_runne
     )
     assert plain.exit_code == 0
     assert "Neighbor candidates (1):" in plain.output
-    env.operations.neighbor_candidates.assert_called_once_with(
+    env.polylogue.neighbor_candidates.assert_called_once_with(
         conversation_id=None,
         query="lock retries",
         provider=None,
@@ -243,8 +245,8 @@ def test_neighbor_helpers_and_command_cover_plain_rendering_and_errors(cli_runne
     )
 
     error_env = MagicMock()
-    error_env.operations = MagicMock()
-    error_env.operations.neighbor_candidates = AsyncMock(side_effect=NeighborDiscoveryError("no candidates"))
+    error_env.polylogue = MagicMock()
+    error_env.polylogue.neighbor_candidates = AsyncMock(side_effect=NeighborDiscoveryError("no candidates"))
     error = cli_runner.invoke(neighbors_command, ["--query", "lock retries"], obj=error_env)
     assert error.exit_code != 0
     assert "no candidates" in str(error.exception)

@@ -35,7 +35,7 @@ async def resolve_id(conn: aiosqlite.Connection, id_prefix: str, *, strict: bool
 
 
 async def get_last_sync_timestamp(conn: aiosqlite.Connection) -> str | None:
-    cursor = await conn.execute("SELECT MAX(timestamp) as last FROM runs")
+    cursor = await conn.execute("SELECT MAX(updated_at) as last FROM conversations")
     row = await cursor.fetchone()
     return row["last"] if row and row["last"] else None
 

@@ -7,6 +7,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from decimal import Decimal
 from io import BytesIO
+from itertools import islice
 from typing import TYPE_CHECKING, Literal, TypeAlias
 
 from polylogue.core.json import JSONDocument, JSONValue, is_json_document, is_json_value
@@ -143,9 +144,12 @@ def _detect_provider_from_raw_bytes(
     raw_bytes: bytes,
     stream_name: str,
     fallback_provider: Provider,
+    *,
+    truncated_tail_ok: bool = False,
 ) -> Provider:
-    text = _decode_json_bytes(raw_bytes)
-    if text:
+    jsonl_like = _is_jsonl_stream_name(stream_name)
+    text = None if jsonl_like else _decode_json_bytes(raw_bytes)
+    if text is not None:
         try:
             payload = json.loads(text)
         except json.JSONDecodeError:
@@ -155,8 +159,12 @@ def _detect_provider_from_raw_bytes(
             if detected is not None:
                 return detected
 
+    stream_bytes = _trim_jsonl_detection_prefix(raw_bytes, stream_name) if truncated_tail_ok else raw_bytes
+    if not stream_bytes:
+        return fallback_provider
     try:
-        payloads = list(_iter_json_stream(BytesIO(raw_bytes), stream_name))
+        stream = _iter_json_stream(BytesIO(stream_bytes), stream_name)
+        payloads = list(islice(stream, 32)) if jsonl_like else list(stream)
     except Exception:
         logger.exception(
             "Provider detection by JSON-stream parsing failed for %s; falling back to %s",
@@ -166,6 +174,19 @@ def _detect_provider_from_raw_bytes(
         return fallback_provider
 
     return detect_provider(payloads) or fallback_provider
+
+
+def _is_jsonl_stream_name(stream_name: str) -> bool:
+    return stream_name.lower().endswith((".jsonl", ".jsonl.txt", ".ndjson"))
+
+
+def _trim_jsonl_detection_prefix(raw_bytes: bytes, stream_name: str) -> bytes:
+    if not _is_jsonl_stream_name(stream_name):
+        return raw_bytes
+    if raw_bytes.endswith((b"\n", b"\r")):
+        return raw_bytes
+    newline_at = raw_bytes.rfind(b"\n")
+    return raw_bytes[: newline_at + 1] if newline_at >= 0 else b""
 
 
 def _schema_guided_payload(

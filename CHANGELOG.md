@@ -59,6 +59,10 @@ documentation polish do not require an entry.
   through `polylogue.archive.write_effects`.
 - `run_blob_gc()` for safe garbage collection of unreferenced blobs with lease,
   generation, and MIN_AGE guards.
+- `devtools run-benchmark-campaigns` now includes a
+  `daemon-live-convergence` synthetic campaign that reports live-ingest file
+  counts, read/write byte shape, append-tail byte shape, stage timings, and
+  archive row counts, plus process and cgroup memory peaks.
 
 ### Changed
 
@@ -74,15 +78,57 @@ documentation polish do not require an entry.
   `--format json` output while retaining `--json` as a strict alias.
 - `polylogue audit` was removed from the product CLI; verification-lab audit
   workflows live under `devtools`.
+- `polylogued status` now reports recent live-ingest attempts with durable
+  phase, file-count, byte-read, timing, RSS, cgroup memory, and stale-heartbeat
+  snapshots so interrupted convergence work leaves diagnosable state in the
+  archive DB.
+- Codex JSONL ingestion now parses hot streams directly from raw records,
+  skips validation-off pre-sampling for known stream providers, and reuses
+  message hash payloads during materialization, reducing daemon live-ingest
+  parse overhead for large Codex sessions.
+- Daemon live convergence refreshes affected insight rows in batches and avoids
+  process-pool startup for tiny ingest batches, reducing convergence and parse
+  overhead for live JSONL workloads.
+- Daemon live catch-up no longer pre-hashes uncursored files, reads cursor
+  state in bulk, and reports the max ingest worker count in live benchmark
+  metrics so many-file convergence throughput is observable.
+- Daemon live ingest bounds small-file convergence groups, offloads sync
+  parse/write work from the event loop, and drains process-pool results without
+  retaining the whole parsed batch in memory.
+- Daemon live convergence avoids duplicate message-FTS repair, chunks sync
+  insight rebuilds by message budget, samples each JSONL once before raw
+  storage, and streams raw blobs in 1 MiB chunks for large catch-up workloads.
+- Daemon convergence now scopes embedding work to changed conversations and
+  avoids starting an async embedding runner from the synchronous convergence
+  stage.
+- Daemon live ingest now excludes relationship-index JSONL sidecars before raw
+  storage instead of treating scalar `conversation`/`parent`/`child` records as
+  provider conversation streams.
 - Live watching is no longer exposed through root `polylogue watch` or
   `polylogue run --watch`; use `polylogued watch` for the long-running source
   watcher.
+- Root `polylogue run` and its stage subcommands were removed; ingestion is
+  daemon-owned through `polylogued run` and explicit `polylogue ingest PATH`
+  requests.
+- Legacy batch-run state, JSON run artifacts, run observers, and the `runs`
+  schema table were removed; schema v8 archives are fresh-only.
 - Browser-capture receiver serving/status moved from root `polylogue
   browser-capture` to `polylogued browser-capture`.
 - `polylogued status` now reports configured daemon components, including live
   watch roots and the browser-capture receiver target.
 - `polylogue doctor --daemon` now includes the same daemon component status in
   the interactive health surface.
+- Live watcher cursor and failure state now live in the archive database and
+  failed ingests remain retryable after backoff instead of being recorded as
+  successful cursor progress.
+- `polylogued status` and daemon ingestion events now expose live cursor
+  backlog, retry state, batch counters, byte deltas, and convergence timings.
+- Live daemon ingestion now uses cursor offsets for append-only JSONL growth so
+  completed tails can be read and merged without re-reading unchanged source
+  prefixes.
+- Daemon convergence now uses the live watcher's batched ingest path as the
+  only source-ingest path; post-ingest convergence stages only repair FTS,
+  embeddings, and insights.
 - `Config` rejects relative `archive_root`, `render_root`, or `db_path`
   with `ConfigError` at construction.
 - `_privacy_level_value` raises `ValueError` on unknown level strings
@@ -108,9 +154,6 @@ documentation polish do not require an entry.
 - Schema v3 archives now upgrade to v4 by rebuilding action-event FTS rows
   with base-table rowids, enabling targeted incremental FTS repairs instead
   of archive-wide FTS scans.
-- Explicit `polylogue run ... index` sequences now repair only conversations
-  processed earlier in the same run when the FTS index already exists, avoiding
-  a full archive index rebuild after ordinary catch-up runs.
 - `sanitize_path` symlink probe narrowed to `OSError` and treats
   uncertainty as suspicious (previously a `PermissionError` on an
   unreadable directory could mask a traversal attempt).

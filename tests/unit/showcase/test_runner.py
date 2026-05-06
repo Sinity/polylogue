@@ -13,14 +13,23 @@ from polylogue.showcase.exercises import Exercise
 from polylogue.showcase.runner import ShowcaseRunner
 
 
-async def _fake_run_sources(**_kwargs: object) -> object:  # pragma: no cover - test helper
-    return None
-
-
 def _write_min_fixture(fixture_dir: Path, provider: str = "chatgpt") -> None:
     provider_dir = fixture_dir / provider
     provider_dir.mkdir(parents=True, exist_ok=True)
     (provider_dir / "sample.json").write_text("{}")
+
+
+class _RecordingPolylogue:
+    def __init__(self, *, archive_root: Path, db_path: Path) -> None:
+        self.archive_root = archive_root
+        self.db_path = db_path
+        self.parse_sources = AsyncMock()
+
+    async def __aenter__(self) -> _RecordingPolylogue:
+        return self
+
+    async def __aexit__(self, *_exc_info: object) -> None:
+        return None
 
 
 class TestShowcaseRunnerSeeding:
@@ -36,7 +45,7 @@ class TestShowcaseRunnerSeeding:
             _write_min_fixture(fixtures_root, provider="codex")
 
         with patch.object(runner, "_generate_synthetic_fixtures", side_effect=_fake_generate) as mock_generate:
-            with patch("polylogue.pipeline.runner.run_sources", new_callable=AsyncMock, side_effect=_fake_run_sources):
+            with patch("polylogue.api.Polylogue", _RecordingPolylogue):
                 runner._seed_workspace(workspace, exercises=[])
 
         assert mock_generate.call_count == 1

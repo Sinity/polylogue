@@ -21,9 +21,9 @@ from typing import Literal, Protocol, TypeAlias
 
 import pytest
 
+from polylogue.api import Polylogue
 from polylogue.config import Config, Source
 from polylogue.core.json import JSONDocument
-from polylogue.pipeline.runner import run_sources
 from polylogue.pipeline.services.parsing import ParsingService
 from polylogue.storage.repository import ConversationRepository
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
@@ -33,7 +33,6 @@ pytestmark = pytest.mark.slow
 WorkflowRepos: TypeAlias = tuple[Config, ConversationRepository, ConversationRepository, Path, Path]
 ProviderName: TypeAlias = Literal["chatgpt", "claude-ai", "claude-code", "codex", "gemini"]
 RenderFormat: TypeAlias = Literal["markdown", "html"]
-PipelineStage: TypeAlias = Literal["all", "parse"]
 
 
 class SyntheticSourceFactory(Protocol):
@@ -161,7 +160,6 @@ async def test_full_workflow_per_provider(
         search_result = search_messages(
             search_term,
             archive_root=archive_root,
-            render_root_path=config.render_root,
             db_path=db_path,
         )
         found_ids = {r.conversation_id for r in search_result.hits}
@@ -620,9 +618,7 @@ async def test_search_accuracy_basic_terms(temp_config_and_repo: WorkflowRepos, 
     search_term = " ".join(words[:3])
     from polylogue.storage.search import search_messages
 
-    result = search_messages(
-        search_term, archive_root=archive_root, render_root_path=config.render_root, db_path=db_path
-    )
+    result = search_messages(search_term, archive_root=archive_root, db_path=db_path)
     result_ids = {r.conversation_id for r in result.hits}
     assert target_conv.id in result_ids, f"Failed to find conversation with '{search_term}'"
 
@@ -675,19 +671,15 @@ async def test_search_with_special_characters(temp_config_and_repo: WorkflowRepo
         from polylogue.storage.search import search_messages
 
         # Search with special chars (should be escaped)
-        result1 = search_messages(
-            "quotes", archive_root=archive_root, render_root_path=config.render_root, db_path=db_path
-        )
+        result1 = search_messages("quotes", archive_root=archive_root, db_path=db_path)
         assert len(result1.hits) > 0
 
-        result2 = search_messages(
-            "braces", archive_root=archive_root, render_root_path=config.render_root, db_path=db_path
-        )
+        result2 = search_messages("braces", archive_root=archive_root, db_path=db_path)
         assert len(result2.hits) > 0
 
         # FTS5 operators should be escaped and not cause errors
         # (*, ?, OR, AND, NOT, etc.)
-        search_messages("*", archive_root=archive_root, render_root_path=config.render_root, db_path=db_path)
+        search_messages("*", archive_root=archive_root, db_path=db_path)
         # Should not crash
 
     finally:
@@ -695,33 +687,23 @@ async def test_search_with_special_characters(temp_config_and_repo: WorkflowRepo
 
 
 # =============================================================================
-# PIPELINE RUNNER TESTS (2 tests)
+# API INGEST TESTS
 # =============================================================================
 
 
-@pytest.mark.parametrize(
-    "stage",
-    ["all", "parse"],
-)
-async def test_pipeline_runner_stage_matrix(
-    workspace_env: dict[str, Path], chatgpt_sample_source: Source, stage: PipelineStage
+async def test_daemon_owned_api_ingest_lands_source_conversation(
+    workspace_env: dict[str, Path], chatgpt_sample_source: Source
 ) -> None:
-    """run_sources handles both full and parse-only execution modes."""
+    """The daemon-owned API ingest path lands source conversations in the archive."""
     from polylogue.config import get_config
 
     config = get_config()
     config.sources = [chatgpt_sample_source]
 
-    if stage == "parse":
-        # Parse-only runs consume the persisted raw-record backlog; they do not
-        # re-scan source paths implicitly.
-        await run_sources(config=config, stage="acquire", source_names=[chatgpt_sample_source.name])
-
-    result = await run_sources(config=config, stage=stage, source_names=[chatgpt_sample_source.name])
+    async with Polylogue(archive_root=config.archive_root, db_path=config.db_path) as polylogue:
+        result = await polylogue.parse_sources([chatgpt_sample_source])
+        stored = await polylogue.list_conversations(limit=5)
 
     assert result is not None
     assert result.counts["conversations"] > 0
-    if stage == "parse":
-        assert result.counts.int_value("rendered") == 0
-    else:
-        assert result.counts.int_value("rendered") >= 1
+    assert len(stored) == 1

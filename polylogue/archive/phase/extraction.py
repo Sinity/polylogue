@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import TYPE_CHECKING
@@ -43,7 +44,7 @@ _PHASE_GAP = timedelta(minutes=5)
 
 
 def _build_phase(
-    messages: list[MessageSemanticFacts],
+    messages: Sequence[MessageSemanticFacts],
     start_idx: int,
     end_idx: int,
     start_time: datetime | None,
@@ -78,7 +79,7 @@ def extract_phases(
     facts: ConversationSemanticFacts | None = None,
 ) -> list[SessionPhase]:
     semantic_facts = facts or build_conversation_semantic_facts(conversation)
-    messages = list(semantic_facts.message_facts)
+    messages = semantic_facts.message_facts
     if not messages:
         return []
 

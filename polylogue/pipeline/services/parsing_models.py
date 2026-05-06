@@ -113,6 +113,11 @@ class ParseResult:
         self._changed_conversation_ids: list[str] = []
         self.batch_observations: list[ParseBatchObservation] = []
 
+    @property
+    def changed_conversation_ids(self) -> tuple[str, ...]:
+        """Conversation IDs whose persisted content changed during parsing."""
+        return tuple(self._changed_conversation_ids)
+
     async def merge_result(
         self,
         conversation_id: str,

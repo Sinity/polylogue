@@ -1,4 +1,4 @@
-"""Non-durable planning and run-result views layered above archive storage."""
+"""Non-durable planning and ingest-count views layered above archive storage."""
 
 from __future__ import annotations
 
@@ -20,7 +20,6 @@ class PlanCountsPayload(TypedDict, total=False):
     validate: int
     parse: int
     materialize: int
-    render: int
     index: int
 
 
@@ -50,8 +49,6 @@ class RunCountsPayload(TypedDict, total=False):
     validation_skipped_no_schema: int
     validation_errors: int
     materialized: int
-    rendered: int
-    render_failures: int
     parse_failures: int
     schemas_generated: int
     schemas_failed: int
@@ -69,11 +66,6 @@ class RunDriftPayload(TypedDict):
     new: DriftBucketPayload
     removed: DriftBucketPayload
     changed: DriftBucketPayload
-
-
-class RenderFailurePayload(TypedDict):
-    conversation_id: str
-    error: str
 
 
 def _coerce_model(value: object, model_type: type[_PayloadModelT]) -> _PayloadModelT:
@@ -208,7 +200,6 @@ class PlanCounts(_IntPayloadModel):
     validate_count: int | None = Field(default=None, alias="validate")
     parse: int | None = None
     materialize: int | None = None
-    render: int | None = None
     index: int | None = None
 
     def to_payload(self) -> PlanCountsPayload:
@@ -223,8 +214,6 @@ class PlanCounts(_IntPayloadModel):
             payload["parse"] = self.parse
         if self.materialize is not None:
             payload["materialize"] = self.materialize
-        if self.render is not None:
-            payload["render"] = self.render
         if self.index is not None:
             payload["index"] = self.index
         return payload
@@ -274,8 +263,6 @@ class RunCounts(_IntPayloadModel):
     validation_skipped_no_schema: int | None = None
     validation_errors: int | None = None
     materialized: int | None = None
-    rendered: int | None = None
-    render_failures: int | None = None
     parse_failures: int | None = None
     schemas_generated: int | None = None
     schemas_failed: int | None = None
@@ -314,10 +301,6 @@ class RunCounts(_IntPayloadModel):
             payload["validation_errors"] = self.validation_errors
         if self.materialized is not None:
             payload["materialized"] = self.materialized
-        if self.rendered is not None:
-            payload["rendered"] = self.rendered
-        if self.render_failures is not None:
-            payload["render_failures"] = self.render_failures
         if self.parse_failures is not None:
             payload["parse_failures"] = self.parse_failures
         if self.schemas_generated is not None:
@@ -427,42 +410,6 @@ class PlanResult(BaseModel):
         return _coerce_cursor_state_payload(v)
 
 
-class RunResult(BaseModel):
-    run_id: str
-    counts: RunCounts = Field(default_factory=RunCounts)
-    drift: RunDrift = Field(default_factory=RunDrift)
-    indexed: bool
-    index_error: str | None
-    duration_ms: int
-    render_failures: list[RenderFailurePayload] = Field(default_factory=list)
-    run_path: str | None = None
-
-    @field_validator("counts", mode="before")
-    @classmethod
-    def coerce_run_counts(cls, v: object) -> RunCounts:
-        return _coerce_model(v, RunCounts)
-
-    @field_validator("drift", mode="before")
-    @classmethod
-    def coerce_run_drift(cls, v: object) -> RunDrift:
-        return _coerce_model(v, RunDrift)
-
-    @field_validator("render_failures", mode="before")
-    @classmethod
-    def coerce_render_failures(cls, v: object) -> list[RenderFailurePayload]:
-        if not isinstance(v, list):
-            return []
-        failures: list[RenderFailurePayload] = []
-        for item in v:
-            if not isinstance(item, dict):
-                continue
-            conversation_id = item.get("conversation_id")
-            error = item.get("error")
-            if isinstance(conversation_id, str) and isinstance(error, str):
-                failures.append({"conversation_id": conversation_id, "error": error})
-        return failures
-
-
 __all__ = [
     "DriftBucket",
     "DriftBucketPayload",
@@ -471,10 +418,8 @@ __all__ = [
     "PlanDetails",
     "PlanDetailsPayload",
     "PlanResult",
-    "RenderFailurePayload",
     "RunCounts",
     "RunCountsPayload",
     "RunDrift",
     "RunDriftPayload",
-    "RunResult",
 ]

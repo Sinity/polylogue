@@ -46,7 +46,7 @@ debugging landmarks. For the conceptual system shape, see
 | --- | --- |
 | `sources/dispatch.py` | Provider detection and parser routing |
 | `sources/parsers/*.py` | Per-provider parsing |
-| `pipeline/run_support.py` | Stage definitions and sequences |
+| `pipeline/ingest_support.py` | Ingest stage definitions and source selection helpers |
 | `pipeline/ids.py` | Content hashing and ID generation |
 | `pipeline/services/ingest_batch.py` | Batch ingest (largest pipeline file) |
 
@@ -147,7 +147,7 @@ Content-addressed blob storage for large binary data:
 Cross-check adjacent surfaces after changes:
 
 - query: `cli/query*.py` ↔ `archive/filter/filters.py` ↔ `storage/search*.py`
-- pipeline: `cli/commands/run.py` ↔ `pipeline/` ↔ `storage/` ↔ `insights/`
+- pipeline: `daemon/` ↔ `pipeline/` ↔ `storage/` ↔ `insights/`
 - maintenance: `cli/commands/check.py` ↔ `storage/repair.py` ↔ `health.py`
 - publication: `rendering/` ↔ `site/` ↔ `showcase/`
 - schema: `schemas/` ↔ `sources/providers/` ↔ `pipeline/services/validation_*`

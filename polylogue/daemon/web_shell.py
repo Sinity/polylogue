@@ -112,6 +112,7 @@ html, body { height: 100%; background: var(--bg); color: var(--text);
 <script>
 const API = '';
 let state = { conversations: [], selected: null, provider: '', query: '', stats: {} };
+const initialConversationId = new URLSearchParams(window.location.search).get('conversation');
 
 async function fetchJSON(url) {
   const r = await fetch(API + url);
@@ -254,7 +255,9 @@ document.addEventListener('keydown', function(e) {
   }
 });
 
-loadConversations();
+loadConversations().then(function() {
+  if (initialConversationId) selectConversation(initialConversationId);
+});
 loadStatus();
 setInterval(loadStatus, 30000);
 </script>

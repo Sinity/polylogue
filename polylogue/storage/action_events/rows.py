@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from polylogue.archive.action_event.action_events import (
@@ -12,7 +13,6 @@ from polylogue.archive.action_event.action_events import (
     build_tool_calls_from_content_blocks,
 )
 from polylogue.archive.viewport.viewports import ToolCategory
-from polylogue.storage.hydrators import message_from_record
 from polylogue.storage.runtime import (
     ACTION_EVENT_MATERIALIZER_VERSION,
     ActionEventRecord,
@@ -21,6 +21,12 @@ from polylogue.storage.runtime import (
     MessageRecord,
 )
 from polylogue.types import Provider
+
+
+@dataclass(frozen=True, slots=True)
+class _ActionEventMessage:
+    id: str
+    timestamp: datetime | None = None
 
 
 def _timestamp_to_iso(value: datetime | None) -> str | None:
@@ -82,12 +88,16 @@ def build_action_event_records(
     provider = _record_message_provider(conversation)
 
     for message in messages:
-        domain_message = message_from_record(message, attachments=[], provider=provider)
+        if not message.content_blocks:
+            continue
         tool_calls = build_tool_calls_from_content_blocks(
             provider=provider,
-            content_blocks=domain_message.content_blocks,
+            content_blocks=[_content_block_mapping(block) for block in message.content_blocks],
         )
-        for event in build_action_events(domain_message, tool_calls):
+        if not tool_calls:
+            continue
+        event_message = _ActionEventMessage(id=str(message.message_id))
+        for event in build_action_events(event_message, tool_calls):
             records.append(
                 ActionEventRecord(
                     event_id=event.event_id,
@@ -114,6 +124,31 @@ def build_action_event_records(
                 )
             )
     return records
+
+
+def _content_block_mapping(block: ContentBlockRecord) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "block_id": block.block_id,
+        "message_id": str(block.message_id),
+        "conversation_id": str(block.conversation_id),
+        "block_index": block.block_index,
+        "type": block.type.value,
+    }
+    if block.text is not None:
+        payload["text"] = block.text
+    if block.tool_name is not None:
+        payload["tool_name"] = block.tool_name
+    if block.tool_id is not None:
+        payload["tool_id"] = block.tool_id
+    if block.tool_input is not None:
+        payload["tool_input"] = block.tool_input
+    if block.media_type is not None:
+        payload["media_type"] = block.media_type
+    if block.metadata is not None:
+        payload["metadata"] = block.metadata
+    if block.semantic_type is not None:
+        payload["semantic_type"] = block.semantic_type.value
+    return payload
 
 
 def attach_blocks_to_messages(

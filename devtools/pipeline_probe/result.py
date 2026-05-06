@@ -5,9 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from devtools.pipeline_probe.request import BudgetReport, ProbeSummary, RawFanoutEntry
-from polylogue.core.json import JSONDocument, JSONValue, json_document, require_json_document
+from polylogue.core.json import JSONDocument, JSONValue, json_document
 from polylogue.scenarios import PipelineProbeRequest
-from polylogue.storage.run_state import RunResult
 from polylogue.storage.sqlite.connection import open_connection
 
 
@@ -61,10 +60,6 @@ def _db_raw_fanout(db_path: Path) -> list[RawFanoutEntry]:
         }
         for row in rows
     ]
-
-
-def _run_result_payload(result: RunResult) -> JSONDocument:
-    return require_json_document(result.model_dump(mode="json"), context="pipeline probe result")
 
 
 def _json_object_or_empty(value: object | None) -> JSONDocument:
@@ -155,5 +150,4 @@ __all__ = [
     "_json_object_or_empty",
     "_json_string_sequence",
     "_observed_peak_rss_mb",
-    "_run_result_payload",
 ]

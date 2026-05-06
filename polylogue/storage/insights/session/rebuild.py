@@ -21,6 +21,7 @@ from polylogue.storage.hydrators import conversation_from_records
 from polylogue.storage.insights.session.aggregates import (
     list_async_provider_day_groups,
     list_sync_provider_day_groups,
+    profile_provider_day,
     refresh_async_provider_day_aggregates,
     refresh_sync_provider_day_aggregates,
 )
@@ -31,16 +32,18 @@ from polylogue.storage.insights.session.profiles import (
 )
 from polylogue.storage.insights.session.runtime import SessionInsightCounts
 from polylogue.storage.insights.session.storage import (
-    replace_session_phases_sync,
-    replace_session_profile_sync,
-    replace_session_work_events_sync,
+    replace_session_phases_bulk_sync,
+    replace_session_profiles_bulk_sync,
+    replace_session_work_events_bulk_sync,
     replace_work_thread_sync,
+    replace_work_threads_bulk_sync,
 )
 from polylogue.storage.insights.session.threads import (
     build_thread_records_for_roots_async,
     build_thread_records_for_roots_sync,
     iter_root_id_pages_async,
     iter_root_id_pages_sync,
+    thread_root_ids_sync,
 )
 from polylogue.storage.insights.session.timeline_rows import (
     build_session_phase_records,
@@ -85,6 +88,7 @@ ORDER BY COALESCE(source_sort_key, 0) DESC, conversation_id
 # very large conversation payloads without letting a single chunk inflate RSS
 # into multi-GB territory.
 _SESSION_INSIGHT_REBUILD_PAGE_SIZE = 1
+_SESSION_INSIGHT_REBUILD_MESSAGE_BUDGET = 5_000
 _SESSION_INSIGHT_CONVERSATION_SQL_TEMPLATE = """
 SELECT
     conversation_id,
@@ -135,6 +139,13 @@ class SessionInsightRecordBundle:
     @property
     def phase_count(self) -> int:
         return len(self.phase_records)
+
+
+@dataclass(slots=True, frozen=True)
+class _SessionInsightRebuildChunk:
+    conversation_ids: tuple[str, ...]
+    estimated_message_count: int
+    max_estimated_conversation_messages: int
 
 
 def iter_conversation_id_pages_sync(
@@ -211,6 +222,66 @@ def _row_to_session_insight_conversation(row: sqlite3.Row) -> ConversationRecord
     )
 
 
+def _load_message_counts_sync(
+    conn: sqlite3.Connection,
+    conversation_ids: Sequence[str],
+) -> dict[str, int]:
+    if not conversation_ids:
+        return {}
+    placeholders = ", ".join("?" for _ in conversation_ids)
+    rows = conn.execute(
+        f"""
+        SELECT conversation_id, message_count
+        FROM conversation_stats
+        WHERE conversation_id IN ({placeholders})
+        """,
+        tuple(conversation_ids),
+    ).fetchall()
+    return {str(row["conversation_id"]): int(row["message_count"] or 0) for row in rows}
+
+
+def _chunk_conversation_ids_by_message_budget_sync(
+    conversation_ids: Sequence[str],
+    *,
+    message_counts: dict[str, int],
+    page_size: int,
+    message_budget: int,
+) -> list[_SessionInsightRebuildChunk]:
+    chunks: list[_SessionInsightRebuildChunk] = []
+    current_chunk: list[str] = []
+    current_messages = 0
+    current_max_messages = 0
+
+    for conversation_id in conversation_ids:
+        estimated_messages = max(int(message_counts.get(conversation_id, 0) or 0), 1)
+        if current_chunk and (
+            len(current_chunk) >= page_size or current_messages + estimated_messages > message_budget
+        ):
+            chunks.append(
+                _SessionInsightRebuildChunk(
+                    conversation_ids=tuple(current_chunk),
+                    estimated_message_count=current_messages,
+                    max_estimated_conversation_messages=current_max_messages,
+                )
+            )
+            current_chunk = []
+            current_messages = 0
+            current_max_messages = 0
+        current_chunk.append(conversation_id)
+        current_messages += estimated_messages
+        current_max_messages = max(current_max_messages, estimated_messages)
+
+    if current_chunk:
+        chunks.append(
+            _SessionInsightRebuildChunk(
+                conversation_ids=tuple(current_chunk),
+                estimated_message_count=current_messages,
+                max_estimated_conversation_messages=current_max_messages,
+            )
+        )
+    return chunks
+
+
 def sync_attachment_batch(
     conn: sqlite3.Connection,
     conversation_ids: Sequence[str],
@@ -275,9 +346,19 @@ def load_sync_batch(
             SELECT *
             FROM content_blocks
             WHERE conversation_id IN ({placeholders})
+              AND message_id IN (
+                  SELECT message_id
+                  FROM messages
+                  WHERE conversation_id IN ({placeholders})
+                    AND (
+                        has_tool_use != 0
+                        OR has_thinking != 0
+                        OR message_type IN ('tool_use', 'tool_result', 'thinking')
+                    )
+              )
             ORDER BY conversation_id, message_id, block_index
             """,
-            tuple(conversation_ids),
+            tuple(conversation_ids) + tuple(conversation_ids),
         ).fetchall()
     ]
     return SessionInsightArchiveBatch(
@@ -326,9 +407,19 @@ async def load_async_batch(
                 SELECT *
                 FROM content_blocks
                 WHERE conversation_id IN ({placeholders})
+                  AND message_id IN (
+                      SELECT message_id
+                      FROM messages
+                      WHERE conversation_id IN ({placeholders})
+                        AND (
+                            has_tool_use != 0
+                            OR has_thinking != 0
+                            OR message_type IN ('tool_use', 'tool_result', 'thinking')
+                        )
+                  )
                 ORDER BY conversation_id, message_id, block_index
                 """,
-                tuple(conversation_ids),
+                tuple(conversation_ids) + tuple(conversation_ids),
             )
         ).fetchall()
     ]
@@ -449,6 +540,32 @@ def _finalize_rebuild_counts(
     )
 
 
+def _session_profile_records_for_conversation_ids_sync(
+    conn: sqlite3.Connection,
+    conversation_ids: Sequence[str],
+) -> list[SessionProfileRecord]:
+    if not conversation_ids:
+        return []
+    placeholders = ", ".join("?" for _ in conversation_ids)
+    rows = conn.execute(
+        f"SELECT * FROM session_profiles WHERE conversation_id IN ({placeholders})",
+        tuple(conversation_ids),
+    ).fetchall()
+    return [_row_to_session_profile_record(row) for row in rows]
+
+
+def _refresh_thread_roots_sync(
+    conn: sqlite3.Connection,
+    root_ids: Sequence[str],
+) -> int:
+    normalized_root_ids = tuple(dict.fromkeys(str(root_id) for root_id in root_ids if str(root_id)))
+    if not normalized_root_ids:
+        return 0
+    records_by_root = build_thread_records_for_roots_sync(conn, normalized_root_ids)
+    replace_work_threads_bulk_sync(conn, {root_id: records_by_root.get(root_id) for root_id in normalized_root_ids})
+    return len(normalized_root_ids)
+
+
 def rebuild_session_insights_sync(
     conn: sqlite3.Connection,
     *,
@@ -466,18 +583,30 @@ def rebuild_session_insights_sync(
         conn.execute("DELETE FROM day_session_summaries")
         conversation_chunks = iter_conversation_id_pages_sync(conn, page_size=page_size)
     else:
-        conversation_chunks = chunked(conversation_ids, size=page_size)
+        conversation_ids = tuple(dict.fromkeys(str(conversation_id) for conversation_id in conversation_ids))
+        previous_profile_groups = {
+            group
+            for record in _session_profile_records_for_conversation_ids_sync(conn, conversation_ids)
+            if (group := profile_provider_day(record)) is not None
+        }
+        message_counts = _load_message_counts_sync(conn, conversation_ids)
+        conversation_chunks = (
+            chunk.conversation_ids
+            for chunk in _chunk_conversation_ids_by_message_budget_sync(
+                conversation_ids,
+                message_counts=message_counts,
+                page_size=page_size,
+                message_budget=_SESSION_INSIGHT_REBUILD_MESSAGE_BUDGET,
+            )
+        )
     if conversation_ids is not None and not conversation_ids:
-        conn.execute("DELETE FROM work_threads")
-        conn.execute("DELETE FROM session_phases")
-        conn.execute("DELETE FROM session_tag_rollups")
-        conn.execute("DELETE FROM day_session_summaries")
         conn.commit()
         return _empty_rebuild_counts()
 
     profile_count = 0
     work_event_count = 0
     phase_count = 0
+    refreshed_profile_groups: set[tuple[str, str]] = set()
     saw_conversation_ids = False
     for chunk in conversation_chunks:
         saw_conversation_ids = True
@@ -487,18 +616,19 @@ def rebuild_session_insights_sync(
             compaction_counts_by_conversation=batch.compaction_counts_by_conversation,
         )
         chunk_profiles, chunk_work_events, chunk_phases = _count_record_bundles(record_bundles)
+        replace_session_profiles_bulk_sync(conn, [bundle.profile_record for bundle in record_bundles])
+        replace_session_work_events_bulk_sync(
+            conn,
+            {bundle.conversation_id: bundle.work_event_records for bundle in record_bundles},
+        )
+        replace_session_phases_bulk_sync(
+            conn,
+            {bundle.conversation_id: bundle.phase_records for bundle in record_bundles},
+        )
         for bundle in record_bundles:
-            replace_session_profile_sync(conn, bundle.profile_record)
-            replace_session_work_events_sync(
-                conn,
-                bundle.conversation_id,
-                bundle.work_event_records,
-            )
-            replace_session_phases_sync(
-                conn,
-                bundle.conversation_id,
-                bundle.phase_records,
-            )
+            group = profile_provider_day(bundle.profile_record)
+            if group is not None:
+                refreshed_profile_groups.add(group)
         profile_count += chunk_profiles
         work_event_count += chunk_work_events
         phase_count += chunk_phases
@@ -511,12 +641,32 @@ def rebuild_session_insights_sync(
                 ),
             )
     if not saw_conversation_ids:
-        conn.execute("DELETE FROM work_threads")
-        conn.execute("DELETE FROM session_phases")
-        conn.execute("DELETE FROM session_tag_rollups")
-        conn.execute("DELETE FROM day_session_summaries")
+        if conversation_ids is None:
+            conn.execute("DELETE FROM work_threads")
+            conn.execute("DELETE FROM session_phases")
+            conn.execute("DELETE FROM session_tag_rollups")
+            conn.execute("DELETE FROM day_session_summaries")
         conn.commit()
         return _empty_rebuild_counts()
+
+    if conversation_ids is not None:
+        affected_roots = tuple(thread_root_ids_sync(conn, conversation_ids).values())
+        thread_count = _refresh_thread_roots_sync(conn, affected_roots)
+        refresh_sync_provider_day_aggregates(
+            conn,
+            previous_profile_groups | refreshed_profile_groups,
+        )
+        tag_rollup_count = conn.execute("SELECT COUNT(*) FROM session_tag_rollups").fetchone()[0]
+        day_summary_count = conn.execute("SELECT COUNT(*) FROM day_session_summaries").fetchone()[0]
+        conn.commit()
+        return _finalize_rebuild_counts(
+            profiles=profile_count,
+            work_events=work_event_count,
+            phases=phase_count,
+            threads=thread_count,
+            tag_rollups=int(tag_rollup_count),
+            day_summaries=int(day_summary_count),
+        )
 
     conn.execute("DELETE FROM work_threads")
     thread_count = 0

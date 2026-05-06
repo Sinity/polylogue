@@ -1440,7 +1440,6 @@ class TestSearchCacheKey:
         key = SearchCacheKey.create(
             query="test query",
             archive_root=tmp_path / "archive",
-            render_root_path=tmp_path / "render",
             db_path=tmp_path / "test.db",
             limit=50,
             source="claude-ai",
@@ -1450,7 +1449,6 @@ class TestSearchCacheKey:
         assert key.limit == 50
         assert key.source == "claude-ai"
         assert key.since == "2024-01-01"
-        assert key.render_root_path == str(tmp_path / "render")
         assert key.db_path == str(tmp_path / "test.db")
 
     def test_key_is_frozen(self, tmp_path: Path) -> None:
@@ -1485,13 +1483,6 @@ class TestSearchCacheKey:
         key1 = SearchCacheKey.create(query="test", archive_root=tmp_path, limit=10)
         key2 = SearchCacheKey.create(query="test", archive_root=tmp_path, limit=20)
         assert key1 != key2
-
-    def test_none_render_root(self, tmp_path: Path) -> None:
-        """None render_root_path stored as None."""
-        from polylogue.storage.search.cache import SearchCacheKey
-
-        key = SearchCacheKey.create(query="test", archive_root=tmp_path, render_root_path=None)
-        assert key.render_root_path is None
 
     def test_key_is_hashable(self, tmp_path: Path) -> None:
         """Cache key can be used as dict key (hashable)."""

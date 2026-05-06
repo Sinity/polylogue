@@ -65,7 +65,6 @@ from polylogue.insights.readiness import (
 )
 from polylogue.insights.resume import ResumeBrief, ResumeOperations, build_resume_brief
 from polylogue.maintenance.targets import build_maintenance_target_catalog
-from polylogue.paths.sanitize import conversation_render_root
 from polylogue.services import RuntimeServices, build_runtime_services
 from polylogue.storage.insights.session.runtime import (
     SessionInsightReadyFlag,
@@ -74,6 +73,7 @@ from polylogue.storage.insights.session.runtime import (
 from polylogue.storage.repair import collect_archive_debt_statuses_sync
 from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.search import SearchHit, SearchResult
+from polylogue.storage.search.query_builders import conversation_web_url
 from polylogue.storage.sqlite.connection import connection_context
 from polylogue.storage.sqlite.queries.stats import ProviderMetricsRow
 from polylogue.types import Provider
@@ -130,7 +130,6 @@ def _conversation_search_hit(
     conversation: Conversation,
     *,
     query: str,
-    render_root_path: Path,
 ) -> SearchHit:
     """Adapt a canonical conversation result into the SearchResult surface."""
     terms = [term.lower() for term in query.split() if term.strip()]
@@ -141,9 +140,6 @@ def _conversation_search_hit(
     message_id = str(matching_message.id) if matching_message else ""
     timestamp = matching_message.timestamp.isoformat() if matching_message and matching_message.timestamp else None
     snippet = _build_search_snippet(matching_message.text or "", query) if matching_message else ""
-    conversation_path = (
-        conversation_render_root(render_root_path, conversation.provider, str(conversation.id)) / "conversation.md"
-    )
     return SearchHit(
         conversation_id=str(conversation.id),
         provider_name=conversation.provider,
@@ -152,7 +148,7 @@ def _conversation_search_hit(
         title=conversation.display_title,
         timestamp=timestamp,
         snippet=snippet,
-        conversation_path=conversation_path,
+        conversation_url=conversation_web_url(str(conversation.id)),
     )
 
 
@@ -450,7 +446,6 @@ class ArchiveSearchMixin:
                 _conversation_search_hit(
                     conversation,
                     query=query,
-                    render_root_path=self.config.render_root,
                 )
                 for conversation in conversations
             ]

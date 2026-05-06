@@ -11,14 +11,16 @@ from __future__ import annotations
 
 import pickle
 import re
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
-from datetime import timezone
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, TypeVar
 
 from typing_extensions import TypedDict
 
-from polylogue.archive.artifact_taxonomy import ArtifactClassification, classify_artifact
+from polylogue.archive.artifact_taxonomy import ArtifactClassification, ArtifactKind, classify_artifact
+from polylogue.archive.artifact_taxonomy.support import is_subagent_path
 from polylogue.archive.conversation.branch_type import BranchType
 from polylogue.archive.message.roles import Role
 from polylogue.archive.raw_payload.decode import RawPayloadEnvelope
@@ -37,8 +39,6 @@ from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.runtime import (
     ACTION_EVENT_MATERIALIZER_VERSION,
     PROVIDER_EVENT_MATERIALIZER_VERSION,
-    ContentBlockRecord,
-    MessageRecord,
     RawConversationRecord,
     _json_or_none,
 )
@@ -200,6 +200,7 @@ class ConversationData:
     # Source metadata
     source_name: str = ""
     raw_id: str | None = None
+    append_only: bool = False
 
 
 @dataclass(slots=True)
@@ -215,6 +216,12 @@ class IngestRecordResult:
     conversations: list[ConversationData] = field(default_factory=list)
     source_name: str | None = None
     serialized_size_bytes: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _ActionEventMessage:
+    id: str
+    timestamp: datetime | None
 
 
 ParsePlanMode = Literal["payload", "stream"]
@@ -314,10 +321,13 @@ def _normalized_conversation(
 def _is_stream_record_provider(source_path: str | None, provider: str | Provider | None) -> bool:
     if provider is None:
         return False
-    normalized_path = (source_path or "").lower()
-    if not normalized_path.endswith((".jsonl", ".jsonl.txt", ".ndjson")):
+    if not _is_jsonl_source_path(source_path):
         return False
     return Provider.from_string(provider) in STREAM_RECORD_PROVIDERS
+
+
+def _is_jsonl_source_path(source_path: str | None) -> bool:
+    return (source_path or "").lower().endswith((".jsonl", ".jsonl.txt", ".ndjson"))
 
 
 def _record_result(
@@ -419,6 +429,7 @@ def _build_stream_parse_plan(
             context.raw_source,
             max_samples=64,
             jsonl_dict_only=True,
+            scan_full=context.validation_mode is ValidationMode.STRICT,
         )
     except Exception:
         # Sampling helper failed entirely (file I/O, decode, or worse). Logging
@@ -432,23 +443,20 @@ def _build_stream_parse_plan(
         return None
 
     runtime_provider = Provider.from_string(payload_provider or context.raw_record.provider_name)
-    detected_provider = Provider.from_string(payload_provider or runtime_provider)
-    sniffed_provider = runtime_provider
-    if sample_payloads:
-        sniffed_provider = detect_provider(sample_payloads) or runtime_provider
-    if sniffed_provider in STREAM_RECORD_PROVIDERS:
-        detected_provider = sniffed_provider
-    else:
-        return None
+    if runtime_provider not in STREAM_RECORD_PROVIDERS:
+        detected_provider = detect_provider(sample_payloads)
+        if detected_provider not in STREAM_RECORD_PROVIDERS:
+            return None
+        runtime_provider = detected_provider
 
     artifact = classify_artifact(
         sample_payloads,
-        provider=detected_provider,
+        provider=runtime_provider,
         source_path=context.raw_record.source_path,
     )
     return _build_parse_plan(
-        provider=detected_provider,
-        payload_provider=str(detected_provider),
+        provider=runtime_provider,
+        payload_provider=str(runtime_provider),
         artifact=artifact,
         source_path=context.raw_record.source_path,
         mode="stream",
@@ -457,6 +465,39 @@ def _build_stream_parse_plan(
         stream_name=stream_name,
         malformed_jsonl_lines=malformed_lines,
         malformed_jsonl_detail=malformed_detail,
+    )
+
+
+def _build_fast_stream_parse_plan(
+    context: _IngestContext,
+    *,
+    payload_provider: str | None,
+) -> _ParsePlan | None:
+    runtime_provider = Provider.from_string(payload_provider or context.raw_record.provider_name)
+    if runtime_provider not in STREAM_RECORD_PROVIDERS:
+        return None
+
+    kind = (
+        ArtifactKind.SUBAGENT_CONVERSATION_STREAM
+        if is_subagent_path(context.raw_record.source_path)
+        else ArtifactKind.CONVERSATION_RECORD_STREAM
+    )
+    artifact = ArtifactClassification(
+        provider=runtime_provider,
+        kind=kind,
+        parse_as_conversation=True,
+        schema_eligible=False,
+        default_priority=90 if kind is ArtifactKind.SUBAGENT_CONVERSATION_STREAM else 120,
+        reason="known JSONL stream provider with validation off",
+    )
+    return _build_parse_plan(
+        provider=runtime_provider,
+        payload_provider=str(runtime_provider),
+        artifact=artifact,
+        source_path=context.raw_record.source_path,
+        mode="stream",
+        schema_payload_source=None,
+        stream_name=context.raw_record.source_path or context.raw_record.raw_id,
     )
 
 
@@ -537,12 +578,24 @@ def _parse_plan_conversations(
     fallback_id = _fallback_id(context.raw_record.source_path, context.raw_record.raw_id)
     if plan.mode == "stream":
         assert plan.stream_name is not None
+        stream_name = plan.stream_name
         with context.raw_source.open("rb") as handle:
-            return parse_stream_payload(
+            valid_record_count = 0
+
+            def counted_stream() -> Iterable[object]:
+                nonlocal valid_record_count
+                for item in _iter_json_stream(handle, stream_name):
+                    valid_record_count += 1
+                    yield item
+
+            conversations = parse_stream_payload(
                 plan.provider,
-                _iter_json_stream(handle, plan.stream_name),
+                counted_stream(),
                 fallback_id,
             )
+            if valid_record_count == 0:
+                raise ValueError(f"no valid JSON records in {stream_name}")
+            return conversations
 
     return parse_payload(
         plan.provider,
@@ -571,6 +624,7 @@ def _materialize_parsed_conversations(
                 source_name=context.source_name,
                 archive_root=context.archive_root,
                 raw_id=context.raw_record.raw_id,
+                append_only=context.raw_record.source_index == -1,
             )
             result_convos.append(cdata)
         except Exception as exc:
@@ -678,10 +732,27 @@ def ingest_record(
         fallback_timestamp=raw_record.file_mtime,
     )
 
-    if _is_stream_record_provider(raw_record.source_path, stored_payload_provider or raw_record.provider_name) and (
-        stream_plan := _build_stream_parse_plan(context, payload_provider=stored_payload_provider)
-    ):
-        return _run_parse_plan(context, stream_plan)
+    if raw_record.blob_size == 0:
+        error = "decode: Input is a zero-length, empty document"
+        return _record_result(
+            context,
+            stored_payload_provider,
+            validation_status=ValidationStatus.FAILED,
+            validation_error=error,
+            parse_error=error,
+            error=error,
+        )
+
+    if _is_stream_record_provider(raw_record.source_path, stored_payload_provider or raw_record.provider_name):
+        if validation_mode is ValidationMode.OFF and (
+            stream_plan := _build_fast_stream_parse_plan(context, payload_provider=stored_payload_provider)
+        ):
+            return _run_parse_plan(context, stream_plan)
+        if stream_plan := _build_stream_parse_plan(context, payload_provider=stored_payload_provider):
+            return _run_parse_plan(context, stream_plan)
+    elif _is_jsonl_source_path(raw_record.source_path):
+        if stream_plan := _build_stream_parse_plan(context, payload_provider=stored_payload_provider):
+            return _run_parse_plan(context, stream_plan)
 
     # ── Phase 1: Decode blob (ONE decode, not two) ────────────────────
     try:
@@ -787,15 +858,35 @@ def _content_block_tuples(conversation: MaterializedConversation) -> list[Conten
     ]
 
 
-def _stats_tuple(conversation: MaterializedConversation) -> StatsTuple:
+_TupleT = TypeVar("_TupleT")
+
+
+def _dedupe_by_key_preserve_last(items: list[_TupleT], key: Callable[[_TupleT], object]) -> list[_TupleT]:
+    if len(items) < 2:
+        return items
+    seen: set[object] = set()
+    deduped: list[_TupleT] = []
+    for item in reversed(items):
+        item_key = key(item)
+        if item_key in seen:
+            continue
+        seen.add(item_key)
+        deduped.append(item)
+    if len(deduped) == len(items):
+        return items
+    deduped.reverse()
+    return deduped
+
+
+def _stats_tuple(conversation: MaterializedConversation, message_tuples: list[MessageTuple]) -> StatsTuple:
     return (
         conversation.conversation_id,
         conversation.provider_name,
-        conversation.stats.message_count,
-        conversation.stats.word_count,
-        conversation.stats.tool_use_count,
-        conversation.stats.thinking_count,
-        conversation.stats.paste_count,
+        len(message_tuples),
+        sum(message[11] for message in message_tuples),
+        sum(message[12] for message in message_tuples),
+        sum(message[13] for message in message_tuples),
+        sum(message[14] for message in message_tuples),
     )
 
 
@@ -861,6 +952,7 @@ def _transform_to_tuples(
     source_name: str,
     archive_root: Path,
     raw_id: str | None,
+    append_only: bool = False,
 ) -> ConversationData:
     """Convert a ParsedConversation to DB-ready tuples."""
     materialized = materialize_conversation(
@@ -868,74 +960,32 @@ def _transform_to_tuples(
         source_name=source_name,
         archive_root=archive_root,
     )
+    message_tuples = _dedupe_by_key_preserve_last(_message_tuples(materialized), lambda item: item[0])
+    block_tuples = _dedupe_by_key_preserve_last(_content_block_tuples(materialized), lambda item: item[0])
+    action_event_tuples = _dedupe_by_key_preserve_last(_build_action_event_tuples(materialized), lambda item: item[0])
+    provider_event_tuples = _dedupe_by_key_preserve_last(
+        _provider_event_tuples(materialized, raw_id=raw_id), lambda item: item[0]
+    )
 
     attachment_tuples, attachment_ref_tuples = _attachment_tuples(materialized)
+    attachment_tuples = _dedupe_by_key_preserve_last(attachment_tuples, lambda item: item[0])
+    attachment_ref_tuples = _dedupe_by_key_preserve_last(attachment_ref_tuples, lambda item: item[0])
 
     return ConversationData(
         conversation_id=materialized.conversation_id,
         content_hash=materialized.content_hash,
         provider_name=materialized.provider_name,
         conversation_tuple=_conversation_tuple(materialized, raw_id=raw_id),
-        message_tuples=_message_tuples(materialized),
-        block_tuples=_content_block_tuples(materialized),
-        action_event_tuples=_build_action_event_tuples(materialized),
-        provider_event_tuples=_provider_event_tuples(materialized, raw_id=raw_id),
-        stats_tuple=_stats_tuple(materialized),
+        message_tuples=message_tuples,
+        block_tuples=block_tuples,
+        action_event_tuples=action_event_tuples,
+        provider_event_tuples=provider_event_tuples,
+        stats_tuple=_stats_tuple(materialized, message_tuples),
         attachment_tuples=attachment_tuples,
         attachment_ref_tuples=attachment_ref_tuples,
         source_name=source_name,
         raw_id=raw_id,
-    )
-
-
-def _content_block_record_for_action_event(
-    *,
-    conversation_id: ConversationId,
-    message_id: MessageId,
-    block: MaterializedContentBlock,
-) -> ContentBlockRecord:
-    return ContentBlockRecord(
-        block_id=block.block_id,
-        message_id=message_id,
-        conversation_id=conversation_id,
-        block_index=block.block_index,
-        type=block.type,
-        text=block.text,
-        tool_name=block.tool_name,
-        tool_id=block.tool_id,
-        tool_input=block.tool_input_json,
-        media_type=block.media_type,
-        metadata=block.metadata_json,
-        semantic_type=block.semantic_type,
-    )
-
-
-def _message_record_for_action_events(
-    conversation: MaterializedConversation,
-    message: MaterializedMessage,
-) -> MessageRecord:
-    return MessageRecord(
-        message_id=message.message_id,
-        conversation_id=conversation.conversation_id,
-        provider_message_id=message.provider_message_id,
-        role=message.role,
-        text=message.text,
-        sort_key=message.sort_key,
-        content_hash=message.content_hash,
-        provider_name=conversation.provider_name,
-        word_count=message.word_count,
-        has_tool_use=message.has_tool_use,
-        has_thinking=message.has_thinking,
-        has_paste=message.has_paste,
-        message_type=message.message_type,
-        content_blocks=[
-            _content_block_record_for_action_event(
-                conversation_id=conversation.conversation_id,
-                message_id=message.message_id,
-                block=block,
-            )
-            for block in message.blocks
-        ],
+        append_only=append_only,
     )
 
 
@@ -987,16 +1037,47 @@ def _action_event_tuple(
     )
 
 
+def _action_event_message_timestamp(message: MaterializedMessage) -> datetime | None:
+    if message.sort_key is None:
+        return None
+    try:
+        return datetime.fromtimestamp(message.sort_key, tz=timezone.utc)
+    except (OSError, ValueError):
+        return None
+
+
+def _content_block_mapping_for_action_event(
+    *,
+    conversation_id: ConversationId,
+    message_id: MessageId,
+    block: MaterializedContentBlock,
+) -> dict[str, object]:
+    return {
+        "block_id": block.block_id,
+        "message_id": message_id,
+        "conversation_id": conversation_id,
+        "block_index": block.block_index,
+        "type": block.type,
+        "text": block.text,
+        "tool_name": block.tool_name,
+        "tool_id": block.tool_id,
+        "tool_input": block.tool_input_json,
+        "media_type": block.media_type,
+        "metadata": block.metadata_json,
+        "semantic_type": block.semantic_type,
+    }
+
+
 def _build_action_event_tuples(
     conversation: MaterializedConversation,
 ) -> list[ActionEventTuple]:
     """Build action event tuples for all messages in a conversation.
 
-    Uses the lightweight action event builder that works from content blocks
-    without needing full Pydantic MessageRecord hydration.
+    Uses the lightweight action event builder directly from materialized content
+    blocks, avoiding Pydantic storage-record/domain-message hydration on dense
+    tool-call streams.
     """
     from polylogue.archive.action_event.action_events import build_action_events, build_tool_calls_from_content_blocks
-    from polylogue.storage.hydrators import message_from_record
 
     provider = Provider.from_string(conversation.provider_name)
     action_tuples: list[ActionEventTuple] = []
@@ -1005,16 +1086,23 @@ def _build_action_event_tuples(
         if not message.has_tool_use:
             continue
 
-        domain_message = message_from_record(
-            _message_record_for_action_events(conversation, message),
-            attachments=[],
-            provider=provider,
+        content_blocks = tuple(
+            _content_block_mapping_for_action_event(
+                conversation_id=conversation.conversation_id,
+                message_id=message.message_id,
+                block=block,
+            )
+            for block in message.blocks
         )
         tool_calls = build_tool_calls_from_content_blocks(
             provider=provider,
-            content_blocks=domain_message.content_blocks,
+            content_blocks=content_blocks,
         )
-        for event in build_action_events(domain_message, tool_calls):
+        action_message = _ActionEventMessage(
+            id=message.message_id,
+            timestamp=_action_event_message_timestamp(message),
+        )
+        for event in build_action_events(action_message, tool_calls):
             action_tuples.append(_action_event_tuple(conversation, message, event))
 
     return action_tuples

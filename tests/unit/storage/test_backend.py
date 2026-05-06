@@ -154,8 +154,6 @@ def test_ensure_schema_contract(tmp_path: Path) -> None:
         "messages",
         "attachments",
         "attachment_refs",
-        "runs",
-        "publications",
     }.issubset(_table_names(conn))
     assert "message_meta" not in _table_names(conn)
     raw_columns = {row[1] for row in conn.execute("PRAGMA table_info(raw_conversations)").fetchall()}
@@ -378,7 +376,7 @@ def test_schema_extension_plan_expands_catalog_descriptors() -> None:
     assert any("provider_events" in statement for statement in plan.scripts), (
         "Provider-event archive table DDL must be in extension scripts"
     )
-    assert len(plan.scripts) == 7
+    assert len(plan.scripts) == 6
 
 
 def test_ensure_schema_rejects_old_raw_table_version_without_mutating(tmp_path: Path) -> None:
@@ -476,7 +474,6 @@ def test_open_connection_contract(tmp_path: Path) -> None:
             "messages",
             "attachments",
             "attachment_refs",
-            "publications",
         }.issubset(_table_names(conn))
 
     assert db_path.exists()
@@ -593,7 +590,6 @@ def test_connection_context_contract(tmp_path: Path, monkeypatch: pytest.MonkeyP
             "messages",
             "attachments",
             "attachment_refs",
-            "publications",
         }.issubset(_table_names(explicit_conn))
 
     data_home = tmp_path / "data"

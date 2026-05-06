@@ -18,7 +18,6 @@ def search_messages(
     query: str,
     *,
     archive_root: Path,
-    render_root_path: Path | None = None,
     db_path: Path | None = None,
     limit: int = 20,
     source: str | None = None,
@@ -29,7 +28,6 @@ def search_messages(
     return _search_runtime.search_messages(
         query=query,
         archive_root=archive_root,
-        render_root_path=render_root_path,
         db_path=db_path,
         limit=limit,
         source=source,

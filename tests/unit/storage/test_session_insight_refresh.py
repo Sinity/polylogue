@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.storage.insights.session.aggregates import refresh_async_provider_day_aggregates
+from polylogue.storage.insights.session.rebuild import load_sync_batch, rebuild_session_insights_sync
 from polylogue.storage.insights.session.refresh import (
     _apply_session_insight_conversation_updates_async,
     _refresh_thread_roots_async,
@@ -125,6 +126,192 @@ async def test_apply_session_insight_conversation_updates_async_counts_provider_
 
     assert row is not None
     assert json.loads(row["evidence_payload_json"])["compaction_count"] == 1
+
+
+def test_targeted_session_insight_rebuild_refreshes_only_affected_groups_and_roots(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "refresh-sync-targeted.db"
+    with open_connection(db_path) as conn:
+        store_records(
+            conversation=make_conversation(
+                "conv-chatgpt-a",
+                provider_name="chatgpt",
+                title="ChatGPT A",
+                created_at="2026-04-02T10:00:00+00:00",
+                updated_at="2026-04-02T10:05:00+00:00",
+            ),
+            messages=[
+                make_message(
+                    "conv-chatgpt-a:msg-1",
+                    "conv-chatgpt-a",
+                    text="ChatGPT A message",
+                    timestamp="2026-04-02T10:00:00+00:00",
+                )
+            ],
+            attachments=[],
+            conn=conn,
+        )
+        store_records(
+            conversation=make_conversation(
+                "conv-claude-a",
+                provider_name="claude-ai",
+                title="Claude A",
+                created_at="2026-04-03T09:00:00+00:00",
+                updated_at="2026-04-03T09:05:00+00:00",
+            ),
+            messages=[
+                make_message(
+                    "conv-claude-a:msg-1",
+                    "conv-claude-a",
+                    text="Claude A message",
+                    timestamp="2026-04-03T09:00:00+00:00",
+                )
+            ],
+            attachments=[],
+            conn=conn,
+        )
+        rebuild_session_insights_sync(conn)
+        conn.execute(
+            "UPDATE day_session_summaries SET search_text = ? WHERE provider_name = ?",
+            ("sentinel day untouched", "claude-ai"),
+        )
+        conn.execute(
+            "UPDATE work_threads SET search_text = ? WHERE thread_id = ?",
+            ("sentinel thread untouched", "conv-claude-a"),
+        )
+        store_records(
+            conversation=make_conversation(
+                "conv-chatgpt-b",
+                provider_name="chatgpt",
+                title="ChatGPT B",
+                created_at="2026-04-02T11:00:00+00:00",
+                updated_at="2026-04-02T11:05:00+00:00",
+            ),
+            messages=[
+                make_message(
+                    "conv-chatgpt-b:msg-1",
+                    "conv-chatgpt-b",
+                    text="ChatGPT B message",
+                    timestamp="2026-04-02T11:00:00+00:00",
+                )
+            ],
+            attachments=[],
+            conn=conn,
+        )
+        counts = rebuild_session_insights_sync(conn, conversation_ids=["conv-chatgpt-b"])
+        day_rows = conn.execute(
+            """
+            SELECT provider_name, day, conversation_count, search_text
+            FROM day_session_summaries
+            ORDER BY provider_name, day
+            """
+        ).fetchall()
+        claude_thread = conn.execute(
+            "SELECT search_text FROM work_threads WHERE thread_id = ?",
+            ("conv-claude-a",),
+        ).fetchone()
+
+    assert counts.profiles == 1
+    assert [(row["provider_name"], row["day"], row["conversation_count"]) for row in day_rows] == [
+        ("chatgpt", "2026-04-02", 2),
+        ("claude-ai", "2026-04-03", 1),
+    ]
+    assert [row["search_text"] for row in day_rows if row["provider_name"] == "claude-ai"] == ["sentinel day untouched"]
+    assert claude_thread is not None
+    assert claude_thread["search_text"] == "sentinel thread untouched"
+
+
+def test_session_insight_load_skips_plain_text_blocks(tmp_path: Path) -> None:
+    db_path = tmp_path / "refresh-block-filter.db"
+    with open_connection(db_path) as conn:
+        store_records(
+            conversation=make_conversation("conv-blocks", provider_name="codex", title="Block Filter"),
+            messages=[
+                make_message(
+                    "conv-blocks:msg-1",
+                    "conv-blocks",
+                    text="Plain text is already stored on the message row.",
+                    content_blocks=[{"type": "text", "text": "Plain text is already stored on the message row."}],
+                ),
+                make_message(
+                    "conv-blocks:msg-2",
+                    "conv-blocks",
+                    role="assistant",
+                    text="exec_command",
+                    content_blocks=[
+                        {
+                            "type": "tool_use",
+                            "name": "exec_command",
+                            "id": "call-1",
+                            "input": {"cmd": "git status"},
+                        }
+                    ],
+                ),
+            ],
+            attachments=[],
+            conn=conn,
+        )
+        batch = load_sync_batch(conn, ["conv-blocks"])
+
+    assert [str(block.message_id) for block in batch.blocks] == ["conv-blocks:msg-2"]
+
+
+def test_targeted_session_insight_rebuild_splits_large_message_batches(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "rebuild-message-budget.db"
+    conversation_ids: list[str] = []
+    with open_connection(db_path) as conn:
+        for index in range(3):
+            conversation_id = f"conv-rebuild-budget-{index:02d}"
+            conversation_ids.append(conversation_id)
+            store_records(
+                conversation=make_conversation(conversation_id, title=f"Rebuild Budget {index:02d}"),
+                messages=[
+                    make_message(
+                        f"{conversation_id}:msg-1",
+                        conversation_id,
+                        text=f"Message for {conversation_id}",
+                    )
+                ],
+                attachments=[],
+                conn=conn,
+            )
+        conn.executemany(
+            """
+            INSERT OR REPLACE INTO conversation_stats (
+                conversation_id,
+                provider_name,
+                message_count,
+                word_count,
+                tool_use_count,
+                thinking_count
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            [
+                ("conv-rebuild-budget-00", "chatgpt", 4_000, 4_000, 0, 0),
+                ("conv-rebuild-budget-01", "chatgpt", 4_000, 4_000, 0, 0),
+                ("conv-rebuild-budget-02", "chatgpt", 100, 100, 0, 0),
+            ],
+        )
+        conn.commit()
+
+        chunk_profile_counts: list[int] = []
+
+        def record_progress(amount: int, desc: str | None = None) -> None:
+            del desc
+            chunk_profile_counts.append(amount)
+
+        counts = rebuild_session_insights_sync(
+            conn,
+            conversation_ids=conversation_ids,
+            page_size=10,
+            progress_callback=record_progress,
+        )
+
+    assert counts.profiles == 3
+    assert chunk_profile_counts == [1, 2]
 
 
 @pytest.mark.asyncio

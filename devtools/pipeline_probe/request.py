@@ -9,8 +9,7 @@ from typing import NotRequired
 from typing_extensions import TypedDict
 
 from devtools.regression_cases import DEFAULT_REGRESSION_CASE_DIR
-from polylogue.core.json import JSONDocument, JSONValue, loads, require_json_document
-from polylogue.pipeline.runner import RUN_STAGE_CHOICES
+from polylogue.core.json import JSONDocument, JSONValue
 from polylogue.scenarios import (
     CorpusRequest,
     CorpusSourceKind,
@@ -27,16 +26,13 @@ _EXT_MAP = {
     "codex": ".jsonl",
 }
 _INPUT_MODES = tuple(mode.value for mode in PipelineProbeInputMode)
+PROBE_STAGE_CHOICES: tuple[str, ...] = ("parse", "materialize", "index", "all")
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 _SOURCE_BACKED_PROBE_STAGE_SEQUENCES: dict[str, tuple[str, ...]] = {
-    "acquire": ("acquire",),
-    "schema": ("acquire", "schema"),
     "parse": ("acquire", "parse"),
     "materialize": ("acquire", "parse", "materialize"),
-    "render": ("acquire", "parse", "render"),
     "index": ("acquire", "parse", "index"),
-    "reprocess": ("acquire", "parse", "materialize", "render", "index"),
-    "all": ("acquire", "parse", "materialize", "render", "index"),
+    "all": ("acquire", "parse", "materialize", "index"),
 }
 
 
@@ -197,12 +193,6 @@ def _resolve_synthetic_provider(request: PipelineProbeRequest) -> str:
     return provider_name
 
 
-def _load_run_payload(run_path: str | None) -> JSONDocument:
-    if not run_path:
-        return {}
-    return require_json_document(loads(Path(run_path).read_text(encoding="utf-8")), context="pipeline run payload")
-
-
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -320,7 +310,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--stage",
-        choices=RUN_STAGE_CHOICES,
+        choices=PROBE_STAGE_CHOICES,
         default="all",
         help="Pipeline stage to execute (default: all)",
     )
@@ -448,7 +438,6 @@ __all__ = [
     "_INPUT_MODES",
     "_REPO_ROOT",
     "_SOURCE_BACKED_PROBE_STAGE_SEQUENCES",
-    "_load_run_payload",
     "_names",
     "_parse_args",
     "_paths",

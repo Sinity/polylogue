@@ -255,15 +255,11 @@ async def run_startup_readiness_campaign(db_path: Path) -> CampaignResult:
         elapsed, _ = await _ameasure(backend.get_provider_metrics_rows())
         metrics["provider_metrics_s"] = round(elapsed, 4)
 
-        elapsed, _ = await _ameasure(backend.queries.get_latest_run())
-        metrics["latest_run_s"] = round(elapsed, 4)
-
         metrics["total_readiness_s"] = round(
             metrics["backend_init_s"]
             + metrics["count_convs_s"]
             + metrics["stats_by_provider_s"]
-            + metrics["provider_metrics_s"]
-            + metrics["latest_run_s"],
+            + metrics["provider_metrics_s"],
             4,
         )
 
@@ -353,6 +349,37 @@ def run_session_insight_materialization_campaign(db_path: Path) -> CampaignResul
     )
 
 
+async def run_daemon_live_convergence_campaign(db_path: Path) -> CampaignResult:
+    """Benchmark in-process daemon live ingestion and convergence."""
+    from devtools.daemon_live_benchmark import run_daemon_live_convergence_workload
+    from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
+    from polylogue.storage.sqlite.connection import open_connection
+
+    metrics, stats = await run_daemon_live_convergence_workload(db_path)
+    with open_connection(db_path) as conn:
+        elapsed, rebuilt = _measure(rebuild_session_insights_sync, conn)
+        conn.commit()
+    metrics.update(
+        {
+            "session_insight_rebuild_wall_s": round(elapsed, 3),
+            "profiles_rebuilt": float(rebuilt.profiles),
+            "work_events_rebuilt": float(rebuilt.work_events),
+            "phases_rebuilt": float(rebuilt.phases),
+            "threads_rebuilt": float(rebuilt.threads),
+            "tag_rollups_rebuilt": float(rebuilt.tag_rollups),
+            "day_summaries_rebuilt": float(rebuilt.day_summaries),
+        }
+    )
+    stats.update(_db_row_counts(db_path))
+    stats.update(_session_insight_table_counts(db_path))
+    return CampaignResult(
+        campaign_name="daemon-live-convergence",
+        scale_level="",
+        metrics=metrics,
+        db_stats=stats,
+    )
+
+
 SYNTHETIC_BENCHMARK_RUNNERS: dict[str, SyntheticBenchmarkRunner] = {
     "fts-rebuild": run_fts_rebuild_campaign,
     "incremental-index": run_incremental_index_campaign,
@@ -360,6 +387,7 @@ SYNTHETIC_BENCHMARK_RUNNERS: dict[str, SyntheticBenchmarkRunner] = {
     "startup-readiness": run_startup_readiness_campaign,
     "action-event-materialization": run_action_event_materialization_campaign,
     "session-insight-materialization": run_session_insight_materialization_campaign,
+    "daemon-live-convergence": run_daemon_live_convergence_campaign,
 }
 
 
@@ -374,6 +402,7 @@ __all__ = [
     "CampaignResult",
     "resolve_synthetic_benchmark_runner",
     "run_action_event_materialization_campaign",
+    "run_daemon_live_convergence_campaign",
     "run_filter_scan_campaign",
     "run_fts_rebuild_campaign",
     "run_incremental_index_campaign",

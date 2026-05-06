@@ -97,6 +97,7 @@ class ArchiveSpec:
                         messages_min=self.messages_per_conversation_range.start,
                         messages_max=self.messages_per_conversation_range.stop - 1,
                         seed=self.seed,
+                        style=_style_for_provider(provider, content_blocks_ratio=self.content_blocks_ratio),
                         origin="generated.large-archive",
                         tags=("synthetic", "benchmark", "scale", self.level.value),
                     )
@@ -214,6 +215,14 @@ def _distribute_conversations(
             remaining -= count
 
     return allocated
+
+
+def _style_for_provider(provider: str, *, content_blocks_ratio: float) -> str:
+    if content_blocks_ratio <= 0:
+        return "default"
+    if provider in {"claude-code", "codex"}:
+        return "tool-heavy"
+    return "default"
 
 
 def _scale_integer_weights(total: int, weights: tuple[int, ...]) -> tuple[int, ...]:

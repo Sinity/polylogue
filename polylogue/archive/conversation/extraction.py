@@ -41,6 +41,7 @@ _SUMMARY_PROTOCOL_BLOCKS = (
 )
 _SUMMARY_MAX_TEXT_LEN = 100
 _SUMMARY_MAX_JOINED_LEN = 200
+_SIGNAL_TEXT_PREVIEW_MAX_LEN = 512
 
 
 def _normalize_summary_whitespace(text: str) -> str:
@@ -246,32 +247,53 @@ _TEXT_SIGNAL_TABLE: TextSignalTable = [
 ]
 
 
+def _text_signal_from_lowered_text(
+    lowered_text: str,
+    *,
+    before_index: int | None = None,
+) -> tuple[int, WorkEventKind, str] | None:
+    signal_table = _TEXT_SIGNAL_TABLE if before_index is None else _TEXT_SIGNAL_TABLE[:before_index]
+    for index, (patterns, kind, name) in enumerate(signal_table):
+        if any(pattern in lowered_text for pattern in patterns):
+            return index, kind, name
+    return None
+
+
 def _collect_range_signals(
     messages: Sequence[MessageSemanticFacts],
     message_range: MessageRange,
 ) -> WorkEventSignalBundle:
     action_category_counts: dict[str, int] = {}
-    user_text_parts: list[str] = []
+    normalized_user_text_parts: list[str] = []
+    normalized_user_text_len = 0
+    best_text_signal_index: int | None = None
+    text_signal: WorkEventKind | None = None
+    text_signal_name: str | None = None
 
     for message in message_range.iter_messages(messages):
         if message.is_user and message.text and not message.is_noise:
-            user_text_parts.append(message.text.lower())
+            lowered_text: str | None = None
+            if normalized_user_text_len < _SIGNAL_TEXT_PREVIEW_MAX_LEN:
+                lowered_text = message.text.lower()
+                remaining = _SIGNAL_TEXT_PREVIEW_MAX_LEN - normalized_user_text_len
+                normalized_user_text_parts.append(lowered_text[:remaining])
+                normalized_user_text_len += min(len(lowered_text), remaining)
+            if best_text_signal_index != 0:
+                if lowered_text is None:
+                    lowered_text = message.text.lower()
+                matched = _text_signal_from_lowered_text(
+                    lowered_text,
+                    before_index=best_text_signal_index,
+                )
+                if matched is not None:
+                    best_text_signal_index, text_signal, text_signal_name = matched
         for action in message.action_events:
             category = action.kind.value
             action_category_counts[category] = action_category_counts.get(category, 0) + 1
 
-    normalized_user_text = " ".join(part for part in user_text_parts if part).strip()
-    text_signal: WorkEventKind | None = None
-    text_signal_name: str | None = None
-    if normalized_user_text:
-        for patterns, kind, name in _TEXT_SIGNAL_TABLE:
-            if any(pattern in normalized_user_text for pattern in patterns):
-                text_signal = kind
-                text_signal_name = name
-                break
     return WorkEventSignalBundle(
         action_category_counts=action_category_counts,
-        normalized_user_text=normalized_user_text,
+        normalized_user_text=" ".join(normalized_user_text_parts).strip(),
         text_signal=text_signal,
         text_signal_name=text_signal_name,
     )
@@ -347,7 +369,7 @@ def _compute_phase_ranges(
         return [(0, msg_count)] if msg_count > 0 else []
 
     ranges: list[tuple[int, int]] = []
-    messages = list(semantic_facts.message_facts)
+    messages = semantic_facts.message_facts
     for phase in resolved_phases:
         start, end = phase.message_range
         if start >= end:
@@ -466,7 +488,7 @@ def extract_work_events(
     phases: Sequence[SessionPhase] | None = None,
 ) -> list[WorkEvent]:
     semantic_facts = facts or build_conversation_semantic_facts(conversation)
-    messages = list(semantic_facts.message_facts)
+    messages = semantic_facts.message_facts
     if not messages:
         return []
 

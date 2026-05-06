@@ -41,7 +41,7 @@ def _output_spec(output_format: str = "markdown") -> QueryOutputSpec:
         message_roles=(),
         transform=None,
         list_mode=False,
-        print_path=False,
+        print_url=False,
     )
 
 
@@ -460,36 +460,9 @@ async def test_query_output_helpers_cover_stream_dates_headers_and_rich_lists(tm
     await query_output.output_search_hits(env, [hit], _output_spec("markdown"), repo=plain_repo)
     await query_output.output_summary_list(env, [_summary()], _output_spec("markdown"), repo=None)
 
-    with (
-        patch("polylogue.cli.shared.helpers.load_effective_config", side_effect=RuntimeError("boom")),
-        patch("polylogue.paths.render_root", return_value=Path("/tmp/missing-render-root")),
-        patch("click.echo") as echo,
-    ):
-        with pytest.raises(SystemExit) as missing_root:
-            query_output.open_result(_env(), [make_conv(id="conv-open", provider="claude-code")], _output_spec("html"))
-    assert missing_root.value.code == 1
-    assert any("No rendered outputs found." in call.args[0] for call in echo.call_args_list if call.args)
-
-    render_root = tmp_path / "render-root"
-    render_root.mkdir()
-    with (
-        patch(
-            "polylogue.cli.shared.helpers.load_effective_config", return_value=SimpleNamespace(render_root=render_root)
-        ),
-        patch("polylogue.paths.render_root", return_value=render_root),
-        patch(
-            "polylogue.paths.sanitize.conversation_render_root",
-            return_value=Path("/tmp/render-root/claude-code/conv-open"),
-        ),
-        patch("polylogue.cli.shared.helpers.latest_render_path", return_value=None),
-        patch("click.echo") as echo,
-    ):
-        with pytest.raises(SystemExit) as missing_render:
-            query_output.open_result(_env(), [make_conv(id="conv-open", provider="claude-code")], _output_spec("html"))
-    assert missing_render.value.code == 1
-    assert any(
-        "No rendered output found for this conversation." in call.args[0] for call in echo.call_args_list if call.args
-    )
+    with patch("webbrowser.open") as open_browser:
+        query_output.open_result(_env(), [make_conv(id="conv-open", provider="claude-code")], _output_spec("html"))
+    open_browser.assert_called_once_with("http://127.0.0.1:8766/?conversation=conv-open")
 
     with patch("sys.stdout.write") as write, patch("sys.stdout.flush") as flush:
         query_output.write_message_streaming(make_msg(text=None), "plaintext")

@@ -23,17 +23,6 @@ mutation_campaigns:
       - tests/unit/cli/test_query_fmt.py
     status: active
 
-  - name: cli-run
-    description: >
-      Run command execution, display, and watch contracts
-    paths_to_mutate:
-      - polylogue/cli/commands/run.py
-    tests:
-      - tests/unit/cli/test_run.py
-      - tests/unit/cli/test_run_int.py
-      - tests/unit/cli/test_run_laws.py
-    status: active
-
   - name: drive-client
     description: >
       Drive auth, transport, JSON payload parsing, and ingest attachment contracts
@@ -106,7 +95,6 @@ mutation_campaigns:
     tests:
       - tests/unit/pipeline/test_acquisition_streams.py
       - tests/unit/pipeline/test_parsing_service.py
-      - tests/unit/pipeline/test_render_service.py
       - tests/unit/pipeline/test_indexing.py
       - tests/unit/pipeline/test_ingest_batch.py
       - tests/unit/pipeline/test_stage_independence.py
@@ -194,16 +182,6 @@ mutation_campaigns:
       - tests/unit/core/test_schema_laws.py
       - tests/unit/core/test_verification.py
       - tests/unit/storage/test_schema_safety.py
-    status: active
-
-  - name: site-builder
-    description: >
-      Static-site builder and CLI archive contracts
-    paths_to_mutate:
-      - polylogue/site/builder.py
-    tests:
-      - tests/integration/test_site.py
-      - tests/integration/test_site_laws.py
     status: active
 
   - name: source-detection

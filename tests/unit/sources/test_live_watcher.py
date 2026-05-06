@@ -4,15 +4,71 @@ debounce, bootstrap scan, and end-to-end via the watchfiles event loop."""
 from __future__ import annotations
 
 import asyncio
+import json
 import sqlite3
+import time
+from collections.abc import Iterable
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from types import SimpleNamespace
+from typing import Any, cast
+from unittest.mock import MagicMock
 
 import pytest
 
 import polylogue.sources.live.watcher as live_watcher
+from polylogue import Polylogue
 from polylogue.sources.live import LiveWatcher, WatchSource
+from polylogue.sources.live.batch import (
+    _LARGE_FULL_PARSE_PROGRESS_BYTES,
+    _SMALL_FULL_PARSE_PROGRESS_MAX_BYTES,
+    _SMALL_FULL_PARSE_PROGRESS_MAX_FILES,
+    _STREAMING_FULL_INGEST_BYTES,
+    LiveBatchProcessor,
+    _full_ingest_worker_count,
+    _full_parse_progress_groups,
+    _FullIngestResult,
+    last_complete_newline_from_tail,
+)
 from polylogue.sources.live.cursor import CursorRecord, CursorStore
+from polylogue.storage.runtime import RawConversationRecord
+
+
+class _FullIngestMock:
+    def __init__(self) -> None:
+        self.await_count = 0
+        self.side_effect: BaseException | type[BaseException] | None = None
+
+    def reset_mock(self) -> None:
+        self.await_count = 0
+
+    async def __call__(self, paths: list[Path], *, source_name: str, heartbeat: object = None) -> _FullIngestResult:
+        del source_name, heartbeat
+        self.await_count += 1
+        if self.side_effect is not None:
+            if isinstance(self.side_effect, BaseException):
+                raise self.side_effect
+            if isinstance(self.side_effect, type) and issubclass(self.side_effect, BaseException):
+                raise self.side_effect()
+        return _FullIngestResult(
+            succeeded=list(paths),
+            failed=[],
+            source_payload_read_bytes=sum(path.stat().st_size for path in paths),
+        )
+
+
+class _FailingSecondPathConverger:
+    def __init__(self, failing_path: Path) -> None:
+        self.failing_path = failing_path
+
+    def converge_batch(self, paths: tuple[Path, ...]) -> tuple[dict[Path, object], dict[str, float]]:
+        if self.failing_path in paths:
+            return (
+                {path: SimpleNamespace(converged=path != self.failing_path) for path in paths},
+                {"fake": 0.001},
+            )
+        return ({path: SimpleNamespace(converged=True) for path in paths}, {"fake": 0.001})
+
 
 # --- CursorStore ---------------------------------------------------------------
 
@@ -53,6 +109,22 @@ def test_cursor_isolated_per_path(tmp_path: Path) -> None:
     assert store.get(b) == 20
 
 
+def test_cursor_fetches_records_in_bulk(tmp_path: Path) -> None:
+    store = CursorStore(tmp_path / "live.sqlite")
+    first = tmp_path / "first.jsonl"
+    second = tmp_path / "second.jsonl"
+    missing = tmp_path / "missing.jsonl"
+
+    store.set(first, 11, parser_fingerprint="parser", content_fingerprint="first-hash")
+    store.set(second, 22, parser_fingerprint="parser", content_fingerprint="second-hash", excluded=True)
+
+    records = store.get_records([first, second, missing, first])
+
+    assert set(records) == {first, second}
+    assert records[first].content_fingerprint == "first-hash"
+    assert records[second].excluded is True
+
+
 def test_cursor_persists_across_instances(tmp_path: Path) -> None:
     db = tmp_path / "live.sqlite"
     store_a = CursorStore(db)
@@ -78,6 +150,82 @@ def test_cursor_writes_updated_at(tmp_path: Path) -> None:
         row = conn.execute("SELECT updated_at FROM live_cursor WHERE source_path=?", (str(p),)).fetchone()
     assert row[0]
     assert "T" in row[0]  # ISO 8601
+
+
+def test_cursor_records_live_ingest_attempt_progress(tmp_path: Path) -> None:
+    store = CursorStore(tmp_path / "live.sqlite")
+    source = tmp_path / "session.jsonl"
+    source.write_text('{"a":1}\n')
+
+    attempt_id = store.begin_ingest_attempt(
+        paths=[source],
+        input_bytes=source.stat().st_size,
+        queued_file_count=1,
+    )
+    store.update_ingest_attempt(
+        attempt_id,
+        phase="full_parse",
+        succeeded_file_count=0,
+        failed_file_count=0,
+        source_payload_read_bytes=0,
+        cursor_fingerprint_read_bytes=0,
+        parse_time_s=0.25,
+        current_source="codex",
+        current_path=source,
+        rss_current_mb=123.0,
+    )
+    running = store.recent_ingest_attempts(limit=1)[0]
+
+    assert running.status == "running"
+    assert running.phase == "full_parse"
+    assert running.current_path == str(source)
+    assert running.rss_current_mb == 123.0
+
+    store.finish_ingest_attempt(attempt_id, status="completed", phase="completed")
+    completed = store.recent_ingest_attempts(limit=1)[0]
+    assert completed.status == "completed"
+    assert completed.completed_at is not None
+
+
+def test_cursor_marks_running_attempts_abandoned_on_restart(tmp_path: Path) -> None:
+    db_path = tmp_path / "live.sqlite"
+    store = CursorStore(db_path)
+    source = tmp_path / "session.jsonl"
+    source.write_text('{"a":1}\n')
+    attempt_id = store.begin_ingest_attempt(
+        paths=[source],
+        input_bytes=source.stat().st_size,
+        queued_file_count=1,
+    )
+    store.update_ingest_attempt(
+        attempt_id,
+        phase="full_parse",
+        succeeded_file_count=0,
+        failed_file_count=0,
+    )
+
+    restarted = CursorStore(db_path)
+    attempt = restarted.recent_ingest_attempts(limit=1)[0]
+
+    assert attempt.attempt_id == attempt_id
+    assert attempt.status == "abandoned"
+    assert attempt.phase == "interrupted"
+    assert attempt.completed_at is not None
+    assert attempt.error == "daemon stopped before completing this ingest attempt"
+
+
+def test_cursor_mark_failed_creates_record_for_new_path(tmp_path: Path) -> None:
+    store = CursorStore(tmp_path / "live.sqlite")
+    p = tmp_path / "new.jsonl"
+    p.write_text('{"a":1}\n')
+
+    store.mark_failed(p)
+
+    record = store.get_record(p)
+    assert record is not None
+    assert record.byte_size == p.stat().st_size
+    assert record.failure_count == 1
+    assert record.next_retry_at is not None
 
 
 def test_cursor_round_trips_freshness_metadata(tmp_path: Path) -> None:
@@ -138,17 +286,167 @@ def test_cursor_migrates_size_only_rows(tmp_path: Path) -> None:
     assert {"byte_offset", "content_fingerprint", "source_name"}.issubset(columns)
 
 
+def test_live_full_ingest_uses_shared_worker_count_policy(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("polylogue.pipeline.services.ingest_batch._core.os.cpu_count", lambda: 16)
+    records = [
+        RawConversationRecord(
+            raw_id=f"raw-{index}",
+            provider_name="claude-code",
+            source_path=f"/tmp/session-{index}.jsonl",
+            blob_size=2 * 1024 * 1024,
+            acquired_at="2026-05-01T00:00:00+00:00",
+        )
+        for index in range(300)
+    ]
+    giant = RawConversationRecord(
+        raw_id="raw-giant",
+        provider_name="codex",
+        source_path="/tmp/giant.jsonl",
+        blob_size=600 * 1024 * 1024,
+        acquired_at="2026-05-01T00:00:00+00:00",
+    )
+
+    assert _full_ingest_worker_count(records) == 16
+    assert _full_ingest_worker_count([giant]) == 1
+
+
+@pytest.mark.asyncio
+async def test_live_full_ingest_streams_large_paths_before_processing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "projects"
+    project = root / "project"
+    project.mkdir(parents=True)
+    source_path = project / "large-session.jsonl"
+    records = [
+        _claude_code_message(
+            session_id="large-live-session",
+            uuid=f"msg-{index}",
+            role="user",
+            text=f"message {index}",
+            timestamp="2026-05-01T00:00:00Z",
+        )
+        for index in range(33)
+    ]
+    _write_jsonl(source_path, records)
+    with source_path.open("r+b") as handle:
+        handle.seek(_STREAMING_FULL_INGEST_BYTES + 128)
+        handle.write(b"\n")
+
+    db_path = tmp_path / "archive.sqlite"
+    polylogue = MagicMock()
+    polylogue.archive_root = tmp_path
+    polylogue.backend.db_path = db_path
+    cursor = CursorStore(db_path)
+    processor = LiveBatchProcessor(
+        polylogue,
+        (WatchSource(name="projects", root=root),),
+        cursor=cursor,
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+    )
+
+    calls: list[str] = []
+
+    def fake_write_from_path(_store: object, path: Path, *, heartbeat: object = None) -> tuple[str, int]:
+        del heartbeat
+        calls.append(f"path:{path.name}")
+        return "a" * 64, path.stat().st_size
+
+    def fail_write_from_bytes(_store: object, _payload: bytes) -> tuple[str, int]:
+        raise AssertionError("large live full ingest should stream from path")
+
+    monkeypatch.setattr("polylogue.sources.live.batch.BlobStore.write_from_path", fake_write_from_path)
+    monkeypatch.setattr("polylogue.sources.live.batch.BlobStore.write_from_bytes", fail_write_from_bytes)
+    monkeypatch.setattr(
+        "polylogue.sources.live.batch._process_ingest_batch_sync",
+        lambda *args, **kwargs: SimpleNamespace(failed_raw_ids={}, parse_failures=0),
+    )
+
+    result = await processor._ingest_full_paths([source_path], source_name="projects")
+
+    assert result.succeeded == [source_path]
+    assert result.failed == []
+    assert calls == ["path:large-session.jsonl"]
+
+
 # --- LiveWatcher: needs_work + ingest_files (batched) --------------------------
 
 
-def _make_watcher(tmp_path: Path, root: Path, *, debounce_s: float = 0.01) -> tuple[LiveWatcher, AsyncMock]:
+def _make_watcher(
+    tmp_path: Path,
+    root: Path,
+    *,
+    debounce_s: float = 0.01,
+    event_emitter: MagicMock | None = None,
+) -> tuple[LiveWatcher, _FullIngestMock]:
     polylogue = MagicMock()
     polylogue.archive_root = tmp_path
-    polylogue.parse_sources = AsyncMock()
     cursor = CursorStore(tmp_path / "cursor.sqlite")
     sources = (WatchSource(name="test", root=root),)
-    watcher = LiveWatcher(polylogue, sources, debounce_s=debounce_s, cursor=cursor)
-    return watcher, polylogue.parse_sources
+    watcher = LiveWatcher(polylogue, sources, debounce_s=debounce_s, cursor=cursor, event_emitter=event_emitter)
+    full_ingest = _FullIngestMock()
+    watcher._batch_processor._ingest_full_paths = full_ingest  # type: ignore[method-assign]
+    return watcher, full_ingest
+
+
+def test_watcher_default_cursor_uses_archive_database(tmp_path: Path) -> None:
+    root = tmp_path / "src"
+    root.mkdir()
+    db_path = tmp_path / "archive.db"
+    polylogue = cast(
+        Any,
+        SimpleNamespace(
+            archive_root=tmp_path,
+            backend=SimpleNamespace(db_path=db_path),
+        ),
+    )
+
+    watcher = LiveWatcher(polylogue, (WatchSource(name="test", root=root),))
+
+    assert watcher._cursor._db_path == db_path
+
+
+def test_catch_up_uses_bulk_cursor_records(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = tmp_path / "src"
+    root.mkdir()
+    files = [root / f"session-{index}.jsonl" for index in range(3)]
+    for path in files:
+        path.write_text('{"role":"user","content":"a"}\n')
+    watcher, _parse_sources = _make_watcher(tmp_path, root)
+    bulk_calls = 0
+    original_get_records = watcher._cursor.get_records
+
+    def counted_get_records(paths: Iterable[Path]) -> dict[Path, CursorRecord]:
+        nonlocal bulk_calls
+        bulk_calls += 1
+        return original_get_records(paths)
+
+    def fail_get_record(path: Path) -> CursorRecord | None:
+        raise AssertionError(f"catch-up should use bulk cursor reads, not per-file reads: {path}")
+
+    captured: dict[str, object] = {}
+
+    async def fake_ingest_files(
+        paths: list[Path],
+        *,
+        queued_file_count: int | None = None,
+        skipped_file_count: int = 0,
+    ) -> None:
+        captured["paths"] = paths
+        captured["queued_file_count"] = queued_file_count
+        captured["skipped_file_count"] = skipped_file_count
+
+    monkeypatch.setattr(watcher._cursor, "get_records", counted_get_records)
+    monkeypatch.setattr(watcher._cursor, "get_record", fail_get_record)
+    watcher._ingest_files = fake_ingest_files  # type: ignore[method-assign]
+
+    asyncio.run(watcher._catch_up([root]))
+
+    assert bulk_calls == 1
+    assert captured["paths"] == files
+    assert captured["queued_file_count"] == 3
+    assert captured["skipped_file_count"] == 0
 
 
 async def _ingest_one(watcher: LiveWatcher, path: Path) -> None:
@@ -220,6 +518,602 @@ def test_legacy_size_only_cursor_reingests_to_populate_fingerprint(tmp_path: Pat
     assert record is not None
     assert record.content_fingerprint
     assert record.parser_fingerprint
+
+
+def test_unchanged_file_uses_stat_fast_path_without_fingerprint_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "src"
+    root.mkdir()
+    f = root / "session.jsonl"
+    f.write_text('{"a":1}\n')
+    watcher, _parse_sources = _make_watcher(tmp_path, root)
+    stat = f.stat()
+    watcher._cursor.set(
+        f,
+        stat.st_size,
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+        content_fingerprint="already-known",
+        st_dev=stat.st_dev,
+        st_ino=stat.st_ino,
+        mtime_ns=stat.st_mtime_ns,
+    )
+
+    def fail_fingerprint(path: Path) -> tuple[str, int]:
+        raise AssertionError(f"unchanged file should not be fingerprinted: {path}")
+
+    monkeypatch.setattr(live_watcher, "fingerprint_file", fail_fingerprint)
+
+    assert watcher._needs_work(f) is False
+
+
+def test_new_file_needs_work_without_prefingerprint_read(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = tmp_path / "src"
+    root.mkdir()
+    f = root / "session.jsonl"
+    f.write_text('{"a":1}\n')
+    watcher, _parse_sources = _make_watcher(tmp_path, root)
+
+    def fail_fingerprint(path: Path) -> tuple[str, int]:
+        raise AssertionError(f"new file should not be fingerprinted before ingest: {path}")
+
+    monkeypatch.setattr(live_watcher, "fingerprint_file", fail_fingerprint)
+
+    assert watcher._needs_work(f) is True
+
+
+def test_parser_version_change_needs_work_without_prefingerprint_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "src"
+    root.mkdir()
+    f = root / "session.jsonl"
+    f.write_text('{"a":1}\n')
+    watcher, _parse_sources = _make_watcher(tmp_path, root)
+    stat = f.stat()
+    watcher._cursor.set(
+        f,
+        stat.st_size,
+        parser_fingerprint="older-parser",
+        content_fingerprint="already-known",
+        st_dev=stat.st_dev,
+        st_ino=stat.st_ino,
+        mtime_ns=stat.st_mtime_ns,
+    )
+
+    def fail_fingerprint(path: Path) -> tuple[str, int]:
+        raise AssertionError(f"parser changes should not prefingerprint before ingest: {path}")
+
+    monkeypatch.setattr(live_watcher, "fingerprint_file", fail_fingerprint)
+
+    assert watcher._needs_work(f) is True
+
+
+def test_full_cursor_uses_batch_raw_fingerprint_without_db_lookup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "src"
+    root.mkdir()
+    f = root / "session.jsonl"
+    f.write_text('{"a":1}\n')
+    watcher, _parse_sources = _make_watcher(tmp_path, root)
+
+    def fail_latest_raw_fingerprint(path: Path) -> str | None:
+        raise AssertionError(f"raw fingerprint should already be carried by the batch result: {path}")
+
+    monkeypatch.setattr(watcher._batch_processor, "_latest_raw_fingerprint", fail_latest_raw_fingerprint)
+
+    bytes_read = watcher._batch_processor._record_full_cursor(f, raw_fingerprint="raw-sha256")
+    record = watcher._cursor.get_record(f)
+
+    assert bytes_read == f.stat().st_size
+    assert record is not None
+    assert record.content_fingerprint == "raw-sha256"
+
+
+def test_append_plan_reads_only_completed_tail(tmp_path: Path) -> None:
+    root = tmp_path / "src"
+    root.mkdir()
+    f = root / "session.jsonl"
+    original = b'{"a":1}\n'
+    appended = b'{"b":2}\n{"c":'
+    f.write_bytes(original + appended)
+    watcher, _parse_sources = _make_watcher(tmp_path, root)
+    stat = f.stat()
+    watcher._cursor.set(
+        f,
+        len(original),
+        byte_offset=len(original),
+        last_complete_newline=len(original),
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+        content_fingerprint="base",
+        st_dev=stat.st_dev,
+        st_ino=stat.st_ino,
+        mtime_ns=stat.st_mtime_ns,
+    )
+
+    plan = watcher._batch_processor._append_plan(f)
+
+    assert plan is not None
+    assert plan.start_offset == len(original)
+    assert plan.payload == b'{"b":2}\n'
+    assert plan.bytes_read == len(appended)
+    assert plan.last_complete_newline == len(original) + len(b'{"b":2}\n')
+
+
+def test_last_complete_newline_from_tail_reads_only_final_chunk(tmp_path: Path) -> None:
+    path = tmp_path / "large.jsonl"
+    complete_prefix = b'{"a":"' + (b"x" * 200_000) + b'"}\n'
+    path.write_bytes(complete_prefix + b'{"b":2}')
+
+    offset, bytes_read = last_complete_newline_from_tail(path, path.stat().st_size)
+
+    assert offset == len(complete_prefix)
+    assert bytes_read < path.stat().st_size
+
+
+def _write_jsonl(path: Path, records: list[dict[str, object]]) -> None:
+    path.write_text("\n".join(json.dumps(record) for record in records) + "\n", encoding="utf-8")
+
+
+def _claude_code_message(
+    *,
+    session_id: str,
+    uuid: str,
+    role: str,
+    text: str,
+    timestamp: str,
+    parent_uuid: str | None = None,
+) -> dict[str, object]:
+    return {
+        "type": role,
+        "uuid": uuid,
+        "parentUuid": parent_uuid,
+        "sessionId": session_id,
+        "timestamp": timestamp,
+        "message": {"role": role, "content": text if role == "user" else [{"type": "text", "text": text}]},
+    }
+
+
+def _codex_session_meta(session_id: str) -> dict[str, object]:
+    return {"type": "session_meta", "payload": {"id": session_id, "timestamp": "2026-05-01T00:00:00Z"}}
+
+
+def _codex_message(*, message_id: str, role: str, text: str, timestamp: str) -> dict[str, object]:
+    block_type = "input_text" if role == "user" else "output_text"
+    return {
+        "type": "response_item",
+        "payload": {
+            "id": message_id,
+            "role": role,
+            "type": "message",
+            "timestamp": timestamp,
+            "content": [{"type": block_type, "text": text}],
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_live_batch_processor_records_durable_attempt(tmp_path: Path) -> None:
+    root = tmp_path / "sessions"
+    root.mkdir()
+    source_path = root / "session.jsonl"
+    source_path.write_text('{"type":"session_meta","payload":{"id":"s"}}\n', encoding="utf-8")
+    db_path = tmp_path / "live.sqlite"
+    cursor = CursorStore(db_path)
+    polylogue = SimpleNamespace(archive_root=tmp_path, backend=None)
+    processor = LiveBatchProcessor(
+        cast(Any, polylogue),
+        (WatchSource(name="codex", root=root),),
+        cursor=cursor,
+        parser_fingerprint="test-parser",
+    )
+
+    metrics = await processor.ingest_files([source_path], emit_event=False)
+    attempts = cursor.recent_ingest_attempts(limit=1)
+
+    assert metrics.succeeded_file_count == 1
+    assert len(attempts) == 1
+    assert attempts[0].status == "completed"
+    assert attempts[0].phase == "completed"
+    assert attempts[0].needed_file_count == 1
+    assert attempts[0].succeeded_file_count == 1
+    assert attempts[0].source_payload_read_bytes == source_path.stat().st_size
+
+
+@pytest.mark.asyncio
+async def test_live_batch_processor_records_cursor_after_each_converged_group(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "sessions"
+    root.mkdir()
+    first_path = root / "first.jsonl"
+    second_path = root / "second.jsonl"
+    _write_jsonl(
+        first_path,
+        [
+            _codex_session_meta("first-session"),
+            _codex_message(
+                message_id="first-message",
+                role="user",
+                text="first converged group",
+                timestamp="2026-05-01T00:00:01Z",
+            ),
+        ],
+    )
+    _write_jsonl(
+        second_path,
+        [
+            _codex_session_meta("second-session"),
+            _codex_message(
+                message_id="second-message",
+                role="user",
+                text="second unconverged group",
+                timestamp="2026-05-01T00:00:01Z",
+            ),
+        ],
+    )
+    db_path = tmp_path / "live.sqlite"
+    cursor = CursorStore(db_path)
+    polylogue = SimpleNamespace(archive_root=tmp_path, backend=None)
+    processor = LiveBatchProcessor(
+        cast(Any, polylogue),
+        (WatchSource(name="codex", root=root),),
+        cursor=cursor,
+        parser_fingerprint="test-parser",
+        converger=_FailingSecondPathConverger(second_path),
+    )
+    monkeypatch.setattr(
+        "polylogue.sources.live.batch._full_parse_progress_groups",
+        lambda paths: ([path] for path in paths),
+    )
+
+    metrics = await processor.ingest_files([first_path, second_path], emit_event=False)
+
+    first_cursor = cursor.get_record(first_path)
+    second_cursor = cursor.get_record(second_path)
+    assert metrics.succeeded_file_count == 1
+    assert metrics.failed_file_count == 1
+    assert first_cursor is not None
+    assert first_cursor.parser_fingerprint == "test-parser"
+    assert second_cursor is None
+
+
+def test_full_parse_progress_groups_bounds_small_files_by_count(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = [tmp_path / f"{index}.jsonl" for index in range(_SMALL_FULL_PARSE_PROGRESS_MAX_FILES + 1)]
+    monkeypatch.setattr("polylogue.sources.live.batch._path_size", lambda path: 1)
+
+    groups = list(_full_parse_progress_groups(paths))
+
+    assert groups == [paths[:_SMALL_FULL_PARSE_PROGRESS_MAX_FILES], paths[_SMALL_FULL_PARSE_PROGRESS_MAX_FILES:]]
+
+
+def test_full_parse_progress_groups_bounds_small_files_by_bytes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = [tmp_path / f"{index}.jsonl" for index in range(5)]
+    byte_size = _LARGE_FULL_PARSE_PROGRESS_BYTES - 1
+    monkeypatch.setattr("polylogue.sources.live.batch._path_size", lambda path: byte_size)
+
+    groups = list(_full_parse_progress_groups(paths))
+
+    assert sum(byte_size for _ in groups[0]) <= _SMALL_FULL_PARSE_PROGRESS_MAX_BYTES
+    assert groups == [paths[:4], paths[4:]]
+
+
+@pytest.mark.asyncio
+async def test_live_full_ingest_offloads_sync_work_to_keep_loop_responsive(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "sessions"
+    root.mkdir()
+    source_path = root / "session.jsonl"
+    source_path.write_text('{"type":"session_meta","payload":{"id":"responsive"}}\n', encoding="utf-8")
+    cursor = CursorStore(tmp_path / "live.sqlite")
+    polylogue = SimpleNamespace(archive_root=tmp_path, backend=None)
+    processor = LiveBatchProcessor(
+        cast(Any, polylogue),
+        (WatchSource(name="codex", root=root),),
+        cursor=cursor,
+        parser_fingerprint="test-parser",
+    )
+
+    def slow_full_ingest(paths: list[Path], *, source_name: str, heartbeat: object = None) -> _FullIngestResult:
+        del source_name, heartbeat
+        time.sleep(0.2)
+        return _FullIngestResult(
+            succeeded=list(paths),
+            failed=[],
+            source_payload_read_bytes=sum(path.stat().st_size for path in paths),
+            raw_fingerprints={path: f"raw:{path.name}" for path in paths},
+        )
+
+    monkeypatch.setattr(processor, "_ingest_full_paths_sync", slow_full_ingest)
+
+    ingest_task = asyncio.create_task(processor.ingest_files([source_path], emit_event=False))
+    await asyncio.sleep(0.02)
+
+    assert not ingest_task.done()
+    metrics = await ingest_task
+    assert metrics.succeeded_file_count == 1
+
+
+@pytest.mark.asyncio
+async def test_live_append_merges_tail_visible_through_public_archive_read(workspace_env: dict[str, Path]) -> None:
+    root = workspace_env["data_root"] / "claude-projects"
+    project = root / "project"
+    project.mkdir(parents=True)
+    source_path = project / "session.jsonl"
+    db_path = workspace_env["data_root"] / "append-public-read.db"
+    archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path)
+    cursor = CursorStore(db_path)
+    processor = LiveBatchProcessor(
+        archive,
+        (WatchSource(name="claude-code", root=root),),
+        cursor=cursor,
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+    )
+
+    try:
+        _write_jsonl(
+            source_path,
+            [
+                _claude_code_message(
+                    session_id="session-public-read",
+                    uuid="msg-1",
+                    role="user",
+                    text="first live message",
+                    timestamp="2026-05-01T00:00:00Z",
+                ),
+                _claude_code_message(
+                    session_id="session-public-read",
+                    uuid="msg-2",
+                    parent_uuid="msg-1",
+                    role="assistant",
+                    text="second live reply",
+                    timestamp="2026-05-01T00:00:01Z",
+                ),
+                _claude_code_message(
+                    session_id="session-public-read",
+                    uuid="msg-3",
+                    parent_uuid="msg-2",
+                    role="user",
+                    text="third live followup",
+                    timestamp="2026-05-01T00:00:02Z",
+                ),
+            ],
+        )
+        initial_metrics = await processor.ingest_files([source_path], emit_event=False)
+
+        with source_path.open("a", encoding="utf-8") as handle:
+            for record in (
+                _claude_code_message(
+                    session_id="session-public-read",
+                    uuid="msg-4",
+                    parent_uuid="msg-3",
+                    role="assistant",
+                    text="fourth appended reply",
+                    timestamp="2026-05-01T00:00:03Z",
+                ),
+                _claude_code_message(
+                    session_id="session-public-read",
+                    uuid="msg-5",
+                    parent_uuid="msg-4",
+                    role="user",
+                    text="fifth appended followup",
+                    timestamp="2026-05-01T00:00:04Z",
+                ),
+            ):
+                handle.write(json.dumps(record) + "\n")
+        append_metrics = await processor.ingest_files([source_path], emit_event=False)
+
+        conversation = await archive.get_conversation("claude-code:session-public-read")
+        assert initial_metrics.full_file_count == 1
+        assert append_metrics.append_file_count == 1
+        assert append_metrics.full_file_count == 0
+        assert append_metrics.source_payload_read_bytes < append_metrics.input_bytes
+        assert conversation is not None
+        assert [message.text for message in conversation.messages] == [
+            "first live message",
+            "second live reply",
+            "third live followup",
+            "fourth appended reply",
+            "fifth appended followup",
+        ]
+    finally:
+        await archive.close()
+
+
+@pytest.mark.asyncio
+async def test_live_full_ingest_detects_provider_when_source_name_is_not_provider(
+    workspace_env: dict[str, Path],
+) -> None:
+    root = workspace_env["data_root"] / "projects"
+    project = root / "project"
+    project.mkdir(parents=True)
+    source_path = project / "session.jsonl"
+    db_path = workspace_env["data_root"] / "detect-provider-live.db"
+    archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path)
+    cursor = CursorStore(db_path)
+    processor = LiveBatchProcessor(
+        archive,
+        (WatchSource(name="projects", root=root),),
+        cursor=cursor,
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+    )
+
+    try:
+        _write_jsonl(
+            source_path,
+            [
+                _claude_code_message(
+                    session_id="session-detected-provider",
+                    uuid="msg-1",
+                    role="user",
+                    text="detected provider message",
+                    timestamp="2026-05-01T00:00:00Z",
+                ),
+            ],
+        )
+        metrics = await processor.ingest_files([source_path], emit_event=False)
+
+        conversation = await archive.get_conversation("claude-code:session-detected-provider")
+        assert metrics.succeeded_file_count == 1
+        assert metrics.failed_file_count == 0
+        assert conversation is not None
+        assert [message.text for message in conversation.messages] == ["detected provider message"]
+    finally:
+        await archive.close()
+
+
+@pytest.mark.asyncio
+async def test_live_full_ingest_excludes_non_conversation_sidecars_before_raw_storage(
+    workspace_env: dict[str, Path],
+) -> None:
+    root = workspace_env["data_root"] / "projects"
+    project = root / "project"
+    project.mkdir(parents=True)
+    source_path = project / "sessions-index.json"
+    source_path.write_text(json.dumps({"sessions": [{"id": "metadata-only"}]}), encoding="utf-8")
+    db_path = workspace_env["data_root"] / "exclude-sidecar-live.db"
+    archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path)
+    cursor = CursorStore(db_path)
+    processor = LiveBatchProcessor(
+        archive,
+        (WatchSource(name="projects", root=root),),
+        cursor=cursor,
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+    )
+
+    try:
+        metrics = await processor.ingest_files([source_path], emit_event=False)
+        record = cursor.get_record(source_path)
+
+        with sqlite3.connect(db_path) as conn:
+            tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            raw_count = (
+                conn.execute("SELECT COUNT(*) FROM raw_conversations").fetchone()[0]
+                if "raw_conversations" in tables
+                else 0
+            )
+            conversation_count = (
+                conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0] if "conversations" in tables else 0
+            )
+
+        assert metrics.succeeded_file_count == 0
+        assert metrics.failed_file_count == 0
+        assert metrics.source_payload_read_bytes == 0
+        assert raw_count == 0
+        assert conversation_count == 0
+        assert record is not None
+        assert record.excluded is True
+    finally:
+        await archive.close()
+
+
+@pytest.mark.asyncio
+async def test_live_full_ingest_excludes_invalid_jsonl_sidecars_before_raw_storage(
+    workspace_env: dict[str, Path],
+) -> None:
+    root = workspace_env["data_root"] / "projects"
+    project = root / "project" / "analysis"
+    project.mkdir(parents=True)
+    source_path = project / "architecture_discussions.jsonl"
+    source_path.write_text("not json\nstill not json\n", encoding="utf-8")
+    db_path = workspace_env["data_root"] / "exclude-invalid-jsonl-live.db"
+    archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path)
+    cursor = CursorStore(db_path)
+    processor = LiveBatchProcessor(
+        archive,
+        (WatchSource(name="projects", root=root),),
+        cursor=cursor,
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+    )
+
+    try:
+        metrics = await processor.ingest_files([source_path], emit_event=False)
+        record = cursor.get_record(source_path)
+
+        with sqlite3.connect(db_path) as conn:
+            tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            raw_count = (
+                conn.execute("SELECT COUNT(*) FROM raw_conversations").fetchone()[0]
+                if "raw_conversations" in tables
+                else 0
+            )
+
+        assert metrics.succeeded_file_count == 0
+        assert metrics.failed_file_count == 0
+        assert metrics.source_payload_read_bytes == 0
+        assert raw_count == 0
+        assert record is not None
+        assert record.excluded is True
+    finally:
+        await archive.close()
+
+
+@pytest.mark.asyncio
+async def test_codex_append_uses_existing_session_identity_when_tail_lacks_session_meta(
+    workspace_env: dict[str, Path],
+) -> None:
+    root = workspace_env["data_root"] / "codex-sessions"
+    project = root / "project"
+    project.mkdir(parents=True)
+    source_path = project / "codex-session.jsonl"
+    db_path = workspace_env["data_root"] / "append-codex.db"
+    archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path)
+    cursor = CursorStore(db_path)
+    processor = LiveBatchProcessor(
+        archive,
+        (WatchSource(name="codex", root=root),),
+        cursor=cursor,
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+    )
+
+    try:
+        _write_jsonl(
+            source_path,
+            [
+                _codex_session_meta("codex-real-session"),
+                _codex_message(
+                    message_id="msg-1",
+                    role="user",
+                    text="codex first",
+                    timestamp="2026-05-01T00:00:00Z",
+                ),
+            ],
+        )
+        await processor.ingest_files([source_path], emit_event=False)
+
+        with source_path.open("a", encoding="utf-8") as handle:
+            handle.write(
+                json.dumps(
+                    _codex_message(
+                        message_id="msg-2",
+                        role="assistant",
+                        text="codex appended",
+                        timestamp="2026-05-01T00:00:01Z",
+                    )
+                )
+                + "\n"
+            )
+        append_metrics = await processor.ingest_files([source_path], emit_event=False)
+
+        existing = await archive.get_conversation("codex:codex-real-session")
+        fallback = await archive.get_conversation("codex:codex-session")
+        assert append_metrics.append_file_count == 1
+        assert append_metrics.full_file_count == 0
+        assert existing is not None
+        assert [message.text for message in existing.messages] == ["codex first", "codex appended"]
+        assert fallback is None
+    finally:
+        await archive.close()
 
 
 def test_parser_fingerprint_change_triggers_reingest(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -313,9 +1207,8 @@ def test_missing_file_is_silent(tmp_path: Path) -> None:
     assert parse_sources.await_count == 0
 
 
-def test_parse_failure_is_logged_and_retried(tmp_path: Path) -> None:
-    """After a batch failure, files are mark_failed but cursor tracks attempt.
-    On retry with fingerprint unchanged, needs_work returns False (skip)."""
+def test_parse_failure_is_recorded_and_backed_off(tmp_path: Path) -> None:
+    """After a batch failure, cursor state records failure and backs off."""
     root = tmp_path / "src"
     root.mkdir()
     f = root / "session.jsonl"
@@ -326,12 +1219,72 @@ def test_parse_failure_is_logged_and_retried(tmp_path: Path) -> None:
     # First attempt: fails, cursor is set
     asyncio.run(_ingest_one(watcher, f))
     assert parse_sources.await_count == 1
-    assert watcher._cursor.get(f) > 0  # cursor records the attempt
+    record = watcher._cursor.get_record(f)
+    assert record is not None
+    assert record.failure_count == 1
+    assert record.next_retry_at is not None
 
-    # Second attempt: fingerprint matches cursor, file skipped
+    # Second immediate attempt: file is skipped during backoff.
     parse_sources.reset_mock()
     asyncio.run(_ingest_one(watcher, f))
-    assert parse_sources.await_count == 0  # skipped — fingerprint unchanged
+    assert parse_sources.await_count == 0
+
+
+def test_ingest_files_emits_observable_batch_metrics(tmp_path: Path) -> None:
+    root = tmp_path / "src"
+    root.mkdir()
+    f = root / "session.jsonl"
+    f.write_text('{"role":"user","content":"a"}\n')
+    emit = MagicMock()
+    watcher, _parse_sources = _make_watcher(tmp_path, root, event_emitter=emit)
+
+    asyncio.run(watcher._ingest_files([f], queued_file_count=3, skipped_file_count=2))
+
+    emit.assert_called_once()
+    kind = emit.call_args.args[0]
+    payload = emit.call_args.args[1]
+    assert kind == "ingestion_batch"
+    assert payload["queued_file_count"] == 3
+    assert payload["needed_file_count"] == 1
+    assert payload["skipped_file_count"] == 2
+    assert payload["succeeded_file_count"] == 1
+    assert payload["failed_file_count"] == 0
+    assert payload["source_group_count"] == 1
+    assert payload["input_bytes"] == f.stat().st_size
+    assert payload["source_payload_read_bytes"] == f.stat().st_size
+    assert payload["cursor_fingerprint_read_bytes"] == f.stat().st_size
+    assert payload["append_file_count"] == 0
+    assert payload["full_file_count"] == 1
+    assert payload["archive_write_bytes_delta"] >= 0
+    assert payload["parse_time_s"] >= 0
+    assert payload["total_time_s"] >= 0
+    assert payload["stage_timings_s"] == {}
+    assert payload["failed_paths"] == []
+
+
+def test_parse_failure_retries_after_backoff(tmp_path: Path) -> None:
+    root = tmp_path / "src"
+    root.mkdir()
+    f = root / "session.jsonl"
+    f.write_text('{"role":"user","content":"a"}\n')
+    watcher, parse_sources = _make_watcher(tmp_path, root)
+    parse_sources.side_effect = RuntimeError("parser sad")
+
+    asyncio.run(_ingest_one(watcher, f))
+    parse_sources.reset_mock()
+    parse_sources.side_effect = None
+    past = (datetime.now(UTC) - timedelta(seconds=1)).isoformat()
+    with sqlite3.connect(tmp_path / "cursor.sqlite") as conn:
+        conn.execute("UPDATE live_cursor SET next_retry_at = ? WHERE source_path = ?", (past, str(f)))
+        conn.commit()
+
+    asyncio.run(_ingest_one(watcher, f))
+
+    assert parse_sources.await_count == 1
+    record = watcher._cursor.get_record(f)
+    assert record is not None
+    assert record.failure_count == 0
+    assert record.next_retry_at is None
 
 
 # --- catch_up bootstrap --------------------------------------------------------
@@ -396,19 +1349,17 @@ def test_catch_up_ignores_non_jsonl(tmp_path: Path) -> None:
     assert parse_sources.await_count == 1
 
 
-def test_catch_up_ignores_junk_at_wrong_depth(tmp_path: Path) -> None:
+def test_catch_up_recurses_like_live_watch(tmp_path: Path) -> None:
     root = tmp_path / "src"
     root.mkdir()
-    # Files at root level are ignored (not {project}/{uuid}.jsonl)
     (root / "orphan.jsonl").write_text('{"a":1}\n')
-    # Files nested too deep without subagent structure are ignored
     deep = root / "p" / "u" / "extra" / "deep.jsonl"
     deep.parent.mkdir(parents=True)
     deep.write_text('{"a":1}\n')
     watcher, parse_sources = _make_watcher(tmp_path, root)
 
     asyncio.run(watcher._catch_up([root]))
-    assert parse_sources.await_count == 0
+    assert parse_sources.await_count == 1
 
 
 def test_catch_up_handles_empty_roots(tmp_path: Path) -> None:

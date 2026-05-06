@@ -56,6 +56,8 @@ def parsed_block_from_harmonized(block: ContentBlock) -> ParsedContentBlock | No
 
 
 def canonicalize_message_content(provider_name: str, message: ParsedMessage) -> ParsedMessage:
+    if message.provider_meta is None:
+        return message
     harmonized = harmonize_parsed_message(
         provider_name,
         message.provider_meta,

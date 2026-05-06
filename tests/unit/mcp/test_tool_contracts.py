@@ -15,6 +15,7 @@ from polylogue.archive.query.search_hits import ConversationSearchHit
 from polylogue.archive.query.spec import ConversationQuerySpec
 from polylogue.archive.semantic.pricing import CostEstimatePayload, CostUsagePayload
 from polylogue.archive.stats import ArchiveStats
+from polylogue.errors import PolylogueError
 from polylogue.insights.archive import (
     ArchiveDebtInsight,
     ArchiveEnrichmentProvenance,
@@ -420,15 +421,13 @@ class TestQueryTools:
             mock_ops.search_conversation_hits = AsyncMock(return_value=[])
             mock_get_archive_ops.return_value = mock_ops
 
-            result = await invoke_surface_async(
-                mcp_server._tool_manager._tools["search"].fn,
-                query="hello",
-                message_type="summmary",
-            )
+            with pytest.raises(PolylogueError, match="search: ValueError"):
+                await invoke_surface_async(
+                    mcp_server._tool_manager._tools["search"].fn,
+                    query="hello",
+                    message_type="summmary",
+                )
 
-        payload = json.loads(result)
-        assert payload["error"] == "internal MCP tool error"
-        assert payload["detail"] == "ValueError"
         mock_ops.search_conversation_hits.assert_not_called()
         mock_ops.query_conversations.assert_not_called()
 
@@ -562,15 +561,14 @@ class TestGetConversationTool:
             mock_poly = make_polylogue_mock()
             mock_get_polylogue.return_value = mock_poly
 
-            result = invoke_surface(
-                mcp_server._tool_manager._tools["get_messages"].fn,
-                conversation_id="test:long",
-                message_type="summmary",
-            )
+            with pytest.raises(PolylogueError, match="get_messages: ValueError"):
+                invoke_surface(
+                    mcp_server._tool_manager._tools["get_messages"].fn,
+                    conversation_id="test:long",
+                    message_type="summmary",
+                )
 
-        payload = json.loads(result)
-        assert payload["error"] == "internal MCP tool error"
-        assert payload["detail"] == "ValueError"
+        mock_poly.get_messages_paginated.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_get_with_nonexistent_id(self, mcp_server: MCPServerUnderTest) -> None:
@@ -881,18 +879,15 @@ class TestInsightTools:
             mock_ops.list_session_enrichment_insights = AsyncMock(return_value=[])
             mock_get_archive_ops.return_value = mock_ops
 
-            raw = await invoke_surface_async(
-                mcp_server._tool_manager._tools["session_enrichments"].fn,
-                provider="claude-code",
-                refined_work_kind="planning",
-                limit=5,
-            )
+            with pytest.raises(PolylogueError, match="Unknown query field"):
+                await invoke_surface_async(
+                    mcp_server._tool_manager._tools["session_enrichments"].fn,
+                    provider="claude-code",
+                    refined_work_kind="planning",
+                    limit=5,
+                )
 
-        payload = json.loads(raw)
-        assert payload["tool"] == "session_enrichments"
-        assert payload["error"] == "internal MCP tool error"
-        assert payload["code"] == "internal_error"
-        assert payload["detail"] == "InsightQueryError"
+        mock_ops.list_session_enrichment_insights.assert_not_called()
         mock_ops.list_session_enrichment_insights.assert_not_awaited()
 
 
@@ -969,14 +964,12 @@ class TestMutationTools:
             mock_poly.add_tag.side_effect = ValueError("Invalid tag")
             mock_get_polylogue.return_value = mock_poly
 
-            result = invoke_surface(
-                mcp_server._tool_manager._tools["add_tag"].fn, conversation_id="test:conv-123", tag="invalid"
-            )
+            with pytest.raises(PolylogueError, match="add_tag: ValueError"):
+                invoke_surface(
+                    mcp_server._tool_manager._tools["add_tag"].fn, conversation_id="test:conv-123", tag="invalid"
+                )
 
-        parsed = json.loads(result)
-        assert parsed["error"] == "internal MCP tool error"
-        assert parsed["code"] == "internal_error"
-        assert parsed["detail"] == "ValueError"
+        mock_poly.add_tag.assert_called_once_with("test:conv-123", "invalid")
 
     def test_remove_tag_success(self, mcp_server: MCPServerUnderTest) -> None:
         with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
@@ -997,11 +990,14 @@ class TestMutationTools:
             mock_poly.remove_tag.side_effect = RuntimeError("Backend error")
             mock_get_polylogue.return_value = mock_poly
 
-            result = invoke_surface(
-                mcp_server._tool_manager._tools["remove_tag"].fn, conversation_id="test:conv-123", tag="important"
-            )
+            with pytest.raises(PolylogueError, match="remove_tag: RuntimeError"):
+                invoke_surface(
+                    mcp_server._tool_manager._tools["remove_tag"].fn,
+                    conversation_id="test:conv-123",
+                    tag="important",
+                )
 
-        assert "error" in json.loads(result)
+        mock_poly.remove_tag.assert_called_once_with("test:conv-123", "important")
 
     def test_bulk_tag_conversations_applies_every_tag_to_every_conversation(
         self,

@@ -237,68 +237,6 @@ def test_maybe_prompt_sources_rejects_empty_choice(
         helpers.maybe_prompt_sources(env, _config_with_sources(tmp_path, ["one", "two"]), None, "sync")
 
 
-@pytest.mark.parametrize(
-    "case_id",
-    [
-        "nonexistent-root",
-        "empty-root",
-        "single-markdown",
-        "single-html",
-        "latest-mtime-wins",
-        "missing-candidate-is-skipped",
-    ],
-)
-def test_latest_render_path_contract(tmp_path: Path, case_id: str) -> None:
-    render_root = tmp_path / "render"
-    expected: Path | None = None
-
-    if case_id == "nonexistent-root":
-        render_root = tmp_path / "missing"
-    elif case_id == "empty-root":
-        render_root.mkdir()
-    elif case_id == "single-markdown":
-        conv_dir = render_root / "conv1"
-        conv_dir.mkdir(parents=True)
-        expected = conv_dir / "conversation.md"
-        expected.write_text("# Test", encoding="utf-8")
-    elif case_id == "single-html":
-        conv_dir = render_root / "conv1"
-        conv_dir.mkdir(parents=True)
-        expected = conv_dir / "conversation.html"
-        expected.write_text("<html>test</html>", encoding="utf-8")
-    elif case_id == "latest-mtime-wins":
-        import os
-
-        conv1 = render_root / "conv1"
-        conv2 = render_root / "conv2"
-        conv1.mkdir(parents=True)
-        conv2.mkdir(parents=True)
-        older = conv1 / "conversation.md"
-        expected = conv2 / "conversation.html"
-        older.write_text("old", encoding="utf-8")
-        expected.write_text("new", encoding="utf-8")
-        os.utime(older, (100, 100))
-        os.utime(expected, (200, 200))
-    elif case_id == "missing-candidate-is-skipped":
-        conv_dir = render_root / "conv1"
-        conv_dir.mkdir(parents=True)
-        expected = conv_dir / "conversation.md"
-        expected.write_text("# Existing", encoding="utf-8")
-        original_rglob = Path.rglob
-
-        def fake_rglob(self: Path, pattern: str) -> Iterable[Path]:
-            if self == render_root and pattern in {"conversation.md", "conversation.html"}:
-                missing = render_root / "deleted" / pattern
-                return list(original_rglob(self, pattern)) + [missing]
-            return original_rglob(self, pattern)
-
-        with patch.object(Path, "rglob", fake_rglob):
-            assert helpers.latest_render_path(render_root) == expected
-        return
-
-    assert helpers.latest_render_path(render_root) == expected
-
-
 # ---------------------------------------------------------------------------
 # Merged from test_helpers.py (2026-03-15)
 # ---------------------------------------------------------------------------
@@ -313,7 +251,7 @@ def config() -> Config:
     )
 
 
-class SummaryRunResult(TypedDict):
+class SummaryResult(TypedDict):
     title: str
     lines: list[str]
     console: str
@@ -416,14 +354,13 @@ def _run_summary(
     *,
     verbose: bool,
     plain: bool,
-    last_run: object | None = None,
     quick_health: str = "OK",
     health: SimpleNamespace | None = None,
     counts: list[tuple[str, int]] | None = None,
     metrics: list[SimpleNamespace] | None = None,
     archive_stats: SimpleNamespace | None = None,
     analytics_error: Exception | None = None,
-) -> SummaryRunResult:
+) -> SummaryResult:
     from polylogue.cli.shared.helpers import print_summary
 
     env, buffer, ui = _make_env(config, plain=plain)
@@ -446,7 +383,6 @@ def _run_summary(
 
     with (
         patch.object(env.repository, "get_archive_stats", new=AsyncMock(return_value=archive_stats)),
-        patch("polylogue.cli.shared.helpers.latest_run", new_callable=AsyncMock, return_value=last_run),
         patch("polylogue.cli.shared.helpers.quick_readiness_summary", return_value=quick_health) as mock_quick,
         patch("polylogue.cli.shared.helpers.get_readiness", return_value=health) as mock_get_readiness,
         patch("polylogue.cli.shared.helpers.format_sources_summary", return_value="inbox"),
@@ -466,12 +402,10 @@ def _run_summary(
 
 
 def test_print_summary_basic_contract(config: Config) -> None:
-    last_run = SimpleNamespace(run_id="run-123", timestamp="2025-01-15T12:30:45Z")
     result = _run_summary(
         config,
         verbose=False,
         plain=False,
-        last_run=last_run,
         counts=[("claude-ai", 7), ("chatgpt", 3)],
     )
 
@@ -480,7 +414,7 @@ def test_print_summary_basic_contract(config: Config) -> None:
         "Archive: /data/archive",
         "Render: /data/archive/rendered",
         "Sources: inbox",
-        "Last run: run-123 (2025-01-15T12:30:45Z)",
+        "Ingestion: owned by polylogued",
         "Embeddings: 0/10 convs, 0 msgs (0.0%)",
         "Readiness: OK",
     ]
@@ -511,7 +445,7 @@ def test_print_summary_verbose_health_matrix(config: Config, plain: bool, status
         "Archive: /data/archive",
         "Render: /data/archive/rendered",
         "Sources: inbox",
-        "Last run: none",
+        "Ingestion: owned by polylogued",
     ]
     assert result["lines"][4] == "Embeddings: 0/0 convs, 0 msgs (0.0%)"
     assert result["lines"][5] == "Readiness (source=live)"

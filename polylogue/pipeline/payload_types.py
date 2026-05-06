@@ -2,21 +2,10 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from typing_extensions import TypedDict
 
 from polylogue.core.json import JSONDocument
 from polylogue.storage.insights.session.runtime import SessionInsightRefreshChunkPayload
-from polylogue.types import SearchProvider
-
-
-class SiteBuildOptions(TypedDict, total=False):
-    output: Path
-    title: str
-    search: bool
-    search_provider: str | SearchProvider
-    dashboard: bool
 
 
 class AcquireSplitPayloadSummary(TypedDict):
@@ -90,14 +79,6 @@ class IngestDiagnostics(TypedDict, total=False):
     batch_observations: ParseBatchObservationSummary
 
 
-class RenderStageObservation(TypedDict, total=False):
-    workers: int
-    rss_start_mb: float
-    rss_end_mb: float
-    rss_delta_mb: float
-    max_current_rss_mb: float
-
-
 class MaterializeStageObservation(TypedDict, total=False):
     mode: str
     profiles: int
@@ -132,6 +113,4 @@ __all__ = [
     "MaterializeStageObservation",
     "ParseBatchObservation",
     "ParseBatchObservationSummary",
-    "RenderStageObservation",
-    "SiteBuildOptions",
 ]

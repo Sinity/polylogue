@@ -98,85 +98,6 @@ def test_executable_scenario_infers_schema_explain_metadata_from_polylogue_execu
     assert scenario.operation_targets == ("query-schema-explanations",)
 
 
-def test_executable_scenario_infers_run_render_metadata_from_polylogue_execution() -> None:
-    scenario = _ExecutableFixture(
-        name="run-render-contract",
-        description="render contract",
-        execution=polylogue_execution("run", "render", "--format", "html"),
-    )
-
-    assert scenario.path_targets == ("conversation-render-loop",)
-    assert scenario.artifact_targets == (
-        "conversation_render_projection",
-        "rendered_conversation_artifacts",
-    )
-    assert scenario.operation_targets == ("render-conversations",)
-
-
-def test_executable_scenario_infers_run_acquire_metadata_from_polylogue_execution() -> None:
-    scenario = _ExecutableFixture(
-        name="run-acquire-contract",
-        description="acquire contract",
-        execution=polylogue_execution("run", "acquire"),
-    )
-
-    assert scenario.path_targets == ("source-acquisition-loop",)
-    assert scenario.artifact_targets == (
-        "configured_sources",
-        "source_payload_stream",
-        "raw_validation_state",
-        "artifact_observation_rows",
-    )
-    assert scenario.operation_targets == ("acquire-raw-conversations",)
-
-
-def test_executable_scenario_infers_run_parse_metadata_from_polylogue_execution() -> None:
-    scenario = _ExecutableFixture(
-        name="run-parse-contract",
-        description="parse contract",
-        execution=polylogue_execution("run", "parse"),
-    )
-
-    assert scenario.path_targets == (
-        "source-acquisition-loop",
-        "raw-reparse-loop",
-        "raw-archive-ingest-loop",
-    )
-    assert scenario.artifact_targets == (
-        "configured_sources",
-        "source_payload_stream",
-        "raw_validation_state",
-        "artifact_observation_rows",
-        "validation_backlog",
-        "parse_backlog",
-        "parse_quarantine",
-        "archive_conversation_rows",
-    )
-    assert scenario.operation_targets == (
-        "acquire-raw-conversations",
-        "plan-validation-backlog",
-        "plan-parse-backlog",
-        "ingest-archive-runtime",
-    )
-
-
-def test_executable_scenario_infers_run_embed_metadata_from_polylogue_execution() -> None:
-    scenario = _ExecutableFixture(
-        name="run-embed-contract",
-        description="embed contract",
-        execution=polylogue_execution("run", "embed", "--limit", "5"),
-    )
-
-    assert scenario.path_targets == ("embedding-materialization-loop",)
-    assert scenario.artifact_targets == (
-        "archive_conversation_rows",
-        "embedding_metadata_rows",
-        "embedding_status_rows",
-        "message_embedding_vectors",
-    )
-    assert scenario.operation_targets == ("materialize-transcript-embeddings",)
-
-
 def test_executable_scenario_infers_embed_stats_metadata_from_polylogue_execution() -> None:
     scenario = _ExecutableFixture(
         name="embed-stats-contract",
@@ -199,20 +120,3 @@ def test_executable_scenario_infers_embed_stats_metadata_from_polylogue_executio
         "query-embedding-status",
         "cli.json-contract",
     )
-
-
-def test_executable_scenario_infers_run_site_metadata_from_polylogue_execution() -> None:
-    scenario = _ExecutableFixture(
-        name="run-site-contract",
-        description="site contract",
-        execution=polylogue_execution("run", "site"),
-    )
-
-    assert scenario.path_targets == ("site-publication-loop",)
-    assert scenario.artifact_targets == (
-        "conversation_render_projection",
-        "site_conversation_pages",
-        "site_publication_manifest",
-        "publication_records",
-    )
-    assert scenario.operation_targets == ("publish-site",)

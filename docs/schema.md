@@ -113,7 +113,6 @@ Used for pushdown filters (`--min-messages`, `--min-words`, `--has-tool-use`,
 | `attachments` / `attachment_refs` | File attachments with M:N message refs |
 | `tags` / `conversation_tags` | M:N tag assignments (replaced JSON `metadata.tags`) |
 | `raw_conversations` | Raw import records before parsing |
-| `runs` | Pipeline run history with state snapshots |
 
 ## FTS5 Tables
 
@@ -164,7 +163,6 @@ a `search_text` column for FTS indexing.
 | Table | Purpose |
 |-------|---------|
 | `artifact_observations` | Schema inference pipeline: per-artifact analysis records |
-| `publications` | Site/exports generation history |
 | `pending_blob_refs` | Blob store leases (prevents GC races) |
 | `gc_generations` | Garbage collection generation tracking |
 | `source_file_cursors` | Per-file ingestion progress (idempotent resume) |

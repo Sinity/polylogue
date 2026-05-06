@@ -85,7 +85,7 @@ class QueryOutputSpec:
     message_roles: MessageRoleFilter
     transform: QueryTransform = None
     list_mode: bool = False
-    print_path: bool = False
+    print_url: bool = False
     content_projection: ContentProjectionSpec = ContentProjectionSpec()
 
     @classmethod
@@ -103,7 +103,7 @@ class QueryOutputSpec:
             content_projection=ContentProjectionSpec.from_params(params),
             transform=str(params["transform"]) if params.get("transform") is not None else None,
             list_mode=bool(params.get("list_mode", False)),
-            print_path=bool(params.get("print_path", False)),
+            print_url=bool(params.get("print_url", False)),
         )
 
     def stream_format(self) -> str:

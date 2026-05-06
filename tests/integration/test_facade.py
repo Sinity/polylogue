@@ -403,7 +403,7 @@ class TestPolylogueSearch:
         first_hit = results.hits[0]
         assert first_hit.conversation_id
         assert first_hit.title
-        assert first_hit.conversation_path.name == "conversation.md"
+        assert first_hit.conversation_url.startswith("/?conversation=")
 
     @pytest.mark.asyncio
     async def test_search_with_limit(self, workspace_env: dict[str, Path], sample_chatgpt_file: Path) -> None:

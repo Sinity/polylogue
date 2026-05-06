@@ -111,6 +111,25 @@ def insert_action_rows_sql(chunk_size: int) -> str:
     """
 
 
+def insert_missing_action_rows_sql(chunk_size: int) -> str:
+    placeholders = ", ".join("?" for _ in range(chunk_size))
+    return f"""
+        INSERT INTO action_events_fts (rowid, event_id, message_id, conversation_id, action_kind, tool_name, text)
+        SELECT
+            ae.rowid,
+            ae.event_id,
+            ae.message_id,
+            ae.conversation_id,
+            ae.action_kind,
+            ae.normalized_tool_name,
+            ae.search_text
+        FROM action_events ae
+        LEFT JOIN action_events_fts f ON f.rowid = ae.rowid
+        WHERE ae.conversation_id IN ({placeholders})
+          AND f.rowid IS NULL
+    """
+
+
 __all__ = [
     "ACTION_FTS_INDEX_DOC_COUNT_SQL",
     "ACTION_FTS_INDEX_EXISTS_SQL",
@@ -127,4 +146,5 @@ __all__ = [
     "delete_conversation_rows_sql",
     "insert_action_rows_sql",
     "insert_conversation_rows_sql",
+    "insert_missing_action_rows_sql",
 ]

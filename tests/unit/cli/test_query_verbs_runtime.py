@@ -109,7 +109,7 @@ def test_open_verb_routes_single_id_or_appends_target_terms() -> None:
     request = execute.call_args.args[1]
     assert isinstance(request, RootModeRequest)
     assert request.query_params()["open_result"] is True
-    assert request.query_params()["print_path"] is True
+    assert request.query_params()["print_url"] is True
     assert request.query_params()["conv_id"] == "chatgpt:123"
     assert request.query_params()["query"] == ()
 
