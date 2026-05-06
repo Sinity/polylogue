@@ -11,11 +11,11 @@ from __future__ import annotations
 
 import pickle
 import re
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, TypeVar
 
 from typing_extensions import TypedDict
 
@@ -321,10 +321,13 @@ def _normalized_conversation(
 def _is_stream_record_provider(source_path: str | None, provider: str | Provider | None) -> bool:
     if provider is None:
         return False
-    normalized_path = (source_path or "").lower()
-    if not normalized_path.endswith((".jsonl", ".jsonl.txt", ".ndjson")):
+    if not _is_jsonl_source_path(source_path):
         return False
     return Provider.from_string(provider) in STREAM_RECORD_PROVIDERS
+
+
+def _is_jsonl_source_path(source_path: str | None) -> bool:
+    return (source_path or "").lower().endswith((".jsonl", ".jsonl.txt", ".ndjson"))
 
 
 def _record_result(
@@ -417,6 +420,7 @@ def _build_stream_parse_plan(
     payload_provider: str | None,
 ) -> _ParsePlan | None:
     from polylogue.archive.raw_payload.decode import _sample_jsonl_payload_with_detail
+    from polylogue.sources.dispatch import detect_provider
 
     stream_name = context.raw_record.source_path or context.raw_record.raw_id
 
@@ -440,7 +444,10 @@ def _build_stream_parse_plan(
 
     runtime_provider = Provider.from_string(payload_provider or context.raw_record.provider_name)
     if runtime_provider not in STREAM_RECORD_PROVIDERS:
-        return None
+        detected_provider = detect_provider(sample_payloads)
+        if detected_provider not in STREAM_RECORD_PROVIDERS:
+            return None
+        runtime_provider = detected_provider
 
     artifact = classify_artifact(
         sample_payloads,
@@ -743,6 +750,9 @@ def ingest_record(
             return _run_parse_plan(context, stream_plan)
         if stream_plan := _build_stream_parse_plan(context, payload_provider=stored_payload_provider):
             return _run_parse_plan(context, stream_plan)
+    elif _is_jsonl_source_path(raw_record.source_path):
+        if stream_plan := _build_stream_parse_plan(context, payload_provider=stored_payload_provider):
+            return _run_parse_plan(context, stream_plan)
 
     # ── Phase 1: Decode blob (ONE decode, not two) ────────────────────
     try:
@@ -848,15 +858,35 @@ def _content_block_tuples(conversation: MaterializedConversation) -> list[Conten
     ]
 
 
-def _stats_tuple(conversation: MaterializedConversation) -> StatsTuple:
+_TupleT = TypeVar("_TupleT")
+
+
+def _dedupe_by_key_preserve_last(items: list[_TupleT], key: Callable[[_TupleT], object]) -> list[_TupleT]:
+    if len(items) < 2:
+        return items
+    seen: set[object] = set()
+    deduped: list[_TupleT] = []
+    for item in reversed(items):
+        item_key = key(item)
+        if item_key in seen:
+            continue
+        seen.add(item_key)
+        deduped.append(item)
+    if len(deduped) == len(items):
+        return items
+    deduped.reverse()
+    return deduped
+
+
+def _stats_tuple(conversation: MaterializedConversation, message_tuples: list[MessageTuple]) -> StatsTuple:
     return (
         conversation.conversation_id,
         conversation.provider_name,
-        conversation.stats.message_count,
-        conversation.stats.word_count,
-        conversation.stats.tool_use_count,
-        conversation.stats.thinking_count,
-        conversation.stats.paste_count,
+        len(message_tuples),
+        sum(message[11] for message in message_tuples),
+        sum(message[12] for message in message_tuples),
+        sum(message[13] for message in message_tuples),
+        sum(message[14] for message in message_tuples),
     )
 
 
@@ -930,19 +960,27 @@ def _transform_to_tuples(
         source_name=source_name,
         archive_root=archive_root,
     )
+    message_tuples = _dedupe_by_key_preserve_last(_message_tuples(materialized), lambda item: item[0])
+    block_tuples = _dedupe_by_key_preserve_last(_content_block_tuples(materialized), lambda item: item[0])
+    action_event_tuples = _dedupe_by_key_preserve_last(_build_action_event_tuples(materialized), lambda item: item[0])
+    provider_event_tuples = _dedupe_by_key_preserve_last(
+        _provider_event_tuples(materialized, raw_id=raw_id), lambda item: item[0]
+    )
 
     attachment_tuples, attachment_ref_tuples = _attachment_tuples(materialized)
+    attachment_tuples = _dedupe_by_key_preserve_last(attachment_tuples, lambda item: item[0])
+    attachment_ref_tuples = _dedupe_by_key_preserve_last(attachment_ref_tuples, lambda item: item[0])
 
     return ConversationData(
         conversation_id=materialized.conversation_id,
         content_hash=materialized.content_hash,
         provider_name=materialized.provider_name,
         conversation_tuple=_conversation_tuple(materialized, raw_id=raw_id),
-        message_tuples=_message_tuples(materialized),
-        block_tuples=_content_block_tuples(materialized),
-        action_event_tuples=_build_action_event_tuples(materialized),
-        provider_event_tuples=_provider_event_tuples(materialized, raw_id=raw_id),
-        stats_tuple=_stats_tuple(materialized),
+        message_tuples=message_tuples,
+        block_tuples=block_tuples,
+        action_event_tuples=action_event_tuples,
+        provider_event_tuples=provider_event_tuples,
+        stats_tuple=_stats_tuple(materialized, message_tuples),
         attachment_tuples=attachment_tuples,
         attachment_ref_tuples=attachment_ref_tuples,
         source_name=source_name,

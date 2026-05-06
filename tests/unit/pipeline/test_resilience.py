@@ -679,6 +679,49 @@ def test_transform_with_tool_use_message_keeps_non_empty_message_hash(tmp_path: 
     assert len(cdata.action_event_tuples) == 1
 
 
+def test_transform_deduplicates_materialized_message_rows_by_primary_key(tmp_path: Path) -> None:
+    from polylogue.pipeline.services.ingest_worker import _transform_to_tuples
+
+    conversation = ParsedConversation(
+        provider_name=Provider.CODEX,
+        provider_conversation_id="duplicate-message-conv",
+        title="Duplicate Message Conversation",
+        created_at="2026-04-02T00:00:00Z",
+        updated_at="2026-04-02T00:00:02Z",
+        messages=[
+            ParsedMessage(
+                provider_message_id="msg-1",
+                role=Role.USER,
+                text="older text",
+                timestamp="2026-04-02T00:00:01Z",
+                content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="older text")],
+            ),
+            ParsedMessage(
+                provider_message_id="msg-1",
+                role=Role.USER,
+                text="newer text",
+                timestamp="2026-04-02T00:00:02Z",
+                content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="newer text")],
+            ),
+        ],
+        attachments=[],
+    )
+
+    cdata = _transform_to_tuples(
+        conversation,
+        source_name="test-source",
+        archive_root=tmp_path / "archive",
+        raw_id="raw-1",
+    )
+
+    assert len(cdata.message_tuples) == 1
+    assert cdata.message_tuples[0][4] == "newer text"
+    assert len(cdata.block_tuples) == 1
+    assert cdata.block_tuples[0][5] == "newer text"
+    assert cdata.stats_tuple
+    assert cdata.stats_tuple[2] == 1
+
+
 def test_ingest_record_streams_codex_jsonl_without_full_envelope_decode(tmp_path: Path) -> None:
     from polylogue.pipeline.services.ingest_worker import ingest_record
 
@@ -702,6 +745,27 @@ def test_ingest_record_streams_codex_jsonl_without_full_envelope_decode(tmp_path
         ),
     ):
         result = ingest_record(record, str(tmp_path / "archive"), "off")
+
+    assert result.error is None
+    assert len(result.conversations) == 1
+    assert result.conversations[0].provider_name == "codex"
+
+
+def test_ingest_record_streams_detected_codex_jsonl_without_full_envelope_decode(tmp_path: Path) -> None:
+    from polylogue.pipeline.services.ingest_worker import ingest_record
+
+    content = (
+        b'{"type":"session_meta","payload":{"id":"session-1","timestamp":"2025-01-01T00:00:00Z"}}\n'
+        b'{"type":"message","id":"msg-1","role":"user","timestamp":"2025-01-01T00:00:01Z",'
+        b'"content":[{"type":"input_text","text":"hello"}]}\n'
+    )
+    record = _make_raw_record("unknown-codex-stream", "unknown", content, "/exports/codex.jsonl")
+
+    with patch(
+        "polylogue.archive.raw_payload.build_raw_payload_envelope",
+        side_effect=AssertionError("detected Codex JSONL should be streamed, not fully decoded"),
+    ):
+        result = ingest_record(record, str(tmp_path / "archive"), "advisory")
 
     assert result.error is None
     assert len(result.conversations) == 1

@@ -27,43 +27,41 @@ from .base import (
 )
 
 logger = get_logger(__name__)
+_TimestampPair = tuple[datetime, str]
+
+
+def _timestamp_pair(value: str | int | float | None) -> _TimestampPair | None:
+    if isinstance(value, str):
+        parsed = parse_timestamp(value)
+        return (parsed, value) if parsed is not None else None
+    parsed = parse_timestamp(value)
+    if parsed is None:
+        return None
+    return (parsed, format_timestamp(parsed))
 
 
 def _normalize_timestamp(value: str | int | float | None) -> str | None:
-    if isinstance(value, str):
-        return value if parse_timestamp(value) is not None else None
-    parsed = parse_timestamp(value)
-    if parsed is None:
-        return None
-    return format_timestamp(parsed)
-
-
-def _latest_timestamp(*values: str | None) -> str | None:
-    candidates: list[tuple[datetime, str]] = []
-    for value in values:
-        if not isinstance(value, str) or not value:
-            continue
-        parsed = parse_timestamp(value)
-        if parsed is None:
-            continue
-        candidates.append((parsed, value))
-    if not candidates:
-        return None
-    candidates.sort(key=lambda item: item[0])
-    return candidates[-1][1]
+    pair = _timestamp_pair(value)
+    return pair[1] if pair is not None else None
 
 
 def _newer_timestamp(
-    current: tuple[datetime, str] | None,
+    current: _TimestampPair | None,
     value: str | None,
-) -> tuple[datetime, str] | None:
+) -> _TimestampPair | None:
     if not isinstance(value, str) or not value:
         return current
-    parsed = parse_timestamp(value)
-    if parsed is None:
+    return _newer_timestamp_pair(current, _timestamp_pair(value))
+
+
+def _newer_timestamp_pair(
+    current: _TimestampPair | None,
+    candidate: _TimestampPair | None,
+) -> _TimestampPair | None:
+    if candidate is None:
         return current
-    if current is None or parsed > current[0]:
-        return (parsed, value)
+    if current is None or candidate[0] > current[0]:
+        return candidate
     return current
 
 
@@ -313,7 +311,8 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedConvers
     provider_events: list[ParsedProviderEvent] = []
     session_id = fallback_id
     session_timestamp: str | None = None
-    latest_message_timestamp: tuple[datetime, str] | None = None
+    session_timestamp_pair: _TimestampPair | None = None
+    latest_message_timestamp: _TimestampPair | None = None
     session_metas_seen: list[str] = []  # Collect all session_meta IDs for parent tracking
     session_git: dict[str, object] | None = None  # Git context from session metadata
     session_instructions: str | None = None  # System instructions from session metadata
@@ -391,7 +390,8 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedConvers
                 session_metas_seen.append(meta_id)
                 if len(session_metas_seen) == 1:
                     session_id = meta_id
-                    session_timestamp = _normalize_timestamp(_record_timestamp(session_meta))
+                    session_timestamp_pair = _timestamp_pair(_record_timestamp(session_meta))
+                    session_timestamp = session_timestamp_pair[1] if session_timestamp_pair is not None else None
             git_context = _git_context(session_meta)
             if git_context and not session_git:
                 session_git = git_context
@@ -405,7 +405,8 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedConvers
             raw_role = _effective_role(message_record)
             content = _effective_content(message_record)
             text = extract_codex_text(content)
-            timestamp = _normalize_timestamp(_record_timestamp(message_record))
+            timestamp_pair = _timestamp_pair(_record_timestamp(message_record))
+            timestamp = timestamp_pair[1] if timestamp_pair is not None else None
 
             if not raw_role or raw_role == "unknown" or not text:
                 continue
@@ -428,7 +429,7 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedConvers
                     message_type=_message_type_from_codex_message(message_record, text),
                 )
             )
-            latest_message_timestamp = _newer_timestamp(latest_message_timestamp, timestamp)
+            latest_message_timestamp = _newer_timestamp_pair(latest_message_timestamp, timestamp_pair)
 
     # Second session_meta ID (if present) is the parent session
     parent_id = session_metas_seen[1] if len(session_metas_seen) > 1 else None
@@ -444,15 +445,14 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedConvers
             conv_meta["instructions"] = session_instructions
         if working_directories:
             conv_meta["working_directories"] = sorted(working_directories)
+    updated_at_pair = _newer_timestamp_pair(session_timestamp_pair, latest_message_timestamp)
 
     return ParsedConversation(
         provider_name=Provider.CODEX,
         provider_conversation_id=session_id,
         title=session_id,
         created_at=session_timestamp,
-        updated_at=_latest_timestamp(
-            latest_message_timestamp[1] if latest_message_timestamp else None, session_timestamp
-        ),
+        updated_at=updated_at_pair[1] if updated_at_pair is not None else None,
         messages=messages,
         provider_meta=conv_meta,
         provider_events=provider_events,
