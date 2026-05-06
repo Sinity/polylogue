@@ -53,6 +53,20 @@ def _latest_timestamp(*values: str | None) -> str | None:
     return candidates[-1][1]
 
 
+def _newer_timestamp(
+    current: tuple[datetime, str] | None,
+    value: str | None,
+) -> tuple[datetime, str] | None:
+    if not isinstance(value, str) or not value:
+        return current
+    parsed = parse_timestamp(value)
+    if parsed is None:
+        return current
+    if current is None or parsed > current[0]:
+        return (parsed, value)
+    return current
+
+
 def _validate_record(item: object, *, index: int, context: str = "record") -> CodexRecord | None:
     if not isinstance(item, dict):
         return None
@@ -299,7 +313,7 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedConvers
     provider_events: list[ParsedProviderEvent] = []
     session_id = fallback_id
     session_timestamp: str | None = None
-    latest_message_timestamp: str | None = None
+    latest_message_timestamp: tuple[datetime, str] | None = None
     session_metas_seen: list[str] = []  # Collect all session_meta IDs for parent tracking
     session_git: dict[str, object] | None = None  # Git context from session metadata
     session_instructions: str | None = None  # System instructions from session metadata
@@ -364,7 +378,7 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedConvers
                 tool_message = _codex_tool_message(inner, index=idx)
                 if tool_message is not None:
                     messages.append(tool_message)
-                    latest_message_timestamp = _latest_timestamp(latest_message_timestamp, tool_message.timestamp)
+                    latest_message_timestamp = _newer_timestamp(latest_message_timestamp, tool_message.timestamp)
                 cwd = _extract_cwd(event_payload)
                 if cwd:
                     working_directories.add(cwd)
@@ -414,7 +428,7 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedConvers
                     message_type=_message_type_from_codex_message(message_record, text),
                 )
             )
-            latest_message_timestamp = _latest_timestamp(latest_message_timestamp, timestamp)
+            latest_message_timestamp = _newer_timestamp(latest_message_timestamp, timestamp)
 
     # Second session_meta ID (if present) is the parent session
     parent_id = session_metas_seen[1] if len(session_metas_seen) > 1 else None
@@ -436,7 +450,9 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedConvers
         provider_conversation_id=session_id,
         title=session_id,
         created_at=session_timestamp,
-        updated_at=_latest_timestamp(latest_message_timestamp, session_timestamp),
+        updated_at=_latest_timestamp(
+            latest_message_timestamp[1] if latest_message_timestamp else None, session_timestamp
+        ),
         messages=messages,
         provider_meta=conv_meta,
         provider_events=provider_events,

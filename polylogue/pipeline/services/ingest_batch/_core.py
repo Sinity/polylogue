@@ -139,6 +139,8 @@ def _topo_sort_message_tuples(tuples: list[MessageTuple]) -> list[MessageTuple]:
 
     message_id is at index 0, parent_message_id is at index 8.
     """
+    if not any(t[8] for t in tuples):
+        return tuples
     ids_in_batch = {t[0] for t in tuples}
     no_parent: list[MessageTuple] = []
     has_parent: list[MessageTuple] = []

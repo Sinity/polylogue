@@ -177,7 +177,7 @@ def _materialize_provider_events(
                 event_type=event.event_type,
                 timestamp=event.timestamp,
                 sort_key=_timestamp_sort_key(event.timestamp),
-                payload=dict(event.payload),
+                payload=event.payload,
                 source_message_id=source_message_id,
             )
         )
@@ -292,25 +292,34 @@ def materialize_conversation(
         parent_message_id = (
             message_id_map.get(str(msg.parent_message_provider_id)) if msg.parent_message_provider_id else None
         )
-        block_types = {block.type for block in msg.content_blocks}
+        has_tool_block = False
+        has_tool_result_block = False
+        has_thinking_block = False
+        for block in msg.content_blocks:
+            if block.type == "thinking":
+                has_thinking_block = True
+            elif block.type == "tool_use":
+                has_tool_block = True
+            elif block.type == "tool_result":
+                has_tool_result_block = True
         message_type = msg.message_type
         # Aggregate session stats are rebuilt later, but these per-message
         # flags are part of the archive row itself and drive query filters.
         word_count = 0
         has_tool_use = int(
-            "tool_use" in block_types
-            or "tool_result" in block_types
+            has_tool_block
+            or has_tool_result_block
             or msg.role == "tool"
             or message_type in {MessageType.TOOL_USE, MessageType.TOOL_RESULT}
         )
-        has_thinking = int("thinking" in block_types or message_type == MessageType.THINKING)
+        has_thinking = int(has_thinking_block or message_type == MessageType.THINKING)
         has_paste = 0
         if message_type == MessageType.MESSAGE:
-            if "thinking" in block_types:
+            if has_thinking_block:
                 message_type = MessageType.THINKING
-            elif "tool_result" in block_types or msg.role == "tool":
+            elif has_tool_result_block or msg.role == "tool":
                 message_type = MessageType.TOOL_RESULT
-            elif "tool_use" in block_types:
+            elif has_tool_block:
                 message_type = MessageType.TOOL_USE
 
         blocks = [

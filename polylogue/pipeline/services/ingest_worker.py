@@ -11,8 +11,9 @@ from __future__ import annotations
 
 import pickle
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from datetime import timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
@@ -38,8 +39,6 @@ from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.runtime import (
     ACTION_EVENT_MATERIALIZER_VERSION,
     PROVIDER_EVENT_MATERIALIZER_VERSION,
-    ContentBlockRecord,
-    MessageRecord,
     RawConversationRecord,
     _json_or_none,
 )
@@ -217,6 +216,12 @@ class IngestRecordResult:
     conversations: list[ConversationData] = field(default_factory=list)
     source_name: str | None = None
     serialized_size_bytes: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _ActionEventMessage:
+    id: str
+    timestamp: datetime | None
 
 
 ParsePlanMode = Literal["payload", "stream"]
@@ -565,12 +570,24 @@ def _parse_plan_conversations(
     fallback_id = _fallback_id(context.raw_record.source_path, context.raw_record.raw_id)
     if plan.mode == "stream":
         assert plan.stream_name is not None
+        stream_name = plan.stream_name
         with context.raw_source.open("rb") as handle:
-            return parse_stream_payload(
+            valid_record_count = 0
+
+            def counted_stream() -> Iterable[object]:
+                nonlocal valid_record_count
+                for item in _iter_json_stream(handle, stream_name):
+                    valid_record_count += 1
+                    yield item
+
+            conversations = parse_stream_payload(
                 plan.provider,
-                _iter_json_stream(handle, plan.stream_name),
+                counted_stream(),
                 fallback_id,
             )
+            if valid_record_count == 0:
+                raise ValueError(f"no valid JSON records in {stream_name}")
+            return conversations
 
     return parse_payload(
         plan.provider,
@@ -922,57 +939,6 @@ def _transform_to_tuples(
     )
 
 
-def _content_block_record_for_action_event(
-    *,
-    conversation_id: ConversationId,
-    message_id: MessageId,
-    block: MaterializedContentBlock,
-) -> ContentBlockRecord:
-    return ContentBlockRecord(
-        block_id=block.block_id,
-        message_id=message_id,
-        conversation_id=conversation_id,
-        block_index=block.block_index,
-        type=block.type,
-        text=block.text,
-        tool_name=block.tool_name,
-        tool_id=block.tool_id,
-        tool_input=block.tool_input_json,
-        media_type=block.media_type,
-        metadata=block.metadata_json,
-        semantic_type=block.semantic_type,
-    )
-
-
-def _message_record_for_action_events(
-    conversation: MaterializedConversation,
-    message: MaterializedMessage,
-) -> MessageRecord:
-    return MessageRecord(
-        message_id=message.message_id,
-        conversation_id=conversation.conversation_id,
-        provider_message_id=message.provider_message_id,
-        role=message.role,
-        text=message.text,
-        sort_key=message.sort_key,
-        content_hash=message.content_hash,
-        provider_name=conversation.provider_name,
-        word_count=message.word_count,
-        has_tool_use=message.has_tool_use,
-        has_thinking=message.has_thinking,
-        has_paste=message.has_paste,
-        message_type=message.message_type,
-        content_blocks=[
-            _content_block_record_for_action_event(
-                conversation_id=conversation.conversation_id,
-                message_id=message.message_id,
-                block=block,
-            )
-            for block in message.blocks
-        ],
-    )
-
-
 def _timestamp_iso_for_action_event(event: ActionEvent) -> str | None:
     if event.timestamp is None:
         return None
@@ -1021,16 +987,47 @@ def _action_event_tuple(
     )
 
 
+def _action_event_message_timestamp(message: MaterializedMessage) -> datetime | None:
+    if message.sort_key is None:
+        return None
+    try:
+        return datetime.fromtimestamp(message.sort_key, tz=timezone.utc)
+    except (OSError, ValueError):
+        return None
+
+
+def _content_block_mapping_for_action_event(
+    *,
+    conversation_id: ConversationId,
+    message_id: MessageId,
+    block: MaterializedContentBlock,
+) -> dict[str, object]:
+    return {
+        "block_id": block.block_id,
+        "message_id": message_id,
+        "conversation_id": conversation_id,
+        "block_index": block.block_index,
+        "type": block.type,
+        "text": block.text,
+        "tool_name": block.tool_name,
+        "tool_id": block.tool_id,
+        "tool_input": block.tool_input_json,
+        "media_type": block.media_type,
+        "metadata": block.metadata_json,
+        "semantic_type": block.semantic_type,
+    }
+
+
 def _build_action_event_tuples(
     conversation: MaterializedConversation,
 ) -> list[ActionEventTuple]:
     """Build action event tuples for all messages in a conversation.
 
-    Uses the lightweight action event builder that works from content blocks
-    without needing full Pydantic MessageRecord hydration.
+    Uses the lightweight action event builder directly from materialized content
+    blocks, avoiding Pydantic storage-record/domain-message hydration on dense
+    tool-call streams.
     """
     from polylogue.archive.action_event.action_events import build_action_events, build_tool_calls_from_content_blocks
-    from polylogue.storage.hydrators import message_from_record
 
     provider = Provider.from_string(conversation.provider_name)
     action_tuples: list[ActionEventTuple] = []
@@ -1039,16 +1036,23 @@ def _build_action_event_tuples(
         if not message.has_tool_use:
             continue
 
-        domain_message = message_from_record(
-            _message_record_for_action_events(conversation, message),
-            attachments=[],
-            provider=provider,
+        content_blocks = tuple(
+            _content_block_mapping_for_action_event(
+                conversation_id=conversation.conversation_id,
+                message_id=message.message_id,
+                block=block,
+            )
+            for block in message.blocks
         )
         tool_calls = build_tool_calls_from_content_blocks(
             provider=provider,
-            content_blocks=domain_message.content_blocks,
+            content_blocks=content_blocks,
         )
-        for event in build_action_events(domain_message, tool_calls):
+        action_message = _ActionEventMessage(
+            id=message.message_id,
+            timestamp=_action_event_message_timestamp(message),
+        )
+        for event in build_action_events(action_message, tool_calls):
             action_tuples.append(_action_event_tuple(conversation, message, event))
 
     return action_tuples
