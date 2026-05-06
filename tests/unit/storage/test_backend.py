@@ -38,6 +38,7 @@ from polylogue.storage.sqlite.schema_bootstrap import (
     SchemaSnapshot,
     build_current_schema_extension_plan,
     build_v2_to_v3_upgrade_plan,
+    build_v7_to_v8_upgrade_plan,
     decide_schema_bootstrap,
     schema_extension_snapshot_indexes,
     schema_extension_snapshot_tables,
@@ -221,6 +222,59 @@ def test_v2_to_v3_upgrade_plan_skips_backfill_when_message_type_exists() -> None
 
     assert any("idx_messages_conversation_message_type" in statement for statement in plan.statements)
     assert not any(statement.lstrip().startswith("UPDATE messages") for statement in plan.statements)
+
+
+def test_ensure_schema_upgrades_v7_by_dropping_run_ledger(tmp_path: Path) -> None:
+    """The v7->v8 path removes the retired batch-run ledger in place."""
+    db_path = tmp_path / "v7-run-ledger.db"
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        """
+        CREATE TABLE raw_conversations (
+            raw_id TEXT PRIMARY KEY,
+            provider_name TEXT NOT NULL,
+            source_path TEXT NOT NULL,
+            blob_size INTEGER NOT NULL,
+            acquired_at TEXT NOT NULL
+        );
+        CREATE TABLE runs (
+            run_id TEXT PRIMARY KEY,
+            timestamp TEXT NOT NULL,
+            plan_snapshot TEXT,
+            counts_json TEXT,
+            drift_json TEXT,
+            indexed INTEGER,
+            duration_ms INTEGER
+        );
+        CREATE INDEX idx_runs_timestamp ON runs(timestamp DESC);
+        INSERT INTO runs (run_id, timestamp) VALUES ('run-1', '2026-05-06T00:00:00+00:00');
+        PRAGMA user_version = 7;
+        """
+    )
+    conn.commit()
+
+    _ensure_schema(conn)
+
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+    assert "raw_conversations" in _table_names(conn)
+    assert "runs" not in _table_names(conn)
+    assert (
+        conn.execute("SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_runs_timestamp'").fetchone() is None
+    )
+    conn.close()
+
+
+def test_v7_to_v8_upgrade_plan_is_run_ledger_only() -> None:
+    """The v8 migration should not carry unrelated archive-wide work."""
+    snapshot = SchemaSnapshot(current_version=7, table_columns={"raw_conversations": frozenset()}, index_sql={})
+
+    plan = build_v7_to_v8_upgrade_plan(snapshot)
+
+    assert plan.scripts == ()
+    assert plan.statements == (
+        "DROP INDEX IF EXISTS idx_runs_timestamp",
+        "DROP TABLE IF EXISTS runs",
+    )
 
 
 def test_ensure_schema_rejects_version_mismatch_without_mutating(tmp_path: Path) -> None:
