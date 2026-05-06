@@ -30,6 +30,11 @@ logger = get_logger(__name__)
 _pidfile_path: Path | None = None
 
 
+def _fts_status_count(status: dict[str, object]) -> int:
+    value = status.get("count", 0)
+    return value if isinstance(value, int) else 0
+
+
 def _cleanup_pidfile() -> None:
     """Remove the daemon pidfile on exit."""
     global _pidfile_path
@@ -83,7 +88,10 @@ async def _ensure_fts_startup_readiness() -> None:
         if total == 0:
             conn.close()
             return
-        fts_count = conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0]
+        from polylogue.storage.fts.fts_lifecycle import fts_index_status_sync
+
+        fts_status = fts_index_status_sync(conn)
+        fts_count = _fts_status_count(fts_status)
         gap = total - fts_count
         if gap <= 0:
             conn.close()
@@ -99,7 +107,7 @@ async def _ensure_fts_startup_readiness() -> None:
 
         rebuild_fts_index_sync(conn)
         conn.commit()
-        new_count = conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0]
+        new_count = _fts_status_count(fts_index_status_sync(conn))
         logger.info("daemon: FTS rebuild complete — %d messages indexed.", new_count)
     except Exception:
         logger.warning("daemon: FTS startup check failed", exc_info=True)
