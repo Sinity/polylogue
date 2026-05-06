@@ -444,13 +444,6 @@ def _write_conversation(
         counts["skipped_messages"] = len(cdata.message_tuples)
         counts["skipped_attachments"] = len(cdata.attachment_tuples)
         counts["skipped_provider_events"] = len(cdata.provider_event_tuples)
-        logger.debug(
-            "Skipping stale duplicate conversation cid=%s raw_id=%s existing_raw_id=%s incoming_msgs=%d",
-            cdata.conversation_id,
-            cdata.raw_id,
-            existing_raw_id,
-            len(cdata.message_tuples),
-        )
         return False, counts
 
     conn.execute(_CONVERSATION_UPSERT_SQL, _resolved_conversation_tuple(conn, cdata))
