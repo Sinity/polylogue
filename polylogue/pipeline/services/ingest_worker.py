@@ -411,7 +411,6 @@ def _build_stream_parse_plan(
     payload_provider: str | None,
 ) -> _ParsePlan | None:
     from polylogue.archive.raw_payload.decode import _sample_jsonl_payload_with_detail
-    from polylogue.sources.dispatch import detect_provider
 
     stream_name = context.raw_record.source_path or context.raw_record.raw_id
 
@@ -433,23 +432,17 @@ def _build_stream_parse_plan(
         return None
 
     runtime_provider = Provider.from_string(payload_provider or context.raw_record.provider_name)
-    detected_provider = Provider.from_string(payload_provider or runtime_provider)
-    sniffed_provider = runtime_provider
-    if sample_payloads:
-        sniffed_provider = detect_provider(sample_payloads) or runtime_provider
-    if sniffed_provider in STREAM_RECORD_PROVIDERS:
-        detected_provider = sniffed_provider
-    else:
+    if runtime_provider not in STREAM_RECORD_PROVIDERS:
         return None
 
     artifact = classify_artifact(
         sample_payloads,
-        provider=detected_provider,
+        provider=runtime_provider,
         source_path=context.raw_record.source_path,
     )
     return _build_parse_plan(
-        provider=detected_provider,
-        payload_provider=str(detected_provider),
+        provider=runtime_provider,
+        payload_provider=str(runtime_provider),
         artifact=artifact,
         source_path=context.raw_record.source_path,
         mode="stream",

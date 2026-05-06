@@ -700,3 +700,24 @@ def test_ingest_record_streams_codex_jsonl_without_full_envelope_decode(tmp_path
     assert result.error is None
     assert len(result.conversations) == 1
     assert result.conversations[0].provider_name == "codex"
+
+
+def test_ingest_record_stream_plan_trusts_known_provider(tmp_path: Path) -> None:
+    from polylogue.pipeline.services.ingest_worker import ingest_record
+
+    content = (
+        b'{"type":"session_meta","payload":{"id":"session-1","timestamp":"2025-01-01T00:00:00Z"}}\n'
+        b'{"type":"message","id":"msg-1","role":"user","timestamp":"2025-01-01T00:00:01Z",'
+        b'"content":[{"type":"input_text","text":"hello"}]}\n'
+    )
+    record = _make_raw_record("codex-stream-known-provider", "codex", content, "/exports/codex.jsonl")
+
+    with patch(
+        "polylogue.sources.dispatch.detect_provider",
+        side_effect=AssertionError("known JSONL stream provider should not be re-sniffed"),
+    ):
+        result = ingest_record(record, str(tmp_path / "archive"), "off")
+
+    assert result.error is None
+    assert len(result.conversations) == 1
+    assert result.conversations[0].provider_name == "codex"
