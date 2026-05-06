@@ -7,6 +7,7 @@ from collections.abc import Iterable
 from typing import IO, Protocol, TypeAlias, TypeGuard
 
 import ijson
+import orjson
 
 from polylogue.logging import get_logger
 
@@ -83,6 +84,16 @@ def _yield_jsonl_pending(
     is_last: bool,
     path_name: str,
 ) -> tuple[list[JsonValue], int]:
+    try:
+        parsed = orjson.loads(raw_pending)
+    except orjson.JSONDecodeError:
+        parsed = None
+    else:
+        if _is_json_value(parsed):
+            return ([parsed], 0)
+        logger_obj.debug("Skipping non-JSON-compatible decoded line from %s", path_name)
+        return ([], 0)
+
     if isinstance(raw_pending, bytes):
         decoded = decode_json_bytes_with(logger_obj, raw_pending)
         if not decoded:
