@@ -254,6 +254,14 @@ class TestQueryFirstGroupParseArgs:
         assert result.exit_code == 0
         assert "health" in result.output.lower() or "repair" in result.output.lower()
 
+    def test_run_subcommand_dispatches_before_query_mode(self, cli_runner: CliRunner) -> None:
+        from polylogue.cli.click_app import cli
+
+        result = cli_runner.invoke(cli, ["run", "--help"], catch_exceptions=False)
+        assert result.exit_code == 0
+        assert "Run pipeline stages" in result.output
+        assert "materialize" in result.output
+
     def test_positional_args_become_query_terms(self, cli_runner: CliRunner) -> None:
         from polylogue.cli.click_app import cli
 
@@ -518,6 +526,8 @@ class TestCliMetadata:
             "run",
             "doctor",
             "reset",
+            "status",
+            "ingest",
             "auth",
             "completions",
             "dashboard",
