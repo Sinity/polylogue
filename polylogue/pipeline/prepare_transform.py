@@ -12,10 +12,12 @@ from polylogue.pipeline.prepare_models import (
 )
 from polylogue.sources.parsers.base import ParsedConversation
 from polylogue.storage.runtime import (
+    PROVIDER_EVENT_MATERIALIZER_VERSION,
     AttachmentRecord,
     ContentBlockRecord,
     ConversationRecord,
     MessageRecord,
+    ProviderEventRecord,
 )
 from polylogue.types import MessageId
 
@@ -119,11 +121,28 @@ def transform_to_records(convo: ParsedConversation, source_name: str, *, archive
             )
         )
 
+    provider_events = [
+        ProviderEventRecord(
+            event_id=event.event_id,
+            conversation_id=event.conversation_id,
+            provider_name=str(event.provider_name),
+            event_index=event.event_index,
+            event_type=event.event_type,
+            timestamp=event.timestamp,
+            sort_key=event.sort_key,
+            payload=event.payload,
+            source_message_id=event.source_message_id,
+            materializer_version=PROVIDER_EVENT_MATERIALIZER_VERSION,
+        )
+        for event in materialized.provider_events
+    ]
+
     bundle = RecordBundle(
         conversation=conversation_record,
         messages=messages,
         attachments=attachments,
         content_blocks=content_block_records,
+        provider_events=provider_events,
     )
     return TransformResult(
         bundle=bundle,

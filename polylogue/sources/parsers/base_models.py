@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import AliasChoices, BaseModel, Field, field_validator
 
 from polylogue.archive.conversation.branch_type import BranchType
 from polylogue.archive.message.roles import Role
@@ -103,6 +103,10 @@ class ParsedProviderEvent(BaseModel):
     event_type: str  # "compaction", "turn_context", etc.
     timestamp: str | None = None
     payload: dict[str, object] = Field(default_factory=dict)
+    source_message_provider_id: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("source_message_provider_id", "source_message_id"),
+    )
 
 
 class ParsedConversation(BaseModel):

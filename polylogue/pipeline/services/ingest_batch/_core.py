@@ -41,6 +41,9 @@ from polylogue.core.common import (
     SQL_MESSAGE_UPSERT as _MESSAGE_UPSERT_SQL,
 )
 from polylogue.core.common import (
+    SQL_PROVIDER_EVENT_INSERT as _PROVIDER_EVENT_INSERT_SQL,
+)
+from polylogue.core.common import (
     SQL_STATS_UPSERT as _STATS_UPSERT_SQL,
 )
 from polylogue.core.metrics import (
@@ -263,9 +266,11 @@ def _write_conversation(
         "conversations": 0,
         "messages": 0,
         "attachments": 0,
+        "provider_events": 0,
         "skipped_conversations": 0,
         "skipped_messages": 0,
         "skipped_attachments": 0,
+        "skipped_provider_events": 0,
     }
 
     content_unchanged = _check_content_unchanged(conn, cdata.conversation_id, cdata.content_hash)
@@ -274,6 +279,7 @@ def _write_conversation(
         counts["skipped_conversations"] = 1
         counts["skipped_messages"] = len(cdata.message_tuples)
         counts["skipped_attachments"] = len(cdata.attachment_tuples)
+        counts["skipped_provider_events"] = len(cdata.provider_event_tuples)
         return False, counts
 
     conn.execute(_CONVERSATION_UPSERT_SQL, _resolved_conversation_tuple(conn, cdata))
@@ -303,6 +309,12 @@ def _write_conversation(
         conn.execute("DELETE FROM action_events WHERE conversation_id = ?", (cdata.conversation_id,))
         if cdata.action_event_tuples:
             conn.executemany(_ACTION_EVENT_INSERT_SQL, cdata.action_event_tuples)
+
+    if not content_unchanged:
+        conn.execute("DELETE FROM provider_events WHERE conversation_id = ?", (cdata.conversation_id,))
+        if cdata.provider_event_tuples:
+            conn.executemany(_PROVIDER_EVENT_INSERT_SQL, cdata.provider_event_tuples)
+            counts["provider_events"] = len(cdata.provider_event_tuples)
 
     # Attachments
     if not content_unchanged:
@@ -356,7 +368,9 @@ def _record_write_result(
     summary.total_convos += 1
     summary.total_msgs += len(cdata.message_tuples)
 
-    ingest_changed = (counts["conversations"] + counts["messages"] + counts["attachments"]) > 0
+    ingest_changed = (
+        counts["conversations"] + counts["messages"] + counts["attachments"] + counts["provider_events"]
+    ) > 0
 
     if ingest_changed or content_changed:
         summary.processed_ids.add(cdata.conversation_id)
@@ -367,6 +381,8 @@ def _record_write_result(
         summary.changed_counts["messages"] += counts["messages"]
     if counts["attachments"]:
         summary.changed_counts["attachments"] += counts["attachments"]
+    if counts["provider_events"]:
+        summary.changed_counts["provider_events"] += counts["provider_events"]
     for key, value in counts.items():
         if key in summary.counts:
             summary.counts[key] += value

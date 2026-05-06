@@ -12,6 +12,7 @@ ConversationId = NewType("ConversationId", str)
 MessageId = NewType("MessageId", str)
 AttachmentId = NewType("AttachmentId", str)
 ContentHash = NewType("ContentHash", str)
+ProviderEventId = NewType("ProviderEventId", str)
 
 
 class Provider(str, Enum):
@@ -205,6 +206,7 @@ __all__ = [
     "MessageId",
     "PlanStage",
     "Provider",
+    "ProviderEventId",
     "SearchProvider",
     "SemanticBlockType",
     "ValidationMode",

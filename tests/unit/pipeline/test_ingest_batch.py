@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock
 import aiosqlite
 import pytest
 
+import polylogue.pipeline.services.ingest_batch._core as ingest_batch_core
 from polylogue.archive.message.roles import Role
 from polylogue.pipeline.services.ingest_batch import (
     _build_batch_memory_observation,
@@ -533,11 +534,8 @@ def test_iter_ingest_results_sync_runs_inline_for_single_worker(
     def fail_process_pool_executor(*, max_workers: int) -> NoReturn:
         raise AssertionError(f"process pool should not be used for single-worker batches: {max_workers}")
 
-    monkeypatch.setattr("polylogue.pipeline.services.ingest_batch.ingest_record", fake_ingest_record)
-    monkeypatch.setattr(
-        "polylogue.pipeline.services.ingest_batch.process_pool_executor",
-        fail_process_pool_executor,
-    )
+    monkeypatch.setattr(ingest_batch_core, "ingest_record", fake_ingest_record)
+    monkeypatch.setattr(ingest_batch_core, "process_pool_executor", fail_process_pool_executor)
 
     results = list(
         _iter_ingest_results_sync(
@@ -635,7 +633,7 @@ def test_process_ingest_batch_sync_commits_fts_repair_and_invalidates_search_cac
         assert record.raw_id == raw_id
         return IngestRecordResult(raw_id=record.raw_id, conversations=[conversation])
 
-    monkeypatch.setattr("polylogue.pipeline.services.ingest_batch.ingest_record", fake_ingest_record)
+    monkeypatch.setattr(ingest_batch_core, "ingest_record", fake_ingest_record)
 
     summary = _process_ingest_batch_sync(
         [raw_record],

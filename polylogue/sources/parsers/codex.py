@@ -221,7 +221,6 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedConvers
     """
     messages: list[ParsedMessage] = []
     provider_events: list[ParsedProviderEvent] = []
-    context_compactions: list[dict[str, object]] = []
     session_id = fallback_id
     session_timestamp: str | None = None
     latest_message_timestamp: str | None = None
@@ -251,7 +250,6 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedConvers
                     payload=event_payload,
                 )
             )
-            context_compactions.append(event_payload)
             continue
 
         # Handle turn-context events
@@ -343,14 +341,12 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedConvers
 
     # Build conversation-level provider_meta with session context
     conv_meta: dict[str, object] | None = None
-    if session_git or session_instructions or context_compactions or working_directories:
+    if session_git or session_instructions or working_directories:
         conv_meta = {}
         if session_git:
             conv_meta["git"] = session_git
         if session_instructions:
             conv_meta["instructions"] = session_instructions
-        if context_compactions:
-            conv_meta["context_compactions"] = context_compactions
         if working_directories:
             conv_meta["working_directories"] = sorted(working_directories)
 

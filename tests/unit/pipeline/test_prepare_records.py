@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -13,7 +14,7 @@ from polylogue.pipeline.prepare import prepare_records
 from polylogue.pipeline.prepare_models import PersistedConversationResult
 from polylogue.pipeline.services.validation import ValidationService
 from polylogue.schemas import ValidationResult
-from polylogue.sources.parsers.base import ParsedAttachment, ParsedConversation, ParsedMessage
+from polylogue.sources.parsers.base import ParsedAttachment, ParsedConversation, ParsedMessage, ParsedProviderEvent
 from polylogue.storage.repository import ConversationRepository
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.types import Provider
@@ -72,6 +73,65 @@ async def test_prepare_records_new_conversation(
     assert counts["skipped_conversations"] == 0
     assert changed is False
     assert conversation_id == "unknown:new-conv-1"
+
+
+async def test_prepare_records_persists_provider_events(
+    async_backend: SQLiteBackend,
+    test_repository: ConversationRepository,
+    tmp_path: Path,
+) -> None:
+    conversation = ParsedConversation(
+        provider_name=Provider.CODEX,
+        provider_conversation_id="conv-events",
+        title="Provider events",
+        created_at="2024-01-01T00:00:00Z",
+        updated_at="2024-01-01T00:00:00Z",
+        messages=[
+            ParsedMessage(
+                provider_message_id="msg-1",
+                role=Role.USER,
+                text="Hello",
+                timestamp="2024-01-01T00:00:00Z",
+            )
+        ],
+        provider_events=[
+            ParsedProviderEvent(
+                event_type="turn_context",
+                timestamp="2024-01-01T00:00:00Z",
+                payload={"cwd": "/repo/polylogue"},
+                source_message_provider_id="msg-1",
+            )
+        ],
+        attachments=[],
+    )
+
+    conversation_id, counts, _ = _prepare_fields(
+        await prepare_records(
+            conversation,
+            "test-source",
+            archive_root=tmp_path / "archive",
+            backend=async_backend,
+            repository=test_repository,
+        )
+    )
+
+    assert counts["provider_events"] == 1
+    async with async_backend.connection() as conn:
+        row = await (
+            await conn.execute(
+                "SELECT event_type, payload_json, source_message_id FROM provider_events WHERE conversation_id = ?",
+                (conversation_id,),
+            )
+        ).fetchone()
+    assert row is not None
+    assert row["event_type"] == "turn_context"
+    assert json.loads(row["payload_json"]) == {"cwd": "/repo/polylogue"}
+    assert row["source_message_id"] == f"{conversation_id}:msg-1"
+    stored = await test_repository.get(conversation_id)
+    assert stored is not None
+    assert [event.event_type for event in stored.provider_events] == ["turn_context"]
+    assert stored.provider_events[0].payload == {"cwd": "/repo/polylogue"}
+    assert str(stored.provider_events[0].source_message_id) == f"{conversation_id}:msg-1"
 
 
 async def test_prepare_records_unchanged_conversation_skips(

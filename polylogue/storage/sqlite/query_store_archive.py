@@ -15,11 +15,13 @@ from polylogue.storage.runtime import (
     ContentBlockRecord,
     ConversationRecord,
     MessageRecord,
+    ProviderEventRecord,
 )
 from polylogue.storage.search.models import ConversationSearchEvidenceHit, ConversationSearchResult
 from polylogue.storage.sqlite.queries import attachments as attachments_q
 from polylogue.storage.sqlite.queries import conversations as conversations_q
 from polylogue.storage.sqlite.queries import messages as messages_q
+from polylogue.storage.sqlite.queries import provider_events as provider_events_q
 from polylogue.storage.sqlite.queries import stats as stats_q
 from polylogue.storage.sqlite.queries.messages import MessageTypeName
 from polylogue.storage.sqlite.queries.stats import (
@@ -183,6 +185,17 @@ class SQLiteQueryStoreArchiveMixin:
     ) -> dict[str, list[AttachmentRecord]]:
         async with self._connection_factory() as conn:
             return await attachments_q.get_attachments_batch(conn, conversation_ids)
+
+    async def get_provider_events(self, conversation_id: str) -> list[ProviderEventRecord]:
+        async with self._connection_factory() as conn:
+            return await provider_events_q.get_provider_events(conn, conversation_id)
+
+    async def get_provider_events_batch(
+        self,
+        conversation_ids: list[str],
+    ) -> dict[str, list[ProviderEventRecord]]:
+        async with self._connection_factory() as conn:
+            return await provider_events_q.get_provider_events_batch(conn, conversation_ids)
 
     async def iter_messages(
         self,

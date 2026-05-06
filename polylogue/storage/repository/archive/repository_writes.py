@@ -12,6 +12,7 @@ from polylogue.core.payload_coercion import string_sequence
 from polylogue.storage.repository.archive.writes.conversations import (
     conversation_to_record,
     delete_conversation_via_backend,
+    provider_event_to_record,
     save_via_backend,
 )
 from polylogue.storage.repository.archive.writes.metadata import metadata_read_modify_write
@@ -21,6 +22,7 @@ from polylogue.storage.runtime import (
     ContentBlockRecord,
     ConversationRecord,
     MessageRecord,
+    ProviderEventRecord,
     PublicationRecord,
     RunRecord,
 )
@@ -39,6 +41,7 @@ class RepositoryWriteMixin:
         messages: builtins.list[MessageRecord],
         attachments: builtins.list[AttachmentRecord],
         content_blocks: builtins.list[ContentBlockRecord] | None = None,
+        provider_events: builtins.list[ProviderEventRecord] | None = None,
     ) -> dict[str, int]:
         if isinstance(conversation, Conversation):
             if conversation.messages and not messages:
@@ -46,6 +49,8 @@ class RepositoryWriteMixin:
                     "save_conversation() received a domain Conversation with messages but no "
                     "MessageRecord rows; pass transformed records instead of risking runtime-state loss"
                 )
+            if provider_events is None:
+                provider_events = [provider_event_to_record(event) for event in conversation.provider_events]
             conv_record = self._conversation_to_record(conversation)
         else:
             conv_record = conversation
@@ -55,6 +60,7 @@ class RepositoryWriteMixin:
             messages,
             attachments,
             content_blocks or [],
+            provider_events,
         )
 
     def _conversation_to_record(self, conversation: Conversation) -> ConversationRecord:
@@ -66,6 +72,7 @@ class RepositoryWriteMixin:
         messages: builtins.list[MessageRecord],
         attachments: builtins.list[AttachmentRecord],
         content_blocks: builtins.list[ContentBlockRecord] | None = None,
+        provider_events: builtins.list[ProviderEventRecord] | None = None,
     ) -> dict[str, int]:
         backend = self._backend
         if backend is None:
@@ -76,6 +83,7 @@ class RepositoryWriteMixin:
             messages,
             attachments,
             content_blocks,
+            provider_events,
         )
 
     async def record_run(self, record: RunRecord) -> None:

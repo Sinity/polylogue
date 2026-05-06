@@ -41,11 +41,12 @@ class RepositoryArchiveConversationMixin:
         if not conv_record:
             return None
 
-        msg_records, att_records = await asyncio.gather(
+        msg_records, att_records, provider_event_records = await asyncio.gather(
             self.queries.get_messages(conversation_id),
             self.queries.get_attachments(conversation_id),
+            self.queries.get_provider_events(conversation_id),
         )
-        return conversation_from_records(conv_record, msg_records, att_records)
+        return conversation_from_records(conv_record, msg_records, att_records, provider_event_records)
 
     async def get_render_projection(self, conversation_id: str) -> ConversationRenderProjection | None:
         conv_record = await self.queries.get_conversation(conversation_id)
@@ -124,15 +125,17 @@ class RepositoryArchiveConversationMixin:
             return []
 
         async with self._backend.read_pool(size=2):
-            msgs_by_id, atts_by_id = await asyncio.gather(
+            msgs_by_id, atts_by_id, provider_events_by_id = await asyncio.gather(
                 self.queries.get_messages_batch(present_ids),
                 self.queries.get_attachments_batch(present_ids),
+                self.queries.get_provider_events_batch(present_ids),
             )
         return [
             conversation_from_records(
                 by_id[conversation_id],
                 msgs_by_id.get(conversation_id, []),
                 atts_by_id.get(conversation_id, []),
+                provider_events_by_id.get(conversation_id, []),
             )
             for conversation_id in present_ids
         ]

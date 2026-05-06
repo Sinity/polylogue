@@ -16,16 +16,6 @@ from polylogue.sources.parsers.codex import parse as parse_codex
 from polylogue.sources.providers.claude_code import ClaudeCodeRecord
 from polylogue.sources.providers.codex import CodexRecord
 
-
-def _provider_compactions(provider_meta: dict[str, object] | None) -> list[dict[str, object]]:
-    assert isinstance(provider_meta, dict)
-    compactions = provider_meta.get("context_compactions")
-    assert isinstance(compactions, list)
-    typed_compactions = [entry for entry in compactions if isinstance(entry, dict)]
-    assert len(typed_compactions) == len(compactions)
-    return typed_compactions
-
-
 # =============================================================================
 # detect_context_compaction — legacy format
 # =============================================================================
@@ -219,15 +209,15 @@ class TestClaudeCodeParserProviderEvents:
         assert event.payload["trigger"] == "auto"
         assert event.payload["pre_tokens"] == 100000
 
-    def test_compaction_backward_compat_provider_meta(self) -> None:
-        """provider_meta['context_compactions'] still populated for backward compat."""
+    def test_compaction_not_duplicated_in_provider_meta(self) -> None:
+        """Compactions are provider events, not conversation metadata."""
         payload: list[object] = [
             {"type": "summary", "uuid": "s1", "message": {"content": "sum"}},
         ]
         result = parse_code(payload, "test-session")
-        compactions = _provider_compactions(result.provider_meta)
-        assert len(compactions) == 1
-        assert compactions[0]["summary"] == "sum"
+        assert result.provider_meta is None
+        assert len(result.provider_events) == 1
+        assert result.provider_events[0].payload["summary"] == "sum"
 
     def test_no_compaction_no_provider_events(self) -> None:
         payload: list[object] = [
@@ -375,8 +365,8 @@ class TestCodexParserProviderEvents:
         assert result.provider_events[0].event_type == "compaction"
         assert result.provider_events[1].event_type == "turn_context"
 
-    def test_compaction_backward_compat_provider_meta(self) -> None:
-        """provider_meta['context_compactions'] still populated for backward compat."""
+    def test_compaction_not_duplicated_in_provider_meta(self) -> None:
+        """Compactions are provider events, not conversation metadata."""
         payload: list[object] = [
             {"type": "compacted", "payload": {"message": "compact text"}},
             {
@@ -389,9 +379,9 @@ class TestCodexParserProviderEvents:
             },
         ]
         result = parse_codex(payload, "fallback")
-        compactions = _provider_compactions(result.provider_meta)
-        assert len(compactions) == 1
-        assert compactions[0]["summary"] == "compact text"
+        assert result.provider_meta is None
+        assert len(result.provider_events) == 1
+        assert result.provider_events[0].payload["summary"] == "compact text"
 
     def test_no_compaction_no_provider_events(self) -> None:
         payload: list[object] = [
@@ -469,6 +459,42 @@ class TestProfileCompactionCounting:
         evidence = profile_evidence_payload(profile)
         assert evidence.compaction_count == 3
         assert evidence.has_compaction is True
+
+    def test_session_profile_counts_provider_event_compactions(self) -> None:
+        from polylogue.archive.conversation.models import Conversation
+        from polylogue.archive.message.messages import MessageCollection
+        from polylogue.archive.provider.events import ProviderEvent
+        from polylogue.archive.session.runtime import build_session_profile
+        from polylogue.types import ConversationId, Provider, ProviderEventId
+
+        conversation = Conversation(
+            id=ConversationId("claude-code:session-1"),
+            provider=Provider.CLAUDE_CODE,
+            title="Session",
+            messages=MessageCollection.empty(),
+            provider_events=(
+                ProviderEvent(
+                    id=ProviderEventId("claude-code:session-1:provider-event:000000"),
+                    conversation_id=ConversationId("claude-code:session-1"),
+                    provider=Provider.CLAUDE_CODE,
+                    event_index=0,
+                    event_type="compaction",
+                    payload={"summary": "Earlier context"},
+                ),
+                ProviderEvent(
+                    id=ProviderEventId("claude-code:session-1:provider-event:000001"),
+                    conversation_id=ConversationId("claude-code:session-1"),
+                    provider=Provider.CLAUDE_CODE,
+                    event_index=1,
+                    event_type="turn_context",
+                    payload={},
+                ),
+            ),
+        )
+
+        profile = build_session_profile(conversation)
+
+        assert profile.compaction_count == 1
 
     def test_profile_evidence_payload_zero_compaction(self) -> None:
         from polylogue.archive.session.models import SessionProfile

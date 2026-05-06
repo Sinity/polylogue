@@ -18,6 +18,7 @@ from polylogue.types import (
     ConversationId,
     MessageId,
     Provider,
+    ProviderEventId,
     SemanticBlockType,
 )
 
@@ -181,6 +182,32 @@ class AttachmentRecord(BaseModel):
     @classmethod
     def coerce_provider_meta(cls, value: object) -> JSONObject | None:
         return _coerce_json_object(value)
+
+
+class ProviderEventRecord(BaseModel):
+    event_id: ProviderEventId
+    conversation_id: ConversationId
+    provider_name: str
+    event_index: int
+    event_type: str
+    timestamp: str | None = None
+    sort_key: float | None = None
+    payload: JSONObject = Field(default_factory=dict)
+    source_message_id: MessageId | None = None
+    raw_id: str | None = None
+    materializer_version: int = 1
+
+    @field_validator("event_id", "conversation_id", "provider_name", "event_type")
+    @classmethod
+    def non_empty_string(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("Field cannot be empty")
+        return v
+
+    @field_validator("payload", mode="before")
+    @classmethod
+    def coerce_payload(cls, value: object) -> JSONObject:
+        return _coerce_json_object(value) or {}
 
 
 def _coerce_run_counts_payload(value: object) -> RunCountsPayload | None:

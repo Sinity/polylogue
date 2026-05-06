@@ -19,12 +19,14 @@ from polylogue.archive.conversation.models import Conversation, ConversationSumm
 from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.message.models import Message
 from polylogue.archive.message.roles import Role
+from polylogue.archive.provider.events import ProviderEvent
 from polylogue.core.json import loads
 from polylogue.core.timestamps import parse_timestamp
 from polylogue.storage.runtime import (
     AttachmentRecord,
     ConversationRecord,
     MessageRecord,
+    ProviderEventRecord,
 )
 from polylogue.types import MessageId, Provider
 
@@ -109,6 +111,22 @@ def message_from_record(
     )
 
 
+def provider_event_from_record(record: ProviderEventRecord) -> ProviderEvent:
+    return ProviderEvent(
+        id=record.event_id,
+        conversation_id=record.conversation_id,
+        provider=Provider.from_string(record.provider_name),
+        event_index=record.event_index,
+        event_type=record.event_type,
+        timestamp=parse_timestamp(record.timestamp),
+        sort_key=record.sort_key,
+        payload=record.payload,
+        source_message_id=record.source_message_id,
+        raw_id=record.raw_id,
+        materializer_version=record.materializer_version,
+    )
+
+
 def conversation_summary_from_record(record: ConversationRecord) -> ConversationSummary:
     """Hydrate a ConversationSummary domain model from a ConversationRecord."""
     return ConversationSummary(
@@ -128,6 +146,7 @@ def conversation_from_records(
     conversation: ConversationRecord,
     messages: list[MessageRecord],
     attachments: list[AttachmentRecord],
+    provider_events: list[ProviderEventRecord] | None = None,
 ) -> Conversation:
     """Hydrate a Conversation domain model from records.
 
@@ -166,6 +185,7 @@ def conversation_from_records(
         updated_at=parse_timestamp(conversation.updated_at),
         provider_meta=conversation.provider_meta,
         metadata=conversation.metadata or {},
+        provider_events=tuple(provider_event_from_record(event) for event in (provider_events or [])),
         parent_id=conversation.parent_conversation_id,
         branch_type=conversation.branch_type,
     )
@@ -176,4 +196,5 @@ __all__ = [
     "conversation_from_records",
     "conversation_summary_from_record",
     "message_from_record",
+    "provider_event_from_record",
 ]

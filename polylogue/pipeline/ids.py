@@ -12,7 +12,7 @@ from polylogue.core.hashing import hash_file, hash_payload, hash_text
 from polylogue.core.json import JSONValue
 from polylogue.sources import ParsedAttachment, ParsedConversation, ParsedMessage
 from polylogue.sources.parsers.base import ParsedContentBlock
-from polylogue.types import ContentHash, ConversationId, MessageId
+from polylogue.types import ContentHash, ConversationId, MessageId, ProviderEventId
 
 # Sentinel values to distinguish None from empty in hash computations
 _NULL_SENTINEL = "__POLYLOGUE_NULL__"
@@ -157,6 +157,10 @@ def message_id(conversation_id: ConversationId, provider_message_id: str) -> Mes
     return MessageId(f"{conversation_id}:{provider_message_id}")
 
 
+def provider_event_id(conversation_id: ConversationId, event_index: int) -> ProviderEventId:
+    return ProviderEventId(f"{conversation_id}:provider-event:{event_index:06d}")
+
+
 def _content_block_payload(block: ParsedContentBlock) -> dict[str, JSONValue]:
     """Build a hash-stable payload for a single content block."""
     payload: dict[str, JSONValue] = {
@@ -194,6 +198,7 @@ def _conversation_hash_payload(
     updated_at: str | None,
     messages: list[dict[str, JSONValue]],
     attachments: list[dict[str, JSONValue]],
+    provider_events: list[dict[str, JSONValue]],
 ) -> dict[str, object]:
     """Build the content-hash payload dict shared by pipeline and async write paths."""
     return {
@@ -201,6 +206,7 @@ def _conversation_hash_payload(
         "created_at": _normalize_for_hash(created_at),
         "updated_at": _normalize_for_hash(updated_at),
         "messages": messages,
+        "provider_events": provider_events,
         "attachments": sorted(
             attachments,
             key=lambda item: (
@@ -248,6 +254,16 @@ def conversation_content_hash(convo: ParsedConversation) -> ContentHash:
         }
         for att in convo.attachments
     ]
+    provider_events_payload = [
+        {
+            "event_index": event_index,
+            "event_type": _normalize_for_hash(event.event_type),
+            "timestamp": _normalize_for_hash(event.timestamp),
+            "source_message_provider_id": _normalize_for_hash(event.source_message_provider_id),
+            "payload": hash_payload(event.payload),
+        }
+        for event_index, event in enumerate(convo.provider_events)
+    ]
     return ContentHash(
         hash_payload(
             _conversation_hash_payload(
@@ -256,6 +272,7 @@ def conversation_content_hash(convo: ParsedConversation) -> ContentHash:
                 updated_at=convo.updated_at,
                 messages=messages_payload,
                 attachments=attachments_payload,
+                provider_events=provider_events_payload,
             )
         )
     )

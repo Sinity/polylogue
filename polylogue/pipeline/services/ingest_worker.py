@@ -36,6 +36,7 @@ from polylogue.sources.dispatch import STREAM_RECORD_PROVIDERS
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.runtime import (
     ACTION_EVENT_MATERIALIZER_VERSION,
+    PROVIDER_EVENT_MATERIALIZER_VERSION,
     ContentBlockRecord,
     MessageRecord,
     RawConversationRecord,
@@ -48,6 +49,7 @@ from polylogue.types import (
     ConversationId,
     MessageId,
     Provider,
+    ProviderEventId,
     SemanticBlockType,
     ValidationMode,
     ValidationStatus,
@@ -141,6 +143,19 @@ ActionEventTuple = tuple[
     str | None,
     str,
 ]
+ProviderEventTuple = tuple[
+    ProviderEventId,
+    ConversationId,
+    Provider,
+    int,
+    str,
+    str | None,
+    float | None,
+    str,
+    MessageId | None,
+    str | None,
+    int,
+]
 StatsTuple = tuple[ConversationId, str, int, int, int, int, int]
 AttachmentTuple = tuple[AttachmentId, str | None, int | None, str | None, int, str | None]
 AttachmentRefTuple = tuple[str, AttachmentId, ConversationId, MessageId | None, str | None]
@@ -170,6 +185,9 @@ class ConversationData:
 
     # list[tuple] matching INSERT INTO action_events column order
     action_event_tuples: list[ActionEventTuple] = field(default_factory=list)
+
+    # list[tuple] matching INSERT INTO provider_events column order
+    provider_event_tuples: list[ProviderEventTuple] = field(default_factory=list)
 
     # (conversation_id, provider_name, msg_count, word_count, tool_use_count, thinking_count)
     stats_tuple: StatsTuple | tuple[()] = ()
@@ -781,6 +799,29 @@ def _stats_tuple(conversation: MaterializedConversation) -> StatsTuple:
     )
 
 
+def _provider_event_tuples(
+    conversation: MaterializedConversation,
+    *,
+    raw_id: str | None,
+) -> list[ProviderEventTuple]:
+    return [
+        (
+            event.event_id,
+            event.conversation_id,
+            event.provider_name,
+            event.event_index,
+            event.event_type,
+            event.timestamp,
+            event.sort_key,
+            json_dumps(event.payload),
+            event.source_message_id,
+            raw_id,
+            PROVIDER_EVENT_MATERIALIZER_VERSION,
+        )
+        for event in conversation.provider_events
+    ]
+
+
 def _attachment_tuples(
     conversation: MaterializedConversation,
 ) -> tuple[list[AttachmentTuple], list[AttachmentRefTuple]]:
@@ -838,6 +879,7 @@ def _transform_to_tuples(
         message_tuples=_message_tuples(materialized),
         block_tuples=_content_block_tuples(materialized),
         action_event_tuples=_build_action_event_tuples(materialized),
+        provider_event_tuples=_provider_event_tuples(materialized, raw_id=raw_id),
         stats_tuple=_stats_tuple(materialized),
         attachment_tuples=attachment_tuples,
         attachment_ref_tuples=attachment_ref_tuples,
