@@ -7,6 +7,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from hashlib import sha256
+from io import BytesIO
 from json import dumps as json_dumps
 from json import loads as json_loads
 from pathlib import Path
@@ -821,7 +822,7 @@ def _parse_as_conversation_artifact(path: Path, *, provider: Provider, payload: 
         return path_classification.parse_as_conversation
     if path.suffix.lower() == ".jsonl":
         records: list[JSONValue] = []
-        for line in payload.splitlines():
+        for line in BytesIO(payload):
             if len(records) >= 32:
                 break
             if not line.strip():

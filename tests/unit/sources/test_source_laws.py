@@ -2027,6 +2027,29 @@ def test_jsonl_prefix_provider_detection_ignores_truncated_tail() -> None:
     assert provider is Provider.CLAUDE_CODE
 
 
+def test_jsonl_provider_detection_samples_stream_without_whole_document_parse(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = (
+        b'{"sessionId":"s1","uuid":"m1","type":"user","message":{"role":"user","content":[{"type":"text","text":"hi"}]}}\n'
+        b'{"sessionId":"s1","uuid":"m2","parentUuid":"m1","type":"assistant","message":{"role":"assistant","content":'
+        b'[{"type":"text","text":"reply"}]}}\n'
+    )
+
+    def _fail_whole_document_decode(_raw_bytes: bytes) -> None:
+        raise AssertionError("JSONL provider detection should not decode the whole payload as one JSON document")
+
+    monkeypatch.setattr(dispatch_module, "_decode_json_bytes", _fail_whole_document_decode)
+
+    provider = dispatch_module._detect_provider_from_raw_bytes(
+        payload,
+        "session.jsonl",
+        Provider.UNKNOWN,
+    )
+
+    assert provider is Provider.CLAUDE_CODE
+
+
 def test_iter_source_raw_data_reports_split_payload_observations(tmp_path: Path) -> None:
     archive_path = tmp_path / "bundle.zip"
     with zipfile.ZipFile(archive_path, "w") as zf:
