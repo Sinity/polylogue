@@ -321,6 +321,7 @@ def _upsert_stats_from_messages(conn: sqlite3.Connection, conversation_id: str, 
 
 
 _ACTION_EVENT_INSERT_OR_IGNORE_SQL = _ACTION_EVENT_INSERT_SQL.replace("INSERT INTO", "INSERT OR IGNORE INTO", 1)
+_PROVIDER_EVENT_INSERT_OR_IGNORE_SQL = _PROVIDER_EVENT_INSERT_SQL.replace("INSERT INTO", "INSERT OR IGNORE INTO", 1)
 
 
 def _append_conversation(
@@ -333,9 +334,11 @@ def _append_conversation(
         "conversations": 0,
         "messages": 0,
         "attachments": 0,
+        "provider_events": 0,
         "skipped_conversations": 0,
         "skipped_messages": 0,
         "skipped_attachments": 0,
+        "skipped_provider_events": 0,
     }
     message_ids = [str(message[0]) for message in cdata.message_tuples]
     existing_messages = _existing_message_hashes(conn, message_ids)
@@ -346,6 +349,7 @@ def _append_conversation(
         counts["skipped_conversations"] = 1
         counts["skipped_messages"] = len(cdata.message_tuples)
         counts["skipped_attachments"] = len(cdata.attachment_tuples)
+        counts["skipped_provider_events"] = len(cdata.provider_event_tuples)
         return False, counts
 
     merged_hash = _append_content_hash(existing_hash, cdata.content_hash)
@@ -363,6 +367,10 @@ def _append_conversation(
 
     if cdata.action_event_tuples:
         conn.executemany(_ACTION_EVENT_INSERT_OR_IGNORE_SQL, cdata.action_event_tuples)
+
+    if cdata.provider_event_tuples:
+        conn.executemany(_PROVIDER_EVENT_INSERT_OR_IGNORE_SQL, cdata.provider_event_tuples)
+        counts["provider_events"] = len(cdata.provider_event_tuples)
 
     affected_attachment_ids = {str(attachment_id) for attachment_id, *_rest in cdata.attachment_tuples}
     if cdata.attachment_tuples:
