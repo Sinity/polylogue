@@ -7,6 +7,8 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from hashlib import sha256
+from json import dumps as json_dumps
+from json import loads as json_loads
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
@@ -18,6 +20,7 @@ from polylogue.pipeline.services.ingest_batch._core import _process_ingest_batch
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.runtime import RawConversationRecord
+from polylogue.types import Provider
 
 if TYPE_CHECKING:
     from polylogue.api import Polylogue
@@ -300,6 +303,9 @@ class LiveBatchProcessor:
         complete_payload = payload[: newline_at + 1]
         if not complete_payload:
             return None
+        append_payload = self._append_payload_for_provider(path, self._source_name_for(path), complete_payload)
+        if append_payload is None:
+            return None
         tail_hash = sha256(complete_payload).hexdigest()
         return _AppendPlan(
             path=path,
@@ -310,11 +316,66 @@ class LiveBatchProcessor:
             st_dev=stat.st_dev,
             st_ino=stat.st_ino,
             mtime_ns=stat.st_mtime_ns,
-            payload=complete_payload,
+            payload=append_payload,
             payload_hash=tail_hash,
             cursor_fingerprint=cursor.content_fingerprint,
             bytes_read=len(payload),
         )
+
+    def _append_payload_for_provider(self, path: Path, source_name: str, payload: bytes) -> bytes | None:
+        provider = Provider.from_string(canonical_acquisition_provider(source_name, source_name=source_name))
+        if provider is Provider.CODEX:
+            identity = self._existing_provider_conversation_id(path)
+            if identity is None:
+                return None
+            session_meta = json_dumps(
+                {"type": "session_meta", "payload": {"id": identity}},
+                separators=(",", ":"),
+            ).encode()
+            return session_meta + b"\n" + payload
+        if provider is Provider.CLAUDE_CODE and not self._claude_code_tail_matches_existing_identity(path, payload):
+            return None
+        return payload
+
+    def _existing_provider_conversation_id(self, path: Path) -> str | None:
+        with self._cursor._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT c.provider_conversation_id
+                FROM conversations AS c
+                JOIN raw_conversations AS r ON r.raw_id = c.raw_id
+                WHERE r.source_path = ?
+                  AND COALESCE(r.source_index, 0) >= 0
+                ORDER BY c.updated_at DESC, c.created_at DESC, c.conversation_id DESC
+                LIMIT 1
+                """,
+                (str(path),),
+            ).fetchone()
+        if row is None:
+            return None
+        value = row[0]
+        return value if isinstance(value, str) and value.strip() else None
+
+    def _claude_code_tail_matches_existing_identity(self, path: Path, payload: bytes) -> bool:
+        existing_id = self._existing_provider_conversation_id(path)
+        if existing_id is None:
+            return False
+        session_ids: set[str] = set()
+        for line in payload.splitlines():
+            if not line.strip():
+                continue
+            try:
+                record = json_loads(line)
+            except ValueError:
+                return False
+            if not isinstance(record, dict):
+                return False
+            session_id = record.get("sessionId")
+            if isinstance(session_id, str) and session_id.strip():
+                session_ids.add(session_id)
+        if not session_ids:
+            return existing_id == path.stem
+        return any(existing_id == session_id or existing_id.startswith(f"{session_id}:") for session_id in session_ids)
 
     def _ingest_append_plans(self, plans: list[_AppendPlan]) -> _AppendResult:
         if not plans:

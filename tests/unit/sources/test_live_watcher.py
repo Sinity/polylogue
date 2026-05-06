@@ -4,6 +4,7 @@ debounce, bootstrap scan, and end-to-end via the watchfiles event loop."""
 from __future__ import annotations
 
 import asyncio
+import json
 import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -14,7 +15,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 import polylogue.sources.live.watcher as live_watcher
+from polylogue import Polylogue
 from polylogue.sources.live import LiveWatcher, WatchSource
+from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.cursor import CursorRecord, CursorStore
 
 # --- CursorStore ---------------------------------------------------------------
@@ -312,6 +315,163 @@ def test_append_plan_reads_only_completed_tail(tmp_path: Path) -> None:
     assert plan.payload == b'{"b":2}\n'
     assert plan.bytes_read == len(appended)
     assert plan.last_complete_newline == len(original) + len(b'{"b":2}\n')
+
+
+def _write_jsonl(path: Path, records: list[dict[str, object]]) -> None:
+    path.write_text("\n".join(json.dumps(record) for record in records) + "\n", encoding="utf-8")
+
+
+def _claude_code_message(
+    *,
+    session_id: str,
+    uuid: str,
+    role: str,
+    text: str,
+    timestamp: str,
+    parent_uuid: str | None = None,
+) -> dict[str, object]:
+    return {
+        "type": role,
+        "uuid": uuid,
+        "parentUuid": parent_uuid,
+        "sessionId": session_id,
+        "timestamp": timestamp,
+        "message": {"role": role, "content": text if role == "user" else [{"type": "text", "text": text}]},
+    }
+
+
+def _codex_session_meta(session_id: str) -> dict[str, object]:
+    return {"type": "session_meta", "payload": {"id": session_id, "timestamp": "2026-05-01T00:00:00Z"}}
+
+
+def _codex_message(*, message_id: str, role: str, text: str, timestamp: str) -> dict[str, object]:
+    block_type = "input_text" if role == "user" else "output_text"
+    return {
+        "type": "response_item",
+        "payload": {
+            "id": message_id,
+            "role": role,
+            "type": "message",
+            "timestamp": timestamp,
+            "content": [{"type": block_type, "text": text}],
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_live_append_merges_tail_visible_through_public_archive_read(workspace_env: dict[str, Path]) -> None:
+    root = workspace_env["data_root"] / "claude-projects"
+    project = root / "project"
+    project.mkdir(parents=True)
+    source_path = project / "session.jsonl"
+    db_path = workspace_env["data_root"] / "append-public-read.db"
+    archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path)
+    cursor = CursorStore(db_path)
+    processor = LiveBatchProcessor(
+        archive,
+        (WatchSource(name="claude-code", root=root),),
+        cursor=cursor,
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+    )
+
+    try:
+        _write_jsonl(
+            source_path,
+            [
+                _claude_code_message(
+                    session_id="session-public-read",
+                    uuid="msg-1",
+                    role="user",
+                    text="first live message",
+                    timestamp="2026-05-01T00:00:00Z",
+                )
+            ],
+        )
+        initial_metrics = await processor.ingest_files([source_path], emit_event=False)
+
+        with source_path.open("a", encoding="utf-8") as handle:
+            handle.write(
+                json.dumps(
+                    _claude_code_message(
+                        session_id="session-public-read",
+                        uuid="msg-2",
+                        parent_uuid="msg-1",
+                        role="assistant",
+                        text="second live reply",
+                        timestamp="2026-05-01T00:00:01Z",
+                    )
+                )
+                + "\n"
+            )
+        append_metrics = await processor.ingest_files([source_path], emit_event=False)
+
+        conversation = await archive.get_conversation("claude-code:session-public-read")
+        assert initial_metrics.full_file_count == 1
+        assert append_metrics.append_file_count == 1
+        assert append_metrics.full_file_count == 0
+        assert append_metrics.source_payload_read_bytes < append_metrics.input_bytes
+        assert conversation is not None
+        assert [message.text for message in conversation.messages] == ["first live message", "second live reply"]
+    finally:
+        await archive.close()
+
+
+@pytest.mark.asyncio
+async def test_codex_append_uses_existing_session_identity_when_tail_lacks_session_meta(
+    workspace_env: dict[str, Path],
+) -> None:
+    root = workspace_env["data_root"] / "codex-sessions"
+    project = root / "project"
+    project.mkdir(parents=True)
+    source_path = project / "codex-session.jsonl"
+    db_path = workspace_env["data_root"] / "append-codex.db"
+    archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path)
+    cursor = CursorStore(db_path)
+    processor = LiveBatchProcessor(
+        archive,
+        (WatchSource(name="codex", root=root),),
+        cursor=cursor,
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+    )
+
+    try:
+        _write_jsonl(
+            source_path,
+            [
+                _codex_session_meta("codex-real-session"),
+                _codex_message(
+                    message_id="msg-1",
+                    role="user",
+                    text="codex first",
+                    timestamp="2026-05-01T00:00:00Z",
+                ),
+            ],
+        )
+        await processor.ingest_files([source_path], emit_event=False)
+
+        with source_path.open("a", encoding="utf-8") as handle:
+            handle.write(
+                json.dumps(
+                    _codex_message(
+                        message_id="msg-2",
+                        role="assistant",
+                        text="codex appended",
+                        timestamp="2026-05-01T00:00:01Z",
+                    )
+                )
+                + "\n"
+            )
+        append_metrics = await processor.ingest_files([source_path], emit_event=False)
+
+        existing = await archive.get_conversation("codex:codex-real-session")
+        fallback = await archive.get_conversation("codex:codex-session")
+        assert append_metrics.append_file_count == 1
+        assert append_metrics.full_file_count == 0
+        assert existing is not None
+        assert [message.text for message in existing.messages] == ["codex first", "codex appended"]
+        assert fallback is None
+    finally:
+        await archive.close()
 
 
 def test_parser_fingerprint_change_triggers_reingest(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
