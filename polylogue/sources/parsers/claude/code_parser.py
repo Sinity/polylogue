@@ -117,7 +117,8 @@ def _string_field(item: dict[str, object], key: str) -> str | None:
 def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedConversation:
     """Parse Claude Code JSONL payloads into a canonical conversation model."""
     messages: list[ParsedMessage] = []
-    timestamps: list[str] = []
+    created_at: str | None = None
+    updated_at: str | None = None
     seen_record_uuids: set[str] = set()
     session_id: str | None = None
     provider_events: list[ParsedProviderEvent] = []
@@ -183,7 +184,8 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedCo
         raw_timestamp = item.get("timestamp")
         timestamp = normalize_timestamp(raw_timestamp if isinstance(raw_timestamp, (str, int, float)) else None)
         if timestamp:
-            timestamps.append(timestamp)
+            created_at = timestamp if created_at is None or timestamp < created_at else created_at
+            updated_at = timestamp if updated_at is None or timestamp > updated_at else updated_at
 
         message = item.get("message")
         raw_content = message.get("content") if isinstance(message, dict) else item.get("content")
@@ -218,9 +220,6 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedCo
         model_name = message_payload.get("model")
         if isinstance(model_name, str):
             models.add(model_name)
-
-    created_at = min(timestamps) if timestamps else None
-    updated_at = max(timestamps) if timestamps else None
 
     is_subagent = fallback_id.startswith("agent-")
     parent_session_id: str | None = None
