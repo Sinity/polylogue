@@ -36,6 +36,9 @@ def make_fts_stage(db_path: Path) -> ConvergenceStage:
         try:
             conn = open_connection(db_path, timeout=5.0)
             try:
+                conversation_ids = _conversation_ids_for_source_path(conn, path)
+                if conversation_ids:
+                    return _fts_needs_repair_for_conversations(conn, conversation_ids)
                 total = int(conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0])
                 if total == 0:
                     return False
@@ -52,13 +55,19 @@ def make_fts_stage(db_path: Path) -> ConvergenceStage:
         except Exception:
             return False
 
-    def execute(path: Path) -> bool:  # noqa: ARG001
-        from polylogue.storage.fts.fts_lifecycle import rebuild_fts_index_sync
+    def execute(path: Path) -> bool:
+        from polylogue.storage.fts.fts_lifecycle import rebuild_fts_index_sync, repair_fts_index_sync
         from polylogue.storage.sqlite.connection_profile import open_connection
 
         try:
             conn = open_connection(db_path, timeout=30.0)
             try:
+                conversation_ids = _conversation_ids_for_source_path(conn, path)
+                if conversation_ids:
+                    repair_fts_index_sync(conn, conversation_ids)
+                    conn.commit()
+                    logger.info("fts: repaired conversations=%d", len(conversation_ids))
+                    return not _fts_needs_repair_for_conversations(conn, conversation_ids)
                 total = int(conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0])
                 rebuild_fts_index_sync(conn)
                 conn.commit()
@@ -74,10 +83,48 @@ def make_fts_stage(db_path: Path) -> ConvergenceStage:
     def check_many(paths: Sequence[Path]) -> set[Path]:
         if not paths:
             return set()
-        return {Path(paths[0])} if check(Path(paths[0])) else set()
+        if not db_path.exists():
+            return set()
+        from polylogue.storage.sqlite.connection_profile import open_connection
+
+        try:
+            conn = open_connection(db_path, timeout=5.0)
+            try:
+                by_path = _conversation_ids_for_source_paths(conn, paths)
+                return {
+                    path
+                    for path, conversation_ids in by_path.items()
+                    if conversation_ids and _fts_needs_repair_for_conversations(conn, conversation_ids)
+                }
+            finally:
+                conn.close()
+        except Exception:
+            return set()
 
     def execute_many(paths: Sequence[Path]) -> bool:
-        return bool(paths) and execute(Path(paths[0]))
+        if not paths:
+            return False
+        from polylogue.storage.fts.fts_lifecycle import repair_fts_index_sync
+        from polylogue.storage.sqlite.connection_profile import open_connection
+
+        try:
+            conn = open_connection(db_path, timeout=30.0)
+            try:
+                by_path = _conversation_ids_for_source_paths(conn, paths)
+                conversation_ids = list(
+                    dict.fromkeys(conversation_id for ids in by_path.values() for conversation_id in ids)
+                )
+                if not conversation_ids:
+                    return execute(Path(paths[0]))
+                repair_fts_index_sync(conn, conversation_ids)
+                conn.commit()
+                logger.info("fts: batch repaired paths=%d conversations=%d", len(paths), len(conversation_ids))
+                return not _fts_needs_repair_for_conversations(conn, conversation_ids)
+            finally:
+                conn.close()
+        except Exception:
+            logger.warning("fts: batch repair failed", exc_info=True)
+            return False
 
     return ConvergenceStage(
         name="fts",
@@ -323,6 +370,43 @@ def _conversation_ids_for_source_paths(
         if path is not None:
             result[path].append(str(row[1]))
     return result
+
+
+def _fts_needs_repair_for_conversations(conn: sqlite3.Connection, conversation_ids: Sequence[str]) -> bool:
+    if not conversation_ids:
+        return False
+    placeholders = ", ".join("?" for _ in conversation_ids)
+    params = tuple(conversation_ids)
+    missing_messages = int(
+        conn.execute(
+            f"""
+            SELECT COUNT(*)
+            FROM messages AS m
+            LEFT JOIN messages_fts AS f ON f.rowid = m.rowid
+            WHERE m.text IS NOT NULL
+              AND m.conversation_id IN ({placeholders})
+              AND f.rowid IS NULL
+            """,
+            params,
+        ).fetchone()[0]
+    )
+    if missing_messages:
+        return True
+    if not _table_exists(conn, "action_events") or not _table_exists(conn, "action_events_fts"):
+        return False
+    missing_actions = int(
+        conn.execute(
+            f"""
+            SELECT COUNT(*)
+            FROM action_events AS ae
+            LEFT JOIN action_events_fts AS f ON f.rowid = ae.rowid
+            WHERE ae.conversation_id IN ({placeholders})
+              AND f.rowid IS NULL
+            """,
+            params,
+        ).fetchone()[0]
+    )
+    return missing_actions > 0
 
 
 def _conversation_ids_missing_profiles(conn: sqlite3.Connection) -> list[str]:

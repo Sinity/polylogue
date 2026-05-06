@@ -17,6 +17,7 @@ from polylogue.core.provider_identity import canonical_acquisition_provider
 from polylogue.logging import get_logger
 from polylogue.paths import blob_store_root
 from polylogue.pipeline.services.ingest_batch._core import _process_ingest_batch_sync
+from polylogue.sources.dispatch import _detect_provider_from_raw_bytes
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.runtime import RawConversationRecord
@@ -462,8 +463,7 @@ class LiveBatchProcessor:
         raw_by_id: dict[str, Path] = {}
         failed: list[Path] = []
         source_payload_read_bytes = 0
-        provider_name = canonical_acquisition_provider(source_name, source_name=source_name)
-        provider = Provider.from_string(provider_name)
+        fallback_provider = Provider.from_string(canonical_acquisition_provider(source_name, source_name=source_name))
 
         for path in paths:
             try:
@@ -474,6 +474,8 @@ class LiveBatchProcessor:
                 continue
             raw_id, blob_size = blob_store.write_from_bytes(payload)
             source_payload_read_bytes += len(payload)
+            provider = _detect_provider_from_raw_bytes(payload, path.name, fallback_provider)
+            provider_name = provider.value
             raw_records.append(
                 RawConversationRecord(
                     raw_id=raw_id,

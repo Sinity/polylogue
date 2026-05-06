@@ -549,6 +549,48 @@ async def test_live_append_merges_tail_visible_through_public_archive_read(works
 
 
 @pytest.mark.asyncio
+async def test_live_full_ingest_detects_provider_when_source_name_is_not_provider(
+    workspace_env: dict[str, Path],
+) -> None:
+    root = workspace_env["data_root"] / "projects"
+    project = root / "project"
+    project.mkdir(parents=True)
+    source_path = project / "session.jsonl"
+    db_path = workspace_env["data_root"] / "detect-provider-live.db"
+    archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path)
+    cursor = CursorStore(db_path)
+    processor = LiveBatchProcessor(
+        archive,
+        (WatchSource(name="projects", root=root),),
+        cursor=cursor,
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+    )
+
+    try:
+        _write_jsonl(
+            source_path,
+            [
+                _claude_code_message(
+                    session_id="session-detected-provider",
+                    uuid="msg-1",
+                    role="user",
+                    text="detected provider message",
+                    timestamp="2026-05-01T00:00:00Z",
+                ),
+            ],
+        )
+        metrics = await processor.ingest_files([source_path], emit_event=False)
+
+        conversation = await archive.get_conversation("claude-code:session-detected-provider")
+        assert metrics.succeeded_file_count == 1
+        assert metrics.failed_file_count == 0
+        assert conversation is not None
+        assert [message.text for message in conversation.messages] == ["detected provider message"]
+    finally:
+        await archive.close()
+
+
+@pytest.mark.asyncio
 async def test_codex_append_uses_existing_session_identity_when_tail_lacks_session_meta(
     workspace_env: dict[str, Path],
 ) -> None:
