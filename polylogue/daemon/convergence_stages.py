@@ -6,7 +6,7 @@ ingestion through daemon-side raw-record ingest; daemon convergence stages only
 repair and refresh post-ingest archive state.
 
 - fts: rebuild FTS if messages > indexed count
-- embed: vectorize un-embedded conversations via Voyage API
+- embed: optional vectorization for changed conversations
 - insights: refresh session profiles
 """
 
@@ -376,11 +376,11 @@ def make_insights_stage(db_path: Path) -> ConvergenceStage:
 
 def make_default_convergence_stages(db_path: Path) -> tuple[ConvergenceStage, ...]:
     """Build the daemon's default post-ingest convergence stage set."""
-    return (
-        make_fts_stage(db_path),
-        make_embed_stage(db_path),
-        make_insights_stage(db_path),
-    )
+    stage_list = [make_fts_stage(db_path)]
+    if _embedding_env_enabled():
+        stage_list.append(make_embed_stage(db_path))
+    stage_list.append(make_insights_stage(db_path))
+    return tuple(stage_list)
 
 
 # ── Helpers ────────────────────────────────────────────────────────
@@ -471,7 +471,8 @@ def _fts_needs_repair_for_conversations(conn: sqlite3.Connection, conversation_i
 def _embedding_env_enabled() -> bool:
     import os
 
-    return bool(os.environ.get("VOYAGE_API_KEY"))
+    enabled = os.environ.get("POLYLOGUE_DAEMON_ENABLE_EMBEDDINGS", "").lower() in {"1", "true", "yes"}
+    return enabled and bool(os.environ.get("VOYAGE_API_KEY"))
 
 
 def _pending_embedding_conversation_ids(

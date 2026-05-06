@@ -52,8 +52,8 @@ Environment variable precedence is:
    auth files.
 4. Drive authentication may override credential and token files through the
    Drive-specific environment variables below.
-5. Vector indexing reads `VOYAGE_API_KEY` when daemon-managed embedding work is
-   enabled.
+5. Vector indexing reads `VOYAGE_API_KEY` only when daemon embedding convergence
+   is explicitly enabled.
 
 These are the supported runtime overrides:
 
@@ -66,6 +66,7 @@ These are the supported runtime overrides:
 | `POLYLOGUE_ARCHIVE_ROOT` | Override the archive root instead of using `$XDG_DATA_HOME/polylogue` |
 | `POLYLOGUE_FORCE_PLAIN` | Force non-interactive plain output |
 | `VOYAGE_API_KEY` | Voyage AI API key for embeddings |
+| `POLYLOGUE_DAEMON_ENABLE_EMBEDDINGS` | Set to `1`, `true`, or `yes` to let daemon convergence call the embedding provider |
 | `POLYLOGUE_CREDENTIAL_PATH` | Drive auth override for the OAuth client JSON path |
 | `POLYLOGUE_TOKEN_PATH` | Drive auth override for the OAuth token path |
 
