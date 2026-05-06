@@ -50,6 +50,7 @@ def build_session_profile(
     conversation: Conversation,
     *,
     analysis: SessionAnalysis | None = None,
+    compaction_count: int | None = None,
 ) -> SessionProfile:
     from polylogue.archive.semantic.pricing import harmonize_session_cost
 
@@ -57,7 +58,11 @@ def build_session_profile(
     facts = session_analysis.facts
     attribution = session_analysis.attribution
     cost_usd, cost_is_estimated = harmonize_session_cost(conversation)
-    compaction_count = sum(1 for event in conversation.provider_events if event.event_type == "compaction")
+    resolved_compaction_count = (
+        compaction_count
+        if compaction_count is not None
+        else sum(1 for event in conversation.provider_events if event.event_type == "compaction")
+    )
     engaged_duration_ms = sum(int(phase.duration_ms or 0) for phase in session_analysis.phases)
     if engaged_duration_ms <= 0:
         engaged_duration_ms = max(int(conversation.total_duration_ms or 0), 0)
@@ -96,7 +101,7 @@ def build_session_profile(
         engaged_duration_ms=engaged_duration_ms,
         wall_duration_ms=facts.wall_duration_ms,
         cost_is_estimated=cost_is_estimated,
-        compaction_count=compaction_count,
+        compaction_count=resolved_compaction_count,
         tags=tuple(conversation.tags),
         is_continuation=conversation.is_continuation,
         parent_id=str(conversation.parent_id) if conversation.parent_id else None,

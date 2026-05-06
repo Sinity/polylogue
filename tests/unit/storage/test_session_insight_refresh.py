@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -123,7 +124,7 @@ async def test_apply_session_insight_conversation_updates_async_counts_provider_
         ).fetchone()
 
     assert row is not None
-    assert '"compaction_count":1' in row["evidence_payload_json"].replace(" ", "")
+    assert json.loads(row["evidence_payload_json"])["compaction_count"] == 1
 
 
 @pytest.mark.asyncio

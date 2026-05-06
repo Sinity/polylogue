@@ -9,7 +9,9 @@ from pathlib import Path
 import pytest
 
 from polylogue.storage.hydrators import conversation_from_records
+from polylogue.storage.runtime import PROVIDER_EVENT_MATERIALIZER_VERSION, ProviderEventRecord
 from polylogue.storage.sqlite.connection import open_connection
+from polylogue.types import ProviderEventId
 from tests.infra.archive_scenarios import (
     ArchiveScenario,
     ScenarioAttachment,
@@ -251,7 +253,7 @@ async def test_repository_resaves_hydrated_domain_provider_events(
                 conv_record.updated_at,
                 0.5,
                 json.dumps({"summary": "compact"}),
-                1,
+                PROVIDER_EVENT_MATERIALIZER_VERSION,
             ),
         )
         conn.commit()
@@ -268,5 +270,116 @@ async def test_repository_resaves_hydrated_domain_provider_events(
         refreshed = await repository.get(scenario.resolved_conversation_id)
         assert refreshed is not None
         assert [event.payload for event in refreshed.provider_events] == [{"summary": "compact"}]
+    finally:
+        await repository.close()
+
+
+@pytest.mark.asyncio()
+async def test_repository_record_resave_preserves_provider_events_when_omitted(
+    workspace_env: Mapping[str, Path],
+) -> None:
+    """Record writes without provider events must not erase existing event rows."""
+    scenario = ArchiveScenario(
+        name="record-provider-events-preserve",
+        provider="claude-code",
+        title="Preserve provider events",
+        messages=(ScenarioMessage(role="user", text="Question", message_id="m1"),),
+    )
+    db_path, _ = seed_workspace_scenarios(workspace_env, [scenario])
+    with open_connection(db_path) as conn:
+        conv_record, msg_records, attachment_records = scenario.records_from_connection(conn)
+        conn.execute(
+            """
+            INSERT INTO provider_events (
+                event_id, conversation_id, provider_name, event_index, event_type,
+                timestamp, sort_key, payload_json, materializer_version
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                f"{conv_record.conversation_id}:provider-event:000000",
+                conv_record.conversation_id,
+                conv_record.provider_name,
+                0,
+                "compaction",
+                conv_record.updated_at,
+                0.5,
+                json.dumps({"summary": "keep"}),
+                PROVIDER_EVENT_MATERIALIZER_VERSION,
+            ),
+        )
+        conn.commit()
+
+    repository = repository_for_scenario_db(db_path)
+    try:
+        counts = await repository.save_conversation(conv_record, msg_records, attachment_records)
+        assert counts["provider_events"] == 0
+
+        refreshed = await repository.get(scenario.resolved_conversation_id)
+        assert refreshed is not None
+        assert [event.payload for event in refreshed.provider_events] == [{"summary": "keep"}]
+    finally:
+        await repository.close()
+
+
+@pytest.mark.asyncio()
+async def test_repository_record_resave_replaces_explicit_provider_events_on_hash_match(
+    workspace_env: Mapping[str, Path],
+) -> None:
+    """Explicit provider-event records remain authoritative even when content hash is unchanged."""
+    scenario = ArchiveScenario(
+        name="record-provider-events-replace",
+        provider="claude-code",
+        title="Replace provider events",
+        messages=(ScenarioMessage(role="user", text="Question", message_id="m1"),),
+    )
+    db_path, _ = seed_workspace_scenarios(workspace_env, [scenario])
+    with open_connection(db_path) as conn:
+        conv_record, msg_records, attachment_records = scenario.records_from_connection(conn)
+        conn.execute(
+            """
+            INSERT INTO provider_events (
+                event_id, conversation_id, provider_name, event_index, event_type,
+                timestamp, sort_key, payload_json, materializer_version
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                f"{conv_record.conversation_id}:provider-event:000000",
+                conv_record.conversation_id,
+                conv_record.provider_name,
+                0,
+                "compaction",
+                conv_record.updated_at,
+                0.5,
+                json.dumps({"summary": "old"}),
+                PROVIDER_EVENT_MATERIALIZER_VERSION,
+            ),
+        )
+        conn.commit()
+
+    replacement = ProviderEventRecord(
+        event_id=ProviderEventId(f"{conv_record.conversation_id}:provider-event:000000"),
+        conversation_id=conv_record.conversation_id,
+        provider_name=conv_record.provider_name,
+        event_index=0,
+        event_type="compaction",
+        timestamp=conv_record.updated_at,
+        sort_key=0.5,
+        payload={"summary": "new"},
+        materializer_version=PROVIDER_EVENT_MATERIALIZER_VERSION,
+    )
+    repository = repository_for_scenario_db(db_path)
+    try:
+        counts = await repository.save_conversation(
+            conv_record,
+            msg_records,
+            attachment_records,
+            provider_events=[replacement],
+        )
+        assert counts["skipped_conversations"] == 1
+        assert counts["provider_events"] == 1
+
+        refreshed = await repository.get(scenario.resolved_conversation_id)
+        assert refreshed is not None
+        assert [event.payload for event in refreshed.provider_events] == [{"summary": "new"}]
     finally:
         await repository.close()

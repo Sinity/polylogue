@@ -256,11 +256,13 @@ def conversation_content_hash(convo: ParsedConversation) -> ContentHash:
     ]
     provider_events_payload = [
         {
+            "event_index": event_index,
             "event_type": _normalize_for_hash(event.event_type),
             "timestamp": _normalize_for_hash(event.timestamp),
+            "source_message_provider_id": _normalize_for_hash(event.source_message_provider_id),
             "payload": hash_payload(event.payload),
         }
-        for event in convo.provider_events
+        for event_index, event in enumerate(convo.provider_events)
     ]
     return ContentHash(
         hash_payload(

@@ -99,6 +99,7 @@ async def test_prepare_records_persists_provider_events(
                 event_type="turn_context",
                 timestamp="2024-01-01T00:00:00Z",
                 payload={"cwd": "/repo/polylogue"},
+                source_message_provider_id="msg-1",
             )
         ],
         attachments=[],
@@ -118,17 +119,19 @@ async def test_prepare_records_persists_provider_events(
     async with async_backend.connection() as conn:
         row = await (
             await conn.execute(
-                "SELECT event_type, payload_json FROM provider_events WHERE conversation_id = ?",
+                "SELECT event_type, payload_json, source_message_id FROM provider_events WHERE conversation_id = ?",
                 (conversation_id,),
             )
         ).fetchone()
     assert row is not None
     assert row["event_type"] == "turn_context"
     assert json.loads(row["payload_json"]) == {"cwd": "/repo/polylogue"}
+    assert row["source_message_id"] == f"{conversation_id}:msg-1"
     stored = await test_repository.get(conversation_id)
     assert stored is not None
     assert [event.event_type for event in stored.provider_events] == ["turn_context"]
     assert stored.provider_events[0].payload == {"cwd": "/repo/polylogue"}
+    assert str(stored.provider_events[0].source_message_id) == f"{conversation_id}:msg-1"
 
 
 async def test_prepare_records_unchanged_conversation_skips(

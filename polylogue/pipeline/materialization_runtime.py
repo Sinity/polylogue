@@ -159,9 +159,15 @@ def _materialize_provider_events(
     convo: ParsedConversation,
     *,
     conversation_id: ConversationId,
+    message_id_map: dict[str, MessageId],
 ) -> list[MaterializedProviderEvent]:
     events: list[MaterializedProviderEvent] = []
     for event_index, event in enumerate(convo.provider_events):
+        source_message_id = (
+            message_id_map.get(event.source_message_provider_id)
+            if event.source_message_provider_id is not None
+            else None
+        )
         events.append(
             MaterializedProviderEvent(
                 event_id=provider_event_id(conversation_id, event_index),
@@ -172,6 +178,7 @@ def _materialize_provider_events(
                 timestamp=event.timestamp,
                 sort_key=_timestamp_sort_key(event.timestamp),
                 payload=dict(event.payload),
+                source_message_id=source_message_id,
             )
         )
     return events
@@ -371,6 +378,7 @@ def materialize_conversation(
         provider_events=_materialize_provider_events(
             normalized_convo,
             conversation_id=conversation_id,
+            message_id_map=message_id_map,
         ),
         stats=MaterializedConversationStats(
             message_count=len(messages),

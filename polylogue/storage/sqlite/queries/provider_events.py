@@ -56,6 +56,31 @@ async def get_provider_events_batch(
     return result
 
 
+async def get_provider_event_compaction_counts(
+    conn: aiosqlite.Connection,
+    conversation_ids: Sequence[str],
+) -> dict[str, int]:
+    if not conversation_ids:
+        return {}
+    placeholders = ", ".join("?" for _ in conversation_ids)
+    rows = await (
+        await conn.execute(
+            f"""
+            SELECT conversation_id, COUNT(*) AS compaction_count
+            FROM provider_events
+            WHERE conversation_id IN ({placeholders})
+              AND event_type = 'compaction'
+            GROUP BY conversation_id
+            """,
+            tuple(conversation_ids),
+        )
+    ).fetchall()
+    result = dict.fromkeys(conversation_ids, 0)
+    for row in rows:
+        result[str(row["conversation_id"])] = int(row["compaction_count"] or 0)
+    return result
+
+
 def sync_provider_events_batch(
     conn: sqlite3.Connection,
     conversation_ids: Sequence[str],
@@ -79,6 +104,29 @@ def sync_provider_events_batch(
         record = _row_to_provider_event(row)
         result[str(record.conversation_id)].append(record)
     return dict(result)
+
+
+def sync_provider_event_compaction_counts(
+    conn: sqlite3.Connection,
+    conversation_ids: Sequence[str],
+) -> dict[str, int]:
+    if not conversation_ids:
+        return {}
+    placeholders = ", ".join("?" for _ in conversation_ids)
+    rows = conn.execute(
+        f"""
+        SELECT conversation_id, COUNT(*) AS compaction_count
+        FROM provider_events
+        WHERE conversation_id IN ({placeholders})
+          AND event_type = 'compaction'
+        GROUP BY conversation_id
+        """,
+        tuple(conversation_ids),
+    ).fetchall()
+    result = dict.fromkeys(conversation_ids, 0)
+    for row in rows:
+        result[str(row["conversation_id"])] = int(row["compaction_count"] or 0)
+    return result
 
 
 async def replace_provider_events(
@@ -115,6 +163,8 @@ async def replace_provider_events(
 __all__ = [
     "get_provider_events",
     "get_provider_events_batch",
+    "get_provider_event_compaction_counts",
     "replace_provider_events",
+    "sync_provider_event_compaction_counts",
     "sync_provider_events_batch",
 ]

@@ -197,7 +197,7 @@ def _row_to_provider_event(row: sqlite3.Row) -> ProviderEventRecord:
     return ProviderEventRecord(
         event_id=ProviderEventId(row["event_id"]),
         conversation_id=ConversationId(row["conversation_id"]),
-        provider_name=_row_text(row, "provider_name") or "",
+        provider_name=_row_text(row, "provider_name") or "unknown",
         event_index=_row_int(row, "event_index", 0) or 0,
         event_type=_row_text(row, "event_type") or "",
         timestamp=_row_text(row, "timestamp"),

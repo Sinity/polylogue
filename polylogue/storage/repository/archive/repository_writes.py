@@ -60,7 +60,7 @@ class RepositoryWriteMixin:
             messages,
             attachments,
             content_blocks or [],
-            provider_events or [],
+            provider_events,
         )
 
     def _conversation_to_record(self, conversation: Conversation) -> ConversationRecord:

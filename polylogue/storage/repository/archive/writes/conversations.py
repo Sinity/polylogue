@@ -93,8 +93,10 @@ def _content_hash_from_metadata_or_domain(conversation: Conversation, metadata: 
             attachments=attachments_payload,
             provider_events=[
                 {
+                    "event_index": event.event_index,
                     "event_type": _normalize_for_hash(event.event_type),
                     "timestamp": _normalize_for_hash(event.timestamp.isoformat() if event.timestamp else None),
+                    "source_message_id": _normalize_for_hash(event.source_message_id),
                     "payload": hash_payload(event.payload),
                 }
                 for event in conversation.provider_events
@@ -168,7 +170,8 @@ async def save_via_backend(
         "skipped_attachments": 0,
         "skipped_provider_events": 0,
     }
-    provider_events = provider_events or []
+    should_replace_provider_events = provider_events is not None
+    provider_events_for_write = provider_events or []
 
     async with backend.transaction(), backend.connection() as conn:
         t0 = _time.perf_counter()
@@ -192,7 +195,16 @@ async def save_via_backend(
             counts["skipped_conversations"] = 1
             counts["skipped_messages"] = len(messages)
             counts["skipped_attachments"] = len(attachments)
-            counts["skipped_provider_events"] = len(provider_events)
+            if should_replace_provider_events:
+                t0 = _time.perf_counter()
+                await provider_events_q.replace_provider_events(
+                    conn,
+                    conversation.conversation_id,
+                    provider_events_for_write,
+                    backend.transaction_depth,
+                )
+                counts["provider_events"] = len(provider_events_for_write)
+                timings["provider_events"] = _time.perf_counter() - t0
         else:
             counts["conversations"] = 1
             t0 = _time.perf_counter()
@@ -235,13 +247,14 @@ async def save_via_backend(
             timings["action_events"] = _time.perf_counter() - t0
 
             t0 = _time.perf_counter()
-            await provider_events_q.replace_provider_events(
-                conn,
-                conversation.conversation_id,
-                provider_events,
-                backend.transaction_depth,
-            )
-            counts["provider_events"] = len(provider_events)
+            if should_replace_provider_events:
+                await provider_events_q.replace_provider_events(
+                    conn,
+                    conversation.conversation_id,
+                    provider_events_for_write,
+                    backend.transaction_depth,
+                )
+                counts["provider_events"] = len(provider_events_for_write)
             timings["provider_events"] = _time.perf_counter() - t0
 
             t0 = _time.perf_counter()
