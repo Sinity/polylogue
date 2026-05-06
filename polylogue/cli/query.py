@@ -381,7 +381,7 @@ async def _execute_query_plan(
 
     if plan.selection.similar_text and vector_provider is None:
         click.echo(
-            "Error: --similar requires vector search support. Configure VOYAGE_API_KEY and enable daemon embedding convergence first.",
+            "Error: --similar requires vector search support, but vector provider initialization failed or is disabled. Check VOYAGE_API_KEY and daemon embedding convergence.",
             err=True,
         )
         raise SystemExit(1)
