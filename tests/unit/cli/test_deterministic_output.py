@@ -500,9 +500,8 @@ def test_format_cursors_contract(cursors: dict[str, object], expected_parts: tup
             },
             ("3 conv (2 new, 1 changed)", "30 msg"),
         ),
-        ({"conversations": 5, "messages": 50, "rendered": 5}, ("5 rendered",)),
         ({"acquired": 4, "validated": 4, "validation_drift": 2}, ("4 acquired", "4 validated", "2 drift")),
-        ({"conversations": 5, "messages": 50, "rendered": 0}, ("5 conv", "50 msg")),
+        ({"conversations": 5, "messages": 50}, ("5 conv", "50 msg")),
         ({}, ("0 conv", "0 msg")),
     ],
 )
@@ -519,7 +518,6 @@ def test_format_counts_contract(counts: dict[str, object], expected_parts: tuple
     [
         ("parse", False, None, "Index: up-to-date"),
         ("parse", True, None, "Index: ok"),
-        ("render", True, None, "Index: skipped"),
         ("index", False, "boom", "Index: error"),
         ("index", True, None, "Index: ok"),
         ("all", False, None, "Index: up-to-date"),

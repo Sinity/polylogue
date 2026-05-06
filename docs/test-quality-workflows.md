@@ -12,31 +12,31 @@ Current registry snapshot:
 - live lanes: `20`
 - composite lanes: `24`
 - validation families: `5`
-- mutation campaigns: `18`
+- mutation campaigns: `17`
 - benchmark campaigns: `3`
 - synthetic benchmark campaigns: `7`
-- scenario projections: `236`
+- scenario projections: `234`
 - inferred corpus scenarios: `5`
   - benchmark-campaign: `3`
-  - exercise: `130`
+  - exercise: `129`
   - inferred-corpus-scenario: `5`
-  - mutation-campaign: `18`
+  - mutation-campaign: `17`
   - synthetic-benchmark: `7`
   - validation-family: `5`
   - validation-lane: `68`
 
 ## Runtime Coverage
 
-- covered runtime paths: `26`
-- covered runtime artifacts: `58`
-- covered runtime operations: `30`
+- covered runtime paths: `25`
+- covered runtime artifacts: `54`
+- covered runtime operations: `29`
 - covered maintenance targets: `3`
-- covered declared operation targets: `42`
-- uncovered runtime paths: `conversation-render-loop`
-- uncovered runtime artifacts: `rendered_conversation_artifacts`
-- uncovered runtime operations: `render-conversations`
+- covered declared operation targets: `41`
+- uncovered runtime paths: —
+- uncovered runtime artifacts: —
+- uncovered runtime operations: —
 - uncovered maintenance targets: `empty_conversations`, `orphaned_attachments`, `orphaned_content_blocks`, `orphaned_messages`, `wal_checkpoint`
-- uncovered declared operation targets: `render-conversations`
+- uncovered declared operation targets: —
 
 Inspect the full authored map with:
 
@@ -146,7 +146,7 @@ Use the named lanes through the runner.
 | `inference-tier-contracts` | 420 | Inference-tier work-event/phase/profile contracts with confidence/provenance-bearing semantic payloads |
 | `long-haul-small` | 1800 | Small reproducible benchmark/long-haul campaign |
 | `machine-contract` | 180 | Root CLI JSON success/failure envelopes and runtime-health machine surfaces |
-| `maintenance-workflows` | 480 | Health, maintenance selection, cache/live provenance, publication summaries, and machine output |
+| `maintenance-workflows` | 480 | Health, maintenance selection, cache/live provenance, and machine output |
 | `mixed-consumer-contracts` | 480 | CLI, facade, MCP, and readiness surfaces consuming the same evidence/inference insight model |
 | `pipeline-probe-chatgpt` | 180 | Synthetic ChatGPT parse-stage pipeline probe under explicit runtime and RSS budgets |
 | `probabilistic-enrichment-contracts` | 720 | Session-enrichment contracts across CLI, facade, MCP, storage, and retrieval-band status |
@@ -236,7 +236,6 @@ Durable mutation ledgers live under `.local/mutation-campaigns/`; workflow polic
 | `schema-core` | `polylogue/schemas/operator/schema_inference.py`<br>`polylogue/schemas/validator.py`<br>`polylogue/schemas/operator/verification.py` | `tests/unit/core/test_schema_validation.py`<br>`tests/unit/core/test_schema_generation.py`<br>`tests/unit/core/test_schema_annotation_contracts.py`<br>`tests/unit/core/test_schema_laws.py`<br>`tests/unit/core/test_schema_privacy.py`<br>`tests/unit/core/test_verification.py`<br>`tests/unit/storage/test_schema_safety.py` | Schema generation, privacy, verification, and safety contracts |
 | `schema-inference` | `polylogue/schemas/operator/schema_inference.py` | `tests/unit/core/test_schema_generation.py`<br>`tests/unit/core/test_schema_laws.py`<br>`tests/unit/core/test_schema_privacy.py` | Schema inference and privacy heuristics |
 | `schema-validation` | `polylogue/schemas/validator.py`<br>`polylogue/schemas/operator/verification.py` | `tests/unit/core/test_schema_validation.py`<br>`tests/unit/core/test_schema_laws.py`<br>`tests/unit/core/test_verification.py`<br>`tests/unit/storage/test_schema_safety.py` | Schema validator and verification contracts |
-| `site-builder` | `polylogue/site/builder.py` | `tests/integration/test_site.py`<br>`tests/integration/test_site_laws.py` | Static-site builder and CLI archive contracts |
 | `source-detection` | `polylogue/sources/source_parsing.py`<br>`polylogue/sources/source_acquisition.py`<br>`polylogue/sources/dispatch.py`<br>`polylogue/sources/decoders.py` | `tests/unit/sources/test_source_laws.py`<br>`tests/unit/sources/test_parsers_base.py`<br>`tests/unit/sources/test_parsers_chatgpt.py`<br>`tests/unit/sources/test_parsers_codex.py`<br>`tests/unit/sources/test_parsers_props.py`<br>`tests/unit/sources/test_parsers_drive.py` | Source detection, sniffing, and parser dispatch |
 | `sources-parse` | `polylogue/sources`<br>`polylogue/schemas/registry.py` | `tests/unit/sources/test_parsers_props.py`<br>`tests/unit/sources/test_source_laws.py`<br>`tests/unit/sources/test_unified_semantic_laws.py`<br>`tests/unit/sources/test_parsers_base.py`<br>`tests/unit/sources/test_parsers_chatgpt.py`<br>`tests/unit/sources/test_parsers_codex.py`<br>`tests/unit/sources/test_parsers_drive.py`<br>`tests/unit/sources/test_drive_source_client.py`<br>`tests/unit/sources/test_drive_gateway.py`<br>`tests/unit/sources/test_drive_auth.py`<br>`tests/unit/sources/test_drive_ops.py`<br>`tests/unit/sources/test_null_guard_properties.py`<br>`tests/unit/sources/test_models.py`<br>`tests/unit/sources/test_token_store.py` | Provider detection, parsing, harmonization, and parser laws |
 | `ui-core` | `polylogue/ui/__init__.py`<br>`polylogue/ui/facade.py` | `tests/unit/ui/test_ui.py`<br>`tests/unit/ui/test_ui_visual.py`<br>`tests/unit/ui/test_tui.py` | UI prompt, progress, and facade interaction contracts |
@@ -407,7 +406,6 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `exercise` | `reverse-sort` | — | — | — | — | — | Reverse sort by date |
 | `exercise` | `sample-random` | — | — | — | — | — | Random sample of conversations |
 | `exercise` | `set-meta` | — | — | — | — | — | Set metadata on conversation |
-| `exercise` | `site-generate` | — | — | — | — | — | Generate static site via run stage |
 | `exercise` | `stats-default` | — | — | — | — | — | Default archive statistics |
 | `exercise` | `stats-verbose` | — | — | — | — | — | Verbose statistics |
 | `exercise` | `tag-add` | — | — | — | — | — | Add tag to latest conversation |
@@ -435,7 +433,6 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `mutation-campaign` | `schema-core` | — | — | — | — | `mutation` | Schema generation, privacy, verification, and safety contracts |
 | `mutation-campaign` | `schema-inference` | — | — | — | — | `mutation` | Schema inference and privacy heuristics |
 | `mutation-campaign` | `schema-validation` | — | — | — | — | `mutation` | Schema validator and verification contracts |
-| `mutation-campaign` | `site-builder` | `site-publication-loop` | `conversation_render_projection`<br>`site_conversation_pages`<br>`site_publication_manifest`<br>`publication_records` | `publish-site` | — | `mutation`<br>`site`<br>`publication` | Static-site builder and CLI archive contracts |
 | `mutation-campaign` | `source-detection` | — | — | — | — | `mutation` | Source detection, sniffing, and parser dispatch |
 | `mutation-campaign` | `sources-parse` | — | — | — | — | `mutation` | Provider detection, parsing, harmonization, and parser laws |
 | `mutation-campaign` | `ui-core` | — | — | — | — | `mutation` | UI prompt, progress, and facade interaction contracts |
@@ -456,8 +453,8 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `validation-lane` | `archive-intelligence` | `conversation-query-loop`<br>`message-fts-readiness-loop`<br>`embedding-materialization-loop`<br>`embedding-status-query-loop`<br>`retrieval-band-readiness-loop` | `message_fts`<br>`conversation_query_results`<br>`archive_readiness`<br>`archive_conversation_rows`<br>`embedding_metadata_rows`<br>`embedding_status_rows`<br>`message_embedding_vectors`<br>`retrieval_band_readiness`<br>`embedding_status_results` | `query-conversations`<br>`project-archive-readiness`<br>`materialize-transcript-embeddings`<br>`project-retrieval-band-readiness`<br>`query-embedding-status` | — | `contract`<br>`retrieval`<br>`readiness`<br>`embeddings` | Local archive-intelligence closure lane for retrieval and embedding readiness |
 | `validation-lane` | `chaos` | — | — | — | — | — | Hostility, interruption, and chronology integration coverage |
 | `validation-lane` | `cleanup-contracts` | — | — | — | — | — | Cleanup lineage, readiness/debt views, and maintenance workflow coverage |
-| `validation-lane` | `domain-read-model-contracts` | `site-publication-loop` | `conversation_render_projection`<br>`site_conversation_pages`<br>`site_publication_manifest`<br>`publication_records` | `publish-site` | — | `contract`<br>`maintenance`<br>`publication` | Local domain read-model lane for analytics/insights, consumer contracts, and debt views |
-| `validation-lane` | `domain-read-model-hardening` | `site-publication-loop`<br>`session-insight-status-query-loop`<br>`session-tag-rollup-query-loop`<br>`conversation-query-loop`<br>`provider-analytics-query-loop`<br>`archive-debt-query-loop`<br>`message-fts-readiness-loop`<br>`retrieval-band-readiness-loop` | `conversation_render_projection`<br>`site_conversation_pages`<br>`site_publication_manifest`<br>`publication_records`<br>`session_insight_readiness`<br>`session_insight_status_results`<br>`session_tag_rollup_rows`<br>`session_tag_rollup_results`<br>`message_fts`<br>`conversation_query_results`<br>`session_insight_rows`<br>`provider_analytics_results`<br>`action_event_readiness`<br>`archive_readiness`<br>`archive_debt_results`<br>`retrieval_band_readiness` | `publish-site`<br>`query-session-insight-status`<br>`query-session-tag-rollups`<br>`query-conversations`<br>`query-provider-analytics`<br>`query-archive-debt`<br>`cli.json-contract`<br>`project-archive-readiness` | — | `contract`<br>`maintenance`<br>`publication`<br>`insights`<br>`status`<br>`tags`<br>`live`<br>`project-stats`<br>`analytics`<br>`debt`<br>`readiness`<br>`preview` | Full domain read-model lane with local contracts and bounded live checks |
+| `validation-lane` | `domain-read-model-contracts` | — | — | — | — | `contract`<br>`maintenance` | Local domain read-model lane for analytics/insights, consumer contracts, and debt views |
+| `validation-lane` | `domain-read-model-hardening` | `session-insight-status-query-loop`<br>`session-tag-rollup-query-loop`<br>`conversation-query-loop`<br>`provider-analytics-query-loop`<br>`archive-debt-query-loop`<br>`message-fts-readiness-loop`<br>`retrieval-band-readiness-loop` | `session_insight_readiness`<br>`session_insight_status_results`<br>`session_tag_rollup_rows`<br>`session_tag_rollup_results`<br>`message_fts`<br>`conversation_query_results`<br>`session_insight_rows`<br>`provider_analytics_results`<br>`action_event_readiness`<br>`archive_readiness`<br>`archive_debt_results`<br>`retrieval_band_readiness` | `query-session-insight-status`<br>`query-session-tag-rollups`<br>`query-conversations`<br>`query-provider-analytics`<br>`query-archive-debt`<br>`cli.json-contract`<br>`project-archive-readiness` | — | `contract`<br>`maintenance`<br>`insights`<br>`status`<br>`tags`<br>`live`<br>`project-stats`<br>`analytics`<br>`debt`<br>`readiness`<br>`preview` | Full domain read-model lane with local contracts and bounded live checks |
 | `validation-lane` | `domain-read-model-live` | `session-insight-status-query-loop`<br>`session-tag-rollup-query-loop`<br>`conversation-query-loop`<br>`provider-analytics-query-loop`<br>`archive-debt-query-loop`<br>`message-fts-readiness-loop`<br>`retrieval-band-readiness-loop` | `session_insight_readiness`<br>`session_insight_status_results`<br>`session_tag_rollup_rows`<br>`session_tag_rollup_results`<br>`message_fts`<br>`conversation_query_results`<br>`session_insight_rows`<br>`provider_analytics_results`<br>`action_event_readiness`<br>`archive_readiness`<br>`archive_debt_results`<br>`retrieval_band_readiness` | `query-session-insight-status`<br>`query-session-tag-rollups`<br>`query-conversations`<br>`query-provider-analytics`<br>`query-archive-debt`<br>`cli.json-contract`<br>`project-archive-readiness` | — | `insights`<br>`status`<br>`tags`<br>`live`<br>`project-stats`<br>`analytics`<br>`debt`<br>`maintenance`<br>`readiness`<br>`preview` | Bounded live archive lane for insights, analytics/debt views, and maintenance checks |
 | `validation-lane` | `embeddings-coverage` | `embedding-materialization-loop`<br>`embedding-status-query-loop`<br>`retrieval-band-readiness-loop` | `archive_conversation_rows`<br>`embedding_metadata_rows`<br>`embedding_status_rows`<br>`message_embedding_vectors`<br>`retrieval_band_readiness`<br>`embedding_status_results` | `materialize-transcript-embeddings`<br>`project-retrieval-band-readiness`<br>`query-embedding-status` | — | `contract`<br>`embeddings`<br>`retrieval` | Embedding coverage/readiness stats, readiness exposure, and embed command contracts |
 | `validation-lane` | `evidence-contracts` | `embedding-status-query-loop`<br>`retrieval-band-readiness-loop`<br>`message-fts-readiness-loop` | `embedding_metadata_rows`<br>`embedding_status_rows`<br>`message_embedding_vectors`<br>`retrieval_band_readiness`<br>`embedding_status_results`<br>`archive_readiness` | `project-retrieval-band-readiness`<br>`query-embedding-status`<br>`project-archive-readiness` | — | `contract`<br>`retrieval`<br>`embeddings`<br>`readiness` | Evidence/inference contract lane across explicit evidence, inferred semantics, consumer parity, and retrieval readiness |
@@ -493,7 +490,7 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `validation-lane` | `long-haul-small` | — | — | — | — | — | Small reproducible benchmark/long-haul campaign |
 | `validation-lane` | `machine-contract` | — | — | `cli.json-contract` | — | `contract`<br>`json`<br>`cli` | Root CLI JSON success/failure envelopes and runtime-health machine surfaces |
 | `validation-lane` | `maintenance-memory-budget` | `message-fts-readiness-loop`<br>`retrieval-band-readiness-loop` | `message_fts`<br>`action_event_readiness`<br>`session_insight_readiness`<br>`retrieval_band_readiness`<br>`archive_readiness` | `cli.json-contract`<br>`project-archive-readiness` | — | `live`<br>`maintenance`<br>`preview` | Live archive maintenance preview under an explicit RSS budget |
-| `validation-lane` | `maintenance-workflows` | `site-publication-loop` | `conversation_render_projection`<br>`site_conversation_pages`<br>`site_publication_manifest`<br>`publication_records` | `publish-site` | — | `contract`<br>`maintenance`<br>`publication` | Health, maintenance selection, cache/live provenance, publication summaries, and machine output |
+| `validation-lane` | `maintenance-workflows` | — | — | — | — | `contract`<br>`maintenance` | Health, maintenance selection, cache/live provenance, and machine output |
 | `validation-lane` | `memory-budget` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `query-conversations` | — | `live`<br>`retrieval`<br>`readiness` | Live archive grouped retrieval command under an explicit RSS budget |
 | `validation-lane` | `mixed-consumer-contracts` | — | — | — | — | — | CLI, facade, MCP, and readiness surfaces consuming the same evidence/inference insight model |
 | `validation-lane` | `pipeline-probe-chatgpt` | `source-acquisition-loop`<br>`raw-reparse-loop`<br>`raw-archive-ingest-loop` | `configured_sources`<br>`source_payload_stream`<br>`raw_validation_state`<br>`artifact_observation_rows`<br>`validation_backlog`<br>`parse_backlog`<br>`parse_quarantine`<br>`archive_conversation_rows` | `acquire-raw-conversations`<br>`plan-validation-backlog`<br>`plan-parse-backlog`<br>`ingest-archive-runtime` | — | — | Synthetic ChatGPT parse-stage pipeline probe under explicit runtime and RSS budgets |
@@ -504,8 +501,8 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `validation-lane` | `query-routing` | — | — | — | — | — | Query-first CLI route planning, integration, and streamed read checks |
 | `validation-lane` | `retrieval-band-readiness` | `embedding-status-query-loop`<br>`retrieval-band-readiness-loop`<br>`message-fts-readiness-loop` | `embedding_metadata_rows`<br>`embedding_status_rows`<br>`message_embedding_vectors`<br>`retrieval_band_readiness`<br>`embedding_status_results`<br>`archive_readiness` | `project-retrieval-band-readiness`<br>`query-embedding-status`<br>`project-archive-readiness` | — | `contract`<br>`retrieval`<br>`embeddings`<br>`readiness` | Transcript/evidence/inference retrieval-band readiness, embedding stats, and readiness exposure |
 | `validation-lane` | `retrieval-checks` | `conversation-query-loop`<br>`message-fts-readiness-loop` | `message_fts`<br>`conversation_query_results`<br>`archive_readiness` | `query-conversations`<br>`project-archive-readiness` | — | `contract`<br>`retrieval`<br>`readiness` | Action-aware query truth, grouped retrieval stats, archive readiness, and MCP retrieval payload coverage |
-| `validation-lane` | `runtime-substrate-contracts` | `site-publication-loop` | `conversation_render_projection`<br>`site_conversation_pages`<br>`site_publication_manifest`<br>`publication_records` | `publish-site` | — | `contract`<br>`maintenance`<br>`publication` | Local runtime-substrate lane across query, semantic checks, archive insights, and maintenance workflows |
-| `validation-lane` | `runtime-substrate-hardening` | `site-publication-loop`<br>`retrieval-band-readiness-loop`<br>`embedding-status-query-loop`<br>`conversation-query-loop`<br>`session-insight-status-query-loop`<br>`message-fts-readiness-loop` | `conversation_render_projection`<br>`site_conversation_pages`<br>`site_publication_manifest`<br>`publication_records`<br>`embedding_metadata_rows`<br>`embedding_status_rows`<br>`message_embedding_vectors`<br>`action_event_readiness`<br>`session_insight_readiness`<br>`retrieval_band_readiness`<br>`embedding_status_results`<br>`message_fts`<br>`conversation_query_results`<br>`session_insight_status_results`<br>`archive_readiness` | `publish-site`<br>`project-retrieval-band-readiness`<br>`query-embedding-status`<br>`cli.json-contract`<br>`query-conversations`<br>`query-session-insight-status`<br>`project-archive-readiness` | — | `contract`<br>`maintenance`<br>`publication`<br>`live`<br>`embeddings`<br>`readiness`<br>`retrieval`<br>`insights`<br>`status`<br>`preview` | Full runtime-substrate validation lane covering local contracts plus bounded live archive checks |
+| `validation-lane` | `runtime-substrate-contracts` | — | — | — | — | `contract`<br>`maintenance` | Local runtime-substrate lane across query, semantic checks, archive insights, and maintenance workflows |
+| `validation-lane` | `runtime-substrate-hardening` | `retrieval-band-readiness-loop`<br>`embedding-status-query-loop`<br>`conversation-query-loop`<br>`session-insight-status-query-loop`<br>`message-fts-readiness-loop` | `embedding_metadata_rows`<br>`embedding_status_rows`<br>`message_embedding_vectors`<br>`action_event_readiness`<br>`session_insight_readiness`<br>`retrieval_band_readiness`<br>`embedding_status_results`<br>`message_fts`<br>`conversation_query_results`<br>`session_insight_status_results`<br>`archive_readiness` | `project-retrieval-band-readiness`<br>`query-embedding-status`<br>`cli.json-contract`<br>`query-conversations`<br>`query-session-insight-status`<br>`project-archive-readiness` | — | `contract`<br>`maintenance`<br>`live`<br>`embeddings`<br>`readiness`<br>`retrieval`<br>`insights`<br>`status`<br>`preview` | Full runtime-substrate validation lane covering local contracts plus bounded live archive checks |
 | `validation-lane` | `runtime-substrate-live` | `retrieval-band-readiness-loop`<br>`embedding-status-query-loop`<br>`conversation-query-loop`<br>`session-insight-status-query-loop`<br>`message-fts-readiness-loop` | `embedding_metadata_rows`<br>`embedding_status_rows`<br>`message_embedding_vectors`<br>`action_event_readiness`<br>`session_insight_readiness`<br>`retrieval_band_readiness`<br>`embedding_status_results`<br>`message_fts`<br>`conversation_query_results`<br>`session_insight_status_results`<br>`archive_readiness` | `project-retrieval-band-readiness`<br>`query-embedding-status`<br>`cli.json-contract`<br>`query-conversations`<br>`query-session-insight-status`<br>`project-archive-readiness` | — | `live`<br>`embeddings`<br>`readiness`<br>`retrieval`<br>`insights`<br>`status`<br>`maintenance`<br>`preview` | Bounded live archive lane for runtime-substrate checks, maintenance checks, and memory budgets |
 | `validation-lane` | `scale-fast` | — | — | — | — | — | Fast storage scale budgets |
 | `validation-lane` | `scale-slow` | — | — | — | — | — | Slow local storage scale budgets |
@@ -516,7 +513,7 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `validation-lane` | `semantic-stack` | — | — | — | — | — | Unified harmonization, semantic facts/profile convergence, and contract inventory coverage |
 | `validation-lane` | `showcase-baselines` | — | — | `cli.help` | — | `contract`<br>`showcase`<br>`help` | Registry-derived tier-0 CLI help/source showcase baselines |
 | `validation-lane` | `source-provider-fidelity` | `source-acquisition-loop` | `configured_sources`<br>`source_payload_stream`<br>`raw_validation_state`<br>`artifact_observation_rows` | `acquire-raw-conversations` | — | `contract`<br>`sources`<br>`acquisition` | Source traversal, Drive/runtime source boundaries, parser decoding, and provider-ingest fidelity |
-| `validation-lane` | `source-runtime-alignment` | `source-acquisition-loop`<br>`site-publication-loop` | `configured_sources`<br>`source_payload_stream`<br>`raw_validation_state`<br>`artifact_observation_rows`<br>`conversation_render_projection`<br>`site_conversation_pages`<br>`site_publication_manifest`<br>`publication_records` | `acquire-raw-conversations`<br>`publish-site` | — | `contract`<br>`sources`<br>`acquisition`<br>`maintenance`<br>`publication` | Local source/provider fidelity plus runtime maintenance alignment |
+| `validation-lane` | `source-runtime-alignment` | `source-acquisition-loop` | `configured_sources`<br>`source_payload_stream`<br>`raw_validation_state`<br>`artifact_observation_rows` | `acquire-raw-conversations` | — | `contract`<br>`sources`<br>`acquisition`<br>`maintenance` | Local source/provider fidelity plus runtime maintenance alignment |
 | `validation-lane` | `tui` | — | — | — | — | — | Textual dashboard screens and interaction-state coverage |
 | `validation-lane` | `verification-substrate-contracts` | — | `archive_scenario_fixtures`<br>`storage_record_fixtures`<br>`json_contract_helpers` | `seed-archive-scenarios`<br>`build-storage-record-fixtures` | — | `contract`<br>`fixtures`<br>`semantic-precision` | Shared test fixture contracts for JSON metadata, scenario content blocks, and semantic facts |
 

@@ -777,7 +777,6 @@
       "execution": {
         "kind": "polylogue",
         "argv": [
-          "run",
           "embed",
           "--stats"
         ]
@@ -801,27 +800,6 @@
       },
       "needs_data": true,
       "output_ext": ".json"
-    },
-    {
-      "name": "site-generate",
-      "group": "subcommands",
-      "description": "Generate static site via run stage",
-      "execution": {
-        "kind": "polylogue",
-        "argv": [
-          "run",
-          "site"
-        ]
-      },
-      "assertion": {
-        "stdout_contains": [
-          "site"
-        ]
-      },
-      "needs_data": true,
-      "writes": true,
-      "tier": 2,
-      "env": "seeded"
     },
     {
       "name": "combined-filters",

@@ -256,7 +256,7 @@ async def test_search_returns_searchresult_object(
         assert hasattr(hit, "snippet")
         assert hasattr(hit, "title")
         assert hasattr(hit, "timestamp")
-        assert hasattr(hit, "conversation_path")
+        assert hasattr(hit, "conversation_url")
 
 
 def test_rebuild_index_with_multiple_messages_per_conversation(test_conn: sqlite3.Connection) -> None:
@@ -1159,11 +1159,11 @@ def test_search_invalid_query_reports_error(
     assert "Invalid search query" in str(exc_info.value)
 
 
-async def test_search_prefers_legacy_render_when_present(
+async def test_search_returns_daemon_reader_url(
     workspace_env: dict[str, Path],
     storage_repository: ConversationRepository,
 ) -> None:
-    """Test that search returns legacy render paths when they exist."""
+    """Search results point to the daemon reader, not rendered files."""
     archive_root = workspace_env["archive_root"]
     provider_name = "legacy-provider"
     conversation_id = "conv-one"
@@ -1175,14 +1175,9 @@ async def test_search_prefers_legacy_render_when_present(
     await save_bundle(bundle, repository=storage_repository)
     rebuild_index()
 
-    # Create a legacy-style render path
-    legacy_path = archive_root / "render" / provider_name / conversation_id / "conversation.md"
-    legacy_path.parent.mkdir(parents=True, exist_ok=True)
-    legacy_path.write_text("legacy", encoding="utf-8")
-
     results = search_messages("hello", archive_root=archive_root, limit=5)
     assert results.hits
-    assert results.hits[0].conversation_path == legacy_path
+    assert results.hits[0].conversation_url == "/?conversation=conv-one"
 
 
 # ============================================================================

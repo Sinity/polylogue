@@ -11,7 +11,7 @@ from polylogue.maintenance.targets import build_maintenance_target_catalog
 from polylogue.storage.fts.fts_lifecycle import check_fts_readiness, message_fts_readiness_sync
 from polylogue.storage.search.cache import SearchCacheKey
 from polylogue.storage.search.models import SearchHit, SearchResult
-from polylogue.storage.search.query_builders import build_ranked_conversation_search_query, resolve_conversation_path
+from polylogue.storage.search.query_builders import build_ranked_conversation_search_query, conversation_web_url
 from polylogue.storage.search.query_support import sort_key_to_iso
 from polylogue.storage.sqlite.connection import open_read_connection
 
@@ -25,7 +25,6 @@ def search_messages_cached(cache_key: SearchCacheKey) -> SearchResult:
     return search_messages_impl(
         query=cache_key.query,
         archive_root=Path(cache_key.archive_root),
-        render_root_path=Path(cache_key.render_root_path) if cache_key.render_root_path else None,
         db_path=Path(cache_key.db_path) if cache_key.db_path else None,
         limit=cache_key.limit,
         source=cache_key.source,
@@ -36,7 +35,6 @@ def search_messages_cached(cache_key: SearchCacheKey) -> SearchResult:
 def search_messages_impl(
     query: str,
     archive_root: Path,
-    render_root_path: Path | None,
     db_path: Path | None,
     limit: int,
     source: str | None,
@@ -73,12 +71,7 @@ def search_messages_impl(
                 title=row["title"],
                 timestamp=sort_key_to_iso(row["sort_key"]),
                 snippet=row["snippet"],
-                conversation_path=resolve_conversation_path(
-                    archive_root,
-                    render_root_path,
-                    row["provider_name"],
-                    conversation_id,
-                ),
+                conversation_url=conversation_web_url(conversation_id),
             )
         )
     return SearchResult(hits=hits)
@@ -88,7 +81,6 @@ def search_messages(
     query: str,
     *,
     archive_root: Path,
-    render_root_path: Path | None = None,
     db_path: Path | None = None,
     limit: int = 20,
     source: str | None = None,
@@ -98,7 +90,6 @@ def search_messages(
     cache_key = SearchCacheKey.create(
         query=query,
         archive_root=archive_root,
-        render_root_path=render_root_path,
         db_path=db_path,
         limit=limit,
         source=source,

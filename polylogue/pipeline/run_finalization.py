@@ -130,7 +130,6 @@ async def persist_run_result(
         indexed=index_outcome.indexed,
         index_error=index_outcome.error,
         duration_ms=duration_ms,
-        render_failures=state.render_failures,
         run_path=str(run_path),
     )
 

@@ -11,34 +11,26 @@ RUN_STAGE_CHOICES: tuple[str, ...] = (
     "acquire",
     "parse",
     "materialize",
-    "render",
-    "site",
     "index",
     "embed",
     "schema",
     "reprocess",
     "all",
-    "publish",
 )
 RUN_STAGE_SEQUENCES: dict[str, tuple[str, ...]] = {
     "acquire": ("acquire",),
     "parse": ("parse",),
     "materialize": ("materialize",),
-    "render": ("render",),
-    "site": ("site",),
     "index": ("index",),
     "embed": ("embed",),
     "schema": ("schema",),
-    "reprocess": ("parse", "materialize", "render", "site", "index"),
-    "all": ("acquire", "parse", "materialize", "render", "site", "index"),
-    "publish": ("render", "site"),
+    "reprocess": ("parse", "materialize", "index"),
+    "all": ("acquire", "parse", "materialize", "index"),
 }
 RUN_LEAF_STAGES = frozenset({stage for sequence in RUN_STAGE_SEQUENCES.values() for stage in sequence})
 INGEST_STAGES = frozenset({"parse", "reprocess", "all"})
 PARSE_STAGES = frozenset({"parse", "reprocess", "all"})
 MATERIALIZE_STAGES = frozenset({"materialize", "reprocess", "all"})
-RENDER_STAGES = frozenset({"render", "reprocess", "all"})
-SITE_STAGES = frozenset({"site", "all", "publish"})
 
 
 def select_sources(config: Config, source_names: Sequence[str] | None) -> list[Source]:
@@ -94,11 +86,9 @@ __all__ = [
     "INGEST_STAGES",
     "MATERIALIZE_STAGES",
     "PARSE_STAGES",
-    "RENDER_STAGES",
     "RUN_STAGE_CHOICES",
     "RUN_LEAF_STAGES",
     "RUN_STAGE_SEQUENCES",
-    "SITE_STAGES",
     "expand_requested_stage",
     "normalize_stage_sequence",
     "run_coroutine_sync",

@@ -22,7 +22,6 @@ def test_run_execution_state_records_stage_results_and_finalizes_drift() -> None
     state.record_parse(parse_result)
     state.record_schema_generation(generated=10, failed=11)
     state.record_materialize(materialized=12)
-    state.record_render(rendered=13, failures=[{"conversation_id": "conv-1", "error": "boom"}])
 
     drift = state.finalize()
 
@@ -41,9 +40,6 @@ def test_run_execution_state_records_stage_results_and_finalizes_drift() -> None
     assert state.counts.schemas_generated == 10
     assert state.counts.schemas_failed == 11
     assert state.counts.materialized == 12
-    assert state.counts.rendered == 13
-    assert state.counts.render_failures == 1
-    assert state.render_failures == [{"conversation_id": "conv-1", "error": "boom"}]
     assert state.processed_ids == {"conv-1", "conv-2"}
     assert state.changed_counts.conversations == 1
     assert state.changed_counts.messages == 4
@@ -60,21 +56,16 @@ def test_run_execution_state_finalize_without_failures_or_validation_keeps_defau
 
     assert drift.new.conversations == 0
     assert drift.changed.conversations == 0
-    assert state.counts.render_failures is None
-    assert state.render_failures == []
 
 
-def test_run_execution_state_record_parse_and_render_keep_default_false_paths() -> None:
+def test_run_execution_state_record_parse_keeps_default_false_paths() -> None:
     state = RunExecutionState()
 
     parse_result = ParseResult()
     parse_result.counts["messages"] = 2
     parse_result.processed_ids = {"conv-1"}
     state.record_parse(parse_result)
-    state.record_render(rendered=2, failures=[])
 
     assert state.counts.messages == 2
     assert state.counts.conversations == 1
     assert state.counts.parse_failures is None
-    assert state.counts.rendered == 2
-    assert state.counts.render_failures is None

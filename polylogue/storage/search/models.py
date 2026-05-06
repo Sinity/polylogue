@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from pathlib import Path
 
 
 @dataclass
@@ -16,7 +15,7 @@ class SearchHit:
     title: str | None
     timestamp: str | None
     snippet: str
-    conversation_path: Path
+    conversation_url: str
 
 
 @dataclass

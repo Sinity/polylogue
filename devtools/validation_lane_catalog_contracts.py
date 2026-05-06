@@ -111,7 +111,7 @@ CONTRACT_LANES = {
     ),
     "maintenance-workflows": pytest_lane(
         "maintenance-workflows",
-        "Health, maintenance selection, cache/live provenance, publication summaries, and machine output",
+        "Health, maintenance selection, cache/live provenance, and machine output",
         480,
         "-q",
         "-n",
@@ -122,18 +122,8 @@ CONTRACT_LANES = {
         "tests/unit/cli/test_source_selection_helpers.py",
         "tests/unit/cli/test_deterministic_output.py",
         "tests/unit/mcp/test_tool_contracts.py",
-        "tests/unit/site/test_builder.py",
-        "tests/unit/cli/test_site.py",
         "tests/integration/test_health.py",
-        path_targets=("site-publication-loop",),
-        artifact_targets=(
-            "conversation_render_projection",
-            "site_conversation_pages",
-            "site_publication_manifest",
-            "publication_records",
-        ),
-        operation_targets=("publish-site",),
-        tags=("contract", "maintenance", "publication"),
+        tags=("contract", "maintenance"),
     ),
     "archive-data-insights": pytest_lane(
         "archive-data-insights",

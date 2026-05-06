@@ -12,7 +12,7 @@ def test_plan_result_coerces_stage_sequence_counts_details_and_cursors() -> None
             "timestamp": 123,
             "stage": "parse",
             "stage_sequence": ("acquire", "parse"),
-            "counts": {"scan": 1, "store_raw": 2, "validate": 3, "parse": 4, "materialize": 5, "render": 6},
+            "counts": {"scan": 1, "store_raw": 2, "validate": 3, "parse": 4, "materialize": 5, "index": 6},
             "details": {
                 "new_raw": 1,
                 "existing_raw": 2,
@@ -96,15 +96,13 @@ def test_run_counts_drift_and_result_payloads_cover_all_fields() -> None:
         validation_skipped_no_schema=13,
         validation_errors=14,
         materialized=15,
-        rendered=16,
-        render_failures=17,
-        parse_failures=18,
-        schemas_generated=19,
-        schemas_failed=20,
-        new_conversations=21,
-        changed_conversations=22,
+        parse_failures=16,
+        schemas_generated=17,
+        schemas_failed=18,
+        new_conversations=19,
+        changed_conversations=20,
     )
-    assert run_counts.to_payload()["changed_conversations"] == 22
+    assert run_counts.to_payload()["changed_conversations"] == 20
 
     drift = RunDrift.model_validate(
         {
@@ -136,14 +134,6 @@ def test_run_counts_drift_and_result_payloads_cover_all_fields() -> None:
             "indexed": True,
             "index_error": None,
             "duration_ms": 12,
-            "render_failures": [{"conversation_id": "conv-1", "error": "boom"}, {"conversation_id": 1}, "bad"],
         }
     )
     assert result.counts.messages == 2
-    assert result.render_failures == [{"conversation_id": "conv-1", "error": "boom"}]
-    assert (
-        RunResult.model_validate(
-            {"run_id": "run-2", "indexed": False, "index_error": "x", "duration_ms": 1, "render_failures": "bad"}
-        ).render_failures
-        == []
-    )

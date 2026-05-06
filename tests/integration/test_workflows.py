@@ -161,7 +161,6 @@ async def test_full_workflow_per_provider(
         search_result = search_messages(
             search_term,
             archive_root=archive_root,
-            render_root_path=config.render_root,
             db_path=db_path,
         )
         found_ids = {r.conversation_id for r in search_result.hits}
@@ -620,9 +619,7 @@ async def test_search_accuracy_basic_terms(temp_config_and_repo: WorkflowRepos, 
     search_term = " ".join(words[:3])
     from polylogue.storage.search import search_messages
 
-    result = search_messages(
-        search_term, archive_root=archive_root, render_root_path=config.render_root, db_path=db_path
-    )
+    result = search_messages(search_term, archive_root=archive_root, db_path=db_path)
     result_ids = {r.conversation_id for r in result.hits}
     assert target_conv.id in result_ids, f"Failed to find conversation with '{search_term}'"
 
@@ -675,19 +672,15 @@ async def test_search_with_special_characters(temp_config_and_repo: WorkflowRepo
         from polylogue.storage.search import search_messages
 
         # Search with special chars (should be escaped)
-        result1 = search_messages(
-            "quotes", archive_root=archive_root, render_root_path=config.render_root, db_path=db_path
-        )
+        result1 = search_messages("quotes", archive_root=archive_root, db_path=db_path)
         assert len(result1.hits) > 0
 
-        result2 = search_messages(
-            "braces", archive_root=archive_root, render_root_path=config.render_root, db_path=db_path
-        )
+        result2 = search_messages("braces", archive_root=archive_root, db_path=db_path)
         assert len(result2.hits) > 0
 
         # FTS5 operators should be escaped and not cause errors
         # (*, ?, OR, AND, NOT, etc.)
-        search_messages("*", archive_root=archive_root, render_root_path=config.render_root, db_path=db_path)
+        search_messages("*", archive_root=archive_root, db_path=db_path)
         # Should not crash
 
     finally:
@@ -721,7 +714,4 @@ async def test_pipeline_runner_stage_matrix(
 
     assert result is not None
     assert result.counts["conversations"] > 0
-    if stage == "parse":
-        assert result.counts.int_value("rendered") == 0
-    else:
-        assert result.counts.int_value("rendered") >= 1
+    assert result.counts.int_value("materialized") >= 1

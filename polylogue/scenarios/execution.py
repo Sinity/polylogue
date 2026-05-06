@@ -61,7 +61,6 @@ _KNOWN_POLYLOGUE_SUBCOMMANDS = frozenset(
         "embed",
         "insights",
         "render",
-        "run",
         "schema",
         "site",
         "tags",
@@ -183,32 +182,6 @@ def _metadata_for_polylogue_embed(argv: tuple[str, ...]) -> ScenarioMetadata:
     return _metadata_for_operations(*operations)
 
 
-def _metadata_for_polylogue_run(argv: tuple[str, ...]) -> ScenarioMetadata:
-    try:
-        run_index = argv.index("run")
-    except ValueError:
-        return ScenarioMetadata()
-    if run_index + 1 >= len(argv):
-        return ScenarioMetadata()
-    stage = argv[run_index + 1]
-    if stage == "render":
-        return _metadata_for_operations("render-conversations")
-    if stage == "site":
-        return _metadata_for_operations("publish-site")
-    if stage == "acquire":
-        return _metadata_for_operations("acquire-raw-conversations")
-    if stage == "parse":
-        return _metadata_for_operations(
-            "acquire-raw-conversations",
-            "plan-validation-backlog",
-            "plan-parse-backlog",
-            "ingest-archive-runtime",
-        )
-    if stage == "embed":
-        return _metadata_for_polylogue_embed(argv[run_index + 2 :])
-    return ScenarioMetadata()
-
-
 def _default_metadata_for_polylogue(argv: tuple[str, ...]) -> ScenarioMetadata:
     if "schema" in argv:
         return _metadata_for_polylogue_schema(argv)
@@ -218,8 +191,6 @@ def _default_metadata_for_polylogue(argv: tuple[str, ...]) -> ScenarioMetadata:
         return _metadata_for_polylogue_doctor(argv)
     if "embed" in argv:
         return _metadata_for_polylogue_embed(argv[argv.index("embed") + 1 :])
-    if "run" in argv:
-        return _metadata_for_polylogue_run(argv)
     first_token = _first_non_option(argv)
     if first_token in _KNOWN_POLYLOGUE_SUBCOMMANDS or not argv:
         return ScenarioMetadata()

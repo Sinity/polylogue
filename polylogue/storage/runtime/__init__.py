@@ -21,7 +21,6 @@ from polylogue.storage.runtime.archive.records import (
     ConversationRecord,
     MessageRecord,
     ProviderEventRecord,
-    PublicationRecord,
     RunRecord,
 )
 from polylogue.storage.runtime.raw.records import (
@@ -69,7 +68,6 @@ __all__ = [
     "ConversationRecord",
     "DaySessionSummaryRecord",
     "MessageRecord",
-    "PublicationRecord",
     "PROVIDER_EVENT_MATERIALIZER_VERSION",
     "ProviderEventRecord",
     "RawConversationRecord",

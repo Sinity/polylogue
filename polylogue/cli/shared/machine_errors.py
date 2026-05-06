@@ -246,7 +246,7 @@ def extract_command(argv: list[str]) -> list[str]:
         "--tier",
         "--only",
         "--skip",
-        "--print-path",
+        "--print-url",
     }
     value_short = {
         "-i",

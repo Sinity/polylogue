@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 from polylogue.pipeline.observers import (
     CompositeObserver,
@@ -11,7 +11,6 @@ from polylogue.pipeline.observers import (
     NotificationObserver,
     WebhookObserver,
 )
-from polylogue.pipeline.services.rendering import RenderService
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
 
@@ -135,104 +134,6 @@ class TestCompositeObserver:
         composite.on_completed(_make_result(5))  # Should not raise
 
 
-# =====================================================================
-# Merged from test_progress_callbacks.py (callbacks and observers)
-# =====================================================================
-
-
-class TestRenderProgressCallback:
-    """Verify progress_callback fires during rendering."""
-
-    async def test_callback_called_for_each_conversation(self: object) -> None:
-        """progress_callback is invoked once per rendered conversation."""
-        # Mock renderer that succeeds
-        mock_renderer = AsyncMock()
-        mock_renderer.render = AsyncMock()
-
-        service = RenderService(renderer=mock_renderer, render_root=Path("/tmp/render"))
-
-        callback = MagicMock()
-        result = await service.render_conversations(
-            ["conv-1", "conv-2", "conv-3"],
-            progress_callback=callback,
-        )
-
-        assert result.rendered_count == 3
-        assert callback.call_count == 3
-
-    async def test_callback_desc_format(self: object) -> None:
-        """progress_callback desc follows 'Rendering: N/total' format."""
-        mock_renderer = AsyncMock()
-        mock_renderer.render = AsyncMock()
-
-        service = RenderService(renderer=mock_renderer, render_root=Path("/tmp/render"))
-
-        descs: list[str | None] = []
-
-        def capture_callback(amount: int, desc: str | None = None) -> None:
-            del amount
-            descs.append(desc)
-
-        await service.render_conversations(
-            ["conv-1", "conv-2"],
-            progress_callback=capture_callback,
-        )
-
-        # All desc values should match the "Rendering: N/2" pattern
-        assert all(d is not None and d.startswith("Rendering:") for d in descs)
-        # The last one should show total completed
-        last_desc = descs[-1]
-        assert last_desc is not None
-        assert "2/2" in last_desc
-
-    async def test_callback_fires_on_failure_too(self: object) -> None:
-        """progress_callback fires even when rendering fails."""
-        mock_renderer = AsyncMock()
-        mock_renderer.render = AsyncMock(side_effect=[None, RuntimeError("render failed"), None])
-
-        service = RenderService(renderer=mock_renderer, render_root=Path("/tmp/render"))
-
-        callback = MagicMock()
-        result = await service.render_conversations(
-            ["conv-1", "conv-2", "conv-3"],
-            progress_callback=callback,
-        )
-
-        # All 3 should fire callback (2 success + 1 failure)
-        assert callback.call_count == 3
-        assert result.rendered_count == 2
-        assert len(result.failures) == 1
-
-    async def test_no_callback_is_safe(self: object) -> None:
-        """Rendering works without a progress_callback."""
-        mock_renderer = AsyncMock()
-        mock_renderer.render = AsyncMock()
-
-        service = RenderService(renderer=mock_renderer, render_root=Path("/tmp/render"))
-
-        result = await service.render_conversations(["conv-1"])
-        assert result.rendered_count == 1
-
-    async def test_callback_amount_is_one(self: object) -> None:
-        """Each callback invocation passes amount=1."""
-        mock_renderer = AsyncMock()
-        mock_renderer.render = AsyncMock()
-
-        service = RenderService(renderer=mock_renderer, render_root=Path("/tmp/render"))
-
-        amounts: list[int] = []
-
-        def capture(amount: int, desc: str | None = None) -> None:
-            del desc
-            amounts.append(amount)
-
-        await service.render_conversations(
-            ["conv-1", "conv-2", "conv-3"],
-            progress_callback=capture,
-        )
-        assert all(a == 1 for a in amounts)
-
-
 class TestIndexProgressCallback:
     """Verify progress_callback firing during indexing is safe."""
 
@@ -265,62 +166,3 @@ class TestIndexProgressCallback:
 
         result = await service.rebuild_index()
         assert result is True
-
-
-class TestCallbackEdgeCases:
-    """Edge cases for progress callback handling."""
-
-    async def test_null_callback_safety(self: object) -> None:
-        """Explicitly passing None as callback doesn't raise."""
-        mock_renderer = AsyncMock()
-        mock_renderer.render = AsyncMock()
-
-        service = RenderService(renderer=mock_renderer, render_root=Path("/tmp/render"))
-
-        # Explicitly pass None (not omit the kwarg)
-        result = await service.render_conversations(
-            ["conv-1", "conv-2"],
-            progress_callback=None,
-        )
-        assert result.rendered_count == 2
-
-    async def test_callback_exception_does_not_crash_render(self: object) -> None:
-        """If the callback itself raises, rendering should still complete.
-
-        Note: Current implementation does NOT catch callback exceptions
-        (they propagate). This test documents the actual behavior.
-        """
-        import pytest
-
-        mock_renderer = AsyncMock()
-        mock_renderer.render = AsyncMock()
-
-        service = RenderService(renderer=mock_renderer, render_root=Path("/tmp/render"))
-
-        def bad_callback(amount: int, desc: str | None = None) -> None:
-            del amount, desc
-            raise RuntimeError("callback exploded")
-
-        # The callback exception propagates — verify it raises
-        with pytest.raises(RuntimeError, match="callback exploded"):
-            await service.render_conversations(
-                ["conv-1"],
-                progress_callback=bad_callback,
-            )
-
-    async def test_empty_conversation_list(self: object) -> None:
-        """Rendering zero conversations returns clean result with no callbacks."""
-        mock_renderer = AsyncMock()
-        mock_renderer.render = AsyncMock()
-
-        service = RenderService(renderer=mock_renderer, render_root=Path("/tmp/render"))
-
-        callback = MagicMock()
-        result = await service.render_conversations(
-            [],
-            progress_callback=callback,
-        )
-
-        assert result.rendered_count == 0
-        assert len(result.failures) == 0
-        assert callback.call_count == 0

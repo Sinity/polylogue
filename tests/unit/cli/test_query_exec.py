@@ -25,7 +25,6 @@ from polylogue.archive.semantic.content_projection import ContentProjectionSpec
 from polylogue.cli.query import QueryAction, QueryOutputSpec, QueryRoute
 from polylogue.cli.query_contracts import QueryDeliveryTarget
 from polylogue.cli.shared.types import AppEnv
-from polylogue.paths.sanitize import conversation_render_root
 from polylogue.services import build_runtime_services
 from polylogue.storage.action_events.artifacts import ActionEventArtifactState
 from polylogue.types import ConversationId, Provider
@@ -988,88 +987,57 @@ def test_copy_to_clipboard_contract(
     (
         "results",
         "params",
-        "render_root_exists",
-        "html_exists",
-        "latest_exists",
         "expected_exit",
-        "expected_open_name",
+        "expected_open_url",
         "expected_stdout",
     ),
     [
-        ([], {}, True, False, False, 2, None, None),
-        ([_make_conv(id="conv-output-1234")], {}, False, False, False, 1, None, None),
-        ([_make_conv(id="conv-output-1234")], {}, True, True, False, None, "conversation.html", None),
-        ([_make_summary(id="conv-output-1234")], {}, True, True, False, None, "conversation.html", None),
-        ([_make_conv(id="conv-output-1234")], {}, True, False, True, None, "fallback.html", None),
+        ([], {}, 2, None, None),
+        ([_make_conv(id="conv-output-1234")], {}, None, "http://127.0.0.1:8766/?conversation=conv-output-1234", None),
         (
-            [_make_conv(id="conv-output-1234")],
-            {"print_path": True},
-            True,
-            True,
-            False,
+            [_make_summary(id="conv-output-1234")],
+            {},
             None,
+            "http://127.0.0.1:8766/?conversation=conv-output-1234",
             None,
-            "conversation.html",
         ),
         (
             [_make_conv(id="conv-output-1234")],
-            {"print_path": True, "output_format": "json"},
-            True,
-            True,
-            False,
+            {"print_url": True},
             None,
             None,
-            '"path":',
+            "http://127.0.0.1:8766/?conversation=conv-output-1234",
+        ),
+        (
+            [_make_conv(id="conv-output-1234")],
+            {"print_url": True, "output_format": "json"},
+            None,
+            None,
+            '"url":',
         ),
     ],
     ids=[
         "no-results",
-        "no-render-root",
-        "specific-render",
-        "specific-render-summary",
-        "latest-fallback",
-        "print-path",
-        "print-path-json",
+        "daemon-url",
+        "daemon-url-summary",
+        "print-url",
+        "print-url-json",
     ],
 )
 def test_open_result_contract(
     results: list[ConversationModel | ConversationSummary],
     params: dict[str, object],
-    render_root_exists: bool,
-    html_exists: bool,
-    latest_exists: bool,
     expected_exit: int | None,
-    expected_open_name: str | None,
+    expected_open_url: str | None,
     expected_stdout: str | None,
     tmp_path: Path,
 ) -> None:
     from polylogue.cli.query_output import _open_result
 
-    render_root = tmp_path / "rendered"
-    if render_root_exists:
-        render_root.mkdir()
-    result = results[0] if results else None
-    specific_dir = (
-        conversation_render_root(render_root, str(result.provider), str(result.id))
-        if result is not None
-        else render_root / "conv-outp"
-    )
-    if html_exists:
-        specific_dir.mkdir(parents=True, exist_ok=True)
-        (specific_dir / "conversation.html").write_text("<html></html>", encoding="utf-8")
-    fallback = render_root / "fallback.html"
-    if latest_exists:
-        fallback.write_text("<html></html>", encoding="utf-8")
-
-    env = _make_env(config=MagicMock(render_root=render_root))
+    env = _make_env(config=MagicMock(render_root=tmp_path / "rendered"))
     mock_print = _as_mock(env.ui.console.print)
     output = QueryOutputSpec.from_params(params)
-    with (
-        patch("polylogue.cli.shared.helpers.load_effective_config", return_value=MagicMock(render_root=render_root)),
-        patch("polylogue.cli.shared.helpers.latest_render_path", return_value=fallback if latest_exists else None),
-        patch("webbrowser.open") as mock_open,
-        patch("click.echo") as mock_echo,
-    ):
+    with patch("webbrowser.open") as mock_open, patch("click.echo") as mock_echo:
         mock_open = _as_mock(mock_open)
         mock_echo = _as_mock(mock_echo)
         if expected_exit is not None:
@@ -1085,8 +1053,7 @@ def test_open_result_contract(
                 echoed = "\n".join(call.args[0] for call in mock_echo.call_args_list if call.args)
                 assert expected_stdout in echoed
             else:
-                opened = mock_open.call_args.args[0]
-                assert expected_open_name in opened
+                mock_open.assert_called_once_with(expected_open_url)
                 mock_print.assert_called_once()
                 mock_echo.assert_not_called()
 
@@ -1098,11 +1065,7 @@ def test_open_result_no_results_json_contract(capsys: pytest.CaptureFixture[str]
     render_root.mkdir()
     env = _make_env(config=MagicMock(render_root=render_root))
 
-    with (
-        patch("polylogue.cli.shared.helpers.load_effective_config", return_value=MagicMock(render_root=render_root)),
-        patch("polylogue.cli.shared.helpers.latest_render_path", return_value=None),
-        patch("webbrowser.open") as mock_open,
-    ):
+    with patch("webbrowser.open") as mock_open:
         mock_open = _as_mock(mock_open)
         with pytest.raises(SystemExit) as exc_info:
             _open_result(env, [], QueryOutputSpec.from_params({"output_format": "json"}))

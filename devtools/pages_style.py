@@ -1,4 +1,4 @@
-"""CSS design tokens and base styles for the GitHub Pages site."""
+"""CSS design tokens and base styles for the documentation site."""
 
 from __future__ import annotations
 

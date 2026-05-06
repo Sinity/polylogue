@@ -237,68 +237,6 @@ def test_maybe_prompt_sources_rejects_empty_choice(
         helpers.maybe_prompt_sources(env, _config_with_sources(tmp_path, ["one", "two"]), None, "sync")
 
 
-@pytest.mark.parametrize(
-    "case_id",
-    [
-        "nonexistent-root",
-        "empty-root",
-        "single-markdown",
-        "single-html",
-        "latest-mtime-wins",
-        "missing-candidate-is-skipped",
-    ],
-)
-def test_latest_render_path_contract(tmp_path: Path, case_id: str) -> None:
-    render_root = tmp_path / "render"
-    expected: Path | None = None
-
-    if case_id == "nonexistent-root":
-        render_root = tmp_path / "missing"
-    elif case_id == "empty-root":
-        render_root.mkdir()
-    elif case_id == "single-markdown":
-        conv_dir = render_root / "conv1"
-        conv_dir.mkdir(parents=True)
-        expected = conv_dir / "conversation.md"
-        expected.write_text("# Test", encoding="utf-8")
-    elif case_id == "single-html":
-        conv_dir = render_root / "conv1"
-        conv_dir.mkdir(parents=True)
-        expected = conv_dir / "conversation.html"
-        expected.write_text("<html>test</html>", encoding="utf-8")
-    elif case_id == "latest-mtime-wins":
-        import os
-
-        conv1 = render_root / "conv1"
-        conv2 = render_root / "conv2"
-        conv1.mkdir(parents=True)
-        conv2.mkdir(parents=True)
-        older = conv1 / "conversation.md"
-        expected = conv2 / "conversation.html"
-        older.write_text("old", encoding="utf-8")
-        expected.write_text("new", encoding="utf-8")
-        os.utime(older, (100, 100))
-        os.utime(expected, (200, 200))
-    elif case_id == "missing-candidate-is-skipped":
-        conv_dir = render_root / "conv1"
-        conv_dir.mkdir(parents=True)
-        expected = conv_dir / "conversation.md"
-        expected.write_text("# Existing", encoding="utf-8")
-        original_rglob = Path.rglob
-
-        def fake_rglob(self: Path, pattern: str) -> Iterable[Path]:
-            if self == render_root and pattern in {"conversation.md", "conversation.html"}:
-                missing = render_root / "deleted" / pattern
-                return list(original_rglob(self, pattern)) + [missing]
-            return original_rglob(self, pattern)
-
-        with patch.object(Path, "rglob", fake_rglob):
-            assert helpers.latest_render_path(render_root) == expected
-        return
-
-    assert helpers.latest_render_path(render_root) == expected
-
-
 # ---------------------------------------------------------------------------
 # Merged from test_helpers.py (2026-03-15)
 # ---------------------------------------------------------------------------

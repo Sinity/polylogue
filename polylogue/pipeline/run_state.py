@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 
 from polylogue.pipeline.services.parsing import ParseResult
 from polylogue.pipeline.stage_models import AcquireResult, ValidateResult
-from polylogue.storage.run_state import DriftBucket, RenderFailurePayload, RunCounts, RunDrift
+from polylogue.storage.run_state import DriftBucket, RunCounts, RunDrift
 
 
 def _initial_counts() -> RunCounts:
@@ -16,7 +16,6 @@ def _initial_counts() -> RunCounts:
         skipped_messages=0,
         skipped_attachments=0,
         materialized=0,
-        rendered=0,
     )
 
 
@@ -31,7 +30,6 @@ class RunExecutionState:
     counts: RunCounts = field(default_factory=_initial_counts)
     changed_counts: DriftBucket = field(default_factory=_initial_changed_counts)
     processed_ids: set[str] = field(default_factory=set)
-    render_failures: list[RenderFailurePayload] = field(default_factory=list)
 
     def record_acquire(self, acquire_result: AcquireResult) -> None:
         self.counts.acquired = acquire_result.acquired
@@ -64,12 +62,6 @@ class RunExecutionState:
 
     def record_materialize(self, *, materialized: int) -> None:
         self.counts.materialized = materialized
-
-    def record_render(self, *, rendered: int, failures: list[RenderFailurePayload]) -> None:
-        self.counts.rendered = rendered
-        self.render_failures = failures
-        if failures:
-            self.counts.render_failures = len(failures)
 
     def finalize(self) -> RunDrift:
         new_counts = DriftBucket(

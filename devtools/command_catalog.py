@@ -123,9 +123,9 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     CommandSpec(
         "render-pages",
         "generated surfaces",
-        "Build the GitHub Pages static site into _site/.",
+        "Build the GitHub Pages documentation site into _site/.",
         "devtools.render_pages",
-        use_when="Build or verify the full GitHub Pages static site after changing docs, templates, or design docs.",
+        use_when="Build or verify the full GitHub Pages documentation site after changing docs, templates, or design docs.",
         examples=("devtools render-pages", "devtools render-pages --check", "devtools render-pages --serve"),
     ),
     CommandSpec(
@@ -338,7 +338,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "devtools proof-pack --base-ref origin/master --head-ref HEAD",
             "devtools proof-pack --base-ref origin/master --head-ref HEAD --markdown",
             "devtools proof-pack --path polylogue/proof/catalog.py --check",
-            "devtools proof-pack --json --path polylogue/site/",
+            "devtools proof-pack --json --path polylogue/daemon/",
         ),
     ),
     CommandSpec(

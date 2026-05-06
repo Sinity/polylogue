@@ -8,10 +8,10 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 
 ## Snapshot
 
-- subjects: `506`
-- claims: `44`
-- runner bindings: `44`
-- proof obligations: `552`
+- subjects: `487`
+- claims: `41`
+- runner bindings: `41`
+- proof obligations: `535`
 
 ## Quality Checks
 
@@ -36,9 +36,9 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `architecture.topology` | 1 |
 | `architecture.witness` | 1 |
 | `archive.query_law` | 1 |
-| `artifact.path` | 27 |
-| `assurance.coverage_gap` | 23 |
-| `assurance.coverage_item` | 106 |
+| `artifact.path` | 25 |
+| `assurance.coverage_gap` | 22 |
+| `assurance.coverage_item` | 104 |
 | `assurance.coverage_manifest` | 9 |
 | `cli.command` | 45 |
 | `cli.json_command` | 5 |
@@ -47,8 +47,8 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `generated.scenario_family` | 9 |
 | `insight.surface` | 12 |
 | `maintenance.target` | 8 |
-| `operation.spec` | 43 |
-| `operation.spec.effect` | 108 |
+| `operation.spec` | 41 |
+| `operation.spec.effect` | 96 |
 | `provider.capability` | 3 |
 | `schema.annotation` | 95 |
 | `schema.roundtrip` | 1 |
@@ -93,7 +93,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `polylogue neighbors` | `polylogue/cli/commands/neighbors.py:42` `polylogue.cli.commands.neighbors.neighbors_command` |
 | `polylogue open` | `polylogue/cli/query_verbs.py:97` `polylogue.cli.query_verbs.open_verb` |
 | `polylogue raw` | `polylogue/cli/query_verbs.py:247` `polylogue.cli.query_verbs.raw_verb` |
-| `polylogue reset` | `polylogue/cli/commands/reset.py:102` `polylogue.cli.commands.reset.reset_command` |
+| `polylogue reset` | `polylogue/cli/commands/reset.py:101` `polylogue.cli.commands.reset.reset_command` |
 | `polylogue resume` | `polylogue/cli/commands/resume.py:22` `polylogue.cli.commands.resume.resume_command` |
 | `polylogue schema` | `polylogue/cli/commands/schema.py:38` `polylogue.cli.commands.schema.schema_command` |
 | `polylogue schema compare` | `polylogue/cli/commands/schema.py:56` `polylogue.cli.commands.schema.schema_compare` |
@@ -149,7 +149,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `docs_media` | `assurance.coverage_item` | 17 |
 | `docs_media` | `assurance.coverage_manifest` | 1 |
 | `migration_safety` | `assurance.coverage_gap` | 1 |
-| `mutation_coverage` | `assurance.coverage_item` | 18 |
+| `mutation_coverage` | `assurance.coverage_item` | 17 |
 | `mutation_coverage` | `assurance.coverage_manifest` | 1 |
 | `operational_resilience` | `assurance.coverage_item` | 1 |
 | `performance` | `assurance.coverage_gap` | 1 |
@@ -159,10 +159,9 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `security_privacy` | `assurance.coverage_gap` | 5 |
 | `security_privacy` | `assurance.coverage_item` | 8 |
 | `security_privacy` | `assurance.coverage_manifest` | 1 |
-| `site_publication` | `assurance.coverage_gap` | 1 |
 | `spec_accuracy` | `assurance.coverage_item` | 12 |
 | `spec_accuracy` | `assurance.coverage_manifest` | 2 |
-| `spec_completeness` | `assurance.coverage_item` | 28 |
+| `spec_completeness` | `assurance.coverage_item` | 27 |
 | `spec_completeness` | `assurance.coverage_manifest` | 1 |
 | `storage_correctness` | `assurance.coverage_gap` | 1 |
 | `test_quality` | `assurance.coverage_gap` | 4 |
@@ -208,9 +207,6 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `operation.effect.idempotent` | `serious` | `operation.effect.implication_violation` | tracked: abstract effect implication requires a concrete runner |
 | `operation.effect.rollback_safe` | `serious` | `operation.effect.implication_violation` | tracked: abstract effect implication requires a concrete runner |
 | `operation.effect.atomic` | `serious` | `operation.effect.implication_violation` | tracked: abstract effect implication requires a concrete runner |
-| `operation.effect.path_sanitized` | `serious` | `operation.effect.implication_violation` | tracked: abstract effect implication requires a concrete runner |
-| `operation.effect.atomic_rename` | `serious` | `operation.effect.implication_violation` | tracked: abstract effect implication requires a concrete runner |
-| `operation.effect.parent_exists` | `serious` | `operation.effect.implication_violation` | tracked: abstract effect implication requires a concrete runner |
 | `operation.effect.timeout_bounded` | `info` | `operation.effect.implication_violation` | tracked: None |
 | `operation.effect.retry_bounded` | `info` | `operation.effect.implication_violation` | tracked: None |
 | `operation.effect.sampling_bounded` | `info` | `operation.effect.implication_violation` | tracked: None |
@@ -257,9 +253,6 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `effect-implication-static-contract:operation.effect.idempotent` | `operation.effect.idempotent` | `structural` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
 | `effect-implication-static-contract:operation.effect.rollback_safe` | `operation.effect.rollback_safe` | `structural` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
 | `effect-implication-static-contract:operation.effect.atomic` | `operation.effect.atomic` | `structural` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
-| `effect-implication-static-contract:operation.effect.path_sanitized` | `operation.effect.path_sanitized` | `structural` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
-| `effect-implication-static-contract:operation.effect.atomic_rename` | `operation.effect.atomic_rename` | `structural` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
-| `effect-implication-static-contract:operation.effect.parent_exists` | `operation.effect.parent_exists` | `structural` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
 | `effect-implication-static-contract:operation.effect.timeout_bounded` | `operation.effect.timeout_bounded` | `structural` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
 | `effect-implication-static-contract:operation.effect.retry_bounded` | `operation.effect.retry_bounded` | `structural` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
 | `effect-implication-static-contract:operation.effect.sampling_bounded` | `operation.effect.sampling_bounded` | `structural` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
@@ -278,9 +271,9 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `architecture.topology.projection_enforced` | 1 |
 | `architecture.witness.lifecycle_enforced` | 1 |
 | `archive.query.provider_filter_consistency` | 1 |
-| `artifact.path.dependency_closure` | 11 |
-| `assurance.coverage.gap_has_closure_path` | 23 |
-| `assurance.coverage.item_declared` | 106 |
+| `artifact.path.dependency_closure` | 9 |
+| `assurance.coverage.gap_has_closure_path` | 22 |
+| `assurance.coverage.item_declared` | 104 |
 | `assurance.coverage.manifest_structured` | 9 |
 | `cli.command.help` | 45 |
 | `cli.command.json_envelope` | 5 |
@@ -293,19 +286,16 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `generated.scenario.semantic_claim_mapping` | 9 |
 | `insight.surface.registered` | 12 |
 | `maintenance.repair.crash_consistency` | 8 |
-| `operation.effect.atomic` | 12 |
-| `operation.effect.atomic_rename` | 2 |
+| `operation.effect.atomic` | 11 |
 | `operation.effect.deterministic` | 8 |
-| `operation.effect.idempotent` | 12 |
+| `operation.effect.idempotent` | 11 |
 | `operation.effect.no_side_effect` | 8 |
-| `operation.effect.parent_exists` | 2 |
-| `operation.effect.path_sanitized` | 2 |
-| `operation.effect.preview` | 12 |
+| `operation.effect.preview` | 11 |
 | `operation.effect.privacy_safe_evidence` | 1 |
 | `operation.effect.retry_bounded` | 1 |
-| `operation.effect.rollback_safe` | 12 |
+| `operation.effect.rollback_safe` | 11 |
 | `operation.effect.sampling_bounded` | 1 |
-| `operation.effect.snapshot_consistent` | 34 |
+| `operation.effect.snapshot_consistent` | 32 |
 | `operation.effect.timeout_bounded` | 1 |
 | `parser.quarantine.context_redaction` | 1 |
 | `provider.capability.identity_bridge` | 3 |

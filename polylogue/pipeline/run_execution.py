@@ -10,7 +10,6 @@ from polylogue.config import Config
 from polylogue.core.json import JSONDocument, JSONValue, json_document
 from polylogue.core.metrics import PipelineMetrics
 from polylogue.logging import get_logger
-from polylogue.pipeline.payload_types import SiteBuildOptions
 from polylogue.pipeline.run_finalization import persist_run_result
 from polylogue.pipeline.run_stages import (
     IndexStageOutcome,
@@ -19,9 +18,7 @@ from polylogue.pipeline.run_stages import (
     execute_index_stage,
     execute_ingest_stage,
     execute_materialize_stage,
-    execute_render_stage,
     execute_schema_generation_stage,
-    execute_site_stage,
 )
 from polylogue.pipeline.run_state import RunExecutionState
 from polylogue.pipeline.run_support import (
@@ -87,8 +84,6 @@ async def run_sources(
     ui: object | None = None,
     source_names: Sequence[str] | None = None,
     progress_callback: ProgressCallback | None = None,
-    render_format: str = "html",
-    site_options: SiteBuildOptions | None = None,
     raw_batch_size: int = 50,
     ingest_workers: int | None = None,
     measure_ingest_result_size: bool = False,
@@ -205,31 +200,6 @@ async def run_sources(
                 rebuilt=materialize_outcome.rebuilt,
             )
 
-        async def _run_render_stage(spec: PipelineStageSpec, render_stage: str) -> None:
-            sm = metrics.start_stage(spec.log_stage)
-            render_outcome = await execute_render_stage(
-                config=config,
-                backend=active_backend,
-                stage=render_stage,
-                source_names=source_names,
-                processed_ids=state.processed_ids,
-                progress_callback=progress_callback,
-                render_format=render_format,
-            )
-            state.record_render(
-                rendered=render_outcome.rendered_count,
-                failures=render_outcome.failures,
-            )
-            if render_outcome.observation:
-                sm.details.update(_json_detail_payload(render_outcome.observation))
-            sm.stop(items=state.counts.get("rendered", 0))
-            logger.info(
-                "Render stage complete",
-                **sm.to_dict(),
-                failures=len(render_outcome.failures),
-                total=render_outcome.total,
-            )
-
         async def _run_index_stage(spec: PipelineStageSpec, index_stage: str) -> IndexStageOutcome:
             sm = metrics.start_stage(spec.log_stage)
             next_index_outcome = await execute_index_stage(
@@ -249,25 +219,6 @@ async def run_sources(
                 indexed=next_index_outcome.indexed,
             )
             return next_index_outcome
-
-        async def _run_site_stage(spec: PipelineStageSpec) -> None:
-            sm = metrics.start_stage(spec.log_stage)
-            site_outcome = await execute_site_stage(
-                backend=active_backend,
-                repository=active_repository,
-                site_options=site_options,
-                progress_callback=progress_callback,
-            )
-            if site_outcome.error is not None:
-                logger.error("Site build failed", error=site_outcome.error)
-            sm.stop(items=site_outcome.rendered_pages)
-            logger.info(
-                "Site stage complete",
-                **sm.to_dict(),
-                conversations=site_outcome.conversations,
-                index_pages=site_outcome.index_pages,
-                rendered_pages=site_outcome.rendered_pages,
-            )
 
         async def _run_embed_stage(spec: PipelineStageSpec) -> None:
             sm = metrics.start_stage(spec.log_stage)
@@ -305,10 +256,6 @@ async def run_sources(
                 await _run_parse_stage(spec, execution_stage)
             elif spec.name == "materialize":
                 await _run_materialize_stage(spec, execution_stage)
-            elif spec.name == "render":
-                await _run_render_stage(spec, execution_stage)
-            elif spec.name == "site":
-                await _run_site_stage(spec)
             elif spec.name == "index":
                 index_outcome = await _run_index_stage(spec, execution_stage)
             elif spec.name == "embed":

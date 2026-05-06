@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -14,8 +13,6 @@ from polylogue.pipeline.run_stages import (
     EmbedStageOutcome,
     IndexStageOutcome,
     MaterializeStageOutcome,
-    RenderStageOutcome,
-    SearchProvider,
 )
 
 
@@ -49,24 +46,6 @@ def _backend(
         iter_conversation_ids=lambda **kwargs: _aiter(*iter_values),
         connection=lambda: _AsyncContext(connection),
     )
-
-
-def test_site_option_helpers_cover_default_and_conversion_paths(tmp_path: Path) -> None:
-    options = {
-        "output": str(tmp_path / "site"),
-        "title": "Docs",
-        "search": False,
-        "search_provider": "lunr",
-    }
-
-    assert run_stages._site_option_path(options, "output", default=tmp_path / "default") == tmp_path / "site"
-    assert run_stages._site_option_path({}, "output", default=tmp_path / "default") == tmp_path / "default"
-    assert run_stages._site_option_str(options, "title", default="Polylogue") == "Docs"
-    assert run_stages._site_option_str({}, "title", default="Polylogue") == "Polylogue"
-    assert run_stages._site_option_bool(options, "search", default=True) is False
-    assert run_stages._site_option_bool({}, "search", default=True) is True
-    assert run_stages._site_option_search_provider(options, default=SearchProvider.PAGEFIND) == SearchProvider.LUNR
-    assert run_stages._site_option_search_provider({}, default=SearchProvider.PAGEFIND) == SearchProvider.PAGEFIND
 
 
 @pytest.mark.asyncio
@@ -217,51 +196,6 @@ async def test_execute_materialize_stage_covers_refresh_scoped_and_unscoped_path
 
 
 @pytest.mark.asyncio
-async def test_execute_render_stage_covers_empty_render_and_observation_fields(tmp_path: Path) -> None:
-    empty = await run_stages.execute_render_stage(
-        config=SimpleNamespace(render_root=tmp_path),
-        backend=_backend(),
-        stage="parse",
-        source_names=None,
-        processed_ids=set(),
-    )
-    assert empty == RenderStageOutcome(rendered_count=0, failures=[], total=0)
-
-    backend = _backend(count=2, iter_values=("conv-1", "conv-2"))
-    render_result = SimpleNamespace(
-        rendered_count=2,
-        failures=[{"conversation_id": "conv-2", "error": "boom"}],
-        worker_count=4,
-        rss_start_mb=10.0,
-        rss_end_mb=13.2,
-        max_current_rss_mb=14.5,
-    )
-    render_service = SimpleNamespace(render_conversations=AsyncMock(return_value=render_result))
-    with patch("polylogue.rendering.renderers.create_renderer", return_value="renderer") as create_renderer:
-        with patch("polylogue.pipeline.services.rendering.RenderService", return_value=render_service) as service_cls:
-            outcome = await run_stages.execute_render_stage(
-                config=SimpleNamespace(render_root=tmp_path),
-                backend=backend,
-                stage="render",
-                source_names=("drive",),
-                processed_ids=set(),
-            )
-
-    assert outcome.rendered_count == 2
-    assert outcome.failures == [{"conversation_id": "conv-2", "error": "boom"}]
-    assert outcome.total == 2
-    assert outcome.observation == {
-        "workers": 4,
-        "rss_start_mb": 10.0,
-        "rss_end_mb": 13.2,
-        "rss_delta_mb": 3.2,
-        "max_current_rss_mb": 14.5,
-    }
-    create_renderer.assert_called_once()
-    assert service_cls.call_args.kwargs["render_root"] == tmp_path
-
-
-@pytest.mark.asyncio
 async def test_execute_index_stage_covers_parse_index_reprocess_and_error_paths() -> None:
     index_service = SimpleNamespace(
         update_index=AsyncMock(return_value=True),
@@ -350,49 +284,6 @@ async def test_execute_index_stage_covers_parse_index_reprocess_and_error_paths(
         )
         assert error.indexed is False
         assert error.error == "RuntimeError: bad index"
-
-
-@pytest.mark.asyncio
-async def test_execute_site_stage_covers_success_and_error_paths(tmp_path: Path) -> None:
-    builder = SimpleNamespace(
-        build=MagicMock(
-            return_value=SimpleNamespace(
-                archive=SimpleNamespace(total_conversations=5),
-                outputs=SimpleNamespace(total_index_pages=2, rendered_conversation_pages=5),
-            )
-        )
-    )
-    with patch("polylogue.site.builder.SiteBuilder", return_value=builder) as site_builder:
-        outcome = await run_stages.execute_site_stage(
-            backend=SimpleNamespace(),
-            repository=SimpleNamespace(),
-            site_options={
-                "output": tmp_path / "site",
-                "title": "Docs",
-                "search": False,
-                "search_provider": "lunr",
-                "dashboard": False,
-            },
-        )
-
-    assert outcome.conversations == 5
-    assert outcome.index_pages == 2
-    assert outcome.rendered_pages == 5
-    config = site_builder.call_args.kwargs["config"]
-    assert config.title == "Docs"
-    assert config.enable_search is False
-    assert config.search_provider == SearchProvider.LUNR
-    assert config.include_dashboard is False
-
-    failing_builder = SimpleNamespace(build=MagicMock(side_effect=RuntimeError("site failed")))
-    with patch("polylogue.site.builder.SiteBuilder", return_value=failing_builder):
-        error = await run_stages.execute_site_stage(
-            backend=SimpleNamespace(),
-            repository=SimpleNamespace(),
-            site_options=None,
-        )
-
-    assert error.error == "RuntimeError: site failed"
 
 
 @pytest.mark.asyncio

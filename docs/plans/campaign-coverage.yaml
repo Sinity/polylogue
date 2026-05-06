@@ -185,16 +185,6 @@ mutation_campaigns:
       - tests/unit/storage/test_schema_safety.py
     status: active
 
-  - name: site-builder
-    description: >
-      Static-site builder and CLI archive contracts
-    paths_to_mutate:
-      - polylogue/site/builder.py
-    tests:
-      - tests/integration/test_site.py
-      - tests/integration/test_site_laws.py
-    status: active
-
   - name: source-detection
     description: >
       Source detection, sniffing, and parser dispatch

@@ -155,24 +155,6 @@ MUTATION_CAMPAIGNS: dict[str, MutationCampaign] = {
             "tests/unit/ui/test_tui.py",
         ),
     ),
-    "site-builder": MutationCampaign(
-        name="site-builder",
-        description="Static-site builder and CLI archive contracts",
-        paths_to_mutate=("polylogue/site/builder.py",),
-        tests=(
-            "tests/integration/test_site.py",
-            "tests/integration/test_site_laws.py",
-        ),
-        path_targets=("site-publication-loop",),
-        artifact_targets=(
-            "conversation_render_projection",
-            "site_conversation_pages",
-            "site_publication_manifest",
-            "publication_records",
-        ),
-        operation_targets=("publish-site",),
-        tags=("mutation", "site", "publication"),
-    ),
     "drive-client": MutationCampaign(
         name="drive-client",
         description="Drive auth, transport, JSON payload parsing, and ingest attachment contracts",

@@ -754,7 +754,7 @@ async def async_execute_query_request(env: AppEnv, request: RootModeRequest) -> 
         raise SystemExit(1)
     if tail_requested and plan.action == QueryAction.OPEN:
         click.echo(
-            "Error: --tail does not support `open` yet because rendered artifacts reflect stable archive state.",
+            "Error: --tail does not support `open` yet because the daemon web reader targets stable archive state.",
             err=True,
         )
         raise SystemExit(1)

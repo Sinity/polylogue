@@ -1,4 +1,4 @@
-"""Static site builder for GitHub Pages."""
+"""Documentation-site builder for GitHub Pages."""
 
 from __future__ import annotations
 
@@ -13,12 +13,12 @@ from typing import Any
 import tomllib
 from jinja2 import DictLoader, Environment, select_autoescape
 
+from devtools.pages_style import PAGES_STYLE
+from devtools.pages_templates import PAGES_TEMPLATES
 from polylogue.rendering.renderers.html import PygmentsHighlighter
 from polylogue.rendering.renderers.html_sanitizer import sanitize_html
-from polylogue.site.pages_style import PAGES_STYLE
-from polylogue.site.pages_templates import PAGES_TEMPLATES
 
-ROOT = Path(__file__).resolve().parent.parent.parent
+ROOT = Path(__file__).resolve().parent.parent
 
 
 @dataclass

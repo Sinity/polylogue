@@ -164,7 +164,6 @@ a `search_text` column for FTS indexing.
 | Table | Purpose |
 |-------|---------|
 | `artifact_observations` | Schema inference pipeline: per-artifact analysis records |
-| `publications` | Site/exports generation history |
 | `pending_blob_refs` | Blob store leases (prevents GC races) |
 | `gc_generations` | Garbage collection generation tracking |
 | `source_file_cursors` | Per-file ingestion progress (idempotent resume) |

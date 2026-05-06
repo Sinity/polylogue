@@ -77,8 +77,6 @@ def format_counts(counts: Mapping[str, object] | RunCounts) -> str:
         ("messages", "msg"),
         ("attachments", "att"),
         ("materialized", "materialized"),
-        ("rendered", "rendered"),
-        ("render_failures", "render failures"),
     ]
     parts: list[str] = []
     total_conv, new_conv, changed_conv = conversation_activity_counts(counts)
@@ -146,14 +144,6 @@ def format_run_details(counts: Mapping[str, object] | RunCounts) -> list[str]:
     if isinstance(materialized, int) and materialized:
         lines.append(f"Materialize: {materialized} conversations")
 
-    render_parts = [
-        (counts.get("rendered"), "rendered"),
-        (counts.get("render_failures"), "failures"),
-    ]
-    render_line = ", ".join(f"{value} {label}" for value, label in render_parts if isinstance(value, int) and value)
-    if render_line:
-        lines.append(f"Render: {render_line}")
-
     schema_parts = [
         (counts.get("schemas_generated"), "generated"),
         (counts.get("schemas_failed"), "failed"),
@@ -172,7 +162,6 @@ def format_plan_counts(counts: Mapping[str, object] | PlanCounts) -> str:
         ("validate", "validate"),
         ("parse", "parse"),
         ("materialize", "materialize"),
-        ("render", "render"),
         ("index", "index"),
     ]
     parts: list[str] = []
@@ -203,8 +192,6 @@ def format_plan_details(details: Mapping[str, object] | PlanDetails) -> str | No
 
 
 def format_index_status(stage: str, indexed: bool, index_error: str | None) -> str:
-    if stage == "render":
-        return "Index: skipped"
     if index_error:
         return "Index: error"
     if indexed:

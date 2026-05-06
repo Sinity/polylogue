@@ -23,22 +23,22 @@ rules:
   - target: polylogue/storage
     description: "Storage substrate must not import surface adapters."
     disallow:
-      from: [polylogue/cli, polylogue/mcp, polylogue/site, polylogue/ui, polylogue/rendering]
+      from: [polylogue/cli, polylogue/mcp, polylogue/daemon, polylogue/ui, polylogue/rendering]
 
   - target: polylogue/pipeline
-    description: "Pipeline orchestration may call publication stages but must not import interactive surfaces."
+    description: "Pipeline orchestration must not import interactive surfaces."
     disallow:
-      from: [polylogue/cli, polylogue/mcp, polylogue/ui]
+      from: [polylogue/cli, polylogue/mcp, polylogue/daemon, polylogue/ui]
 
   - target: polylogue/sources
     description: "Source acquisition/parsing must not import surface adapters."
     disallow:
-      from: [polylogue/cli, polylogue/mcp, polylogue/site, polylogue/ui]
+      from: [polylogue/cli, polylogue/mcp, polylogue/daemon, polylogue/ui]
 
   - target: polylogue/insights
-    description: "Derived insights must not import MCP/site/UI adapters."
+    description: "Derived insights must not import daemon/MCP/UI adapters."
     disallow:
-      from: [polylogue/mcp, polylogue/site, polylogue/ui]
+      from: [polylogue/daemon, polylogue/mcp, polylogue/ui]
 
-  - target: polylogue/site
-    description: "Site publication surface adapter."
+  - target: polylogue/daemon
+    description: "Daemon convergence and HTTP/web-reader surface adapter."

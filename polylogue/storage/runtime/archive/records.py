@@ -239,24 +239,3 @@ class RunRecord(BaseModel):
     @classmethod
     def coerce_drift(cls, value: object) -> JSONObject | None:
         return _coerce_json_object(value)
-
-
-class PublicationRecord(BaseModel):
-    publication_id: str
-    publication_kind: str
-    generated_at: str
-    output_dir: str
-    duration_ms: int | None = None
-    manifest: JSONObject
-
-    @field_validator("publication_id", "publication_kind", "generated_at", "output_dir")
-    @classmethod
-    def publication_non_empty_string(cls, v: str) -> str:
-        if not v or not v.strip():
-            raise ValueError("Field cannot be empty")
-        return v
-
-    @field_validator("manifest", mode="before")
-    @classmethod
-    def coerce_manifest(cls, value: object) -> JSONObject:
-        return _coerce_json_object(value) or {}

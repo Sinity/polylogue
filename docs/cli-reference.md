@@ -152,9 +152,9 @@ Commands:
   list         List matched conversations.
   messages     Show paginated messages for a conversation.
   neighbors    Show explainable neighboring or near-duplicate candidates.
-  open         Open matched conversation in browser/editor.
+  open         Open matched conversation in the daemon web reader.
   raw          Show raw archive artifacts for a conversation.
-  reset        Reset database, blob store, assets, rendered outputs, or...
+  reset        Reset database, blob store, assets, cache, or auth state.
   resume       Reconstruct work-state context for a fresh agent session.
   schema       Inspect schema packages, versions, and evidence.
   select       Select one matched conversation and print a field.
@@ -212,11 +212,11 @@ Options:
 ```text
 Usage: polylogue open [OPTIONS] [TARGET_TERMS]...
 
-  Open matched conversation in browser/editor.
+  Open matched conversation in the daemon web reader.
 
 Options:
-  --print-path  Print the matched render path instead of opening it
-  -h, --help    Show this message and exit.
+  --print-url  Print the matched daemon web URL instead of opening it
+  -h, --help   Show this message and exit.
 ```
 
 ## Delete Verb
@@ -363,7 +363,7 @@ Options:
 ```text
 Usage: polylogue reset [OPTIONS]
 
-  Reset database, blob store, assets, rendered outputs, or auth state.
+  Reset database, blob store, assets, cache, or auth state.
 
   By default, requires explicit flags to specify what to reset. Use --all to
   reset everything.
@@ -376,7 +376,6 @@ Options:
   --database           Delete the SQLite database
   --blob               Delete the content-addressed blob store
   --assets             Delete archived assets/attachments
-  --render             Delete rendered conversations (Markdown/HTML)
   --cache              Delete search indexes, schemas, and cache
   --auth               Delete Google Drive OAuth tokens
   --all                Reset everything

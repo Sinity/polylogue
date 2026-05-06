@@ -10,14 +10,7 @@ Polylogue follows XDG Base Directory specification:
 ~/.local/share/polylogue/           # XDG_DATA_HOME/polylogue
 ├── polylogue.db                    # SQLite database
 ├── blobs/                          # Stored attachment/blob payloads
-├── browser-capture/                # Browser-capture artifact spool
-└── render/                         # Rendered output
-    ├── html/
-    │   └── claude/
-    │       └── abc123.html
-    └── md/
-        └── claude/
-            └── abc123.md
+└── browser-capture/                # Browser-capture artifact spool
 
 ~/.claude/projects/                  # Auto-discovered: Claude Code sessions
 ~/.codex/sessions/                   # Auto-discovered: Codex sessions

@@ -48,7 +48,7 @@ These expose the archive and its insights:
 - CLI: `polylogue/cli/`
 - Python API: `polylogue/api/__init__.py`
 - MCP server: `polylogue/mcp/`
-- site generation: `polylogue/site/`
+- daemon web reader: `polylogue/daemon/web_shell.py`
 - dashboard and TUI: `polylogue/ui/`
 - renderers: `polylogue/rendering/`
 
@@ -84,8 +84,8 @@ source files (JSON/JSONL/ZIP)
              filter chain → query → storage
 ```
 
-The `all` pipeline stage runs: acquire → parse → materialize → render → site → index.
-`reprocess` runs: parse → materialize → render → index (skips acquire).
+The `all` pipeline stage runs: acquire → parse → materialize → index.
+`reprocess` runs: parse → materialize → index (skips acquire).
 
 ## Provider Detection
 
@@ -190,7 +190,7 @@ attachments, exports):
 - `lib/` — domain types, invariants, shared primitives (no I/O, no storage)
 - `storage/` — SQLite backends, repositories, FTS, search providers
 - `sources/` — provider detection, parsing, acquisition
-- `pipeline/` — stage execution, ingestion, validation, rendering pipeline
+- `pipeline/` — stage execution, daemon ingestion, validation, and indexing
 - `insights/` — derived read models, session insights, analytics
 - `operations/` — operation specs, artifact graph, declared runtime contracts
 
@@ -198,9 +198,9 @@ attachments, exports):
 - `cli/` — Click commands, shared helpers, output formatting
 - `mcp/` — MCP server tools
 - `api/` — async library API
-- `site/` — static site generation
 - `rendering/` — markdown/HTML renderers
 - `ui/` — TUI, dashboard
+- `daemon/` — daemon convergence, HTTP API, and web reader
 
 ### Verification (repo health)
 - `proof/` — proof obligations, subject discovery, claim catalog, witnesses

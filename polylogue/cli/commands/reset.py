@@ -21,7 +21,6 @@ from polylogue.paths import (
     db_path,
     drive_cache_path,
     drive_token_path,
-    render_root,
     state_home,
 )
 from polylogue.storage.sqlite.connection_profile import open_connection
@@ -103,7 +102,6 @@ def _tombstone_conversations(db: Path, conversation_ids: list[str]) -> int:
 @click.option("--database", is_flag=True, help="Delete the SQLite database")
 @click.option("--blob", is_flag=True, help="Delete the content-addressed blob store")
 @click.option("--assets", is_flag=True, help="Delete archived assets/attachments")
-@click.option("--render", is_flag=True, help="Delete rendered conversations (Markdown/HTML)")
 @click.option("--cache", is_flag=True, help="Delete search indexes, schemas, and cache")
 @click.option("--auth", is_flag=True, help="Delete Google Drive OAuth tokens")
 @click.option("--all", "reset_all", is_flag=True, help="Reset everything")
@@ -122,7 +120,6 @@ def reset_command(
     database: bool,
     blob: bool,
     assets: bool,
-    render: bool,
     cache: bool,
     auth: bool,
     reset_all: bool,
@@ -130,7 +127,7 @@ def reset_command(
     conv_id: str | None,
     source_path: Path | None,
 ) -> None:
-    """Reset database, blob store, assets, rendered outputs, or auth state.
+    """Reset database, blob store, assets, cache, or auth state.
 
     By default, requires explicit flags to specify what to reset.
     Use --all to reset everything.
@@ -141,7 +138,7 @@ def reset_command(
       --source PATH      Tombstone all conversations from a source path
     """
     if reset_all:
-        database = blob = assets = render = cache = auth = True
+        database = blob = assets = cache = auth = True
 
     # Identity-preserving soft-delete paths
     _db = db_path()
@@ -170,10 +167,10 @@ def reset_command(
         env.ui.console.print(f"Tombstoned {len(conv_ids)} conversation(s) from {source_path}: {count} row(s) affected.")
         return
 
-    if not (database or blob or assets or render or cache or auth):
+    if not (database or blob or assets or cache or auth):
         fail(
             "reset",
-            "Specify at least one target (e.g., --database, --assets, --render, --cache, --auth) or use --all",
+            "Specify at least one target (e.g., --database, --assets, --cache, --auth) or use --all",
         )
 
     targets = []
@@ -192,8 +189,6 @@ def reset_command(
         assets_dir = data_home() / "assets"
         if assets_dir.exists():
             targets.append(("assets", assets_dir))
-    if render and render_root().exists():
-        targets.append(("render results", render_root()))
     if cache:
         if cache_home().exists():
             targets.append(("cache/indexes", cache_home()))

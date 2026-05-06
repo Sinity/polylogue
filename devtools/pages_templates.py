@@ -1,4 +1,4 @@
-"""Jinja2 templates for the GitHub Pages static site."""
+"""Jinja2 templates for the documentation site."""
 
 from __future__ import annotations
 

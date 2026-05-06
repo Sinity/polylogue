@@ -565,63 +565,6 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
         readiness_surfaces=("query", "mcp", "facade"),
     ),
     ArtifactNode(
-        name="conversation_render_projection",
-        layer=ArtifactLayer.PROJECTION,
-        description="Repository-owned render projection preserving canonical conversation, message, and attachment layout.",
-        depends_on=("archive_conversation_rows",),
-        code_refs=(
-            "polylogue.storage.repository.archive.conversations.RepositoryArchiveConversationMixin.get_render_projection",
-            "polylogue.rendering.core_formatter.ConversationFormatter.load_projection",
-        ),
-        readiness_surfaces=("render", "site"),
-    ),
-    ArtifactNode(
-        name="rendered_conversation_artifacts",
-        layer=ArtifactLayer.PROJECTION,
-        description="Filesystem render outputs produced for conversation pages.",
-        depends_on=("conversation_render_projection",),
-        code_refs=(
-            "polylogue.pipeline.services.rendering.RenderService.render_conversations",
-            "polylogue.rendering.renderers.markdown.MarkdownRenderer.render",
-            "polylogue.rendering.renderers.html.HTMLRenderer.render",
-        ),
-        readiness_surfaces=("render",),
-    ),
-    ArtifactNode(
-        name="site_conversation_pages",
-        layer=ArtifactLayer.PROJECTION,
-        description="Conversation page artifacts emitted by the static-site builder.",
-        depends_on=("conversation_render_projection",),
-        code_refs=(
-            "polylogue.site.conversation_pages.generate_conversation_page",
-            "polylogue.site.site_builder_archive.generate_conversation_page_for_builder",
-        ),
-        readiness_surfaces=("site",),
-    ),
-    ArtifactNode(
-        name="site_publication_manifest",
-        layer=ArtifactLayer.PROJECTION,
-        description="Typed site publication manifest written to disk after a successful site build.",
-        depends_on=("site_conversation_pages",),
-        code_refs=(
-            "polylogue.site.publication_flow.build_site_publication_manifest",
-            "polylogue.site.publication_flow.write_site_publication_manifest",
-        ),
-        readiness_surfaces=("site", "maintenance"),
-    ),
-    ArtifactNode(
-        name="publication_records",
-        layer=ArtifactLayer.DURABLE,
-        description="Persisted publication records storing the latest publication manifests in the archive database.",
-        depends_on=("site_publication_manifest",),
-        code_refs=(
-            "polylogue.storage.repository.archive.repository_writes.RepositoryWritesMixin.record_publication",
-            "polylogue.storage.repository.archive.repository_writes.RepositoryWritesMixin.get_latest_publication",
-            "polylogue.storage.sqlite.queries.publications",
-        ),
-        readiness_surfaces=("site", "maintenance"),
-    ),
-    ArtifactNode(
         name="schema_packages",
         layer=ArtifactLayer.DURABLE,
         description="Versioned provider schema packages stored in the schema registry.",
@@ -943,26 +886,6 @@ RUNTIME_ARTIFACT_PATHS: tuple[ArtifactPath, ...] = (
         nodes=(
             "message_fts",
             "conversation_query_results",
-        ),
-    ),
-    ArtifactPath(
-        name="conversation-render-loop",
-        description="Durable archive conversations through repository render projections and rendered filesystem artifacts.",
-        nodes=(
-            "archive_conversation_rows",
-            "conversation_render_projection",
-            "rendered_conversation_artifacts",
-        ),
-    ),
-    ArtifactPath(
-        name="site-publication-loop",
-        description="Durable archive conversations through site conversation pages, publication manifest output, and persisted publication records.",
-        nodes=(
-            "archive_conversation_rows",
-            "conversation_render_projection",
-            "site_conversation_pages",
-            "site_publication_manifest",
-            "publication_records",
         ),
     ),
     ArtifactPath(

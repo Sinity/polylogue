@@ -280,12 +280,10 @@ def test_resolve_folder_id_contract(
     expect_error: type[Exception] | None,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from googleapiclient.errors import HttpError
-
-    class _FakeHttpError(HttpError):
+    class _FakeHttpError(Exception):
         def __init__(self, status: int) -> None:
-            resp = SimpleNamespace(status=status, reason="")
-            super().__init__(resp=resp, content=b"")
+            self.resp = SimpleNamespace(status=status, reason="")
+            super().__init__(f"HTTP {status}")
 
     service = MockDriveService()
     resource = service._files_resource
@@ -300,6 +298,12 @@ def test_resolve_folder_id_contract(
     else:
         monkeypatch.setattr(resource, "get", get_mock)
     monkeypatch.setattr(resource, "list", list_mock)
+    monkeypatch.setattr(
+        "polylogue.sources.drive.gateway._import_module",
+        lambda name: (
+            SimpleNamespace(HttpError=_FakeHttpError) if name == "googleapiclient.errors" else __import__(name)
+        ),
+    )
 
     client = _source_client(mock_service=service)
 

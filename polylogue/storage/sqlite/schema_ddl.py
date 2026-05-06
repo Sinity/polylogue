@@ -27,9 +27,6 @@ from polylogue.storage.sqlite.schema_ddl_aux import (
     ARTIFACT_OBSERVATION_DDL as _ARTIFACT_OBSERVATION_DDL,
 )
 from polylogue.storage.sqlite.schema_ddl_aux import (
-    PUBLICATION_DDL as _PUBLICATION_DDL,
-)
-from polylogue.storage.sqlite.schema_ddl_aux import (
     VEC0_DDL as _VEC0_DDL,
 )
 from polylogue.storage.sqlite.schema_ddl_cursor import (
@@ -56,15 +53,7 @@ SCHEMA_VERSION = 7
 
 # Complete target schema applied to fresh databases.
 SCHEMA_DDL = (
-    _RAW_ARCHIVE_DDL
-    + "\n\n"
-    + _ARTIFACT_OBSERVATION_DDL
-    + "\n\n"
-    + _PUBLICATION_DDL
-    + "\n\n"
-    + _ARCHIVE_STORAGE_DDL
-    + "\n\n"
-    + _MESSAGE_FTS_DDL
+    _RAW_ARCHIVE_DDL + "\n\n" + _ARTIFACT_OBSERVATION_DDL + "\n\n" + _ARCHIVE_STORAGE_DDL + "\n\n" + _MESSAGE_FTS_DDL
 )
 
 SCHEMA_DDL += "\n\n" + _SOURCE_FILE_CURSOR_DDL
@@ -89,7 +78,6 @@ __all__ = [
     "_BLOB_LEASE_DDL",
     "_IDENTITY_DDL",
     "_MESSAGE_FTS_DDL",
-    "_PUBLICATION_DDL",
     "_PROVIDER_EVENT_DDL",
     "_RAW_ARCHIVE_DDL",
     "_SESSION_INSIGHT_DDL",
