@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
+from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -101,6 +102,22 @@ def test_cursor_isolated_per_path(tmp_path: Path) -> None:
     store.set(b, 20)
     assert store.get(a) == 10
     assert store.get(b) == 20
+
+
+def test_cursor_fetches_records_in_bulk(tmp_path: Path) -> None:
+    store = CursorStore(tmp_path / "live.sqlite")
+    first = tmp_path / "first.jsonl"
+    second = tmp_path / "second.jsonl"
+    missing = tmp_path / "missing.jsonl"
+
+    store.set(first, 11, parser_fingerprint="parser", content_fingerprint="first-hash")
+    store.set(second, 22, parser_fingerprint="parser", content_fingerprint="second-hash", excluded=True)
+
+    records = store.get_records([first, second, missing, first])
+
+    assert set(records) == {first, second}
+    assert records[first].content_fingerprint == "first-hash"
+    assert records[second].excluded is True
 
 
 def test_cursor_persists_across_instances(tmp_path: Path) -> None:
@@ -264,7 +281,8 @@ def test_cursor_migrates_size_only_rows(tmp_path: Path) -> None:
     assert {"byte_offset", "content_fingerprint", "source_name"}.issubset(columns)
 
 
-def test_live_full_ingest_parallelizes_many_small_records() -> None:
+def test_live_full_ingest_uses_shared_worker_count_policy(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("polylogue.pipeline.services.ingest_batch._core.os.cpu_count", lambda: 16)
     records = [
         RawConversationRecord(
             raw_id=f"raw-{index}",
@@ -283,7 +301,7 @@ def test_live_full_ingest_parallelizes_many_small_records() -> None:
         acquired_at="2026-05-01T00:00:00+00:00",
     )
 
-    assert _full_ingest_worker_count(records) == 4
+    assert _full_ingest_worker_count(records) == 16
     assert _full_ingest_worker_count([giant]) == 1
 
 
@@ -383,6 +401,48 @@ def test_watcher_default_cursor_uses_archive_database(tmp_path: Path) -> None:
     assert watcher._cursor._db_path == db_path
 
 
+def test_catch_up_uses_bulk_cursor_records(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = tmp_path / "src"
+    root.mkdir()
+    files = [root / f"session-{index}.jsonl" for index in range(3)]
+    for path in files:
+        path.write_text('{"role":"user","content":"a"}\n')
+    watcher, _parse_sources = _make_watcher(tmp_path, root)
+    bulk_calls = 0
+    original_get_records = watcher._cursor.get_records
+
+    def counted_get_records(paths: Iterable[Path]) -> dict[Path, CursorRecord]:
+        nonlocal bulk_calls
+        bulk_calls += 1
+        return original_get_records(paths)
+
+    def fail_get_record(path: Path) -> CursorRecord | None:
+        raise AssertionError(f"catch-up should use bulk cursor reads, not per-file reads: {path}")
+
+    captured: dict[str, object] = {}
+
+    async def fake_ingest_files(
+        paths: list[Path],
+        *,
+        queued_file_count: int | None = None,
+        skipped_file_count: int = 0,
+    ) -> None:
+        captured["paths"] = paths
+        captured["queued_file_count"] = queued_file_count
+        captured["skipped_file_count"] = skipped_file_count
+
+    monkeypatch.setattr(watcher._cursor, "get_records", counted_get_records)
+    monkeypatch.setattr(watcher._cursor, "get_record", fail_get_record)
+    watcher._ingest_files = fake_ingest_files  # type: ignore[method-assign]
+
+    asyncio.run(watcher._catch_up([root]))
+
+    assert bulk_calls == 1
+    assert captured["paths"] == files
+    assert captured["queued_file_count"] == 3
+    assert captured["skipped_file_count"] == 0
+
+
 async def _ingest_one(watcher: LiveWatcher, path: Path) -> None:
     """Helper: check and ingest a single file (mimics old _ingest_if_grown)."""
     if watcher._needs_work(path):
@@ -479,6 +539,70 @@ def test_unchanged_file_uses_stat_fast_path_without_fingerprint_read(
     monkeypatch.setattr(live_watcher, "fingerprint_file", fail_fingerprint)
 
     assert watcher._needs_work(f) is False
+
+
+def test_new_file_needs_work_without_prefingerprint_read(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = tmp_path / "src"
+    root.mkdir()
+    f = root / "session.jsonl"
+    f.write_text('{"a":1}\n')
+    watcher, _parse_sources = _make_watcher(tmp_path, root)
+
+    def fail_fingerprint(path: Path) -> tuple[str, int]:
+        raise AssertionError(f"new file should not be fingerprinted before ingest: {path}")
+
+    monkeypatch.setattr(live_watcher, "fingerprint_file", fail_fingerprint)
+
+    assert watcher._needs_work(f) is True
+
+
+def test_parser_version_change_needs_work_without_prefingerprint_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "src"
+    root.mkdir()
+    f = root / "session.jsonl"
+    f.write_text('{"a":1}\n')
+    watcher, _parse_sources = _make_watcher(tmp_path, root)
+    stat = f.stat()
+    watcher._cursor.set(
+        f,
+        stat.st_size,
+        parser_fingerprint="older-parser",
+        content_fingerprint="already-known",
+        st_dev=stat.st_dev,
+        st_ino=stat.st_ino,
+        mtime_ns=stat.st_mtime_ns,
+    )
+
+    def fail_fingerprint(path: Path) -> tuple[str, int]:
+        raise AssertionError(f"parser changes should not prefingerprint before ingest: {path}")
+
+    monkeypatch.setattr(live_watcher, "fingerprint_file", fail_fingerprint)
+
+    assert watcher._needs_work(f) is True
+
+
+def test_full_cursor_uses_batch_raw_fingerprint_without_db_lookup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "src"
+    root.mkdir()
+    f = root / "session.jsonl"
+    f.write_text('{"a":1}\n')
+    watcher, _parse_sources = _make_watcher(tmp_path, root)
+
+    def fail_latest_raw_fingerprint(path: Path) -> str | None:
+        raise AssertionError(f"raw fingerprint should already be carried by the batch result: {path}")
+
+    monkeypatch.setattr(watcher._batch_processor, "_latest_raw_fingerprint", fail_latest_raw_fingerprint)
+
+    bytes_read = watcher._batch_processor._record_full_cursor(f, raw_fingerprint="raw-sha256")
+    record = watcher._cursor.get_record(f)
+
+    assert bytes_read == f.stat().st_size
+    assert record is not None
+    assert record.content_fingerprint == "raw-sha256"
 
 
 def test_append_plan_reads_only_completed_tail(tmp_path: Path) -> None:

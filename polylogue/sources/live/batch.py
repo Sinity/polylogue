@@ -21,7 +21,7 @@ from polylogue.core.metrics import read_current_rss_mb, read_peak_rss_children_m
 from polylogue.core.provider_identity import canonical_acquisition_provider
 from polylogue.logging import get_logger
 from polylogue.paths import blob_store_root
-from polylogue.pipeline.services.ingest_batch._core import _process_ingest_batch_sync
+from polylogue.pipeline.services.ingest_batch._core import _process_ingest_batch_sync, _select_ingest_worker_count
 from polylogue.sources.dispatch import _detect_provider_from_raw_bytes, detect_provider
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.storage.blob_store import BlobStore
@@ -59,6 +59,7 @@ class LiveBatchMetrics:
     input_bytes: int
     source_payload_read_bytes: int
     cursor_fingerprint_read_bytes: int
+    ingest_worker_count_max: int
     append_file_count: int
     full_file_count: int
     archive_bytes_before: int
@@ -81,6 +82,7 @@ class LiveBatchMetrics:
             "input_bytes": self.input_bytes,
             "source_payload_read_bytes": self.source_payload_read_bytes,
             "cursor_fingerprint_read_bytes": self.cursor_fingerprint_read_bytes,
+            "ingest_worker_count_max": self.ingest_worker_count_max,
             "append_file_count": self.append_file_count,
             "full_file_count": self.full_file_count,
             "archive_bytes_before": self.archive_bytes_before,
@@ -99,6 +101,8 @@ class _FullIngestResult:
     succeeded: list[Path]
     failed: list[Path]
     source_payload_read_bytes: int
+    raw_fingerprints: dict[Path, str] = field(default_factory=dict)
+    worker_count: int = 0
 
 
 class LiveBatchProcessor:
@@ -147,6 +151,7 @@ class LiveBatchProcessor:
         stage_timings: dict[str, float] = {}
         failed_paths: list[str] = []
         succeeded_paths: set[Path] = set()
+        ingest_worker_count_max = 0
 
         append_plans: list[_AppendPlan] = []
         full_paths: list[Path] = []
@@ -172,6 +177,7 @@ class LiveBatchProcessor:
             )
             t0 = time.perf_counter()
             append_result = self._ingest_append_plans(append_plans)
+            ingest_worker_count_max = max(ingest_worker_count_max, append_result.worker_count)
             parse_time_s += time.perf_counter() - t0
             self._record_attempt_progress(
                 attempt_id,
@@ -220,6 +226,7 @@ class LiveBatchProcessor:
                         current_path=source_paths[0] if source_paths else None,
                     )
                     full_result = await self._ingest_full_paths(source_paths, source_name=source_name)
+                    ingest_worker_count_max = max(ingest_worker_count_max, full_result.worker_count)
                 except Exception as exc:
                     logger.warning("live.watcher: batch failed for %s: %s", source_name, exc)
                     for path in source_paths:
@@ -259,7 +266,10 @@ class LiveBatchProcessor:
                 for path in full_result.succeeded:
                     if path in converged_paths:
                         succeeded_paths.add(path)
-                        cursor_fingerprint_read_bytes += self._record_full_cursor(path)
+                        cursor_fingerprint_read_bytes += self._record_full_cursor(
+                            path,
+                            raw_fingerprint=full_result.raw_fingerprints.get(path),
+                        )
                     else:
                         failed_paths.append(str(path))
                 for path in full_result.failed:
@@ -295,6 +305,7 @@ class LiveBatchProcessor:
             input_bytes=input_bytes,
             source_payload_read_bytes=source_payload_read_bytes,
             cursor_fingerprint_read_bytes=cursor_fingerprint_read_bytes,
+            ingest_worker_count_max=ingest_worker_count_max,
             append_file_count=len(append_plans),
             full_file_count=len(full_paths),
             archive_bytes_before=db_bytes_before,
@@ -387,12 +398,16 @@ class LiveBatchProcessor:
         self._cursor.mark_failed(path)
         return stat.st_size
 
-    def _record_full_cursor(self, path: Path) -> int:
+    def _record_full_cursor(self, path: Path, *, raw_fingerprint: str | None = None) -> int:
         try:
             stat = path.stat()
         except FileNotFoundError:
             return 0
-        fp, last_nl, bytes_read = self._cursor_state_after_full_ingest(path, stat.st_size)
+        fp, last_nl, bytes_read = self._cursor_state_after_full_ingest(
+            path,
+            stat.st_size,
+            raw_fingerprint=raw_fingerprint,
+        )
         self._cursor.set(
             path,
             stat.st_size,
@@ -445,8 +460,14 @@ class LiveBatchProcessor:
             logger.warning("live.watcher: post-ingest converge failed: %s", exc)
             return set(), time.perf_counter() - started, {}
 
-    def _cursor_state_after_full_ingest(self, path: Path, byte_size: int) -> tuple[str, int, int]:
-        raw_fingerprint = self._latest_raw_fingerprint(path)
+    def _cursor_state_after_full_ingest(
+        self,
+        path: Path,
+        byte_size: int,
+        *,
+        raw_fingerprint: str | None = None,
+    ) -> tuple[str, int, int]:
+        raw_fingerprint = raw_fingerprint or self._latest_raw_fingerprint(path)
         if raw_fingerprint is None:
             fp, last_nl = fingerprint_file(path)
             return fp, last_nl, byte_size
@@ -584,6 +605,8 @@ class LiveBatchProcessor:
             succeeded=[path for path in ingested if path not in failed_set],
             failed=failed,
             source_payload_read_bytes=source_payload_read_bytes,
+            raw_fingerprints={path: raw_id for raw_id, path in raw_by_id.items()},
+            worker_count=int(getattr(summary, "worker_count", 0)) if raw_records else 0,
         )
 
     def _mark_excluded_cursor(self, path: Path, stat: object, *, source_name: str) -> None:
@@ -703,7 +726,7 @@ class LiveBatchProcessor:
 
     def _ingest_append_plans(self, plans: list[_AppendPlan]) -> _AppendResult:
         if not plans:
-            return _AppendResult(succeeded=[], failed=[])
+            return _AppendResult(succeeded=[], failed=[], worker_count=0)
         archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
         blob_root = blob_store_root()
         blob_store = BlobStore(blob_root)
@@ -739,14 +762,14 @@ class LiveBatchProcessor:
             )
         except Exception as exc:
             logger.warning("live.watcher: append ingest failed: %s", exc)
-            return _AppendResult(succeeded=[], failed=plans)
+            return _AppendResult(succeeded=[], failed=plans, worker_count=0)
 
         failed = [raw_by_id[raw_id] for raw_id in summary.failed_raw_ids if raw_id in raw_by_id]
         failed_paths = {plan.path for plan in failed}
         succeeded = [plan for plan in plans if plan.path not in failed_paths and summary.parse_failures == 0]
         if summary.parse_failures and not failed:
-            return _AppendResult(succeeded=[], failed=plans)
-        return _AppendResult(succeeded=succeeded, failed=failed)
+            return _AppendResult(succeeded=[], failed=plans, worker_count=summary.worker_count)
+        return _AppendResult(succeeded=succeeded, failed=failed, worker_count=summary.worker_count)
 
     def _persist_raw_records(self, records: list[RawConversationRecord]) -> None:
         if not records:
@@ -823,6 +846,7 @@ class _AppendPlan:
 class _AppendResult:
     succeeded: list[_AppendPlan]
     failed: list[_AppendPlan]
+    worker_count: int = 0
 
 
 def fingerprint_file(path: Path) -> tuple[str, int]:
@@ -867,15 +891,7 @@ def _full_parse_progress_groups(paths: list[Path]) -> Iterable[list[Path]]:
 
 
 def _full_ingest_worker_count(records: list[RawConversationRecord]) -> int:
-    if len(records) <= 1:
-        return 1
-    total_bytes = sum(record.blob_size for record in records)
-    max_bytes = max(record.blob_size for record in records)
-    if max_bytes >= 512 * 1024 * 1024:
-        return 1
-    if total_bytes >= 512 * 1024 * 1024:
-        return min(4, len(records))
-    return min(2, len(records))
+    return _select_ingest_worker_count(records, None)
 
 
 def _path_size(path: Path) -> int:

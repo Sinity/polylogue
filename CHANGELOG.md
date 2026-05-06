@@ -88,6 +88,9 @@ documentation polish do not require an entry.
 - Daemon live convergence refreshes affected insight rows in batches and avoids
   process-pool startup for tiny ingest batches, reducing convergence and parse
   overhead for live JSONL workloads.
+- Daemon live catch-up no longer pre-hashes uncursored files, reads cursor
+  state in bulk, and reports the max ingest worker count in live benchmark
+  metrics so many-file convergence throughput is observable.
 - Live watching is no longer exposed through root `polylogue watch` or
   `polylogue run --watch`; use `polylogued watch` for the long-running source
   watcher.

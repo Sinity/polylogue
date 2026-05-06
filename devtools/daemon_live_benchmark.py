@@ -252,6 +252,9 @@ async def run_daemon_live_convergence_workload(db_path: Path) -> tuple[dict[str,
         "cursor_fingerprint_read_bytes": float(
             initial_metrics.cursor_fingerprint_read_bytes + append_metrics.cursor_fingerprint_read_bytes
         ),
+        "ingest_worker_count_max": float(
+            max(initial_metrics.ingest_worker_count_max, append_metrics.ingest_worker_count_max)
+        ),
         "succeeded_files": float(initial_metrics.succeeded_file_count + append_metrics.succeeded_file_count),
         "failed_files": float(initial_metrics.failed_file_count + append_metrics.failed_file_count),
         "append_files": float(append_metrics.append_file_count),

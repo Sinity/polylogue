@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import sqlite3
 import uuid
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any, cast
 
 from polylogue.storage.sqlite.connection_profile import open_connection
 
@@ -116,6 +118,46 @@ class LiveIngestAttempt:
     rss_peak_self_mb: float | None = None
     rss_peak_children_mb: float | None = None
     source_paths_json: str = "[]"
+
+
+def _required_int(value: object) -> int:
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str | bytes | bytearray):
+        return int(value)
+    if isinstance(value, float):
+        return int(value)
+    return int(cast(Any, value))
+
+
+def _optional_int(value: object) -> int | None:
+    return None if value is None else _required_int(value)
+
+
+def _optional_str(value: object) -> str | None:
+    return value if isinstance(value, str) else None
+
+
+def _cursor_record_from_row(row: sqlite3.Row | tuple[object, ...]) -> CursorRecord:
+    return CursorRecord(
+        source_path=str(row[0]),
+        byte_size=_required_int(row[1]),
+        byte_offset=_required_int(row[2]),
+        last_complete_newline=_required_int(row[3]),
+        record_count=_required_int(row[4]),
+        updated_at=str(row[5]),
+        last_record_ts=_optional_str(row[6]),
+        parser_fingerprint=_optional_str(row[7]),
+        content_fingerprint=_optional_str(row[8]),
+        source_name=_optional_str(row[9]),
+        st_dev=_optional_int(row[10]),
+        st_ino=_optional_int(row[11]),
+        mtime_ns=_optional_int(row[12]),
+        source_generation=_required_int(row[13]) if row[13] is not None else 0,
+        failure_count=_required_int(row[14]) if row[14] is not None else 0,
+        next_retry_at=_optional_str(row[15]),
+        excluded=bool(row[16]) if row[16] is not None else False,
+    )
 
 
 class CursorStore:
@@ -385,25 +427,47 @@ class CursorStore:
             ).fetchone()
         if row is None:
             return None
-        return CursorRecord(
-            source_path=str(row[0]),
-            byte_size=int(row[1]),
-            byte_offset=int(row[2]),
-            last_complete_newline=int(row[3]),
-            record_count=int(row[4]),
-            updated_at=str(row[5]),
-            last_record_ts=row[6],
-            parser_fingerprint=row[7],
-            content_fingerprint=row[8],
-            source_name=row[9],
-            st_dev=row[10],
-            st_ino=row[11],
-            mtime_ns=row[12],
-            source_generation=int(row[13] or 0) if row[13] is not None else 0,
-            failure_count=int(row[14] or 0) if row[14] is not None else 0,
-            next_retry_at=row[15],
-            excluded=bool(row[16]) if row[16] is not None else False,
-        )
+        return _cursor_record_from_row(row)
+
+    def get_records(self, paths: Iterable[Path]) -> dict[Path, CursorRecord]:
+        """Return cursor records for many paths using batched SQLite reads."""
+        unique_paths = tuple(dict.fromkeys(paths))
+        if not unique_paths:
+            return {}
+        records_by_source_path: dict[str, CursorRecord] = {}
+        with self._connect() as conn:
+            for offset in range(0, len(unique_paths), 500):
+                chunk = unique_paths[offset : offset + 500]
+                placeholders = ",".join("?" for _path in chunk)
+                rows = conn.execute(
+                    f"""
+                    SELECT
+                        source_path,
+                        byte_size,
+                        byte_offset,
+                        last_complete_newline,
+                        record_count,
+                        updated_at,
+                        last_record_ts,
+                        parser_fingerprint,
+                        content_fingerprint,
+                        source_name,
+                        st_dev,
+                        st_ino,
+                        mtime_ns,
+                        source_generation,
+                        failure_count,
+                        next_retry_at,
+                        excluded
+                    FROM live_cursor
+                    WHERE source_path IN ({placeholders})
+                    """,
+                    tuple(str(path) for path in chunk),
+                ).fetchall()
+                for row in rows:
+                    record = _cursor_record_from_row(row)
+                    records_by_source_path[record.source_path] = record
+        return {path: records_by_source_path[str(path)] for path in unique_paths if str(path) in records_by_source_path}
 
     def set(
         self,

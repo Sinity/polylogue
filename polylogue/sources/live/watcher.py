@@ -13,6 +13,7 @@ each file triggered a full source-tree rescan via ``parse_file()``.
 from __future__ import annotations
 
 import asyncio
+import os
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -21,7 +22,7 @@ from typing import TYPE_CHECKING
 
 from polylogue.logging import get_logger
 from polylogue.sources.live.batch import LiveBatchEventEmitter, LiveBatchProcessor, fingerprint_file
-from polylogue.sources.live.cursor import CursorStore
+from polylogue.sources.live.cursor import CursorRecord, CursorStore
 
 if TYPE_CHECKING:
     from polylogue.api import Polylogue
@@ -119,19 +120,21 @@ class LiveWatcher:
         if not files:
             return
         logger.info("live.watcher: catch-up scan over %d file(s)", len(files))
+        cursor_records = self._cursor.get_records(files)
         needed: list[Path] = []
         skipped = 0
         needed_bytes = 0
         for path in files:
             if self._stop.is_set():
                 return
-            if self._needs_work(path):
-                try:
-                    size = path.stat().st_size
-                except FileNotFoundError:
-                    size = 0
+            try:
+                stat = path.stat()
+            except FileNotFoundError:
+                skipped += 1
+                continue
+            if self._needs_work_from_state(path, stat=stat, cursor=cursor_records.get(path)):
                 needed.append(path)
-                needed_bytes += size
+                needed_bytes += stat.st_size
             else:
                 skipped += 1
 
@@ -180,7 +183,15 @@ class LiveWatcher:
             self._pending_scheduled = False
 
         # Filter to files that actually need work.
-        needed = [p for p in paths if self._needs_work(p)]
+        cursor_records = self._cursor.get_records(paths)
+        needed = []
+        for path in paths:
+            try:
+                stat = path.stat()
+            except FileNotFoundError:
+                continue
+            if self._needs_work_from_state(path, stat=stat, cursor=cursor_records.get(path)):
+                needed.append(path)
         if not needed:
             return
 
@@ -201,37 +212,39 @@ class LiveWatcher:
             stat = path.stat()
         except FileNotFoundError:
             return False
-        size = stat.st_size
         cursor = self._cursor.get_record(path)
-        if cursor is not None:
-            if cursor.excluded:
-                return False
-            if cursor.failure_count > 0:
-                return _retry_due(cursor.next_retry_at)
-            parser_matches = cursor.parser_fingerprint == _PARSER_FINGERPRINT
-            same_inode = (cursor.st_dev is None or cursor.st_dev == stat.st_dev) and (
-                cursor.st_ino is None or cursor.st_ino == stat.st_ino
-            )
-            if parser_matches and same_inode and size > cursor.byte_offset:
-                return True
-            if (
-                parser_matches
-                and same_inode
-                and size == cursor.byte_size
-                and cursor.mtime_ns == stat.st_mtime_ns
-                and cursor.content_fingerprint is not None
-            ):
-                return False
+        return self._needs_work_from_state(path, stat=stat, cursor=cursor)
+
+    def _needs_work_from_state(self, path: Path, *, stat: os.stat_result, cursor: CursorRecord | None) -> bool:
+        size = stat.st_size
+        if cursor is None:
+            return True
+        if cursor.excluded:
+            return False
+        if cursor.failure_count > 0:
+            return _retry_due(cursor.next_retry_at)
+        parser_matches = cursor.parser_fingerprint == _PARSER_FINGERPRINT
+        if not parser_matches:
+            return True
+        same_inode = (cursor.st_dev is None or cursor.st_dev == stat.st_dev) and (
+            cursor.st_ino is None or cursor.st_ino == stat.st_ino
+        )
+        if same_inode and size > cursor.byte_offset:
+            return True
+        if (
+            same_inode
+            and size == cursor.byte_size
+            and cursor.mtime_ns == stat.st_mtime_ns
+            and cursor.content_fingerprint is not None
+        ):
+            return False
+        if cursor.content_fingerprint is None:
+            return True
         try:
             fingerprint, _last_nl = fingerprint_file(path)
         except FileNotFoundError:
             return False
-        return not (
-            cursor is not None
-            and size == cursor.byte_size
-            and fingerprint == cursor.content_fingerprint
-            and cursor.parser_fingerprint == _PARSER_FINGERPRINT
-        )
+        return not (size == cursor.byte_size and fingerprint == cursor.content_fingerprint)
 
     async def _ingest_files(
         self,
