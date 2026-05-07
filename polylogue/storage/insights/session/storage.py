@@ -56,6 +56,12 @@ _SESSION_PROFILE_BASE_COLUMNS = (
     "engaged_duration_ms",
     "wall_duration_ms",
     "cost_is_estimated",
+    "thinking_duration_ms",
+    "output_duration_ms",
+    "tool_duration_ms",
+    "latency_percentiles_ms_json",
+    "tool_calls_per_minute",
+    "timing_provenance",
 )
 _SESSION_PROFILE_PAYLOAD_COLUMNS = (
     "evidence_payload_json",
@@ -232,6 +238,12 @@ def session_profile_insert_values(
         record.engaged_duration_ms,
         record.wall_duration_ms,
         int(record.cost_is_estimated),
+        record.thinking_duration_ms,
+        record.output_duration_ms,
+        record.tool_duration_ms,
+        record.latency_percentiles_ms_json,
+        record.tool_calls_per_minute,
+        record.timing_provenance,
     ]
     payload_values: tuple[SqlValue, ...] = (
         _json_or_none(record.evidence_payload),

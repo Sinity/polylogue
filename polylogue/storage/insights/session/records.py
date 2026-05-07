@@ -49,6 +49,12 @@ class SessionProfileRecord(BaseModel):
     engaged_duration_ms: int = 0
     wall_duration_ms: int = 0
     cost_is_estimated: bool = False
+    thinking_duration_ms: int = 0
+    output_duration_ms: int = 0
+    tool_duration_ms: int = 0
+    latency_percentiles_ms_json: str = "{}"
+    tool_calls_per_minute: float = 0.0
+    timing_provenance: str = "sort_key_estimated"
     evidence_payload: SessionEvidencePayload
     inference_payload: SessionInferencePayload
     search_text: str
