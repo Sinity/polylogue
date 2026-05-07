@@ -208,6 +208,26 @@ async def _periodic_convergence_check(
             logger.warning("convergence: check failed", exc_info=True)
 
 
+async def _periodic_health_check() -> None:
+    """Run FAST health checks every 5 minutes with structured alert logging."""
+    while True:
+        await asyncio.sleep(300)
+        try:
+            from polylogue.daemon.health import HealthTier, check_health
+            from polylogue.daemon.notifications import (
+                LogNotificationBackend,
+                send_notifications,
+            )
+
+            health = check_health(tiers=(HealthTier.FAST, HealthTier.MEDIUM))
+            if health.overall_status != "ok":
+                send_notifications(
+                    health.alerts, backend=LogNotificationBackend()
+                )
+        except Exception:
+            logger.warning("health: periodic check failed", exc_info=True)
+
+
 def _acquire_pidfile(pidfile: Path) -> int:
     """Acquire an advisory lock on the pidfile via fcntl.flock.
 
@@ -298,7 +318,8 @@ async def run_daemon_services(
     wal_task = asyncio.create_task(_periodic_wal_checkpoint())
     heartbeat_task = asyncio.create_task(_periodic_heartbeat())
     convergence_task = asyncio.create_task(_periodic_convergence_check(sources))
-    maintenance_tasks = [wal_task, heartbeat_task, convergence_task]
+    health_task = asyncio.create_task(_periodic_health_check())
+    maintenance_tasks = [wal_task, heartbeat_task, convergence_task, health_task]
 
     api_server: ThreadingHTTPServer | None = None
     api_server_task: asyncio.Task[None] | None = None
