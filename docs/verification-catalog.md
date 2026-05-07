@@ -8,10 +8,10 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 
 ## Snapshot
 
-- subjects: `487`
+- subjects: `526`
 - claims: `41`
 - runner bindings: `41`
-- proof obligations: `537`
+- proof obligations: `572`
 
 ## Quality Checks
 
@@ -40,15 +40,15 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `assurance.coverage_gap` | 22 |
 | `assurance.coverage_item` | 102 |
 | `assurance.coverage_manifest` | 9 |
-| `cli.command` | 46 |
+| `cli.command` | 47 |
 | `cli.json_command` | 5 |
 | `diagnostic.observable` | 1 |
 | `error.surface` | 2 |
 | `generated.scenario_family` | 9 |
 | `insight.surface` | 12 |
 | `maintenance.target` | 9 |
-| `operation.spec` | 41 |
-| `operation.spec.effect` | 96 |
+| `operation.spec` | 47 |
+| `operation.spec.effect` | 128 |
 | `provider.capability` | 3 |
 | `schema.annotation` | 95 |
 | `schema.roundtrip` | 1 |
@@ -61,6 +61,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | --- | --- |
 | `polylogue` | `polylogue/cli/click_app.py:50` `polylogue.cli.click_app.cli` |
 | `polylogue auth` | `polylogue/cli/commands/auth.py:16` `polylogue.cli.commands.auth.auth_command` |
+| `polylogue backup` | `polylogue/cli/commands/backup.py:13` `polylogue.cli.commands.backup.backup_command` |
 | `polylogue bulk-export` | `polylogue/cli/query_verbs.py:112` `polylogue.cli.query_verbs.bulk_export_verb` |
 | `polylogue completions` | `polylogue/cli/commands/completions.py:9` `polylogue.cli.commands.completions.completions_command` |
 | `polylogue config` | `polylogue/cli/commands/config.py:10` `polylogue.cli.commands.config.config_command` |
@@ -276,10 +277,10 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `assurance.coverage.gap_has_closure_path` | 22 |
 | `assurance.coverage.item_declared` | 102 |
 | `assurance.coverage.manifest_structured` | 9 |
-| `cli.command.help` | 46 |
+| `cli.command.help` | 47 |
 | `cli.command.json_envelope` | 5 |
-| `cli.command.no_traceback` | 46 |
-| `cli.command.plain_mode` | 46 |
+| `cli.command.no_traceback` | 47 |
+| `cli.command.plain_mode` | 47 |
 | `diagnostic.observable_trace_mapping` | 1 |
 | `error.machine_user_context` | 2 |
 | `generated.scenario.family_registered` | 9 |
@@ -287,16 +288,18 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `generated.scenario.semantic_claim_mapping` | 9 |
 | `insight.surface.registered` | 12 |
 | `maintenance.repair.crash_consistency` | 9 |
-| `operation.effect.atomic` | 11 |
+| `operation.effect.atomic` | 17 |
+| `operation.effect.confirmed_before_execute` | 1 |
 | `operation.effect.deterministic` | 8 |
-| `operation.effect.idempotent` | 11 |
+| `operation.effect.explicit_dry_run_evidence` | 1 |
+| `operation.effect.idempotent` | 17 |
 | `operation.effect.no_side_effect` | 8 |
-| `operation.effect.preview` | 11 |
+| `operation.effect.preview` | 17 |
 | `operation.effect.privacy_safe_evidence` | 1 |
 | `operation.effect.retry_bounded` | 1 |
-| `operation.effect.rollback_safe` | 11 |
+| `operation.effect.rollback_safe` | 17 |
 | `operation.effect.sampling_bounded` | 1 |
-| `operation.effect.snapshot_consistent` | 32 |
+| `operation.effect.snapshot_consistent` | 38 |
 | `operation.effect.timeout_bounded` | 1 |
 | `parser.quarantine.context_redaction` | 1 |
 | `provider.capability.identity_bridge` | 3 |

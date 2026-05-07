@@ -139,6 +139,7 @@ Options:
 
 Commands:
   auth         Authenticate with external services (Google Drive for...
+  backup       Back up the Polylogue archive database.
   bulk-export  Bulk export every matched conversation in one process.
   completions  Generate shell completion scripts.
   config       Show resolved Polylogue configuration with precedence...
