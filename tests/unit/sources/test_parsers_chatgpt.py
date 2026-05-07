@@ -572,3 +572,244 @@ def test_chatgpt_metadata_roundtrip_parser_to_hydration(tmp_path: Path) -> None:
     assert isinstance(hydrated_meta.get("chatgpt_citations"), list)
     assert isinstance(hydrated_meta.get("chatgpt_code_execution"), dict)
     assert isinstance(hydrated_meta.get("chatgpt_user_context"), dict)
+
+
+# =============================================================================
+# CATALOG-DRIVEN METADATA ROUNDTRIP PERMUTATIONS
+# =============================================================================
+
+# Each entry tests a distinct metadata field or combination surviving the
+# parser → materialization → hydration pipeline. The catalog provides the
+# message-level metadata dict and the expected assertions keyed by field name.
+
+_METADATA_PERMUTATION_CASES: list[tuple[dict[str, object], str, dict[str, object]]] = [
+    # --- Single-field permutations ---
+    (
+        {"model_slug": "gpt-4"},
+        "single: model_slug",
+        {"chatgpt_model": "gpt-4"},
+    ),
+    (
+        {"model_slug": "gpt-4o"},
+        "single: model_slug variant gpt-4o",
+        {"chatgpt_model": "gpt-4o"},
+    ),
+    (
+        {"model_slug": "o1"},
+        "single: model_slug variant o1",
+        {"chatgpt_model": "o1"},
+    ),
+    # --- author metadata (tool use messages) ---
+    (
+        {"model_slug": "gpt-4", "is_tool_message": True},
+        "combined: model + tool author metadata",
+        {"chatgpt_model": "gpt-4", "chatgpt_author_name": "dalle", "chatgpt_recipient": "dalle.text2im"},
+    ),
+    # --- status ---
+    (
+        {"model_slug": "gpt-4", "is_tool_message": True, "message_status": "finished_successfully"},
+        "combined: model + author + status finished",
+        {
+            "chatgpt_model": "gpt-4",
+            "chatgpt_author_name": "dalle",
+            "chatgpt_recipient": "dalle.text2im",
+            "chatgpt_status": "finished_successfully",
+        },
+    ),
+    (
+        {"model_slug": "gpt-4", "is_tool_message": True, "message_status": "failed"},
+        "combined: model + author + status failed",
+        {
+            "chatgpt_model": "gpt-4",
+            "chatgpt_author_name": "dalle",
+            "chatgpt_recipient": "dalle.text2im",
+            "chatgpt_status": "failed",
+        },
+    ),
+    # --- end_turn ---
+    (
+        {"model_slug": "gpt-4", "is_tool_message": True, "end_turn": True},
+        "combined: model + author + end_turn True",
+        {
+            "chatgpt_model": "gpt-4",
+            "chatgpt_author_name": "dalle",
+            "chatgpt_recipient": "dalle.text2im",
+            "chatgpt_end_turn": True,
+        },
+    ),
+    (
+        {"model_slug": "gpt-4", "is_tool_message": True, "end_turn": False},
+        "combined: model + author + end_turn False",
+        {
+            "chatgpt_model": "gpt-4",
+            "chatgpt_author_name": "dalle",
+            "chatgpt_recipient": "dalle.text2im",
+            "chatgpt_end_turn": False,
+        },
+    ),
+    # --- citations ---
+    (
+        {"model_slug": "gpt-4", "citations": [{"title": "Ref", "url": "https://example.com"}]},
+        "single: citations list",
+        {"chatgpt_model": "gpt-4", "chatgpt_citations": [{"title": "Ref", "url": "https://example.com"}]},
+    ),
+    # --- code execution ---
+    (
+        {"model_slug": "gpt-4", "aggregate_result": {"exit_code": 0, "output": "ok"}},
+        "single: code_execution aggregate_result",
+        {"chatgpt_model": "gpt-4", "chatgpt_code_execution": {"exit_code": 0, "output": "ok"}},
+    ),
+    # --- user context ---
+    (
+        {"model_slug": "gpt-4", "user_context_message_data": {"about_user_message": "likes cats"}},
+        "single: user_context_message_data",
+        {"chatgpt_model": "gpt-4", "chatgpt_user_context": {"about_user_message": "likes cats"}},
+    ),
+    # --- full combination ---
+    (
+        {
+            "model_slug": "gpt-4",
+            "is_tool_message": True,
+            "message_status": "finished_successfully",
+            "end_turn": True,
+            "citations": [{"title": "A", "url": "https://a.com"}],
+            "aggregate_result": {"exit_code": 0, "output": "done"},
+            "user_context_message_data": {"about_user_message": "needs help"},
+        },
+        "full: all metadata fields combined",
+        {
+            "chatgpt_model": "gpt-4",
+            "chatgpt_author_name": "dalle",
+            "chatgpt_recipient": "dalle.text2im",
+            "chatgpt_status": "finished_successfully",
+            "chatgpt_end_turn": True,
+            "chatgpt_citations": [{"title": "A", "url": "https://a.com"}],
+            "chatgpt_code_execution": {"exit_code": 0, "output": "done"},
+            "chatgpt_user_context": {"about_user_message": "needs help"},
+        },
+    ),
+]
+
+
+def _build_chatgpt_message_metadata_payload(
+    meta_spec: dict[str, object],
+) -> dict[str, object]:
+    """Build a ChatGPT mapping payload with the given metadata spec."""
+    author: dict[str, object] = {"role": "assistant"}
+    if meta_spec.get("is_tool_message"):
+        author["name"] = "dalle"
+
+    metadata: dict[str, object] = {}
+    if "model_slug" in meta_spec:
+        metadata["model_slug"] = meta_spec["model_slug"]
+    if "citations" in meta_spec:
+        metadata["citations"] = meta_spec["citations"]
+    if "aggregate_result" in meta_spec:
+        metadata["aggregate_result"] = meta_spec["aggregate_result"]
+    if "user_context_message_data" in meta_spec:
+        metadata["user_context_message_data"] = meta_spec["user_context_message_data"]
+
+    message: dict[str, object] = {
+        "id": "msg-1",
+        "author": author,
+        "content": {"parts": ["Test message"]},
+        "create_time": 1717430400.0,
+        "metadata": metadata,
+    }
+
+    if "is_tool_message" in meta_spec and meta_spec["is_tool_message"]:
+        message["recipient"] = "dalle.text2im"
+    if "message_status" in meta_spec:
+        message["status"] = meta_spec["message_status"]
+    if "end_turn" in meta_spec:
+        message["end_turn"] = meta_spec["end_turn"]
+
+    return {
+        "title": "Metadata Permutation Test",
+        "id": "conv-perm-001",
+        "mapping": {"node1": {"id": "node1", "message": message}},
+    }
+
+
+@pytest.mark.parametrize("meta_spec,desc,expected_fields", _METADATA_PERMUTATION_CASES)
+def test_chatgpt_metadata_permutation_roundtrip(
+    meta_spec: dict[str, object],
+    desc: str,
+    expected_fields: dict[str, object],
+    tmp_path: Path,
+) -> None:
+    """Catalog-driven: each metadata field permutation survives parser→materialize→hydrate."""
+    from polylogue.pipeline.materialization_runtime import materialize_conversation
+    from polylogue.storage.hydrators import message_from_record
+    from polylogue.storage.runtime import ContentBlockRecord, MessageRecord
+
+    payload = _build_chatgpt_message_metadata_payload(meta_spec)
+
+    # Stage 1: Parse
+    parsed = chatgpt_parse(payload, "permutation-test")
+    assert parsed.provider_name == "chatgpt"
+
+    # Stage 2: Materialize
+    materialized = materialize_conversation(parsed, source_name="test", archive_root=tmp_path)
+    assert len(materialized.messages) >= 1
+
+    msg = materialized.messages[0]
+    assert len(msg.blocks) >= 1
+    meta_json = msg.blocks[0].metadata_json
+    assert meta_json is not None, f"metadata_json should survive materialization: {desc}"
+
+    # Stage 3: Hydrate
+    content_block_records = [
+        ContentBlockRecord(
+            block_id=b.block_id,
+            message_id=msg.message_id,
+            conversation_id=materialized.conversation_id,
+            block_index=b.block_index,
+            type=b.type,
+            text=b.text,
+            tool_name=b.tool_name,
+            tool_id=b.tool_id,
+            tool_input=b.tool_input_json,
+            media_type=b.media_type,
+            metadata=b.metadata_json,
+            semantic_type=b.semantic_type,
+        )
+        for b in msg.blocks
+    ]
+    record = MessageRecord(
+        message_id=msg.message_id,
+        conversation_id=materialized.conversation_id,
+        provider_message_id=msg.provider_message_id,
+        role=msg.role,
+        text=msg.text,
+        sort_key=msg.sort_key,
+        content_hash=msg.content_hash,
+        parent_message_id=msg.parent_message_id,
+        branch_index=msg.branch_index,
+        content_blocks=content_block_records,
+        provider_name="chatgpt",
+        word_count=msg.word_count,
+        has_tool_use=msg.has_tool_use,
+        has_thinking=msg.has_thinking,
+        has_paste=msg.has_paste,
+        message_type=msg.message_type,
+    )
+    hydrated = message_from_record(record, attachments=[], provider="chatgpt")
+
+    assert hydrated.provider_meta is None, "Hydrated messages must not depend on provider_meta.raw"
+    assert len(hydrated.content_blocks) >= 1
+    hydrated_meta = hydrated.content_blocks[0].get("metadata")
+    assert isinstance(hydrated_meta, dict), f"Expected dict, got {type(hydrated_meta)}: {desc}"
+
+    # Assert each expected field
+    for field_name, expected_value in expected_fields.items():
+        actual = hydrated_meta.get(field_name)
+        if isinstance(expected_value, dict):
+            assert isinstance(actual, dict), f"[{desc}] Expected dict for {field_name}, got {type(actual)}"
+            for k, v in expected_value.items():
+                assert actual.get(k) == v, f"[{desc}] {field_name}.{k}: expected {v!r}, got {actual.get(k)!r}"
+        elif isinstance(expected_value, list):
+            assert isinstance(actual, list), f"[{desc}] Expected list for {field_name}, got {type(actual)}"
+            assert actual == expected_value, f"[{desc}] {field_name}: expected {expected_value!r}, got {actual!r}"
+        else:
+            assert actual == expected_value, f"[{desc}] {field_name}: expected {expected_value!r}, got {actual!r}"

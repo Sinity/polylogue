@@ -28,3 +28,9 @@ shared:
 
   - path: tests/unit/test_entrypoints_runtime.py
     reason: tests Python entrypoints via importlib.metadata, not direct import
+
+  - path: tests/unit/devtools/test_pre_push_hook.py
+    reason: structural test — exercises pre-push hook behavior, not a production-module target
+
+  - path: tests/unit/pipeline/test_no_cli_imports.py
+    reason: structural test — verifies pipeline module isolation from CLI surface; import-free by design
