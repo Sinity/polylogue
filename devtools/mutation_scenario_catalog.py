@@ -260,6 +260,26 @@ MUTATION_CAMPAIGNS: dict[str, MutationCampaign] = {
         ),
         notes=("Broadest campaign here; best run after law-wave work lands.",),
     ),
+    "daemon-http": MutationCampaign(
+        name="daemon-http",
+        description="Daemon HTTP API endpoint handler contracts",
+        paths_to_mutate=("polylogue/daemon/http.py",),
+        tests=("tests/unit/daemon/test_daemon_http.py",),
+        notes=(
+            "CI-compatible subset; run with fast timeout tiers.",
+            "HTTP endpoint handlers should remain deterministic under test fixtures.",
+        ),
+    ),
+    "repair-core": MutationCampaign(
+        name="repair-core",
+        description="Storage repair logic, preview/idempotence/failure state effects",
+        paths_to_mutate=("polylogue/storage/repair.py",),
+        tests=("tests/unit/storage/test_repair.py",),
+        notes=(
+            "Repair is a maintenance-critical path; preview/dry-run/execute contracts must hold.",
+            "Keep timeout generous - repair tests may perform full FTS5 rebuilds.",
+        ),
+    ),
 }
 
 

@@ -86,7 +86,22 @@ class ContextPackProvenance(BaseModel):
     redacted: bool = True
 
 
+class ContextPackIntent(BaseModel):
+    """What the user was trying to accomplish (from session title + first messages)."""
+
+    summary: str = ""
+    goals: list[str] = Field(default_factory=list)
+
+
+class ContextPackDecisions(BaseModel):
+    """Key decisions and their context (from action events + message analysis)."""
+
+    items: list[str] = Field(default_factory=list)
+
+
 class ContextPackPayload(BaseModel):
+    intent: ContextPackIntent = Field(default_factory=ContextPackIntent)
+    decisions: ContextPackDecisions = Field(default_factory=ContextPackDecisions)
     project: ContextPackProject = Field(default_factory=ContextPackProject)
     date_range: ContextPackDateRange = Field(default_factory=ContextPackDateRange)
     query_context: ContextPackQueryContext = Field(default_factory=ContextPackQueryContext)
