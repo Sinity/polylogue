@@ -19,7 +19,6 @@ from enum import Enum
 
 from pydantic import BaseModel, Field
 
-from polylogue.daemon.status import _raw_failure_info
 from polylogue.logging import get_logger
 from polylogue.paths import archive_root, db_path
 
@@ -296,6 +295,7 @@ def _check_raw_failures_medium() -> HealthAlert:
     """Check raw conversation parse/validation failure counts."""
     now = datetime.now(UTC).isoformat()
     try:
+        from polylogue.daemon.status import _raw_failure_info
         info = _raw_failure_info()
         parse = info.get("parse_failures", 0) if isinstance(info.get("parse_failures"), int) else 0
         validation = info.get("validation_failures", 0) if isinstance(info.get("validation_failures"), int) else 0
