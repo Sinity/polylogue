@@ -19,6 +19,7 @@ from polylogue.api import Polylogue
 from polylogue.browser_capture.server import BrowserCaptureHTTPServer, make_server
 from polylogue.core.json import dumps
 from polylogue.daemon.browser_capture import browser_capture_command
+from polylogue.daemon.health import HealthTier, check_health, format_health_lines
 from polylogue.daemon.status import daemon_status_payload, format_daemon_status_lines
 from polylogue.logging import configure_logging, get_logger
 from polylogue.sources.live import LiveWatcher, WatchSource
@@ -470,6 +471,62 @@ def status_command(spool_path: Path | None, output_format: str | None) -> None:
         click.echo(line)
 
 
+@main.command("health", help="Run tiered daemon health checks.")
+@click.option(
+    "--tier",
+    "tiers",
+    type=click.Choice(["fast", "medium", "expensive"]),
+    multiple=True,
+    default=None,
+    help="Run specific health check tiers (repeatable). Default: fast + medium.",
+)
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["json"]),
+    default=None,
+    help="Output format.",
+)
+@click.option(
+    "--expensive",
+    "include_expensive",
+    is_flag=True,
+    default=False,
+    help="Include expensive checks (DB integrity).",
+)
+def health_command(
+    tiers: tuple[str, ...],
+    output_format: str | None,
+    include_expensive: bool,
+) -> None:
+    """Run tiered daemon health checks.
+
+    By default runs FAST + MEDIUM checks. Use --tier to select specific
+    tiers or --expensive to add the EXPENSIVE tier.
+    """
+    configure_logging()
+
+    if tiers:
+        health_tiers: set[HealthTier] = {HealthTier(t) for t in tiers}
+    else:
+        health_tiers = {HealthTier.FAST, HealthTier.MEDIUM}
+        if include_expensive:
+            health_tiers.add(HealthTier.EXPENSIVE)
+
+    health = check_health(tiers=health_tiers)
+
+    if output_format == "json":
+        click.echo(health.model_dump_json(indent=2))
+        if health.overall_status.value in ("error", "critical"):
+            raise SystemExit(1)
+        return
+
+    for line in format_health_lines(health):
+        click.echo(line)
+    if health.overall_status.value in ("error", "critical"):
+        raise SystemExit(1)
+
+
 @main.command("run", help="Run configured long-lived daemon components.")
 @click.option(
     "--root",
@@ -648,6 +705,7 @@ def watch_command(roots: tuple[Path, ...], debounce_s: float) -> None:
 
 
 __all__ = [
+    "health_command",
     "main",
     "run_command",
     "run_daemon_services",
