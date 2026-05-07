@@ -52,8 +52,7 @@ class AuthoredScenarioCatalog:
         result: list[ScenarioProjectionSource] = []
         result.extend(self.exercise_scenarios)
         result.extend(self.qa_extra_scenarios)
-        for lane in self.validation_lanes:
-            result.append(lane.to_projection_entry())  # type: ignore[arg-type]
+        result.extend(self.validation_lanes)  # type: ignore[arg-type]
         result.extend(self.mutation_campaigns)
         result.extend(self.benchmark_campaigns)
         result.extend(self.synthetic_benchmark_campaigns)
