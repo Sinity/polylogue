@@ -60,6 +60,10 @@ def _validate_message_role_tokens(
 
 FILTER_OPTION_DECORATORS: tuple[Callable[[ClickCallable], ClickCallable], ...] = (
     click.option(
+        "--view",
+        help="Load filter presets from a saved view by name",
+    ),
+    click.option(
         "--id",
         "-i",
         "conv_id",
