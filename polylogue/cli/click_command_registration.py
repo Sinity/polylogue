@@ -5,6 +5,7 @@ from __future__ import annotations
 import click
 
 from polylogue.cli.commands.auth import auth_command
+from polylogue.cli.commands.backup import backup_command
 from polylogue.cli.commands.check import check_command
 from polylogue.cli.commands.completions import completions_command
 from polylogue.cli.commands.config import config_command
@@ -21,6 +22,7 @@ from polylogue.cli.commands.status import status_command
 from polylogue.cli.commands.tags import tags_command
 
 ROOT_COMMANDS: tuple[click.Command, ...] = (
+    backup_command,
     check_command,
     config_command,
     reset_command,

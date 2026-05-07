@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 
 from polylogue.browser_capture.receiver import BrowserCaptureReceiverConfig, receiver_status_payload
 from polylogue.core.json import JSONDocument, json_document
+from polylogue.daemon.health import DaemonHealth, check_health
 from polylogue.paths import db_path
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.watcher import default_sources
@@ -138,6 +139,7 @@ class DaemonStatus(BaseModel):
     raw_validation_failures: int = 0
     raw_quarantined: int = 0
     raw_failure_samples: list[dict[str, object]] = Field(default_factory=list)
+    health: DaemonHealth = Field(default_factory=DaemonHealth)
     checked_at: str = ""
 
 
@@ -622,6 +624,8 @@ def build_daemon_status(
     *,
     sources: tuple[WatchSource, ...] | None = None,
     browser_capture_spool_path: Path | None = None,
+    *,
+    include_expensive_health: bool = False,
 ) -> DaemonStatus:
     """Build a typed DaemonStatus from durable component state."""
     watch_sources = sources if sources is not None else default_sources()
@@ -631,6 +635,17 @@ def build_daemon_status(
     live_cursor = _live_cursor_summary_info()
     live_ingest_attempts = _live_ingest_attempt_summary_info()
     raw_failures = _raw_failure_info()
+
+    # Build health status (FAST + MEDIUM by default; EXPENSIVE opt-in).
+    from polylogue.daemon.health import HealthTier
+
+    health_tiers: set[HealthTier] = {HealthTier.FAST, HealthTier.MEDIUM}
+    if include_expensive_health:
+        health_tiers.add(HealthTier.EXPENSIVE)
+    try:
+        health = check_health(tiers=health_tiers)
+    except Exception:
+        health = DaemonHealth()
 
     return DaemonStatus(
         raw_parse_failures=_safe_int(raw_failures.get("parse_failures", 0)),
@@ -659,6 +674,7 @@ def build_daemon_status(
             sessions_with_profiles=_safe_int(freshness.get("sessions_with_profiles", 0)),
             total_sessions=_safe_int(freshness.get("total_sessions", 0)),
         ),
+        health=health,
         browser_capture_active=browser_capture_spool_path is not None,
         checked_at=datetime.now(UTC).isoformat(),
     )
@@ -714,6 +730,12 @@ def daemon_status_payload(
             "operations": status.current_operations,
             "last_ingestion_batch": last_ingestion,
             "fts_readiness": status.fts_readiness.model_dump(),
+            "health": {
+                "overall_status": status.health.overall_status.value,
+                "checked_at": status.health.checked_at,
+                "alert_count": len(status.health.alerts),
+                "tier_summary": status.health.tier_summary,
+            },
         }
     )
 
@@ -782,6 +804,11 @@ def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
                     if cgroup_peak is not None:
                         cgroup_text += f" peak {cgroup_peak} MiB"
                     lines.append(cgroup_text)
+    # Health summary
+    health = payload.get("health")
+    if isinstance(health, dict):
+        overall = health.get("overall_status", "unknown")
+        lines.append(f"Health: {overall} ({health.get('alert_count', 0)} alerts)")
     return lines
 
 
