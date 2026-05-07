@@ -1240,9 +1240,11 @@ def _failed_raw_state_update(
     if outcome is None:
         return RawConversationStateUpdate(
             parse_error=error,
+            detection_warnings=error[:500] if error else None,
         )
     return RawConversationStateUpdate(
         parse_error=outcome.parse_error,
+        detection_warnings=outcome.parse_error[:500] if outcome.parse_error else None,
         payload_provider=outcome.payload_provider,
         validation_status=outcome.validation_status,
         validation_error=outcome.validation_error or error,

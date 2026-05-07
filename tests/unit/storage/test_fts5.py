@@ -1493,3 +1493,54 @@ class TestSearchWithSinceLaws:
         all_ids = {h.message_id for h in results_all.hits}
         since_ids = {h.message_id for h in results_since.hits}
         assert since_ids <= all_ids, f"since-filtered IDs {since_ids - all_ids} not in unfiltered results"
+
+
+def test_fts_triggers_restored_after_exception() -> None:
+    """FTS triggers must be active even after an exception during ingest (#817)."""
+    import sqlite3
+
+    from polylogue.storage.fts.fts_lifecycle import restore_fts_triggers_sync, suspend_fts_triggers_sync
+    from polylogue.storage.sqlite.schema_ddl_archive import ARCHIVE_STORAGE_DDL
+
+    db_path = None
+    conn = sqlite3.connect(":memory:")
+    try:
+        conn.executescript(ARCHIVE_STORAGE_DDL)
+        conn.execute(
+            "INSERT INTO conversations(conversation_id, provider_name, provider_conversation_id) VALUES(?,?,?)",
+            ("c1", "test", "pc1"),
+        )
+        conn.commit()
+
+        # Simulate ingest: suspend, insert, exception, restore in finally
+        suspend_fts_triggers_sync(conn)
+        conn.execute(
+            "INSERT INTO messages(message_id, conversation_id, role, text, provider_name) VALUES(?,?,?,?,?)",
+            ("m1", "c1", "user", "test message", "test"),
+        )
+        try:
+            raise RuntimeError("simulated ingest failure")
+        except RuntimeError:
+            pass
+        finally:
+            # CRITICAL: restore triggers even after exception (#817)
+            restore_fts_triggers_sync(conn)
+            conn.commit()
+
+        # Insert another message — FTS should pick it up since triggers are active
+        conn.execute(
+            "INSERT INTO messages(message_id, conversation_id, role, text, provider_name) VALUES(?,?,?,?,?)",
+            ("m2", "c1", "assistant", "another message", "test"),
+        )
+        conn.commit()
+        count = conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0]
+        assert count == 2, f"Expected 2 FTS entries after exception recovery, got {count}"
+    finally:
+        conn.close()
+        if db_path is not None:
+            import os
+
+            try:
+                os.unlink(db_path)
+            except OSError:
+                pass
