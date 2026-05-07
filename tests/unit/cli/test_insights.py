@@ -829,9 +829,7 @@ def test_targeted_session_insight_rebuild_does_not_duplicate_profile_fts(cli_wor
         status = session_insight_status_sync(conn)
 
     assert status.profile_row_count == 2
-    assert status.profile_merged_fts_count == 2
-    assert status.profile_merged_fts_duplicate_count == 0
-    assert status.profile_merged_fts_ready is True
+    assert status.profile_rows_ready is True
 
 
 def test_session_insight_status_marks_older_materializer_versions_stale(cli_workspace: CliWorkspace) -> None:
