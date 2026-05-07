@@ -90,7 +90,16 @@ def main(argv: list[str] | None = None) -> int:
             ok_count += 1
 
     if args.json:
-        print(dumps({"witnesses": len(witnesses), "ok": ok_count, "issues": issues}))
+        print(
+            dumps(
+                {
+                    "witnesses": len(witnesses),
+                    "ok": ok_count,
+                    "issues": issues,
+                    "evidence_note": "freshness derived from authored metadata (last_exercised_at), not wired to actual replay/test artifacts",
+                }
+            )
+        )
     else:
         for issue in issues:
             wid = issue["witness_id"]
