@@ -114,26 +114,28 @@ class RepositoryWriteMixin:
         self,
         conversation_id: str,
         mutator: Callable[[JSONDocument], bool],
-    ) -> None:
-        await metadata_read_modify_write(self._backend, conversation_id, mutator)
+    ) -> bool:
+        return await metadata_read_modify_write(self._backend, conversation_id, mutator)
 
-    async def update_metadata(self, conversation_id: str, key: str, value: JSONValue) -> None:
+    async def update_metadata(self, conversation_id: str, key: str, value: JSONValue) -> bool:
         def _set(meta: JSONDocument) -> bool:
+            if key in meta and meta[key] == value:
+                return False
             meta[key] = value
             return True
 
-        await self._metadata_read_modify_write(conversation_id, _set)
+        return await self._metadata_read_modify_write(conversation_id, _set)
 
-    async def delete_metadata(self, conversation_id: str, key: str) -> None:
+    async def delete_metadata(self, conversation_id: str, key: str) -> bool:
         def _delete(meta: JSONDocument) -> bool:
             if key in meta:
                 del meta[key]
                 return True
             return False
 
-        await self._metadata_read_modify_write(conversation_id, _delete)
+        return await self._metadata_read_modify_write(conversation_id, _delete)
 
-    async def add_tag(self, conversation_id: str, tag: str) -> None:
+    async def add_tag(self, conversation_id: str, tag: str) -> bool:
         if not tag or not tag.strip():
             raise ValueError("tag must be a non-empty string")
         if len(tag) > 200:
@@ -148,9 +150,10 @@ class RepositoryWriteMixin:
                 return True
             return False
 
-        await self._metadata_read_modify_write(conversation_id, _add)
+        was_added = await self._metadata_read_modify_write(conversation_id, _add)
         # Also write to normalized tables for M2M query support
         await self._upsert_normalized_tag(conversation_id, tag)
+        return was_added
 
     async def bulk_add_tags(self, conversation_ids: list[str], tags: list[str]) -> int:
         """Add tags to multiple conversations within a single transaction.
@@ -201,7 +204,7 @@ class RepositoryWriteMixin:
                     applied_count += 1
         return applied_count
 
-    async def remove_tag(self, conversation_id: str, tag: str) -> None:
+    async def remove_tag(self, conversation_id: str, tag: str) -> bool:
         def _remove(meta: JSONDocument) -> bool:
             tags = list(string_sequence(meta.get("tags")))
             if tag in tags:
@@ -211,9 +214,10 @@ class RepositoryWriteMixin:
                 return True
             return False
 
-        await self._metadata_read_modify_write(conversation_id, _remove)
+        was_removed = await self._metadata_read_modify_write(conversation_id, _remove)
         # Also remove from normalized tables
         await self._delete_normalized_tag(conversation_id, tag)
+        return was_removed
 
     async def list_tags(self, *, provider: str | None = None) -> dict[str, int]:
         async with self._backend.connection() as conn:
