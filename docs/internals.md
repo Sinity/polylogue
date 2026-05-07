@@ -66,8 +66,8 @@ needs a stats-table join, update `_needs_stats_join()` in
 `cli/query.py` and MCP parameter in `mcp/`.
 
 **Adding a CLI command**: Register in `cli/command_inventory.py`. Implementation
-goes in `cli/commands/`. The CLI is query-first — bare `polylogue` is search,
-not help.
+goes in `cli/commands/`. The CLI shows fast daemon status on bare invocation
+and falls back to archive summary when the daemon is not running.
 
 **Adding a session insight**: Define the insight model in `insights/`. Add
 storage in `storage/insights/session/`. Wire rebuild logic and register in
