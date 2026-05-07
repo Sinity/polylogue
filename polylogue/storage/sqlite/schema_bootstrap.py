@@ -924,6 +924,8 @@ def build_v9_to_v10_upgrade_plan(snapshot: SchemaSnapshot) -> SchemaExtensionPla
         statements.extend(s for s in _split_ddl_into_statements(_PROVIDER_META_PROMOTION_ATTACHMENT_INDEXES_DDL) if s)
     return SchemaExtensionPlan(statements=tuple(statements), scripts=())
 
+_DETECTION_WARNINGS_COLUMN_DDL = "ALTER TABLE raw_conversations ADD COLUMN detection_warnings TEXT"
+
 
 def _upgrade_tail_statements(snapshot: SchemaSnapshot, *, from_version: int) -> tuple[str, ...]:
     statements: tuple[str, ...] = ()
