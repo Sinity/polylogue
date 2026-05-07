@@ -142,9 +142,10 @@ ON CONFLICT(attachment_id) DO UPDATE SET
 """
 
 _ATTACHMENT_REF_INSERT_SQL = """
-INSERT OR IGNORE INTO attachment_refs (
+INSERT INTO attachment_refs (
     ref_id, attachment_id, conversation_id, message_id, provider_meta
 ) VALUES (?, ?, ?, ?, ?)
+ON CONFLICT(ref_id) DO NOTHING
 """
 
 _IDENTITY_LEDGER_UPSERT_SQL = """
