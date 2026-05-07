@@ -207,5 +207,7 @@
               touch $out
             '';
       }
-    );
+    ) // {
+      nixosModules.default = import ./nix/module.nix;
+    };
 }

@@ -99,6 +99,7 @@ class RawConversationStateUpdate:
     validation_drift_count: int | None | _RawStateUnset = UNSET
     validation_provider: Provider | str | None | _RawStateUnset = UNSET
     validation_mode: ValidationMode | str | None | _RawStateUnset = UNSET
+    detection_warnings: str | None | _RawStateUnset = UNSET
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "payload_provider", _coerce_update_provider(self.payload_provider))
