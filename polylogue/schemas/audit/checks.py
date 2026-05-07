@@ -226,7 +226,6 @@ __all__ = [
     "check_annotation_coverage",
     "check_cross_provider_consistency",
     "check_privacy_guards",
-    "check_schema_drift",
     "check_schema_staleness",
     "check_semantic_roles",
 ]
