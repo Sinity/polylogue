@@ -71,7 +71,7 @@ dev = [
   "types-dateparser>=1.2.0",  # dateparser library stubs for mypy
   "types-PyYAML>=6.0",  # yaml library stubs for mypy
   "ruff>=0.15.12",
-  "pre-commit>=3.5.0",
+  "pre-commit>=4.6.0",
   "pip-audit>=2.7",  # OSV-backed CVE scanning over the locked dev environment
 ]
 fuzz = [
