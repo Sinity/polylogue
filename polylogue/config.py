@@ -19,8 +19,6 @@ from .errors import PolylogueError
 from .paths import (
     GEMINI_DRIVE_FOLDER,
     archive_root,
-    claude_code_path,
-    codex_path,
     config_home,
     drive_cache_path,
     drive_credentials_path,
@@ -118,14 +116,16 @@ class Config:
 
 
 def get_sources() -> list[Source]:
-    """Return the configured conversation sources."""
-    sources: list[Source] = []
+    """Return the configured conversation sources.
 
-    if claude_code_path().exists():
-        sources.append(Source(name="claude-code", path=claude_code_path()))
+    Delegates to ``default_sources()`` for local watch roots (Claude Code,
+    Codex, inbox), then adds Drive/Gemini if configured.  Daemon and CLI
+    share the same source discovery through this function.
+    """
+    from polylogue.sources.live.watcher import default_sources
 
-    if codex_path().exists():
-        sources.append(Source(name="codex", path=codex_path()))
+    watch_sources = default_sources()
+    sources: list[Source] = [Source(name=ws.name, path=ws.root) for ws in watch_sources if ws.exists()]
 
     gemini_cache = drive_cache_path() / "gemini"
     if gemini_cache.exists() or drive_credentials_path().exists() or drive_token_path().exists():
