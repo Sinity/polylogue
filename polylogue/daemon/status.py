@@ -54,6 +54,17 @@ class InsightFreshness(BaseModel):
     total_sessions: int = 0
 
 
+class EmbeddingReadiness(BaseModel):
+    embedding_enabled: bool = False
+    embedding_model: str = ""
+    embedding_dimension: int = 0
+    embedding_pending_count: int = 0
+    embedding_stale_count: int = 0
+    embedding_coverage_percent: float = 0.0
+    embedding_failure_count: int = 0
+    embedding_estimated_cost_usd: float = 0.0
+
+
 class LiveCursorFileState(BaseModel):
     source_path: str
     failure_count: int = 0
@@ -135,6 +146,7 @@ class DaemonStatus(BaseModel):
     disk_free_bytes: int = 0
     fts_readiness: FTSReadiness = Field(default_factory=FTSReadiness)
     insight_freshness: InsightFreshness = Field(default_factory=InsightFreshness)
+    embedding_readiness: EmbeddingReadiness = Field(default_factory=EmbeddingReadiness)
     browser_capture_active: bool = False
     raw_parse_failures: int = 0
     raw_validation_failures: int = 0
@@ -398,6 +410,18 @@ def _row_float(value: object) -> float | None:
     return None
 
 
+def _safe_float(value: object, *, default: float = 0.0) -> float:
+    """Coerce value to float, returning default on failure."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return default
+    return default
+
+
 def _failing_files_info() -> list[str]:
     """Return live-source files currently marked failed or excluded."""
     return [item.source_path for item in _live_cursor_summary_info().failing_files]
@@ -625,6 +649,105 @@ def _retry_due(next_retry_at: str | None, *, now: datetime) -> bool:
     return retry_at <= now
 
 
+def _embedding_readiness_info() -> dict[str, object]:
+    """Query embedding tables for daemon status visibility.
+
+    Returns empty/inactive defaults when tables don't exist or embedding is
+    not configured. This is intentionally bounded — expensive retrieval-band
+    computation only happens through the dedicated stats path.
+    """
+    from polylogue.config import load_polylogue_config
+    from polylogue.storage.embeddings.support import optional_count_sync
+
+    cfg = load_polylogue_config()
+    enabled = bool(cfg.embedding_enabled) and cfg.voyage_api_key is not None
+    model = cfg.embedding_model
+    dimension = cfg.embedding_dimension
+
+    dbf = db_path()
+    if not dbf.exists() or not enabled:
+        return {
+            "embedding_enabled": enabled,
+            "embedding_model": model,
+            "embedding_dimension": dimension,
+            "embedding_pending_count": 0,
+            "embedding_stale_count": 0,
+            "embedding_coverage_percent": 0.0,
+            "embedding_failure_count": 0,
+            "embedding_estimated_cost_usd": 0.0,
+        }
+
+    pending = 0
+    stale = 0
+    failure = 0
+    total = 0
+    cost = 0.0
+
+    try:
+        conn = open_readonly_connection(dbf)
+        try:
+            pending = optional_count_sync(conn, "SELECT COUNT(*) FROM embedding_status WHERE needs_reindex = 1")
+            stale = optional_count_sync(
+                conn,
+                """
+                SELECT COUNT(*)
+                FROM message_embeddings me
+                JOIN messages m ON m.message_id = me.message_id
+                LEFT JOIN embeddings_meta em
+                  ON em.target_id = me.message_id
+                 AND em.target_type = 'message'
+                WHERE em.target_id IS NULL
+                   OR (em.content_hash IS NOT NULL AND em.content_hash != m.content_hash)
+                """,
+            )
+            embedded_msg = optional_count_sync(conn, "SELECT COUNT(*) FROM message_embeddings")
+            failure = optional_count_sync(conn, "SELECT COUNT(*) FROM embedding_status WHERE error_message IS NOT NULL")
+
+            total_conv = int(
+                conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0] or 0
+            ) if _table_exists_readonly(conn, "conversations") else 0
+
+            if total_conv > 0:
+                total = embedded_msg
+
+            # Rough cost: (embedded + pending) * 500 tokens/msg * $0.10/1M tokens
+            from polylogue.storage.search_providers.sqlite_vec_support import (
+                ESTIMATED_TOKENS_PER_MESSAGE,
+                VOYAGE_4_COST_PER_1M_TOKENS,
+            )
+
+            estimated_tokens = (total + pending) * ESTIMATED_TOKENS_PER_MESSAGE
+            cost = round(estimated_tokens * VOYAGE_4_COST_PER_1M_TOKENS / 1_000_000, 2)
+        finally:
+            conn.close()
+    except (sqlite3.Error, OSError):
+        pass
+
+    coverage = 0.0
+    if total_conv > 0:
+        embedded_conv = max(0, total_conv - pending)
+        coverage = embedded_conv / total_conv * 100
+
+    return {
+        "embedding_enabled": enabled,
+        "embedding_model": model,
+        "embedding_dimension": dimension,
+        "embedding_pending_count": pending,
+        "embedding_stale_count": stale,
+        "embedding_coverage_percent": round(coverage, 1),
+        "embedding_failure_count": failure,
+        "embedding_estimated_cost_usd": cost,
+    }
+
+
+def _table_exists_readonly(conn: sqlite3.Connection, table: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1",
+        (table,),
+    ).fetchone()
+    return row is not None
+
+
 def _check_daemon_liveness() -> bool:
     """Check whether the daemon process is running via pidfile."""
     try:
@@ -654,6 +777,7 @@ def build_daemon_status(
     live_cursor = _live_cursor_summary_info()
     live_ingest_attempts = _live_ingest_attempt_summary_info()
     raw_failures = _raw_failure_info()
+    embedding_info = _embedding_readiness_info()
 
     # Build health status (FAST + MEDIUM by default; EXPENSIVE opt-in).
     from polylogue.daemon.health import HealthTier
@@ -693,6 +817,16 @@ def build_daemon_status(
         insight_freshness=InsightFreshness(
             sessions_with_profiles=_safe_int(freshness.get("sessions_with_profiles", 0)),
             total_sessions=_safe_int(freshness.get("total_sessions", 0)),
+        ),
+        embedding_readiness=EmbeddingReadiness(
+            embedding_enabled=bool(embedding_info.get("embedding_enabled", False)),
+            embedding_model=str(embedding_info.get("embedding_model", "")),
+            embedding_dimension=_safe_int(embedding_info.get("embedding_dimension", 0)),
+            embedding_pending_count=_safe_int(embedding_info.get("embedding_pending_count", 0)),
+            embedding_stale_count=_safe_int(embedding_info.get("embedding_stale_count", 0)),
+            embedding_coverage_percent=_safe_float(embedding_info.get("embedding_coverage_percent")),
+            embedding_failure_count=_safe_int(embedding_info.get("embedding_failure_count", 0)),
+            embedding_estimated_cost_usd=_safe_float(embedding_info.get("embedding_estimated_cost_usd")),
         ),
         health=health,
         browser_capture_active=browser_capture_spool_path is not None,
@@ -750,6 +884,7 @@ def daemon_status_payload(
             "operations": status.current_operations,
             "last_ingestion_batch": last_ingestion,
             "fts_readiness": status.fts_readiness.model_dump(),
+            "embedding_readiness": status.embedding_readiness.model_dump(),
             "health": {
                 "overall_status": status.health.overall_status.value,
                 "checked_at": status.health.checked_at,
@@ -829,11 +964,31 @@ def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
     if isinstance(health, dict):
         overall = health.get("overall_status", "unknown")
         lines.append(f"Health: {overall} ({health.get('alert_count', 0)} alerts)")
+    # Embedding readiness
+    embedding = payload.get("embedding_readiness")
+    if isinstance(embedding, dict):
+        if embedding.get("embedding_enabled"):
+            coverage = _safe_float(embedding.get("embedding_coverage_percent"))
+            pending = _safe_int(embedding.get("embedding_pending_count"))
+            stale = _safe_int(embedding.get("embedding_stale_count"))
+            lines.append(
+                f"Embeddings: {coverage:.1f}% coverage, {pending} pending, {stale} stale"
+            )
+            if _safe_int(embedding.get("embedding_failure_count")) > 0:
+                lines.append(f"  failures: {_safe_int(embedding.get('embedding_failure_count'))}")
+            cost = _safe_float(embedding.get("embedding_estimated_cost_usd"))
+            if cost > 0:
+                model = str(embedding.get("embedding_model", ""))
+                dimension = _safe_int(embedding.get("embedding_dimension"))
+                lines.append(f"  model: {model} ({dimension}d), est. cost: ${cost:.2f}")
+        else:
+            lines.append("Embeddings: disabled")
     return lines
 
 
 __all__ = [
     "DaemonStatus",
+    "EmbeddingReadiness",
     "build_daemon_status",
     "browser_capture_status_payload",
     "daemon_status_payload",

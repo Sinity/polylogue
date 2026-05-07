@@ -155,7 +155,12 @@ def make_fts_stage(db_path: Path) -> ConvergenceStage:
 
 
 def make_embed_stage(db_path: Path) -> ConvergenceStage:
-    """Generate vector embeddings for changed conversations that need them."""
+    """Generate vector embeddings for changed conversations that need them.
+
+    Before embedding, detects model/dimension config changes and marks
+    affected rows for reindex. Enforces the configured cost cap during
+    embedding.
+    """
 
     def check(path: Path) -> bool:
         if not _embedding_config_enabled():
@@ -167,6 +172,8 @@ def make_embed_stage(db_path: Path) -> ConvergenceStage:
         try:
             conn = open_connection(db_path, timeout=5.0)
             try:
+                _reconcile_embedding_config_change(conn)
+                conn.commit()
                 conversation_ids = _conversation_ids_for_source_path(conn, path)
                 return bool(_pending_embedding_conversation_ids(conn, conversation_ids))
             finally:
@@ -203,6 +210,8 @@ def make_embed_stage(db_path: Path) -> ConvergenceStage:
         try:
             conn = open_connection(db_path, timeout=5.0)
             try:
+                _reconcile_embedding_config_change(conn)
+                conn.commit()
                 by_path = _conversation_ids_for_source_paths(conn, paths)
                 all_conversation_ids = list(
                     dict.fromkeys(conversation_id for ids in by_path.values() for conversation_id in ids)
@@ -476,6 +485,68 @@ def _embedding_config_enabled() -> bool:
     return bool(cfg.get("embedding_enabled")) and bool(cfg.get("voyage_api_key"))
 
 
+def _reconcile_embedding_config_change(conn: sqlite3.Connection) -> None:
+    """Detect model/dimension config changes and mark rows for reindex.
+
+    When the configured model differs from what is stored in embeddings_meta,
+    all embedding_status rows are marked ``needs_reindex = 1``. When the
+    configured dimension differs, the vec0 table is also dropped so it can
+    be recreated with the new dimension.
+    """
+    from polylogue.config import load_polylogue_config
+    from polylogue.storage.search_providers.sqlite_vec_runtime import _reconcile_vec0_dimension
+    from polylogue.storage.search_providers.sqlite_vec_support import logger as vec_logger
+
+    cfg = load_polylogue_config()
+    configured_model = cfg.embedding_model
+    configured_dimension = cfg.embedding_dimension
+
+    if not _table_exists(conn, "embeddings_meta") or not _table_exists(conn, "embedding_status"):
+        return
+
+    # Check stored model
+    stored_models = conn.execute(
+        "SELECT DISTINCT model FROM embeddings_meta WHERE target_type='message' ORDER BY model"
+    ).fetchall()
+    stored_model = str(stored_models[0][0]) if stored_models else None
+
+    model_changed = stored_model is not None and stored_model != configured_model
+    dimension_changed = False
+
+    if stored_model is not None:
+        stored_dim_row = conn.execute(
+            "SELECT dimension FROM embeddings_meta WHERE target_type='message' LIMIT 1"
+        ).fetchone()
+        if stored_dim_row:
+            stored_dimension = int(stored_dim_row[0])
+            dimension_changed = stored_dimension != configured_dimension
+
+    if model_changed:
+        vec_logger.info(
+            "embedding model changed: stored=%s configured=%s — marking all for reindex",
+            stored_model,
+            configured_model,
+        )
+    if dimension_changed:
+        vec_logger.info(
+            "embedding dimension changed: stored=%d configured=%d — dropping vec0 + reindex",
+            stored_model and _stored_dim_from_meta(conn) or 0,
+            configured_dimension,
+        )
+
+    if model_changed or dimension_changed:
+        conn.execute("UPDATE embedding_status SET needs_reindex = 1, error_message = NULL")
+        if dimension_changed:
+            _reconcile_vec0_dimension(conn, configured_dimension)
+
+
+def _stored_dim_from_meta(conn: sqlite3.Connection) -> int:
+    row = conn.execute(
+        "SELECT dimension FROM embeddings_meta WHERE target_type='message' LIMIT 1"
+    ).fetchone()
+    return int(row[0]) if row else 0
+
+
 def _pending_embedding_conversation_ids(
     conn: sqlite3.Connection,
     conversation_ids: Sequence[str],
@@ -499,19 +570,29 @@ def _pending_embedding_conversation_ids(
 
 
 def _embed_conversations_sync(db_path: Path, conversation_ids: Sequence[str]) -> bool:
-
     from polylogue.api.sync.bridge import run_coroutine_sync
     from polylogue.config import load_polylogue_config
     from polylogue.storage.embeddings.materialization import embed_conversation_sync
     from polylogue.storage.repository import ConversationRepository
     from polylogue.storage.search_providers import create_vector_provider
+    from polylogue.storage.search_providers.sqlite_vec_support import (
+        ESTIMATED_TOKENS_PER_MESSAGE,
+        VOYAGE_4_COST_PER_1M_TOKENS,
+    )
     from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
-    voyage_key = load_polylogue_config().get("voyage_api_key")
+    cfg = load_polylogue_config()
+    voyage_key = cfg.get("voyage_api_key")
     if not voyage_key:
         return True
 
-    vec_provider = create_vector_provider(voyage_api_key=str(voyage_key), db_path=db_path)
+    max_cost = float(str(cfg.get("embedding_max_cost_usd", 0.0)))
+    model = cfg.embedding_model
+    dimension = cfg.embedding_dimension
+
+    vec_provider = create_vector_provider(
+        voyage_api_key=str(voyage_key), db_path=db_path, model=model, dimension=dimension
+    )
     if vec_provider is None:
         logger.warning("embed: vector provider unavailable")
         return False
@@ -519,15 +600,32 @@ def _embed_conversations_sync(db_path: Path, conversation_ids: Sequence[str]) ->
     repo = ConversationRepository(backend=SQLiteBackend(db_path=db_path))
     errors = 0
     embedded = 0
+    cumulative_cost = 0.0
     try:
         for conversation_id in dict.fromkeys(conversation_ids):
             outcome = embed_conversation_sync(repo, vec_provider, conversation_id)
             if outcome.status == "embedded":
                 embedded += 1
+                # Estimate cost: messages * estimated_tokens_per_message * price_per_token
+                batch_cost = (
+                    outcome.embedded_message_count
+                    * ESTIMATED_TOKENS_PER_MESSAGE
+                    * VOYAGE_4_COST_PER_1M_TOKENS
+                    / 1_000_000
+                )
+                cumulative_cost += batch_cost
+                if max_cost > 0.0 and cumulative_cost > max_cost:
+                    logger.info(
+                        "embed: cost cap reached (%.4f > %.2f) — stopping after %d conversations",
+                        cumulative_cost,
+                        max_cost,
+                        embedded,
+                    )
+                    break
             elif outcome.status == "error":
                 errors += 1
                 logger.warning("embed: %s failed: %s", conversation_id, outcome.error)
-        logger.info("embed: %d done, %d errors", embedded, errors)
+        logger.info("embed: %d done, %d errors, est. cost $%.4f", embedded, errors, cumulative_cost)
         return errors == 0
     finally:
         run_coroutine_sync(repo.close())

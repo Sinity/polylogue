@@ -16,6 +16,8 @@ class SqliteVecRuntimeMixin:
 
     if TYPE_CHECKING:
         db_path: Path
+        model: str
+        dimension: int
         _vec_available: bool | None
         _tables_ensured: bool
 
@@ -53,20 +55,27 @@ class SqliteVecRuntimeMixin:
             raise SqliteVecError("sqlite-vec extension not available. Install with: pip install sqlite-vec")
 
     def _ensure_tables(self) -> None:
-        """Create required vector and metadata tables if they don't exist."""
-        if self._tables_ensured:
-            return
+        """Create required vector and metadata tables if they don't exist.
 
+        Detects dimension mismatches between the configured dimension and the
+        existing vec0 table. Drops and recreates the vec0 table when the
+        dimension has changed.
+        """
         conn = self._get_connection()
         try:
-            conn.execute("""
+            # Detect and handle dimension mismatch before creating tables
+            _reconcile_vec0_dimension(conn, self.dimension)
+
+            conn.execute(
+                f"""
                 CREATE VIRTUAL TABLE IF NOT EXISTS message_embeddings USING vec0(
                     message_id TEXT PRIMARY KEY,
-                    embedding float[1024],
+                    embedding float[{self.dimension}],
                     +provider_name TEXT,
                     +conversation_id TEXT
                 )
-            """)
+                """
+            )
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS embeddings_meta (
                     target_id TEXT PRIMARY KEY,
@@ -99,5 +108,57 @@ class SqliteVecRuntimeMixin:
         finally:
             conn.close()
 
+    def _stored_embedding_dimension(self) -> int | None:
+        """Return the dimension stored in embeddings_meta, if any."""
+        conn = self._get_connection()
+        try:
+            has_table = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='embeddings_meta'"
+            ).fetchone()
+            if has_table is None:
+                return None
+            row = conn.execute(
+                "SELECT dimension FROM embeddings_meta WHERE target_type='message' LIMIT 1"
+            ).fetchone()
+            return int(row["dimension"]) if row else None
+        except (sqlite3.OperationalError, TypeError, ValueError):
+            return None
+        finally:
+            conn.close()
 
-__all__ = ["SqliteVecRuntimeMixin"]
+
+def _vec0_table_dimension(conn: sqlite3.Connection) -> int | None:
+    """Read the dimension of the existing vec0 table, if it exists."""
+    try:
+        has_table = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='message_embeddings'"
+        ).fetchone()
+        if has_table is None:
+            return None
+        # SQLite vec0 stores dimension in the CREATE VIRTUAL TABLE DDL.
+        ddl_row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='message_embeddings'"
+        ).fetchone()
+        if ddl_row is None or ddl_row["sql"] is None:
+            return None
+        import re
+        match = re.search(r"float\[(\d+)\]", str(ddl_row["sql"]))
+        return int(match.group(1)) if match else None
+    except (sqlite3.OperationalError, TypeError, ValueError):
+        return None
+
+
+def _reconcile_vec0_dimension(conn: sqlite3.Connection, configured_dimension: int) -> None:
+    """Drop vec0 table when its dimension differs from the configured dimension."""
+    current = _vec0_table_dimension(conn)
+    if current is not None and current != configured_dimension:
+        logger.info(
+            "vec0 dimension mismatch: stored=%d configured=%d — dropping message_embeddings",
+            current,
+            configured_dimension,
+        )
+        conn.execute("DROP TABLE IF EXISTS message_embeddings")
+        conn.commit()
+
+
+__all__ = ["SqliteVecRuntimeMixin", "_reconcile_vec0_dimension"]

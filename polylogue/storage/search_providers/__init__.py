@@ -52,6 +52,8 @@ def create_vector_provider(
     *,
     voyage_api_key: str | None = None,
     db_path: Path | None = None,
+    model: str | None = None,
+    dimension: int | None = None,
 ) -> VectorProvider | None:
     """Create a vector provider instance if configured.
 
@@ -62,6 +64,8 @@ def create_vector_provider(
         config: Application configuration with optional index_config
         voyage_api_key: Voyage AI API key (overrides config and env var)
         db_path: Optional database path override
+        model: Embedding model name (defaults to voyage-4 if None)
+        dimension: Embedding dimension (defaults to 1024 if None)
 
     Returns:
         SqliteVecProvider if configured and available, None otherwise
@@ -90,11 +94,14 @@ def create_vector_provider(
         SqliteVecProvider,
     )
 
+    kwargs: dict[str, object] = {"voyage_key": voyage_key, "db_path": db_path}
+    if model is not None:
+        kwargs["model"] = model
+    if dimension is not None:
+        kwargs["dimension"] = dimension
+
     try:
-        return SqliteVecProvider(
-            voyage_key=voyage_key,
-            db_path=db_path,
-        )
+        return SqliteVecProvider(**kwargs)  # type: ignore[arg-type]
     except SqliteVecError as exc:
         logger.warning("sqlite-vec initialization failed: %s", exc)
         return None
