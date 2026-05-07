@@ -18,7 +18,12 @@ from polylogue.daemon.status import daemon_status_payload
 from polylogue.errors import PolylogueError
 from polylogue.logging import get_logger
 from polylogue.paths import db_path
-from polylogue.surfaces.payloads import QueryErrorPayload
+from polylogue.surfaces.payloads import (
+    QueryErrorPayload,
+    _build_flags_from_conversation,
+    _extract_cwd,
+    _extract_repo,
+)
 
 if TYPE_CHECKING:
     from polylogue.api import Polylogue
@@ -77,20 +82,6 @@ def _get_or_create_polylogue() -> Polylogue:
 def _is_localhost(host: str) -> bool:
     """Return True if host is a loopback address."""
     return host in ("127.0.0.1", "::1", "localhost")
-
-
-def _extract_repo(provider_meta: dict[str, object] | None) -> str | None:
-    if provider_meta is None:
-        return None
-    repo = provider_meta.get("repo") or provider_meta.get("repository") or provider_meta.get("git_repo")
-    return str(repo) if repo else None
-
-
-def _extract_cwd(provider_meta: dict[str, object] | None) -> str | None:
-    if provider_meta is None:
-        return None
-    cwd = provider_meta.get("cwd") or provider_meta.get("working_directory") or provider_meta.get("cwd_display")
-    return str(cwd) if cwd else None
 
 
 def _build_query_spec_params(
@@ -342,6 +333,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             self._handle_get_conversation(path[2])
         elif len(path) == 5 and path[:2] == ["api", "conversations"] and path[3] == "messages":
             self._handle_get_messages(path[2], params)
+        elif len(path) == 4 and path[:2] == ["api", "conversations"] and path[3] == "raw":
+            self._handle_get_conversation_raw(path[2])
         elif len(path) == 4 and path[:3] == ["api", "raw_artifacts"]:
             self._handle_get_raw_artifact(path[3])
         else:
@@ -496,17 +489,21 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
         items: list[dict[str, object]] = []
         for summary in summaries:
+            flags = _build_flags_from_conversation(summary)
             row: dict[str, object] = {
                 "id": str(summary.id),
                 "title": summary.display_title,
                 "provider": str(summary.provider) if summary.provider else None,
+                "date": summary.display_date.isoformat() if summary.display_date else None,
                 "created_at": summary.created_at.isoformat() if summary.created_at else None,
                 "updated_at": summary.updated_at.isoformat() if summary.updated_at else None,
-                "message_count": getattr(summary, "message_count", 0),
+                "message_count": getattr(summary, "message_count", 0) or 0,
                 "word_count": getattr(summary, "word_count", None),
                 "repo": _extract_repo(summary.provider_meta),
                 "cwd_display": _extract_cwd(summary.provider_meta),
                 "tags": summary.tags,
+                "flags": flags.model_dump(mode="json") if flags else None,
+                "summary": summary.summary,
             }
             items.append(row)
 
@@ -539,6 +536,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         conv = await poly.get_conversation(conv_id)
         if conv is None:
             return None
+        flags = _build_flags_from_conversation(conv)
         return {
             "id": str(conv.id),
             "title": conv.title,
@@ -556,15 +554,61 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                     "timestamp": msg.timestamp.isoformat() if msg.timestamp else None,
                     "message_type": str(getattr(msg, "message_type", "")),
                     "word_count": msg.word_count,
+                    "has_tool_use": bool(msg.has_tool_use) if hasattr(msg, "has_tool_use") else False,
+                    "has_thinking": bool(msg.has_thinking) if hasattr(msg, "has_thinking") else False,
+                    "has_paste": bool(msg.has_paste) if hasattr(msg, "has_paste") else False,
                 }
                 for msg in conv.messages
             ],
             "tags": conv.tags,
             "branch_type": str(conv.branch_type) if conv.branch_type else None,
             "parent_id": str(conv.parent_id) if conv.parent_id else None,
+            "session_id": getattr(conv, "session_id", None),
             "repo": _extract_repo(conv.provider_meta),
             "cwd_display": _extract_cwd(conv.provider_meta),
+            "model": conv.provider_meta.get("model") if conv.provider_meta else None,
+            "flags": flags.model_dump(mode="json") if flags else None,
+            "summary": conv.summary,
             "total": len(conv.messages),
+        }
+
+    # ------------------------------------------------------------------
+    # Handlers: get conversation raw
+    # ------------------------------------------------------------------
+
+    @daemon_safe_handler
+    def _handle_get_conversation_raw(self, conv_id: str) -> None:
+        def _get(poly: Polylogue) -> object:
+            return asyncio.run(self._do_get_conversation_raw(poly, conv_id))
+
+        result = self._sync_run(_get)
+        if result is None:
+            self._send_error(HTTPStatus.NOT_FOUND, "not_found")
+            return
+        self._send_json(HTTPStatus.OK, result)
+
+    async def _do_get_conversation_raw(self, poly: Polylogue, conv_id: str) -> object:
+        conv = await poly.get_conversation(conv_id)
+        if conv is None:
+            return None
+        raw_items = await poly.get_raw_artifacts_for_conversation(conv_id)
+        provider_meta_serializable: dict[str, object] = {}
+        if conv.provider_meta:
+            for k, v in conv.provider_meta.items():
+                try:
+                    json.dumps({k: v})
+                    provider_meta_serializable[k] = v
+                except (TypeError, ValueError):
+                    provider_meta_serializable[k] = str(v)
+        return {
+            "id": str(conv.id),
+            "provider": str(conv.provider) if conv.provider else None,
+            "title": conv.display_title,
+            "provider_meta": provider_meta_serializable,
+            "branch_type": str(conv.branch_type) if conv.branch_type else None,
+            "parent_id": str(conv.parent_id) if conv.parent_id else None,
+            "session_id": getattr(conv, "session_id", None),
+            "raw_artifacts": raw_items,
         }
 
     # ------------------------------------------------------------------
