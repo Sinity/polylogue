@@ -8,6 +8,7 @@ from polylogue.schemas.audit.checks import (
     check_annotation_coverage,
     check_cross_provider_consistency,
     check_privacy_guards,
+    check_schema_staleness,
     check_semantic_roles,
 )
 from polylogue.schemas.audit.models import AuditCheck, AuditReport
@@ -53,6 +54,7 @@ def audit_provider(provider: str) -> AuditReport:
     report.checks.append(_scoped(provider, check_privacy_guards(schema)))
     report.checks.append(_scoped(provider, check_semantic_roles(schema)))
     report.checks.append(_scoped(provider, check_annotation_coverage(schema)))
+    report.checks.append(_scoped(provider, check_schema_staleness(schema)))
 
     return report
 

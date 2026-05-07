@@ -187,10 +187,46 @@ def check_cross_provider_consistency(schemas: Mapping[str, Mapping[str, object] 
     )
 
 
+def check_schema_staleness(schema: Mapping[str, object] | SchemaNode) -> CheckResult:
+    """Check whether the committed schema is stale via its generated-at timestamp."""
+    from datetime import UTC, datetime
+
+    root = json_document(schema)
+    generated_at = root.get("x-polylogue-generated-at")
+    if not generated_at or not isinstance(generated_at, str):
+        return CheckResult(
+            name="schema_staleness",
+            status=OutcomeStatus.WARNING,
+            summary="Schema has no x-polylogue-generated-at timestamp",
+        )
+    try:
+        gen_time = datetime.fromisoformat(generated_at.replace("Z", "+00:00"))
+        age_days = (datetime.now(UTC) - gen_time).days
+    except ValueError:
+        return CheckResult(
+            name="schema_staleness",
+            status=OutcomeStatus.WARNING,
+            summary=f"Unparseable generated-at timestamp: {generated_at!r}",
+        )
+    if age_days > 90:
+        return CheckResult(
+            name="schema_staleness",
+            status=OutcomeStatus.WARNING,
+            summary=f"Schema may be stale — generated {age_days} days ago",
+        )
+    return CheckResult(
+        name="schema_staleness",
+        status=OutcomeStatus.OK,
+        summary=f"Schema generated {age_days} days ago",
+    )
+
+
 __all__ = [
     "CheckResult",
     "check_annotation_coverage",
     "check_cross_provider_consistency",
     "check_privacy_guards",
+    "check_schema_drift",
+    "check_schema_staleness",
     "check_semantic_roles",
 ]
