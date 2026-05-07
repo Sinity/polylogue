@@ -92,6 +92,9 @@ class _IngestBatchSummary:
     flush_elapsed_s: float = 0.0
     commit_elapsed_s: float = 0.0
     teardown_elapsed_s: float = 0.0
+    worker_progress_in_flight: int = 0
+    worker_progress_completed: int = 0
+    worker_progress_total: int = 0
 
 
 @dataclass(frozen=True, slots=True)
