@@ -219,11 +219,9 @@ async def _periodic_health_check() -> None:
                 send_notifications,
             )
 
-            health = check_health(tiers=(HealthTier.FAST, HealthTier.MEDIUM))
+            health = check_health(tiers={HealthTier.FAST, HealthTier.MEDIUM})
             if health.overall_status != "ok":
-                send_notifications(
-                    health.alerts, backend=LogNotificationBackend()
-                )
+                send_notifications(health.alerts, backend=LogNotificationBackend())
         except Exception:
             logger.warning("health: periodic check failed", exc_info=True)
 
