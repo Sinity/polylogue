@@ -599,9 +599,7 @@ class PolylogueArchiveMixin:
     # Recall packs
     # ------------------------------------------------------------------
 
-    async def create_recall_pack(
-        self, pack_id: str, label: str, conversation_id: str, payload_json: str
-    ) -> bool:
+    async def create_recall_pack(self, pack_id: str, label: str, conversation_id: str, payload_json: str) -> bool:
         """Save a recall pack. Returns ``True`` if newly created."""
         import json
 

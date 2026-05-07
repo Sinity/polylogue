@@ -315,11 +315,57 @@ BLOB_LEASE_DDL = """
         );
 """
 
+# ---------------------------------------------------------------------------
+# User marks — per-conversation mark types (star, pin, archive)
+# ---------------------------------------------------------------------------
+
+USER_MARKS_DDL = """
+        CREATE TABLE IF NOT EXISTS user_marks (
+            conversation_id TEXT NOT NULL REFERENCES conversations(conversation_id) ON DELETE CASCADE,
+            mark_type       TEXT NOT NULL CHECK (mark_type IN ('star', 'pin', 'archive')),
+            created_at      TEXT NOT NULL,
+            PRIMARY KEY (conversation_id, mark_type)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_user_marks_type
+            ON user_marks(mark_type);
+"""
+
+# ---------------------------------------------------------------------------
+# Saved views — named query presets storing ConversationQuerySpec as JSON
+# ---------------------------------------------------------------------------
+
+SAVED_VIEWS_DDL = """
+        CREATE TABLE IF NOT EXISTS saved_views (
+            view_id    TEXT PRIMARY KEY,
+            name       TEXT NOT NULL UNIQUE,
+            query_json TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+"""
+
+# ---------------------------------------------------------------------------
+# Recall packs — saved conversation selections with context-pack payloads
+# ---------------------------------------------------------------------------
+
+RECALL_PACKS_DDL = """
+        CREATE TABLE IF NOT EXISTS recall_packs (
+            pack_id               TEXT PRIMARY KEY,
+            label                 TEXT NOT NULL,
+            conversation_ids_json TEXT NOT NULL DEFAULT '[]',
+            payload_json           TEXT NOT NULL DEFAULT '{}',
+            created_at            TEXT NOT NULL
+        );
+"""
+
 
 __all__ = [
     "ARCHIVE_STORAGE_DDL",
     "BLOB_LEASE_DDL",
     "MESSAGE_FTS_DDL",
     "RAW_ARCHIVE_DDL",
+    "RECALL_PACKS_DDL",
+    "SAVED_VIEWS_DDL",
     "TAGS_M2M_DDL",
+    "USER_MARKS_DDL",
 ]
