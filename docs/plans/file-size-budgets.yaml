@@ -60,3 +60,7 @@ exceptions:
   - path: polylogue/storage/repair.py
     ceiling: 1200
     reason: "added blob orphan detection, cleanup, and integrity verification (#818)"
+
+  - path: polylogue/storage/sqlite/schema_bootstrap.py
+    ceiling: 1200
+    reason: "added v9→v10 provider-meta promotion migration (#864)"
