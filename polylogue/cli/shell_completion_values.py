@@ -1,9 +1,17 @@
-"""Shell-completion helpers for archive-backed CLI values."""
+"""Shell-completion helpers for archive-backed CLI values.
+
+Conversation ID and tag completions route through
+``ArchiveOperations`` (async, bridged via ``asyncio.run``).
+Repo, CWD-prefix, and tool-name completions still use raw SQL on
+``session_profiles`` / ``action_events`` \u2014 those tables lack
+ArchiveOperations read methods (follow-up in #862 or a successor).
+"""
 
 from __future__ import annotations
 
+import asyncio
 import sqlite3
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from typing import Final
 
 import click
@@ -12,8 +20,11 @@ from click.shell_completion import CompletionItem
 from polylogue.archive.message.types import MessageType
 from polylogue.archive.query.fields import CompletionSource
 from polylogue.archive.query.spec import QUERY_ACTION_TYPES, QUERY_RETRIEVAL_LANES, QUERY_SEQUENCE_ACTION_TYPES
+from polylogue.operations.archive import ArchiveOperations as _ArchiveOperations
 from polylogue.paths import db_path
 from polylogue.storage.sqlite.connection import open_read_connection
+
+Callback = Callable[[_ArchiveOperations], Awaitable[list[CompletionItem]]]
 
 _PROVIDER_DESCRIPTIONS: Final[dict[str, str]] = {
     "chatgpt": "OpenAI ChatGPT exports",
@@ -61,6 +72,29 @@ def _fetch_rows(sql: str, params: tuple[object, ...]) -> list[sqlite3.Row]:
         return []
 
 
+async def _with_operations(
+    action: Callback,
+) -> list[CompletionItem]:
+    """Create ArchiveOperations, run *action*, and close services."""
+    from polylogue.operations.archive import ArchiveOperations
+    from polylogue.services import build_runtime_services
+
+    services = build_runtime_services()
+    try:
+        operations = ArchiveOperations.from_services(services)
+        return await action(operations)
+    finally:
+        await services.close()
+
+
+def _run_completion(action: Callback) -> list[CompletionItem]:
+    """Bridge an async completion action into the synchronous Click callback world."""
+    try:
+        return list(asyncio.run(_with_operations(action)))
+    except Exception:
+        return []
+
+
 def _rows_to_completion_items(
     rows: list[sqlite3.Row],
     *,
@@ -78,7 +112,7 @@ def _trim_help(value: str, *, limit: int = 72) -> str:
     cleaned = " ".join(value.split())
     if len(cleaned) <= limit:
         return cleaned
-    return cleaned[: limit - 1] + "…"
+    return cleaned[: limit - 1] + chr(0x2026)
 
 
 def _static_completion_items(
@@ -153,42 +187,32 @@ def complete_conversation_ids(
     del ctx, param
     current = incomplete.strip()
     current_lower = current.lower()
-    rows = _fetch_rows(
-        """
-        SELECT
-            conversation_id,
-            provider_name,
-            COALESCE(
-                NULLIF(json_extract(metadata, '$.title'), ''),
-                NULLIF(title, ''),
-                conversation_id
-            ) AS display_title
-        FROM conversations
-        WHERE (
-            ? = ''
-            OR conversation_id LIKE ?
-            OR conversation_id LIKE ?
-            OR LOWER(COALESCE(json_extract(metadata, '$.title'), title, '')) LIKE ?
-        )
-        ORDER BY sort_key DESC, conversation_id ASC
-        LIMIT ?
-        """,
-        (
-            current,
-            f"{current}%",
-            f"%:{current}%",
-            f"%{current_lower}%",
-            _MAX_ID_COMPLETIONS,
-        ),
-    )
-    return _rows_to_completion_items(
-        rows,
-        value_column="conversation_id",
-        help_builder=lambda row: (
-            f"{str(row['provider_name'] or 'unknown')} · "
-            f"{_trim_help(str(row['display_title'] or row['conversation_id']))}"
-        ),
-    )
+
+    if not _db_exists():
+        return []
+
+    async def _query(ops: _ArchiveOperations) -> list[CompletionItem]:
+        conversations = await ops.list_conversations(limit=100)
+        items: list[CompletionItem] = []
+        for conv in conversations:
+            cid = str(conv.id)
+            title = conv.title or ""
+            provider_name = str(conv.provider)
+            display = title or cid
+            if current and not (
+                cid.startswith(current) or (":" in cid and current in cid) or (title and current_lower in title.lower())
+            ):
+                continue
+            items.append(
+                CompletionItem(
+                    cid,
+                    help=f"{provider_name} \u00b7 {_trim_help(display)}",
+                )
+            )
+        items.sort(key=lambda item: item.value)
+        return items[:_MAX_ID_COMPLETIONS]
+
+    return _run_completion(_query)
 
 
 def complete_open_targets(
@@ -206,54 +230,24 @@ def complete_tag_values(
 ) -> list[CompletionItem]:
     del ctx, param
     prefix, current = _split_csv_incomplete(incomplete)
-    rows = _fetch_rows(
-        """
-        SELECT t.name AS tag_name, COUNT(DISTINCT ct.conversation_id) AS cnt
-        FROM conversation_tags ct
-        JOIN tags t ON t.id = ct.tag_id
-        WHERE (? = '' OR t.name LIKE ?)
-        GROUP BY t.name
-        ORDER BY cnt DESC, t.name ASC
-        LIMIT ?
-        """,
-        (
-            current,
-            f"{current}%",
-            _MAX_VALUE_COMPLETIONS,
-        ),
-    )
-    if rows:
-        items = _rows_to_completion_items(
-            rows,
-            value_column="tag_name",
-            help_builder=lambda row: f"{int(row['cnt'])} conversations",
-        )
-        return _with_csv_prefix(items, prefix)
+    current_lower = current.lower()
 
-    # Fallback to JSON metadata for pre-migration archives
-    rows = _fetch_rows(
-        """
-        SELECT
-            t.name AS tag_name,
-            COUNT(*) AS cnt
-        FROM conversation_tags ct
-        JOIN tags t ON t.id = ct.tag_id
-        WHERE (? = '' OR t.name LIKE ?)
-        GROUP BY t.name
-        ORDER BY cnt DESC, t.name ASC
-        LIMIT ?
-        """,
-        (
-            current,
-            f"{current}%",
-            _MAX_VALUE_COMPLETIONS,
-        ),
-    )
-    items = _rows_to_completion_items(
-        rows,
-        value_column="tag_name",
-        help_builder=lambda row: f"{int(row['cnt'])} conversations",
-    )
+    if not _db_exists():
+        return []
+
+    async def _query(ops: _ArchiveOperations) -> list[CompletionItem]:
+        tags = await ops.list_tags()
+        sorted_tags = sorted(tags.items(), key=lambda x: (-x[1], x[0]))
+        items: list[CompletionItem] = []
+        for name, cnt in sorted_tags:
+            if current_lower and not name.lower().startswith(current_lower):
+                continue
+            items.append(CompletionItem(name, help=f"{cnt} conversations"))
+            if len(items) >= _MAX_VALUE_COMPLETIONS:
+                break
+        return items
+
+    items = _run_completion(_query)
     return _with_csv_prefix(items, prefix)
 
 
@@ -262,6 +256,8 @@ def complete_repo_values(
     param: click.Parameter,
     incomplete: str,
 ) -> list[CompletionItem]:
+    # NOTE: Raw SQL on session_profiles \u2014 no ArchiveOperations read
+    # method for repo-name aggregation yet.
     del ctx, param
     prefix, current = _split_csv_incomplete(incomplete)
     rows = _fetch_rows(
@@ -295,6 +291,8 @@ def complete_cwd_prefix_values(
     param: click.Parameter,
     incomplete: str,
 ) -> list[CompletionItem]:
+    # NOTE: Raw SQL on session_profiles \u2014 no ArchiveOperations read
+    # method for cwd-prefix aggregation yet.
     del ctx, param
     current = incomplete.strip()
     rows = _fetch_rows(
@@ -327,6 +325,8 @@ def complete_tool_values(
     param: click.Parameter,
     incomplete: str,
 ) -> list[CompletionItem]:
+    # NOTE: Raw SQL on action_events \u2014 no ArchiveOperations read
+    # method for tool-name aggregation yet.
     del ctx, param
     current = incomplete.strip().lower()
     rows = _fetch_rows(

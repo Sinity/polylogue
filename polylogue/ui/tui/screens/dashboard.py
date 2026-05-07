@@ -1,4 +1,8 @@
-"""Enhanced dashboard screen with embedding stats and provider breakdown."""
+"""Enhanced dashboard screen with embedding stats and provider breakdown.
+
+Routes stats through ``ArchiveOperations.storage_stats()``
+instead of calling the repository directly.
+"""
 
 from __future__ import annotations
 
@@ -6,7 +10,7 @@ from textual.app import ComposeResult
 from textual.containers import Container, Grid
 from textual.widgets import Static
 
-from polylogue.archive.stats import ArchiveStats
+from polylogue.archive.stats import ArchiveStats as StorageArchiveStats
 from polylogue.logging import get_logger
 from polylogue.ui.tui.screens.base import RepositoryBoundContainer
 from polylogue.ui.tui.widgets.stats import StatCard
@@ -40,8 +44,8 @@ class ProviderBar(Static):
         pct = (self.count / self.max_count * 100) if self.max_count > 0 else 0
         bar_width = 20
         filled = int(pct / 100 * bar_width)
-        bar = "█" * filled + "░" * (bar_width - filled)
-        # Format: "provider_name    ████████░░░░░░░░░░░░  123"
+        bar = chr(0x2588) * filled + chr(0x2591) * (bar_width - filled)
+        # Format: "provider_name    [bar]  123"
         return f"{self.provider[:16]:<16} {bar} {self.count:>6}"
 
 
@@ -96,15 +100,15 @@ class Dashboard(RepositoryBoundContainer):
     async def _fetch_stats(self) -> None:
         """Fetch stats asynchronously, then update DOM."""
         try:
-            repo = self._get_repo("Dashboard")
-            stats = await repo.get_archive_stats()
+            ops = self._get_ops("Dashboard")
+            stats = await ops.storage_stats()
         except Exception as e:
             self.notify(f"Failed to load stats: {e}", severity="error")
             return
 
         self._apply_stats(stats)
 
-    def _apply_stats(self, stats: ArchiveStats) -> None:
+    def _apply_stats(self, stats: StorageArchiveStats) -> None:
         """Apply fetched stats to DOM widgets (runs on main thread)."""
 
         self.query_one("#stat-conversations", StatCard).value = str(stats.total_conversations)

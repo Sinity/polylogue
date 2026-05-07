@@ -6,11 +6,16 @@ from textual.app import App, ComposeResult
 from textual.widgets import Footer, Header
 
 if TYPE_CHECKING:
-    from polylogue.protocols import ConversationArchiveReadStore
+    from polylogue.operations.archive import ArchiveOperations
 
 
 class PolylogueApp(App[None]):
-    """Polylogue dashboard TUI."""
+    """Polylogue dashboard TUI.
+
+    Accepts an optional ``ArchiveOperations`` instance so screens route
+    through the shared archive operations contract rather than calling
+    repository methods directly (ref #860).
+    """
 
     CSS_PATH = "css/styles.tcss"
     BINDINGS = [
@@ -20,10 +25,10 @@ class PolylogueApp(App[None]):
 
     def __init__(
         self,
-        repository: ConversationArchiveReadStore | None = None,
+        operations: ArchiveOperations | None = None,
     ) -> None:
         super().__init__()
-        self._repository = repository
+        self._operations = operations
 
     def compose(self) -> ComposeResult:
         """Create child widgets for the app."""
@@ -37,13 +42,13 @@ class PolylogueApp(App[None]):
 
         with TabbedContent(initial="dashboard"):
             with TabPane("Dashboard", id="dashboard"):
-                yield Dashboard(repository=self._repository)
+                yield Dashboard(operations=self._operations)
 
             with TabPane("Browser", id="browser"):
-                yield Browser(repository=self._repository)
+                yield Browser(operations=self._operations)
 
             with TabPane("Search", id="search"):
-                yield Search(repository=self._repository)
+                yield Search(operations=self._operations)
 
         yield Footer()
 
