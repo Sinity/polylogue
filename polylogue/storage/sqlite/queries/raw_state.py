@@ -75,6 +75,11 @@ async def apply_raw_state_update(
     if state.payload_provider is not UNSET:
         set_clauses.append("payload_provider = COALESCE(?, payload_provider)")
         params.append(coerce_provider(state.payload_provider))
+    if state.detection_warnings is not UNSET:
+        set_clauses.append("detection_warnings = ?")
+        params.append(
+            state.detection_warnings[:2000] if isinstance(state.detection_warnings, str) else state.detection_warnings
+        )
     if state.validation_status is not UNSET or state.validation_error is not UNSET:
         set_clauses.append("validated_at = ?")
         params.append(datetime.now(timezone.utc).isoformat())
