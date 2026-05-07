@@ -43,3 +43,14 @@ DIMENSION_COUNTS_SQL = """
     ORDER BY count DESC, dimension ASC
 """
 CONVERSATIONS_EXISTS_SQL = "SELECT name FROM sqlite_master WHERE type='table' AND name='conversations'"
+EMBEDDING_FAILURE_COUNT_SQL = "SELECT COUNT(*) FROM embedding_status WHERE error_message IS NOT NULL"
+STORED_MODEL_SQL = """
+    SELECT DISTINCT model
+    FROM embeddings_meta
+    WHERE target_type = 'message'
+    ORDER BY model
+"""
+EMBEDDING_TOTAL_TOKENS_SQL = """
+    SELECT COUNT(*) AS message_count
+    FROM message_embeddings
+"""

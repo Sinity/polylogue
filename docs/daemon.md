@@ -147,6 +147,7 @@ Enabled by default on `127.0.0.1:8765`. Disable with `--no-browser-capture`.
 | `fts_readiness.messages_ready` | FTS index covers all messages |
 | `fts_readiness.action_events_ready` | FTS index covers all action events |
 | `insight_freshness` | Sessions with profiles vs. total |
+| `embedding_readiness` | Embedding enabled, coverage, pending/stale, failures, cost |
 | `db_size_bytes` | Database file size |
 | `wal_size_bytes` | WAL file size |
 | `blob_dir_size_bytes` | Blob store size |
@@ -186,16 +187,49 @@ locking to prevent concurrent instances.
 
 ## Embeddings
 
-When `VOYAGE_API_KEY` is set and `POLYLOGUE_DAEMON_ENABLE_EMBEDDINGS` is enabled
-(`1`, `true`, or `yes`), the daemon can generate vector embeddings for message
-content. Embeddings are stored in the `message_embeddings` vec0 virtual table
-and used by the `--similar` search and `hybrid` retrieval lane. Embedding
-convergence is opt-in so ordinary daemon catch-up does not make provider API
-calls.
+The daemon can generate Voyage AI vector embeddings for message content, stored
+in the `message_embeddings` vec0 virtual table and consumed by `--similar` search
+and the `hybrid` retrieval lane.
 
-Check embedding coverage:
+Embedding convergence is **opt-in** — ordinary daemon catch-up does not make
+provider API calls unless explicitly configured.
+
+### Configuration
+
+Embedding settings live in the `[embedding]` section of `polylogue.toml` (see
+`polylogue config` for the resolved path). The daemon reads these keys:
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `embedding_enabled` | bool | `false` | Enable post-ingest embedding convergence |
+| `embedding_model` | string | `voyage-4` | Voyage AI model name |
+| `embedding_dimension` | int | `1024` | Vector dimension (must match the model) |
+| `embedding_max_cost_usd` | float | `0.0` | Cost cap in USD (0 = no limit) |
+| `voyage_api_key` | string | (none) | Voyage AI API key |
+
+Example TOML:
+
+```toml
+[embedding]
+embedding_enabled = true
+embedding_model = "voyage-4"
+embedding_dimension = 1024
+embedding_max_cost_usd = 1.00
+voyage_api_key = "va-..."
+```
+
+Without a `voyage_api_key`, the embedding stage reports "disabled" in daemon
+status — this is not an error.
+
+### Model/dimension changes
+
+When the configured model or dimension differs from stored embeddings, the
+daemon marks all conversations for re-embedding. A dimension change also drops
+and recreates the vec0 virtual table.
+
+### Checking coverage
 
 ```bash
-polylogue stats
-# Embeddings: 1,234/567 convs, 45,678 msgs (87.3%)
+polylogue stats                      # embedding coverage in archive stats
+polylogued status                    # daemon status includes embedding readiness
 ```

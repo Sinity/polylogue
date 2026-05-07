@@ -48,6 +48,8 @@ class EmbeddingStatusPayload(TypedDict):
     embedding_models: dict[str, int]
     embedding_dimensions: dict[int, int]
     retrieval_bands: dict[str, dict[str, object]]
+    failure_count: int
+    total_estimated_cost_usd: float
 
 
 def _payload_int(value: object) -> int:
@@ -135,6 +137,8 @@ def _payload_from_stats(
         "embedding_models": stats.model_counts,
         "embedding_dimensions": stats.dimension_counts,
         "retrieval_bands": stats.retrieval_bands,
+        "failure_count": stats.failure_count,
+        "total_estimated_cost_usd": stats.total_estimated_cost_usd,
     }
 
 
