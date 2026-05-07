@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import os
 import sys
 from collections.abc import Mapping
 from pathlib import Path
 
-from polylogue.config import Source
+from polylogue.config import Source, load_polylogue_config
 from polylogue.core.timestamps import format_timestamp
 from polylogue.pipeline.run_activity import conversation_activity_counts
 from polylogue.storage.cursor_state import CursorStatePayload

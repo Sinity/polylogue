@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-from polylogue.config import load_polylogue_config
-
 import logging
-import os
 import sys
 from collections.abc import Iterable, Iterator
 from types import TracebackType
@@ -13,6 +10,8 @@ from typing import BinaryIO, Protocol, TextIO
 
 import structlog
 from structlog.types import Processor
+
+from polylogue.config import load_polylogue_config
 
 
 class BoundLoggerLike(Protocol):

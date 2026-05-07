@@ -166,6 +166,82 @@ def get_config() -> Config:
 # ---------------------------------------------------------------------------
 
 
+@dataclass
+class PolylogueConfig:
+    """Typed configuration loaded from TOML with env/CLI overrides.
+
+    Wraps a resolved config dict with attribute access for known keys.
+    The underlying dict is available via ``raw`` for unknown keys.
+    """
+
+    _data: dict[str, object] = field(default_factory=dict)
+
+    @property
+    def raw(self) -> dict[str, object]:
+        return self._data
+
+    @property
+    def archive_root(self) -> str:
+        return str(self._data.get("archive_root", ""))
+
+    @property
+    def daemon_url(self) -> str:
+        return str(self._data.get("daemon_url", "http://127.0.0.1:8766"))
+
+    @property
+    def daemon_host(self) -> str:
+        return str(self._data.get("daemon_host", "127.0.0.1"))
+
+    @property
+    def daemon_port(self) -> int:
+        return int(str(self._data.get("daemon_port", 8766)))
+
+    @property
+    def embedding_enabled(self) -> bool:
+        return bool(self._data.get("embedding_enabled"))
+
+    @property
+    def embedding_model(self) -> str:
+        return str(self._data.get("embedding_model", "voyage-4"))
+
+    @property
+    def embedding_dimension(self) -> int:
+        return int(str(self._data.get("embedding_dimension", 1024)))
+
+    @property
+    def embedding_max_cost_usd(self) -> float:
+        return float(str(self._data.get("embedding_max_cost_usd", 0.0)))
+
+    @property
+    def voyage_api_key(self) -> str | None:
+        v = self._data.get("voyage_api_key")
+        return v if isinstance(v, str) and v else None
+
+    @property
+    def hooks_enabled(self) -> bool:
+        return bool(self._data.get("hooks_enabled"))
+
+    @property
+    def log_level(self) -> str:
+        return str(self._data.get("log_level", "INFO"))
+
+    @property
+    def force_plain(self) -> bool:
+        return bool(self._data.get("force_plain"))
+
+    @property
+    def schema_validation(self) -> str:
+        return str(self._data.get("schema_validation", "advisory"))
+
+    @property
+    def slow_query_notice_seconds(self) -> float | None:
+        v = self._data.get("slow_query_notice_seconds")
+        return float(str(v)) if v is not None else None
+
+    def get(self, key: str, default: object = None) -> object:
+        return self._data.get(key, default)
+
+
 def _config_file_path() -> Path | None:
     """Resolve the polylogue.toml path.
 
@@ -195,11 +271,11 @@ def load_polylogue_config(
     *,
     config_path: Path | None = None,
     cli_overrides: dict[str, object] | None = None,
-) -> dict[str, object]:
+) -> PolylogueConfig:
     """Load resolved Polylogue config with four-layer precedence.
 
-    Returns a dict suitable for constructing typed config models.
-    The dict always has all known keys with defaults applied.
+    Returns a typed ``PolylogueConfig`` with attribute access for
+    known keys and ``.get()`` / ``.raw`` for everything else.
     """
     cfg: dict[str, object] = {
         "archive_root": str(archive_root()),
@@ -213,6 +289,7 @@ def load_polylogue_config(
         "hooks_enabled": False,
         "log_level": "INFO",
         "force_plain": False,
+        "schema_validation": "advisory",
     }
 
     # Layer 2: TOML file
@@ -234,7 +311,7 @@ def load_polylogue_config(
             if value is not None:
                 cfg[key] = value
 
-    return cfg
+    return PolylogueConfig(_data=cfg)
 
 
 def _merge_toml(cfg: dict[str, object], toml_data: dict[str, object]) -> None:
@@ -323,9 +400,12 @@ __all__ = [
     "ConfigError",
     "DriveConfig",
     "IndexConfig",
+    "PolylogueConfig",
     "Source",
+    "format_config_toml",
     "get_config",
     "get_drive_config",
     "get_index_config",
     "get_sources",
+    "load_polylogue_config",
 ]

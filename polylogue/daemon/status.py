@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 import sqlite3
 from datetime import UTC, datetime
@@ -288,7 +289,13 @@ def _raw_failure_info() -> dict[str, object]:
                 ).fetchall()
             }
             if "raw_conversations" not in tables:
-                return {"parse_failures": 0, "validation_failures": 0, "quarantined": 0, "detection_warnings": 0, "samples": []}
+                return {
+                    "parse_failures": 0,
+                    "validation_failures": 0,
+                    "quarantined": 0,
+                    "detection_warnings": 0,
+                    "samples": [],
+                }
 
             parse_fail = int(
                 conn.execute("SELECT COUNT(*) FROM raw_conversations WHERE parse_error IS NOT NULL").fetchone()[0] or 0
@@ -305,14 +312,15 @@ def _raw_failure_info() -> dict[str, object]:
             )
             detection_warnings_count = 0
             try:
-                detection_warnings_count = int(
-                    conn.execute(
-                        "SELECT COUNT(*) FROM raw_conversations WHERE detection_warnings IS NOT NULL"
-                    ).fetchone()[0]
-                    or 0
-                )
-            except sqlite3.OperationalError:
-                pass  # Column may not exist yet (pre-migration)
+                with contextlib.suppress(sqlite3.OperationalError):
+                    detection_warnings_count = int(
+                        conn.execute(
+                            "SELECT COUNT(*) FROM raw_conversations WHERE detection_warnings IS NOT NULL"
+                        ).fetchone()[0]
+                        or 0
+                    )
+            except Exception:
+                pass
             # Bounded failure samples (most recent 50)
             samples: list[dict[str, object]] = []
             for row in conn.execute(
