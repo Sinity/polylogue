@@ -320,6 +320,8 @@ class ConversationSearchMatchPayload(SurfacePayloadModel):
     message_id: str | None = None
     snippet: str | None = None
     score: float | None = None
+    matched_terms: tuple[str, ...] = ()
+    score_components: dict[str, float] = Field(default_factory=dict)
 
 
 class ConversationSearchHitPayload(SurfacePayloadModel):
@@ -347,6 +349,8 @@ class ConversationSearchHitPayload(SurfacePayloadModel):
                 message_id=hit.message_id,
                 snippet=hit.snippet,
                 score=hit.score,
+                matched_terms=hit.matched_terms,
+                score_components=hit.score_components,
             ),
         )
 

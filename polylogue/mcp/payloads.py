@@ -169,6 +169,7 @@ class MCPPaginatedSearchResultPayload(SurfacePayloadModel):
     limit: int
     offset: int
     next_offset: int | None = None
+    next_cursor: str | None = None
     diagnostics: MCPQueryMissDiagnosticsPayload | None = None
 
 
@@ -221,6 +222,17 @@ def conversation_neighbor_candidate_list_payload(
     )
 
 
+def _build_search_cursor(hits: Sequence[ConversationSearchHit]) -> str | None:
+    """Build an opaque cursor from the last hit for keyset pagination."""
+    if not hits:
+        return None
+    import base64
+
+    last = hits[-1]
+    payload = f"{last.rank}:{last.conversation_id}"
+    return base64.b64encode(payload.encode()).decode()
+
+
 def conversation_search_result_payload(
     hits: Sequence[ConversationSearchHit],
     *,
@@ -230,6 +242,7 @@ def conversation_search_result_payload(
     diagnostics: QueryMissDiagnostics | None = None,
 ) -> MCPPaginatedSearchResultPayload:
     next_offset = offset + len(hits) if len(hits) == limit and offset + limit < total else None
+    next_cursor = _build_search_cursor(hits) if len(hits) == limit else None
     return MCPPaginatedSearchResultPayload(
         hits=tuple(
             MCPConversationSearchHitPayload.from_search_hit(
@@ -242,6 +255,7 @@ def conversation_search_result_payload(
         limit=limit,
         offset=offset,
         next_offset=next_offset,
+        next_cursor=next_cursor,
         diagnostics=(MCPQueryMissDiagnosticsPayload.from_diagnostics(diagnostics) if diagnostics else None),
     )
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING
 
 from polylogue.archive.query.fields import plan_has_fields_matching
@@ -27,6 +27,8 @@ class ConversationSearchHit:
     message_id: str | None = None
     snippet: str | None = None
     score: float | None = None
+    matched_terms: tuple[str, ...] = ()
+    score_components: dict[str, float] = field(default_factory=dict)
 
     @property
     def conversation_id(self) -> str:
@@ -83,6 +85,8 @@ def conversation_search_hit_from_conversation(
     retrieval_lane: str,
     match_surface: str | None = None,
     score: float | None = None,
+    matched_terms: tuple[str, ...] = (),
+    score_components: dict[str, float] | None = None,
 ) -> ConversationSearchHit:
     terms = search_terms(query_terms)
     matching_message = next(
@@ -102,6 +106,8 @@ def conversation_search_hit_from_conversation(
         message_id=str(matching_message.id) if matching_message else None,
         snippet=snippet,
         score=score,
+        matched_terms=matched_terms,
+        score_components=score_components or {},
     )
 
 
@@ -114,6 +120,8 @@ def conversation_search_hit_from_summary(
     message_id: str | None,
     snippet: str | None,
     score: float | None = None,
+    matched_terms: tuple[str, ...] = (),
+    score_components: dict[str, float] | None = None,
 ) -> ConversationSearchHit:
     return ConversationSearchHit(
         summary=summary,
@@ -123,6 +131,8 @@ def conversation_search_hit_from_summary(
         message_id=message_id,
         snippet=snippet,
         score=score,
+        matched_terms=matched_terms,
+        score_components=score_components or {},
     )
 
 
@@ -168,15 +178,45 @@ async def search_hits_for_plan(
             since=plan.since.isoformat() if plan.since else None,
         )
 
+    # Hybrid lane: use direct search to preserve per-lane rank contributions
+    if plan.retrieval_lane == "hybrid":
+        from polylogue.archive.query.retrieval_search import search_hybrid_results as _search_hybrid
+
+        limit = plan.limit or search_limit(plan)
+        conversations, lane_ranks = await _search_hybrid(plan, repository, limit=limit)
+        query_terms = (query_text,)
+        terms = search_terms(query_terms)
+        hits: list[ConversationSearchHit] = []
+        for rank, conversation in enumerate(conversations, start=1):
+            conv_id = str(conversation.id)
+            lane_info = lane_ranks.get(conv_id, {})
+            score_components: dict[str, float] = {}
+            for lane_name, lane_rank_val in lane_info.items():
+                if lane_rank_val is not None:
+                    score_components[f"{lane_name}_rank"] = float(lane_rank_val)
+            hits.append(
+                conversation_search_hit_from_conversation(
+                    conversation,
+                    query_terms=query_terms,
+                    rank=rank,
+                    retrieval_lane="hybrid",
+                    score_components=score_components,
+                    matched_terms=terms,
+                )
+            )
+        return hits
+
     conversations = await plan.list(repository)
     retrieval_lane = _resolved_retrieval_lane(plan)
     query_terms = (query_text,)
+    terms = search_terms(query_terms)
     return [
         conversation_search_hit_from_conversation(
             conversation,
             query_terms=query_terms,
             rank=rank,
             retrieval_lane=retrieval_lane,
+            matched_terms=terms,
         )
         for rank, conversation in enumerate(conversations, start=1)
     ]

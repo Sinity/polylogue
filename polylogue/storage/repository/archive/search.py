@@ -112,6 +112,8 @@ class RepositoryArchiveSearchMixin:
                 message_id=hit.message_id,
                 snippet=hit.snippet,
                 score=hit.score,
+                matched_terms=hit.matched_terms,
+                score_components=hit.score_components,
             )
             for hit in evidence_hits
             if hit.conversation_id in summaries_by_id

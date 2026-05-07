@@ -27,6 +27,7 @@ from polylogue.surfaces.payloads import (
 
 if TYPE_CHECKING:
     from polylogue.api import Polylogue
+    from polylogue.archive.query.spec import ConversationQuerySpec
 
 logger = get_logger(__name__)
 
@@ -497,6 +498,13 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         spec = ConversationQuerySpec.from_params(
             {**query_params, "limit": limit, "offset": offset},
         )
+        query_text = query_params.get("query") or query_params.get("contains")
+
+        # When search terms are present, return ranked result envelope with
+        # per-hit match evidence instead of plain row dicts.
+        if query_text and not query_params.get("similar_text"):
+            return await self._do_search_list(poly, spec, limit, offset)
+
         filter_obj = spec.build_filter(poly.repository)
         summaries = await filter_obj.list_summaries()
         total = await spec.count(poly.repository)
@@ -535,6 +543,71 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
         result: dict[str, object] = {
             "items": items,
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+        }
+        if diagnostics is not None:
+            result["diagnostics"] = diagnostics.model_dump(mode="json")
+        return result
+
+    async def _do_search_list(
+        self,
+        poly: Polylogue,
+        spec: ConversationQuerySpec,
+        limit: int,
+        offset: int,
+    ) -> object:
+        """Return ranked search hits with match evidence for queries with search terms."""
+        from polylogue.archive.query.search_hits import search_hits_for_plan
+        from polylogue.mcp.payloads import MCPQueryMissDiagnosticsPayload
+
+        plan = spec.to_plan()
+        hits = await search_hits_for_plan(plan, poly.repository)
+        total = await spec.count(poly.repository)
+
+        diagnostics = None
+        if not hits and spec.has_filters():
+            with contextlib.suppress(Exception):
+                try:
+                    raw_diag = await poly.operations.diagnose_query_miss(spec)
+                    diagnostics = MCPQueryMissDiagnosticsPayload.from_diagnostics(raw_diag)
+                except Exception:
+                    pass
+
+        hit_dicts: list[dict[str, object]] = []
+        for hit in hits:
+            flags = _build_flags_from_conversation(hit.summary)
+            hit_dicts.append(
+                {
+                    "id": hit.conversation_id,
+                    "title": hit.summary.display_title,
+                    "provider": str(hit.summary.provider) if hit.summary.provider else None,
+                    "date": hit.summary.display_date.isoformat() if hit.summary.display_date else None,
+                    "created_at": hit.summary.created_at.isoformat() if hit.summary.created_at else None,
+                    "updated_at": hit.summary.updated_at.isoformat() if hit.summary.updated_at else None,
+                    "message_count": hit.summary.message_count,
+                    "word_count": getattr(hit.summary, "word_count", None),
+                    "repo": _extract_repo(hit.summary.provider_meta),
+                    "cwd_display": _extract_cwd(hit.summary.provider_meta),
+                    "tags": hit.summary.tags,
+                    "flags": flags.model_dump(mode="json") if flags else None,
+                    "summary": hit.summary.summary,
+                    "match": {
+                        "rank": hit.rank,
+                        "retrieval_lane": hit.retrieval_lane,
+                        "match_surface": hit.match_surface,
+                        "message_id": hit.message_id,
+                        "snippet": hit.snippet,
+                        "score": hit.score,
+                        "matched_terms": list(hit.matched_terms),
+                        "score_components": hit.score_components,
+                    },
+                }
+            )
+
+        result: dict[str, object] = {
+            "hits": hit_dicts,
             "total": total,
             "limit": limit,
             "offset": offset,

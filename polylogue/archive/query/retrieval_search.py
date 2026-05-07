@@ -139,7 +139,12 @@ async def search_hybrid_results(
     repository: ConversationQueryRuntimeStore,
     *,
     limit: int,
-) -> list[Conversation]:
+) -> tuple[list[Conversation], dict[str, dict[str, int | None]]]:
+    """Return hybrid results with per-conversation lane rank contributions.
+
+    Returns a tuple of (ordered conversations, lane_ranks dict).
+    lane_ranks maps conversation_id -> {"text": rank_or_None, "action": rank_or_None, "vector": rank_or_None}.
+    """
     query = search_query_text(plan)
     provider_names = list(provider_values(plan.providers)) or None
     text_results = await repository.search(query, limit=limit * 3, providers=provider_names)
@@ -161,6 +166,17 @@ async def search_hybrid_results(
             )
             vector_results = []
 
+    # Build per-lane rank lookup: conv_id -> rank (1-based, None if not in lane)
+    text_rank_by_id: dict[str, int] = {}
+    for rank, conversation in enumerate(text_results, start=1):
+        text_rank_by_id[str(conversation.id)] = rank
+    action_rank_by_id: dict[str, int] = {}
+    for rank, conversation in enumerate(action_results, start=1):
+        action_rank_by_id[str(conversation.id)] = rank
+    vector_rank_by_id: dict[str, int] = {}
+    for rank, conversation in enumerate(vector_results, start=1):
+        vector_rank_by_id[str(conversation.id)] = rank
+
     text_ranked = [(str(conversation.id), float(rank)) for rank, conversation in enumerate(text_results, start=1)]
     action_ranked = [(str(conversation.id), float(rank)) for rank, conversation in enumerate(action_results, start=1)]
     vector_ranked = [(str(conversation.id), float(rank)) for rank, conversation in enumerate(vector_results, start=1)]
@@ -172,13 +188,19 @@ async def search_hybrid_results(
     action_by_id = {str(conversation.id): conversation for conversation in action_results}
     vector_by_id = {str(conversation.id): conversation for conversation in vector_results}
     ordered: list[Conversation] = []
+    lane_ranks: dict[str, dict[str, int | None]] = {}
     for conversation_id in fused_ids:
-        conversation = (
+        matched_conversation: Conversation | None = (
             action_by_id.get(conversation_id) or text_by_id.get(conversation_id) or vector_by_id.get(conversation_id)
         )
-        if conversation is not None:
-            ordered.append(conversation)
-    return ordered
+        if matched_conversation is not None:
+            ordered.append(matched_conversation)
+            lane_ranks[str(matched_conversation.id)] = {
+                "text": text_rank_by_id.get(conversation_id),
+                "action": action_rank_by_id.get(conversation_id),
+                "vector": vector_rank_by_id.get(conversation_id),
+            }
+    return ordered, lane_ranks
 
 
 async def fetch_batched_filtered_conversations(
