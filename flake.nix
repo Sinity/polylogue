@@ -70,9 +70,7 @@
             orjson
             structlog
             pydantic
-            pydantic-settings
             aiosqlite
-            glom
             mcp
             pyyaml
             watchfiles
