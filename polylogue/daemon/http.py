@@ -78,6 +78,31 @@ def _advertised_cors_headers(host: str) -> dict[str, str]:
     return {}
 
 
+
+def _check_auth_logic(
+    auth_token: str | None,
+    client_host: str,  # noqa: ARG001
+    auth_header: str,
+) -> _AuthResult:
+    """Pure logic for auth checks — testable without HTTP handler setup."""
+    if not auth_token:
+        return _AuthResult(allowed=True, reason=None)
+    if not auth_header.startswith("Bearer "):
+        return _AuthResult(allowed=False, reason="unauthorized")
+    if auth_header[7:] != auth_token:
+        return _AuthResult(allowed=False, reason="unauthorized")
+    return _AuthResult(allowed=True, reason=None)
+
+
+class _AuthResult:
+    def __init__(self, *, allowed: bool, reason: str | None) -> None:
+        self.allowed = allowed
+        self.reason = reason
+
+    def __bool__(self) -> bool:
+        return self.allowed
+
+
 class DaemonAPIHandler(BaseHTTPRequestHandler):
     """HTTP handler for the daemon API server.
 
@@ -212,7 +237,7 @@ class _AuthResult:
     # OPTIONS (no CORS by default — localhost-only service)
     # ------------------------------------------------------------------
 
-    def do_OPTIONS(self) -> None:
+    def do_OPTIONS(self) -> None:  # noqa: N802
         self._send_error(HTTPStatus.METHOD_NOT_ALLOWED, "method_not_allowed")
 
     # ------------------------------------------------------------------
@@ -248,7 +273,7 @@ class _AuthResult:
         else:
             self._send_error(HTTPStatus.NOT_FOUND, "not_found")
 
-    def do_GET(self) -> None:
+    def do_GET(self) -> None:  # noqa: N802
         path, params = self._parse_path()
         self._dispatch_get(path, params)
 
@@ -273,7 +298,7 @@ class _AuthResult:
         self._send_error(HTTPStatus.FORBIDDEN, "cross_origin_denied")
         return False
 
-    def do_POST(self) -> None:
+    def do_POST(self) -> None:  # noqa: N802
         path, params = self._parse_path()
 
         if not self._check_auth():
