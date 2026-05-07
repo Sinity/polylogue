@@ -772,7 +772,14 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         result = self._sync_run(lambda p: _do_reset())
 
         emit_daemon_event("reset", operation_id=op_id, payload=result if isinstance(result, dict) else None)
-        self._send_json(HTTPStatus.OK, result)
+        from polylogue.mcp.payloads import MutationResultPayload
+
+        deleted = result.get("deleted", False) if isinstance(result, dict) else False
+        response = MutationResultPayload(
+            status="deleted" if deleted else "ok",
+            detail=f"reset {scope}" if deleted else f"reset {scope} — no conversations matched",
+        )
+        self._send_json(HTTPStatus.OK, response.model_dump())
 
     # ------------------------------------------------------------------
     # Handlers: ingest
