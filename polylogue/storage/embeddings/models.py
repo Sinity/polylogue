@@ -17,6 +17,8 @@ class EmbeddingStatsSnapshot:
     model_counts: dict[str, int] = field(default_factory=dict)
     dimension_counts: dict[int, int] = field(default_factory=dict)
     retrieval_bands: dict[str, dict[str, object]] = field(default_factory=dict)
+    failure_count: int = 0
+    total_estimated_cost_usd: float = 0.0
 
 
 __all__ = ["EmbeddingStatsSnapshot"]

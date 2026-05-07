@@ -18,6 +18,8 @@ from polylogue.storage.embeddings.sql import (
     EMBEDDED_AT_BOUNDS_SQL,
     EMBEDDED_CONVERSATIONS_SQL,
     EMBEDDED_MESSAGES_SQL,
+    EMBEDDING_FAILURE_COUNT_SQL,
+    EMBEDDING_TOTAL_TOKENS_SQL,
     MISSING_META_MESSAGES_SQL,
     MODEL_COUNTS_SQL,
     PENDING_CONVERSATIONS_SQL,
@@ -37,6 +39,10 @@ from polylogue.storage.insights.session.status import (
     session_insight_status_async,
     session_insight_status_sync,
 )
+from polylogue.storage.search_providers.sqlite_vec_support import (
+    ESTIMATED_TOKENS_PER_MESSAGE,
+    VOYAGE_4_COST_PER_1M_TOKENS,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,6 +56,8 @@ class _EmbeddingStatsParts:
     stale_messages: int
     missing_provenance: int
     conversations_exist: bool
+    failure_count: int = 0
+    total_message_count: int = 0
     total_conversations: int = 0
 
 
@@ -107,6 +115,8 @@ def _base_parts_sync(conn: sqlite3.Connection) -> _EmbeddingStatsParts:
         stale_messages=optional_count_sync(conn, STALE_MESSAGES_SQL),
         missing_provenance=optional_count_sync(conn, MISSING_META_MESSAGES_SQL),
         conversations_exist=bool(optional_row_sync(conn, CONVERSATIONS_EXISTS_SQL)),
+        failure_count=optional_count_sync(conn, EMBEDDING_FAILURE_COUNT_SQL),
+        total_message_count=optional_count_sync(conn, EMBEDDING_TOTAL_TOKENS_SQL),
     )
 
 
@@ -121,6 +131,8 @@ async def _base_parts_async(conn: aiosqlite.Connection) -> _EmbeddingStatsParts:
         stale_messages=await optional_count_async(conn, STALE_MESSAGES_SQL),
         missing_provenance=await optional_count_async(conn, MISSING_META_MESSAGES_SQL),
         conversations_exist=bool(await optional_row_async(conn, CONVERSATIONS_EXISTS_SQL)),
+        failure_count=await optional_count_async(conn, EMBEDDING_FAILURE_COUNT_SQL),
+        total_message_count=await optional_count_async(conn, EMBEDDING_TOTAL_TOKENS_SQL),
     )
 
 
@@ -143,6 +155,16 @@ async def _total_conversations_async(conn: aiosqlite.Connection) -> int:
     return _row_count(await (await conn.execute("SELECT COUNT(*) FROM conversations")).fetchone())
 
 
+def _estimated_cost(total_message_count: int, pending_messages: int = 0) -> float:
+    """Estimate Voyage API cost from message counts.
+
+    Uses rough per-message token estimate (500 tokens/msg average)
+    and voyage-4 pricing ($0.10 / 1M tokens).
+    """
+    estimated_tokens = (total_message_count + pending_messages) * ESTIMATED_TOKENS_PER_MESSAGE
+    return estimated_tokens * VOYAGE_4_COST_PER_1M_TOKENS / 1_000_000
+
+
 def _snapshot(
     parts: _EmbeddingStatsParts,
     *,
@@ -159,6 +181,11 @@ def _snapshot(
         model_counts=_model_counts(parts.model_rows),
         dimension_counts=_dimension_counts(parts.dimension_rows),
         retrieval_bands=retrieval_bands,
+        failure_count=parts.failure_count,
+        total_estimated_cost_usd=round(
+            _estimated_cost(parts.total_message_count, parts.pending_conversations),
+            2,
+        ),
     )
 
 
