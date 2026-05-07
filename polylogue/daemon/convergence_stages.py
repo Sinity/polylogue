@@ -158,7 +158,7 @@ def make_embed_stage(db_path: Path) -> ConvergenceStage:
     """Generate vector embeddings for changed conversations that need them."""
 
     def check(path: Path) -> bool:
-        if not _embedding_env_enabled():
+        if not _embedding_config_enabled():
             return False
         if not db_path.exists():
             return False
@@ -175,7 +175,7 @@ def make_embed_stage(db_path: Path) -> ConvergenceStage:
             return False
 
     def execute(path: Path) -> bool:
-        if not _embedding_env_enabled():
+        if not _embedding_config_enabled():
             return True
         from polylogue.storage.sqlite.connection_profile import open_connection
 
@@ -196,7 +196,7 @@ def make_embed_stage(db_path: Path) -> ConvergenceStage:
             return False
 
     def check_many(paths: Sequence[Path]) -> set[Path]:
-        if not paths or not _embedding_env_enabled() or not db_path.exists():
+        if not paths or not _embedding_config_enabled() or not db_path.exists():
             return set()
         from polylogue.storage.sqlite.connection_profile import open_connection
 
@@ -221,7 +221,7 @@ def make_embed_stage(db_path: Path) -> ConvergenceStage:
             return set()
 
     def execute_many(paths: Sequence[Path]) -> bool:
-        if not paths or not _embedding_env_enabled():
+        if not paths or not _embedding_config_enabled():
             return True
         from polylogue.storage.sqlite.connection_profile import open_connection
 
@@ -377,7 +377,7 @@ def make_insights_stage(db_path: Path) -> ConvergenceStage:
 def make_default_convergence_stages(db_path: Path) -> tuple[ConvergenceStage, ...]:
     """Build the daemon's default post-ingest convergence stage set."""
     stage_list = [make_fts_stage(db_path)]
-    if _embedding_env_enabled():
+    if _embedding_config_enabled():
         stage_list.append(make_embed_stage(db_path))
     stage_list.append(make_insights_stage(db_path))
     return tuple(stage_list)
@@ -468,11 +468,12 @@ def _fts_needs_repair_for_conversations(conn: sqlite3.Connection, conversation_i
     return _fts_repair_needs_for_conversations(conn, conversation_ids).any
 
 
-def _embedding_env_enabled() -> bool:
-    import os
+def _embedding_config_enabled() -> bool:
+    """Check whether embedding convergence is enabled via the shared config layer."""
+    from polylogue.config import load_polylogue_config
 
-    enabled = os.environ.get("POLYLOGUE_DAEMON_ENABLE_EMBEDDINGS", "").lower() in {"1", "true", "yes"}
-    return enabled and bool(os.environ.get("VOYAGE_API_KEY"))
+    cfg = load_polylogue_config()
+    return bool(cfg.get("embedding_enabled")) and bool(cfg.get("voyage_api_key"))
 
 
 def _pending_embedding_conversation_ids(
@@ -498,19 +499,19 @@ def _pending_embedding_conversation_ids(
 
 
 def _embed_conversations_sync(db_path: Path, conversation_ids: Sequence[str]) -> bool:
-    import os
 
     from polylogue.api.sync.bridge import run_coroutine_sync
+    from polylogue.config import load_polylogue_config
     from polylogue.storage.embeddings.materialization import embed_conversation_sync
     from polylogue.storage.repository import ConversationRepository
     from polylogue.storage.search_providers import create_vector_provider
     from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
-    voyage_key = os.environ.get("VOYAGE_API_KEY")
+    voyage_key = load_polylogue_config().get("voyage_api_key")
     if not voyage_key:
         return True
 
-    vec_provider = create_vector_provider(voyage_api_key=voyage_key, db_path=db_path)
+    vec_provider = create_vector_provider(voyage_api_key=str(voyage_key), db_path=db_path)
     if vec_provider is None:
         logger.warning("embed: vector provider unavailable")
         return False
