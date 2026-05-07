@@ -745,6 +745,10 @@ def _run_generated_scenario_family_evidence(
     evidence["status"] = status
     evidence["generated_world"] = attrs.get("generated_world")
     evidence["workload_family"] = attrs.get("workload_family")
+    evidence["evidence_note"] = (
+        "metadata/spec completeness: checks that scenario family subject metadata "
+        "is declared, not that the scenario executes"
+    )
     return _build_envelope(
         obligation,
         status=OutcomeStatus.OK if all(bool(value) for value in checks.values()) else OutcomeStatus.ERROR,
@@ -790,6 +794,10 @@ def _run_generated_scenario_local_evidence(
     evidence["local_deterministic"] = attrs.get("local_deterministic")
     evidence["live_archive_dependency"] = attrs.get("live_archive_dependency")
     evidence["reproducer"] = list(family_reproducer)
+    evidence["evidence_note"] = (
+        "metadata/spec completeness: checks that scenario family declares local/deterministic "
+        "properties in subject metadata, not that the scenario executes"
+    )
     return _build_envelope(
         obligation,
         status=OutcomeStatus.OK if all(bool(value) for value in checks.values()) else OutcomeStatus.ERROR,
@@ -842,6 +850,10 @@ def _run_generated_scenario_semantic_evidence(
     evidence["semantic_claims"] = [dict(claim) for claim in semantic_claims]
     evidence["implemented_claim_families"] = list(implemented)
     evidence["mapped_claim_families"] = list(mapped)
+    evidence["evidence_note"] = (
+        "metadata/spec completeness: checks that scenario family declares semantic claim "
+        "mappings in subject metadata, not that the mapped behavior executes"
+    )
     return _build_envelope(
         obligation,
         status=OutcomeStatus.OK if all(bool(value) for value in checks.values()) else OutcomeStatus.ERROR,
