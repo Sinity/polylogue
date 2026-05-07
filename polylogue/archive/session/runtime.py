@@ -9,6 +9,7 @@ from polylogue.archive.conversation.attribution import extract_attribution
 from polylogue.archive.conversation.extraction import extract_work_events
 from polylogue.archive.phase.extraction import extract_phases
 from polylogue.archive.semantic.facts import build_conversation_semantic_facts
+from polylogue.archive.semantic.timing import compute_session_timing
 from polylogue.archive.session.models import SessionAnalysis, SessionProfile
 
 if TYPE_CHECKING:
@@ -69,6 +70,11 @@ def build_session_profile(
     canonical_session_at = (
         facts.first_message_at or conversation.created_at or conversation.updated_at or facts.last_message_at
     )
+    timing = compute_session_timing(
+        list(conversation.messages),
+        tool_use_count=facts.tool_messages,
+        wall_duration_ms=facts.wall_duration_ms,
+    )
     partial = SessionProfile(
         conversation_id=str(conversation.id),
         provider=str(conversation.provider),
@@ -105,6 +111,12 @@ def build_session_profile(
         tags=tuple(conversation.tags),
         is_continuation=conversation.is_continuation,
         parent_id=str(conversation.parent_id) if conversation.parent_id else None,
+        thinking_duration_ms=timing.thinking_duration_ms,
+        output_duration_ms=timing.output_duration_ms,
+        tool_duration_ms=timing.tool_duration_ms,
+        latency_percentiles_ms=timing.latency_percentiles_ms,
+        tool_calls_per_minute=timing.tool_calls_per_minute,
+        timing_provenance=timing.timing_provenance,
     )
     return replace(partial, auto_tags=infer_auto_tags(partial))
 
