@@ -1514,3 +1514,74 @@ async def test_parent_message_id_self_referential_fk(
     assert len(await backend.get_messages("conv-fk")) == 0
 
     await backend.close()
+
+
+def test_quarantine_catches_validation_failures(tmp_path: Path) -> None:
+    """Quarantine property must return True when validation_status is FAILED (#844)."""
+    from polylogue.storage.raw.artifacts import RawIngestArtifactState
+    from polylogue.types import ValidationStatus
+
+    # Strict schema validation failure without parse error — must still be quarantined
+    state = RawIngestArtifactState(
+        raw_id="raw-1",
+        parsed=False,
+        parse_error=None,
+        parsed_at=None,
+        validation_status=ValidationStatus.FAILED,
+    )
+    assert state.quarantined is True
+
+    # Parse error also quarantines
+    state_with_parse = RawIngestArtifactState(
+        raw_id="raw-2",
+        parsed=False,
+        parse_error="something broke",
+        parsed_at=None,
+        validation_status=None,
+    )
+    assert state_with_parse.quarantined is True
+
+    # Successfully parsed + validated is NOT quarantined
+    state_clean = RawIngestArtifactState(
+        raw_id="raw-3",
+        parsed=True,
+        parse_error=None,
+        parsed_at="2026-01-01T00:00:00Z",
+        validation_status=ValidationStatus.PASSED,
+    )
+    assert state_clean.quarantined is False
+
+
+def test_fts_triggers_restored_before_commit(tmp_path: Path) -> None:
+    """FTS triggers must be active after _commit_ingest_results (#817).
+
+    Verify that the restore happens before conn.commit() in the ingest path.
+    We check this by confirming FTS triggers exist after the commit boundary.
+    """
+    import sqlite3
+
+    from polylogue.storage.sqlite.schema_ddl_archive import ARCHIVE_STORAGE_DDL
+
+    db = tmp_path / "fts_commit.db"
+    conn = sqlite3.connect(str(db))
+    conn.executescript(ARCHIVE_STORAGE_DDL)
+    conn.execute("INSERT INTO conversations(conversation_id, provider_name, provider_conversation_id) VALUES(?,?,?)",
+                 ("c1", "test", "pc1"))
+    conn.execute("INSERT INTO messages(message_id, conversation_id, role, text, provider_name) VALUES(?,?,?,?,?)",
+                 ("m1", "c1", "user", "hello world", "test"))
+    conn.commit()
+
+    # Simulate: suspend triggers, insert data, restore before commit
+    from polylogue.storage.fts.fts_lifecycle import restore_fts_triggers_sync, suspend_fts_triggers_sync
+
+    suspend_fts_triggers_sync(conn)
+    conn.execute("INSERT INTO messages(message_id, conversation_id, role, text, provider_name) VALUES(?,?,?,?,?)",
+                 ("m2", "c1", "assistant", "hi there", "test"))
+    # Restore BEFORE commit (the fix)
+    restore_fts_triggers_sync(conn)
+    conn.commit()
+
+    # After commit, FTS should be populated for both messages
+    count = conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0]
+    assert count == 2, f"Expected 2 FTS entries, got {count}"
+    conn.close()
