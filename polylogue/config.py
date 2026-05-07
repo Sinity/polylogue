@@ -238,6 +238,31 @@ class PolylogueConfig:
         v = self._data.get("slow_query_notice_seconds")
         return float(str(v)) if v is not None else None
 
+    @property
+    def api_host(self) -> str:
+        return str(self._data.get("api_host", "127.0.0.1"))
+
+    @property
+    def api_port(self) -> int:
+        return int(str(self._data.get("api_port", 8766)))
+
+    @property
+    def api_auth_token(self) -> str | None:
+        v = self._data.get("api_auth_token")
+        return v if isinstance(v, str) and v else None
+
+    @property
+    def browser_capture_port(self) -> int:
+        return int(str(self._data.get("browser_capture_port", 8765)))
+
+    @property
+    def browser_capture_allowed_origins(self) -> str:
+        return str(self._data.get("browser_capture_allowed_origins", "127.0.0.1"))
+
+    @property
+    def additional_sources(self) -> str:
+        return str(self._data.get("additional_sources", ""))
+
     def get(self, key: str, default: object = None) -> object:
         return self._data.get(key, default)
 
@@ -282,6 +307,11 @@ def load_polylogue_config(
         "daemon_url": "http://127.0.0.1:8766",
         "daemon_host": "127.0.0.1",
         "daemon_port": 8766,
+        "api_host": "127.0.0.1",
+        "api_port": 8766,
+        "api_auth_token": None,
+        "browser_capture_port": 8765,
+        "browser_capture_allowed_origins": "127.0.0.1",
         "embedding_enabled": False,
         "embedding_model": "voyage-4",
         "embedding_dimension": 1024,
@@ -290,6 +320,7 @@ def load_polylogue_config(
         "log_level": "INFO",
         "force_plain": False,
         "schema_validation": "advisory",
+        "additional_sources": "",
     }
 
     # Layer 2: TOML file
@@ -319,12 +350,22 @@ def _merge_toml(cfg: dict[str, object], toml_data: dict[str, object]) -> None:
     section_keys = {
         "archive": ("archive_root",),
         "daemon": ("daemon_host", "daemon_port"),
+        "daemon.api": ("api_host", "api_port", "api_auth_token"),
+        "daemon.browser_capture": ("browser_capture_port", "browser_capture_allowed_origins"),
         "embedding": ("embedding_enabled", "embedding_model", "embedding_dimension", "embedding_max_cost_usd"),
         "hooks": ("hooks_enabled",),
         "logging": ("log_level", "force_plain"),
+        "sources": ("additional_sources",),
     }
     for section, keys in section_keys.items():
-        section_data = toml_data.get(section)
+        # Walk dotted paths for nested TOML sections like [daemon.api]
+        section_data: object = toml_data
+        for part in section.split("."):
+            if isinstance(section_data, dict):
+                section_data = section_data.get(part)
+            else:
+                section_data = None
+                break
         if isinstance(section_data, dict):
             for key in keys:
                 if key in section_data:
