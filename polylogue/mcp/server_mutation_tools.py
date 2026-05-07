@@ -18,9 +18,7 @@ if TYPE_CHECKING:
     from polylogue.mcp.server_support import ServerCallbacks
 
 
-async def _resolve_or_error(
-    hooks: ServerCallbacks, conversation_id: str
-) -> tuple[str | None, str | None]:
+async def _resolve_or_error(hooks: ServerCallbacks, conversation_id: str) -> tuple[str | None, str | None]:
     """Resolve a conversation ID, returning the canonical ID or an error JSON."""
     resolved = await hooks.get_query_store().resolve_id(conversation_id, strict=True)
     if not resolved:

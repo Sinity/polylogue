@@ -238,9 +238,7 @@ class MessageRuntimeMixin:
         # Narrow fallbacks that require context beyond message text.
         if self.attachments and len(text) < 100:
             return True
-        if "```" in text and text.count("```") >= 6:
-            return True
-        return False
+        return bool("```" in text and text.count("```") >= 6)
 
     @cached_property
     def is_protocol_artifact(self) -> bool:

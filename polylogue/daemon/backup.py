@@ -18,7 +18,7 @@ from pathlib import Path
 from pydantic import BaseModel
 
 from polylogue.logging import get_logger
-from polylogue.paths import archive_root, blob_store_root, db_path
+from polylogue.paths import blob_store_root, db_path
 
 logger = get_logger(__name__)
 
@@ -91,8 +91,7 @@ def _check_prerequisites() -> list[str]:
         free = st.f_frsize * st.f_bavail
         if free < needed:
             warnings.append(
-                f"low disk space: {free / (1024**3):.1f} GB free, "
-                f"~{needed / (1024**3):.1f} GB needed for VACUUM INTO"
+                f"low disk space: {free / (1024**3):.1f} GB free, ~{needed / (1024**3):.1f} GB needed for VACUUM INTO"
             )
     except Exception:
         pass

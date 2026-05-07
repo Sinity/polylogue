@@ -11,24 +11,29 @@ from typing_extensions import TypedDict
 from polylogue.core.json import JSONDocument
 from polylogue.mcp.context_pack import (
     ContextPackActionSummary as MCPContextPackActionSummary,
-    ContextPackConversation as MCPContextPackConversation,
-    ContextPackDateRange as MCPContextPackDateRange,
-    ContextPackMessage as MCPContextPackMessage,
-    ContextPackPayload as MCPContextPackPayload,
-    ContextPackProject as MCPContextPackProject,
-    ContextPackProvenance as MCPContextPackProvenance,
-    ContextPackQueryContext as MCPContextPackQueryContext,
-    ContextPackUnresolvedWork as MCPContextPackUnresolvedWork,
 )
 from polylogue.mcp.context_pack import (
-    ContextPackActionSummary as MCPContextPackActionSummary,
     ContextPackConversation as MCPContextPackConversation,
+)
+from polylogue.mcp.context_pack import (
     ContextPackDateRange as MCPContextPackDateRange,
+)
+from polylogue.mcp.context_pack import (
     ContextPackMessage as MCPContextPackMessage,
+)
+from polylogue.mcp.context_pack import (
     ContextPackPayload as MCPContextPackPayload,
+)
+from polylogue.mcp.context_pack import (
     ContextPackProject as MCPContextPackProject,
+)
+from polylogue.mcp.context_pack import (
     ContextPackProvenance as MCPContextPackProvenance,
+)
+from polylogue.mcp.context_pack import (
     ContextPackQueryContext as MCPContextPackQueryContext,
+)
+from polylogue.mcp.context_pack import (
     ContextPackUnresolvedWork as MCPContextPackUnresolvedWork,
 )
 from polylogue.surfaces.payloads import (
@@ -145,7 +150,6 @@ class MCPConversationSearchNoResultsPayload(SurfacePayloadModel):
     diagnostics: MCPQueryMissDiagnosticsPayload
 
 
-
 class MCPPaginatedQueryResultPayload(SurfacePayloadModel):
     """Paginated query result envelope for list_conversations."""
 
@@ -187,9 +191,7 @@ def conversation_query_result_payload(
         total=total,
         limit=limit,
         offset=offset,
-        diagnostics=(
-            MCPQueryMissDiagnosticsPayload.from_diagnostics(diagnostics) if diagnostics else None
-        ),
+        diagnostics=(MCPQueryMissDiagnosticsPayload.from_diagnostics(diagnostics) if diagnostics else None),
     )
 
 
@@ -234,9 +236,7 @@ def conversation_search_result_payload(
         total=total,
         limit=limit,
         offset=offset,
-        diagnostics=(
-            MCPQueryMissDiagnosticsPayload.from_diagnostics(diagnostics) if diagnostics else None
-        ),
+        diagnostics=(MCPQueryMissDiagnosticsPayload.from_diagnostics(diagnostics) if diagnostics else None),
     )
 
 

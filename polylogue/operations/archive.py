@@ -303,9 +303,7 @@ class ArchiveSearchMixin:
         full_id = await self.repository.resolve_id(conversation_id) or conversation_id
         return await self.repository.get_conversation_stats(str(full_id))
 
-    async def get_render_projection(
-        self, conversation_id: str
-    ) -> ConversationRenderProjection | None:
+    async def get_render_projection(self, conversation_id: str) -> ConversationRenderProjection | None:
         """Load the canonical render projection for a conversation."""
         return await self.repository.get_render_projection(conversation_id)
 

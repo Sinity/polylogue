@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json as _json
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -37,8 +38,6 @@ from polylogue.storage.runtime import (
     SessionProfileRecord,
 )
 from polylogue.types import ConversationId
-
-import json as _json
 
 
 def _serialize_percentiles(percentiles: dict[str, int]) -> str:
