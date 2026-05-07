@@ -18,7 +18,7 @@ from polylogue.config import load_polylogue_config
 
 logger = logging.getLogger(__name__)
 
-from polylogue.storage.action_events.artifacts import ActionEventArtifactState
+from polylogue.storage.action_events.artifacts import ActionEventArtifactState  # noqa: E402
 
 _T = TypeVar("_T")
 
