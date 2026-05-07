@@ -59,7 +59,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 
 | Command | Source |
 | --- | --- |
-| `polylogue` | `polylogue/cli/click_app.py:50` `polylogue.cli.click_app.cli` |
+| `polylogue` | `polylogue/cli/click_app.py:58` `polylogue.cli.click_app.cli` |
 | `polylogue auth` | `polylogue/cli/commands/auth.py:16` `polylogue.cli.commands.auth.auth_command` |
 | `polylogue backup` | `polylogue/cli/commands/backup.py:13` `polylogue.cli.commands.backup.backup_command` |
 | `polylogue bulk-export` | `polylogue/cli/query_verbs.py:112` `polylogue.cli.query_verbs.bulk_export_verb` |
@@ -74,7 +74,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `polylogue diagnostics turns` | `polylogue/cli/commands/diagnostics.py:92` `polylogue.cli.commands.diagnostics.turns_command` |
 | `polylogue doctor` | `polylogue/cli/commands/check.py:31` `polylogue.cli.commands.check.check_command` |
 | `polylogue export` | `polylogue/cli/commands/export.py:29` `polylogue.cli.commands.export.export_command` |
-| `polylogue ingest` | `polylogue/cli/commands/ingest.py:21` `polylogue.cli.commands.ingest.ingest_command` |
+| `polylogue ingest` | `polylogue/cli/commands/ingest.py:22` `polylogue.cli.commands.ingest.ingest_command` |
 | `polylogue insights` | `polylogue/cli/commands/insights.py:134` `polylogue.cli.commands.insights.insights_command` |
 | `polylogue insights analytics` | `polylogue/cli/commands/insights.py:100` `polylogue.cli.commands.insights._make_callback.<locals>.callback` |
 | `polylogue insights cost-rollups` | `polylogue/cli/commands/insights.py:100` `polylogue.cli.commands.insights._make_callback.<locals>.callback` |
