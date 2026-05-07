@@ -321,7 +321,10 @@ def promote_schema_cluster(request: SchemaPromoteRequest) -> SchemaPromoteResult
 def audit_schemas(request: SchemaAuditRequest) -> AuditReport:
     from polylogue.schemas.audit.workflow import audit_all_providers, audit_provider
 
-    return audit_provider(request.provider) if request.provider else audit_all_providers()
+    db_path = request.db_path if request.check_drift else None
+    if request.provider:
+        return audit_provider(request.provider, db_path=db_path)
+    return audit_all_providers(db_path=db_path)
 
 
 __all__ = [

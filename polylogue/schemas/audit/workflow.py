@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from polylogue.core.outcomes import OutcomeCheck as CheckResult
 from polylogue.core.outcomes import OutcomeStatus
 from polylogue.schemas.audit.checks import (
     check_annotation_coverage,
     check_cross_provider_consistency,
     check_privacy_guards,
+    check_schema_drift,
     check_schema_staleness,
     check_semantic_roles,
 )
@@ -27,7 +30,7 @@ def _scoped(provider: str, check: CheckResult) -> AuditCheck:
     )
 
 
-def audit_provider(provider: str) -> AuditReport:
+def audit_provider(provider: str, *, db_path: Path | None = None) -> AuditReport:
     """Run all audit checks on a single provider's committed schema."""
     report = AuditReport(provider=provider)
 
@@ -56,10 +59,22 @@ def audit_provider(provider: str) -> AuditReport:
     report.checks.append(_scoped(provider, check_annotation_coverage(schema)))
     report.checks.append(_scoped(provider, check_schema_staleness(schema)))
 
+    if db_path is not None:
+        report.checks.append(
+            _scoped(
+                provider,
+                check_schema_drift(schema, db_path=db_path, provider=provider),
+            )
+        )
+
     return report
 
 
-def audit_all_providers(providers: list[str] | None = None) -> AuditReport:
+def audit_all_providers(
+    providers: list[str] | None = None,
+    *,
+    db_path: Path | None = None,
+) -> AuditReport:
     """Run audit checks across all (or specified) providers."""
     from polylogue.schemas.observation import PROVIDERS
 
@@ -68,7 +83,7 @@ def audit_all_providers(providers: list[str] | None = None) -> AuditReport:
 
     schemas = {}
     for provider in provider_list:
-        provider_report = audit_provider(provider)
+        provider_report = audit_provider(provider, db_path=db_path)
         report.checks.extend(provider_report.checks)
         schema = _load_committed_schema(provider)
         if schema:
