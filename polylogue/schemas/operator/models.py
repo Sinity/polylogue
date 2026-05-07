@@ -309,6 +309,8 @@ class SchemaExplainResult:
 @dataclass(frozen=True)
 class SchemaAuditRequest:
     provider: str | None = None
+    check_drift: bool = False
+    db_path: Path | None = None
 
 
 @dataclass(frozen=True)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from pathlib import Path
 
 from polylogue.core.json import json_document, json_document_list
 from polylogue.core.outcomes import OutcomeCheck as CheckResult
@@ -221,11 +222,79 @@ def check_schema_staleness(schema: Mapping[str, object] | SchemaNode) -> CheckRe
     )
 
 
+def check_schema_drift(
+    schema: Mapping[str, object] | SchemaNode,
+    *,
+    db_path: Path | None = None,
+    provider: str = "",
+    max_samples: int = 50,
+) -> CheckResult:
+    """Check whether committed schema has drifted from live archive data.
+
+    Loads samples from the database and runs detect_drift() against the
+    committed schema.  Reports fields present in live data but missing from
+    the schema.
+    """
+    from polylogue.core.json import json_document
+    from polylogue.schemas.sampling import load_samples_from_db
+    from polylogue.schemas.validator import detect_drift
+
+    if db_path is None or not Path(db_path).exists():
+        return CheckResult(
+            name="schema_drift",
+            status=OutcomeStatus.SKIP,
+            summary="No database available for drift detection",
+        )
+
+    try:
+        samples = load_samples_from_db(provider, db_path=Path(db_path), max_samples=max_samples)
+    except Exception as exc:
+        return CheckResult(
+            name="schema_drift",
+            status=OutcomeStatus.WARNING,
+            summary=f"Failed to load samples for drift detection: {exc}",
+        )
+
+    if not samples:
+        return CheckResult(
+            name="schema_drift",
+            status=OutcomeStatus.SKIP,
+            summary="No samples available for drift detection",
+        )
+
+    root = json_document(schema)
+    all_drift: list[str] = []
+    seen: set[str] = set()
+    for sample in samples:
+        for warning in detect_drift(sample, root, ""):
+            if warning not in seen:
+                seen.add(warning)
+                all_drift.append(warning)
+
+    if not all_drift:
+        return CheckResult(
+            name="schema_drift",
+            status=OutcomeStatus.OK,
+            summary=f"No drift detected across {len(samples)} sample(s)",
+            count=len(samples),
+        )
+
+    unique_drift = list(dict.fromkeys(all_drift))
+    return CheckResult(
+        name="schema_drift",
+        status=OutcomeStatus.WARNING,
+        summary=f"Schema drift detected: {len(unique_drift)} unexpected field(s) in live data",
+        details=unique_drift[:50],
+        count=len(samples),
+    )
+
+
 __all__ = [
     "CheckResult",
     "check_annotation_coverage",
     "check_cross_provider_consistency",
     "check_privacy_guards",
+    "check_schema_drift",
     "check_schema_staleness",
     "check_semantic_roles",
 ]

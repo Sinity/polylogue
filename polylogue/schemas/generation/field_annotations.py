@@ -18,6 +18,12 @@ _ENUM_OUTPUT_CAP = 20
 _ENUM_MIN_COUNT = 2
 _ENUM_MIN_FREQ = 0.03
 
+# Semantic roles whose enum values are structural identifiers
+# (e.g. record types, message roles).  These fields bypass the
+# cross-conversation privacy threshold because their values are
+# protocol-level tokens, not user content.
+_STRUCTURAL_ROLE_VALUES = frozenset({"message_role"})
+
 
 def _enum_values(
     field_stats: FieldStats,
@@ -104,10 +110,17 @@ def annotate_schema(
             and fmt not in id_formats
             and not _is_content_field(path)
         ):
+            # Structural fields (e.g. message_role) bypass the
+            # cross-conversation privacy threshold — their values
+            # are protocol-level tokens, not user content.
+            sem_role = schema_node.get("x-polylogue-semantic-role")
+            effective_min_conv = (
+                1 if isinstance(sem_role, str) and sem_role in _STRUCTURAL_ROLE_VALUES else min_conversation_count
+            )
             enum_values = _enum_values(
                 field_stats,
                 path=path,
-                min_conversation_count=min_conversation_count,
+                min_conversation_count=effective_min_conv,
                 privacy_config=privacy_config,
             )
             if enum_values:
