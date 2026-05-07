@@ -157,6 +157,7 @@ class MCPPaginatedQueryResultPayload(SurfacePayloadModel):
     total: int
     limit: int
     offset: int
+    next_offset: int | None = None
     diagnostics: MCPQueryMissDiagnosticsPayload | None = None
 
 
@@ -167,6 +168,7 @@ class MCPPaginatedSearchResultPayload(SurfacePayloadModel):
     total: int
     limit: int
     offset: int
+    next_offset: int | None = None
     diagnostics: MCPQueryMissDiagnosticsPayload | None = None
 
 
@@ -186,11 +188,13 @@ def conversation_query_result_payload(
     offset: int,
     diagnostics: QueryMissDiagnostics | None = None,
 ) -> MCPPaginatedQueryResultPayload:
+    next_offset = offset + len(conversations) if len(conversations) == limit and offset + limit < total else None
     return MCPPaginatedQueryResultPayload(
         items=tuple(MCPConversationSummaryPayload.from_conversation(conv) for conv in conversations),
         total=total,
         limit=limit,
         offset=offset,
+        next_offset=next_offset,
         diagnostics=(MCPQueryMissDiagnosticsPayload.from_diagnostics(diagnostics) if diagnostics else None),
     )
 
@@ -225,6 +229,7 @@ def conversation_search_result_payload(
     offset: int,
     diagnostics: QueryMissDiagnostics | None = None,
 ) -> MCPPaginatedSearchResultPayload:
+    next_offset = offset + len(hits) if len(hits) == limit and offset + limit < total else None
     return MCPPaginatedSearchResultPayload(
         hits=tuple(
             MCPConversationSearchHitPayload.from_search_hit(
@@ -236,6 +241,7 @@ def conversation_search_result_payload(
         total=total,
         limit=limit,
         offset=offset,
+        next_offset=next_offset,
         diagnostics=(MCPQueryMissDiagnosticsPayload.from_diagnostics(diagnostics) if diagnostics else None),
     )
 

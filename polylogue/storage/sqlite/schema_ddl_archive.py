@@ -87,7 +87,7 @@ ARCHIVE_STORAGE_DDL = """
             sort_key REAL,
             content_hash TEXT NOT NULL DEFAULT '',
             version INTEGER NOT NULL,
-            parent_message_id TEXT REFERENCES messages(message_id),
+            parent_message_id TEXT REFERENCES messages(message_id) ON DELETE NO ACTION,
             branch_index INTEGER NOT NULL DEFAULT 0,
             provider_name TEXT NOT NULL DEFAULT '',
             word_count INTEGER NOT NULL DEFAULT 0,
