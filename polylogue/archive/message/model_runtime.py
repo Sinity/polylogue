@@ -225,6 +225,12 @@ class MessageRuntimeMixin:
 
     @cached_property
     def is_context_dump(self) -> bool:
+        """Returns True if the message text is a context/protocol artifact.
+
+        Authoritative check is stored message_type (set at materialization).
+        Text-based heuristics below are resilience fallbacks for pre-#839 rows
+        that were ingested before message_type was persisted.
+        """
         # Authoritative: stored message_type from materialization.
         if self.message_type == MessageType.CONTEXT:
             return True
