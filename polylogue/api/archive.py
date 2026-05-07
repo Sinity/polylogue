@@ -521,3 +521,114 @@ class PolylogueArchiveMixin:
 
         store: RepositoryWriteMixin = self.repository
         return await store.update_metadata(str(resolved), key, value)
+
+    # ------------------------------------------------------------------
+    # Marks
+    # ------------------------------------------------------------------
+
+    async def add_mark(self, conversation_id: str, mark_type: str) -> bool:
+        """Add a mark (star/pin/archive) to a conversation.
+
+        Returns ``True`` if the mark was newly added, ``False`` if it already
+        existed.
+        """
+        resolved = await self.repository.resolve_id(conversation_id, strict=True)
+        if resolved is None:
+            raise ConversationNotFoundError(conversation_id)
+        from polylogue.storage.repository.archive.repository_writes import RepositoryWriteMixin
+
+        store: RepositoryWriteMixin = self.repository
+        return await store.add_mark(str(resolved), mark_type)
+
+    async def remove_mark(self, conversation_id: str, mark_type: str) -> bool:
+        """Remove a mark from a conversation. Returns ``True`` if removed."""
+        from polylogue.storage.repository.archive.repository_writes import RepositoryWriteMixin
+
+        store: RepositoryWriteMixin = self.repository
+        return await store.remove_mark(conversation_id, mark_type)
+
+    async def list_marks(
+        self, *, mark_type: str | None = None, conversation_id: str | None = None
+    ) -> list[dict[str, str]]:
+        """List marks, optionally filtered by type or conversation."""
+        from polylogue.storage.repository.archive.repository_writes import RepositoryWriteMixin
+
+        store: RepositoryWriteMixin = self.repository
+        return await store.list_marks(mark_type=mark_type, conversation_id=conversation_id)
+
+    # ------------------------------------------------------------------
+    # Saved views
+    # ------------------------------------------------------------------
+
+    async def save_view(self, view_id: str, name: str, query_json: str) -> bool:
+        """Save a named query view. Returns ``True`` if newly created."""
+        from polylogue.storage.repository.archive.repository_writes import RepositoryWriteMixin
+
+        store: RepositoryWriteMixin = self.repository
+        return await store.save_view(view_id, name, query_json)
+
+    async def get_view(self, view_id: str) -> dict[str, str] | None:
+        """Get a saved view by ID."""
+        from polylogue.storage.repository.archive.repository_writes import RepositoryWriteMixin
+
+        store: RepositoryWriteMixin = self.repository
+        return await store.get_view(view_id)
+
+    async def get_view_by_name(self, name: str) -> dict[str, str] | None:
+        """Get a saved view by name."""
+        from polylogue.storage.repository.archive.repository_writes import RepositoryWriteMixin
+
+        store: RepositoryWriteMixin = self.repository
+        return await store.get_view_by_name(name)
+
+    async def list_views(self) -> list[dict[str, str]]:
+        """List all saved views."""
+        from polylogue.storage.repository.archive.repository_writes import RepositoryWriteMixin
+
+        store: RepositoryWriteMixin = self.repository
+        return await store.list_views()
+
+    async def delete_view(self, view_id: str) -> bool:
+        """Delete a saved view. Returns ``True`` if deleted."""
+        from polylogue.storage.repository.archive.repository_writes import RepositoryWriteMixin
+
+        store: RepositoryWriteMixin = self.repository
+        return await store.delete_view(view_id)
+
+    # ------------------------------------------------------------------
+    # Recall packs
+    # ------------------------------------------------------------------
+
+    async def create_recall_pack(
+        self, pack_id: str, label: str, conversation_id: str, payload_json: str
+    ) -> bool:
+        """Save a recall pack. Returns ``True`` if newly created."""
+        import json
+
+        conversation_ids = json.loads(conversation_id) if conversation_id.startswith("[") else [conversation_id]
+        conversation_ids_json = json.dumps(conversation_ids)
+        from polylogue.storage.repository.archive.repository_writes import RepositoryWriteMixin
+
+        store: RepositoryWriteMixin = self.repository
+        return await store.save_recall_pack(pack_id, label, conversation_ids_json, payload_json)
+
+    async def get_recall_pack(self, pack_id: str) -> dict[str, str] | None:
+        """Get a recall pack by ID."""
+        from polylogue.storage.repository.archive.repository_writes import RepositoryWriteMixin
+
+        store: RepositoryWriteMixin = self.repository
+        return await store.get_recall_pack(pack_id)
+
+    async def list_recall_packs(self) -> list[dict[str, str]]:
+        """List all recall packs."""
+        from polylogue.storage.repository.archive.repository_writes import RepositoryWriteMixin
+
+        store: RepositoryWriteMixin = self.repository
+        return await store.list_recall_packs()
+
+    async def delete_recall_pack(self, pack_id: str) -> bool:
+        """Delete a recall pack. Returns ``True`` if deleted."""
+        from polylogue.storage.repository.archive.repository_writes import RepositoryWriteMixin
+
+        store: RepositoryWriteMixin = self.repository
+        return await store.delete_recall_pack(pack_id)
