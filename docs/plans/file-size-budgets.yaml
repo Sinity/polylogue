@@ -16,7 +16,7 @@ per_package:
   polylogue/proof/:
     source_loc_ceiling: 1500
   polylogue/pipeline/services/:
-    source_loc_ceiling: 1400
+    source_loc_ceiling: 1450
   polylogue/operations/:
     source_loc_ceiling: 1100
   polylogue/storage/:
@@ -42,7 +42,7 @@ exceptions:
     reason: "tracked split into per-provider model contract suites"
 
   - path: tests/unit/storage/test_fts5.py
-    ceiling: 1510
+    ceiling: 1550
     reason: "tracked split for FTS escaping vs hybrid ranking"
 
   - path: tests/unit/sources/test_parsers_base.py

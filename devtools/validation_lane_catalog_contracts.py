@@ -11,6 +11,7 @@ from polylogue.scenarios import (
     pipeline_probe_execution,
     pytest_execution,
 )
+from polylogue.scenarios.assertions import AssertionClass, AssertionSpec
 
 # ---------------------------------------------------------------------------
 # Contract lanes
@@ -72,6 +73,10 @@ CONTRACT_LANES: dict[str, LaneEntry] = {
                 max_total_ms=10000,
                 max_peak_rss_mb=512,
             )
+        ),
+        assertion=AssertionSpec(
+            stdout_min_lines=3,
+            classification_override=AssertionClass.SMOKE_PROCESS,
         ),
     ),
     "semantic-stack": LaneEntry(
@@ -180,6 +185,9 @@ CONTRACT_LANES: dict[str, LaneEntry] = {
             "tests/unit/sources/test_parsers_base.py",
             "tests/unit/sources/test_parsers_drive.py",
             "tests/unit/devtools/test_validation_lanes.py",
+        ),
+        assertion=AssertionSpec(
+            classification_override=AssertionClass.SMOKE_PROCESS,
         ),
     ),
     "retrieval-checks": LaneEntry(
