@@ -214,7 +214,6 @@ PROVIDER_CAPABILITIES: tuple[ProviderCapability, ...] = (
             "Message.branch_index",
             "Conversation.created_at",
             "Conversation.updated_at",
-            "Message.provider_meta.raw",
         ),
         identity_mappings=(
             IdentityMapping(
@@ -229,8 +228,8 @@ PROVIDER_CAPABILITIES: tuple[ProviderCapability, ...] = (
             ),
             IdentityMapping(
                 native="message",
-                canonical="Message.provider_meta.raw",
-                note="Raw message metadata is retained for provider-native facts not projected into canonical fields.",
+                canonical="Message.content_blocks[].metadata",
+                note="ChatGPT message-level metadata (model, author_name, recipient, status, end_turn, citations, code_execution, user_context) is promoted into content_block metadata at parse time with chatgpt_ prefix. Raw message payload is preserved in raw_conversations.",
             ),
         ),
         timestamp_semantics="create_time/update_time floats are normalized into canonical conversation and message timestamps.",
