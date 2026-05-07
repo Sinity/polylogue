@@ -13,7 +13,7 @@ async def metadata_read_modify_write(
     backend: RepositoryBackendProtocol,
     conversation_id: str,
     mutator: Callable[[JSONDocument], bool],
-) -> None:
+) -> bool:
     async with backend.transaction(), backend.connection() as conn:
         current = await conversations_q.get_metadata(conn, conversation_id)
         if mutator(current):
@@ -22,3 +22,5 @@ async def metadata_read_modify_write(
                 conversation_id,
                 current,
             )
+            return True
+        return False
