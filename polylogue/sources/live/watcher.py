@@ -272,12 +272,18 @@ class LiveWatcher:
 
 
 def default_sources() -> tuple[WatchSource, ...]:
-    """Discover the default live-source roots from XDG/home conventions."""
-    from polylogue.paths import claude_code_path, codex_path
+    """Discover the default live-source roots from XDG/home conventions.
+
+    Includes the archive inbox so that ``polylogue ingest PATH``
+    (which stages to ``archive_root()/inbox``) is observed by the
+    daemon-owned watcher.
+    """
+    from polylogue.paths import archive_root, claude_code_path, codex_path
 
     return (
         WatchSource(name="claude-code", root=claude_code_path()),
         WatchSource(name="codex", root=codex_path()),
+        WatchSource(name="inbox", root=archive_root() / "inbox"),
     )
 
 
