@@ -15,6 +15,7 @@ from tests.infra.builders import make_conv, make_msg
 EXPECTED_TOOL_NAMES = {
     "search",
     "list_conversations",
+    "build_context_pack",
     "get_conversation",
     "neighbor_candidates",
     "stats",

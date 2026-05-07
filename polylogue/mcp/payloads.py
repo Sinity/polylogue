@@ -11,29 +11,13 @@ from typing_extensions import TypedDict
 from polylogue.core.json import JSONDocument
 from polylogue.mcp.context_pack import (
     ContextPackActionSummary as MCPContextPackActionSummary,
-)
-from polylogue.mcp.context_pack import (
     ContextPackConversation as MCPContextPackConversation,
-)
-from polylogue.mcp.context_pack import (
     ContextPackDateRange as MCPContextPackDateRange,
-)
-from polylogue.mcp.context_pack import (
     ContextPackMessage as MCPContextPackMessage,
-)
-from polylogue.mcp.context_pack import (
     ContextPackPayload as MCPContextPackPayload,
-)
-from polylogue.mcp.context_pack import (
     ContextPackProject as MCPContextPackProject,
-)
-from polylogue.mcp.context_pack import (
     ContextPackProvenance as MCPContextPackProvenance,
-)
-from polylogue.mcp.context_pack import (
     ContextPackQueryContext as MCPContextPackQueryContext,
-)
-from polylogue.mcp.context_pack import (
     ContextPackUnresolvedWork as MCPContextPackUnresolvedWork,
 )
 from polylogue.surfaces.payloads import (
@@ -471,6 +455,7 @@ __all__ = [
     "MCPContextPackProvenance",
     "MCPContextPackQueryContext",
     "MCPContextPackUnresolvedWork",
+<<<<<<< HEAD
     "MCPContextPackActionSummary",
     "MCPContextPackConversation",
     "MCPContextPackDateRange",
@@ -480,6 +465,9 @@ __all__ = [
     "MCPContextPackProvenance",
     "MCPContextPackQueryContext",
     "MCPContextPackUnresolvedWork",
+||||||| parent of 786ea8e0 (feat(context): add context pack builder for agent analysis (#838))
+=======
+>>>>>>> 786ea8e0 (feat(context): add context pack builder for agent analysis (#838))
     "MCPConversationDetailPayload",
     "MCPConversationNeighborCandidateListPayload",
     "MCPConversationNeighborCandidatePayload",
