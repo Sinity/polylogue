@@ -480,8 +480,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         limit = self._get_int(params, "limit", 50)
         offset = self._get_int(params, "offset", 0)
 
-        def _list(poly: Polylogue) -> object:
-            return asyncio.run(self._do_list(poly, query_params, limit, offset))
+        async def _list(poly: Polylogue) -> object:
+            return await self._do_list(poly, query_params, limit, offset)
 
         result = self._sync_run(_list)
         self._send_json(HTTPStatus.OK, result)
@@ -622,8 +622,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
     @daemon_safe_handler
     def _handle_get_conversation(self, conv_id: str) -> None:
-        def _get(poly: Polylogue) -> object:
-            return asyncio.run(self._do_get_conversation(poly, conv_id))
+        async def _get(poly: Polylogue) -> object:
+            return await self._do_get_conversation(poly, conv_id)
 
         result = self._sync_run(_get)
         if result is None:
@@ -677,8 +677,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
     @daemon_safe_handler
     def _handle_get_conversation_raw(self, conv_id: str) -> None:
-        def _get(poly: Polylogue) -> object:
-            return asyncio.run(self._do_get_conversation_raw(poly, conv_id))
+        async def _get(poly: Polylogue) -> object:
+            return await self._do_get_conversation_raw(poly, conv_id)
 
         result = self._sync_run(_get)
         if result is None:
@@ -719,8 +719,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         limit = self._get_int(params, "limit", 50)
         offset = self._get_int(params, "offset", 0)
 
-        def _get(poly: Polylogue) -> object:
-            return asyncio.run(self._do_get_messages(poly, conv_id, limit, offset))
+        async def _get(poly: Polylogue) -> object:
+            return await self._do_get_messages(poly, conv_id, limit, offset)
 
         result = self._sync_run(_get)
         self._send_json(HTTPStatus.OK, result)
@@ -750,8 +750,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
     @daemon_safe_handler
     def _handle_get_raw_artifact(self, artifact_id: str) -> None:
-        def _get(poly: Polylogue) -> object:
-            return asyncio.run(self._do_get_raw_artifacts(poly, artifact_id))
+        async def _get(poly: Polylogue) -> object:
+            return await self._do_get_raw_artifacts(poly, artifact_id)
 
         result = self._sync_run(_get)
         self._send_json(HTTPStatus.OK, result)
