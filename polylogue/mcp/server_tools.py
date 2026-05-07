@@ -25,6 +25,7 @@ from polylogue.mcp.query_contracts import (
     MCPToolLimit,
     MCPToolOffset,
 )
+from polylogue.mcp.server_context_tools import register_context_tools
 from polylogue.mcp.server_insight_tools import register_insight_tools
 from polylogue.mcp.server_maintenance_tools import register_maintenance_tools
 from polylogue.mcp.server_mutation_tools import register_mutation_tools
@@ -445,6 +446,7 @@ def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
 def register_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     register_query_tools(mcp, hooks)
     register_read_tools(mcp, hooks)
+    register_context_tools(mcp, hooks)
     register_insight_tools(mcp, hooks)
     if role_allows(hooks.role, "write"):
         register_mutation_tools(mcp, hooks)
