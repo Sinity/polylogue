@@ -121,16 +121,35 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         must present it. Loopback is not a security boundary when a
         browser on the same host can reach the daemon.
         """
-        if not self._auth_token:
-            return True
         auth_header = self.headers.get("Authorization", "")
-        if not auth_header.startswith("Bearer "):
-            self._send_error(HTTPStatus.UNAUTHORIZED, "unauthorized")
-            return False
-        if not self._auth_token or auth_header[7:] != self._auth_token:
-            self._send_error(HTTPStatus.UNAUTHORIZED, "unauthorized")
-            return False
-        return True
+        result = _check_auth_logic(self._auth_token, self._client_host, auth_header)
+        if not result.allowed:
+            self._send_error(HTTPStatus.UNAUTHORIZED, result.reason or "unauthorized")
+        return result.allowed
+
+
+def _check_auth_logic(
+    auth_token: str | None,
+    client_host: str,
+    auth_header: str,
+) -> _AuthResult:
+    """Pure logic for auth checks — testable without HTTP handler setup."""
+    if not auth_token:
+        return _AuthResult(allowed=True, reason=None)
+    if not auth_header.startswith("Bearer "):
+        return _AuthResult(allowed=False, reason="unauthorized")
+    if auth_header[7:] != auth_token:
+        return _AuthResult(allowed=False, reason="unauthorized")
+    return _AuthResult(allowed=True, reason=None)
+
+
+class _AuthResult:
+    def __init__(self, *, allowed: bool, reason: str | None) -> None:
+        self.allowed = allowed
+        self.reason = reason
+
+    def __bool__(self) -> bool:
+        return self.allowed
 
     # ------------------------------------------------------------------
     # Helpers
