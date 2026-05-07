@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 
 from polylogue.scenarios.assertions import AssertionSpec
 from polylogue.scenarios.execution import ExecutionSpec
 from polylogue.scenarios.metadata import ScenarioMetadata
 from polylogue.scenarios.projections import ScenarioProjectionEntry, ScenarioProjectionSourceKind
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -29,6 +32,15 @@ class LaneEntry:
     artifact_targets: tuple[str, ...] = ()
     operation_targets: tuple[str, ...] = ()
     tags: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        """Validate assertion/lane consistency after construction."""
+        if self.execution and self.execution.members:
+            # Composite lanes delegate to sub-lanes; skip validation.
+            return
+        warnings = self.assertion.validate()
+        for w in warnings:
+            logger.warning("validation lane %s: %s", self.name, w)
 
     @property
     def is_composite(self) -> bool:
