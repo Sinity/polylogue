@@ -234,3 +234,96 @@ class RepositoryWriteMixin:
 
     async def delete_conversation(self, conversation_id: str) -> bool:
         return await delete_conversation_via_backend(self._backend, conversation_id)
+
+    # ------------------------------------------------------------------
+    # Marks
+    # ------------------------------------------------------------------
+
+    async def add_mark(self, conversation_id: str, mark_type: str) -> bool:
+        """Add a mark to a conversation. Returns True if newly inserted."""
+        import datetime as _dt
+
+        if mark_type not in ("star", "pin", "archive"):
+            raise ValueError(f"invalid mark_type: {mark_type!r}")
+        async with self._backend.connection() as conn:
+            return await conversations_q.add_mark(
+                conn, conversation_id, mark_type, _dt.datetime.now(tz=_dt.timezone.utc).isoformat()
+            )
+
+    async def remove_mark(self, conversation_id: str, mark_type: str) -> bool:
+        """Remove a mark from a conversation. Returns True if deleted."""
+        async with self._backend.connection() as conn:
+            return await conversations_q.remove_mark(conn, conversation_id, mark_type)
+
+    async def list_marks(
+        self, *, mark_type: str | None = None, conversation_id: str | None = None
+    ) -> list[dict[str, str]]:
+        """List marks, optionally filtered by type or conversation."""
+        async with self._backend.connection() as conn:
+            return await conversations_q.list_marks(conn, mark_type=mark_type, conversation_id=conversation_id)
+
+    # ------------------------------------------------------------------
+    # Saved views
+    # ------------------------------------------------------------------
+
+    async def save_view(self, view_id: str, name: str, query_json: str) -> bool:
+        """Save a named query view. Returns True if newly created."""
+        import datetime as _dt
+
+        async with self._backend.connection() as conn:
+            return await conversations_q.save_view(
+                conn, view_id, name, query_json, _dt.datetime.now(tz=_dt.timezone.utc).isoformat()
+            )
+
+    async def get_view(self, view_id: str) -> dict[str, str] | None:
+        """Get a saved view by ID."""
+        async with self._backend.connection() as conn:
+            return await conversations_q.get_view(conn, view_id)
+
+    async def get_view_by_name(self, name: str) -> dict[str, str] | None:
+        """Get a saved view by name."""
+        async with self._backend.connection() as conn:
+            return await conversations_q.get_view_by_name(conn, name)
+
+    async def list_views(self) -> list[dict[str, str]]:
+        """List all saved views."""
+        async with self._backend.connection() as conn:
+            return await conversations_q.list_views(conn)
+
+    async def delete_view(self, view_id: str) -> bool:
+        """Delete a saved view. Returns True if deleted."""
+        async with self._backend.connection() as conn:
+            return await conversations_q.delete_view(conn, view_id)
+
+    # ------------------------------------------------------------------
+    # Recall packs
+    # ------------------------------------------------------------------
+
+    async def save_recall_pack(self, pack_id: str, label: str, conversation_ids_json: str, payload_json: str) -> bool:
+        """Save a recall pack. Returns True if newly created."""
+        import datetime as _dt
+
+        async with self._backend.connection() as conn:
+            return await conversations_q.save_recall_pack(
+                conn,
+                pack_id,
+                label,
+                conversation_ids_json,
+                payload_json,
+                _dt.datetime.now(tz=_dt.timezone.utc).isoformat(),
+            )
+
+    async def get_recall_pack(self, pack_id: str) -> dict[str, str] | None:
+        """Get a recall pack by ID."""
+        async with self._backend.connection() as conn:
+            return await conversations_q.get_recall_pack(conn, pack_id)
+
+    async def list_recall_packs(self) -> list[dict[str, str]]:
+        """List all recall packs."""
+        async with self._backend.connection() as conn:
+            return await conversations_q.list_recall_packs(conn)
+
+    async def delete_recall_pack(self, pack_id: str) -> bool:
+        """Delete a recall pack. Returns True if deleted."""
+        async with self._backend.connection() as conn:
+            return await conversations_q.delete_recall_pack(conn, pack_id)

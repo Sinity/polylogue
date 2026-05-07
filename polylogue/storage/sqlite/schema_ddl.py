@@ -21,7 +21,16 @@ from polylogue.storage.sqlite.schema_ddl_archive import (
     RAW_ARCHIVE_DDL as _RAW_ARCHIVE_DDL,
 )
 from polylogue.storage.sqlite.schema_ddl_archive import (
+    RECALL_PACKS_DDL as _RECALL_PACKS_DDL,
+)
+from polylogue.storage.sqlite.schema_ddl_archive import (
+    SAVED_VIEWS_DDL as _SAVED_VIEWS_DDL,
+)
+from polylogue.storage.sqlite.schema_ddl_archive import (
     TAGS_M2M_DDL as _TAGS_M2M_DDL,
+)
+from polylogue.storage.sqlite.schema_ddl_archive import (
+    USER_MARKS_DDL as _USER_MARKS_DDL,
 )
 from polylogue.storage.sqlite.schema_ddl_aux import (
     ARTIFACT_OBSERVATION_DDL as _ARTIFACT_OBSERVATION_DDL,
@@ -48,7 +57,7 @@ from polylogue.storage.sqlite.schema_ddl_provider_events import (
     PROVIDER_EVENT_DDL as _PROVIDER_EVENT_DDL,
 )
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 
 # Complete target schema applied to fresh databases.
@@ -63,6 +72,9 @@ SCHEMA_DDL += "\n\n" + _BLOB_LEASE_DDL
 SCHEMA_DDL += "\n\n" + _PROVIDER_EVENT_DDL
 SCHEMA_DDL += "\n\n" + _ACTION_EVENT_DDL
 SCHEMA_DDL += _ACTION_FTS_DDL
+SCHEMA_DDL += "\n\n" + _USER_MARKS_DDL
+SCHEMA_DDL += "\n\n" + _SAVED_VIEWS_DDL
+SCHEMA_DDL += "\n\n" + _RECALL_PACKS_DDL
 
 _SESSION_INSIGHT_DDL = _SESSION_INSIGHT_PROFILE_DDL + _SESSION_INSIGHT_TIMELINE_DDL + _SESSION_INSIGHT_AGGREGATE_DDL
 
@@ -82,6 +94,9 @@ __all__ = [
     "_RAW_ARCHIVE_DDL",
     "_SESSION_INSIGHT_DDL",
     "_SOURCE_FILE_CURSOR_DDL",
+    "_RECALL_PACKS_DDL",
+    "_SAVED_VIEWS_DDL",
     "_TAGS_M2M_DDL",
+    "_USER_MARKS_DDL",
     "_VEC0_DDL",
 ]
