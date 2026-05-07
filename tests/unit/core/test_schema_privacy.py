@@ -419,6 +419,65 @@ class TestStructuralConstantsInIdentifierFields:
 
 
 # =============================================================================
+# Guard 4: Structural role exemption -- message_role bypasses
+#          cross-conversation threshold
+# =============================================================================
+
+
+class TestStructuralRoleExemption:
+    """message_role fields bypass cross-conversation privacy threshold."""
+
+    def test_message_role_bypasses_threshold(self) -> None:
+        """A message_role field includes values from <3 conversations."""
+        values_by_conv = {
+            "conv_A": ["attachment"],
+            "conv_B": ["assistant"],
+            "conv_C": ["assistant"],
+            "conv_D": ["user", "assistant"],
+            "conv_E": ["user"],
+        }
+        flat_samples = [{"type": v} for vals in values_by_conv.values() for v in vals]
+        flat_conv_ids: list[str | None] = [cid for cid, vals in values_by_conv.items() for _ in vals]
+        stats = _collect_field_stats(flat_samples, conversation_ids=flat_conv_ids)
+        schema: dict[str, object] = {
+            "type": "object",
+            "properties": {
+                "type": {
+                    "type": "string",
+                    "x-polylogue-semantic-role": "message_role",
+                }
+            },
+        }
+        annotated = _annotate_schema(schema, stats, min_conversation_count=3)
+        type_schema = schema_property(annotated, "type")
+        enum_vals = schema_values(type_schema)
+        assert "attachment" in enum_vals, "message_role field should preserve values even when min_conversation_count=3"
+        assert "assistant" in enum_vals
+        assert "user" in enum_vals
+
+    def test_non_role_field_respects_threshold(self) -> None:
+        """A field without message_role still respects the threshold."""
+        values_by_conv = {
+            "conv_A": ["rare_val"],
+            "conv_B": ["common"],
+            "conv_C": ["common"],
+            "conv_D": ["common"],
+        }
+        flat_samples = [{"status": v} for vals in values_by_conv.values() for v in vals]
+        flat_conv_ids: list[str | None] = [cid for cid, vals in values_by_conv.items() for _ in vals]
+        stats = _collect_field_stats(flat_samples, conversation_ids=flat_conv_ids)
+        schema = {
+            "type": "object",
+            "properties": {"status": {"type": "string"}},
+        }
+        annotated = _annotate_schema(schema, stats, min_conversation_count=3)
+        status_schema = schema_property(annotated, "status")
+        enum_vals = schema_values(status_schema)
+        assert "rare_val" not in enum_vals, "Non-role field should respect min_conversation_count=3"
+        assert "common" in enum_vals
+
+
+# =============================================================================
 # Guard 5: Property test — safe values never resemble PII (Phase 9)
 # =============================================================================
 
