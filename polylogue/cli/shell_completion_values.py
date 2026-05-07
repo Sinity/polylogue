@@ -234,15 +234,13 @@ def complete_tag_values(
     rows = _fetch_rows(
         """
         SELECT
-            tag.value AS tag_name,
+            t.name AS tag_name,
             COUNT(*) AS cnt
-        FROM conversations,
-             json_each(json_extract(metadata, '$.tags')) AS tag
-        WHERE metadata IS NOT NULL
-          AND json_extract(metadata, '$.tags') IS NOT NULL
-          AND (? = '' OR tag.value LIKE ?)
-        GROUP BY tag.value
-        ORDER BY cnt DESC, tag.value ASC
+        FROM conversation_tags ct
+        JOIN tags t ON t.id = ct.tag_id
+        WHERE (? = '' OR t.name LIKE ?)
+        GROUP BY t.name
+        ORDER BY cnt DESC, t.name ASC
         LIMIT ?
         """,
         (
