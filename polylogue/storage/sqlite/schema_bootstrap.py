@@ -909,6 +909,23 @@ CREATE INDEX IF NOT EXISTS idx_attachment_refs_provider_drive_id
 ON attachment_refs(provider_drive_id);
 """
 
+_PROVIDER_META_BACKFILL_WORKING_DIRS_JSON = """
+UPDATE conversations SET working_directories_json = (
+    SELECT json_extract(provider_meta, '$.working_directories')
+    FROM conversations AS c2 WHERE c2.conversation_id = conversations.conversation_id
+)
+WHERE working_directories_json IS NULL
+  AND provider_meta IS NOT NULL
+  AND json_extract(provider_meta, '$.working_directories') IS NOT NULL
+"""
+
+_PROVIDER_META_BACKFILL_CWD = """
+UPDATE conversations SET working_directories_json = json_array(json_extract(provider_meta, '$.cwd'))
+WHERE working_directories_json IS NULL
+  AND provider_meta IS NOT NULL
+  AND json_extract(provider_meta, '$.cwd') IS NOT NULL
+"""
+
 _PROVIDER_META_BACKFILL_SOURCE_NAME = """
 UPDATE conversations SET source_name = COALESCE(json_extract(provider_meta, '$.source'), '')
 WHERE source_name = '' AND provider_meta IS NOT NULL

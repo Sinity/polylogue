@@ -117,9 +117,7 @@ class SqliteVecRuntimeMixin:
             ).fetchone()
             if has_table is None:
                 return None
-            row = conn.execute(
-                "SELECT dimension FROM embeddings_meta WHERE target_type='message' LIMIT 1"
-            ).fetchone()
+            row = conn.execute("SELECT dimension FROM embeddings_meta WHERE target_type='message' LIMIT 1").fetchone()
             return int(row["dimension"]) if row else None
         except (sqlite3.OperationalError, TypeError, ValueError):
             return None
@@ -142,6 +140,7 @@ def _vec0_table_dimension(conn: sqlite3.Connection) -> int | None:
         if ddl_row is None or ddl_row["sql"] is None:
             return None
         import re
+
         match = re.search(r"float\[(\d+)\]", str(ddl_row["sql"]))
         return int(match.group(1)) if match else None
     except (sqlite3.OperationalError, TypeError, ValueError):
