@@ -1,5 +1,12 @@
 """Verify inter-package layering rules from docs/plans/layering.yaml.
 
+Gate classification: **blocking architectural boundary check**.
+
+Enforces the substrate-vs-surface import boundary: substrate packages
+(storage, pipeline, sources, insights) must not import surface adapters
+(cli, mcp, daemon, ui, rendering). This is a durable architecture contract,
+not placement hygiene.
+
 Usage:
   devtools verify-layering
   devtools verify-layering --json
