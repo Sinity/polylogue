@@ -56,6 +56,15 @@ IndependenceLevel = Literal[
     "ceremonial",
 ]
 
+EvidenceTaxonomy = Literal[
+    "executable_behavior",
+    "observability",
+    "architectural_static",
+    "metadata_spec",
+    "manual_review",
+    "advisory",
+]
+
 AssuranceDomain = Literal[
     "operational_resilience",
     "surface_parity",
@@ -580,6 +589,7 @@ __all__ = [
     "EvidenceEnvelope",
     "EvidenceClass",
     "EvidenceSource",
+    "EvidenceTaxonomy",
     "IndependenceLevel",
     "Kind",
     "NetworkPolicy",

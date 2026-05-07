@@ -29,6 +29,9 @@ def test_proof_pack_reports_diff_shaped_fields() -> None:
     assert "additional_known_gaps" in report
     assert "stable_affected_obligations" in report
     assert "catalog_quality_checks" in report
+    assert "taxonomy" in report
+    assert "clean_tree" in report
+    assert "_context" in report
 
 
 def test_proof_pack_markdown_is_pr_comment_ready() -> None:
@@ -42,9 +45,10 @@ def test_proof_pack_markdown_is_pr_comment_ready() -> None:
     rendered = render_markdown(report)
 
     assert "## Polylogue Proof Pack" in rendered
-    assert "### Focused Gates" in rendered
-    assert "### Required PR Gates" in rendered
-    assert "### Optional Confidence Gates" in rendered
+    assert "### Required Gates (run now)" in rendered
+    assert "### Always-On PR Gates" in rendered
+    assert "### Confidence Gates (optional)" in rendered
+    assert "### Affected Evidence by Taxonomy" in rendered
     assert "stable affected obligations" in rendered
 
 
@@ -62,7 +66,7 @@ def test_proof_pack_surfaces_manifest_known_gaps_for_affected_domains() -> None:
     assert "docs_media" in gap_domains | additional_gap_domains
 
 
-def test_proof_pack_markdown_collapses_zero_claim_domains() -> None:
+def test_proof_pack_markdown_has_taxonomy_section() -> None:
     report = build_proof_pack(
         Path.cwd(),
         base_ref="origin/master",
@@ -72,9 +76,10 @@ def test_proof_pack_markdown_collapses_zero_claim_domains() -> None:
 
     rendered = render_markdown(report)
 
-    assert "Additional routed domains with zero affected claims" in rendered
-    assert "### Optional Confidence Gates" in rendered
-    assert "stale evidence" not in rendered
+    assert "### Affected Evidence by Taxonomy" in rendered
+    assert "executable_behavior" in rendered
+    assert "architectural_static" in rendered
+    assert "metadata_spec" in rendered
 
 
 def test_proof_pack_markdown_lists_agent_judgment_cells() -> None:
@@ -218,3 +223,62 @@ def test_proof_pack_check_flag_returns_nonzero_on_policy_failure(monkeypatch: py
     monkeypatch.setattr(proof_pack, "build_proof_pack", lambda *args, **kwargs: report)
 
     assert proof_pack.main(["--path", "docs/plans/layering.yaml", "--check"]) == 1
+
+
+def test_clean_tree_report_distinguishes_baseline() -> None:
+    """A clean-tree report should mark clean_tree=True with a distinct context message."""
+    report = build_proof_pack(
+        Path.cwd(),
+        base_ref="HEAD",
+        head_ref="HEAD",
+    )
+
+    assert report["clean_tree"] is True
+    assert report["changed_paths"] == []
+    assert "No changed paths" in str(report.get("_context", ""))
+
+
+def test_proof_pack_taxonomy_groups_are_present_in_report() -> None:
+    """The report should include taxonomy groups with correct structure."""
+    report = build_proof_pack(
+        Path.cwd(),
+        base_ref="origin/master",
+        head_ref="HEAD",
+        changed_paths=["docs/plans/layering.yaml"],
+    )
+
+    taxonomy = report["taxonomy"]
+    assert isinstance(taxonomy, dict)
+    for taxonomy_name in (
+        "executable_behavior",
+        "observability",
+        "architectural_static",
+        "metadata_spec",
+        "manual_review",
+        "advisory",
+    ):
+        assert taxonomy_name in taxonomy
+        group = taxonomy[taxonomy_name]
+        assert "description" in group
+        assert "actionable" in group
+        assert "obligation_count" in group
+        assert "obligations" in group
+
+    assert taxonomy["architectural_static"]["obligation_count"] > 0
+    assert taxonomy["architectural_static"]["actionable"] is True
+
+
+def test_proof_pack_markdown_shows_taxonomy_labels() -> None:
+    """Markdown output should label actionable vs non-blocking taxonomies."""
+    report = build_proof_pack(
+        Path.cwd(),
+        base_ref="origin/master",
+        head_ref="HEAD",
+        changed_paths=["docs/plans/layering.yaml"],
+    )
+
+    rendered = render_markdown(report)
+
+    assert "architectural_static" in rendered
+    assert "(actionable)" in rendered
+    assert "### Known Gaps (tracking, not blocking)" in rendered
