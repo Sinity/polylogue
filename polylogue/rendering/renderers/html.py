@@ -27,7 +27,7 @@ from polylogue.rendering.renderers.html_template import get_cached_template
 if TYPE_CHECKING:
     from polylogue.archive.models import Conversation
     from polylogue.storage.archive_views import ConversationRenderProjection
-    from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
+    from polylogue.storage.repository import ConversationRepository
 
 
 class HTMLRenderer:
@@ -36,7 +36,7 @@ class HTMLRenderer:
     Performance architecture:
     - Single DB query per conversation (merged format + prepare)
     - CPU work (Pygments, MarkdownIt, Jinja2) offloaded to thread pool
-    - Shared backend eliminates per-render schema checks / connection setup
+    - Shared repository eliminates per-render schema checks / connection setup
     - File writes offloaded to thread pool
     """
 
@@ -45,7 +45,7 @@ class HTMLRenderer:
         archive_root: Path,
         template_path: Path | None = None,
         theme: str = "dark",
-        backend: SQLiteBackend | None = None,
+        repository: ConversationRepository,
     ) -> None:
         """Initialize the HTML renderer.
 
@@ -53,12 +53,12 @@ class HTMLRenderer:
             archive_root: Root directory for archived conversations
             template_path: Optional path to custom Jinja2 HTML template
             theme: Theme name ("dark" or "light"), default "dark"
-            backend: Shared async SQLite backend (avoids per-render connection overhead)
+            repository: Shared ConversationRepository (avoids per-render connection overhead)
         """
         self.archive_root = archive_root
         self.template_path = template_path
         self.theme = theme
-        self._formatter = ConversationFormatter(archive_root, backend=backend)
+        self._formatter = ConversationFormatter(archive_root, repository=repository)
 
         # Initialize Pygments highlighter
         style = "monokai" if theme == "dark" else "default"

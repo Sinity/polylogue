@@ -4,22 +4,27 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from polylogue.paths.sanitize import conversation_render_root
 from polylogue.rendering.core import ConversationFormatter
+
+if TYPE_CHECKING:
+    from polylogue.storage.repository import ConversationRepository
 
 
 class PlaintextRenderer:
     """Renders conversations to plain text format."""
 
-    def __init__(self, archive_root: Path):
+    def __init__(self, archive_root: Path, repository: ConversationRepository):
         """Initialize the plaintext renderer.
 
         Args:
             archive_root: Root directory for archived conversations
+            repository: ConversationRepository for loading projections
         """
         self.archive_root = archive_root
-        self.formatter = ConversationFormatter(archive_root)
+        self.formatter = ConversationFormatter(archive_root, repository=repository)
 
     def supports_format(self) -> str:
         """Return the output format this renderer supports.

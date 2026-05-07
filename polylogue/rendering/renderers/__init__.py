@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 
 from polylogue.config import Config
 from polylogue.protocols import OutputRenderer
+from polylogue.storage.repository import ConversationRepository
 
 from .html import HTMLRenderer
 from .markdown import MarkdownRenderer
@@ -20,9 +21,18 @@ if TYPE_CHECKING:
     from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
 
+def _renderer_repository(config: Config, backend: SQLiteBackend | None) -> ConversationRepository:
+    """Build a repository from a backend or config for renderer injection."""
+    if backend is not None:
+        return ConversationRepository(backend=backend)
+    return ConversationRepository(db_path=config.db_path)
+
+
 def _markdown_renderer(config: Config, backend: SQLiteBackend | None) -> OutputRenderer:
-    del backend
-    return MarkdownRenderer(archive_root=config.archive_root)
+    return MarkdownRenderer(
+        archive_root=config.archive_root,
+        repository=_renderer_repository(config, backend),
+    )
 
 
 def _html_renderer(config: Config, backend: SQLiteBackend | None) -> OutputRenderer:
@@ -30,13 +40,15 @@ def _html_renderer(config: Config, backend: SQLiteBackend | None) -> OutputRende
     return HTMLRenderer(
         archive_root=config.archive_root,
         template_path=template_path,
-        backend=backend,
+        repository=_renderer_repository(config, backend),
     )
 
 
 def _plaintext_renderer(config: Config, backend: SQLiteBackend | None) -> OutputRenderer:
-    del backend
-    return PlaintextRenderer(archive_root=config.archive_root)
+    return PlaintextRenderer(
+        archive_root=config.archive_root,
+        repository=_renderer_repository(config, backend),
+    )
 
 
 _RENDERER_FACTORIES = {
