@@ -1585,3 +1585,37 @@ def test_fts_triggers_restored_before_commit(tmp_path: Path) -> None:
     count = conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0]
     assert count == 2, f"Expected 2 FTS entries, got {count}"
     conn.close()
+
+
+def test_attachment_ref_fk_violation_surfaced(tmp_path: Path) -> None:
+    """ON CONFLICT DO NOTHING surfaces FK violations rather than swallowing them (#820)."""
+    import sqlite3
+
+    from polylogue.storage.sqlite.schema_ddl_archive import ARCHIVE_STORAGE_DDL
+
+    db = tmp_path / "fk_surface.db"
+    conn = sqlite3.connect(str(db))
+    conn.executescript(ARCHIVE_STORAGE_DDL)
+
+    # Create a conversation so the FK to conversations is satisfied
+    conn.execute(
+        "INSERT INTO conversations(conversation_id, provider_name, provider_conversation_id) VALUES(?,?,?)",
+        ("c1", "test", "pc1"),
+    )
+    conn.commit()
+
+    # Try to insert an attachment_ref with a non-existent attachment_id
+    # ON CONFLICT DO NOTHING only handles ref_id conflicts — FK violations still raise
+    try:
+        conn.execute(
+            "INSERT INTO attachment_refs(ref_id, attachment_id, conversation_id) VALUES(?,?,?)",
+            ("ref-1", "nonexistent-attachment", "c1"),
+        )
+        conn.commit()
+        # If we get here, the FK violation was NOT surfaced — this is a bug
+        raise AssertionError("FK violation should have raised IntegrityError")
+    except sqlite3.IntegrityError:
+        # Expected: FK violation surfaced
+        pass
+    finally:
+        conn.close()
