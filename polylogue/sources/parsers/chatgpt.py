@@ -162,6 +162,44 @@ def extract_messages_from_mapping(mapping: Mapping[str, object]) -> tuple[list[P
                         )
                     )
 
+        # Promote message-level metadata into content_block metadata so it
+        # survives parsing → materialization → storage → hydration. These
+        # are prefixed with chatgpt_ to distinguish provider-specific facts
+        # from canonical block semantics.
+        _chatgpt_block_meta: dict[str, object] = {}
+        if isinstance(msg_metadata, dict):
+            model_slug_val = msg_metadata.get("model_slug")
+            if model_slug_val:
+                _chatgpt_block_meta["chatgpt_model"] = model_slug_val
+            citations_val = msg_metadata.get("citations") or msg_metadata.get("_cite_metadata")
+            if isinstance(citations_val, (list, dict)) and citations_val:
+                _chatgpt_block_meta["chatgpt_citations"] = citations_val
+            aggregate_result_val = msg_metadata.get("aggregate_result")
+            if isinstance(aggregate_result_val, dict) and aggregate_result_val:
+                _chatgpt_block_meta["chatgpt_code_execution"] = aggregate_result_val
+            user_context_val = msg_metadata.get("user_context_message_data")
+            if isinstance(user_context_val, dict) and user_context_val:
+                _chatgpt_block_meta["chatgpt_user_context"] = user_context_val
+        if isinstance(author, dict):
+            author_name = author.get("name")
+            if isinstance(author_name, str) and author_name:
+                _chatgpt_block_meta["chatgpt_author_name"] = author_name
+        recipient_val = msg.get("recipient")
+        if isinstance(recipient_val, str) and recipient_val and recipient_val != "all":
+            _chatgpt_block_meta["chatgpt_recipient"] = recipient_val
+        status_val = msg.get("status")
+        if isinstance(status_val, str) and status_val:
+            _chatgpt_block_meta["chatgpt_status"] = status_val
+        end_turn_val = msg.get("end_turn")
+        if isinstance(end_turn_val, bool):
+            _chatgpt_block_meta["chatgpt_end_turn"] = end_turn_val
+
+        if _chatgpt_block_meta:
+            for block in content_blocks:
+                if block.metadata is None:
+                    block.metadata = {}
+                block.metadata.update(_chatgpt_block_meta)
+
         parsed = ParsedMessage(
             provider_message_id=str(msg_id),
             role=role,
