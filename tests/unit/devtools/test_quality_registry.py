@@ -16,8 +16,6 @@ def test_build_quality_registry_exposes_live_catalogs() -> None:
     assert any(entry.name == "frontier-local" for entry in registry.composite_lanes)
     assert any(entry.name == "machine-contract" for entry in registry.contract_lanes)
     assert any(entry.name == "live-exercises" for entry in registry.live_lanes)
-    # ValidationLaneFamily DSL removed in #805; families are now empty
-    assert isinstance(registry.validation_families, tuple)
     assert any(entry.name == "filters" for entry in registry.mutation_campaigns)
     assert any(entry.name == "search-filters" for entry in registry.benchmark_campaigns)
     assert any(entry.name == "pipeline" for entry in registry.benchmark_campaigns)
@@ -29,10 +27,6 @@ def test_build_quality_registry_exposes_live_catalogs() -> None:
         for scenario in registry.inferred_corpus_scenarios
     )
     assert any(entry.name == "json-doctor-action-event-preview" for entry in registry.scenario_projections)
-    assert any(
-        entry.name == "runtime-substrate" and entry.source_kind.value == "validation-family"
-        for entry in registry.scenario_projections
-    )
     assert any(entry.name == "machine-contract" for entry in registry.scenario_projections)
     assert any(
         entry.name == "filters" and entry.source_kind.value == "mutation-campaign"

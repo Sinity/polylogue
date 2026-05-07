@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
-from typing import Any
 
 from devtools.benchmark_catalog import BenchmarkCampaignEntry
 from devtools.command_catalog import control_plane_command
@@ -30,19 +29,6 @@ def _render_lane_table(entries: tuple[LaneEntry, ...]) -> list[str]:
     ]
     for entry in entries:
         lines.append(f"| `{entry.name}` | {entry.timeout_s} | {entry.description} |")
-    return lines
-
-
-def _render_validation_family_table(
-    entries: tuple[Any, ...],
-) -> list[str]:  # flattened — ValidationLaneFamily DSL removed in #805
-    lines = [
-        "| Family | Composite Lanes | Description |",
-        "| --- | --- | --- |",
-    ]
-    for entry in entries:
-        lane_names = tuple(lane.name for lane in entry.lanes)
-        lines.append(f"| `{entry.name}` | {_format_code_list(lane_names)} | {entry.description} |")
     return lines
 
 
@@ -204,7 +190,6 @@ def build_document(registry: QualityRegistry, *, runtime_coverage: RuntimeScenar
         f"- contract lanes: `{len(registry.contract_lanes)}`",
         f"- live lanes: `{len(registry.live_lanes)}`",
         f"- composite lanes: `{len(registry.composite_lanes)}`",
-        f"- validation families: `{len(registry.validation_families)}`",
         f"- mutation campaigns: `{len(registry.mutation_campaigns)}`",
         f"- benchmark campaigns: `{len(registry.benchmark_campaigns)}`",
         f"- synthetic benchmark campaigns: `{len(registry.synthetic_benchmark_campaigns)}`",
@@ -311,10 +296,6 @@ def build_document(registry: QualityRegistry, *, runtime_coverage: RuntimeScenar
         "## Validation Lane Catalog",
         "",
         "Use the named lanes through the runner.",
-        "",
-        "### Validation Families",
-        "",
-        *_render_validation_family_table(registry.validation_families),
         "",
         "### Contract Lanes",
         "",
