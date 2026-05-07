@@ -20,7 +20,6 @@ from polylogue.mcp.server_support import (
     _safe_call,
     _set_runtime_services,
 )
-from polylogue.mcp.server_context_tools import register_context_tools
 from polylogue.mcp.server_tools import register_tools
 from polylogue.operations import ArchiveOperations
 from polylogue.protocols import ConversationQueryRuntimeStore, TagStore
@@ -94,7 +93,6 @@ def build_server(*, role: MCPRole = "read") -> FastMCP:
         role=role,
     )
     register_tools(mcp, hooks)
-    register_context_tools(mcp, hooks)
     register_resources(mcp, hooks)
     register_prompts(mcp, hooks)
     return mcp
