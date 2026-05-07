@@ -12,7 +12,7 @@ from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from polylogue.config import Config
+from polylogue.config import Config, load_polylogue_config
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.core.outcomes import OutcomeCheck, OutcomeReport, OutcomeStatus
 from polylogue.maintenance.models import DerivedModelStatus
@@ -475,7 +475,7 @@ def run_runtime_readiness(config: Config) -> ReadinessReport:
     term = os.environ.get("TERM", "unknown")
     cols, rows = shutil.get_terminal_size()
     is_tty = sys.stdout.isatty()
-    force_plain = os.environ.get("POLYLOGUE_FORCE_PLAIN", "")
+    force_plain = "1" if load_polylogue_config().force_plain else ""
 
     term_detail = f"TERM={term}, {cols}x{rows}, tty={is_tty}"
     if force_plain:

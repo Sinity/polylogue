@@ -7,19 +7,12 @@ import os
 
 from polylogue.config import load_polylogue_config
 from polylogue.logging import get_logger
-from polylogue.config import load_polylogue_config
 from polylogue.paths import blob_store_root
-from polylogue.config import load_polylogue_config
 from polylogue.pipeline.services.process_pool import process_pool_executor
-from polylogue.config import load_polylogue_config
 from polylogue.pipeline.services.validation_runtime import _validate_record_sync, _ValidationOutcome
-from polylogue.config import load_polylogue_config
 from polylogue.pipeline.stage_models import ValidatedRawRecord, ValidateResult
-from polylogue.config import load_polylogue_config
 from polylogue.protocols import ProgressCallback, RawValidationStore
-from polylogue.config import load_polylogue_config
 from polylogue.storage.runtime import RawConversationRecord
-from polylogue.config import load_polylogue_config
 from polylogue.types import Provider, ValidationMode, ValidationStatus
 
 logger = get_logger(__name__)
@@ -32,7 +25,7 @@ def schema_validation_mode(
 ) -> ValidationMode:
     """Return configured schema validation mode."""
     if env_var == "POLYLOGUE_SCHEMA_VALIDATION":
-        raw = str(load_polylogue_config().get("schema_validation", default))
+        raw = load_polylogue_config().schema_validation
     else:
         raw = os.environ.get(env_var, str(default))
     try:
