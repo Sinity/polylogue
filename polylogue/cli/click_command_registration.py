@@ -8,6 +8,7 @@ from polylogue.cli.commands.auth import auth_command
 from polylogue.cli.commands.backup import backup_command
 from polylogue.cli.commands.check import check_command
 from polylogue.cli.commands.completions import completions_command
+from polylogue.cli.commands.cost import cost_command
 from polylogue.cli.commands.config import config_command
 from polylogue.cli.commands.dashboard import dashboard_command
 from polylogue.cli.commands.diagnostics import diagnostics_group
@@ -25,6 +26,7 @@ ROOT_COMMANDS: tuple[click.Command, ...] = (
     backup_command,
     check_command,
     config_command,
+    cost_command,
     reset_command,
     status_command,
     ingest_command,
