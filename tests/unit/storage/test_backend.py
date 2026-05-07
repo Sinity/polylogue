@@ -1516,25 +1516,21 @@ async def test_parent_message_id_self_referential_fk(
     await backend.close()
 
 
-def test_quarantine_catches_validation_failures(tmp_path: Path) -> None:
+def test_quarantine_catches_validation_failures() -> None:
     """Quarantine property must return True when validation_status is FAILED (#844)."""
     from polylogue.storage.raw.artifacts import RawIngestArtifactState
     from polylogue.types import ValidationStatus
 
     # Strict schema validation failure without parse error — must still be quarantined
     state = RawIngestArtifactState(
-        raw_id="raw-1",
-        parsed=False,
         parse_error=None,
         parsed_at=None,
         validation_status=ValidationStatus.FAILED,
     )
     assert state.quarantined is True
 
-    # Parse error also quarantines
+    # Parse error also quarantines (even without validation failure)
     state_with_parse = RawIngestArtifactState(
-        raw_id="raw-2",
-        parsed=False,
         parse_error="something broke",
         parsed_at=None,
         validation_status=None,
@@ -1543,8 +1539,6 @@ def test_quarantine_catches_validation_failures(tmp_path: Path) -> None:
 
     # Successfully parsed + validated is NOT quarantined
     state_clean = RawIngestArtifactState(
-        raw_id="raw-3",
-        parsed=True,
         parse_error=None,
         parsed_at="2026-01-01T00:00:00Z",
         validation_status=ValidationStatus.PASSED,
@@ -1565,18 +1559,24 @@ def test_fts_triggers_restored_before_commit(tmp_path: Path) -> None:
     db = tmp_path / "fts_commit.db"
     conn = sqlite3.connect(str(db))
     conn.executescript(ARCHIVE_STORAGE_DDL)
-    conn.execute("INSERT INTO conversations(conversation_id, provider_name, provider_conversation_id) VALUES(?,?,?)",
-                 ("c1", "test", "pc1"))
-    conn.execute("INSERT INTO messages(message_id, conversation_id, role, text, provider_name) VALUES(?,?,?,?,?)",
-                 ("m1", "c1", "user", "hello world", "test"))
+    conn.execute(
+        "INSERT INTO conversations(conversation_id, provider_name, provider_conversation_id) VALUES(?,?,?)",
+        ("c1", "test", "pc1"),
+    )
+    conn.execute(
+        "INSERT INTO messages(message_id, conversation_id, role, text, provider_name) VALUES(?,?,?,?,?)",
+        ("m1", "c1", "user", "hello world", "test"),
+    )
     conn.commit()
 
     # Simulate: suspend triggers, insert data, restore before commit
     from polylogue.storage.fts.fts_lifecycle import restore_fts_triggers_sync, suspend_fts_triggers_sync
 
     suspend_fts_triggers_sync(conn)
-    conn.execute("INSERT INTO messages(message_id, conversation_id, role, text, provider_name) VALUES(?,?,?,?,?)",
-                 ("m2", "c1", "assistant", "hi there", "test"))
+    conn.execute(
+        "INSERT INTO messages(message_id, conversation_id, role, text, provider_name) VALUES(?,?,?,?,?)",
+        ("m2", "c1", "assistant", "hi there", "test"),
+    )
     # Restore BEFORE commit (the fix)
     restore_fts_triggers_sync(conn)
     conn.commit()
