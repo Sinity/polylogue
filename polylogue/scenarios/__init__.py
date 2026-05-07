@@ -1,6 +1,6 @@
 """Shared scenario models used across verification projections."""
 
-from .assertions import AssertionSpec
+from .assertions import AssertionClass, AssertionSpec, classification_label
 from .cli_surfaces import (
     CliSurfaceFamily,
     CliSurfaceVariant,
@@ -75,7 +75,9 @@ from .sources import NamedScenarioSource
 from .specs import ScenarioSpec
 
 __all__ = [
+    "AssertionClass",
     "AssertionSpec",
+    "classification_label",
     "build_default_corpus_specs",
     "build_corpus_scenarios",
     "build_inferred_corpus_specs",

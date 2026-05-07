@@ -32,6 +32,7 @@ def print_lane(lane: LaneEntry, *, indent: str = "") -> None:
     else:
         print(f"{indent}  command: {' '.join(build_lane_command(lane))}")
         print(f"{indent}  timeout: {lane.timeout_s}s")
+        print(f"{indent}  assertion: {lane.assertion.classification.value}")
 
 
 def run_lane(lane: LaneEntry) -> int:
