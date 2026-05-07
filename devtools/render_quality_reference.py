@@ -13,7 +13,6 @@ from devtools.mutation_catalog import MutationCampaignEntry
 from devtools.quality_registry import QualityRegistry, build_quality_registry
 from devtools.render_support import write_if_changed
 from devtools.scenario_coverage import RuntimeScenarioCoverage, build_runtime_scenario_coverage
-from devtools.validation_family_models import ValidationLaneFamily
 from polylogue.scenarios import CorpusScenario, ScenarioProjectionEntry
 
 
@@ -33,7 +32,7 @@ def _render_lane_table(entries: tuple[LaneEntry, ...]) -> list[str]:
     return lines
 
 
-def _render_validation_family_table(entries: tuple[ValidationLaneFamily, ...]) -> list[str]:
+def _render_validation_family_table(entries: tuple[object, ...]) -> list[str]:  # flattened — ValidationLaneFamily DSL removed in #805
     lines = [
         "| Family | Composite Lanes | Description |",
         "| --- | --- | --- |",
