@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Protocol, TypeAlias
 
 from polylogue.archive.conversation.branch_type import BranchType
+from polylogue.archive.message.artifacts import classify_text_message_type
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
 from polylogue.archive.viewport.viewports import ToolCategory, classify_tool
@@ -321,6 +322,10 @@ def materialize_conversation(
                 message_type = MessageType.TOOL_RESULT
             elif has_tool_block:
                 message_type = MessageType.TOOL_USE
+        if message_type == MessageType.MESSAGE:
+            classified = classify_text_message_type(msg.text)
+            if classified is not None:
+                message_type = classified
 
         blocks = [
             _materialize_content_block(message_id, block_index, block)
