@@ -48,7 +48,7 @@ from polylogue.storage.sqlite.schema_ddl_provider_events import (
     PROVIDER_EVENT_DDL as _PROVIDER_EVENT_DDL,
 )
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 
 # Complete target schema applied to fresh databases.
