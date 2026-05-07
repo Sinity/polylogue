@@ -10,26 +10,30 @@ let
     archive = lib.optionalAttrs (cfg.settings.archive.root != null) {
       root = cfg.settings.archive.root;
     };
-    daemon = lib.optionalAttrs (cfg.settings.daemon != { }) (
-      lib.filterAttrs (_: v: v != null) {
-        host = cfg.settings.daemon.host;
-        port = cfg.settings.daemon.port;
-        watch = cfg.settings.daemon.watch;
-      }
-    );
-    daemon.api = lib.optionalAttrs (cfg.settings.daemon-api != { }) (
-      lib.filterAttrs (_: v: v != null) {
-        host = cfg.settings.daemon-api.host;
-        port = cfg.settings.daemon-api.port;
-        auth_token = cfg.settings.daemon-api.auth-token;
-      }
-    );
-    daemon.browser-capture = lib.optionalAttrs (cfg.settings.browser-capture != { }) (
-      lib.filterAttrs (_: v: v != null) {
-        port = cfg.settings.browser-capture.port;
-        allowed_origins = cfg.settings.browser-capture.allowed-origins;
-      }
-    );
+    daemon =
+      let
+        base = lib.optionalAttrs (cfg.settings.daemon != { }) (
+          lib.filterAttrs (_: v: v != null) {
+            host = cfg.settings.daemon.host;
+            port = cfg.settings.daemon.port;
+            watch = cfg.settings.daemon.watch;
+          }
+        );
+        api = lib.optionalAttrs (cfg.settings.daemon-api != { }) {
+          api = lib.filterAttrs (_: v: v != null) {
+            host = cfg.settings.daemon-api.host;
+            port = cfg.settings.daemon-api.port;
+            auth_token = cfg.settings.daemon-api.auth-token;
+          };
+        };
+        browser-capture = lib.optionalAttrs (cfg.settings.browser-capture != { }) {
+          browser-capture = lib.filterAttrs (_: v: v != null) {
+            port = cfg.settings.browser-capture.port;
+            allowed_origins = cfg.settings.browser-capture.allowed-origins;
+          };
+        };
+      in
+      base // api // browser-capture;
     embedding = lib.optionalAttrs (cfg.settings.embedding != { }) (
       lib.filterAttrs (_: v: v != null) {
         enabled = cfg.settings.embedding.enabled;
