@@ -50,7 +50,7 @@ class RawIngestArtifactState:
 
     @property
     def quarantined(self) -> bool:
-        return not self.parsed and self.parse_error is not None
+        return not self.parsed and (self.parse_error is not None or self.validation_status is ValidationStatus.FAILED)
 
     def needs_validation_backlog(self, *, force_reparse: bool = False) -> bool:
         return self.validation_status is None and (force_reparse or not self.parsed)
