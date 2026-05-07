@@ -296,9 +296,14 @@ def _check_raw_failures_medium() -> HealthAlert:
     now = datetime.now(UTC).isoformat()
     try:
         from polylogue.daemon.status import _raw_failure_info
+
         info = _raw_failure_info()
-        parse = info.get("parse_failures", 0) if isinstance(info.get("parse_failures"), int) else 0
-        validation = info.get("validation_failures", 0) if isinstance(info.get("validation_failures"), int) else 0
+        parse = int(info.get("parse_failures", 0) or 0) if isinstance(info.get("parse_failures"), (int, float)) else 0
+        validation = (
+            int(info.get("validation_failures", 0) or 0)
+            if isinstance(info.get("validation_failures"), (int, float))
+            else 0
+        )
         quarantined = info.get("quarantined", 0) if isinstance(info.get("quarantined"), int) else 0
         total_failures = parse + validation
 

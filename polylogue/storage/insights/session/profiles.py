@@ -323,7 +323,7 @@ def hydrate_session_profile(record: SessionProfileRecord) -> SessionProfile:
         "thinking_duration_ms": record.thinking_duration_ms,
         "output_duration_ms": record.output_duration_ms,
         "tool_duration_ms": record.tool_duration_ms,
-        "latency_percentiles_ms": record.evidence_payload.latency_percentiles_ms,
+        "latency_percentiles_ms_json": record.evidence_payload.latency_percentiles_ms,
         "tool_calls_per_minute": record.tool_calls_per_minute,
         "timing_provenance": record.timing_provenance,
     }

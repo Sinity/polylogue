@@ -72,6 +72,12 @@ class SessionProfileDocument(TypedDict):
     auto_tags: list[str]
     is_continuation: bool
     parent_id: str | None
+    thinking_duration_ms: int
+    output_duration_ms: int
+    tool_duration_ms: int
+    latency_percentiles_ms_json: str
+    tool_calls_per_minute: float
+    timing_provenance: str
 
 
 class WorkThreadMemberEvidenceDocument(TypedDict):
