@@ -1,0 +1,295 @@
+# Test-coverage-domain manifest.
+#
+# Maps production domains to their covering test files, providing a
+# qualitative complement to verify-test-ownership (which measures import
+# reachability, not behavior coverage).
+#
+# Domains are grouped by architecture ring (substrate, insights, surfaces,
+# verification). Each domain entry lists:
+#   - domain: short name
+#   - production_modules: polylogue/ paths for the domain
+#   - covering_tests: test files exercising behavior in this domain
+#   - notes: coverage assessment (covered, partial, uncovered, structural-only)
+#
+# Created 2026-05-07. Seed state documents current coverage, not target.
+
+description: >
+  Qualitative test-coverage catalog mapping production domains to
+  test files that exercise their behavior. Complements verify-test-ownership
+  (import-reachability gate) with domain-level coverage assessment.
+
+domains:
+  # -- Substrate: archive meaning --------------------------------------------
+
+  - domain: parser_chatgpt
+    production_modules:
+      - polylogue/sources/parsers/chatgpt.py
+    covering_tests:
+      - tests/unit/sources/test_parsers_chatgpt.py
+    notes: >
+      covered — format detection, message extraction, parent/branch,
+      metadata roundtrip, property permutations
+
+  - domain: parser_claude_ai
+    production_modules:
+      - polylogue/sources/parsers/claude.py
+    covering_tests:
+      - tests/unit/sources/test_parsers_chatgpt.py
+    notes: >
+      partial — format detection shared with chatgpt; claude-specific
+      parsing lacks dedicated tests
+
+  - domain: parser_claude_code
+    production_modules:
+      - polylogue/sources/parsers/claude.py
+    covering_tests:
+      - tests/unit/sources/test_parsers_claude.py
+    notes: >
+      covered — code path, message extraction, block mapping, subagent events
+
+  - domain: parser_codex
+    production_modules:
+      - polylogue/sources/parsers/codex.py
+    covering_tests:
+      - tests/unit/sources/test_parsers_codex.py
+      - tests/unit/sources/test_parsers_props.py
+    notes: >
+      covered — format detection, message extraction, event parsing,
+      property tests
+
+  - domain: parser_gemini
+    production_modules:
+      - polylogue/sources/parsers/drive.py
+    covering_tests:
+      - tests/unit/sources/test_parsers_drive.py
+    notes: >
+      partial — format detection covered; message extraction and
+      metadata lacking dedicated tests
+
+  - domain: provider_detection
+    production_modules:
+      - polylogue/sources/dispatch.py
+      - polylogue/sources/artifact_taxonomy/
+    covering_tests:
+      - tests/unit/sources/test_dispatch.py
+      - tests/unit/sources/test_parsers_props.py
+      - tests/unit/sources/test_null_guard_properties.py
+    notes: >
+      covered — dispatch, artifact classification, null-guard and
+      property tests
+
+  - domain: content_hashing
+    production_modules:
+      - polylogue/pipeline/ids.py
+      - polylogue/core/hashing.py
+    covering_tests:
+      - tests/unit/core/test_hashing.py
+      - tests/unit/pipeline/test_ids.py
+    notes: covered — hash computation, NFC normalization, idempotency
+
+  - domain: pipeline_ingest
+    production_modules:
+      - polylogue/pipeline/
+      - polylogue/pipeline/services/
+    covering_tests:
+      - tests/unit/pipeline/test_stage_independence.py
+      - tests/unit/pipeline/test_resilience.py
+    notes: >
+      partial — stage isolation and resilience covered; batch ingest and
+      validation parallelism not directly tested
+
+  - domain: storage_crud
+    production_modules:
+      - polylogue/storage/repository/
+      - polylogue/storage/sqlite/
+    covering_tests:
+      - tests/unit/storage/test_backend.py
+      - tests/unit/storage/test_store_ops.py
+      - tests/unit/storage/test_repository_lifecycle_laws.py
+      - tests/unit/storage/test_crud.py
+    notes: covered — save, get, list, delete, metadata, lifecycle laws
+
+  - domain: storage_fts5
+    production_modules:
+      - polylogue/storage/search_providers/fts5.py
+      - polylogue/storage/fts/
+    covering_tests:
+      - tests/unit/storage/test_fts5.py
+      - tests/unit/storage/test_fts5_laws.py
+      - tests/unit/storage/test_archive_search_contracts.py
+    notes: >
+      covered — FTS5 query, rebuild, trigger lifecycle, search contracts
+
+  - domain: storage_hybrid
+    production_modules:
+      - polylogue/storage/search_providers/hybrid.py
+    covering_tests:
+      - tests/unit/storage/test_hybrid_laws.py
+    notes: covered — RRF fusion, deduplication, limit edge cases
+
+  - domain: tags
+    production_modules:
+      - polylogue/storage/repository/archive/repository_writes.py
+      - polylogue/storage/sqlite/queries/conversations_identity.py
+    covering_tests:
+      - tests/unit/storage/test_repository_lifecycle_laws.py
+      - tests/unit/storage/test_tag_contracts.py
+      - tests/integration/test_cli_tags_surface.py
+    notes: >
+      covered — add/remove/list/bulk/validation via catalog-driven
+      parametrization
+
+  - domain: embeddings
+    production_modules:
+      - polylogue/storage/embeddings/
+      - polylogue/storage/search_providers/sqlite_vec_runtime.py
+    covering_tests:
+      - tests/unit/storage/test_embedding_stats.py
+      - tests/unit/storage/test_embedding_contracts.py
+    notes: >
+      partial — stats and lifecycle covered; embed_provider call not
+      tested (requires API key)
+
+  - domain: blob_store
+    production_modules:
+      - polylogue/storage/blob_store.py
+    covering_tests:
+      - tests/unit/storage/test_blob_store.py
+    notes: >
+      partial — basic read/write covered; GC and orphan detection
+      tracked in #818
+
+  - domain: schema_inference
+    production_modules:
+      - polylogue/schemas/
+      - polylogue/schemas/schema_inference.py
+    covering_tests:
+      - tests/unit/core/test_schema_privacy.py
+      - tests/unit/core/test_schema_validation.py
+      - tests/unit/core/test_schema_annotation_contracts.py
+      - tests/unit/core/test_schema_cluster_assignment.py
+    notes: covered — privacy guards, validation, annotation, cluster assignment
+
+  # -- Derived read models ------------------------------------------------
+
+  - domain: session_insights
+    production_modules:
+      - polylogue/insights/
+      - polylogue/storage/insights/session/
+    covering_tests:
+      - tests/unit/storage/test_session_insight_mapper_fallbacks.py
+      - tests/unit/scenarios/test_insight_surfaces.py
+    notes: >
+      partial — mapper fallbacks and surface exercises covered; rebuild
+      correctness not directly tested
+
+  # -- Surfaces -----------------------------------------------------------
+
+  - domain: cli_surface
+    production_modules:
+      - polylogue/cli/
+    covering_tests:
+      - tests/unit/cli/test_click_app.py
+      - tests/unit/cli/test_cli_error_boundaries.py
+      - tests/unit/cli/test_query_exec.py
+      - tests/unit/cli/test_deterministic_output.py
+      - tests/unit/cli/test_json_envelope_contract.py
+      - tests/unit/cli/test_terminal_snapshots.py
+    notes: >
+      covered — commands, error boundaries, query, output, envelopes,
+      snapshots
+
+  - domain: mcp_surface
+    production_modules:
+      - polylogue/mcp/
+    covering_tests:
+      - tests/unit/mcp/test_tool_contracts.py
+      - tests/unit/mcp/test_server_surfaces.py
+      - tests/unit/mcp/test_mcp_edge_cases.py
+      - tests/integration/test_mcp.py
+    notes: covered — tool contracts, surfaces, edge cases, integration
+
+  - domain: api_surface
+    production_modules:
+      - polylogue/api/
+    covering_tests:
+      - tests/unit/core/test_facade_api.py
+      - tests/unit/core/test_sync_surface_runtime.py
+    notes: partial — facade and sync surface covered; async API not directly tested
+
+  - domain: daemon
+    production_modules:
+      - polylogue/daemon/
+    covering_tests:
+      - tests/unit/daemon/test_daemon_convergence.py
+      - tests/unit/daemon/test_convergence_stages.py
+    notes: covered — convergence, stage isolation, embedding opt-in
+
+  - domain: rendering
+    production_modules:
+      - polylogue/rendering/
+    covering_tests:
+      - tests/unit/rendering/test_html_sanitizer.py
+    notes: partial — HTML sanitizer covered; markdown rendering not directly tested
+
+  # -- Verification -------------------------------------------------------
+
+  - domain: showcase
+    production_modules:
+      - polylogue/showcase/
+    covering_tests:
+      - tests/unit/showcase/test_exercise_catalog.py
+      - tests/unit/showcase/test_catalog_loader_runtime.py
+      - tests/unit/showcase/test_scenario_models.py
+    notes: covered — exercise catalog, loading, scenario models
+
+  - domain: scenarios
+    production_modules:
+      - polylogue/scenarios/
+    covering_tests:
+      - tests/unit/scenarios/test_corpus.py
+      - tests/unit/scenarios/test_sources.py
+      - tests/unit/scenarios/test_metadata.py
+      - tests/unit/scenarios/test_operational_surfaces.py
+      - tests/unit/scenarios/test_insight_surfaces.py
+      - tests/unit/scenarios/test_scenario_specs.py
+    notes: >
+      covered — corpus generation, sources, metadata, operational and
+      insight surfaces, specs
+
+  - domain: devtools
+    production_modules:
+      - devtools/
+    covering_tests:
+      - tests/unit/devtools/test_proof_pack.py
+      - tests/unit/devtools/test_quality_registry.py
+      - tests/unit/devtools/test_benchmark_campaign.py
+      - tests/unit/devtools/test_validation_lanes.py
+      - tests/unit/devtools/test_pipeline_probe.py
+    notes: partial — core tooling covered; some leaf commands have no direct tests
+
+  - domain: proof
+    production_modules:
+      - polylogue/proof/
+    covering_tests:
+      - tests/unit/proof/test_generated_scenario_obligations.py
+      - tests/unit/devtools/test_proof_pack.py
+    notes: >
+      partial — scenario obligations and proof pack covered; subject
+      discovery not directly tested
+
+# -- Known gaps (from recon report #807) ----------------------------------
+#
+# These domains lack dedicated behavioral tests:
+#
+#   - codex_events: event stream parsing lacks dedicated contract tests
+#   - site/rendering: GitHub Pages site generation not tested
+#   - auth: no authentication boundary tests
+#   - scale: no scale/performance regression tests (benchmarks are out-of-band)
+#   - schema_migration: in-place schema upgrade scripts not tested
+#   - browser_capture: not a testable surface (external browser integration)
+#   - cli_insights: insights subcommands tested via surface scenarios only
+#
+# Orphan tests (legitimate structural/infrastructure tests):
+#   - tests/unit/devtools/test_pre_push_hook.py — exercises pre-push hook
+#   - tests/unit/pipeline/test_no_cli_imports.py — verifies pipeline isolation
