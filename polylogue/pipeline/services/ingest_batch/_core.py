@@ -879,6 +879,14 @@ def _commit_ingest_results(
     )
     summary.flush_elapsed_s = time.perf_counter() - flush_started
     _observe_current_rss(summary)
+    # Restore FTS triggers BEFORE commit so they are durable with the data.
+    # CREATE TRIGGER is DDL and auto-commits the pending transaction, so the
+    # explicit conn.commit() below becomes a no-op. If restore fails, the
+    # exception propagates before we mark the batch as committed.
+    # See https://github.com/Sinity/polylogue/issues/817
+    from polylogue.storage.fts.fts_lifecycle import restore_fts_triggers_sync
+
+    restore_fts_triggers_sync(conn)
     commit_started = time.perf_counter()
     conn.commit()
     summary.commit_elapsed_s = time.perf_counter() - commit_started
