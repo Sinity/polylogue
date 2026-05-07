@@ -43,6 +43,8 @@ def _origin_check(origin: str) -> bool:
     if not origin:
         return True
     return (
-        origin.startswith("http://127.0.0.1:") or origin.startswith("http://localhost:")
-        or origin.startswith("https://127.0.0.1:") or origin.startswith("https://localhost:")
+        origin.startswith("http://127.0.0.1:")
+        or origin.startswith("http://localhost:")
+        or origin.startswith("https://127.0.0.1:")
+        or origin.startswith("https://localhost:")
     )
