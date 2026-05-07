@@ -44,7 +44,14 @@ class ConversationFormatter:
 
     def __init__(self, archive_root: Path, repository: ConversationRepository | None = None):
         self.archive_root = archive_root
-        self._repository = repository
+        if repository is None:
+            from polylogue.storage.repository import ConversationRepository
+            from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
+
+            backend = SQLiteBackend(db_path=archive_root / "polylogue.db")
+            self._repository = ConversationRepository(backend=backend)
+        else:
+            self._repository = repository
 
     async def load_projection(self, conversation_id: str) -> ConversationRenderProjection:
         """Load the canonical repository-owned render projection."""

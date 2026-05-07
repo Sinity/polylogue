@@ -215,7 +215,7 @@ class SessionProfile:
             output_duration_ms=coerce_int(payload.get("output_duration_ms"), 0),
             tool_duration_ms=coerce_int(payload.get("tool_duration_ms"), 0),
             latency_percentiles_ms=(
-                {str(k): coerce_int(v, 0) for k, v in payload.get("latency_percentiles_ms", {}).items()}
+                {str(k): coerce_int(v, 0) for k, v in (payload.get("latency_percentiles_ms") or {}).items()}  # type: ignore[attr-defined]
                 if isinstance(payload.get("latency_percentiles_ms"), dict)
                 else {}
             ),
