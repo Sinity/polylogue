@@ -209,19 +209,40 @@ async def _periodic_convergence_check(
 
 
 async def _periodic_health_check() -> None:
-    """Run FAST health checks every 5 minutes with structured alert logging."""
-    while True:
-        await asyncio.sleep(300)
-        try:
-            from polylogue.daemon.health import HealthTier, check_health
-            from polylogue.daemon.notifications import (
-                LogNotificationBackend,
-                send_notifications,
-            )
+    """Run periodic health checks with config-driven notification backend.
 
-            health = check_health(tiers={HealthTier.FAST, HealthTier.MEDIUM})
+    Health check tiers and interval are read from PolylogueConfig.
+    Notifications are sent through the configured notification backend.
+    """
+    while True:
+        from polylogue.config import load_polylogue_config
+
+        cfg = load_polylogue_config()
+        interval = cfg.health_check_interval_s
+        tier_str = cfg.health_check_tiers
+
+        # Resolve health tiers from config.
+        tier_map = {
+            "fast": HealthTier.FAST,
+            "medium": HealthTier.MEDIUM,
+            "expensive": HealthTier.EXPENSIVE,
+        }
+        tiers: set[HealthTier] = set()
+        for t in tier_str.split(","):
+            t = t.strip()
+            if t in tier_map:
+                tiers.add(tier_map[t])
+        if not tiers:
+            tiers = {HealthTier.FAST, HealthTier.MEDIUM}
+
+        await asyncio.sleep(interval)
+        try:
+            from polylogue.daemon.health import check_health
+            from polylogue.daemon.notifications import send_notifications
+
+            health = check_health(tiers=tiers)
             if health.overall_status != "ok":
-                send_notifications(health.alerts, backend=LogNotificationBackend())
+                send_notifications(health.alerts, config=cfg.raw)
         except Exception:
             logger.warning("health: periodic check failed", exc_info=True)
 

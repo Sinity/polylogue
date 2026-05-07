@@ -1,9 +1,10 @@
 """Tiered daemon health checks with typed alerts and severity escalation.
 
 Health checks are grouped into three tiers by cost:
-- FAST: sub-1s checks (liveness, disk space, WAL size)
-- MEDIUM: sub-10s queries (FTS readiness, insight freshness, stale attempts, failures)
-- EXPENSIVE: longer-running checks (DB integrity, blob integrity)
+- FAST: sub-1s checks (liveness, disk space, WAL size, source availability)
+- MEDIUM: sub-10s queries (FTS readiness, insight freshness, stale attempts,
+  repeated stage failures, raw failures)
+- EXPENSIVE: longer-running checks (DB integrity, blob integrity, embedding coverage)
 
 Each check produces a ``HealthAlert`` with severity, message, and checked_at.
 Alerts accrue a ``consecutive_failures`` counter that carries forward across
@@ -220,11 +221,62 @@ def _check_wal_size_fast() -> HealthAlert:
         )
 
 
+def _check_source_availability_fast() -> HealthAlert:
+    """Check that configured watch source roots exist and are readable."""
+    from polylogue.sources.live.watcher import default_sources
+
+    now = datetime.now(UTC).isoformat()
+    try:
+        sources = default_sources()
+        missing: list[str] = []
+        unreadable: list[str] = []
+        available = 0
+        for src in sources:
+            if not src.exists():
+                missing.append(src.name)
+            elif not os.access(str(src.root), os.R_OK):
+                unreadable.append(src.name)
+            else:
+                available += 1
+
+        if not missing and not unreadable:
+            severity = HealthSeverity.OK
+            message = f"{available} source(s) available"
+        elif missing and not unreadable:
+            severity = HealthSeverity.WARNING
+            message = f"{available}/{len(sources)} source(s) available, missing: {', '.join(missing)}"
+        elif unreadable:
+            severity = HealthSeverity.ERROR
+            message = f"{available}/{len(sources)} source(s) available, unreadable: {', '.join(unreadable)}"
+        else:
+            severity = HealthSeverity.WARNING
+            message = f"{available}/{len(sources)} source(s) available"
+
+        return HealthAlert(
+            check_name="source_availability",
+            tier=HealthTier.FAST,
+            severity=severity,
+            message=message,
+            checked_at=now,
+            consecutive_failures=_record_failure("source_availability", severity == HealthSeverity.OK),
+        )
+    except Exception as exc:
+        return HealthAlert(
+            check_name="source_availability",
+            tier=HealthTier.FAST,
+            severity=HealthSeverity.ERROR,
+            message=f"source availability check failed: {exc}",
+            checked_at=now,
+            consecutive_failures=_record_failure("source_availability", False),
+        )
+
+
 def _run_fast_checks() -> list[HealthAlert]:
     return [
         _check_daemon_liveness_fast(),
         _check_disk_space_fast(),
         _check_wal_size_fast(),
+        _check_source_availability_fast(),
     ]
 
 
@@ -371,11 +423,154 @@ def _check_stale_ingest_attempts_medium() -> HealthAlert:
         )
 
 
+def _check_insight_freshness_medium() -> HealthAlert:
+    """Check session profile coverage against total conversations.
+
+    A gap indicates insight materialization is incomplete — profiles,
+    work events, phases, and threads may be stale or missing.
+    """
+    now = datetime.now(UTC).isoformat()
+    try:
+        from polylogue.daemon.status import _insight_freshness_info
+
+        info = _insight_freshness_info()
+        total_sessions = info.get("total_sessions", 0)
+        total = total_sessions if isinstance(total_sessions, int) else 0
+        profiled = info.get("sessions_with_profiles", 0)
+        with_profiles = profiled if isinstance(profiled, int) else 0
+        gap = total - with_profiles
+
+        if total == 0:
+            severity = HealthSeverity.OK
+            message = "no sessions to profile"
+        elif gap == 0:
+            severity = HealthSeverity.OK
+            message = f"{with_profiles} sessions profiled"
+        elif gap <= total * 0.1:
+            severity = HealthSeverity.WARNING
+            gap_pct = 100 * gap / total
+            message = f"{gap} of {total} sessions missing profiles ({gap_pct:.1f}%)"
+        else:
+            severity = HealthSeverity.ERROR
+            gap_pct = 100 * gap / total
+            message = f"{gap} of {total} sessions missing profiles ({gap_pct:.1f}%) — convergence may be stalled"
+
+        return HealthAlert(
+            check_name="insight_freshness",
+            tier=HealthTier.MEDIUM,
+            severity=severity,
+            message=message,
+            checked_at=now,
+            consecutive_failures=_record_failure("insight_freshness", severity == HealthSeverity.OK),
+        )
+    except Exception as exc:
+        return HealthAlert(
+            check_name="insight_freshness",
+            tier=HealthTier.MEDIUM,
+            severity=HealthSeverity.ERROR,
+            message=f"insight freshness check failed: {exc}",
+            checked_at=now,
+            consecutive_failures=_record_failure("insight_freshness", False),
+        )
+
+
+def _check_repeated_stage_failures_medium() -> HealthAlert:
+    """Check for repeated stage failures in live ingest attempts.
+
+    Looks at recent ingest attempts and flags when a non-trivial portion
+    have failed — indicating a persistent stage-level problem rather than
+    a transient source-file issue.
+    """
+    now = datetime.now(UTC).isoformat()
+    dbf = db_path()
+    if not dbf.exists():
+        return HealthAlert(
+            check_name="repeated_stage_failures",
+            tier=HealthTier.MEDIUM,
+            severity=HealthSeverity.ERROR,
+            message="database not found",
+            checked_at=now,
+            consecutive_failures=_record_failure("repeated_stage_failures", False),
+        )
+    try:
+        conn = sqlite3.connect(str(dbf))
+        try:
+            has_table = bool(
+                conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='live_ingest_attempt'").fetchone()
+            )
+            if not has_table:
+                return HealthAlert(
+                    check_name="repeated_stage_failures",
+                    tier=HealthTier.MEDIUM,
+                    severity=HealthSeverity.OK,
+                    message="no ingest attempt history",
+                    checked_at=now,
+                    consecutive_failures=_record_failure("repeated_stage_failures", True),
+                )
+
+            total_recent = conn.execute(
+                "SELECT COUNT(*) FROM (SELECT 1 FROM live_ingest_attempt ORDER BY started_at DESC LIMIT 20)"
+            ).fetchone()[0]
+            failed_recent = conn.execute(
+                "SELECT COUNT(*) FROM ("
+                "SELECT 1 FROM live_ingest_attempt "
+                "WHERE status = 'failed' "
+                "ORDER BY started_at DESC LIMIT 20"
+                ")"
+            ).fetchone()[0]
+
+            if total_recent == 0:
+                severity = HealthSeverity.OK
+                message = "no recent ingest attempts"
+            elif failed_recent == 0:
+                severity = HealthSeverity.OK
+                message = f"no failures in last {total_recent} attempts"
+            elif failed_recent <= 2:
+                severity = HealthSeverity.WARNING
+                message = f"{failed_recent}/{total_recent} recent attempts failed"
+            else:
+                # Sample the most recent error for context.
+                error_row = conn.execute(
+                    "SELECT phase, error FROM live_ingest_attempt "
+                    "WHERE status = 'failed' AND error IS NOT NULL "
+                    "ORDER BY started_at DESC LIMIT 1"
+                ).fetchone()
+                error_hint = ""
+                if error_row:
+                    phase = error_row[0] or "unknown"
+                    error_text = error_row[1] or ""
+                    error_hint = f" (phase={phase}: {error_text[:80]})"
+                severity = HealthSeverity.ERROR
+                message = f"{failed_recent}/{total_recent} recent attempts failed{error_hint}"
+
+            return HealthAlert(
+                check_name="repeated_stage_failures",
+                tier=HealthTier.MEDIUM,
+                severity=severity,
+                message=message,
+                checked_at=now,
+                consecutive_failures=_record_failure("repeated_stage_failures", severity == HealthSeverity.OK),
+            )
+        finally:
+            conn.close()
+    except Exception as exc:
+        return HealthAlert(
+            check_name="repeated_stage_failures",
+            tier=HealthTier.MEDIUM,
+            severity=HealthSeverity.ERROR,
+            message=f"stage failure check failed: {exc}",
+            checked_at=now,
+            consecutive_failures=_record_failure("repeated_stage_failures", False),
+        )
+
+
 def _run_medium_checks() -> list[HealthAlert]:
     return [
         _check_fts_readiness_medium(),
         _check_raw_failures_medium(),
         _check_stale_ingest_attempts_medium(),
+        _check_insight_freshness_medium(),
+        _check_repeated_stage_failures_medium(),
     ]
 
 
@@ -429,9 +624,116 @@ def _check_db_integrity_expensive() -> HealthAlert:
         )
 
 
+def _check_blob_integrity_expensive() -> HealthAlert:
+    """Sample-check blob store integrity by verifying a bounded set of blobs.
+
+    Uses ``BlobStore.verify_all()`` with a low failure cap to bound runtime.
+    This is a filesystem-only check — it does not touch the database and is
+    usable even when the DB is unavailable.
+    """
+    from polylogue.storage.blob_store import get_blob_store
+
+    now = datetime.now(UTC).isoformat()
+    try:
+        store = get_blob_store()
+        result = store.verify_all(max_failures=5)
+        if result.passed:
+            severity = HealthSeverity.OK
+            message = f"blob integrity ok ({result.checked} verified)"
+        elif result.truncated:
+            severity = HealthSeverity.ERROR
+            message = f"blob integrity: {result.failed_count} failures (stopped early)"
+        else:
+            severity = HealthSeverity.WARNING
+            failure_details = "; ".join(f"{f.hash[:8]}... ({f.reason})" for f in result.failures)
+            message = f"blob integrity: {result.failed_count}/{result.checked} failures [{failure_details}]"
+        is_ok = severity == HealthSeverity.OK
+        return HealthAlert(
+            check_name="blob_integrity",
+            tier=HealthTier.EXPENSIVE,
+            severity=severity,
+            message=message,
+            checked_at=now,
+            consecutive_failures=_record_failure("blob_integrity", is_ok),
+        )
+    except Exception as exc:
+        return HealthAlert(
+            check_name="blob_integrity",
+            tier=HealthTier.EXPENSIVE,
+            severity=HealthSeverity.ERROR,
+            message=f"blob integrity check failed: {exc}",
+            checked_at=now,
+            consecutive_failures=_record_failure("blob_integrity", False),
+        )
+
+
+def _check_embedding_coverage_expensive() -> HealthAlert:
+    """Check embedding coverage when embedding is enabled.
+
+    Only raises non-OK when embedding is configured but coverage is low
+    or there are embedding failures. Disabled embedding is OK.
+    """
+    from polylogue.config import load_polylogue_config
+    from polylogue.daemon.status import _embedding_readiness_info
+
+    now = datetime.now(UTC).isoformat()
+    try:
+        cfg = load_polylogue_config()
+        enabled = bool(cfg.embedding_enabled) and cfg.voyage_api_key is not None
+
+        if not enabled:
+            return HealthAlert(
+                check_name="embedding_coverage",
+                tier=HealthTier.EXPENSIVE,
+                severity=HealthSeverity.OK,
+                message="embedding disabled",
+                checked_at=now,
+                consecutive_failures=_record_failure("embedding_coverage", True),
+            )
+
+        info = _embedding_readiness_info()
+        coverage = info.get("embedding_coverage_percent", 0.0)
+        cov_pct = float(coverage) if isinstance(coverage, (int, float)) and not isinstance(coverage, bool) else 0.0
+        failure_count = info.get("embedding_failure_count", 0)
+        failures = failure_count if isinstance(failure_count, int) else 0
+
+        if failures > 0 and cov_pct < 50:
+            severity = HealthSeverity.ERROR
+            message = f"embedding coverage {cov_pct:.1f}% with {failures} failures"
+        elif failures > 0:
+            severity = HealthSeverity.WARNING
+            message = f"embedding coverage {cov_pct:.1f}%, {failures} failures"
+        elif cov_pct < 10:
+            severity = HealthSeverity.WARNING
+            message = f"embedding coverage low: {cov_pct:.1f}%"
+        else:
+            severity = HealthSeverity.OK
+            message = f"embedding coverage {cov_pct:.1f}%"
+
+        return HealthAlert(
+            check_name="embedding_coverage",
+            tier=HealthTier.EXPENSIVE,
+            severity=severity,
+            message=message,
+            checked_at=now,
+            consecutive_failures=_record_failure("embedding_coverage", severity == HealthSeverity.OK),
+        )
+    except Exception as exc:
+        return HealthAlert(
+            check_name="embedding_coverage",
+            tier=HealthTier.EXPENSIVE,
+            severity=HealthSeverity.ERROR,
+            message=f"embedding coverage check failed: {exc}",
+            checked_at=now,
+            consecutive_failures=_record_failure("embedding_coverage", False),
+        )
+
+
 def _run_expensive_checks() -> list[HealthAlert]:
     return [
         _check_db_integrity_expensive(),
+        _check_blob_integrity_expensive(),
+        _check_embedding_coverage_expensive(),
     ]
 
 
