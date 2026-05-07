@@ -242,6 +242,31 @@ class MCPMutationStatusPayload(SurfacePayloadModel):
     conversation_count: int | None = None
 
 
+class MutationResultPayload(SurfacePayloadModel):
+    """Shared result envelope for tag, metadata, and delete mutations.
+
+    Carries idempotent status codes, context fields, and bulk-operation
+    counts so that CLI, MCP, API, and daemon surfaces all expose the
+    same mutation contract shape.
+    """
+
+    status: str
+    """``ok``, ``deleted``, ``not_found``, ``unchanged``, or ``partial``."""
+
+    conversation_id: str | None = None
+    detail: str | None = None
+    """Machine-readable detail: ``already_present``, ``tag_not_present``,
+    ``key_not_found``, ``value_unchanged``, ``conversation_not_found``."""
+
+    affected_count: int | None = None
+    skipped_count: int | None = None
+    tag: str | None = None
+    key: str | None = None
+    conversation_count: int | None = None
+    tag_count: int | None = None
+    applied_count: int | None = None
+
+
 class MCPTagCountsPayload(MCPRootPayload[dict[str, int]]):
     root: dict[str, int]
 
@@ -388,6 +413,7 @@ __all__ = [
     "MCPMessagesListPayload",
     "MCPMetadataPayload",
     "MCPMutationStatusPayload",
+    "MutationResultPayload",
     "MCPQueryMissDiagnosticsPayload",
     "MCPQueryMissReasonPayload",
     "MCPRawArtifactPayload",

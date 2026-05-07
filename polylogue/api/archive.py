@@ -476,10 +476,7 @@ class PolylogueArchiveMixin:
         from polylogue.storage.repository.archive.repository_writes import RepositoryWriteMixin
 
         store: RepositoryWriteMixin = self.repository
-        existing = await store.list_tags()
-        await store.add_tag(str(resolved), tag)
-        after = await store.list_tags()
-        return after.get(tag, 0) > existing.get(tag, 0)
+        return await store.add_tag(str(resolved), tag)
 
     async def remove_tag(self, conversation_id: str, tag: str) -> bool:
         """Remove a tag from a conversation. Returns ``True`` if the tag was removed."""
@@ -489,10 +486,7 @@ class PolylogueArchiveMixin:
         from polylogue.storage.repository.archive.repository_writes import RepositoryWriteMixin
 
         store: RepositoryWriteMixin = self.repository
-        existing = await store.list_tags()
-        await store.remove_tag(str(resolved), tag)
-        after = await store.list_tags()
-        return after.get(tag, 0) < existing.get(tag, 0)
+        return await store.remove_tag(str(resolved), tag)
 
     async def get_metadata(self, conversation_id: str) -> dict[str, str]:
         """Return all metadata key-value pairs for a conversation."""
@@ -505,12 +499,16 @@ class PolylogueArchiveMixin:
             result[str(k)] = str(v) if not isinstance(v, str) else v
         return result
 
-    async def update_metadata(self, conversation_id: str, key: str, value: str) -> None:
-        """Set a metadata key on a conversation. Creates or updates the key."""
+    async def update_metadata(self, conversation_id: str, key: str, value: str) -> bool:
+        """Set a metadata key on a conversation.
+
+        Returns ``True`` if the value was changed, ``False`` if it was already set
+        to the same value.
+        """
         resolved = await self.repository.resolve_id(conversation_id, strict=True)
         if resolved is None:
             raise ConversationNotFoundError(conversation_id)
         from polylogue.storage.repository.archive.repository_writes import RepositoryWriteMixin
 
         store: RepositoryWriteMixin = self.repository
-        await store.update_metadata(str(resolved), key, value)
+        return await store.update_metadata(str(resolved), key, value)
