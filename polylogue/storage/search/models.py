@@ -39,6 +39,11 @@ class ConversationSearchEvidenceHit:
     snippet: str | None = None
     match_surface: str = "message"
     retrieval_lane: str = "dialogue"
+    matched_terms: tuple[str, ...] = ()
+    score_components: dict[str, float] | None = None
+    lane_rank: int | None = None
+    lane_contribution: float | None = None
+    raw_score: float | None = None
 
 
 @dataclass(frozen=True)

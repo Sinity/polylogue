@@ -97,7 +97,7 @@ class ConversationQueryPlan:
     parent_id: str | None = None
     since: datetime | None = None
     until: datetime | None = None
-    sort: SortField = "date"
+    sort: SortField | None = None
     reverse: bool = False
     limit: int | None = None
     sample: int | None = None
@@ -117,6 +117,9 @@ class ConversationQueryPlan:
     since_session_id: str | None = None
     message_type: str | None = None
     offset: int = 0
+    cursor: str | None = None
+    ranking_policy: str = "default"
+    ranking_policy_version: str = "1"
     vector_provider: VectorProvider | None = None
 
     # -- Description / record-query methods (was QueryPlanDescriptionMixin) --

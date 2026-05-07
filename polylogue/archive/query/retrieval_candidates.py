@@ -177,7 +177,8 @@ async def fetch_search_results(
             return False, []
         from polylogue.archive.query.retrieval_search import search_hybrid_results
 
-        return True, await search_hybrid_results(plan, repository, limit=search_limit(plan))
+        results, _lane_ranks = await search_hybrid_results(plan, repository, limit=search_limit(plan))
+        return True, results
 
     query = " ".join(plan.fts_terms)
     provider_names = list(provider_values(plan.providers)) or None
