@@ -1,13 +1,47 @@
-"""Conversation write helpers for the repository mixin."""
+"""Conversation write helpers for the repository mixin.
+
+Hash boundary
+------------
+The content hash on ``ConversationRecord`` represents the canonical identity of an
+imported conversation.  It is computed from these fields (see
+``_conversation_hash_payload`` in ``pipeline/ids.py``):
+
+    Inside the hash
+    ~~~~~~~~~~~~~~~
+    - conversation: title, created_at, updated_at
+    - messages: id, role, text, timestamp, content_blocks
+    - content_blocks: type, text, tool_name, tool_id, tool_input, media_type
+    - attachments: id, message_id, name, mime_type, size_bytes
+    - provider_events: event_index, event_type, timestamp, source_message_id, payload
+
+    Outside the hash (intentionally excluded)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    - user metadata (tags, summaries, notes) — editable without triggering re-import
+    - provider_meta (source_name, cwd, git context) — operational metadata
+    - action_events — derived from messages + content_blocks at write time by
+      ``build_action_event_records()``; they carry no independent semantics
+
+When the content hash matches the stored row, message, attachment, content_block,
+and action_event writes are skipped (idempotency).  Provider events are always
+replaced when explicitly supplied, regardless of hash match — they carry
+supplementary indexing-level data that may be updated without changing the
+semantic content.
+
+``save_via_backend()`` validates that the row graph passed by the caller agrees
+with ``ConversationRecord.content_hash`` by re-deriving the hash from the
+storage records and comparing.  A mismatch is logged as a warning and forces a
+full write instead of the idempotency skip.
+"""
 
 from __future__ import annotations
 
 import builtins
+from datetime import datetime, timezone
 
 from polylogue.archive.conversation.models import Conversation
 from polylogue.archive.provider.events import ProviderEvent
 from polylogue.core.hashing import hash_payload
-from polylogue.core.json import JSONValue, json_document
+from polylogue.core.json import JSONValue, json_document, loads
 from polylogue.pipeline.ids import _content_block_payload, _conversation_hash_payload, _normalize_for_hash
 from polylogue.storage.action_events.rows import attach_blocks_to_messages, build_action_event_records
 from polylogue.storage.conversation_replacement import (
@@ -148,6 +182,118 @@ def provider_event_to_record(event: ProviderEvent) -> ProviderEventRecord:
     )
 
 
+def _content_block_record_to_hash_payload(block: ContentBlockRecord) -> dict[str, JSONValue]:
+    """Build a hash-stable payload for a ``ContentBlockRecord``.
+
+    Mirrors ``_content_block_payload()`` in ``pipeline/ids.py`` but accepts the
+    storage record type instead of the parsed source type.
+    """
+    payload: dict[str, JSONValue] = {
+        "type": str(block.type),
+        "text": _normalize_for_hash(block.text),
+    }
+    if block.tool_name:
+        payload["tool_name"] = _normalize_for_hash(block.tool_name)
+    if block.tool_id:
+        payload["tool_id"] = _normalize_for_hash(block.tool_id)
+    if block.tool_input is not None:
+        # ContentBlockRecord stores tool_input as a JSON string, but the canonical
+        # hash hashes the dict representation.  Parse and re-hash for consistency.
+        try:
+            parsed = loads(block.tool_input)
+            if isinstance(parsed, dict):
+                payload["tool_input"] = hash_payload(parsed)
+            else:
+                payload["tool_input"] = hash_payload(block.tool_input)
+        except Exception:
+            payload["tool_input"] = hash_payload(block.tool_input)
+    if block.media_type:
+        payload["media_type"] = _normalize_for_hash(block.media_type)
+    return payload
+
+
+def _compute_hash_from_row_graph(
+    *,
+    conversation: ConversationRecord,
+    messages: builtins.list[MessageRecord],
+    attachments: builtins.list[AttachmentRecord],
+    provider_events: builtins.list[ProviderEventRecord] | None = None,
+) -> str:
+    """Re-derive the conversation content hash from the storage record graph.
+
+    Uses the same canonical ``_conversation_hash_payload`` helper as
+    ``pipeline/ids.py`` but sources field values from storage records instead
+    of the domain ``Conversation`` model.  This function exists so that
+    ``save_via_backend`` can validate that the row graph the caller supplied
+    actually agrees with ``ConversationRecord.content_hash``.
+
+    Returns the full SHA-256 hex digest.
+    """
+    messages_payload: list[dict[str, JSONValue]] = []
+    for msg in messages:
+        timestamp_str = None
+        if msg.sort_key is not None:
+            try:
+                dt = datetime.fromtimestamp(msg.sort_key, tz=timezone.utc)
+                timestamp_str = dt.isoformat()
+            except (ValueError, OverflowError, OSError):
+                timestamp_str = str(msg.sort_key)
+
+        msg_entry: dict[str, JSONValue] = {
+            "id": str(msg.message_id),
+            "role": _normalize_for_hash(str(msg.role) if msg.role else None),
+            "text": _normalize_for_hash(msg.text),
+            "timestamp": _normalize_for_hash(timestamp_str),
+        }
+        if msg.content_blocks:
+            msg_entry["content_blocks"] = [_content_block_record_to_hash_payload(b) for b in msg.content_blocks]
+        messages_payload.append(msg_entry)
+
+    attachments_payload: list[dict[str, JSONValue]] = []
+    for att in attachments:
+        att_name: str | None = None
+        if att.provider_meta and isinstance(att.provider_meta, dict):
+            raw_name = att.provider_meta.get("name")
+            if isinstance(raw_name, str):
+                att_name = raw_name
+        if att_name is None:
+            att_name = att.attachment_id
+
+        attachments_payload.append(
+            {
+                "id": _normalize_for_hash(att.attachment_id),
+                "message_id": _normalize_for_hash(att.message_id),
+                "name": _normalize_for_hash(att_name),
+                "mime_type": _normalize_for_hash(att.mime_type),
+                "size_bytes": _normalize_for_hash(att.size_bytes),
+            }
+        )
+
+    provider_events_payload: list[dict[str, JSONValue]] = []
+    if provider_events:
+        for event in provider_events:
+            provider_events_payload.append(
+                {
+                    "event_index": event.event_index,
+                    "event_type": _normalize_for_hash(event.event_type),
+                    "timestamp": _normalize_for_hash(event.timestamp),
+                    "source_message_id": _normalize_for_hash(event.source_message_id),
+                    "payload": hash_payload(event.payload),
+                }
+            )
+
+    return hash_payload(
+        _conversation_hash_payload(
+            title=conversation.title,
+            created_at=conversation.created_at,
+            updated_at=conversation.updated_at,
+            messages=messages_payload,
+            attachments=attachments_payload,
+            provider_events=provider_events_payload,
+        )
+    )
+
+
 async def save_via_backend(
     backend: RepositoryBackendProtocol,
     conversation: ConversationRecord,
@@ -186,6 +332,36 @@ async def save_via_backend(
         timings["hash_check"] = _time.perf_counter() - t0
 
         content_unchanged = existing_hash is not None and existing_hash == conversation.content_hash
+
+        # ------------------------------------------------------------------
+        # Cross-validate: does the row graph the caller supplied actually
+        # agree with ConversationRecord.content_hash?  A mismatch means the
+        # caller built records that diverged from what was hashed — the hash
+        # is no longer a trustworthy signal for the idempotency skip.
+        # ------------------------------------------------------------------
+        row_graph_hash = _compute_hash_from_row_graph(
+            conversation=conversation,
+            messages=messages,
+            attachments=attachments,
+            provider_events=provider_events_for_write if should_replace_provider_events else None,
+        )
+        if row_graph_hash != conversation.content_hash:
+            from polylogue.logging import get_logger
+
+            logger = get_logger(__name__)
+            logger.warning(
+                "save_via_backend_hash_mismatch",
+                conversation_id=str(conversation.conversation_id),
+                record_hash=str(conversation.content_hash),
+                row_graph_hash=row_graph_hash,
+                content_unchanged=content_unchanged,
+            )
+            if content_unchanged:
+                # The stored DB hash agrees with our (stale) record hash, but
+                # the row graph we are about to write disagrees.  The record
+                # hash is no longer trustworthy — force a full write so that
+                # changed rows are not silently skipped.
+                content_unchanged = False
 
         t0 = _time.perf_counter()
         await conversations_q.save_conversation_record(conn, conversation, backend.transaction_depth)
