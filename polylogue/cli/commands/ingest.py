@@ -10,6 +10,7 @@ import click
 
 from polylogue.cli.shared.helpers import fail
 from polylogue.cli.shared.types import AppEnv
+from polylogue.operations.import_contracts import ImportOperation
 
 _DEFAULT_DAEMON_URL = "http://127.0.0.1:8766"
 
@@ -52,21 +53,22 @@ def ingest_command(
 
     try:
         with urlopen(req, timeout=5) as resp:
-            result = json.loads(resp.read())
+            raw = json.loads(resp.read())
     except OSError as exc:
         fail(
             "ingest",
             f"Could not reach daemon at {daemon_url}. Is polylogued running? ({exc})",
         )
 
-    if result.get("ok"):
+    operation = ImportOperation.from_dict(raw)
+    if operation.status not in ("failed", "error"):
         env.ui.console.print(
-            f"[bold green]Scheduled:[/bold green] {result['path']}\n"
-            f"  Operation: {result['operation_id']}\n"
-            f"  {result['message']}"
+            f"[bold green]Scheduled:[/bold green] {operation.path}\n"
+            f"  Operation: {operation.operation_id}\n"
+            f"  {operation.message}"
         )
     else:
-        fail("ingest", result.get("error", "Unknown error"))
+        fail("ingest", operation.error or "Unknown error")
 
 
 __all__ = ["ingest_command"]

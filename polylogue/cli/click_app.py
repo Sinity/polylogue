@@ -40,7 +40,15 @@ def _handle_query_mode(ctx: click.Context) -> None:
 
 
 def _show_stats(env: AppEnv, *, verbose: bool = False) -> None:
-    """Show archive statistics."""
+    """Show fast status when daemon is reachable, otherwise archive summary."""
+    if not verbose:
+        try:
+            from polylogue.cli.commands.status import show_fast_status
+
+            show_fast_status(env)
+            return
+        except Exception:
+            pass
     from polylogue.cli.shared.helpers import print_summary
 
     print_summary(env, verbose=verbose)
