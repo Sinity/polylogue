@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
+from typing import Any
 
 from devtools.benchmark_catalog import BenchmarkCampaignEntry
 from devtools.command_catalog import control_plane_command

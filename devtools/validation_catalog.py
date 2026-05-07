@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from typing import Any
 
 from .lane_models import LaneEntry
 from .validation_lane_catalog_contracts import COMPOSITE_LANES, CONTRACT_LANES
@@ -78,7 +79,7 @@ def build_composite_lane_entries() -> tuple[LaneEntry, ...]:
     return _category_entries("composite")
 
 
-def build_validation_family_entries() -> tuple[object, ...]:
+def build_validation_family_entries() -> tuple[Any, ...]:
     """Return validation family entries (flattened — families are now direct composites)."""
     return ()
 

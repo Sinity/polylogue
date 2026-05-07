@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import lru_cache
+from typing import Any
 
 from devtools.benchmark_catalog import (
     BenchmarkCampaignEntry,
@@ -48,16 +49,16 @@ class AuthoredScenarioCatalog:
         return tuple(entry for entry in self.validation_lanes if entry.category == "composite")
 
     def projection_sources(self) -> tuple[ScenarioProjectionSource, ...]:
-        return (
-            *self.exercise_scenarios,
-            *self.qa_extra_scenarios,
-            *self.validation_families,
-            *self.validation_lanes,
-            *self.mutation_campaigns,
-            *self.benchmark_campaigns,
-            *self.synthetic_benchmark_campaigns,
-            *self.inferred_corpus_scenarios,
-        )
+        result: list[ScenarioProjectionSource] = []
+        result.extend(self.exercise_scenarios)
+        result.extend(self.qa_extra_scenarios)
+        for lane in self.validation_lanes:
+            result.append(lane.to_projection_entry())  # type: ignore[arg-type]
+        result.extend(self.mutation_campaigns)
+        result.extend(self.benchmark_campaigns)
+        result.extend(self.synthetic_benchmark_campaigns)
+        result.extend(self.inferred_corpus_scenarios)
+        return tuple(result)
 
     def validation_lane_index(self) -> dict[str, LaneEntry]:
         return {entry.name: entry for entry in self.validation_lanes}

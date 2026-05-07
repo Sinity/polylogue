@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 from devtools.authored_scenario_catalog import AuthoredScenarioCatalog, get_authored_scenario_catalog
 from devtools.benchmark_catalog import BenchmarkCampaignEntry
@@ -31,8 +32,8 @@ class QualityRegistry:
         return self.catalog.contract_lanes
 
     @property
-    def validation_families(self) -> tuple[object, ...]:  # flattened — ValidationLaneFamily DSL removed in #805
-        return self.catalog.validation_families
+    def validation_families(self) -> tuple[Any, ...]:  # flattened — ValidationLaneFamily DSL removed in #805
+        return tuple(self.catalog.validation_families)
 
     @property
     def live_lanes(self) -> tuple[LaneEntry, ...]:
