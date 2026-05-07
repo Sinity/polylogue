@@ -2,6 +2,10 @@
 
 Consumes the assurance-domain manifests, proof catalog, and affected-obligation
 routing to produce an operator-facing confidence answer.
+
+The report classifies every affected obligation by evidence taxonomy so agents
+can distinguish executable checks from static declarations, metadata
+completeness assertions, and advisory noise.
 """
 
 from __future__ import annotations
@@ -19,12 +23,36 @@ from polylogue.proof.catalog import (
     build_verification_catalog,
 )
 from polylogue.proof.diffing import (
+    AffectedObligation,
     RecommendedCheck,
     build_affected_obligation_report,
     changed_paths_between_refs,
     obligation_ids_for_ref,
 )
-from polylogue.proof.models import RunnerBinding, SubjectRef
+from polylogue.proof.models import EvidenceTaxonomy, RunnerBinding, SubjectRef
+
+# Taxonomy human-facing descriptions and actionability guidance.
+_TAXONOMY_DESCRIPTIONS: dict[EvidenceTaxonomy, str] = {
+    "executable_behavior": "Gates backed by executable checks (tests, probes, smoke runs).",
+    "observability": "Runtime trace or diagnostic observability evidence.",
+    "architectural_static": "Static boundary checks (topology, layering, file budgets).",
+    "metadata_spec": "Metadata and specification completeness -- does not block by itself.",
+    "manual_review": "Requires human agent judgment artifact.",
+    "advisory": "Advisory / noise -- tracking only, not a gate.",
+}
+
+_TAXONOMY_ACTIONABLE: frozenset[EvidenceTaxonomy] = frozenset(
+    {"executable_behavior", "observability", "architectural_static"}
+)
+
+_TAXONOMY_SORT_ORDER: tuple[EvidenceTaxonomy, ...] = (
+    "executable_behavior",
+    "observability",
+    "architectural_static",
+    "metadata_spec",
+    "manual_review",
+    "advisory",
+)
 
 
 def _load_assurance_domains(root: Path) -> dict[str, dict[str, Any]]:
@@ -39,6 +67,87 @@ def _load_assurance_domains(root: Path) -> dict[str, dict[str, Any]]:
     return domains if isinstance(domains, dict) else {}
 
 
+def _classify_obligation_taxonomy(
+    claim_oracle: str,
+    claim_independence: str,
+    runner_evidence_class: str,
+) -> EvidenceTaxonomy:
+    """Classify an obligation by its evidence taxonomy.
+
+    Derives the taxonomy from existing oracle, independence level, and
+    evidence class fields -- no new catalog metadata required.
+    """
+    if claim_oracle == "manual_review":
+        return "manual_review"
+    if claim_oracle == "ceremonial" or claim_independence in ("ceremonial", "self_attesting"):
+        return "advisory"
+    if claim_oracle in ("proof", "smoke") or runner_evidence_class in ("smoke", "semantic", "performance"):
+        return "executable_behavior"
+    if runner_evidence_class == "trace":
+        return "observability"
+    if claim_oracle == "drift_check":
+        return "architectural_static"
+    if claim_oracle == "construction_sanity":
+        return "metadata_spec"
+    return "advisory"
+
+
+def _taxonomy_for_obligation(
+    obligation_id: str,
+    catalog: VerificationCatalog,
+    *,
+    cache: dict[str, EvidenceTaxonomy] | None = None,
+) -> EvidenceTaxonomy:
+    """Look up an obligation by ID and return its evidence taxonomy."""
+    if cache is not None and obligation_id in cache:
+        return cache[obligation_id]
+    for obligation in catalog.obligations:
+        if obligation.id == obligation_id:
+            taxonomy = _classify_obligation_taxonomy(
+                claim_oracle=obligation.claim.oracle,
+                claim_independence=obligation.claim.independence_level,
+                runner_evidence_class=obligation.runner.evidence_class,
+            )
+            if cache is not None:
+                cache[obligation_id] = taxonomy
+            return taxonomy
+    result: EvidenceTaxonomy = "advisory"
+    if cache is not None:
+        cache[obligation_id] = result
+    return result
+
+
+def _build_taxonomy_groups(
+    affected_obligations: tuple[AffectedObligation, ...],
+    *,
+    catalog: VerificationCatalog,
+    cache: dict[str, EvidenceTaxonomy],
+) -> dict[str, Any]:
+    """Group affected obligations by evidence taxonomy."""
+    grouped: dict[EvidenceTaxonomy, list[dict[str, Any]]] = defaultdict(list)
+    for item in affected_obligations:
+        taxonomy = _taxonomy_for_obligation(item.obligation_id, catalog, cache=cache)
+        grouped[taxonomy].append(
+            {
+                "obligation_id": item.obligation_id,
+                "claim_id": item.claim_id,
+                "subject_id": item.subject_id,
+                "reasons": list(item.reasons),
+            }
+        )
+
+    payload: dict[str, Any] = {}
+    for taxonomy in _TAXONOMY_SORT_ORDER:
+        items = grouped.get(taxonomy, [])
+        payload[taxonomy] = {
+            "description": _TAXONOMY_DESCRIPTIONS.get(taxonomy, ""),
+            "actionable": taxonomy in _TAXONOMY_ACTIONABLE,
+            "obligation_count": len(items),
+            "obligations": items,
+        }
+    return payload
+
+
 def build_proof_pack(
     root: Path,
     *,
@@ -46,7 +155,7 @@ def build_proof_pack(
     head_ref: str = "HEAD",
     changed_paths: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Build a diff-shaped proof-pack report."""
+    """Build a diff-shaped proof-pack report with evidence taxonomy."""
     catalog = build_verification_catalog()
     domains_data = _load_assurance_domains(root)
     paths = tuple(sorted(dict.fromkeys(changed_paths or changed_paths_between_refs(base_ref, head_ref))))
@@ -89,9 +198,19 @@ def build_proof_pack(
         affected_domain_names,
         visible_domains=visible_gap_domains,
     )
+    taxonomy_cache: dict[str, EvidenceTaxonomy] = {}
+    taxonomy_groups = _build_taxonomy_groups(
+        affected.affected_obligations,
+        catalog=catalog,
+        cache=taxonomy_cache,
+    )
+    clean_tree = len(paths) == 0
+    stable_count = len(affected.obligation_diff.stable_affected)
+    affected_count = len(affected.affected_obligations)
     return {
         "refs": {"base_ref": base_ref, "head_ref": head_ref},
         "changed_paths": list(paths),
+        "clean_tree": clean_tree,
         "catalog_headline": {
             "claim_count": len(catalog.claims),
             "subject_count": len(catalog.subjects),
@@ -105,10 +224,20 @@ def build_proof_pack(
         "required_gates": _checks_payload((*affected.inner_loop_checks, *affected.pr_gates)),
         "agent_judgment_cells": _agent_judgment_cells(affected_claims),
         "stable_affected_obligations": list(affected.obligation_diff.stable_affected),
+        "taxonomy": taxonomy_groups,
         "known_gaps": known_gaps,
         "additional_known_gaps": additional_known_gaps,
         "oracle_mix": dict(Counter(claim.oracle for claim in affected_claims)),
         "cost_tier": _cost_tier_counts(affected, catalog),
+        "_context": (
+            "No changed paths -- zero obligations are change-specific. Catalog stats reflect the baseline, not a diff."
+            if clean_tree
+            else (
+                f"{len(paths)} changed path(s); {affected_count} affected obligations, "
+                f"{stable_count} stable affected. "
+                "Taxonomy distinguishes executable gates from static/metadata obligations."
+            )
+        ),
     }
 
 
@@ -617,13 +746,20 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def render_markdown(report: dict[str, Any]) -> str:
+    """Render a taxonomy-aware Proof Pack as PR-comment-ready markdown."""
     refs = report["refs"]
+    context = str(report.get("_context", ""))
+    changed_paths_count = len(report.get("changed_paths", []))
     lines = [
         "## Polylogue Proof Pack",
         "",
         f"**Refs:** `{refs['base_ref']}..{refs['head_ref']}`",
-        f"**Changed paths:** {len(report['changed_paths'])}",
+        f"**Changed paths:** {changed_paths_count}",
     ]
+
+    if context:
+        lines.extend(["", f"> {context}"])
+
     check_result = report.get("check")
     if isinstance(check_result, dict):
         lines.extend(["", "### Check Policy"])
@@ -635,37 +771,44 @@ def render_markdown(report: dict[str, Any]) -> str:
             lines.append(f"- blocking: {error}")
         for warning in check_result.get("warnings", []) or []:
             lines.append(f"- warning: {warning}")
-    lines.extend(["", "### Affected Domains"])
-    affected_domains = report.get("affected_domains", [])
-    visible_domains = [domain for domain in affected_domains if domain.get("claim_count", 0) > 0]
-    zero_claim_domains = [domain for domain in affected_domains if domain.get("claim_count", 0) == 0]
-    if visible_domains:
-        for domain in visible_domains:
-            lines.append(f"- `{domain['domain']}` — {domain['claim_count']} claim(s), maturity `{domain['maturity']}`")
-    else:
-        lines.append("- none with affected claims")
-    if zero_claim_domains:
-        lines.extend(
-            [
-                "",
-                "<details>",
-                "<summary>Additional routed domains with zero affected claims</summary>",
-                "",
-            ]
-        )
-        for domain in zero_claim_domains:
-            lines.append(f"- `{domain['domain']}` — maturity `{domain['maturity']}`")
-        lines.extend(["", "</details>"])
 
+    # Required Gates
     gate_groups = report.get("gate_groups", {})
-    lines.extend(["", "### Focused Gates"])
-    _append_gate_lines(lines, gate_groups.get("focused", []), empty_text="- none")
-    lines.extend(["", "### Required PR Gates"])
-    _append_gate_lines(lines, gate_groups.get("required", report.get("required_gates", [])), empty_text="- none")
-    lines.extend(["", "### Optional Confidence Gates"])
+    focused = gate_groups.get("focused", [])
+    combined_required = _checks_payload_merge(focused, gate_groups.get("required", []))
+    lines.extend(["", "### Required Gates (run now)"])
+    if combined_required:
+        for gate in combined_required:
+            command = " ".join(gate["command"])
+            lines.append(f"- `{command}` -- {gate['reason']}")
+    else:
+        lines.append("- none beyond always-on PR gates")
+    lines.extend(["", "### Always-On PR Gates"])
+    _append_gate_lines(lines, gate_groups.get("required", []), empty_text="- none")
+
+    # Confidence Gates
+    lines.extend(["", "### Confidence Gates (optional)"])
     _append_gate_lines(lines, gate_groups.get("optional_confidence", []), empty_text="- none")
 
-    lines.extend(["", "### Known Gaps"])
+    # Evidence Taxonomy
+    lines.extend(["", "### Affected Evidence by Taxonomy"])
+    taxonomy = report.get("taxonomy", {})
+    _render_taxonomy_section_markdown(lines, taxonomy)
+
+    # Agent Judgment Cells
+    agent_judgment_cells = report.get("agent_judgment_cells", [])
+    if agent_judgment_cells:
+        lines.extend(["", "### Agent Judgment Cells (manual review)"])
+        lines.append(f"_{len(agent_judgment_cells)} cell(s) -- only actionable if severity is 'serious'_")
+        for cell in agent_judgment_cells:
+            lines.append(
+                f"- `{cell['claim_id']}` -- result `{cell['result']}`; "
+                f"artifact `{cell['artifact'] or 'missing'}`; "
+                f"reviewer `{cell['reviewer'] or 'missing'}`"
+            )
+
+    # Known Gaps
+    lines.extend(["", "### Known Gaps (tracking, not blocking)"])
     known_gaps = report.get("known_gaps", [])
     if known_gaps:
         for item in known_gaps:
@@ -674,27 +817,61 @@ def render_markdown(report: dict[str, Any]) -> str:
         lines.append("- none for domains with affected claims")
     additional_known_gaps = report.get("additional_known_gaps", [])
     if additional_known_gaps:
-        lines.extend(["", "<details>", "<summary>Additional gaps in zero-claim routed domains</summary>", ""])
+        lines.extend(["", "<details>", "<summary>Additional gaps (zero-claim routed domains)</summary>", ""])
         for item in additional_known_gaps:
             lines.append(f"- `{item['domain']}`: {', '.join(item['gaps'])}")
         lines.extend(["", "</details>"])
-    lines.extend(["", "### Oracle / Cost"])
-    lines.append(f"- oracle mix: `{json.dumps(report.get('oracle_mix', {}), sort_keys=True)}`")
-    lines.append(f"- cost tier: `{json.dumps(report.get('cost_tier', {}), sort_keys=True)}`")
+
+    # Catalog quality summary
+    lines.extend(["", "### Catalog Quality"])
+    oracle_mix = report.get("oracle_mix", {})
+    cost_tier = report.get("cost_tier", {})
+    catalog_headline = report.get("catalog_headline", {})
+    lines.append(
+        f"- claims: {catalog_headline.get('claim_count', '?')}, "
+        f"obligations: {catalog_headline.get('obligation_count', '?')}"
+    )
+    oracle_str = json.dumps(oracle_mix, sort_keys=True) if oracle_mix else "(none affected)"
+    lines.append(f"- oracle mix: `{oracle_str}`")
+    cost_str = json.dumps(cost_tier, sort_keys=True) if cost_tier else "(none)"
+    lines.append(f"- cost tier: `{cost_str}`")
     lines.append(f"- stable affected obligations: {len(report.get('stable_affected_obligations', []))}")
-    agent_judgment_cells = report.get("agent_judgment_cells", [])
     lines.append(f"- agent judgment cells: {len(agent_judgment_cells)}")
-    if agent_judgment_cells:
-        lines.extend(["", "### Agent Judgment Cells"])
-        for cell in agent_judgment_cells:
-            lines.append(
-                f"- `{cell['claim_id']}` — result `{cell['result']}`; "
-                f"artifact `{cell['artifact'] or 'missing'}`; "
-                f"reviewer `{cell['reviewer'] or 'missing'}`; "
-                f"produced_at `{cell['produced_at'] or 'missing'}`; "
-                f"freshness `{cell['freshness'] or 'missing'}`"
-            )
+
     return "\n".join(lines)
+
+
+def _render_taxonomy_section_markdown(lines: list[str], taxonomy: dict[str, Any]) -> None:
+    """Append taxonomy-grouped obligation tables to markdown lines."""
+    if not taxonomy:
+        lines.append("- no affected obligations")
+        return
+
+    for taxonomy_name in _TAXONOMY_SORT_ORDER:
+        group = taxonomy.get(taxonomy_name)
+        if not isinstance(group, dict) or group.get("obligation_count", 0) == 0:
+            continue
+        count = group["obligation_count"]
+        description = str(group.get("description", ""))
+        actionable = bool(group.get("actionable", False))
+        label = "actionable" if actionable else "does not block"
+        lines.append(f"- **{taxonomy_name}** ({label}): {count} obligation(s) -- {description}")
+
+
+def _checks_payload_merge(
+    *check_lists: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Merge and deduplicate check payload lists."""
+    seen: set[tuple[str, ...]] = set()
+    merged: list[dict[str, Any]] = []
+    for check_list in check_lists:
+        for check in check_list:
+            command = tuple(check.get("command", []))
+            if command in seen:
+                continue
+            seen.add(command)
+            merged.append(check)
+    return merged
 
 
 def _append_gate_lines(lines: list[str], gates: list[dict[str, Any]], *, empty_text: str) -> None:
@@ -703,10 +880,11 @@ def _append_gate_lines(lines: list[str], gates: list[dict[str, Any]], *, empty_t
         return
     for gate in gates:
         command = " ".join(gate["command"])
-        lines.append(f"- `{command}` — {gate['reason']}")
+        lines.append(f"- `{command}` -- {gate['reason']}")
 
 
 def _print_human_report(report: dict[str, Any]) -> None:
+    """Print a taxonomy-aware human-readable proof-pack report."""
     headline = report["catalog_headline"]
     print(
         f"Proof catalog: {headline['claim_count']} claims, "
@@ -714,28 +892,46 @@ def _print_human_report(report: dict[str, Any]) -> None:
     )
     print(f"Refs: {report['refs']['base_ref']}..{report['refs']['head_ref']}")
     print(f"Changed paths: {len(report['changed_paths'])}")
+    context = report.get("_context", "")
+    if context:
+        print(f"  {context}")
     print()
-    print("Affected domains:")
-    affected_domains = [domain for domain in report.get("affected_domains", []) if domain.get("claim_count", 0) > 0]
-    if not affected_domains:
-        print("  none with affected claims")
-    for domain in affected_domains:
-        print(f"  {domain['domain']:<30} {domain['claim_count']:>3} claims  {domain['oracle_counts']}")
-    print()
+
     gate_groups = report.get("gate_groups", {})
-    print("Focused gates:")
-    for gate in gate_groups.get("focused", []):
-        print(f"  {' '.join(gate['command'])} — {gate['reason']}")
-    print("Required PR gates:")
-    for gate in gate_groups.get("required", []):
-        print(f"  {' '.join(gate['command'])} — {gate['reason']}")
-    print("Optional confidence gates:")
+    print("Required gates (run now):")
+    focused = gate_groups.get("focused", [])
+    required = gate_groups.get("required", [])
+    all_required = _checks_payload_merge(focused, required)
+    if all_required:
+        for gate in all_required:
+            print(f"  {' '.join(gate['command'])} -- {gate['reason']}")
+    else:
+        print("  none beyond always-on PR gates")
+    print()
+
+    print("Evidence taxonomy:")
+    taxonomy = report.get("taxonomy", {})
+    if taxonomy:
+        for taxonomy_name in _TAXONOMY_SORT_ORDER:
+            group = taxonomy.get(taxonomy_name)
+            if not isinstance(group, dict) or group.get("obligation_count", 0) == 0:
+                continue
+            count = group["obligation_count"]
+            actionable = "RUN" if group.get("actionable") else "INFO"
+            print(f"  {taxonomy_name:<25} {count:>4} obligations [{actionable}]")
+            print(f"    {group.get('description', '')}")
+    else:
+        print("  no affected obligations")
+    print()
+
+    print("Confidence gates (optional):")
     for gate in gate_groups.get("optional_confidence", []):
-        print(f"  {' '.join(gate['command'])} — {gate['reason']}")
+        print(f"  {' '.join(gate['command'])} -- {gate['reason']}")
     print()
     print(f"Agent judgment cells: {len(report.get('agent_judgment_cells', []))}")
     print(f"Stable affected obligations: {len(report.get('stable_affected_obligations', []))}")
     print(f"Known gaps: {len(report.get('known_gaps', []))}")
+
     check_result = report.get("check")
     if isinstance(check_result, dict):
         print(f"Check policy: {check_result.get('status', 'unknown')}")
