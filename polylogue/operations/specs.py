@@ -36,6 +36,8 @@ class OperationKind(str, Enum):
     BENCHMARK = "benchmark"
     QUERY = "query"
     READINESSCHECK = "readinesscheck"
+    IMPORT = "import"
+    MAINTENANCE = "maintenance"
 
 
 @dataclass(frozen=True, slots=True)
