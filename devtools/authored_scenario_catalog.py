@@ -28,7 +28,7 @@ from polylogue.showcase.exercises import EXERCISE_SCENARIOS, QA_EXTRA_SCENARIOS
 class AuthoredScenarioCatalog:
     exercise_scenarios: tuple[Exercise, ...]
     qa_extra_scenarios: tuple[Exercise, ...]
-    validation_families: tuple[object, ...]  # flattened — ValidationLaneFamily DSL removed in #805
+    validation_families: Any  # flattened — ValidationLaneFamily DSL removed in #805
     validation_lanes: tuple[LaneEntry, ...]
     mutation_campaigns: tuple[MutationCampaignEntry, ...]
     benchmark_campaigns: tuple[BenchmarkCampaignEntry, ...]
