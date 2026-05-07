@@ -116,9 +116,12 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
     def _check_auth(self) -> bool:
         """Validate the Authorization header against the daemon token.
 
-        Returns True if authorized, sends 401 and returns False if not.
+        When no token is configured the API is open (local dev default).
+        When a token IS configured, all clients — including localhost —
+        must present it. Loopback is not a security boundary when a
+        browser on the same host can reach the daemon.
         """
-        if not self._auth_token or _is_localhost(self._client_host):
+        if not self._auth_token:
             return True
         auth_header = self.headers.get("Authorization", "")
         if not auth_header.startswith("Bearer "):
