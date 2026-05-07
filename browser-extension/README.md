@@ -19,3 +19,24 @@ The extension does not send session content to any remote service. It only
 talks to the local receiver. When the receiver is unavailable, the extension
 badge and popup report the offline state. ChatGPT and Claude.ai are the minimum
 supported provider adapters in this slice.
+
+## Development
+
+Install dependencies:
+
+```bash
+npm install
+```
+
+### Tests
+
+```bash
+npm test              # single run (vitest)
+npm run test:watch    # watch mode
+```
+
+### Lint
+
+```bash
+npm run lint          # eslint on src/ and tests/
+```
