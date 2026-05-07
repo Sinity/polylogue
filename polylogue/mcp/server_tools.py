@@ -82,6 +82,8 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     ) -> str:
         async def run() -> str:
             ops = hooks.get_archive_ops()
+            clamped_limit = hooks.clamp_limit(limit)
+            clamped_offset = max(0, offset)
             spec = MCPConversationQueryRequest(
                 query=query,
                 retrieval_lane=retrieval_lane,
@@ -108,7 +110,7 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 sort=sort,
                 reverse=reverse,
                 latest=latest,
-                limit=limit,
+                limit=clamped_limit,
                 has_tool_use=has_tool_use,
                 has_thinking=has_thinking,
                 has_paste=has_paste,
@@ -121,11 +123,20 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 since_session=since_session,
                 since_session_id=since_session_id,
                 message_type=message_type,
-                offset=offset,
+                offset=clamped_offset,
             ).build_spec(hooks.clamp_limit)
             results = await ops.search_conversation_hits(spec)
+            total = await spec.count(hooks.get_query_store())
             diagnostics = await ops.diagnose_query_miss(spec) if not results else None
-            return hooks.json_payload(conversation_search_result_payload(results, diagnostics=diagnostics))
+            return hooks.json_payload(
+                conversation_search_result_payload(
+                    results,
+                    total=total,
+                    limit=clamped_limit,
+                    offset=clamped_offset,
+                    diagnostics=diagnostics,
+                )
+            )
 
         return await hooks.async_safe_call("search", run)
 
@@ -172,6 +183,8 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     ) -> str:
         async def run() -> str:
             ops = hooks.get_archive_ops()
+            clamped_limit = hooks.clamp_limit(limit)
+            clamped_offset = max(0, offset)
             spec = MCPConversationQueryRequest(
                 provider=provider,
                 retrieval_lane=retrieval_lane,
@@ -197,7 +210,7 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 sort=sort,
                 reverse=reverse,
                 latest=latest,
-                limit=limit,
+                limit=clamped_limit,
                 has_tool_use=has_tool_use,
                 has_thinking=has_thinking,
                 has_paste=has_paste,
@@ -210,16 +223,25 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 since_session=since_session,
                 since_session_id=since_session_id,
                 message_type=message_type,
-                offset=offset,
+                offset=clamped_offset,
             ).build_spec(hooks.clamp_limit)
             conversations = await ops.query_conversations(spec)
+            total = await spec.count(hooks.get_query_store())
             diagnostics = None
             if not conversations:
                 try:
                     diagnostics = await ops.diagnose_query_miss(spec)
                 except ConfigError:
                     diagnostics = None
-            return hooks.json_payload(conversation_query_result_payload(conversations, diagnostics=diagnostics))
+            return hooks.json_payload(
+                conversation_query_result_payload(
+                    conversations,
+                    total=total,
+                    limit=clamped_limit,
+                    offset=clamped_offset,
+                    diagnostics=diagnostics,
+                )
+            )
 
         return await hooks.async_safe_call("list_conversations", run)
 

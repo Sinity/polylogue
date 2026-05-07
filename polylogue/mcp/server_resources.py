@@ -25,7 +25,14 @@ def register_resources(mcp: FastMCP, hooks: ServerCallbacks) -> None:
 
     @mcp.resource("polylogue://stats")
     async def stats_resource() -> str:
-        archive_stats = await hooks.get_archive_ops().storage_stats()
+        try:
+            archive_stats = await hooks.get_archive_ops().storage_stats()
+        except Exception as exc:
+            return hooks.error_json(
+                f"Failed to retrieve archive stats: {exc}",
+                code="internal_error",
+                detail=type(exc).__name__,
+            )
         return hooks.json_payload(
             MCPArchiveStatsPayload.from_archive_stats(
                 archive_stats,
@@ -37,7 +44,14 @@ def register_resources(mcp: FastMCP, hooks: ServerCallbacks) -> None:
 
     @mcp.resource("polylogue://conversations")
     async def conversations_resource() -> str:
-        convs = await MCPConversationQueryRequest().build_spec(hooks.clamp_limit).list(hooks.get_query_store())
+        try:
+            convs = await MCPConversationQueryRequest().build_spec(hooks.clamp_limit).list(hooks.get_query_store())
+        except Exception as exc:
+            return hooks.error_json(
+                f"Failed to list conversations: {exc}",
+                code="internal_error",
+                detail=type(exc).__name__,
+            )
         return hooks.json_payload(conversation_summary_list_payload(convs))
 
     @mcp.resource("polylogue://conversation/{conv_id}")
@@ -45,7 +59,7 @@ def register_resources(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         ops = hooks.get_archive_ops()
         summary = await ops.get_conversation_summary(conv_id)
         if not summary:
-            return hooks.error_json(f"Conversation not found: {conv_id}")
+            return hooks.error_json(f"Conversation not found: {conv_id}", code="not_found")
         stats = await ops.get_conversation_stats(conv_id)
         return hooks.json_payload(
             MCPConversationSummaryPayload.from_summary(
@@ -56,7 +70,14 @@ def register_resources(mcp: FastMCP, hooks: ServerCallbacks) -> None:
 
     @mcp.resource("polylogue://tags")
     async def tags_resource() -> str:
-        tags = await hooks.get_tag_store().list_tags()
+        try:
+            tags = await hooks.get_tag_store().list_tags()
+        except Exception as exc:
+            return hooks.error_json(
+                f"Failed to list tags: {exc}",
+                code="internal_error",
+                detail=type(exc).__name__,
+            )
         return hooks.json_payload(MCPTagCountsPayload(root=tags))
 
     @mcp.resource("polylogue://messages/{conv_id}")
@@ -64,7 +85,7 @@ def register_resources(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         ops = hooks.get_archive_ops()
         summary = await ops.get_conversation_summary(conv_id)
         if summary is None:
-            return hooks.error_json(f"Conversation not found: {conv_id}")
+            return hooks.error_json(f"Conversation not found: {conv_id}", code="not_found")
         canonical_id = str(summary.id)
         messages, total = await ops.get_messages_paginated(canonical_id, limit=20, offset=0)
         from polylogue.mcp.payloads import MCPMessagePayload, MCPMessagesListPayload
@@ -81,13 +102,27 @@ def register_resources(mcp: FastMCP, hooks: ServerCallbacks) -> None:
 
     @mcp.resource("polylogue://session-tree/{conv_id}")
     async def session_tree_resource(conv_id: str) -> str:
-        tree = await hooks.get_archive_ops().get_session_tree(conv_id)
+        try:
+            tree = await hooks.get_archive_ops().get_session_tree(conv_id)
+        except Exception as exc:
+            return hooks.error_json(
+                f"Failed to get session tree for {conv_id}: {exc}",
+                code="internal_error",
+                detail=type(exc).__name__,
+            )
         return hooks.json_payload(conversation_summary_list_payload(tree))
 
     @mcp.resource("polylogue://provider/{name}/recent")
     async def provider_recent_resource(name: str) -> str:
-        spec = MCPConversationQueryRequest(provider=name, sort="date", limit=10).build_spec(hooks.clamp_limit)
-        convs = await spec.list(hooks.get_query_store())
+        try:
+            spec = MCPConversationQueryRequest(provider=name, sort="date", limit=10).build_spec(hooks.clamp_limit)
+            convs = await spec.list(hooks.get_query_store())
+        except Exception as exc:
+            return hooks.error_json(
+                f"Failed to list recent conversations for provider {name}: {exc}",
+                code="internal_error",
+                detail=type(exc).__name__,
+            )
         return hooks.json_payload(conversation_summary_list_payload(convs))
 
     @mcp.resource("polylogue://readiness")
