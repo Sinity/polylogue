@@ -42,7 +42,7 @@ eval "$(devtools lab-corpus seed --count 8 --env-only)"
 
 polylogue list --limit 5
 polylogue insights profiles --limit 5
-polylogued run --api
+polylogued run --enable-api
 ```
 
 Demo data is isolated from your normal archive. If you only installed the
@@ -60,7 +60,7 @@ are discovered from your local environment automatically. The daemon converges
 them idempotently; content hashes prevent re-import of the same data.
 
 ```bash
-polylogued run --watch --api
+polylogued run --enable-api
 ```
 
 ## CLI shape
@@ -123,7 +123,7 @@ extension. The unpacked extension source lives in `browser-extension/`.
 ### Web Reader and MCP
 
 ```bash
-polylogued run --api
+polylogued run --enable-api
 polylogue-mcp --role read
 ```
 

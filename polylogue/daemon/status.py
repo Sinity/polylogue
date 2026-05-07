@@ -155,6 +155,10 @@ class DaemonStatus(BaseModel):
     raw_detection_warnings: int = 0
     health: DaemonHealth = Field(default_factory=DaemonHealth)
     checked_at: str = ""
+    # Memory pressure — surfaced from the most recent running live ingest attempt
+    rss_current_mb: float | None = None
+    rss_peak_mb: float | None = None
+    cgroup_memory_current_mb: float | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -792,6 +796,24 @@ def build_daemon_status(
     except Exception:
         health = DaemonHealth()
 
+    # Surface memory pressure from the most recent running attempt
+    rss_current_mb: float | None = None
+    rss_peak_mb: float | None = None
+    cgroup_memory_current_mb: float | None = None
+    for attempt in live_ingest_attempts.recent:
+        if attempt.status == "running":
+            rss_current_mb = attempt.rss_current_mb
+            cgroup_memory_current_mb = attempt.cgroup_memory_current_mb
+            if attempt.rss_peak_self_mb is not None:
+                rss_peak_mb = attempt.rss_peak_self_mb
+                if attempt.rss_peak_children_mb is not None:
+                    rss_peak_mb += attempt.rss_peak_children_mb
+                elif rss_peak_mb is None:
+                    rss_peak_mb = attempt.rss_peak_children_mb
+            elif attempt.rss_peak_children_mb is not None:
+                rss_peak_mb = attempt.rss_peak_children_mb
+            break
+
     return DaemonStatus(
         raw_parse_failures=_safe_int(raw_failures.get("parse_failures", 0)),
         raw_validation_failures=_safe_int(raw_failures.get("validation_failures", 0)),
@@ -832,6 +854,9 @@ def build_daemon_status(
         ),
         health=health,
         browser_capture_active=browser_capture_spool_path is not None,
+        rss_current_mb=rss_current_mb,
+        rss_peak_mb=rss_peak_mb,
+        cgroup_memory_current_mb=cgroup_memory_current_mb,
         checked_at=datetime.now(UTC).isoformat(),
     )
 
@@ -887,6 +912,11 @@ def daemon_status_payload(
             "last_ingestion_batch": last_ingestion,
             "fts_readiness": status.fts_readiness.model_dump(),
             "embedding_readiness": status.embedding_readiness.model_dump(),
+            "memory": {
+                "rss_current_mb": status.rss_current_mb,
+                "rss_peak_mb": status.rss_peak_mb,
+                "cgroup_memory_current_mb": status.cgroup_memory_current_mb,
+            },
             "health": {
                 "overall_status": status.health.overall_status.value,
                 "checked_at": status.health.checked_at,
@@ -961,6 +991,15 @@ def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
                     if cgroup_peak is not None:
                         cgroup_text += f" peak {cgroup_peak} MiB"
                     lines.append(cgroup_text)
+                rss_current = latest.get("rss_current_mb")
+                if rss_current is not None:
+                    rss_text = f"  memory: RSS {rss_current} MiB"
+                    rss_peak_self = _safe_float(latest.get("rss_peak_self_mb"), default=-1.0)
+                    rss_peak_children = _safe_float(latest.get("rss_peak_children_mb"), default=-1.0)
+                    if rss_peak_self >= 0.0 or rss_peak_children >= 0.0:
+                        peak_total = max(0.0, rss_peak_self) + max(0.0, rss_peak_children)
+                        rss_text += f" peak {peak_total} MiB"
+                    lines.append(rss_text)
     # Health summary
     health = payload.get("health")
     if isinstance(health, dict):

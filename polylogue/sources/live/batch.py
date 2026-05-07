@@ -25,7 +25,10 @@ from polylogue.core.metrics import (
 from polylogue.core.provider_identity import canonical_acquisition_provider
 from polylogue.logging import get_logger
 from polylogue.paths import blob_store_root
-from polylogue.pipeline.services.ingest_batch._core import _process_ingest_batch_sync
+from polylogue.pipeline.services.ingest_batch._core import (
+    _INGEST_RESULT_CHUNK_SIZE,
+    _process_ingest_batch_sync,
+)
 from polylogue.sources.dispatch import _detect_provider_from_raw_bytes
 from polylogue.sources.live.batch_support import (
     _LARGE_FULL_PARSE_PROGRESS_BYTES as _LARGE_FULL_PARSE_PROGRESS_BYTES,
@@ -738,6 +741,7 @@ class LiveBatchProcessor:
                 ingest_workers=_full_ingest_worker_count(raw_records),
                 measure_ingest_result_size=False,
                 repair_action_fts=False,
+                ingest_result_chunk_size=_INGEST_RESULT_CHUNK_SIZE,
                 heartbeat=None
                 if heartbeat is None
                 else lambda: heartbeat(
@@ -918,6 +922,7 @@ class LiveBatchProcessor:
                 ingest_workers=1,
                 measure_ingest_result_size=False,
                 repair_action_fts=False,
+                ingest_result_chunk_size=_INGEST_RESULT_CHUNK_SIZE,
             )
         except Exception as exc:
             logger.warning("live.watcher: append ingest failed: %s", exc)

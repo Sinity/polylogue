@@ -110,6 +110,7 @@ class _BlobSized(Protocol):
 
 IngestHeartbeat = Callable[[], None]
 _INGEST_RESULT_WAIT_HEARTBEAT_S = 15.0
+_INGEST_RESULT_CHUNK_SIZE = 100
 
 
 # ---------------------------------------------------------------------------
@@ -663,12 +664,52 @@ def _iter_ingest_results_sync(
     worker_count: int,
     heartbeat: IngestHeartbeat | None = None,
     progress: _WorkerProgress | None = None,
+    chunk_size: int = 0,
 ) -> Iterable[IngestRecordResult]:
+    """Yield ingest results for raw_artifacts, optionally in bounded chunks.
+
+    When *chunk_size* > 0 and *total* > *chunk_size*, the raw_artifacts are
+    split into sub-lists of at most *chunk_size* records. Each chunk is
+    submitted and drained before the next begins, so the process pool and
+    the drain loop never hold parsed results for more than one chunk in
+    memory at once.
+    """
     total = len(raw_artifacts)
     if progress is not None:
         progress.total_raw_count = total
         progress.completed_raw_count = 0
         progress.in_flight_raw_ids.clear()
+
+    if chunk_size <= 0 or total <= chunk_size:
+        yield from _iter_ingest_results_chunk(
+            raw_artifacts,
+            request=request,
+            worker_count=worker_count,
+            heartbeat=heartbeat,
+            progress=progress,
+        )
+        return
+
+    for chunk_start in range(0, total, chunk_size):
+        chunk = raw_artifacts[chunk_start : chunk_start + chunk_size]
+        yield from _iter_ingest_results_chunk(
+            chunk,
+            request=request,
+            worker_count=worker_count,
+            heartbeat=heartbeat,
+            progress=progress,
+        )
+
+
+def _iter_ingest_results_chunk(
+    raw_artifacts: list[RawConversationRecord],
+    *,
+    request: _IngestWorkerRequest,
+    worker_count: int,
+    heartbeat: IngestHeartbeat | None = None,
+    progress: _WorkerProgress | None = None,
+) -> Iterable[IngestRecordResult]:
+    """Process one chunk of raw_artifacts through the process pool."""
     if worker_count <= 1:
         for raw_record in raw_artifacts:
             if progress is not None:
@@ -835,6 +876,7 @@ def _consume_ingest_results(
     force_write: bool = False,
     heartbeat: IngestHeartbeat | None = None,
     progress: _WorkerProgress | None = None,
+    ingest_result_chunk_size: int = 0,
 ) -> None:
     result_iterator = iter(
         _iter_ingest_results_sync(
@@ -843,6 +885,7 @@ def _consume_ingest_results(
             worker_count=summary.worker_count,
             heartbeat=heartbeat,
             progress=progress,
+            chunk_size=ingest_result_chunk_size,
         )
     )
     while True:
@@ -923,6 +966,7 @@ def _process_ingest_batch_sync(
     repair_action_fts: bool = True,
     heartbeat: IngestHeartbeat | None = None,
     progress: _WorkerProgress | None = None,
+    ingest_result_chunk_size: int = 0,
 ) -> _IngestBatchSummary:
     from polylogue.storage.fts.fts_lifecycle import (
         suspend_fts_triggers_sync,
@@ -958,6 +1002,7 @@ def _process_ingest_batch_sync(
             force_write=force_write,
             heartbeat=heartbeat,
             progress=progress,
+            ingest_result_chunk_size=ingest_result_chunk_size,
         )
         _commit_ingest_results(
             conn,
@@ -1126,12 +1171,17 @@ async def process_ingest_batch(
     progress_callback: ProgressCallback | None,
     *,
     force_write: bool = False,
+    ingest_result_chunk_size: int = 0,
 ) -> ParseBatchObservation | None:
     """Process a batch of raw records through the unified ingest pipeline.
 
     1. Submit all records to ProcessPool (decode + validate + parse + transform)
     2. Consume results via as_completed — write to DB as each worker finishes
     3. Defer session insight refresh to caller (done once after all batches)
+
+    When *ingest_result_chunk_size* > 0 and *batch_ids* exceeds it, raw
+    records are split into sub-batches to bound the memory held by parsed
+    results in the process pool and drain loop.
     """
     import asyncio
 
@@ -1158,6 +1208,7 @@ async def process_ingest_batch(
         ingest_workers=service.ingest_workers,
         measure_ingest_result_size=service.measure_ingest_result_size,
         force_write=force_write,
+        ingest_result_chunk_size=ingest_result_chunk_size,
     )
 
     _apply_ingest_batch_summary(result, batch_summary)
@@ -1389,4 +1440,4 @@ async def refresh_session_insights_bulk(
         }
 
 
-__all__ = ["process_ingest_batch", "refresh_session_insights_bulk"]
+__all__ = ["_INGEST_RESULT_CHUNK_SIZE", "process_ingest_batch", "refresh_session_insights_bulk"]
