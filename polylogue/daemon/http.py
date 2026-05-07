@@ -38,7 +38,7 @@ def daemon_safe_handler(fn: Callable[..., Any]) -> Callable[..., Any]:
     """
 
     @functools.wraps(fn)
-    def wrapper(self: DaemonAPIHandler, *args: object, **kwargs: object) -> None:  # noqa: F821
+    def wrapper(self: DaemonAPIHandler, *args: object, **kwargs: object) -> None:
         try:
             fn(self, *args, **kwargs)
         except PolylogueError as exc:
@@ -78,11 +78,9 @@ def _advertised_cors_headers(host: str) -> dict[str, str]:
     return {}
 
 
-
-
 def _check_auth_logic(
     auth_token: str | None,
-    client_host: str,
+    client_host: str,  # noqa: ARG001
     auth_header: str,
 ) -> _AuthResult:
     """Pure logic for auth checks — testable without HTTP handler setup."""
@@ -102,6 +100,56 @@ class _AuthResult:
 
     def __bool__(self) -> bool:
         return self.allowed
+
+
+class DaemonAPIHandler(BaseHTTPRequestHandler):
+    """HTTP handler for the daemon API server.
+
+    Runs async archive operations via ``asyncio.run()`` in a thread pool
+    worker. This is safe because each request runs in its own thread.
+    """
+
+    server: DaemonAPIHTTPServer
+
+    def log_message(self, format: str, *args: object) -> None:
+        return
+
+    # ------------------------------------------------------------------
+    # Auth
+    # ------------------------------------------------------------------
+
+    @property
+    def _auth_token(self) -> str | None:
+        return getattr(self.server, "auth_token", None)
+
+    @property
+    def _api_host(self) -> str:
+        return getattr(self.server, "api_host", "127.0.0.1")
+
+    @property
+    def _auth_required(self) -> bool:
+        """Auth is always required on non-loopback, always from the web shell."""
+        return not _is_localhost(self._client_host)
+
+    @property
+    def _client_host(self) -> str:
+        """Extract client IP from the request."""
+        # The client_address is (host, port) from the underlying socket.
+        return self.client_address[0] if self.client_address else "127.0.0.1"
+
+    def _check_auth(self) -> bool:
+        """Validate the Authorization header against the daemon token.
+
+        When no token is configured the API is open (local dev default).
+        When a token IS configured, all clients — including localhost —
+        must present it. Loopback is not a security boundary when a
+        browser on the same host can reach the daemon.
+        """
+        auth_header = self.headers.get("Authorization", "")
+        result = _check_auth_logic(self._auth_token, self._client_host, auth_header)
+        if not result.allowed:
+            self._send_error(HTTPStatus.UNAUTHORIZED, result.reason or "unauthorized")
+        return result.allowed
 
     # ------------------------------------------------------------------
     # Helpers

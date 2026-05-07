@@ -42,8 +42,7 @@ def _origin_check(origin: str) -> bool:
     """Simulate the origin check logic from _check_cross_origin."""
     if not origin:
         return True
-    if origin.startswith("http://127.0.0.1:") or origin.startswith("http://localhost:"):
-        return True
-    if origin.startswith("https://127.0.0.1:") or origin.startswith("https://localhost:"):
-        return True
-    return False
+    return (
+        origin.startswith("http://127.0.0.1:") or origin.startswith("http://localhost:")
+        or origin.startswith("https://127.0.0.1:") or origin.startswith("https://localhost:")
+    )
