@@ -1,4 +1,57 @@
-"""Archive conversation/message/query methods for the async SQLite backend."""
+"""Archive conversation/message/query methods for the async SQLite backend.
+
+This mixin (SQLiteArchiveMixin) serves the SQLiteBackend with read AND
+write capability. Most reads delegate to self.queries (a SQLiteQueryStore),
+while writes use self._get_connection() directly.
+
+Relationship with SQLiteQueryStoreArchiveMixin (query_store_archive.py):
+
+- SQLiteArchiveMixin is the *backend* layer: write-capable, schema-ensured
+  connections. Reads usually delegate to the underlying query store.
+- SQLiteQueryStoreArchiveMixin is the *query store* layer: read-only, uses
+  plain connection factory, implements the SQLiteQueryStore public API.
+
+Intentional divergences (10 known, all architectural):
+
+1. Naming: _conversation_id_query (private delegate) vs
+   conversation_id_query (public query-store API). Same function, different
+   callers.
+
+2. search_conversations: delegates to queries (backend) vs delegates to
+   search_conversation_hits().conversation_ids() (query store). Same result.
+
+3. get_messages: content_blocks are pre-attached by the query store layer;
+   the backend inherits this. The query store does a two-step load+merge
+   because it IS the canonical implementation.
+
+4. Connection management: _get_connection() ensures schema before every use
+   (backend); _connection_factory provides pre-configured read-only
+   connections (query store). Both correct for their context.
+
+5. Write methods (save_conversation_record, save_messages, etc.) exist only
+   on SQLiteArchiveMixin. The query store is deliberately read-only.
+
+6. Query API methods (list_conversations, count_conversations,
+   search_action_*, search_conversation_evidence_hits) exist only on
+   SQLiteQueryStoreArchiveMixin. The backend accesses them through
+   self.queries (a SQLiteQueryStore instance).
+
+7. get_session_insight_status exists only on SQLiteArchiveMixin. The query
+   store has its own implementation in query_store.py.
+
+8. get_messages_batch: both have equivalent behavior. The backend delegates
+   to queries; the query store adds an explicit empty-conversation_ids early
+   exit for clarity.
+
+9. iter_messages: the backend has a chunk_size=100 fast path that delegates
+   to the query store; both call messages_q.iter_messages underneath.
+
+10. search_conversation_hits: backend delegates to self.queries; query store
+    opens a direct connection. Same destination through different layers.
+
+These divergences reflect the different roles, not bugs. The backend is a
+write-capable full DB owner; the query store is a composable read-only
+component usable across multiple backend types."""
 
 from __future__ import annotations
 

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import Any
 
 from .lane_models import LaneEntry
 from .validation_lane_catalog_contracts import COMPOSITE_LANES, CONTRACT_LANES
@@ -41,11 +40,24 @@ def _build_lane_entry(
     visiting.add(lane_name)
     lane = ALL_VALIDATION_LANES[lane_name]
     child_entries = tuple(_build_lane_entry(child, cache=cache, visiting=visiting) for child in lane.sub_lanes)
+    exec_meta = lane.execution.metadata if lane.execution is not None else None
     entry = replace(
         lane,
-        path_targets=_merge_unique(lane.path_targets, *(child.path_targets for child in child_entries)),
-        artifact_targets=_merge_unique(lane.artifact_targets, *(child.artifact_targets for child in child_entries)),
-        operation_targets=_merge_unique(lane.operation_targets, *(child.operation_targets for child in child_entries)),
+        path_targets=_merge_unique(
+            lane.path_targets,
+            exec_meta.path_targets if exec_meta is not None else (),
+            *(child.path_targets for child in child_entries),
+        ),
+        artifact_targets=_merge_unique(
+            lane.artifact_targets,
+            exec_meta.artifact_targets if exec_meta is not None else (),
+            *(child.artifact_targets for child in child_entries),
+        ),
+        operation_targets=_merge_unique(
+            lane.operation_targets,
+            exec_meta.operation_targets if exec_meta is not None else (),
+            *(child.operation_targets for child in child_entries),
+        ),
         tags=_merge_unique(lane.tags, *(child.tags for child in child_entries)),
     )
     visiting.remove(lane_name)
@@ -79,15 +91,9 @@ def build_composite_lane_entries() -> tuple[LaneEntry, ...]:
     return _category_entries("composite")
 
 
-def build_validation_family_entries() -> tuple[Any, ...]:
-    """Return validation family entries (flattened — families are now direct composites)."""
-    return ()
-
-
 __all__ = [
     "build_validation_lane_entries",
     "LaneEntry",
-    "build_validation_family_entries",
     "build_composite_lane_entries",
     "build_contract_lane_entries",
     "build_live_lane_entries",

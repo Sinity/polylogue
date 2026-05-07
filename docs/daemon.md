@@ -353,3 +353,65 @@ and recreates the vec0 virtual table.
 polylogue stats                      # embedding coverage in archive stats
 polylogued status                    # daemon status includes embedding readiness
 ```
+
+## Service Recovery
+
+`polylogued` is typically managed as a systemd user service. Example unit:
+
+```ini
+# ~/.config/systemd/user/polylogued.service
+[Unit]
+Description=Polylogue daemon
+After=network.target
+
+[Service]
+ExecStart=%h/.local/bin/polylogued run
+Restart=on-failure
+Environment=POLYLOGUE_CONFIG=%h/.config/polylogue/polylogue.toml
+
+[Install]
+WantedBy=default.target
+```
+
+Check status: `systemctl --user status polylogued`
+View logs: `journalctl --user -u polylogued -f`
+
+If the daemon fails to start, check:
+- Archive DB exists and is writable
+- `polylogue.toml` is valid (run `polylogue config`)
+- No other instance is running (pidfile lock)
+
+## Backup and Recovery
+
+The Polylogue archive consists of:
+- `polylogue.db` — SQLite database (WAL mode, includes `-wal` and `-shm` files)
+- `blob/` — content-addressed blob store
+
+**Quick backup** (daemon stopped):
+```bash
+polylogue backup --output-dir /backup/polylogue
+```
+
+**Continuous backup** with Litestream:
+```bash
+litestream replicate polylogue.db s3://my-bucket/polylogue
+```
+
+**Blob store backup** with restic:
+```bash
+restic backup /path/to/archive/blob/
+```
+
+**Recovery**:
+```bash
+# Stop daemon
+systemctl --user stop polylogued
+# Restore files
+cp /backup/polylogue.db /path/to/archive/
+cp -r /backup/blob/ /path/to/archive/blob/
+# Start daemon
+systemctl --user start polylogued
+```
+
+The daemon will catch up on any files ingested after the backup was taken.
+```
