@@ -7,7 +7,7 @@ import contextlib
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, TypeVar, cast
+from typing import TypeVar, cast
 
 import click
 
@@ -18,8 +18,6 @@ from polylogue.config import load_polylogue_config
 
 logger = logging.getLogger(__name__)
 
-if TYPE_CHECKING:
-    from polylogue.config import load_polylogue_config
 from polylogue.storage.action_events.artifacts import ActionEventArtifactState
 
 _T = TypeVar("_T")

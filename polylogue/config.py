@@ -194,7 +194,7 @@ class PolylogueConfig:
 
     @property
     def daemon_port(self) -> int:
-        return int(self._data.get("daemon_port", 8766))
+        return int(str(self._data.get("daemon_port", 8766)))
 
     @property
     def embedding_enabled(self) -> bool:
@@ -206,11 +206,11 @@ class PolylogueConfig:
 
     @property
     def embedding_dimension(self) -> int:
-        return int(self._data.get("embedding_dimension", 1024))
+        return int(str(self._data.get("embedding_dimension", 1024)))
 
     @property
     def embedding_max_cost_usd(self) -> float:
-        return float(self._data.get("embedding_max_cost_usd", 0.0))
+        return float(str(self._data.get("embedding_max_cost_usd", 0.0)))
 
     @property
     def voyage_api_key(self) -> str | None:
@@ -236,7 +236,7 @@ class PolylogueConfig:
     @property
     def slow_query_notice_seconds(self) -> float | None:
         v = self._data.get("slow_query_notice_seconds")
-        return float(v) if v is not None else None
+        return float(str(v)) if v is not None else None
 
     def get(self, key: str, default: object = None) -> object:
         return self._data.get(key, default)

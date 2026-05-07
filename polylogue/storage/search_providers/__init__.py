@@ -73,7 +73,7 @@ def create_vector_provider(
     if voyage_key is None and config and config.index_config:
         voyage_key = config.index_config.voyage_api_key
     if voyage_key is None:
-        voyage_key = str(load_polylogue_config().get("voyage_api_key") or "") or None
+        voyage_key = os.environ.get("VOYAGE_API_KEY")
 
     if not voyage_key:
         return None

@@ -25,7 +25,7 @@ def schema_validation_mode(
 ) -> ValidationMode:
     """Return configured schema validation mode."""
     if env_var == "POLYLOGUE_SCHEMA_VALIDATION":
-        raw = str(load_polylogue_config().get("schema_validation", default))
+        raw = load_polylogue_config().schema_validation
     else:
         raw = os.environ.get(env_var, str(default))
     try:

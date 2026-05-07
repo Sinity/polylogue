@@ -23,53 +23,39 @@ from hashlib import sha256
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
-from polylogue.config import load_polylogue_config
 from polylogue.archive.write_gateway import ArchiveWriteGateway, WriteOperation
-from polylogue.config import load_polylogue_config
 from polylogue.core.common import (
     SQL_ACTION_EVENT_INSERT as _ACTION_EVENT_INSERT_SQL,
 )
-from polylogue.config import load_polylogue_config
 from polylogue.core.common import (
     SQL_ATTACHMENT_REF_INSERT as _ATTACHMENT_REF_INSERT_SQL,
 )
-from polylogue.config import load_polylogue_config
 from polylogue.core.common import (
     SQL_ATTACHMENT_UPSERT as _ATTACHMENT_UPSERT_SQL,
 )
-from polylogue.config import load_polylogue_config
 from polylogue.core.common import (
     SQL_CONTENT_BLOCK_UPSERT as _CONTENT_BLOCK_UPSERT_SQL,
 )
-from polylogue.config import load_polylogue_config
 from polylogue.core.common import (
     SQL_CONVERSATION_UPSERT as _CONVERSATION_UPSERT_SQL,
 )
-from polylogue.config import load_polylogue_config
 from polylogue.core.common import (
     SQL_MESSAGE_UPSERT as _MESSAGE_UPSERT_SQL,
 )
-from polylogue.config import load_polylogue_config
 from polylogue.core.common import (
     SQL_PROVIDER_EVENT_INSERT as _PROVIDER_EVENT_INSERT_SQL,
 )
-from polylogue.config import load_polylogue_config
 from polylogue.core.common import (
     SQL_STATS_UPSERT as _STATS_UPSERT_SQL,
 )
-from polylogue.config import load_polylogue_config
 from polylogue.core.metrics import (
     read_current_rss_mb,
     read_peak_rss_children_mb,
     read_peak_rss_self_mb,
 )
-from polylogue.config import load_polylogue_config
 from polylogue.logging import get_logger
-from polylogue.config import load_polylogue_config
 from polylogue.paths import blob_store_root
-from polylogue.config import load_polylogue_config
 from polylogue.pipeline.payload_types import MaterializeStageObservation, ParseBatchObservation
-from polylogue.config import load_polylogue_config
 from polylogue.pipeline.services.ingest_worker import (
     ConversationData,
     ConversationTuple,
@@ -77,38 +63,26 @@ from polylogue.pipeline.services.ingest_worker import (
     MessageTuple,
     ingest_record,
 )
-from polylogue.config import load_polylogue_config
 from polylogue.pipeline.services.process_pool import process_pool_executor
-from polylogue.config import load_polylogue_config
 from polylogue.storage.conversation_replacement import (
     recount_and_prune_attachments_sync,
     replace_conversation_runtime_state_sync,
 )
-from polylogue.config import load_polylogue_config
 from polylogue.storage.raw.models import RawConversationStateUpdate
-from polylogue.config import load_polylogue_config
 from polylogue.storage.runtime import RawConversationRecord
-from polylogue.config import load_polylogue_config
 from polylogue.storage.sqlite.connection import _load_sqlite_vec
-from polylogue.config import load_polylogue_config
 from polylogue.storage.sqlite.connection_profile import (
     DB_TIMEOUT,
     WRITE_CONNECTION_PRAGMA_STATEMENTS,
 )
-from polylogue.config import load_polylogue_config
 from polylogue.types import ContentHash
 
 if TYPE_CHECKING:
-    from polylogue.config import load_polylogue_config
-from polylogue.pipeline.services.parsing import ParsingService
-    from polylogue.config import load_polylogue_config
-from polylogue.pipeline.services.parsing_models import ParseResult
-    from polylogue.config import load_polylogue_config
-from polylogue.protocols import ProgressCallback
-    from polylogue.config import load_polylogue_config
-from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
+    from polylogue.pipeline.services.parsing import ParsingService
+    from polylogue.pipeline.services.parsing_models import ParseResult
+    from polylogue.protocols import ProgressCallback
+    from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
-from polylogue.config import load_polylogue_config
 from polylogue.pipeline.services.ingest_batch._models import (
     _DEFAULT_INGEST_WORKER_LIMIT,
     _BulkConnectionBackendLike,
@@ -139,8 +113,7 @@ _INGEST_RESULT_WAIT_HEARTBEAT_S = 15.0
 
 
 # ---------------------------------------------------------------------------
-# SQL templates — imported from polylogue.config import load_polylogue_config
-from polylogue.core.common (canonical source)
+# SQL templates — imported from polylogue.core.common (canonical source)
 # ---------------------------------------------------------------------------
 
 # _CONVERSATION_UPSERT_SQL, _MESSAGE_UPSERT_SQL, _CONTENT_BLOCK_UPSERT_SQL,
@@ -911,8 +884,7 @@ def _commit_ingest_results(
     # explicit conn.commit() below becomes a no-op. If restore fails, the
     # exception propagates before we mark the batch as committed.
     # See https://github.com/Sinity/polylogue/issues/817
-    from polylogue.config import load_polylogue_config
-from polylogue.storage.fts.fts_lifecycle import restore_fts_triggers_sync
+    from polylogue.storage.fts.fts_lifecycle import restore_fts_triggers_sync
 
     restore_fts_triggers_sync(conn)
     commit_started = time.perf_counter()
@@ -952,8 +924,7 @@ def _process_ingest_batch_sync(
     heartbeat: IngestHeartbeat | None = None,
     progress: _WorkerProgress | None = None,
 ) -> _IngestBatchSummary:
-    from polylogue.config import load_polylogue_config
-from polylogue.storage.fts.fts_lifecycle import (
+    from polylogue.storage.fts.fts_lifecycle import (
         suspend_fts_triggers_sync,
     )
 
@@ -1175,7 +1146,7 @@ async def process_ingest_batch(
     peak_rss_self_start_mb = read_peak_rss_self_mb()
 
     # Get validation mode from environment
-    validation_mode = load_polylogue_config().get("schema_validation", "advisory")
+    validation_mode = os.environ.get("POLYLOGUE_SCHEMA_VALIDATION", "advisory")
 
     batch_summary = await asyncio.to_thread(
         _process_ingest_batch_sync,
@@ -1337,8 +1308,7 @@ async def refresh_session_insights_bulk(
     thread_elapsed = 0.0
     aggregate_elapsed = 0.0
     try:
-        from polylogue.config import load_polylogue_config
-from polylogue.storage.insights.session.refresh import (
+        from polylogue.storage.insights.session.refresh import (
             _apply_session_insight_conversation_updates_async,
             _refresh_thread_roots_async,
             refresh_async_provider_day_aggregates,

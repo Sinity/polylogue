@@ -157,8 +157,12 @@ ProviderEventTuple = tuple[
     int,
 ]
 StatsTuple = tuple[ConversationId, str, int, int, int, int, int]
-AttachmentTuple = tuple[AttachmentId, str | None, int | None, str | None, int, str | None, str | None, str | None, str | None]
-AttachmentRefTuple = tuple[str, AttachmentId, ConversationId, MessageId | None, str | None, str | None, str | None, str | None]
+AttachmentTuple = tuple[
+    AttachmentId, str | None, int | None, str | None, int, str | None, str | None, str | None, str | None
+]
+AttachmentRefTuple = tuple[
+    str, AttachmentId, ConversationId, MessageId | None, str | None, str | None, str | None, str | None
+]
 
 
 # ---------------------------------------------------------------------------
