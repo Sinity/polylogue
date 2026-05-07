@@ -578,6 +578,10 @@ files:
     loc: 23
     target: polylogue/cli/commands/completions.py
     owner: stable
+  - path: polylogue/cli/commands/config.py
+    loc: 28
+    target: polylogue/cli/commands/config.py
+    owner: stable
   - path: polylogue/cli/commands/dashboard.py
     loc: 20
     target: polylogue/cli/commands/dashboard.py

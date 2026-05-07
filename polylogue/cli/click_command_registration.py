@@ -7,6 +7,7 @@ import click
 from polylogue.cli.commands.auth import auth_command
 from polylogue.cli.commands.check import check_command
 from polylogue.cli.commands.completions import completions_command
+from polylogue.cli.commands.config import config_command
 from polylogue.cli.commands.dashboard import dashboard_command
 from polylogue.cli.commands.diagnostics import diagnostics_group
 from polylogue.cli.commands.export import export_command
@@ -21,6 +22,7 @@ from polylogue.cli.commands.tags import tags_command
 
 ROOT_COMMANDS: tuple[click.Command, ...] = (
     check_command,
+    config_command,
     reset_command,
     status_command,
     ingest_command,
