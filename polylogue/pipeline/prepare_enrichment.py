@@ -23,6 +23,14 @@ from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.types import ConversationId, MessageId
 
 
+def _str_from_meta(provider_meta: dict[str, object] | None, key: str) -> str | None:
+    """Extract a string value from provider_meta if present."""
+    if not provider_meta:
+        return None
+    value = provider_meta.get(key)
+    return value if isinstance(value, str) else None
+
+
 def enrich_bundle_from_db(
     convo: ParsedConversation,
     source_name: str,
@@ -59,6 +67,27 @@ def enrich_bundle_from_db(
     if convo.provider_meta:
         merged_provider_meta.update(convo.provider_meta)
 
+    # Extract canonical fields from provider_meta (#864 Slice 2)
+    import json as _json
+
+    working_directories_json: str | None = None
+    git_branch: str | None = None
+    git_repository_url: str | None = None
+    if convo.provider_meta:
+        wds = convo.provider_meta.get("working_directories")
+        if isinstance(wds, list):
+            working_directories_json = _json.dumps(wds)
+        cwd = convo.provider_meta.get("cwd")
+        if isinstance(cwd, str) and working_directories_json is None:
+            working_directories_json = _json.dumps([cwd])
+        gb = convo.provider_meta.get("gitBranch")
+        if isinstance(gb, str):
+            git_branch = gb
+        git_obj = convo.provider_meta.get("git")
+        if isinstance(git_obj, dict):
+            git_branch = git_branch or git_obj.get("branch")
+            git_repository_url = git_obj.get("repository_url")
+
     conversation_record = ConversationRecord(
         conversation_id=cid,
         provider_name=convo.provider_name,
@@ -69,6 +98,10 @@ def enrich_bundle_from_db(
         sort_key=transform.bundle.conversation.sort_key,
         content_hash=content_hash,
         provider_meta=merged_provider_meta,
+        source_name=source_name,
+        working_directories_json=working_directories_json,
+        git_branch=git_branch,
+        git_repository_url=git_repository_url,
         parent_conversation_id=parent_conversation_id,
         branch_type=convo.branch_type,
         raw_id=raw_id,
@@ -138,6 +171,9 @@ def enrich_bundle_from_db(
                 size_bytes=attachment.size_bytes,
                 path=attachment.path,
                 provider_meta=attachment.provider_meta,
+                provider_attachment_id=attachment.provider_attachment_id,
+                provider_file_id=_str_from_meta(attachment.provider_meta, "fileId"),
+                provider_drive_id=_str_from_meta(attachment.provider_meta, "driveId"),
             )
         )
 

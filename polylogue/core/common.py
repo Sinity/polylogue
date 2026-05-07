@@ -132,19 +132,24 @@ INSERT INTO provider_events (
 
 _ATTACHMENT_UPSERT_SQL = """
 INSERT INTO attachments (
-    attachment_id, mime_type, size_bytes, path, ref_count, provider_meta
-) VALUES (?, ?, ?, ?, ?, ?)
+    attachment_id, mime_type, size_bytes, path, ref_count, provider_meta,
+    provider_attachment_id, provider_file_id, provider_drive_id
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(attachment_id) DO UPDATE SET
     mime_type = COALESCE(excluded.mime_type, attachments.mime_type),
     size_bytes = COALESCE(excluded.size_bytes, attachments.size_bytes),
     path = COALESCE(excluded.path, attachments.path),
-    provider_meta = COALESCE(excluded.provider_meta, attachments.provider_meta)
+    provider_meta = COALESCE(excluded.provider_meta, attachments.provider_meta),
+    provider_attachment_id = COALESCE(excluded.provider_attachment_id, attachments.provider_attachment_id),
+    provider_file_id = COALESCE(excluded.provider_file_id, attachments.provider_file_id),
+    provider_drive_id = COALESCE(excluded.provider_drive_id, attachments.provider_drive_id)
 """
 
 _ATTACHMENT_REF_INSERT_SQL = """
 INSERT INTO attachment_refs (
-    ref_id, attachment_id, conversation_id, message_id, provider_meta
-) VALUES (?, ?, ?, ?, ?)
+    ref_id, attachment_id, conversation_id, message_id, provider_meta,
+    provider_attachment_id, provider_file_id, provider_drive_id
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(ref_id) DO NOTHING
 """
 

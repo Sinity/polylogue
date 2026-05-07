@@ -157,8 +157,8 @@ ProviderEventTuple = tuple[
     int,
 ]
 StatsTuple = tuple[ConversationId, str, int, int, int, int, int]
-AttachmentTuple = tuple[AttachmentId, str | None, int | None, str | None, int, str | None]
-AttachmentRefTuple = tuple[str, AttachmentId, ConversationId, MessageId | None, str | None]
+AttachmentTuple = tuple[AttachmentId, str | None, int | None, str | None, int, str | None, str | None, str | None, str | None]
+AttachmentRefTuple = tuple[str, AttachmentId, ConversationId, MessageId | None, str | None, str | None, str | None, str | None]
 
 
 # ---------------------------------------------------------------------------
@@ -920,6 +920,9 @@ def _attachment_tuples(
     attachment_ref_tuples: list[AttachmentRefTuple] = []
     for attachment in conversation.attachments:
         meta_json = _json_or_none(attachment.provider_meta)
+        provider_attachment_id = getattr(attachment, "provider_attachment_id", None) or None
+        provider_file_id = getattr(attachment, "provider_file_id", None) or None
+        provider_drive_id = getattr(attachment, "provider_drive_id", None) or None
         attachment_tuples.append(
             (
                 attachment.attachment_id,
@@ -928,6 +931,9 @@ def _attachment_tuples(
                 attachment.path,
                 0,
                 meta_json,
+                provider_attachment_id,
+                provider_file_id,
+                provider_drive_id,
             )
         )
         attachment_ref_tuples.append(
@@ -941,6 +947,9 @@ def _attachment_tuples(
                 conversation.conversation_id,
                 attachment.message_id,
                 meta_json,
+                provider_attachment_id,
+                provider_file_id,
+                provider_drive_id,
             )
         )
     return attachment_tuples, attachment_ref_tuples
