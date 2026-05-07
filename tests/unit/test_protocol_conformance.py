@@ -213,10 +213,9 @@ class TestOutputRendererConformance:
         backend = SQLiteBackend(db_path=db_path)
 
         if cls is HTMLRenderer:
-            renderer: OutputRenderer = HTMLRenderer(archive_root=output_dir, backend=backend)
+            renderer: OutputRenderer = HTMLRenderer(archive_root=output_dir)
         else:
             renderer = MarkdownRenderer(archive_root=output_dir)
-            renderer.formatter.db_path = db_path
 
         result_path = await renderer.render(conv_id, output_dir)
 
