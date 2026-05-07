@@ -17,6 +17,7 @@ import sqlite3
 import time
 from collections.abc import Callable, Iterable, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, wait
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
@@ -94,6 +95,13 @@ from polylogue.pipeline.services.ingest_batch._models import (
 )
 
 logger = get_logger(__name__)
+
+
+@dataclass
+class _WorkerProgress:
+    in_flight_raw_ids: list[str] = field(default_factory=list)
+    completed_raw_count: int = 0
+    total_raw_count: int = 0
 
 
 class _BlobSized(Protocol):
@@ -654,14 +662,24 @@ def _iter_ingest_results_sync(
     request: _IngestWorkerRequest,
     worker_count: int,
     heartbeat: IngestHeartbeat | None = None,
+    progress: _WorkerProgress | None = None,
 ) -> Iterable[IngestRecordResult]:
+    total = len(raw_artifacts)
+    if progress is not None:
+        progress.total_raw_count = total
+        progress.completed_raw_count = 0
+        progress.in_flight_raw_ids.clear()
     if worker_count <= 1:
         for raw_record in raw_artifacts:
+            if progress is not None:
+                progress.in_flight_raw_ids[:] = [raw_record.raw_id]
             if heartbeat is not None:
                 heartbeat()
             yield _run_ingest_record(raw_record, request)
+            if progress is not None:
+                progress.completed_raw_count += 1
+                progress.in_flight_raw_ids.clear()
         return
-
     try:
         with process_pool_executor(max_workers=worker_count) as executor:
             raw_iter = iter(raw_artifacts)
@@ -675,12 +693,13 @@ def _iter_ingest_results_sync(
                     return False
                 future = executor.submit(_run_ingest_record, raw_record, request)
                 futures[future] = raw_record.raw_id
+                if progress is not None:
+                    progress.in_flight_raw_ids[:] = list(futures.values())
                 return True
 
             for _ in range(max_in_flight):
                 if not submit_next():
                     break
-
             while futures:
                 done, _pending = wait(
                     tuple(futures),
@@ -693,17 +712,27 @@ def _iter_ingest_results_sync(
                     continue
                 for future in done:
                     raw_id = futures.pop(future)
+                    if progress is not None:
+                        progress.in_flight_raw_ids[:] = list(futures.values())
                     try:
                         result = future.result()
                     except Exception as exc:
                         result = IngestRecordResult(raw_id=raw_id, error=f"worker: {exc}")
                     submit_next()
+                    if progress is not None:
+                        progress.in_flight_raw_ids[:] = list(futures.values())
+                        progress.completed_raw_count += 1
                     yield result
     except (TypeError, pickle.PicklingError):
         for raw_record in raw_artifacts:
+            if progress is not None:
+                progress.in_flight_raw_ids[:] = [raw_record.raw_id]
             if heartbeat is not None:
                 heartbeat()
             yield _run_ingest_record(raw_record, request)
+            if progress is not None:
+                progress.completed_raw_count += 1
+                progress.in_flight_raw_ids.clear()
 
 
 def _resolved_ingest_worker_limit(value: int | None) -> int:
@@ -805,6 +834,7 @@ def _consume_ingest_results(
     pending_by_parent: dict[str, list[_ConversationEntry]],
     force_write: bool = False,
     heartbeat: IngestHeartbeat | None = None,
+    progress: _WorkerProgress | None = None,
 ) -> None:
     result_iterator = iter(
         _iter_ingest_results_sync(
@@ -812,6 +842,7 @@ def _consume_ingest_results(
             request=worker_request,
             worker_count=summary.worker_count,
             heartbeat=heartbeat,
+            progress=progress,
         )
     )
     while True:
@@ -883,11 +914,14 @@ def _process_ingest_batch_sync(
     force_write: bool = False,
     repair_action_fts: bool = True,
     heartbeat: IngestHeartbeat | None = None,
+    progress: _WorkerProgress | None = None,
 ) -> _IngestBatchSummary:
     from polylogue.storage.fts.fts_lifecycle import (
         suspend_fts_triggers_sync,
     )
 
+    if progress is None:
+        progress = _WorkerProgress()
     summary = _new_ingest_batch_summary(raw_artifacts, ingest_workers=ingest_workers)
     worker_request = _make_ingest_worker_request(
         archive_root_str=archive_root_str,
@@ -895,16 +929,13 @@ def _process_ingest_batch_sync(
         validation_mode=validation_mode,
         measure_ingest_result_size=measure_ingest_result_size,
     )
-
     t_start = time.perf_counter()
     setup_started = time.perf_counter()
     conn = _open_sync_connection(db_path)
     summary.setup_elapsed_s = time.perf_counter() - setup_started
-
     materialized_ids: set[str] = set()
     pending_by_parent: dict[str, list[_ConversationEntry]] = {}
     _observe_current_rss(summary)
-
     changed_ids: set[str] = set()
     try:
         suspend_fts_triggers_sync(conn)
@@ -918,6 +949,7 @@ def _process_ingest_batch_sync(
             pending_by_parent=pending_by_parent,
             force_write=force_write,
             heartbeat=heartbeat,
+            progress=progress,
         )
         _commit_ingest_results(
             conn,
@@ -942,7 +974,9 @@ def _process_ingest_batch_sync(
             raise
         finally:
             conn.close()
-
+    summary.worker_progress_in_flight = len(progress.in_flight_raw_ids)
+    summary.worker_progress_completed = progress.completed_raw_count
+    summary.worker_progress_total = progress.total_raw_count
     summary.elapsed_s = time.perf_counter() - t_start
     return summary
 

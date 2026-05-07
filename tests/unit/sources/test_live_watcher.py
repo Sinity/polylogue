@@ -42,8 +42,10 @@ class _FullIngestMock:
     def reset_mock(self) -> None:
         self.await_count = 0
 
-    async def __call__(self, paths: list[Path], *, source_name: str, heartbeat: object = None) -> _FullIngestResult:
-        del source_name, heartbeat
+    async def __call__(
+        self, paths: list[Path], *, source_name: str, heartbeat: object = None, attempt_id: str | None = None
+    ) -> _FullIngestResult:
+        del source_name, heartbeat, attempt_id
         self.await_count += 1
         if self.side_effect is not None:
             if isinstance(self.side_effect, BaseException):
@@ -824,8 +826,10 @@ async def test_live_full_ingest_offloads_sync_work_to_keep_loop_responsive(
         parser_fingerprint="test-parser",
     )
 
-    def slow_full_ingest(paths: list[Path], *, source_name: str, heartbeat: object = None) -> _FullIngestResult:
-        del source_name, heartbeat
+    def slow_full_ingest(
+        paths: list[Path], *, source_name: str, heartbeat: object = None, attempt_id: str | None = None
+    ) -> _FullIngestResult:
+        del source_name, heartbeat, attempt_id
         time.sleep(0.2)
         return _FullIngestResult(
             succeeded=list(paths),

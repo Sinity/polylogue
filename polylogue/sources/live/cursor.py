@@ -68,6 +68,9 @@ CREATE TABLE IF NOT EXISTS live_ingest_attempt (
     cgroup_memory_current_mb REAL,
     cgroup_memory_peak_mb REAL,
     cgroup_memory_swap_current_mb REAL,
+    worker_in_flight_count INTEGER,
+    worker_completed_count INTEGER,
+    worker_total_count INTEGER,
     source_paths_json TEXT NOT NULL DEFAULT '[]'
 )
 """
@@ -125,6 +128,9 @@ class LiveIngestAttempt:
     cgroup_memory_current_mb: float | None = None
     cgroup_memory_peak_mb: float | None = None
     cgroup_memory_swap_current_mb: float | None = None
+    worker_in_flight_count: int | None = None
+    worker_completed_count: int | None = None
+    worker_total_count: int | None = None
     source_paths_json: str = "[]"
 
 
@@ -210,6 +216,9 @@ class CursorStore:
             "cgroup_memory_current_mb": "REAL",
             "cgroup_memory_peak_mb": "REAL",
             "cgroup_memory_swap_current_mb": "REAL",
+            "worker_in_flight_count": "INTEGER",
+            "worker_completed_count": "INTEGER",
+            "worker_total_count": "INTEGER",
         }
         for name, definition in attempt_columns.items():
             if name not in existing_attempt:
@@ -297,6 +306,9 @@ class CursorStore:
         cgroup_memory_current_mb: float | None = None,
         cgroup_memory_peak_mb: float | None = None,
         cgroup_memory_swap_current_mb: float | None = None,
+        worker_in_flight_count: int | None = None,
+        worker_completed_count: int | None = None,
+        worker_total_count: int | None = None,
     ) -> None:
         """Update an in-flight attempt without waiting for batch completion."""
         now = datetime.now(UTC).isoformat()
@@ -319,6 +331,9 @@ class CursorStore:
             "cgroup_memory_current_mb": cgroup_memory_current_mb,
             "cgroup_memory_peak_mb": cgroup_memory_peak_mb,
             "cgroup_memory_swap_current_mb": cgroup_memory_swap_current_mb,
+            "worker_in_flight_count": worker_in_flight_count,
+            "worker_completed_count": worker_completed_count,
+            "worker_total_count": worker_total_count,
         }
         for field, value in optional_fields.items():
             if value is None:
@@ -389,6 +404,9 @@ class CursorStore:
                     cgroup_memory_current_mb,
                     cgroup_memory_peak_mb,
                     cgroup_memory_swap_current_mb,
+                    worker_in_flight_count,
+                    worker_completed_count,
+                    worker_total_count,
                     source_paths_json
                 FROM live_ingest_attempt
                 ORDER BY updated_at DESC, started_at DESC
@@ -423,7 +441,10 @@ class CursorStore:
                 cgroup_memory_current_mb=float(row[22]) if row[22] is not None else None,
                 cgroup_memory_peak_mb=float(row[23]) if row[23] is not None else None,
                 cgroup_memory_swap_current_mb=float(row[24]) if row[24] is not None else None,
-                source_paths_json=str(row[25] or "[]"),
+                worker_in_flight_count=int(row[25]) if row[25] is not None else None,
+                worker_completed_count=int(row[26]) if row[26] is not None else None,
+                worker_total_count=int(row[27]) if row[27] is not None else None,
+                source_paths_json=str(row[28] or "[]"),
             )
             for row in rows
         ]
