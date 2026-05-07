@@ -322,7 +322,7 @@ def query_spec_to_plan(
         conversation_id=spec.conversation_id,
         since=parse_query_date("since", spec.since),
         until=parse_query_date("until", spec.until),
-        sort=spec.sort or "date",
+        sort=spec.sort,
         reverse=spec.reverse,
         limit=spec.limit,
         sample=spec.sample,
@@ -337,6 +337,7 @@ def query_spec_to_plan(
         since_session_id=spec.since_session_id,
         message_type=spec.message_type,
         offset=spec.offset,
+        cursor=spec.cursor,
         vector_provider=vector_provider,
     )
     if spec.latest:
@@ -392,6 +393,7 @@ class ConversationQuerySpec:
     since_session_id: str | None = None
     message_type: str | None = None
     offset: int = 0
+    cursor: str | None = None
 
     @classmethod
     def from_params(cls, params: Mapping[str, object], *, strict: bool = False) -> ConversationQuerySpec:

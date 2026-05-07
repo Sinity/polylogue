@@ -176,7 +176,7 @@ async def test_search_hybrid_results_orders_fused_ids_and_skips_missing(monkeypa
         ],
     )
 
-    results = await search_hybrid_results(
+    results, lane_ranks = await search_hybrid_results(
         ConversationQueryPlan(
             query_terms=("needle",),
             vector_provider=cast(
@@ -197,6 +197,10 @@ async def test_search_hybrid_results_orders_fused_ids_and_skips_missing(monkeypa
         "conv-text",
         "conv-vector",
     ]
+    # Verify lane rank contributions
+    assert lane_ranks["conv-action"]["action"] == 1
+    assert lane_ranks["conv-text"]["text"] == 1
+    assert lane_ranks["conv-vector"]["vector"] == 1
 
 
 @pytest.mark.asyncio

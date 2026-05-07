@@ -16,6 +16,15 @@ if TYPE_CHECKING:
     from polylogue.protocols import ConversationQueryRuntimeStore
 
 
+def _plan_sort_is_rank_first(plan: ConversationQueryPlan) -> bool:
+    """Return True when the plan's effective sort is rank-first.
+
+    When search terms exist and no explicit sort was chosen, results
+    should preserve the natural ranking from the search provider.
+    """
+    return bool(plan.fts_terms and plan.sort is None)
+
+
 async def list_for_plan(
     plan: ConversationQueryPlan,
     repository: ConversationQueryRuntimeStore,
@@ -34,6 +43,8 @@ async def list_for_plan(
 
     candidate_results, sql_pushed = await fetch_candidates(plan, repository, summaries=False)
     filtered = plan._apply_full_filters(candidate_results, sql_pushed=sql_pushed)
+    if _plan_sort_is_rank_first(plan):
+        return plan._finalize(filtered)
     return plan._finalize(plan._sort_conversations(filtered))
 
 
@@ -56,6 +67,8 @@ async def list_summaries_for_plan(
 
     candidates, sql_pushed = await fetch_candidates(plan, repository, summaries=True)
     filtered = plan._apply_common_filters(candidates, sql_pushed=sql_pushed)
+    if _plan_sort_is_rank_first(plan):
+        return plan._finalize(filtered)
     return plan._finalize(plan._sort_summaries(filtered))
 
 
