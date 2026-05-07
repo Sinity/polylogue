@@ -73,6 +73,12 @@ class SessionEvidencePayload(ArchiveInsightModel):
     latency_percentiles_ms: dict[str, int] = Field(default_factory=dict)
     tool_calls_per_minute: float = 0.0
     timing_provenance: str = "sort_key_estimated"
+    total_input_tokens: int = 0
+    total_output_tokens: int = 0
+    total_cache_read_tokens: int = 0
+    total_cache_write_tokens: int = 0
+    total_credit_cost: float = 0.0
+    cost_provenance: str = "unknown"
 
 
 class SessionInferencePayload(ArchiveInsightModel):

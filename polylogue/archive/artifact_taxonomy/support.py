@@ -26,6 +26,7 @@ _RECORDISH_KEYS = frozenset(
 )
 _MESSAGE_KEYS = frozenset({"role", "content", "text", "parts", "author"})
 _RELATIONSHIP_INDEX_KEYS = frozenset({"conversation", "parent", "child", "type", "timestamp"})
+_HOOK_EVENT_KEYS = frozenset({"event_type", "session_id", "timestamp", "provider"})
 
 
 def path_only_sidecars() -> dict[str, str]:
@@ -66,6 +67,33 @@ def looks_like_record_entry(payload: JSONDocument) -> bool:
         return True
     nested_message = json_document(payload.get("message"))
     return bool(nested_message) and any(key in nested_message for key in _MESSAGE_KEYS)
+
+
+def looks_like_hook_event(payload: object) -> bool:
+    """Detect if a payload is a hook event record.
+
+    Hook events have a canonical shape with event_type, session_id,
+    timestamp, and provider fields. This detects both Claude Code (16
+    events) and Codex (6 events) hook artifacts.
+    """
+    if not isinstance(payload, dict):
+        return False
+    if not isinstance(payload.get("event_type"), str):
+        return False
+    if not isinstance(payload.get("session_id"), str):
+        return False
+    if not isinstance(payload.get("timestamp"), str):
+        return False
+    provider = payload.get("provider")
+    return isinstance(provider, str) and provider in ("claude-code", "codex")
+
+
+def looks_like_hook_event_stream(payload: list[JSONDocument]) -> bool:
+    """Detect if a JSONL list is a stream of hook event records."""
+    if not payload:
+        return False
+    recordish = sum(1 for item in payload if looks_like_hook_event(item))
+    return recordish == len(payload) and recordish >= 1
 
 
 def looks_like_message_entry(payload: object) -> bool:
