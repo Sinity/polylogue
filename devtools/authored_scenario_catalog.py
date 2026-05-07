@@ -51,7 +51,7 @@ class AuthoredScenarioCatalog:
         return (
             *self.exercise_scenarios,
             *self.qa_extra_scenarios,
-            *self.validation_families,
+            *self.validation_families  # type: ignore[misc],
             *self.validation_lanes,
             *self.mutation_campaigns,
             *self.benchmark_campaigns,
