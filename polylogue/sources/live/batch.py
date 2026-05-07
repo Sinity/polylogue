@@ -212,6 +212,7 @@ class LiveBatchProcessor:
                     full_result = await self._ingest_full_paths(
                         source_paths,
                         source_name=source_name,
+                        attempt_id=attempt_id,
                         heartbeat=self._full_ingest_heartbeat(
                             attempt_id,
                             source_name=source_name,
@@ -568,9 +569,10 @@ class LiveBatchProcessor:
         *,
         source_name: str,
         heartbeat: _FullIngestHeartbeat | None = None,
+        attempt_id: str | None = None,
     ) -> _FullIngestResult:
         return await asyncio.to_thread(
-            self._ingest_full_paths_sync, paths, source_name=source_name, heartbeat=heartbeat
+            self._ingest_full_paths_sync, paths, source_name=source_name, heartbeat=heartbeat, attempt_id=attempt_id
         )
 
     def _ingest_full_paths_sync(
@@ -579,6 +581,7 @@ class LiveBatchProcessor:
         *,
         source_name: str,
         heartbeat: _FullIngestHeartbeat | None = None,
+        attempt_id: str | None = None,
     ) -> _FullIngestResult:
         if not paths:
             return _FullIngestResult(succeeded=[], failed=[], source_payload_read_bytes=0)
@@ -746,6 +749,15 @@ class LiveBatchProcessor:
             failed.extend(raw_by_id[raw_id] for raw_id in summary.failed_raw_ids if raw_id in raw_by_id)
             if summary.parse_failures and not summary.failed_raw_ids:
                 failed.extend(raw_by_id.values())
+            if attempt_id is not None and summary.worker_progress_total > 0:
+                self._cursor.update_ingest_attempt(
+                    attempt_id,
+                    phase="full_worker_wait",
+                    status="running",
+                    worker_in_flight_count=summary.worker_progress_in_flight,
+                    worker_completed_count=summary.worker_progress_completed,
+                    worker_total_count=summary.worker_progress_total,
+                )
 
         failed_set = set(failed)
         return _FullIngestResult(

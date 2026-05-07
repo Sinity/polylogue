@@ -96,6 +96,9 @@ class LiveIngestAttemptState(BaseModel):
     cgroup_memory_current_mb: float | None = None
     cgroup_memory_peak_mb: float | None = None
     cgroup_memory_swap_current_mb: float | None = None
+    worker_in_flight_count: int | None = None
+    worker_completed_count: int | None = None
+    worker_total_count: int | None = None
     updated_age_s: float | None = None
     stale: bool = False
     completed_at: str | None = None
@@ -401,6 +404,9 @@ def _live_ingest_attempt_summary_info() -> LiveIngestAttemptSummary:
             cgroup_current_expr = "cgroup_memory_current_mb" if "cgroup_memory_current_mb" in columns else "NULL"
             cgroup_peak_expr = "cgroup_memory_peak_mb" if "cgroup_memory_peak_mb" in columns else "NULL"
             cgroup_swap_expr = "cgroup_memory_swap_current_mb" if "cgroup_memory_swap_current_mb" in columns else "NULL"
+            worker_in_flight_expr = "worker_in_flight_count" if "worker_in_flight_count" in columns else "NULL"
+            worker_completed_expr = "worker_completed_count" if "worker_completed_count" in columns else "NULL"
+            worker_total_expr = "worker_total_count" if "worker_total_count" in columns else "NULL"
             rows = conn.execute(
                 f"""
                 SELECT
@@ -428,7 +434,10 @@ def _live_ingest_attempt_summary_info() -> LiveIngestAttemptSummary:
                     {cgroup_path_expr},
                     {cgroup_current_expr},
                     {cgroup_peak_expr},
-                    {cgroup_swap_expr}
+                    {cgroup_swap_expr},
+                    {worker_in_flight_expr},
+                    {worker_completed_expr},
+                    {worker_total_expr}
                 FROM live_ingest_attempt
                 ORDER BY updated_at DESC, started_at DESC
                 LIMIT 5
@@ -493,6 +502,9 @@ def _live_ingest_attempt_state_from_row(
         cgroup_memory_current_mb=_row_float(row[22]),
         cgroup_memory_peak_mb=_row_float(row[23]),
         cgroup_memory_swap_current_mb=_row_float(row[24]),
+        worker_in_flight_count=_row_int(row[25]) if len(row) > 25 else None,
+        worker_completed_count=_row_int(row[26]) if len(row) > 26 else None,
+        worker_total_count=_row_int(row[27]) if len(row) > 27 else None,
         updated_age_s=updated_age_s,
         stale=stale,
     )
