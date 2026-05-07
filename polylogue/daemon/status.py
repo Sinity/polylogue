@@ -703,9 +703,11 @@ def _embedding_readiness_info() -> dict[str, object]:
             embedded_msg = optional_count_sync(conn, "SELECT COUNT(*) FROM message_embeddings")
             failure = optional_count_sync(conn, "SELECT COUNT(*) FROM embedding_status WHERE error_message IS NOT NULL")
 
-            total_conv = int(
-                conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0] or 0
-            ) if _table_exists_readonly(conn, "conversations") else 0
+            total_conv = (
+                int(conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0] or 0)
+                if _table_exists_readonly(conn, "conversations")
+                else 0
+            )
 
             if total_conv > 0:
                 total = embedded_msg
@@ -971,9 +973,7 @@ def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
             coverage = _safe_float(embedding.get("embedding_coverage_percent"))
             pending = _safe_int(embedding.get("embedding_pending_count"))
             stale = _safe_int(embedding.get("embedding_stale_count"))
-            lines.append(
-                f"Embeddings: {coverage:.1f}% coverage, {pending} pending, {stale} stale"
-            )
+            lines.append(f"Embeddings: {coverage:.1f}% coverage, {pending} pending, {stale} stale")
             if _safe_int(embedding.get("embedding_failure_count")) > 0:
                 lines.append(f"  failures: {_safe_int(embedding.get('embedding_failure_count'))}")
             cost = _safe_float(embedding.get("embedding_estimated_cost_usd"))

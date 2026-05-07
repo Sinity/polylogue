@@ -126,10 +126,11 @@ def _build_conversation_filters(
             )
             params.append(f"%{escaped}%")
     if cwd_prefix:
+        cwd_col = "c.working_directories_json" if needs_stats_join else "conversations.working_directories_json"
         provider_meta_col = "c.provider_meta" if needs_stats_join else "provider_meta"
         exact_prefix, child_prefix = escaped_sql_path_prefix_patterns(cwd_prefix)
         where_clauses.append(
-            f"EXISTS (SELECT 1 FROM json_each(COALESCE(json_extract({provider_meta_col}, '$.working_directories'), '[]')) cwd "
+            f"EXISTS (SELECT 1 FROM json_each(COALESCE({cwd_col}, COALESCE(json_extract({provider_meta_col}, '$.working_directories'), '[]'))) cwd "
             f"WHERE REPLACE(cwd.value, char(92), '/') = ? "
             f"OR REPLACE(cwd.value, char(92), '/') LIKE ? ESCAPE '\\')"
         )

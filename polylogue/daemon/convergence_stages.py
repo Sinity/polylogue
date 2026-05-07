@@ -541,9 +541,7 @@ def _reconcile_embedding_config_change(conn: sqlite3.Connection) -> None:
 
 
 def _stored_dim_from_meta(conn: sqlite3.Connection) -> int:
-    row = conn.execute(
-        "SELECT dimension FROM embeddings_meta WHERE target_type='message' LIMIT 1"
-    ).fetchone()
+    row = conn.execute("SELECT dimension FROM embeddings_meta WHERE target_type='message' LIMIT 1").fetchone()
     return int(row[0]) if row else 0
 
 
