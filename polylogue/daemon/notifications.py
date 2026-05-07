@@ -20,7 +20,7 @@ logger = get_logger(__name__)
 class NotificationBackend(Protocol):
     """Protocol for notification backends."""
 
-    def notify(self, alerts: list[HealthAlert], *, config: dict | None = None) -> None:
+    def notify(self, alerts: list[HealthAlert], *, config: dict[str, object] | None = None) -> None:
         """Deliver one or more health alerts."""
         ...
 
@@ -28,7 +28,7 @@ class NotificationBackend(Protocol):
 class LogNotificationBackend:
     """Logs all non-OK alerts to the structured logger."""
 
-    def notify(self, alerts: list[HealthAlert], *, config: dict | None = None) -> None:
+    def notify(self, alerts: list[HealthAlert], *, config: dict[str, object] | None = None) -> None:
         for alert in alerts:
             if alert.severity == HealthSeverity.OK:
                 logger.debug(
@@ -45,15 +45,8 @@ class LogNotificationBackend:
                     alert.severity.value,
                     alert.message,
                 )
-            elif alert.severity == HealthSeverity.ERROR:
+            elif alert.severity == HealthSeverity.ERROR or alert.severity == HealthSeverity.CRITICAL:
                 logger.error(
-                    "daemon.health: %s [%s] %s",
-                    alert.check_name,
-                    alert.severity.value,
-                    alert.message,
-                )
-            elif alert.severity == HealthSeverity.CRITICAL:
-                logger.critical(
                     "daemon.health: %s [%s] %s",
                     alert.check_name,
                     alert.severity.value,
@@ -65,7 +58,7 @@ def send_notifications(
     alerts: list[HealthAlert],
     *,
     backend: NotificationBackend | None = None,
-    config: dict | None = None,
+    config: dict[str, object] | None = None,
 ) -> None:
     """Send health alert notifications through the configured backend.
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from contextlib import suppress
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from polylogue.mcp.payloads import (
     MCPMetadataPayload,
@@ -149,9 +149,7 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 return err
             assert resolved is not None  # _resolve_or_error contract
 
-            from polylogue.storage.repository.archive.repository_writes import RepositoryWriteMixin
-
-            tag_store: RepositoryWriteMixin = hooks.get_tag_store()
+            tag_store: Any = hooks.get_tag_store()
             was_deleted = await tag_store.delete_metadata(resolved, key)
             return hooks.json_payload(
                 MutationResultPayload(
