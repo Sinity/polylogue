@@ -16,6 +16,7 @@ class ArtifactKind(StrEnum):
     SESSION_INDEX = "session_index"
     BRIDGE_POINTER = "bridge_pointer"
     METADATA_DOCUMENT = "metadata_document"
+    HOOK_EVENT = "hook_event"
     UNKNOWN = "unknown"
 
 

@@ -23,6 +23,7 @@ from .paths import (
     drive_cache_path,
     drive_credentials_path,
     drive_token_path,
+    hooks_sidecar_dir,
     render_root,
 )
 from .paths import (
@@ -222,6 +223,10 @@ class PolylogueConfig:
         return bool(self._data.get("hooks_enabled"))
 
     @property
+    def hooks_sidecar_dir(self) -> str:
+        return str(self._data.get("hooks_sidecar_dir", hooks_sidecar_dir()))
+
+    @property
     def log_level(self) -> str:
         return str(self._data.get("log_level", "INFO"))
 
@@ -329,6 +334,7 @@ def load_polylogue_config(
         "embedding_dimension": 1024,
         "embedding_max_cost_usd": 0.0,
         "hooks_enabled": False,
+        "hooks_sidecar_dir": str(hooks_sidecar_dir()),
         "log_level": "INFO",
         "force_plain": False,
         "schema_validation": "advisory",
@@ -368,7 +374,7 @@ def _merge_toml(cfg: dict[str, object], toml_data: dict[str, object]) -> None:
         "daemon.api": ("api_host", "api_port", "api_auth_token"),
         "daemon.browser_capture": ("browser_capture_port", "browser_capture_allowed_origins"),
         "embedding": ("embedding_enabled", "embedding_model", "embedding_dimension", "embedding_max_cost_usd"),
-        "hooks": ("hooks_enabled",),
+        "hooks": ("hooks_enabled", "hooks_sidecar_dir"),
         "logging": ("log_level", "force_plain"),
         "notifications": ("notification_backend",),
         "health": ("health_check_interval_s", "health_check_tiers"),
@@ -428,7 +434,7 @@ def format_config_toml(cfg: dict[str, object]) -> str:
         "embedding_max_cost_usd",
         "voyage_api_key",
     )
-    hooks_keys = ("hooks_enabled",)
+    hooks_keys = ("hooks_enabled", "hooks_sidecar_dir")
     logging_keys = ("log_level", "force_plain")
     notifications_keys = ("notification_backend",)
     health_keys = ("health_check_interval_s", "health_check_tiers")

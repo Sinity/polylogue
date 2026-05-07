@@ -53,8 +53,10 @@ _MESSAGE_UPSERT_SQL = """
 INSERT INTO messages (
     message_id, conversation_id, provider_message_id, role, text,
     sort_key, content_hash, version, parent_message_id, branch_index,
-    provider_name, word_count, has_tool_use, has_thinking, has_paste, message_type
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    provider_name, word_count, has_tool_use, has_thinking, has_paste,
+    input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+    model_name, message_type
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(message_id) DO UPDATE SET
     role = excluded.role,
     text = excluded.text,
@@ -67,6 +69,11 @@ ON CONFLICT(message_id) DO UPDATE SET
     has_tool_use = excluded.has_tool_use,
     has_thinking = excluded.has_thinking,
     has_paste = excluded.has_paste,
+    input_tokens = excluded.input_tokens,
+    output_tokens = excluded.output_tokens,
+    cache_read_tokens = excluded.cache_read_tokens,
+    cache_write_tokens = excluded.cache_write_tokens,
+    model_name = excluded.model_name,
     message_type = excluded.message_type
 WHERE
     content_hash != excluded.content_hash
@@ -79,6 +86,11 @@ WHERE
     OR has_tool_use != excluded.has_tool_use
     OR has_thinking != excluded.has_thinking
     OR has_paste != excluded.has_paste
+    OR input_tokens != excluded.input_tokens
+    OR output_tokens != excluded.output_tokens
+    OR cache_read_tokens != excluded.cache_read_tokens
+    OR cache_write_tokens != excluded.cache_write_tokens
+    OR IFNULL(model_name, '') != IFNULL(excluded.model_name, '')
     OR message_type != excluded.message_type
 """
 

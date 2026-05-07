@@ -64,6 +64,11 @@ async def save_messages(
             r.has_tool_use,
             r.has_thinking,
             r.has_paste,
+            r.input_tokens,
+            r.output_tokens,
+            r.cache_read_tokens,
+            r.cache_write_tokens,
+            r.model_name,
             r.message_type.value,
         )
         for r in records
