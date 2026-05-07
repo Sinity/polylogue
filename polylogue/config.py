@@ -263,6 +263,18 @@ class PolylogueConfig:
     def additional_sources(self) -> str:
         return str(self._data.get("additional_sources", ""))
 
+    @property
+    def notification_backend(self) -> str:
+        return str(self._data.get("notification_backend", "log"))
+
+    @property
+    def health_check_interval_s(self) -> int:
+        return int(str(self._data.get("health_check_interval_s", 300)))
+
+    @property
+    def health_check_tiers(self) -> str:
+        return str(self._data.get("health_check_tiers", "fast,medium"))
+
     def get(self, key: str, default: object = None) -> object:
         return self._data.get(key, default)
 
@@ -321,6 +333,9 @@ def load_polylogue_config(
         "force_plain": False,
         "schema_validation": "advisory",
         "additional_sources": "",
+        "notification_backend": "log",
+        "health_check_interval_s": 300,
+        "health_check_tiers": "fast,medium",
     }
 
     # Layer 2: TOML file
@@ -355,6 +370,8 @@ def _merge_toml(cfg: dict[str, object], toml_data: dict[str, object]) -> None:
         "embedding": ("embedding_enabled", "embedding_model", "embedding_dimension", "embedding_max_cost_usd"),
         "hooks": ("hooks_enabled",),
         "logging": ("log_level", "force_plain"),
+        "notifications": ("notification_backend",),
+        "health": ("health_check_interval_s", "health_check_tiers"),
         "sources": ("additional_sources",),
     }
     for section, keys in section_keys.items():
@@ -381,6 +398,9 @@ def _apply_env_overrides(cfg: dict[str, object]) -> None:
         "POLYLOGUE_FORCE_PLAIN": "force_plain",
         "POLYLOGUE_SLOW_QUERY_NOTICE_SECONDS": "slow_query_notice_seconds",
         "POLYLOGUE_SCHEMA_VALIDATION": "schema_validation",
+        "POLYLOGUE_NOTIFICATION_BACKEND": "notification_backend",
+        "POLYLOGUE_HEALTH_CHECK_INTERVAL_S": "health_check_interval_s",
+        "POLYLOGUE_HEALTH_CHECK_TIERS": "health_check_tiers",
     }
     for env_var, cfg_key in env_map.items():
         value = os.environ.get(env_var)
@@ -410,6 +430,8 @@ def format_config_toml(cfg: dict[str, object]) -> str:
     )
     hooks_keys = ("hooks_enabled",)
     logging_keys = ("log_level", "force_plain")
+    notifications_keys = ("notification_backend",)
+    health_keys = ("health_check_interval_s", "health_check_tiers")
 
     for section, keys in [
         ("archive", archive_keys),
@@ -417,6 +439,8 @@ def format_config_toml(cfg: dict[str, object]) -> str:
         ("embedding", embedding_keys),
         ("hooks", hooks_keys),
         ("logging", logging_keys),
+        ("notifications", notifications_keys),
+        ("health", health_keys),
     ]:
         section_data = {k: cfg[k] for k in keys if k in cfg}
         if section_data:
