@@ -2,6 +2,19 @@
 
 Shared by CLI ingest, daemon HTTP, live watcher, and MCP maintenance
 so adapters don't drift into separate write/control semantics.
+
+Entrypoint inventory (which surfaces consume this contract):
+  - Canonical operation: ``ImportOperation`` consumed by daemon HTTP
+    ``_handle_ingest()`` and CLI ``polylogue ingest`` (#883, #902)
+  - Adapter: CLI ``ingest_command`` adapts daemon response through
+    ``ImportOperation.from_dict()``
+  - Low-level library: ``Polylogue.parse_file()`` / ``parse_sources()``
+    are direct pipeline helpers, not scheduling operations
+  - Not yet adapted: MCP maintenance tools (``server_maintenance_tools.py``)
+    still instantiate ``IndexService`` directly — should route through
+    ``ImportOperation(kind=MAINTENANCE)``
+  - Not yet adapted: live watcher cursor/fingerprint updates are not
+    unified through shared helpers — convergence paths may drift
 """
 
 from __future__ import annotations
