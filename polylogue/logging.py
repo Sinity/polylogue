@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from polylogue.config import load_polylogue_config
+
 import logging
 import os
 import sys
@@ -144,7 +146,7 @@ def configure_logging(verbose: bool = False, json_logs: bool = False) -> None:
     if json_logs:
         processors.append(structlog.processors.JSONRenderer())
     else:
-        env_force = os.environ.get("POLYLOGUE_FORCE_PLAIN")
+        env_force = load_polylogue_config().get("force_plain")
         force_plain = bool(env_force and env_force.lower() not in {"0", "false", "no"})
         processors.append(
             structlog.dev.ConsoleRenderer(
