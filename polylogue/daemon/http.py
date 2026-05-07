@@ -540,17 +540,17 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "error": str(exc)})
             return
 
+        from polylogue.operations.import_contracts import ImportOperation
+
         op_id = f"ingest-{source.name}"
         emit_daemon_event("ingest", operation_id=op_id, payload={"path": str(source), "inbox": str(dest)})
-        self._send_json(
-            HTTPStatus.ACCEPTED,
-            {
-                "ok": True,
-                "operation_id": op_id,
-                "path": str(source),
-                "message": "Ingestion scheduled. Check status for progress.",
-            },
+
+        operation = ImportOperation.pending(
+            operation_id=op_id,
+            path=str(source),
+            message="Ingestion scheduled. Check status for progress.",
         )
+        self._send_json(HTTPStatus.ACCEPTED, operation.to_dict())
 
 
 class DaemonAPIHTTPServer(ThreadingHTTPServer):

@@ -7,6 +7,11 @@ from .archive import (
     get_provider_counts,
     list_provider_analytics_insights,
 )
+from .import_contracts import (
+    ImportOperation,
+    RawFailureSample,
+    bounded_failure_samples,
+)
 from .specs import (
     OperationCatalog,
     OperationKind,
@@ -19,11 +24,14 @@ __all__ = [
     "ArchiveDebtInsight",
     "ArchiveOperations",
     "ArchiveStats",
-    "build_declared_operation_catalog",
-    "build_runtime_operation_catalog",
+    "ImportOperation",
     "OperationCatalog",
     "OperationKind",
     "OperationSpec",
+    "RawFailureSample",
+    "bounded_failure_samples",
+    "build_declared_operation_catalog",
+    "build_runtime_operation_catalog",
     "get_provider_counts",
     "list_provider_analytics_insights",
 ]

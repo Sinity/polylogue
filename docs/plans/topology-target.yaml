@@ -1015,6 +1015,10 @@ files:
     loc: 1058
     target: polylogue/operations/archive.py
     owner: stable
+  - path: polylogue/operations/import_contracts.py
+    loc: 135
+    target: polylogue/operations/import_contracts.py
+    owner: stable
   - path: polylogue/operations/specs.py
     loc: 706
     target: polylogue/operations/specs.py
