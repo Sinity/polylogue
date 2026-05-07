@@ -357,4 +357,36 @@ Tracked in [#864](https://github.com/Sinity/polylogue/issues/864) (shrink after 
 | `work_threads.payload_json` (legacy single payload) | Legacy, intentional | None (revisit if thread search needs split) |
 | `day_session_summaries.payload_json` (legacy single payload) | Legacy, intentional | None (revisit if day search needs split) |
 | Mapper/tuple/DDL repetition (table descriptor) | Decision deferred | This issue (#840) |
+
+## Provider-Meta Allowlist (#864)
+
+After schema v10 promotion, the following classification applies to all `provider_meta` keys:
+
+### Promoted to canonical columns
+| Key | Canonical column | Status |
+|-----|-----------------|--------|
+| `source` | `conversations.source_name` | ✓ Populated during materialization (#884, #909) |
+| `working_directories` | `conversations.working_directories_json` | ✓ Populated + backfill migration (#909, #925) |
+| `cwd` | `conversations.working_directories_json` | ✓ Populated (single-element array) |
+| `gitBranch` | `conversations.git_branch` | ✓ Column exists, needs backfill |
+| `git.repository_url` | `conversations.git_repository_url` | ✓ Column exists, needs backfill |
+| `git.branch` | `conversations.git_branch` | ✓ Column exists, needs backfill |
+| `id` (attachments) | `attachments.provider_attachment_id` | ✓ Populated during materialization |
+| `provider_id` (attachments) | `attachments.provider_file_id` | ✓ Populated during materialization |
+| `fileId` (attachments) | `attachments.provider_file_id` | ✓ Populated during materialization |
+| `driveId` (attachments) | `attachments.provider_drive_id` | ✓ Populated during materialization |
+
+### Retained as provider-specific (OK in provider_meta)
+- `display_label`, `instructions`, `is_archived`, `title_source`, `gizmo_id`, `gizmo_type`
+- `moderation`, `safe_urls`, `blocked_urls`, `internal_status_flags`
+- Browser capture `session`/`capture` metadata
+- `polylogue_tail_overlay` (internal metadata)
+
+### Raw-only (exist in raw_conversations, not needed in canonical tables)
+- `raw` — full wire payload, preserved in raw_conversations + blob store
+
+### Deferred to owning issues
+- Model/token/cost/duration → #803
+- ChatGPT message-level metadata → promoted to content_block metadata (#842)
+- Action event cwd/branch/path context → #866 (lineage graph)
 | Full ORM adoption | Rejected | This issue (#840) |
