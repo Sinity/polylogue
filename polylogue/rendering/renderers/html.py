@@ -43,7 +43,7 @@ class HTMLRenderer:
     def __init__(
         self,
         archive_root: Path,
-        repository: ConversationRepository,
+        repository: ConversationRepository | None = None,
         template_path: Path | None = None,
         theme: str = "dark",
     ) -> None:

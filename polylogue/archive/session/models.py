@@ -108,13 +108,13 @@ class SessionProfile:
     thinking_duration_ms: int = 0
     output_duration_ms: int = 0
     tool_duration_ms: int = 0
-    latency_percentiles_ms: dict[str, int] = ()
+    latency_percentiles_ms: dict[str, int] = field(default_factory=dict)
     tool_calls_per_minute: float = 0.0
     timing_provenance: str = "sort_key_estimated"
 
     def __post_init__(self) -> None:
         if not isinstance(self.latency_percentiles_ms, dict):
-            object.__setattr__(self, "latency_percentiles_ms_json", dict(self.latency_percentiles_ms or {}))
+            object.__setattr__(self, "latency_percentiles_ms", dict(self.latency_percentiles_ms or {}))
 
     def to_dict(self) -> SessionProfilePayload:
         return {
@@ -160,7 +160,7 @@ class SessionProfile:
             "thinking_duration_ms": self.thinking_duration_ms,
             "output_duration_ms": self.output_duration_ms,
             "tool_duration_ms": self.tool_duration_ms,
-            "latency_percentiles_ms_json": dict(self.latency_percentiles_ms),
+            "latency_percentiles_ms": dict(self.latency_percentiles_ms),
             "tool_calls_per_minute": self.tool_calls_per_minute,
             "timing_provenance": self.timing_provenance,
         }
@@ -215,8 +215,8 @@ class SessionProfile:
             output_duration_ms=coerce_int(payload.get("output_duration_ms"), 0),
             tool_duration_ms=coerce_int(payload.get("tool_duration_ms"), 0),
             latency_percentiles_ms=(
-                {str(k): coerce_int(v, 0) for k, v in payload.get("latency_percentiles_ms_json", {}).items()}
-                if isinstance(payload.get("latency_percentiles_ms_json"), dict)
+                {str(k): coerce_int(v, 0) for k, v in payload.get("latency_percentiles_ms", {}).items()}
+                if isinstance(payload.get("latency_percentiles_ms"), dict)
                 else {}
             ),
             tool_calls_per_minute=coerce_float(payload.get("tool_calls_per_minute"), 0.0),

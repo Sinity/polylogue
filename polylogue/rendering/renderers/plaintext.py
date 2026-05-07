@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 class PlaintextRenderer:
     """Renders conversations to plain text format."""
 
-    def __init__(self, archive_root: Path, repository: ConversationRepository):
+    def __init__(self, archive_root: Path, repository: ConversationRepository | None = None):
         """Initialize the plaintext renderer.
 
         Args:
