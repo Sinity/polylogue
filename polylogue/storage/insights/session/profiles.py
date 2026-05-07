@@ -38,6 +38,13 @@ from polylogue.storage.runtime import (
 )
 from polylogue.types import ConversationId
 
+import json as _json
+
+
+def _serialize_percentiles(percentiles: dict[str, int]) -> str:
+    return _json.dumps(percentiles, sort_keys=True) if percentiles else "{}"
+
+
 # ---------------------------------------------------------------------------
 # Search-text builders
 # ---------------------------------------------------------------------------
@@ -180,6 +187,12 @@ def profile_evidence_payload(profile: SessionProfile) -> SessionEvidencePayload:
         tags=profile.tags,
         is_continuation=profile.is_continuation,
         parent_id=profile.parent_id,
+        thinking_duration_ms=profile.thinking_duration_ms,
+        output_duration_ms=profile.output_duration_ms,
+        tool_duration_ms=profile.tool_duration_ms,
+        latency_percentiles_ms=dict(profile.latency_percentiles_ms),
+        tool_calls_per_minute=profile.tool_calls_per_minute,
+        timing_provenance=profile.timing_provenance,
     )
 
 
@@ -245,6 +258,12 @@ def build_session_profile_record(
         engaged_duration_ms=profile.engaged_duration_ms,
         wall_duration_ms=profile.wall_duration_ms,
         cost_is_estimated=profile.cost_is_estimated,
+        thinking_duration_ms=profile.thinking_duration_ms,
+        output_duration_ms=profile.output_duration_ms,
+        tool_duration_ms=profile.tool_duration_ms,
+        latency_percentiles_ms_json=_serialize_percentiles(profile.latency_percentiles_ms),
+        tool_calls_per_minute=profile.tool_calls_per_minute,
+        timing_provenance=profile.timing_provenance,
         canonical_session_date=(profile.canonical_session_date.isoformat() if profile.canonical_session_date else None),
         evidence_payload=evidence,
         inference_payload=inference,
@@ -302,6 +321,12 @@ def hydrate_session_profile(record: SessionProfileRecord) -> SessionProfile:
         "timestamp_coverage": record.evidence_payload.timestamp_coverage,
         "is_continuation": record.evidence_payload.is_continuation,
         "parent_id": record.evidence_payload.parent_id,
+        "thinking_duration_ms": record.thinking_duration_ms,
+        "output_duration_ms": record.output_duration_ms,
+        "tool_duration_ms": record.tool_duration_ms,
+        "latency_percentiles_ms": record.evidence_payload.latency_percentiles_ms,
+        "tool_calls_per_minute": record.tool_calls_per_minute,
+        "timing_provenance": record.timing_provenance,
     }
     return SessionProfile.from_dict(merged_payload)
 
