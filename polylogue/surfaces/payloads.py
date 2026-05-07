@@ -232,8 +232,19 @@ class ConversationDetailPayload(ConversationSummaryPayload):
         )
 
 
+class ConversationFlagsPayload(SurfacePayloadModel):
+    """Boolean flags summarizing conversation content characteristics."""
+
+    has_tool_use: bool = False
+    has_thinking: bool = False
+    has_paste: bool = False
+
+
 class ConversationListRowPayload(SurfacePayloadModel):
-    """Conversation row payload used by CLI list, JSON, and YAML surfaces."""
+    """Conversation row payload used by CLI list, JSON, and YAML surfaces.
+
+    Carries the canonical row shape for the web reader contract (#848).
+    """
 
     id: str
     provider: str
@@ -244,6 +255,9 @@ class ConversationListRowPayload(SurfacePayloadModel):
     summary: str | None = None
     words: int | None = None
     tail: TailOverlayPayload | None = None
+    repo: str | None = None
+    cwd_display: str | None = None
+    flags: ConversationFlagsPayload | None = None
 
     @classmethod
     def from_conversation(cls, conversation: Conversation) -> ConversationListRowPayload:
@@ -258,6 +272,9 @@ class ConversationListRowPayload(SurfacePayloadModel):
             summary=conversation.summary,
             words=sum(message.word_count for message in conversation.messages),
             tail=TailOverlayPayload.from_info(tail) if tail is not None else None,
+            repo=_extract_repo(conversation.provider_meta),
+            cwd_display=_extract_cwd(conversation.provider_meta),
+            flags=_build_flags_from_conversation(conversation),
         )
 
     @classmethod
@@ -266,6 +283,10 @@ class ConversationListRowPayload(SurfacePayloadModel):
         summary: ConversationSummary,
         *,
         message_count: int,
+        word_count: int | None = None,
+        flags: ConversationFlagsPayload | None = None,
+        repo: str | None = None,
+        cwd_display: str | None = None,
     ) -> ConversationListRowPayload:
         tail = summary.tail_overlay
         return cls(
@@ -276,7 +297,11 @@ class ConversationListRowPayload(SurfacePayloadModel):
             messages=message_count,
             tags=tuple(summary.tags),
             summary=summary.summary,
+            words=word_count,
             tail=TailOverlayPayload.from_info(tail) if tail is not None else None,
+            repo=repo or _extract_repo(summary.provider_meta),
+            cwd_display=cwd_display or _extract_cwd(summary.provider_meta),
+            flags=flags,
         )
 
     def selected(self, fields: Container[str] | None = None) -> JSONDocument:
@@ -372,8 +397,140 @@ class ConversationNeighborCandidatePayload(SurfacePayloadModel):
         )
 
 
+# ---------------------------------------------------------------------------
+# Shared response envelopes
+# ---------------------------------------------------------------------------
+
+
+class QueryErrorPayload(SurfacePayloadModel):
+    """Shared error payload for daemon HTTP, MCP, and other surfaces.
+
+    Compatible with daemon HTTP's ``{"ok": False, "error": ..., "detail": ...}``
+    shape and MCP's ``MCPErrorPayload``.
+    """
+
+    ok: Literal[False] = False
+    error: str
+    detail: str | None = None
+    field: str | None = None
+
+
+class QueryMissReasonPayload(SurfacePayloadModel):
+    """Shared reason entry explaining why a query produced no results."""
+
+    code: str
+    severity: str
+    summary: str
+    detail: str | None = None
+    count: int | None = None
+
+    @classmethod
+    def from_reason(cls, reason: object) -> QueryMissReasonPayload:
+        return cls(
+            code=getattr(reason, "code", ""),
+            severity=getattr(reason, "severity", ""),
+            summary=getattr(reason, "summary", ""),
+            detail=getattr(reason, "detail", None),
+            count=getattr(reason, "count", None),
+        )
+
+
+class QueryMissDiagnosticsPayload(SurfacePayloadModel):
+    """Shared diagnostics payload for zero-result queries."""
+
+    message: str
+    filters: tuple[str, ...]
+    reasons: tuple[QueryMissReasonPayload, ...]
+    archive_conversation_count: int | None = None
+    raw_conversation_count: int | None = None
+
+    @classmethod
+    def from_diagnostics(cls, diagnostics: object) -> QueryMissDiagnosticsPayload:
+        return cls(
+            message=getattr(diagnostics, "message", ""),
+            filters=tuple(getattr(diagnostics, "filters", ())),
+            reasons=tuple(QueryMissReasonPayload.from_reason(reason) for reason in getattr(diagnostics, "reasons", ())),
+            archive_conversation_count=getattr(diagnostics, "archive_conversation_count", None),
+            raw_conversation_count=getattr(diagnostics, "raw_conversation_count", None),
+        )
+
+
+class ConversationListResponse(SurfacePayloadModel):
+    """Shared response envelope for list and search results.
+
+    All read surfaces (daemon HTTP, MCP, CLI JSON output) adapt this shape.
+    """
+
+    items: tuple[ConversationListRowPayload, ...]
+    total: int
+    limit: int
+    offset: int
+    query_description: list[str] = Field(default_factory=list)
+    diagnostics: QueryMissDiagnosticsPayload | None = None
+
+
+class ConversationDetailResponse(SurfacePayloadModel):
+    """Shared response envelope for a single conversation detail."""
+
+    conversation: ConversationDetailPayload
+
+
+class FacetTimeRange(SurfacePayloadModel):
+    """Time range boundary for facet results."""
+
+    min: str | None = None
+    max: str | None = None
+
+
+class FacetsResponse(SurfacePayloadModel):
+    """Shared facets response envelope with scope semantics."""
+
+    scoped_to_query: bool = False
+    providers: dict[str, int] = Field(default_factory=dict)
+    tags: dict[str, int] = Field(default_factory=dict)
+    repos: dict[str, int] = Field(default_factory=dict)
+    cwd_prefixes: dict[str, int] = Field(default_factory=dict)
+    message_types: dict[str, int] = Field(default_factory=dict)
+    action_types: dict[str, int] = Field(default_factory=dict)
+    has_flags: dict[str, int] = Field(default_factory=dict)
+    time_range: FacetTimeRange | None = None
+    total_conversations: int = 0
+    total_messages: int = 0
+
+
+# ---------------------------------------------------------------------------
+# Payload builder helpers
+# ---------------------------------------------------------------------------
+
+
+def _extract_repo(provider_meta: dict[str, object] | None) -> str | None:
+    if provider_meta is None:
+        return None
+    repo = provider_meta.get("repo") or provider_meta.get("repository") or provider_meta.get("git_repo")
+    return str(repo) if repo else None
+
+
+def _extract_cwd(provider_meta: dict[str, object] | None) -> str | None:
+    if provider_meta is None:
+        return None
+    cwd = provider_meta.get("cwd") or provider_meta.get("working_directory") or provider_meta.get("cwd_display")
+    return str(cwd) if cwd else None
+
+
+def _build_flags_from_conversation(conversation: object) -> ConversationFlagsPayload | None:
+    has_tool = bool(getattr(conversation, "has_tool_use", None))
+    has_thinking = bool(getattr(conversation, "has_thinking", None))
+    has_paste = bool(getattr(conversation, "has_paste", None))
+    if not has_tool and not has_thinking and not has_paste:
+        return None
+    return ConversationFlagsPayload(has_tool_use=has_tool, has_thinking=has_thinking, has_paste=has_paste)
+
+
 __all__ = [
     "ConversationDetailPayload",
+    "ConversationDetailResponse",
+    "ConversationFlagsPayload",
+    "ConversationListResponse",
     "ConversationListRowPayload",
     "ConversationMessagePayload",
     "ConversationNeighborCandidatePayload",
@@ -381,10 +538,15 @@ __all__ = [
     "ConversationSearchHitPayload",
     "ConversationSearchMatchPayload",
     "ConversationSummaryPayload",
+    "FacetTimeRange",
+    "FacetsResponse",
     "MachineErrorPayload",
     "MachineErrorEnvelope",
     "MachineSuccessEnvelope",
     "MachineSuccessPayload",
+    "QueryErrorPayload",
+    "QueryMissDiagnosticsPayload",
+    "QueryMissReasonPayload",
     "SurfacePayloadModel",
     "TailOverlayPayload",
     "JSONDocument",
