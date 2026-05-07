@@ -139,6 +139,7 @@ class DaemonStatus(BaseModel):
     raw_validation_failures: int = 0
     raw_quarantined: int = 0
     raw_failure_samples: list[dict[str, object]] = Field(default_factory=list)
+    raw_detection_warnings: int = 0
     health: DaemonHealth = Field(default_factory=DaemonHealth)
     checked_at: str = ""
 
@@ -287,7 +288,7 @@ def _raw_failure_info() -> dict[str, object]:
                 ).fetchall()
             }
             if "raw_conversations" not in tables:
-                return {"parse_failures": 0, "validation_failures": 0, "quarantined": 0, "samples": []}
+                return {"parse_failures": 0, "validation_failures": 0, "quarantined": 0, "detection_warnings": 0, "samples": []}
 
             parse_fail = int(
                 conn.execute("SELECT COUNT(*) FROM raw_conversations WHERE parse_error IS NOT NULL").fetchone()[0] or 0
@@ -302,6 +303,16 @@ def _raw_failure_info() -> dict[str, object]:
                 ).fetchone()[0]
                 or 0
             )
+            detection_warnings_count = 0
+            try:
+                detection_warnings_count = int(
+                    conn.execute(
+                        "SELECT COUNT(*) FROM raw_conversations WHERE detection_warnings IS NOT NULL"
+                    ).fetchone()[0]
+                    or 0
+                )
+            except sqlite3.OperationalError:
+                pass  # Column may not exist yet (pre-migration)
             # Bounded failure samples (most recent 50)
             samples: list[dict[str, object]] = []
             for row in conn.execute(
@@ -326,10 +337,11 @@ def _raw_failure_info() -> dict[str, object]:
             "parse_failures": parse_fail,
             "validation_failures": validation_fail,
             "quarantined": quarantined,
+            "detection_warnings": detection_warnings_count,
             "samples": samples,
         }
     except sqlite3.Error:
-        return {"parse_failures": 0, "validation_failures": 0, "quarantined": 0, "samples": []}
+        return {"parse_failures": 0, "validation_failures": 0, "quarantined": 0, "detection_warnings": 0, "samples": []}
 
 
 def _safe_list_of_dicts(value: object) -> list[dict[str, object]]:
@@ -651,6 +663,7 @@ def build_daemon_status(
         raw_validation_failures=_safe_int(raw_failures.get("validation_failures", 0)),
         raw_quarantined=_safe_int(raw_failures.get("quarantined", 0)),
         raw_failure_samples=_safe_list_of_dicts(raw_failures.get("samples")),
+        raw_detection_warnings=_safe_int(raw_failures.get("detection_warnings", 0)),
         daemon_liveness=_check_daemon_liveness(),
         component_state=ComponentState(
             watcher="running" if watch_sources else "stopped",

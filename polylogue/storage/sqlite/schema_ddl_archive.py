@@ -20,7 +20,8 @@ RAW_ARCHIVE_DDL = """
             validation_error TEXT,
             validation_drift_count INTEGER DEFAULT 0,
             validation_provider TEXT,
-            validation_mode TEXT
+            validation_mode TEXT,
+            detection_warnings TEXT
         );
 
         CREATE INDEX IF NOT EXISTS idx_raw_conv_provider
