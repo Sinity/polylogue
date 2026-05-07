@@ -1,8 +1,13 @@
 """Render docs/topology-status.md — the structural-cohesion drift dashboard.
 
-Reads ``docs/plans/topology-target.yaml`` and the realized polylogue tree.
-Emits a checked-in markdown table that shows placement-domain progress.
+Gate classification: **generated-doc freshness check**. Reads
+``docs/plans/topology-target.yaml`` and the realized polylogue tree
+and emits a checked-in markdown table that shows placement-domain progress.
 Drift fails ``devtools render-all --check``.
+
+This is a navigation/advisory artifact, not a blocking architectural gate.
+The underlying structural contracts are enforced by ``verify-topology``
+(orphans, missing, kernel-rule) and ``verify-layering`` (import-boundary).
 """
 
 from __future__ import annotations
