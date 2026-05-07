@@ -224,6 +224,16 @@ MAINTENANCE_TARGET_SPECS: tuple[MaintenanceTargetSpec, ...] = (
         include_in_archive_readiness=True,
         archive_readiness_unready_status=OutcomeStatus.ERROR,
     ),
+    MaintenanceTargetSpec(
+        name="orphaned_blobs",
+        mode=MaintenanceTargetMode.CLEANUP,
+        category=MaintenanceCategory.ARCHIVE_CLEANUP,
+        destructive=True,
+        description="Delete content-addressed blob files that are no longer referenced in the archive.",
+        include_in_archive_readiness=True,
+        archive_readiness_unready_status=OutcomeStatus.WARNING,
+        archive_readiness_requires_deep=True,
+    ),
 )
 
 

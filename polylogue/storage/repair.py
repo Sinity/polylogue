@@ -468,6 +468,12 @@ def collect_archive_debt_statuses_sync(
             if orphaned_content_blocks == 0
             else f"{orphaned_content_blocks:,} orphaned content blocks",
         )
+        orphaned_blobs = count_orphaned_blobs_sync(conn)
+        debt_statuses["orphaned_blobs"] = _archive_debt_status(
+            "orphaned_blobs",
+            issue_count=orphaned_blobs,
+            detail="No orphaned blobs" if orphaned_blobs == 0 else f"{orphaned_blobs:,} orphaned blob files on disk",
+        )
     return debt_statuses
 
 
@@ -637,6 +643,92 @@ def preview_orphaned_content_blocks(*, count: int) -> RepairResult:
         repaired_count=count,
         success=True,
         detail=f"Would: {count} rows affected" if count else "Would: No issues found",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Blob cleanup
+# ---------------------------------------------------------------------------
+
+
+def count_orphaned_blobs_sync(conn: sqlite3.Connection) -> int:
+    """Count blob files on disk that have no DB reference.
+
+    This is a filesystem-intensive operation — it walks the blob store
+    directory and compares against ``raw_conversations.raw_id``.  Call
+    only when ``include_expensive`` or ``--deep`` is requested.
+    """
+    from polylogue.storage.blob_store import get_blob_store
+
+    db_raw_ids: set[str] = set()
+    for row in conn.execute("SELECT raw_id FROM raw_conversations"):
+        db_raw_ids.add(row[0])
+    blob_store = get_blob_store()
+    result = blob_store.detect_orphans(db_raw_ids)
+    return result.orphan_count
+
+
+def repair_orphaned_blobs(config: Config, dry_run: bool = False) -> RepairResult:
+    """Delete blob files that are no longer referenced in the archive.
+
+    Dry-run (default via --preview) reports what would be deleted without
+    touching the filesystem.  The live path deletes blobs one at a time
+    and reports the aggregate result.
+    """
+    from polylogue.storage.blob_store import get_blob_store
+    from polylogue.storage.sqlite.connection import connection_context
+
+    blob_store = get_blob_store()
+    db_raw_ids: set[str] = set()
+    with connection_context(None) as conn:
+        for row in conn.execute("SELECT raw_id FROM raw_conversations"):
+            db_raw_ids.add(row[0])
+
+    detect_result = blob_store.detect_orphans(db_raw_ids)
+    if detect_result.orphan_count == 0:
+        return _repair_result(
+            "orphaned_blobs",
+            repaired_count=0,
+            success=True,
+            detail="No orphaned blobs found",
+        )
+
+    orphan_hashes = set(detect_result.orphan_samples)
+    # For the real cleanup we need all orphans, not just the sample.
+    # Re-walk to build the full set.
+    if not dry_run:
+        orphan_hashes = {h for h in blob_store.iter_all() if h not in db_raw_ids}
+
+    cleanup_result = blob_store.cleanup_orphans(orphan_hashes, dry_run=dry_run)
+
+    if dry_run:
+        return _repair_result(
+            "orphaned_blobs",
+            repaired_count=cleanup_result.would_delete_count,
+            success=True,
+            detail=(
+                f"Would: delete {cleanup_result.would_delete_count} orphaned blobs "
+                f"({cleanup_result.would_delete_bytes:,} bytes)"
+            ),
+        )
+    return _repair_result(
+        "orphaned_blobs",
+        repaired_count=cleanup_result.deleted_count,
+        success=cleanup_result.errors == 0,
+        detail=(
+            f"Deleted {cleanup_result.deleted_count} orphaned blobs "
+            f"({cleanup_result.deleted_bytes:,} bytes)"
+            + (f" with {cleanup_result.errors} errors" if cleanup_result.errors else "")
+        ),
+    )
+
+
+def preview_orphaned_blobs(*, count: int) -> RepairResult:
+    return _repair_result(
+        "orphaned_blobs",
+        repaired_count=count,
+        success=True,
+        detail=f"Would: delete {count} orphaned blobs" if count else "Would: No orphaned blobs found",
     )
 
 
@@ -944,6 +1036,7 @@ _PREVIEW_HANDLERS: dict[str, Callable[..., RepairResult]] = {
     "orphaned_content_blocks": preview_orphaned_content_blocks,
     "empty_conversations": preview_empty_conversations,
     "orphaned_attachments": preview_orphaned_attachments,
+    "orphaned_blobs": preview_orphaned_blobs,
 }
 
 _REPAIR_HANDLERS: dict[str, Callable[..., RepairResult]] = {
@@ -955,6 +1048,7 @@ _REPAIR_HANDLERS: dict[str, Callable[..., RepairResult]] = {
     "orphaned_content_blocks": repair_orphaned_content_blocks,
     "empty_conversations": repair_empty_conversations,
     "orphaned_attachments": repair_orphaned_attachments,
+    "orphaned_blobs": repair_orphaned_blobs,
 }
 
 
@@ -1057,6 +1151,7 @@ __all__ = [
     "collect_archive_debt_statuses_sync",
     "count_empty_conversations_sync",
     "count_orphaned_attachments_sync",
+    "count_orphaned_blobs_sync",
     "count_orphaned_content_blocks_sync",
     "count_orphaned_messages_sync",
     "dangling_fts_repair_count",
@@ -1065,6 +1160,7 @@ __all__ = [
     "preview_dangling_fts",
     "preview_empty_conversations",
     "preview_orphaned_attachments",
+    "preview_orphaned_blobs",
     "preview_orphaned_content_blocks",
     "preview_orphaned_messages",
     "preview_session_insights",
@@ -1072,6 +1168,7 @@ __all__ = [
     "repair_dangling_fts",
     "repair_empty_conversations",
     "repair_orphaned_attachments",
+    "repair_orphaned_blobs",
     "repair_orphaned_content_blocks",
     "repair_orphaned_messages",
     "repair_session_insights",

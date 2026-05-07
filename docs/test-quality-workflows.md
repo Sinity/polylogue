@@ -35,7 +35,7 @@ Current registry snapshot:
 - uncovered runtime paths: —
 - uncovered runtime artifacts: —
 - uncovered runtime operations: —
-- uncovered maintenance targets: `empty_conversations`, `orphaned_attachments`, `orphaned_content_blocks`, `orphaned_messages`, `wal_checkpoint`
+- uncovered maintenance targets: `empty_conversations`, `orphaned_attachments`, `orphaned_blobs`, `orphaned_content_blocks`, `orphaned_messages`, `wal_checkpoint`
 - uncovered declared operation targets: —
 
 Inspect the full authored map with:

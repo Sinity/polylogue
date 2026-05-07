@@ -56,3 +56,7 @@ exceptions:
   - path: tests/unit/cli/test_query_exec.py
     ceiling: 1300
     reason: "tracked split into routing/execution/output suites"
+
+  - path: polylogue/storage/repair.py
+    ceiling: 1200
+    reason: "added blob orphan detection, cleanup, and integrity verification (#818)"
