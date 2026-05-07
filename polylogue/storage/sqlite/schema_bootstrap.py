@@ -82,6 +82,7 @@ class SchemaBootstrapDecision:
         "upgrade_v7_to_v8",
         "upgrade_v8_to_v9",
         "upgrade_v9_to_v10",
+        "upgrade_v10_to_v11",
         "version_mismatch",
     ]
     extension_plan: SchemaExtensionPlan | None = None
@@ -957,6 +958,22 @@ def build_v9_to_v10_upgrade_plan(snapshot: SchemaSnapshot) -> SchemaExtensionPla
     return SchemaExtensionPlan(statements=tuple(statements), scripts=())
 
 
+def build_v10_to_v11_upgrade_plan(snapshot: SchemaSnapshot) -> SchemaExtensionPlan:
+    """Add user_marks, saved_views, and recall_packs tables."""
+    assert_supported_archive_layout_snapshot(snapshot)
+
+    from polylogue.storage.sqlite.schema_ddl_archive import (
+        RECALL_PACKS_DDL,
+        SAVED_VIEWS_DDL,
+        USER_MARKS_DDL,
+    )
+
+    return SchemaExtensionPlan(
+        statements=_split_ddl_into_statements(USER_MARKS_DDL, SAVED_VIEWS_DDL, RECALL_PACKS_DDL),
+        scripts=(),
+    )
+
+
 _DETECTION_WARNINGS_COLUMN_DDL = "ALTER TABLE raw_conversations ADD COLUMN detection_warnings TEXT"
 
 
@@ -979,6 +996,8 @@ def _upgrade_tail_statements(snapshot: SchemaSnapshot, *, from_version: int) -> 
         statements = (*statements, *build_v8_to_v9_upgrade_plan(snapshot).statements)
     if from_version < 10 <= SCHEMA_VERSION:
         statements = (*statements, *build_v9_to_v10_upgrade_plan(snapshot).statements)
+    if from_version < 11 <= SCHEMA_VERSION:
+        statements = (*statements, *build_v10_to_v11_upgrade_plan(snapshot).statements)
     return statements
 
 
@@ -1056,6 +1075,20 @@ def decide_schema_bootstrap(snapshot: SchemaSnapshot) -> SchemaBootstrapDecision
         return SchemaBootstrapDecision(
             action="upgrade_v8_to_v9",
             extension_plan=build_v8_to_v9_upgrade_plan(snapshot),
+            current_version=snapshot.current_version,
+        )
+
+    if snapshot.current_version == 9 and SCHEMA_VERSION >= 10:
+        return SchemaBootstrapDecision(
+            action="upgrade_v9_to_v10",
+            extension_plan=build_v9_to_v10_upgrade_plan(snapshot),
+            current_version=snapshot.current_version,
+        )
+
+    if snapshot.current_version == 10 and SCHEMA_VERSION >= 11:
+        return SchemaBootstrapDecision(
+            action="upgrade_v10_to_v11",
+            extension_plan=build_v10_to_v11_upgrade_plan(snapshot),
             current_version=snapshot.current_version,
         )
 
@@ -1184,6 +1217,7 @@ __all__ = [
     "build_v3_to_v4_upgrade_plan",
     "build_v7_to_v8_upgrade_plan",
     "build_v8_to_v9_upgrade_plan",
+    "build_v10_to_v11_upgrade_plan",
     "capture_schema_snapshot",
     "capture_schema_snapshot_async",
     "decide_schema_bootstrap",
