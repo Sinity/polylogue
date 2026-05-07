@@ -319,7 +319,9 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         if not self._check_auth():
             return
 
-        if path == ["api", "health"]:
+        if path == ["api", "health", "check"]:
+            self._handle_health_check()
+        elif path == ["api", "health"]:
             self._handle_health()
         elif path == ["api", "status"]:
             self._handle_status()
@@ -395,6 +397,30 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
     # ------------------------------------------------------------------
 
     @daemon_safe_handler
+    def _handle_health_check(self) -> None:
+        """CI-facing health check with deterministic exit semantics.
+
+        Returns 200 when all FAST health checks pass, 503 when any
+        non-OK health alert is present.  Suitable for health check
+        endpoints in Docker, systemd, and CI pipelines.
+        """
+        try:
+            from polylogue.daemon.health import HealthTier, check_health
+
+            health = check_health(tiers={HealthTier.FAST, HealthTier.MEDIUM})
+            if health.overall_status == "ok":
+                self._send_json(HTTPStatus.OK, {"ok": True, "status": "healthy"})
+            else:
+                self._send_json(
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    {"ok": False, "status": health.overall_status, "alerts": len(health.alerts)},
+                )
+        except Exception:
+            self._send_json(
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                {"ok": False, "status": "error", "detail": "health check failed"},
+            )
+
     def _handle_health(self) -> None:
         dbp = db_path()
         db_size = dbp.stat().st_size if dbp.exists() else 0

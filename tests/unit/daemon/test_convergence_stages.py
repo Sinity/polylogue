@@ -266,3 +266,39 @@ def test_insights_stage_batches_sync_rebuild_chunks(
     assert stage.execute_many is not None
     assert stage.execute_many([tmp_path / "a.jsonl", tmp_path / "b.jsonl"]) is True
     assert rebuild_calls == [(["conv-a", "conv-b"], 10)]
+
+
+def test_embedding_config_enabled_with_key() -> None:
+    """Embedding is enabled when config has both enabled flag and API key."""
+    from unittest.mock import patch
+
+    with patch("polylogue.daemon.convergence_stages.load_polylogue_config") as mock_cfg:
+        mock_cfg.return_value.embedding_enabled = True
+        mock_cfg.return_value.voyage_api_key = "test-key"
+        from polylogue.daemon.convergence_stages import _embedding_config_enabled
+
+        assert _embedding_config_enabled() is True
+
+
+def test_embedding_config_disabled_without_key() -> None:
+    """Embedding is disabled when config has enabled flag but no API key."""
+    from unittest.mock import patch
+
+    with patch("polylogue.daemon.convergence_stages.load_polylogue_config") as mock_cfg:
+        mock_cfg.return_value.embedding_enabled = True
+        mock_cfg.return_value.voyage_api_key = None
+        from polylogue.daemon.convergence_stages import _embedding_config_enabled
+
+        assert _embedding_config_enabled() is False
+
+
+def test_embedding_config_disabled_explicitly() -> None:
+    """Embedding is disabled when config has key but enabled flag is False."""
+    from unittest.mock import patch
+
+    with patch("polylogue.daemon.convergence_stages.load_polylogue_config") as mock_cfg:
+        mock_cfg.return_value.embedding_enabled = False
+        mock_cfg.return_value.voyage_api_key = "test-key"
+        from polylogue.daemon.convergence_stages import _embedding_config_enabled
+
+        assert _embedding_config_enabled() is False
