@@ -143,6 +143,14 @@ if TYPE_CHECKING:
 
         async def get_conversation_stats(self, conversation_id: str) -> dict[str, int]: ...
 
+        async def get_raw_artifacts_for_conversation(
+            self,
+            conversation_id: str,
+            *,
+            limit: int = 50,
+            offset: int = 0,
+        ) -> tuple[list[object], int]: ...
+
 
 class ConversationNotFoundError(PolylogueError):
     """Raised when a requested conversation does not exist in the archive."""
@@ -311,31 +319,32 @@ class PolylogueArchiveMixin:
         limit: int = 50,
         offset: int = 0,
     ) -> tuple[list[dict[str, object]], int]:
-        """Return paginated raw archive artifact rows for a conversation."""
-        from polylogue.storage.sqlite.queries.raw import get_raw_records_for_conversation as _raw_query
+        """Return paginated raw archive artifact rows for a conversation.
 
-        summary = await self.operations.get_conversation_summary(conversation_id)
-        if summary is None:
-            return [], 0
-        full_id = str(summary.id)
-
-        async with self.repository._backend.connection() as conn:
-            records, total = await _raw_query(conn, full_id, limit=limit, offset=offset)
-            result = []
-            for r in records:
-                result.append(
-                    {
-                        "raw_id": getattr(r, "raw_id", ""),
-                        "provider_name": getattr(r, "provider_name", ""),
-                        "source_path": getattr(r, "source_path", ""),
-                        "source_name": getattr(r, "source_name", None),
-                        "blob_size": getattr(r, "blob_size", 0),
-                        "acquired_at": getattr(r, "acquired_at", None),
-                        "parsed_at": getattr(r, "parsed_at", None),
-                        "validation_status": getattr(r, "validation_status", None),
-                    }
-                )
-            return result, total
+        Delegates to
+        ``ArchiveOperations.get_raw_artifacts_for_conversation()``
+        rather than accessing the private ``_backend`` connection directly.
+        """
+        records, total = await self.operations.get_raw_artifacts_for_conversation(
+            conversation_id,
+            limit=limit,
+            offset=offset,
+        )
+        result: list[dict[str, object]] = []
+        for r in records:
+            result.append(
+                {
+                    "raw_id": getattr(r, "raw_id", ""),
+                    "provider_name": getattr(r, "provider_name", ""),
+                    "source_path": getattr(r, "source_path", ""),
+                    "source_name": getattr(r, "source_name", None),
+                    "blob_size": getattr(r, "blob_size", 0),
+                    "acquired_at": getattr(r, "acquired_at", None),
+                    "parsed_at": getattr(r, "parsed_at", None),
+                    "validation_status": getattr(r, "validation_status", None),
+                }
+            )
+        return result, total
 
     async def query_conversations(
         self,

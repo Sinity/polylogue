@@ -1,18 +1,20 @@
 from __future__ import annotations
 
-import sqlite3
-
 from textual.app import ComposeResult
 from textual.containers import Container, Horizontal, Vertical
 from textual.widgets import DataTable, Input
 from textual.widgets import Markdown as MarkdownWidget
 
-from polylogue.errors import DatabaseError
 from polylogue.ui.tui.screens.base import RepositoryBoundContainer
 
 
 class Search(RepositoryBoundContainer):
-    """Search widget for finding conversations."""
+    """Search widget for finding conversations.
+
+    Routes through ``ArchiveOperations.search()`` which applies the
+    canonical query pipeline (FTS5, filters, result mapping) instead of
+    calling the repository's ``search_summaries`` directly.
+    """
 
     def compose(self) -> ComposeResult:
         with Vertical():
@@ -33,28 +35,29 @@ class Search(RepositoryBoundContainer):
         if not query:
             return
 
-        repo = self._get_repo("Search")
+        ops = self._get_ops("Search")
 
-        # Perform search
         table = self.query_one("#search-results", DataTable)
         table.clear()
 
         try:
-            summaries = await repo.search_summaries(query, limit=50)
-        except (sqlite3.OperationalError, DatabaseError) as exc:
-            if "no such table" in str(exc) or "Search index not built" in str(exc):
-                table.add_row("—", "—", "Search index not built. Start: polylogued run", "")
-            else:
-                table.add_row("—", "—", f"Search error: {exc}", "")
+            result = await ops.search(query, limit=50)
+        except Exception:
+            table.add_row(
+                "—",
+                "—",
+                "Search not ready: polylogued may need to build indexes",
+                "",
+            )
             return
 
-        for s in summaries:
+        for hit in result.hits:
             table.add_row(
-                s.id,
-                s.provider,
-                s.title or "Untitled",
-                str(s.created_at) if s.created_at else "",
-                key=s.id,  # Store ID as row key for selection
+                hit.conversation_id,
+                hit.provider_name,
+                hit.title or "Untitled",
+                str(hit.timestamp) if hit.timestamp else "",
+                key=hit.conversation_id,
             )
 
     async def on_data_table_row_selected(self, message: DataTable.RowSelected) -> None:
