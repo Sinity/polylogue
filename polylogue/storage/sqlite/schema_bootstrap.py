@@ -909,6 +909,21 @@ CREATE INDEX IF NOT EXISTS idx_attachment_refs_provider_drive_id
 ON attachment_refs(provider_drive_id);
 """
 
+_PROVIDER_META_BACKFILL_SOURCE_NAME = """
+UPDATE conversations SET source_name = COALESCE(json_extract(provider_meta, '$.source'), '')
+WHERE source_name = '' AND provider_meta IS NOT NULL
+"""
+
+_PROVIDER_META_BACKFILL_WORKING_DIRS = """
+UPDATE conversations SET working_directories_json = (
+    SELECT json_group_array(value) FROM json_each(
+        COALESCE(json_extract(provider_meta, '$.working_directories'), '[]')
+    )
+    WHERE json_extract(provider_meta, '$.working_directories') IS NOT NULL
+)
+WHERE working_directories_json IS NULL AND provider_meta IS NOT NULL
+"""
+
 
 def build_v9_to_v10_upgrade_plan(snapshot: SchemaSnapshot) -> SchemaExtensionPlan:
     """Promote provider-meta fields to canonical columns (#864)."""
