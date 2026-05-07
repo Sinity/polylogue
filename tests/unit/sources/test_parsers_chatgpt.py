@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable, Mapping, Sequence
+from pathlib import Path
 from typing import TypeAlias
 
 import pytest
@@ -403,3 +404,171 @@ def test_chatgpt_parse_synthetic_branching() -> None:
 
     assert result.provider_name == "chatgpt"
     assert len(result.messages) > 10  # Multiple messages like branching conversations
+
+
+# -----------------------------------------------------------------------------
+# METADATA ROUNDTRIP: parser → materialization → hydration
+# -----------------------------------------------------------------------------
+
+
+def test_chatgpt_metadata_roundtrip_parser_to_hydration(tmp_path: Path) -> None:
+    """ChatGPT message metadata survives parser → materialization → hydration.
+
+    Proves that ChatGPT message-level metadata (model, author_name, recipient,
+    status, end_turn, citations, code_execution, user_context) reaches hydrated
+    Message.content_blocks[].metadata without depending on
+    Message.provider_meta.raw.
+    """
+    from polylogue.pipeline.materialization_runtime import materialize_conversation
+    from polylogue.storage.hydrators import message_from_record
+    from polylogue.storage.runtime import ContentBlockRecord, MessageRecord
+
+    # Build a ChatGPT mapping payload with rich message-level metadata.
+    payload: dict[str, object] = {
+        "title": "Metadata Roundtrip Test",
+        "id": "conv-roundtrip-001",
+        "mapping": {
+            "node1": {
+                "id": "node1",
+                "message": {
+                    "id": "msg-1",
+                    "author": {"role": "assistant", "name": "dalle"},
+                    "content": {"parts": ["Generated an image of a cat"], "content_type": "text"},
+                    "create_time": 1717430400.0,
+                    "recipient": "dalle.text2im",
+                    "status": "finished_successfully",
+                    "end_turn": True,
+                    "metadata": {
+                        "model_slug": "gpt-4",
+                        "citations": [{"title": "Example", "url": "https://example.com"}],
+                        "aggregate_result": {"exit_code": 0, "output": "hello world"},
+                        "user_context_message_data": {"about_user_message": "I like cats"},
+                    },
+                },
+            },
+            "node2": {
+                "id": "node2",
+                "message": {
+                    "id": "msg-2",
+                    "author": {"role": "user"},
+                    "content": {"parts": ["Show me a cat"], "content_type": "text"},
+                    "create_time": 1717430300.0,
+                    "metadata": {
+                        "model_slug": "gpt-4",
+                    },
+                },
+                "parent": "node1",
+            },
+        },
+    }
+
+    # --- Stage 1: Parse ---
+    parsed = chatgpt_parse(payload, "roundtrip-test")
+    assert parsed.provider_name == "chatgpt"
+
+    # The assistant message should have content_blocks with chatgpt_ metadata.
+    assistant_msg = next(m for m in parsed.messages if m.role == "assistant")
+    assert len(assistant_msg.content_blocks) >= 1
+    block_meta = assistant_msg.content_blocks[0].metadata
+    assert block_meta is not None, "content_block metadata should be set"
+    assert block_meta.get("chatgpt_model") == "gpt-4"
+    assert block_meta.get("chatgpt_author_name") == "dalle"
+    assert block_meta.get("chatgpt_recipient") == "dalle.text2im"
+    assert block_meta.get("chatgpt_status") == "finished_successfully"
+    assert block_meta.get("chatgpt_end_turn") is True
+    assert isinstance(block_meta.get("chatgpt_citations"), list)
+    assert isinstance(block_meta.get("chatgpt_code_execution"), dict)
+    assert isinstance(block_meta.get("chatgpt_user_context"), dict)
+
+    # The user message should also have model metadata.
+    user_msg = next(m for m in parsed.messages if m.role == "user")
+    assert len(user_msg.content_blocks) >= 1
+    user_block_meta = user_msg.content_blocks[0].metadata
+    assert user_block_meta is not None
+    assert user_block_meta.get("chatgpt_model") == "gpt-4"
+    # User message should NOT have tool-specific metadata.
+    assert "chatgpt_author_name" not in user_block_meta
+    assert "chatgpt_recipient" not in user_block_meta
+
+    # --- Stage 2: Materialize ---
+    materialized = materialize_conversation(
+        parsed,
+        source_name="test",
+        archive_root=tmp_path,
+    )
+    assert len(materialized.messages) >= 2
+
+    # Find the materialized assistant message and verify metadata_json.
+    mat_assistant = next(m for m in materialized.messages if m.role == "assistant")
+    assert len(mat_assistant.blocks) >= 1
+    import json as _json
+
+    assistant_meta_json = mat_assistant.blocks[0].metadata_json
+    assert assistant_meta_json is not None, "metadata_json should survive materialization"
+    assistant_meta = _json.loads(assistant_meta_json)
+    assert assistant_meta.get("chatgpt_model") == "gpt-4"
+    assert assistant_meta.get("chatgpt_author_name") == "dalle"
+    assert assistant_meta.get("chatgpt_recipient") == "dalle.text2im"
+    assert assistant_meta.get("chatgpt_status") == "finished_successfully"
+    assert assistant_meta.get("chatgpt_end_turn") is True
+    assert isinstance(assistant_meta.get("chatgpt_citations"), list)
+    assert isinstance(assistant_meta.get("chatgpt_code_execution"), dict)
+    assert isinstance(assistant_meta.get("chatgpt_user_context"), dict)
+
+    # --- Stage 3: Hydrate ---
+    # Simulate the storage→hydration path by constructing records from
+    # materialized output.
+    content_block_records = [
+        ContentBlockRecord(
+            block_id=b.block_id,
+            message_id=mat_assistant.message_id,
+            conversation_id=materialized.conversation_id,
+            block_index=b.block_index,
+            type=b.type,
+            text=b.text,
+            tool_name=b.tool_name,
+            tool_id=b.tool_id,
+            tool_input=b.tool_input_json,
+            media_type=b.media_type,
+            metadata=b.metadata_json,
+            semantic_type=b.semantic_type,
+        )
+        for b in mat_assistant.blocks
+    ]
+    record = MessageRecord(
+        message_id=mat_assistant.message_id,
+        conversation_id=materialized.conversation_id,
+        provider_message_id=mat_assistant.provider_message_id,
+        role=mat_assistant.role,
+        text=mat_assistant.text,
+        sort_key=mat_assistant.sort_key,
+        content_hash=mat_assistant.content_hash,
+        parent_message_id=mat_assistant.parent_message_id,
+        branch_index=mat_assistant.branch_index,
+        content_blocks=content_block_records,
+        provider_name="chatgpt",
+        word_count=mat_assistant.word_count,
+        has_tool_use=mat_assistant.has_tool_use,
+        has_thinking=mat_assistant.has_thinking,
+        has_paste=mat_assistant.has_paste,
+        message_type=mat_assistant.message_type,
+    )
+    hydrated = message_from_record(record, attachments=[], provider="chatgpt")
+
+    # Hydrated Message.provider_meta should be None (canonical storage contract).
+    assert hydrated.provider_meta is None, (
+        "Hydrated messages must not depend on provider_meta.raw; metadata is in content_blocks"
+    )
+
+    # Metadata should be accessible via content_blocks.
+    assert len(hydrated.content_blocks) >= 1
+    hydrated_meta = hydrated.content_blocks[0].get("metadata")
+    assert isinstance(hydrated_meta, dict), f"Expected dict, got {type(hydrated_meta)}"
+    assert hydrated_meta.get("chatgpt_model") == "gpt-4"
+    assert hydrated_meta.get("chatgpt_author_name") == "dalle"
+    assert hydrated_meta.get("chatgpt_recipient") == "dalle.text2im"
+    assert hydrated_meta.get("chatgpt_status") == "finished_successfully"
+    assert hydrated_meta.get("chatgpt_end_turn") is True
+    assert isinstance(hydrated_meta.get("chatgpt_citations"), list)
+    assert isinstance(hydrated_meta.get("chatgpt_code_execution"), dict)
+    assert isinstance(hydrated_meta.get("chatgpt_user_context"), dict)
