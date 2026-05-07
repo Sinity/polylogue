@@ -142,6 +142,13 @@ class MessageRuntimeMixin:
             return None
 
     def _is_chatgpt_thinking(self) -> bool:
+        """ChatGPT-specific thinking detection via provider_meta.
+
+        PARSER-ONLY compatibility path. After hydration, provider_meta is
+        None and this always returns False. Hydrated messages have ChatGPT
+        thinking preserved as THINKING-type content blocks, which
+        ``is_thinking`` checks directly.
+        """
         if self.provider_meta is None:
             return False
         provider_meta = _provider_meta_record(self.provider_meta)
@@ -171,6 +178,9 @@ class MessageRuntimeMixin:
         if any(block.get("type") in {"tool_use", "tool_result"} for block in self.content_blocks):
             return True
 
+        # PARSER-ONLY: provider_meta fallbacks are unreachable for hydrated
+        # messages (provider_meta is None after hydration). They serve
+        # direct parser consumers with provider_meta populated.
         provider_meta = self.provider_meta
         if provider_meta is not None:
             provider_meta_record = _provider_meta_record(provider_meta)
@@ -186,6 +196,12 @@ class MessageRuntimeMixin:
                 return True
 
         if self.role == Role.TOOL:
+            # ChatGPT thinking messages use role=TOOL; avoid misclassifying
+            # them as tool_use. Check canonical content_blocks first
+            # (works for hydrated messages), then fall back to the
+            # parser-only provider_meta heuristic.
+            if any(block.get("type") == "thinking" for block in self.content_blocks):
+                return False
             return not self._is_chatgpt_thinking()
 
         return False
@@ -195,6 +211,9 @@ class MessageRuntimeMixin:
         if any(block.get("type") == "thinking" for block in self.content_blocks):
             return True
 
+        # PARSER-ONLY: these fallbacks read provider_meta which is None for
+        # hydrated messages. The canonical content_blocks check above covers
+        # all hydrated cases.
         provider_meta = self.provider_meta
         if provider_meta is not None:
             provider_meta_record = _provider_meta_record(provider_meta)
@@ -263,6 +282,10 @@ class MessageRuntimeMixin:
 
     @property
     def cost_usd(self) -> float | None:
+        """PARSER-ONLY: reads provider_meta, None for hydrated messages.
+
+        Hydrated-message cost data is provided by #803's typed model.
+        """
         provider_meta = self.provider_meta
         if provider_meta is None:
             return None
@@ -272,6 +295,7 @@ class MessageRuntimeMixin:
 
     @property
     def duration_ms(self) -> int | None:
+        """PARSER-ONLY: reads provider_meta, None for hydrated messages."""
         provider_meta = self.provider_meta
         if provider_meta is None:
             return None
