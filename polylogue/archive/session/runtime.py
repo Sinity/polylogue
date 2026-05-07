@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json as _json
 from dataclasses import replace
 from typing import TYPE_CHECKING
 
@@ -53,12 +54,14 @@ def build_session_profile(
     analysis: SessionAnalysis | None = None,
     compaction_count: int | None = None,
 ) -> SessionProfile:
+    from polylogue.archive.cost.compute import compute_session_cost
     from polylogue.archive.semantic.pricing import harmonize_session_cost
 
     session_analysis = analysis or build_session_analysis(conversation)
     facts = session_analysis.facts
     attribution = session_analysis.attribution
     cost_usd, cost_is_estimated = harmonize_session_cost(conversation)
+    cost_summary = compute_session_cost(conversation)
     resolved_compaction_count = (
         compaction_count
         if compaction_count is not None
@@ -107,6 +110,18 @@ def build_session_profile(
         engaged_duration_ms=engaged_duration_ms,
         wall_duration_ms=facts.wall_duration_ms,
         cost_is_estimated=cost_is_estimated,
+        total_input_tokens=cost_summary.total_input_tokens,
+        total_output_tokens=cost_summary.total_output_tokens,
+        total_cache_read_tokens=cost_summary.total_cache_read_tokens,
+        total_cache_write_tokens=cost_summary.total_cache_write_tokens,
+        total_credit_cost=cost_summary.total_credit_cost,
+        cost_provenance=cost_summary.cost_provenance,
+        per_model_cost_json=_json.dumps(
+            [b.model_dump(mode="json") for b in cost_summary.per_model]
+            if cost_summary.per_model
+            else [],
+            default=str,
+        ),
         compaction_count=resolved_compaction_count,
         tags=tuple(conversation.tags),
         is_continuation=conversation.is_continuation,

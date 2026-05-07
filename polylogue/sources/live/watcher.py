@@ -278,12 +278,13 @@ def default_sources() -> tuple[WatchSource, ...]:
     (which stages to ``archive_root()/inbox``) is observed by the
     daemon-owned watcher.
     """
-    from polylogue.paths import archive_root, claude_code_path, codex_path
+    from polylogue.paths import archive_root, claude_code_path, codex_path, hooks_sidecar_dir
 
     return (
         WatchSource(name="claude-code", root=claude_code_path()),
         WatchSource(name="codex", root=codex_path()),
         WatchSource(name="inbox", root=archive_root() / "inbox"),
+        WatchSource(name="hooks", root=hooks_sidecar_dir()),
     )
 
 

@@ -101,6 +101,15 @@ def blob_store_root() -> Path:
     return data_home() / "blob"
 
 
+def hooks_sidecar_dir() -> Path:
+    """Directory where hook scripts drop session event data.
+
+    AI coding agent hooks (Claude Code, Codex) write structured JSONL
+    event records here. The daemon watcher picks them up for ingestion.
+    """
+    return data_home() / "hooks"
+
+
 def drive_cache_path() -> Path:
     """Local cache directory for Drive-sourced files."""
     return data_home() / "drive-cache"

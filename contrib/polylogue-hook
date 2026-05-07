@@ -1,0 +1,129 @@
+#!/usr/bin/env bash
+# polylogue-hook — AI coding agent hook handler for Polylogue
+#
+# Invoked by Claude Code or Codex hook systems on session lifecycle events.
+# Receives the event type as the first argument and the event payload on stdin
+# as JSON. Writes enriched hook event records to the Polylogue sidecar directory
+# where the daemon watcher picks them up for ingestion.
+#
+# Usage:
+#   polylogue-hook <event-type>
+#
+# Environment variables:
+#   POLYLOGUE_HOOK_SIDECAR_DIR  Override default sidecar directory
+#   POLYLOGUE_HOOK_PROVIDER      Force provider (claude-code | codex)
+#
+# Supported events:
+#   Claude Code (16): SessionStart, Setup, UserPromptSubmit, PreToolUse,
+#     PostToolUse, PostToolUseFailure, PermissionRequest, PermissionDenied,
+#     Notification, Elicitation, ElicitationResult, CwdChanged, FileChanged,
+#     WorktreeCreate, SubagentStart, Stop
+#   Codex (6): SessionStart, UserPromptSubmit, PreToolUse, PostToolUse,
+#     PermissionRequest, Stop
+#
+# Exit codes:
+#   0 - event recorded successfully
+#   1 - input validation or processing error
+#   2 - unsupported event type
+
+set -euo pipefail
+
+EVENT_TYPE="${1:-}"
+if [ -z "$EVENT_TYPE" ]; then
+    echo "Usage: polylogue-hook <event-type>" >&2
+    exit 1
+fi
+
+SIDECAR_DIR="${POLYLOGUE_HOOK_SIDECAR_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/polylogue/hooks}"
+
+# Save stdin payload to a temp file so python3 can read it.
+# The heredoc below consumes python's stdin for the script source.
+PAYLOAD_FILE=$(mktemp)
+trap 'rm -f "$PAYLOAD_FILE"' EXIT
+cat > "$PAYLOAD_FILE"
+
+python3 - "$EVENT_TYPE" "$SIDECAR_DIR" "$PAYLOAD_FILE" <<'PYEOF'
+import json
+import os
+import sys
+from datetime import datetime, timezone
+
+event_type = sys.argv[1]
+sidecar_dir = sys.argv[2]
+payload_path = sys.argv[3]
+
+# Supported events
+CC_EVENTS = frozenset({
+    "SessionStart", "Setup", "UserPromptSubmit", "PreToolUse",
+    "PostToolUse", "PostToolUseFailure", "PermissionRequest",
+    "PermissionDenied", "Notification", "Elicitation",
+    "ElicitationResult", "CwdChanged", "FileChanged",
+    "WorktreeCreate", "SubagentStart", "Stop",
+})
+CODEX_EVENTS = frozenset({
+    "SessionStart", "UserPromptSubmit", "PreToolUse",
+    "PostToolUse", "PermissionRequest", "Stop",
+})
+ALL_EVENTS = CC_EVENTS | CODEX_EVENTS
+
+if event_type not in ALL_EVENTS:
+    print(f"polylogue-hook: unsupported event type: {event_type}", file=sys.stderr)
+    sys.exit(2)
+
+# Read and validate payload from the saved file
+try:
+    with open(payload_path, "r") as fh:
+        payload = json.load(fh)
+except (json.JSONDecodeError, FileNotFoundError) as e:
+    print(f"polylogue-hook: invalid JSON payload: {e}", file=sys.stderr)
+    sys.exit(1)
+
+if not isinstance(payload, dict):
+    print("polylogue-hook: payload must be a JSON object", file=sys.stderr)
+    sys.exit(1)
+
+# Extract session_id from payload
+session_id = None
+for key in ("session_id", "sessionId", "session"):
+    val = payload.get(key)
+    if isinstance(val, str) and val.strip():
+        session_id = val.strip()
+        break
+
+if not session_id:
+    print("polylogue-hook: could not extract session_id from payload", file=sys.stderr)
+    sys.exit(1)
+
+# Detect provider
+provider = os.environ.get("POLYLOGUE_HOOK_PROVIDER")
+if not provider:
+    if "permission_mode" in payload or "model" in payload:
+        provider = "claude-code"
+    elif "source" in payload:
+        provider = "codex"
+    else:
+        provider = "unknown"
+
+if provider not in ("claude-code", "codex"):
+    print(
+        "polylogue-hook: could not detect provider; "
+        "set POLYLOGUE_HOOK_PROVIDER=claude-code|codex",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+# Build enriched event record
+record = {
+    "event_type": event_type,
+    "session_id": session_id,
+    "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    "provider": provider,
+    "payload": payload,
+}
+
+# Write to sidecar file (one JSONL file per provider+session)
+os.makedirs(sidecar_dir, exist_ok=True)
+outfile = os.path.join(sidecar_dir, f"{provider}-{session_id}.jsonl")
+with open(outfile, "a") as f:
+    f.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+PYEOF

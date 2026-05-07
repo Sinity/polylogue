@@ -8,6 +8,8 @@ from polylogue.archive.artifact_taxonomy.models import ArtifactClassification, A
 from polylogue.archive.artifact_taxonomy.support import (
     is_subagent_path,
     looks_like_conversation_document,
+    looks_like_hook_event,
+    looks_like_hook_event_stream,
     looks_like_record_entry,
     looks_like_record_stream,
     looks_metadataish_dict,
@@ -99,6 +101,16 @@ def _classify_list(
             reason="empty list payload",
         )
 
+    if dict_items and looks_like_hook_event_stream(dict_items):
+        return ArtifactClassification(
+            provider=provider,
+            kind=ArtifactKind.HOOK_EVENT,
+            parse_as_conversation=False,
+            schema_eligible=False,
+            default_priority=100,
+            reason="hook event stream",
+        )
+
     if dict_items and looks_like_record_stream(dict_items):
         subagent = is_subagent_path(source_path)
         kind = ArtifactKind.SUBAGENT_CONVERSATION_STREAM if subagent else ArtifactKind.CONVERSATION_RECORD_STREAM
@@ -147,6 +159,16 @@ def _classify_dict(
     provider: Provider,
     source_path: str | Path | None,
 ) -> ArtifactClassification:
+    if looks_like_hook_event(payload):
+        return ArtifactClassification(
+            provider=provider,
+            kind=ArtifactKind.HOOK_EVENT,
+            parse_as_conversation=False,
+            schema_eligible=False,
+            default_priority=100,
+            reason="hook event record",
+        )
+
     if looks_like_conversation_document(payload):
         return ArtifactClassification(
             provider=provider,
