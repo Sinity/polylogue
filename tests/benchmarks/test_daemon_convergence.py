@@ -211,3 +211,92 @@ def test_convergence_single_file_perf(benchmark, tmp_path: Path, monkeypatch: py
         }
         if hasattr(benchmark, "extra_info"):
             benchmark.extra_info.update(extras)
+
+
+# ── Memory probe ─────────────────────────────────────────────────────
+
+
+def _run_convergence_memory_probe(
+    corpus_root: Path,
+    tmp_path: Path,
+) -> dict[str, float]:
+    """Run the daemon live-ingest path and capture RSS/memory metrics."""
+    import asyncio
+
+    from polylogue.daemon.convergence import DaemonConverger
+    from polylogue.daemon.convergence_stages import make_default_convergence_stages
+    from polylogue.sources.live.batch import LiveBatchProcessor
+    from polylogue.sources.live.cursor import CursorStore
+    from polylogue.sources.live.watcher import WatchSource
+
+    db_path = tmp_path / "polylogue.db"
+    os.environ["POLYLOGUE_ARCHIVE_ROOT"] = str(tmp_path)
+
+    files = list(corpus_root.rglob("*.jsonl"))
+
+    converger = DaemonConverger(stages=make_default_convergence_stages(db_path), max_workers=4)
+    polylogue = _BenchmarkPolylogue(tmp_path, db_path)
+    processor = LiveBatchProcessor(
+        cast(Any, polylogue),
+        (WatchSource(name="benchmark", root=corpus_root),),
+        cursor=CursorStore(db_path),
+        parser_fingerprint="benchmark-memory-v1",
+        converger=converger,
+    )
+
+    t_total = time.perf_counter()
+    metrics = asyncio.run(processor.ingest_files(files, emit_event=False))
+    elapsed = time.perf_counter() - t_total
+
+    return {
+        "total_s": round(elapsed, 2),
+        "files": float(len(files)),
+        "succeeded_files": float(metrics.succeeded_file_count),
+        "failed_files": float(metrics.failed_file_count),
+        "parse_wall_s": metrics.parse_time_s,
+        "convergence_wall_s": metrics.convergence_time_s,
+        "rss_current_mb": metrics.rss_current_mb or 0.0,
+        "rss_peak_self_mb": metrics.rss_peak_self_mb or 0.0,
+        "rss_peak_children_mb": metrics.rss_peak_children_mb or 0.0,
+        "cgroup_memory_current_mb": metrics.cgroup_memory_current_mb or 0.0,
+        "cgroup_memory_peak_mb": metrics.cgroup_memory_peak_mb or 0.0,
+        "input_bytes": float(metrics.input_bytes),
+        "source_payload_read_bytes": float(metrics.source_payload_read_bytes),
+    }
+
+
+@pytest.mark.benchmark
+@pytest.mark.parametrize("n_messages", [200, 1000, 5000])
+def test_convergence_large_session_memory(benchmark, n_messages: int, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:  # type: ignore[no-untyped-def]
+    """Measure convergence performance and memory on a single large session.
+
+    Records RSS, cgroup memory, and timing metrics as benchmark extra_info.
+    """
+    root = tmp_path / "corpus" / "test"
+    records = _make_claude_code_session("large-session-memory", n_messages)
+    _write_jsonl(root / "large.jsonl", records)
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
+
+    result = benchmark(_run_convergence_memory_probe, root.parent, tmp_path)
+
+    if result["total_s"] > 0:
+        rss_peak_mb = result["rss_peak_self_mb"] + result["rss_peak_children_mb"]
+        extras = {
+            "n_messages": n_messages,
+            "total_s": result["total_s"],
+            "msgs_per_s": round(n_messages / result["total_s"], 1),
+            "parse_wall_s": result["parse_wall_s"],
+            "convergence_wall_s": result["convergence_wall_s"],
+            "rss_current_mb": result["rss_current_mb"],
+            "rss_peak_self_mb": result["rss_peak_self_mb"],
+            "rss_peak_children_mb": result["rss_peak_children_mb"],
+            "rss_peak_mb": round(rss_peak_mb, 1),
+            "cgroup_memory_current_mb": result["cgroup_memory_current_mb"],
+            "cgroup_memory_peak_mb": result["cgroup_memory_peak_mb"],
+            "input_bytes": result["input_bytes"],
+            "source_payload_read_bytes": result["source_payload_read_bytes"],
+        }
+        if hasattr(benchmark, "extra_info"):
+            benchmark.extra_info.update(extras)
+        assert result["failed_files"] == 0
+        assert result["succeeded_files"] >= 1
