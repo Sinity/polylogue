@@ -81,6 +81,7 @@ class SchemaBootstrapDecision:
         "upgrade_v6_to_v7",
         "upgrade_v7_to_v8",
         "upgrade_v8_to_v9",
+        "upgrade_v9_to_v10",
         "version_mismatch",
     ]
     extension_plan: SchemaExtensionPlan | None = None
@@ -867,6 +868,63 @@ def build_v8_to_v9_upgrade_plan(snapshot: SchemaSnapshot) -> SchemaExtensionPlan
     return SchemaExtensionPlan(statements=tuple(statements), scripts=())
 
 
+_PROVIDER_META_PROMOTION_CONVERSATION_DDL = """
+ALTER TABLE conversations ADD COLUMN working_directories_json TEXT;
+ALTER TABLE conversations ADD COLUMN git_branch TEXT;
+ALTER TABLE conversations ADD COLUMN git_repository_url TEXT;
+"""
+
+_PROVIDER_META_PROMOTION_ATTACHMENT_DDL = """
+ALTER TABLE attachments ADD COLUMN provider_attachment_id TEXT;
+ALTER TABLE attachments ADD COLUMN provider_file_id TEXT;
+ALTER TABLE attachments ADD COLUMN provider_drive_id TEXT;
+"""
+
+_PROVIDER_META_PROMOTION_ATTACHMENT_REF_DDL = """
+ALTER TABLE attachment_refs ADD COLUMN provider_attachment_id TEXT;
+ALTER TABLE attachment_refs ADD COLUMN provider_file_id TEXT;
+ALTER TABLE attachment_refs ADD COLUMN provider_drive_id TEXT;
+"""
+
+_PROVIDER_META_PROMOTION_ATTACHMENT_INDEXES_DDL = """
+DROP INDEX IF EXISTS idx_attachments_provider_meta_id;
+DROP INDEX IF EXISTS idx_attachments_provider_meta_provider_id;
+DROP INDEX IF EXISTS idx_attachments_provider_meta_file_id;
+DROP INDEX IF EXISTS idx_attachments_provider_meta_drive_id;
+DROP INDEX IF EXISTS idx_attachment_refs_provider_meta_id;
+DROP INDEX IF EXISTS idx_attachment_refs_provider_meta_provider_id;
+DROP INDEX IF EXISTS idx_attachment_refs_provider_meta_file_id;
+DROP INDEX IF EXISTS idx_attachment_refs_provider_meta_drive_id;
+CREATE INDEX IF NOT EXISTS idx_attachments_provider_attachment_id
+ON attachments(provider_attachment_id);
+CREATE INDEX IF NOT EXISTS idx_attachments_provider_file_id
+ON attachments(provider_file_id);
+CREATE INDEX IF NOT EXISTS idx_attachments_provider_drive_id
+ON attachments(provider_drive_id);
+CREATE INDEX IF NOT EXISTS idx_attachment_refs_provider_attachment_id
+ON attachment_refs(provider_attachment_id);
+CREATE INDEX IF NOT EXISTS idx_attachment_refs_provider_file_id
+ON attachment_refs(provider_file_id);
+CREATE INDEX IF NOT EXISTS idx_attachment_refs_provider_drive_id
+ON attachment_refs(provider_drive_id);
+"""
+
+
+def build_v9_to_v10_upgrade_plan(snapshot: SchemaSnapshot) -> SchemaExtensionPlan:
+    """Promote provider-meta fields to canonical columns (#864)."""
+    assert_supported_archive_layout_snapshot(snapshot)
+
+    statements: list[str] = []
+    if snapshot.has_table("conversations"):
+        statements.extend(s for s in _split_ddl_into_statements(_PROVIDER_META_PROMOTION_CONVERSATION_DDL) if s)
+    if snapshot.has_table("attachments"):
+        statements.extend(s for s in _split_ddl_into_statements(_PROVIDER_META_PROMOTION_ATTACHMENT_DDL) if s)
+    if snapshot.has_table("attachment_refs"):
+        statements.extend(s for s in _split_ddl_into_statements(_PROVIDER_META_PROMOTION_ATTACHMENT_REF_DDL) if s)
+        statements.extend(s for s in _split_ddl_into_statements(_PROVIDER_META_PROMOTION_ATTACHMENT_INDEXES_DDL) if s)
+    return SchemaExtensionPlan(statements=tuple(statements), scripts=())
+
+
 def _upgrade_tail_statements(snapshot: SchemaSnapshot, *, from_version: int) -> tuple[str, ...]:
     statements: tuple[str, ...] = ()
     if from_version < 5 <= SCHEMA_VERSION:
@@ -884,6 +942,8 @@ def _upgrade_tail_statements(snapshot: SchemaSnapshot, *, from_version: int) -> 
         statements = (*statements, *build_v7_to_v8_upgrade_plan(snapshot).statements)
     if from_version < 9 <= SCHEMA_VERSION:
         statements = (*statements, *build_v8_to_v9_upgrade_plan(snapshot).statements)
+    if from_version < 10 <= SCHEMA_VERSION:
+        statements = (*statements, *build_v9_to_v10_upgrade_plan(snapshot).statements)
     return statements
 
 

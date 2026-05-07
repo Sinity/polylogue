@@ -53,7 +53,10 @@ ARCHIVE_STORAGE_DDL = """
             content_hash TEXT NOT NULL DEFAULT '',
             provider_meta TEXT,
             metadata TEXT DEFAULT '{}',
-            source_name TEXT GENERATED ALWAYS AS (json_extract(provider_meta, '$.source')) STORED,
+            source_name TEXT NOT NULL DEFAULT '',
+            working_directories_json TEXT,
+            git_branch TEXT,
+            git_repository_url TEXT,
             version INTEGER NOT NULL,
             parent_conversation_id TEXT REFERENCES conversations(conversation_id) ON DELETE SET NULL,
             branch_type TEXT CHECK (branch_type IN ('continuation', 'sidechain', 'fork', 'subagent') OR branch_type IS NULL),
@@ -64,7 +67,7 @@ ARCHIVE_STORAGE_DDL = """
         ON conversations(provider_name, provider_conversation_id);
 
         CREATE INDEX IF NOT EXISTS idx_conversations_source_name
-        ON conversations(source_name) WHERE source_name IS NOT NULL;
+        ON conversations(source_name);
 
         CREATE INDEX IF NOT EXISTS idx_conversations_parent
         ON conversations(parent_conversation_id) WHERE parent_conversation_id IS NOT NULL;
@@ -185,6 +188,9 @@ ARCHIVE_STORAGE_DDL = """
             path TEXT,
             ref_count INTEGER NOT NULL DEFAULT 0,
             provider_meta TEXT,
+            provider_attachment_id TEXT,
+            provider_file_id TEXT,
+            provider_drive_id TEXT,
             UNIQUE (attachment_id)
         );
 
@@ -194,6 +200,9 @@ ARCHIVE_STORAGE_DDL = """
             conversation_id TEXT NOT NULL,
             message_id TEXT,
             provider_meta TEXT,
+            provider_attachment_id TEXT,
+            provider_file_id TEXT,
+            provider_drive_id TEXT,
             FOREIGN KEY (attachment_id)
                 REFERENCES attachments(attachment_id) ON DELETE CASCADE,
             FOREIGN KEY (conversation_id)
@@ -212,37 +221,23 @@ ARCHIVE_STORAGE_DDL = """
         ON attachment_refs(message_id)
         WHERE message_id IS NOT NULL;
 
-        CREATE INDEX IF NOT EXISTS idx_attachments_provider_meta_id
-        ON attachments(json_extract(provider_meta, '$.id'))
-        WHERE provider_meta IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS idx_attachments_provider_attachment_id
+        ON attachments(provider_attachment_id);
 
-        CREATE INDEX IF NOT EXISTS idx_attachments_provider_meta_provider_id
-        ON attachments(json_extract(provider_meta, '$.provider_id'))
-        WHERE provider_meta IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS idx_attachments_provider_file_id
+        ON attachments(provider_file_id);
 
-        CREATE INDEX IF NOT EXISTS idx_attachments_provider_meta_file_id
-        ON attachments(json_extract(provider_meta, '$.fileId'))
-        WHERE provider_meta IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS idx_attachments_provider_drive_id
+        ON attachments(provider_drive_id);
 
-        CREATE INDEX IF NOT EXISTS idx_attachments_provider_meta_drive_id
-        ON attachments(json_extract(provider_meta, '$.driveId'))
-        WHERE provider_meta IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS idx_attachment_refs_provider_attachment_id
+        ON attachment_refs(provider_attachment_id);
 
-        CREATE INDEX IF NOT EXISTS idx_attachment_refs_provider_meta_id
-        ON attachment_refs(json_extract(provider_meta, '$.id'))
-        WHERE provider_meta IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS idx_attachment_refs_provider_file_id
+        ON attachment_refs(provider_file_id);
 
-        CREATE INDEX IF NOT EXISTS idx_attachment_refs_provider_meta_provider_id
-        ON attachment_refs(json_extract(provider_meta, '$.provider_id'))
-        WHERE provider_meta IS NOT NULL;
-
-        CREATE INDEX IF NOT EXISTS idx_attachment_refs_provider_meta_file_id
-        ON attachment_refs(json_extract(provider_meta, '$.fileId'))
-        WHERE provider_meta IS NOT NULL;
-
-        CREATE INDEX IF NOT EXISTS idx_attachment_refs_provider_meta_drive_id
-        ON attachment_refs(json_extract(provider_meta, '$.driveId'))
-        WHERE provider_meta IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS idx_attachment_refs_provider_drive_id
+        ON attachment_refs(provider_drive_id);
 
 """
 

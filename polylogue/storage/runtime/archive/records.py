@@ -51,6 +51,10 @@ class ConversationRecord(BaseModel):
     parent_conversation_id: ConversationId | None = None
     branch_type: BranchType | None = None
     raw_id: str | None = None
+    source_name: str = ""
+    working_directories_json: str | None = None
+    git_branch: str | None = None
+    git_repository_url: str | None = None
 
     @property
     def provider(self) -> Provider:
@@ -155,6 +159,9 @@ class AttachmentRecord(BaseModel):
     size_bytes: int | None = None
     path: str | None = None
     provider_meta: JSONObject | None = None
+    provider_attachment_id: str | None = None
+    provider_file_id: str | None = None
+    provider_drive_id: str | None = None
 
     @field_validator("attachment_id", "conversation_id")
     @classmethod
