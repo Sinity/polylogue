@@ -46,6 +46,7 @@ class HTMLRenderer:
         repository: ConversationRepository | None = None,
         template_path: Path | None = None,
         theme: str = "dark",
+        **kwargs: object,
     ) -> None:
         """Initialize the HTML renderer.
 

@@ -42,7 +42,7 @@ class FormattedConversation:
 class ConversationFormatter:
     """Formats repository render projections to structured output."""
 
-    def __init__(self, archive_root: Path, repository: ConversationRepository | None = None):
+    def __init__(self, archive_root: Path, repository: ConversationRepository | None = None, **kwargs: object):
         self.archive_root = archive_root
         if repository is None:
             from polylogue.storage.repository import ConversationRepository
