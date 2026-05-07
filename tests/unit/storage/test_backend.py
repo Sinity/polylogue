@@ -1641,8 +1641,6 @@ def test_fts_triggers_restored_after_exception_during_ingest(tmp_path: Path) -> 
 
     # FTS should have both messages (the original m1 via repair,
     # and m2 via active trigger after restore)
-||||||| parent of e895ccf5 (refactor(storage): remove 4 unused session profile FTS tables and 12 triggers (#817))
-    """FTS triggers must be active even after an exception during ingest (#817)."""
     import sqlite3
 
     from polylogue.storage.sqlite.schema_ddl_actions import ACTION_EVENT_DDL

@@ -134,7 +134,11 @@ Enabled by default on `127.0.0.1:8765`. Disable with `--no-browser-capture`.
 
 ## Health Monitoring
 
-`polylogued status` reports typed daemon health via the `DaemonStatus` model:
+`polylogued status` reports typed daemon health via the `DaemonStatus` model.
+`polylogued health` runs tiered health checks (fast + medium by default,
+`--expensive` to include full integrity checks).
+
+### Status Fields
 
 | Field | Description |
 |-------|-------------|
@@ -154,14 +158,130 @@ Enabled by default on `127.0.0.1:8765`. Disable with `--no-browser-capture`.
 | `disk_free_bytes` | Free disk space |
 | `ingestion_throughput` | Messages and files per second |
 
+### Health Check Tiers
+
+`polylogued health` runs checks grouped by cost:
+
+**Fast** (sub-1s):
+- `daemon_liveness` — pidfile check
+- `disk_space` — free disk space (warns at 500 MB, critical at 100 MB)
+- `wal_size` — WAL file size (warns at 50 MB, errors at 200 MB)
+- `source_availability` — watch roots exist and are readable
+
+**Medium** (sub-10s queries):
+- `fts_readiness` — FTS index coverage vs. total messages
+- `raw_failures` — parse/validation failure counts
+- `stale_ingest_attempts` — running attempts past the stale threshold
+- `insight_freshness` — session profile coverage vs. total sessions
+- `repeated_stage_failures` — recent ingest attempt failure rate
+
+**Expensive** (potentially >10s):
+- `db_integrity` — `PRAGMA integrity_check`
+- `blob_integrity` — sample blob store content verification
+- `embedding_coverage` — embedding coverage when enabled
+
+Each check produces a typed `HealthAlert` with severity (`ok`, `warning`,
+`error`, `critical`), message, and `consecutive_failures` counter for
+persistent condition detection.
+
+### Notification Backend
+
+Health alerts are delivered through a configurable notification backend.
+The default `log` backend writes alerts to the structured logger.
+Configure via `polylogue.toml`:
+
+```toml
+[notifications]
+notification_backend = "log"
+```
+
+Or via environment variable:
+
+```bash
+export POLYLOGUE_NOTIFICATION_BACKEND=log
+```
+
 ## Maintenance
 
-The daemon runs periodic maintenance tasks:
+Maintenance tasks are split between daemon-owned (fast, inline) and
+operator-owned (heavy, scheduled externally via systemd timers or cron).
 
-- **WAL checkpoint** every 5 minutes (keeps the WAL file bounded)
-- **Heartbeat** every 15 minutes (logs conversation/message counts)
-- **FTS startup check**: rebuilds the FTS index if messages exist but aren't
-  indexed (covers gaps from pre-daemon data)
+### Daemon-Owned Tasks
+
+These run automatically inside the daemon process:
+
+| Task | Frequency | Description |
+|------|-----------|-------------|
+| WAL checkpoint | Every 5 minutes | Keeps the WAL file bounded via `PRAGMA wal_checkpoint(TRUNCATE)` |
+| Heartbeat | Every 15 minutes | Logs conversation/message counts as structured heartbeat |
+| FTS convergence | Every 10 minutes | Verifies FTS coverage, rebuilds if messages are unindexed |
+| Health checks | Configurable (default 5 min) | Runs tiered health checks (FAST + MEDIUM by default), sends notifications on non-OK status |
+| FTS startup check | Once at startup | Rebuilds the FTS index if messages exist but aren't indexed (covers gaps from pre-daemon data) |
+
+Health check tier and interval are configurable via `polylogue.toml`:
+
+```toml
+[health]
+health_check_interval_s = 300
+health_check_tiers = "fast,medium"
+```
+
+### Operator-Owned Tasks
+
+These are heavier operations that should run outside the daemon via
+systemd timers, cron, or manual invocation. The daemon does not own
+these — operators are responsible for scheduling them:
+
+| Task | Tool | Frequency | Description |
+|------|------|-----------|-------------|
+| Database backup | `polylogue backup` | Daily | Creates a clean SQLite database copy. Use `VACUUM INTO` when available (SQLite >= 3.27) for a defragmented copy. |
+| Blob store backup | `polylogue backup --include-blobs` | Weekly | Copies the content-addressed blob store. Integration with restic or similar incremental backup tools is recommended for production use. |
+| Database vacuum | `sqlite3 <db> "VACUUM"` | Monthly | Reclaims space after large deletes or updates. Requires downtime or `VACUUM INTO` to a new file while the daemon runs. |
+| Litestream replication | Litestream | Continuous | Real-time WAL replication to S3-compatible storage. Configure Litestream to watch the database and WAL files; the daemon's periodic WAL checkpoint is compatible with Litestream's replication model. |
+
+### Litestream Integration (Guidance)
+
+Litestream provides continuous SQLite replication by shipping WAL frames
+to object storage. Integration guidance:
+
+1. Install Litestream and configure it to watch the Polylogue database
+   (typically `~/.local/share/polylogue/polylogue.db`).
+2. The daemon's periodic WAL checkpoint (`PRAGMA wal_checkpoint(TRUNCATE)`)
+   triggers Litestream to create new generations. No daemon changes needed.
+3. Test restores periodically: `litestream restore -o /tmp/restore.db <path>`.
+
+A sample Litestream config:
+
+```yaml
+dbs:
+  - path: /home/user/.local/share/polylogue/polylogue.db
+    replicas:
+      - type: s3
+        bucket: my-backups
+        path: polylogue
+        endpoint: https://s3.amazonaws.com
+```
+
+### Blob Store Backup Guidance
+
+The blob store uses content-addressed storage under
+`<archive_root>/blob/`. Each blob's filename is its SHA-256 hash, so
+identical content is automatically deduplicated. For backup:
+
+- `polylogue backup --include-blobs` copies blobs alongside the database
+- For large archives, use restic or rsync targeting the `blob/` directory
+- Blobs are write-once, read-many — incremental backup tools work well
+
+### Vacuum Guidance
+
+SQLite `VACUUM` rebuilds the database file, reclaiming free pages. It
+requires the full database size in free disk space. Two approaches:
+
+1. **Online** (preferred): `polylogue backup` uses `VACUUM INTO` to
+   produce a clean copy without blocking the daemon. Swap the new file
+   in during a maintenance window.
+2. **Offline**: Stop the daemon, run `sqlite3 <db> "VACUUM"`, then
+   restart. Only needed when `VACUUM INTO` is unavailable (SQLite < 3.27).
 
 ## Systemd Integration
 

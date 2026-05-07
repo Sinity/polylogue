@@ -4,7 +4,11 @@ The initial backend is log-based — all alerts are written to the structured
 logger. This provides a baseline notifications surface that can be extended
 with webhook, email, or other transports without changing the alert model.
 
-Backend selection is driven by the runtime config (#829).
+Backend selection is driven by the runtime config's ``notification_backend``
+key. Supported values:
+
+- ``"log"`` (default) — write alerts to the structured logger
+- Future: ``"email"``, ``"slack"``, ``"webhook"``
 """
 
 from __future__ import annotations
@@ -54,6 +58,24 @@ class LogNotificationBackend:
                 )
 
 
+def _resolve_backend(backend_name: str) -> NotificationBackend:
+    """Resolve a notification backend name to an instance.
+
+    Args:
+        backend_name: Backend identifier (e.g. ``"log"``).
+
+    Returns:
+        An instance of the requested backend.
+
+    Raises:
+        ValueError: If the backend name is unknown.
+    """
+    if backend_name == "log":
+        return LogNotificationBackend()
+    supported = ["log"]
+    raise ValueError(f"unknown notification backend: {backend_name!r}. Supported backends: {', '.join(supported)}")
+
+
 def send_notifications(
     alerts: list[HealthAlert],
     *,
@@ -64,10 +86,17 @@ def send_notifications(
 
     Args:
         alerts: Health alerts to deliver.
-        backend: Notification backend. Defaults to ``LogNotificationBackend``.
+        backend: Notification backend. If None, resolved from config or
+                 defaults to ``LogNotificationBackend``.
         config: Optional runtime config dict (reserved for future backends).
     """
-    _backend = backend or LogNotificationBackend()
+    if backend is not None:
+        _backend = backend
+    elif config is not None and isinstance(config.get("notification_backend"), str):
+        _backend = _resolve_backend(str(config["notification_backend"]))
+    else:
+        _backend = LogNotificationBackend()
+
     if alerts:
         _backend.notify(alerts, config=config)
     else:
@@ -77,5 +106,6 @@ def send_notifications(
 __all__ = [
     "LogNotificationBackend",
     "NotificationBackend",
+    "_resolve_backend",
     "send_notifications",
 ]
