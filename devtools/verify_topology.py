@@ -1,14 +1,18 @@
 """Verify the realized polylogue/ tree against the topology projection.
 
-Reports:
+Gate classification:
 
-  * orphans         — file in tree, not declared in YAML
-  * missing         — file declared in YAML, not in tree
-  * conflicts       — same path declared twice
-  * kernel-rule     — root file not in the declared kernel set
-  * tbd             — projection cells still marked TBD
+  Blocking (architectural contracts):
+    orphans       — file in tree, not declared in YAML
+    missing       — file declared in YAML, not in tree
+    conflicts     — same path declared twice
+    kernel_rule   — root file not in the declared kernel set
 
-Exits 0 if everything passes, 1 if any blocking finding, 2 if only warnings.
+  Advisory (placement hygiene, warning-only):
+    tbd           — projection cells still marked TBD
+                    (blocking only with --strict-tbd)
+
+Exits 0 if everything passes, 1 if any blocking finding.
 """
 
 from __future__ import annotations
@@ -61,7 +65,6 @@ def parse_yaml(text: str) -> list[dict[str, Any]]:
                 except ValueError:
                     current[key] = 0
             elif key == "cross_cut":
-                # form: { layer: read, lifecycle: model }
                 inner = value.strip("{ }")
                 tags = {}
                 if inner:
@@ -120,9 +123,6 @@ def main(argv: Iterable[str]) -> int:
     findings["orphans"] = sorted(realized - declared)
     findings["missing"] = sorted(declared - realized)
 
-    # Kernel rule: any polylogue/<file>.py whose target is itself but owner is NOT kernel
-    # is a hint that the rule is loose. Stricter: all root files that are *not* moving
-    # should be declared kernel.
     for row in rows:
         path = row["path"]
         if not is_root_polylogue(path):
