@@ -884,6 +884,27 @@ files:
     loc: 572
     target: polylogue/daemon/http.py
     owner: stable
+  - path: polylogue/archive/semantic/timing.py
+    loc: 80
+    target: polylogue/archive/semantic/timing.py
+    owner: stable
+  - path: polylogue/cli/commands/backup.py
+    loc: 50
+    target: polylogue/cli/commands/backup.py
+    owner: stable
+  - path: polylogue/daemon/backup.py
+    loc: 180
+    target: polylogue/daemon/backup.py
+    owner: stable
+  - path: polylogue/daemon/health.py
+    loc: 320
+    target: polylogue/daemon/health.py
+    owner: stable
+  - path: polylogue/daemon/notifications.py
+    loc: 80
+    target: polylogue/daemon/notifications.py
+    owner: stable
+
   - path: polylogue/daemon/status.py
     loc: 707
     target: polylogue/daemon/status.py

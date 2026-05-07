@@ -44,7 +44,7 @@ class SessionTimingFacts:
     thinking_duration_ms: int = 0
     output_duration_ms: int = 0
     tool_duration_ms: int = 0
-    latency_percentiles_ms: dict[str, int] = ()
+    latency_percentiles_ms: dict[str, int] = field(default_factory=dict)
     tool_calls_per_minute: float = 0.0
     timing_provenance: str = "sort_key_estimated"
 

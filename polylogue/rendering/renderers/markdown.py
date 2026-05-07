@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 class MarkdownRenderer:
     """Renders conversations to plain Markdown format."""
 
-    def __init__(self, archive_root: Path, repository: ConversationRepository):
+    def __init__(self, archive_root: Path, repository: ConversationRepository | None = None):
         """Initialize the Markdown renderer.
 
         Args:
