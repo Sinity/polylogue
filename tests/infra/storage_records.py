@@ -499,13 +499,14 @@ def upsert_attachment(conn: sqlite3.Connection, record: AttachmentRecord) -> boo
     ref_id = _make_ref_id(record.attachment_id, record.conversation_id, record.message_id)
     res = conn.execute(
         """
-        INSERT OR IGNORE INTO attachment_refs (
+        INSERT INTO attachment_refs (
             ref_id,
             attachment_id,
             conversation_id,
             message_id,
             provider_meta
         ) VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(ref_id) DO NOTHING
         """,
         (
             ref_id,
