@@ -75,7 +75,7 @@ class SessionProfileDocument(TypedDict):
     thinking_duration_ms: int
     output_duration_ms: int
     tool_duration_ms: int
-    latency_percentiles_ms: str
+    latency_percentiles_ms: dict[str, int]
     tool_calls_per_minute: float
     timing_provenance: str
 
