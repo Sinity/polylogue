@@ -16,8 +16,7 @@ _FALSEY_ENV_VALUES = frozenset({"0", "false", "no"})
 
 
 def plain_forced_by_env() -> bool:
-    env_force = load_polylogue_config().get("force_plain")
-    return bool(env_force and env_force.lower() not in _FALSEY_ENV_VALUES)
+    return load_polylogue_config().force_plain
 
 
 def should_use_plain(*, plain: bool) -> bool:

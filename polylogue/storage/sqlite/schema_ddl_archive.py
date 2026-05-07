@@ -248,6 +248,8 @@ MESSAGE_FTS_DDL = """
             message_id UNINDEXED,
             conversation_id UNINDEXED,
             text,
+            content='messages',
+            content_rowid='rowid',
             tokenize='unicode61'
         );
 

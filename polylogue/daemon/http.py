@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import functools
 import json
 import os
@@ -17,6 +18,7 @@ from polylogue.daemon.status import daemon_status_payload
 from polylogue.errors import PolylogueError
 from polylogue.logging import get_logger
 from polylogue.paths import db_path
+from polylogue.surfaces.payloads import QueryErrorPayload
 
 if TYPE_CHECKING:
     from polylogue.api import Polylogue
@@ -47,10 +49,21 @@ def daemon_safe_handler(fn: Callable[..., Any]) -> Callable[..., Any]:
                 if 100 <= exc.http_status_code <= 599
                 else HTTPStatus.INTERNAL_SERVER_ERROR
             )
-            self._send_json(status, {"ok": False, "error": type(exc).__name__, "detail": str(exc)})
+            field = getattr(exc, "field", None)
+            self._send_json(
+                status,
+                QueryErrorPayload(
+                    error=type(exc).__name__,
+                    detail=str(exc),
+                    field=field,
+                ).model_dump(mode="json"),
+            )
         except Exception:
             logger.exception("unhandled error in %s", fn.__name__)
-            self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "error": "internal_error"})
+            self._send_json(
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+                QueryErrorPayload(error="internal_error").model_dump(mode="json"),
+            )
 
     return wrapper
 
@@ -64,6 +77,86 @@ def _get_or_create_polylogue() -> Polylogue:
 def _is_localhost(host: str) -> bool:
     """Return True if host is a loopback address."""
     return host in ("127.0.0.1", "::1", "localhost")
+
+
+def _extract_repo(provider_meta: dict[str, object] | None) -> str | None:
+    if provider_meta is None:
+        return None
+    repo = provider_meta.get("repo") or provider_meta.get("repository") or provider_meta.get("git_repo")
+    return str(repo) if repo else None
+
+
+def _extract_cwd(provider_meta: dict[str, object] | None) -> str | None:
+    if provider_meta is None:
+        return None
+    cwd = provider_meta.get("cwd") or provider_meta.get("working_directory") or provider_meta.get("cwd_display")
+    return str(cwd) if cwd else None
+
+
+def _build_query_spec_params(
+    params: dict[str, list[str]],
+    handler: DaemonAPIHandler,
+) -> dict[str, object]:
+    """Build ConversationQuerySpec-compatible params from HTTP query string."""
+    spec_params: dict[str, object] = {}
+
+    for key in (
+        "query",
+        "contains",
+        "exclude_text",
+        "retrieval_lane",
+        "cwd_prefix",
+        "action_text",
+        "title",
+        "conv_id",
+        "since",
+        "until",
+        "sort",
+        "similar_text",
+        "since_session",
+        "since_session_id",
+        "message_type",
+    ):
+        val = handler._get_param(params, key)
+        if val is not None:
+            spec_params[key] = val
+
+    for key in (
+        "provider",
+        "exclude_provider",
+        "tag",
+        "exclude_tag",
+        "repo",
+        "has_type",
+        "referenced_path",
+        "action",
+        "exclude_action",
+        "action_sequence",
+        "tool",
+        "exclude_tool",
+    ):
+        val = handler._get_param(params, key)
+        if val is not None:
+            spec_params[key] = val
+
+    for key in (
+        "latest",
+        "reverse",
+        "filter_has_tool_use",
+        "filter_has_thinking",
+        "filter_has_paste",
+        "typed_only",
+    ):
+        if handler._get_bool(params, key):
+            spec_params[key] = True
+
+    for key in ("min_messages", "max_messages", "min_words", "sample"):
+        val = handler._get_param(params, key)
+        if val is not None:
+            with contextlib.suppress(ValueError, TypeError):
+                spec_params[key] = int(val)
+
+    return spec_params
 
 
 def _advertised_cors_headers(host: str) -> dict[str, str]:
@@ -194,6 +287,12 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             except (ValueError, TypeError):
                 pass
         return default
+
+    def _get_bool(self, params: dict[str, list[str]], key: str) -> bool:
+        val = self._get_param(params, key)
+        if val is None:
+            return False
+        return val.lower() in ("1", "true", "yes", "on")
 
     # ------------------------------------------------------------------
     # Async operation runner
@@ -357,31 +456,69 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
     @daemon_safe_handler
     def _handle_list_conversations(self, params: dict[str, list[str]]) -> None:
+        query_params = _build_query_spec_params(params, self)
         limit = self._get_int(params, "limit", 50)
-        provider = self._get_param(params, "provider")
-        since = self._get_param(params, "since")
+        offset = self._get_int(params, "offset", 0)
 
         def _list(poly: Polylogue) -> object:
-            return asyncio.run(self._do_list(poly, limit, provider, since))
+            return asyncio.run(self._do_list(poly, query_params, limit, offset))
 
         result = self._sync_run(_list)
         self._send_json(HTTPStatus.OK, result)
 
-    async def _do_list(self, poly: Polylogue, limit: int, provider: str | None, since: str | None) -> object:
-        summaries = await poly.list_conversations(provider=provider, limit=limit)
-        hits: list[dict[str, object]] = []
+    async def _do_list(
+        self,
+        poly: Polylogue,
+        query_params: dict[str, object],
+        limit: int,
+        offset: int,
+    ) -> object:
+        from polylogue.archive.query.spec import ConversationQuerySpec
+
+        spec = ConversationQuerySpec.from_params(
+            {**query_params, "limit": limit, "offset": offset},
+        )
+        filter_obj = spec.build_filter(poly.repository)
+        summaries = await filter_obj.list_summaries()
+        total = await spec.count(poly.repository)
+
+        diagnostics = None
+        if not summaries and spec.has_filters():
+            with contextlib.suppress(ImportError):
+                from polylogue.config import ConfigError
+                from polylogue.mcp.payloads import MCPQueryMissDiagnosticsPayload
+
+                try:
+                    raw_diag = await poly.operations.diagnose_query_miss(spec)
+                    diagnostics = MCPQueryMissDiagnosticsPayload.from_diagnostics(raw_diag)
+                except ConfigError:
+                    pass
+
+        items: list[dict[str, object]] = []
         for summary in summaries:
-            hits.append(
-                {
-                    "id": str(summary.id),
-                    "title": summary.display_title,
-                    "provider": str(summary.provider) if summary.provider else None,
-                    "created_at": summary.created_at.isoformat() if summary.created_at else None,
-                    "updated_at": summary.updated_at.isoformat() if summary.updated_at else None,
-                    "message_count": getattr(summary, "message_count", None),
-                }
-            )
-        return {"hits": hits, "total": len(hits)}
+            row: dict[str, object] = {
+                "id": str(summary.id),
+                "title": summary.display_title,
+                "provider": str(summary.provider) if summary.provider else None,
+                "created_at": summary.created_at.isoformat() if summary.created_at else None,
+                "updated_at": summary.updated_at.isoformat() if summary.updated_at else None,
+                "message_count": getattr(summary, "message_count", 0),
+                "word_count": getattr(summary, "word_count", None),
+                "repo": _extract_repo(summary.provider_meta),
+                "cwd_display": _extract_cwd(summary.provider_meta),
+                "tags": summary.tags,
+            }
+            items.append(row)
+
+        result: dict[str, object] = {
+            "items": items,
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+        }
+        if diagnostics is not None:
+            result["diagnostics"] = diagnostics.model_dump(mode="json")
+        return result
 
     # ------------------------------------------------------------------
     # Handlers: get conversation
@@ -405,18 +542,28 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         return {
             "id": str(conv.id),
             "title": conv.title,
+            "display_title": conv.display_title,
             "provider": str(conv.provider) if conv.provider else None,
             "created_at": conv.created_at.isoformat() if conv.created_at else None,
             "updated_at": conv.updated_at.isoformat() if conv.updated_at else None,
+            "message_count": len(conv.messages),
+            "word_count": conv.word_count,
             "messages": [
                 {
                     "id": str(msg.id),
                     "role": str(msg.role),
                     "text": msg.text,
                     "timestamp": msg.timestamp.isoformat() if msg.timestamp else None,
+                    "message_type": str(getattr(msg, "message_type", "")),
+                    "word_count": msg.word_count,
                 }
                 for msg in conv.messages
             ],
+            "tags": conv.tags,
+            "branch_type": str(conv.branch_type) if conv.branch_type else None,
+            "parent_id": str(conv.parent_id) if conv.parent_id else None,
+            "repo": _extract_repo(conv.provider_meta),
+            "cwd_display": _extract_cwd(conv.provider_meta),
             "total": len(conv.messages),
         }
 
@@ -444,10 +591,14 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                     "role": str(msg.role),
                     "text": msg.text,
                     "timestamp": msg.timestamp.isoformat() if msg.timestamp else None,
+                    "message_type": str(getattr(msg, "message_type", "")),
+                    "word_count": msg.word_count,
                 }
                 for msg in messages
             ],
             "total": total,
+            "limit": limit,
+            "offset": offset,
         }
 
     # ------------------------------------------------------------------
@@ -472,16 +623,33 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
     @daemon_safe_handler
     def _handle_facets(self, params: dict[str, list[str]]) -> None:
+        query_params = _build_query_spec_params(params, self)
+
         def _get(poly: Polylogue) -> object:
-            return asyncio.run(self._do_facets(poly))
+            return asyncio.run(self._do_facets(poly, query_params))
 
         result = self._sync_run(_get)
         self._send_json(HTTPStatus.OK, result)
 
-    async def _do_facets(self, poly: Polylogue) -> object:
+    async def _do_facets(
+        self,
+        poly: Polylogue,
+        query_params: dict[str, object],
+    ) -> object:
         stats = await poly.stats()
+        tags = await poly.list_tags()
+        scoped_to_query = bool(query_params)
+
         return {
+            "scoped_to_query": scoped_to_query,
             "providers": stats.providers,
+            "tags": tags,
+            "repos": {},
+            "cwd_prefixes": {},
+            "message_types": {},
+            "action_types": {},
+            "has_flags": {},
+            "time_range": None,
             "total_conversations": stats.conversation_count,
             "total_messages": stats.message_count,
         }

@@ -108,18 +108,8 @@ _SPECS: tuple[InsightReadinessSpec, ...] = (
         missing_count_attr="missing_profile_row_count",
         stale_count_attr="stale_profile_row_count",
         orphan_count_attr="orphan_profile_row_count",
-        ready_flags=(
-            "profile_rows_ready",
-            "profile_merged_fts_ready",
-            "profile_evidence_fts_ready",
-            "profile_inference_fts_ready",
-        ),
-        artifacts=(
-            "session_profiles",
-            "session_profiles_fts",
-            "session_profile_evidence_fts",
-            "session_profile_inference_fts",
-        ),
+        ready_flags=("profile_rows_ready",),
+        artifacts=("session_profiles",),
         time_column="source_updated_at",
         version_fields=(
             ("materializer_version", SESSION_INSIGHT_MATERIALIZER_VERSION),
@@ -135,8 +125,8 @@ _SPECS: tuple[InsightReadinessSpec, ...] = (
         missing_count_attr="missing_profile_row_count",
         stale_count_attr="stale_profile_row_count",
         orphan_count_attr="orphan_profile_row_count",
-        ready_flags=("profile_rows_ready", "profile_enrichment_fts_ready"),
-        artifacts=("session_profiles", "session_profile_enrichment_fts"),
+        ready_flags=("profile_rows_ready",),
+        artifacts=("session_profiles",),
         time_column="source_updated_at",
         version_fields=(
             ("materializer_version", SESSION_INSIGHT_MATERIALIZER_VERSION),
@@ -272,10 +262,6 @@ def _count(status: SessionInsightStatusSnapshot, attr: str | None) -> int:
 def _artifact_ready(status: SessionInsightStatusSnapshot, artifact_name: str) -> bool | None:
     mapping = {
         "session_profiles": "profile_rows_ready",
-        "session_profiles_fts": "profile_merged_fts_ready",
-        "session_profile_evidence_fts": "profile_evidence_fts_ready",
-        "session_profile_inference_fts": "profile_inference_fts_ready",
-        "session_profile_enrichment_fts": "profile_enrichment_fts_ready",
         "session_work_events": "work_event_inference_rows_ready",
         "session_work_events_fts": "work_event_inference_fts_ready",
         "session_phases": "phase_inference_rows_ready",

@@ -117,9 +117,6 @@ def _rebuild_schema(conn: sqlite3.Connection) -> None:
     """Drop all insight tables and re-create from DDL."""
     tables = [
         "session_profiles_fts",
-        "session_profile_evidence_fts",
-        "session_profile_inference_fts",
-        "session_profile_enrichment_fts",
         "session_profiles",
         "session_work_events_fts",
         "session_work_events",

@@ -26,10 +26,6 @@ _MAINTENANCE_TARGET_CATALOG = build_maintenance_target_catalog()
 
 _SESSION_INSIGHT_READY_FLAGS: tuple[SessionInsightReadyFlag, ...] = (
     "profile_rows_ready",
-    "profile_merged_fts_ready",
-    "profile_evidence_fts_ready",
-    "profile_inference_fts_ready",
-    "profile_enrichment_fts_ready",
     "work_event_inference_rows_ready",
     "work_event_inference_fts_ready",
     "phase_inference_rows_ready",
@@ -167,10 +163,6 @@ def count_orphaned_attachments_sync(conn: sqlite3.Connection) -> int:
 def session_insight_repair_count(derived_statuses: dict[str, DerivedModelStatus]) -> int:
     keys = [
         "session_profile_rows",
-        "session_profile_merged_fts",
-        "session_profile_evidence_fts",
-        "session_profile_inference_fts",
-        "session_profile_enrichment_fts",
         "session_work_event_inference",
         "session_work_event_inference_fts",
         "session_phase_inference",
@@ -220,26 +212,6 @@ def _session_insight_row_repair_count(status: SessionInsightStatusSnapshot) -> i
 def _session_insight_fts_repair_count(status: SessionInsightStatusSnapshot) -> int:
     return sum(
         (
-            _fts_repair_count(
-                source_rows=status.profile_row_count,
-                indexed_rows=status.profile_merged_fts_count,
-                duplicates=status.profile_merged_fts_duplicate_count,
-            ),
-            _fts_repair_count(
-                source_rows=status.profile_row_count,
-                indexed_rows=status.profile_evidence_fts_count,
-                duplicates=status.profile_evidence_fts_duplicate_count,
-            ),
-            _fts_repair_count(
-                source_rows=status.profile_row_count,
-                indexed_rows=status.profile_inference_fts_count,
-                duplicates=status.profile_inference_fts_duplicate_count,
-            ),
-            _fts_repair_count(
-                source_rows=status.profile_row_count,
-                indexed_rows=status.profile_enrichment_fts_count,
-                duplicates=status.profile_enrichment_fts_duplicate_count,
-            ),
             _fts_repair_count(
                 source_rows=status.work_event_inference_count,
                 indexed_rows=status.work_event_inference_fts_count,

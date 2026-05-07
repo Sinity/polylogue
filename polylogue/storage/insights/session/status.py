@@ -173,26 +173,6 @@ class SessionInsightReadyDescriptor:
 # ---------------------------------------------------------------------------
 
 SESSION_PROFILE_COUNT_SQL = "SELECT COUNT(*) FROM session_profiles"
-SESSION_PROFILE_MERGED_FTS_DOC_COUNT_SQL = "SELECT COUNT(DISTINCT conversation_id) FROM session_profiles_fts"
-SESSION_PROFILE_MERGED_FTS_DUPLICATE_COUNT_SQL = (
-    "SELECT COUNT(*) - COUNT(DISTINCT conversation_id) FROM session_profiles_fts"
-)
-SESSION_PROFILE_EVIDENCE_FTS_DOC_COUNT_SQL = "SELECT COUNT(DISTINCT conversation_id) FROM session_profile_evidence_fts"
-SESSION_PROFILE_EVIDENCE_FTS_DUPLICATE_COUNT_SQL = (
-    "SELECT COUNT(*) - COUNT(DISTINCT conversation_id) FROM session_profile_evidence_fts"
-)
-SESSION_PROFILE_INFERENCE_FTS_DOC_COUNT_SQL = (
-    "SELECT COUNT(DISTINCT conversation_id) FROM session_profile_inference_fts"
-)
-SESSION_PROFILE_INFERENCE_FTS_DUPLICATE_COUNT_SQL = (
-    "SELECT COUNT(*) - COUNT(DISTINCT conversation_id) FROM session_profile_inference_fts"
-)
-SESSION_PROFILE_ENRICHMENT_FTS_DOC_COUNT_SQL = (
-    "SELECT COUNT(DISTINCT conversation_id) FROM session_profile_enrichment_fts"
-)
-SESSION_PROFILE_ENRICHMENT_FTS_DUPLICATE_COUNT_SQL = (
-    "SELECT COUNT(*) - COUNT(DISTINCT conversation_id) FROM session_profile_enrichment_fts"
-)
 SESSION_WORK_EVENT_COUNT_SQL = "SELECT COUNT(*) FROM session_work_events"
 SESSION_WORK_EVENT_FTS_DOC_COUNT_SQL = "SELECT COUNT(DISTINCT event_id) FROM session_work_events_fts"
 SESSION_WORK_EVENT_FTS_DUPLICATE_COUNT_SQL = "SELECT COUNT(*) - COUNT(DISTINCT event_id) FROM session_work_events_fts"
@@ -381,22 +361,6 @@ _TABLE_DESCRIPTORS: tuple[SessionInsightTableDescriptor, ...] = (
         count_sql=SESSION_PROFILE_COUNT_SQL,
     ),
     SessionInsightTableDescriptor(
-        key="session_profiles_fts",
-        table_name="session_profiles_fts",
-    ),
-    SessionInsightTableDescriptor(
-        key="session_profile_evidence_fts",
-        table_name="session_profile_evidence_fts",
-    ),
-    SessionInsightTableDescriptor(
-        key="session_profile_inference_fts",
-        table_name="session_profile_inference_fts",
-    ),
-    SessionInsightTableDescriptor(
-        key="session_profile_enrichment_fts",
-        table_name="session_profile_enrichment_fts",
-    ),
-    SessionInsightTableDescriptor(
         key="session_work_events",
         table_name="session_work_events",
         count_key="work_event_inference_count",
@@ -437,46 +401,6 @@ _TABLE_DESCRIPTORS: tuple[SessionInsightTableDescriptor, ...] = (
 )
 
 _FTS_DESCRIPTORS: tuple[SessionInsightFtsDescriptor, ...] = (
-    SessionInsightFtsDescriptor(
-        table_key="session_profiles_fts",
-        table_name="session_profiles_fts",
-        count_key="profile_merged_fts_count",
-        duplicate_count_key="profile_merged_fts_duplicate_count",
-        source_count_key="profile_row_count",
-        distinct_sql=SESSION_PROFILE_MERGED_FTS_DOC_COUNT_SQL,
-        duplicate_sql=SESSION_PROFILE_MERGED_FTS_DUPLICATE_COUNT_SQL,
-        ready_key="profile_merged_fts_ready",
-    ),
-    SessionInsightFtsDescriptor(
-        table_key="session_profile_evidence_fts",
-        table_name="session_profile_evidence_fts",
-        count_key="profile_evidence_fts_count",
-        duplicate_count_key="profile_evidence_fts_duplicate_count",
-        source_count_key="profile_row_count",
-        distinct_sql=SESSION_PROFILE_EVIDENCE_FTS_DOC_COUNT_SQL,
-        duplicate_sql=SESSION_PROFILE_EVIDENCE_FTS_DUPLICATE_COUNT_SQL,
-        ready_key="profile_evidence_fts_ready",
-    ),
-    SessionInsightFtsDescriptor(
-        table_key="session_profile_inference_fts",
-        table_name="session_profile_inference_fts",
-        count_key="profile_inference_fts_count",
-        duplicate_count_key="profile_inference_fts_duplicate_count",
-        source_count_key="profile_row_count",
-        distinct_sql=SESSION_PROFILE_INFERENCE_FTS_DOC_COUNT_SQL,
-        duplicate_sql=SESSION_PROFILE_INFERENCE_FTS_DUPLICATE_COUNT_SQL,
-        ready_key="profile_inference_fts_ready",
-    ),
-    SessionInsightFtsDescriptor(
-        table_key="session_profile_enrichment_fts",
-        table_name="session_profile_enrichment_fts",
-        count_key="profile_enrichment_fts_count",
-        duplicate_count_key="profile_enrichment_fts_duplicate_count",
-        source_count_key="profile_row_count",
-        distinct_sql=SESSION_PROFILE_ENRICHMENT_FTS_DOC_COUNT_SQL,
-        duplicate_sql=SESSION_PROFILE_ENRICHMENT_FTS_DUPLICATE_COUNT_SQL,
-        ready_key="profile_enrichment_fts_ready",
-    ),
     SessionInsightFtsDescriptor(
         table_key="session_work_events_fts",
         table_name="session_work_events_fts",
@@ -776,10 +700,6 @@ def _status_payload(
     return SessionInsightStatusSnapshot(
         **counts,
         profile_rows_ready=ready_flags["profile_rows_ready"],
-        profile_merged_fts_ready=ready_flags["profile_merged_fts_ready"],
-        profile_evidence_fts_ready=ready_flags["profile_evidence_fts_ready"],
-        profile_inference_fts_ready=ready_flags["profile_inference_fts_ready"],
-        profile_enrichment_fts_ready=ready_flags["profile_enrichment_fts_ready"],
         work_event_inference_rows_ready=ready_flags["work_event_inference_rows_ready"],
         work_event_inference_fts_ready=ready_flags["work_event_inference_fts_ready"],
         phase_inference_rows_ready=ready_flags["phase_inference_rows_ready"],

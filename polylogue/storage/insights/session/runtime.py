@@ -10,10 +10,6 @@ from typing_extensions import TypedDict
 ProviderDayGroup: TypeAlias = tuple[str, str]
 SessionInsightReadyFlag: TypeAlias = Literal[
     "profile_rows_ready",
-    "profile_merged_fts_ready",
-    "profile_evidence_fts_ready",
-    "profile_inference_fts_ready",
-    "profile_enrichment_fts_ready",
     "work_event_inference_rows_ready",
     "work_event_inference_fts_ready",
     "phase_inference_rows_ready",
@@ -94,14 +90,6 @@ class SessionInsightStatusSnapshot:
     total_conversations: int = 0
     root_threads: int = 0
     profile_row_count: int = 0
-    profile_merged_fts_count: int = 0
-    profile_merged_fts_duplicate_count: int = 0
-    profile_evidence_fts_count: int = 0
-    profile_evidence_fts_duplicate_count: int = 0
-    profile_inference_fts_count: int = 0
-    profile_inference_fts_duplicate_count: int = 0
-    profile_enrichment_fts_count: int = 0
-    profile_enrichment_fts_duplicate_count: int = 0
     work_event_inference_count: int = 0
     work_event_inference_fts_count: int = 0
     work_event_inference_fts_duplicate_count: int = 0
@@ -127,10 +115,6 @@ class SessionInsightStatusSnapshot:
     expected_day_summary_count: int = 0
     stale_day_summary_count: int = 0
     profile_rows_ready: bool = False
-    profile_merged_fts_ready: bool = False
-    profile_evidence_fts_ready: bool = False
-    profile_inference_fts_ready: bool = False
-    profile_enrichment_fts_ready: bool = False
     work_event_inference_rows_ready: bool = False
     work_event_inference_fts_ready: bool = False
     phase_inference_rows_ready: bool = False

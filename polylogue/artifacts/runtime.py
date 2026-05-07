@@ -214,54 +214,6 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
         readiness_surfaces=("doctor", "archive_debt", "insights"),
     ),
     ArtifactNode(
-        name="session_profile_merged_fts",
-        layer=ArtifactLayer.INDEX,
-        description="Merged session-profile FTS projection over durable session profile rows.",
-        depends_on=("session_profile_rows",),
-        code_refs=(
-            "polylogue.storage.insights.session.status",
-            "polylogue.storage.sqlite.schema_ddl_insight_profiles",
-        ),
-        repair_targets=("session_insights",),
-        readiness_surfaces=("doctor", "archive_debt", "insights"),
-    ),
-    ArtifactNode(
-        name="session_profile_evidence_fts",
-        layer=ArtifactLayer.INDEX,
-        description="Evidence-tier session-profile FTS projection over durable session profile rows.",
-        depends_on=("session_profile_rows",),
-        code_refs=(
-            "polylogue.storage.insights.session.status",
-            "polylogue.storage.sqlite.schema_ddl_insight_profiles",
-        ),
-        repair_targets=("session_insights",),
-        readiness_surfaces=("doctor", "archive_debt", "insights"),
-    ),
-    ArtifactNode(
-        name="session_profile_inference_fts",
-        layer=ArtifactLayer.INDEX,
-        description="Inference-tier session-profile FTS projection over durable session profile rows.",
-        depends_on=("session_profile_rows",),
-        code_refs=(
-            "polylogue.storage.insights.session.status",
-            "polylogue.storage.sqlite.schema_ddl_insight_profiles",
-        ),
-        repair_targets=("session_insights",),
-        readiness_surfaces=("doctor", "archive_debt", "insights"),
-    ),
-    ArtifactNode(
-        name="session_profile_enrichment_fts",
-        layer=ArtifactLayer.INDEX,
-        description="Enrichment-tier session-profile FTS projection over durable session profile rows.",
-        depends_on=("session_profile_rows",),
-        code_refs=(
-            "polylogue.storage.insights.session.status",
-            "polylogue.storage.sqlite.schema_ddl_insight_profiles",
-        ),
-        repair_targets=("session_insights",),
-        readiness_surfaces=("doctor", "archive_debt", "insights"),
-    ),
-    ArtifactNode(
         name="session_work_event_rows",
         layer=ArtifactLayer.DERIVED,
         description="Durable session work-event rows materialized from session profile analysis.",
@@ -369,10 +321,6 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
         layer=ArtifactLayer.INDEX,
         description="The session-insight FTS family over profiles, work events, and threads.",
         depends_on=(
-            "session_profile_merged_fts",
-            "session_profile_evidence_fts",
-            "session_profile_inference_fts",
-            "session_profile_enrichment_fts",
             "session_work_event_fts",
             "work_thread_fts",
         ),
@@ -434,7 +382,7 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
         name="session_profile_results",
         layer=ArtifactLayer.PROJECTION,
         description="Query/read results for durable session profiles.",
-        depends_on=("session_profile_rows", "session_profile_merged_fts"),
+        depends_on=("session_profile_rows",),
         code_refs=(
             "polylogue.operations.archive.ArchiveInsightMixin.list_session_profile_insights",
             "polylogue.cli.commands.insights",
@@ -445,7 +393,7 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
         name="session_enrichment_results",
         layer=ArtifactLayer.PROJECTION,
         description="Query/read results for durable session enrichments.",
-        depends_on=("session_profile_rows", "session_profile_enrichment_fts"),
+        depends_on=("session_profile_rows",),
         code_refs=(
             "polylogue.operations.archive.ArchiveInsightMixin.list_session_enrichment_insights",
             "polylogue.cli.commands.insights",
@@ -713,10 +661,6 @@ RUNTIME_ARTIFACT_PATHS: tuple[ArtifactPath, ...] = (
         nodes=(
             "session_insight_source_conversations",
             "session_profile_rows",
-            "session_profile_merged_fts",
-            "session_profile_evidence_fts",
-            "session_profile_inference_fts",
-            "session_profile_enrichment_fts",
             "session_work_event_rows",
             "session_work_event_fts",
             "session_phase_rows",
@@ -769,7 +713,6 @@ RUNTIME_ARTIFACT_PATHS: tuple[ArtifactPath, ...] = (
         description="Durable session profile rows through profile FTS and profile query results.",
         nodes=(
             "session_profile_rows",
-            "session_profile_merged_fts",
             "session_profile_results",
         ),
     ),
@@ -778,7 +721,6 @@ RUNTIME_ARTIFACT_PATHS: tuple[ArtifactPath, ...] = (
         description="Durable session profile rows through enrichment FTS and enrichment query results.",
         nodes=(
             "session_profile_rows",
-            "session_profile_enrichment_fts",
             "session_enrichment_results",
         ),
     ),

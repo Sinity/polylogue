@@ -163,30 +163,6 @@ def _profile_rows_status(metrics: Metrics) -> DerivedModelStatus:
 def build_profile_statuses(metrics: Metrics) -> dict[str, DerivedModelStatus]:
     return {
         "session_profile_rows": _profile_rows_status(metrics),
-        "session_profile_merged_fts": build_profile_fts_status(
-            metrics,
-            key_prefix="profile_merged_fts",
-            name="session_profile_merged_fts",
-            label="Session-profile merged FTS",
-        ),
-        "session_profile_evidence_fts": build_profile_fts_status(
-            metrics,
-            key_prefix="profile_evidence_fts",
-            name="session_profile_evidence_fts",
-            label="Session-profile evidence FTS",
-        ),
-        "session_profile_inference_fts": build_profile_fts_status(
-            metrics,
-            key_prefix="profile_inference_fts",
-            name="session_profile_inference_fts",
-            label="Session-profile inference FTS",
-        ),
-        "session_profile_enrichment_fts": build_profile_fts_status(
-            metrics,
-            key_prefix="profile_enrichment_fts",
-            name="session_profile_enrichment_fts",
-            label="Session-profile enrichment FTS",
-        ),
     }
 
 
