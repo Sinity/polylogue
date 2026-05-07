@@ -117,7 +117,15 @@ def _artifact_query(options: CheckCommandOptions) -> ArtifactObservationQuery:
     )
 
 
-def _run_blob_store_check(env: AppEnv, config: Config, json_output: bool = False) -> JSONDocument | None:
+def _run_blob_store_check(
+    env: AppEnv, config: Config, *, deep: bool = False, json_output: bool = False
+) -> JSONDocument | None:
+    """Verify blob store integrity: missing/orphaned blobs + optional integrity check.
+
+    Uses ``detect_orphans()`` for memory-bounded orphan counting with byte
+    totals.  When *deep* is True, also runs ``verify_all()`` to re-hash every
+    blob on disk — this is I/O-intensive on large archives.
+    """
     from polylogue.storage.blob_store import get_blob_store
 
     blob_store = get_blob_store()
@@ -125,30 +133,68 @@ def _run_blob_store_check(env: AppEnv, config: Config, json_output: bool = False
     with connection_context(config.db_path) as conn:
         for row in conn.execute("SELECT raw_id FROM raw_conversations"):
             db_raw_ids.add(row[0])
+
+    # Missing: DB references without disk blobs
     disk_hashes = set(blob_store.iter_all())
     missing = sorted(db_raw_ids - disk_hashes)
-    orphaned = sorted(disk_hashes - db_raw_ids)
+
+    # Orphans: disk blobs without DB references (with byte totals)
+    orphan_result = blob_store.detect_orphans(db_raw_ids)
+
+    # Deep integrity: re-hash every blob on disk
+    verify_result = None
+    if deep and disk_hashes:
+        verify_result = blob_store.verify_all()
 
     if json_output:
-        return json_document(
-            {
-                "total_blobs": len(disk_hashes),
-                "total_raw_records": len(db_raw_ids),
-                "missing_count": len(missing),
-                "orphaned_count": len(orphaned),
-                "missing": missing[:10],
-                "orphaned": orphaned[:10],
+        payload: dict[str, object] = {
+            "total_blobs": len(disk_hashes),
+            "total_raw_records": len(db_raw_ids),
+            "missing_count": len(missing),
+            "orphaned_count": orphan_result.orphan_count,
+            "orphaned_bytes": orphan_result.orphan_bytes,
+            "missing": missing[:10],
+            "orphaned": list(orphan_result.orphan_samples),
+        }
+        if verify_result is not None:
+            payload["integrity"] = {
+                "checked": verify_result.checked,
+                "checked_bytes": verify_result.checked_bytes,
+                "failed_count": verify_result.failed_count,
+                "truncated": verify_result.truncated,
+                "failures": [{"hash": f.hash, "reason": f.reason, "detail": f.detail} for f in verify_result.failures],
             }
-        )
+        return json_document(payload)
 
     env.ui.console.print(f"Blob store: {len(disk_hashes)} blobs on disk, {len(db_raw_ids)} raw records in DB")
     if missing:
         env.ui.console.print(f"  MISSING: {len(missing)} blobs referenced in DB but not on disk")
         for h in sorted(missing)[:10]:
             env.ui.console.print(f"    {h[:16]}...")
-    if orphaned:
-        env.ui.console.print(f"  Orphaned: {len(orphaned)} blobs on disk not in DB")
-    if not missing and not orphaned:
+
+    if orphan_result.orphan_count:
+        env.ui.console.print(
+            f"  Orphaned: {orphan_result.orphan_count} blobs ({orphan_result.orphan_bytes:,} bytes) not referenced in DB"
+        )
+        for h in orphan_result.orphan_samples:
+            env.ui.console.print(f"    {h[:16]}...")
+    else:
+        env.ui.console.print("  No orphaned blobs.")
+
+    if verify_result is not None:
+        if verify_result.passed:
+            env.ui.console.print(
+                f"  Integrity: {verify_result.checked} blobs verified ({verify_result.checked_bytes:,} bytes) — all passed"
+            )
+        else:
+            env.ui.console.print(
+                f"  Integrity: {verify_result.failed_count} failures out of {verify_result.checked} checked"
+                + (" (truncated)" if verify_result.truncated else "")
+            )
+            for f in verify_result.failures:
+                env.ui.console.print(f"    {f.hash[:16]}...  {f.reason}: {f.detail}")
+
+    if not missing and orphan_result.orphan_count == 0 and (verify_result is None or verify_result.passed):
         env.ui.console.print("  All blobs verified.")
     return None
 
@@ -247,7 +293,7 @@ def run_check_workflow(env: AppEnv, options: CheckCommandOptions) -> CheckComman
         result.daemon_report = daemon_status_payload()
 
     if options.check_blob:
-        result.blob_report = _run_blob_store_check(env, config, json_output=options.json_output)
+        result.blob_report = _run_blob_store_check(env, config, deep=options.deep, json_output=options.json_output)
 
     if options.check_schemas:
         result.schema_report = _run_schema_verification(options, config)

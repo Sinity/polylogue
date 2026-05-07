@@ -17,13 +17,17 @@ as it goes, then copies to the store — peak memory is one chunk.
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import re
 import tempfile
 from collections.abc import Callable, Iterator
 from contextlib import suppress
+from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, BinaryIO
+
+logger = logging.getLogger(__name__)
 
 _CHUNK_SIZE = 1024 * 1024  # 1 MiB
 
@@ -272,6 +276,236 @@ class BlobStore:
             total_bytes += self.blob_path(hash_hex).stat().st_size
         return {"count": count, "total_bytes": total_bytes}
 
+    # ------------------------------------------------------------------
+    # Batch integrity and maintenance
+    # ------------------------------------------------------------------
+
+    def verify_all(
+        self,
+        *,
+        max_failures: int = 10,
+        heartbeat: Heartbeat | None = None,
+    ) -> BlobVerifyAllResult:
+        """Re-hash every blob on disk and verify content integrity.
+
+        Reads and hashes each blob in 1 MiB chunks. Stops after
+        *max_failures* failures to keep output bounded. Returns a
+        summary with count, bytes checked, and failure details.
+
+        This is intentionally a filesystem-only integrity check — it
+        does not consult the database.  That keeps it usable even when
+        the database is unavailable or corrupted.
+        """
+        checked = 0
+        checked_bytes = 0
+        failures: list[BlobVerifyFailure] = []
+
+        for hash_hex in self.iter_all():
+            checked += 1
+            path = self.blob_path(hash_hex)
+            try:
+                file_size = path.stat().st_size
+                checked_bytes += file_size
+            except OSError:
+                failures.append(BlobVerifyFailure(hash=hash_hex, reason="stat_failed"))
+                if len(failures) >= max_failures:
+                    break
+                continue
+
+            hasher = hashlib.sha256()
+            try:
+                with builtins_open(path, "rb") as f:
+                    while True:
+                        chunk = f.read(_CHUNK_SIZE)
+                        if not chunk:
+                            break
+                        hasher.update(chunk)
+            except OSError as exc:
+                failures.append(BlobVerifyFailure(hash=hash_hex, reason="read_error", detail=str(exc)))
+                if len(failures) >= max_failures:
+                    break
+                continue
+
+            actual = hasher.hexdigest()
+            if actual != hash_hex:
+                failures.append(
+                    BlobVerifyFailure(
+                        hash=hash_hex,
+                        reason="hash_mismatch",
+                        detail=f"expected {hash_hex[:16]}..., got {actual[:16]}...",
+                    )
+                )
+                if len(failures) >= max_failures:
+                    break
+
+            if heartbeat is not None:
+                with suppress(Exception):
+                    heartbeat()
+
+        return BlobVerifyAllResult(
+            checked=checked,
+            checked_bytes=checked_bytes,
+            failures=tuple(failures),
+            truncated=len(failures) >= max_failures,
+        )
+
+    def detect_orphans(
+        self,
+        db_referenced_ids: set[str],
+        *,
+        max_sample: int = 10,
+    ) -> OrphanDetectionResult:
+        """Find blobs on disk that have no corresponding DB reference.
+
+        Walks the blob store directory (one blob at a time, bounded
+        memory) and compares against *db_referenced_ids* (the set of
+        ``raw_id`` values from ``raw_conversations``).
+
+        Returns count, total bytes, and a representative sample of
+        orphan hashes.  Blob files that are temporary (``.blob.*``
+        prefix) are excluded from the walk by ``iter_all()``.
+        """
+        orphan_count = 0
+        orphan_bytes = 0
+        orphan_samples: list[str] = []
+
+        for hash_hex in self.iter_all():
+            if hash_hex in db_referenced_ids:
+                continue
+            orphan_count += 1
+            with suppress(OSError):
+                orphan_bytes += self.blob_path(hash_hex).stat().st_size
+            if len(orphan_samples) < max_sample:
+                orphan_samples.append(hash_hex)
+
+        return OrphanDetectionResult(
+            orphan_count=orphan_count,
+            orphan_bytes=orphan_bytes,
+            orphan_samples=tuple(orphan_samples),
+        )
+
+    def cleanup_orphans(
+        self,
+        orphan_hashes: set[str],
+        *,
+        dry_run: bool = True,
+    ) -> CleanupOrphansResult:
+        """Delete orphaned blobs from the filesystem.
+
+        Safety: *dry_run* defaults to ``True`` — callers must
+        explicitly opt in to deletion.  The *orphan_hashes* set should
+        be produced by ``detect_orphans()`` immediately before cleanup
+        to avoid TOCTOU races against concurrent ingest.
+
+        Returns per-blob results and aggregate stats.
+        """
+        if dry_run:
+            would_delete_count = 0
+            would_delete_bytes = 0
+            for hash_hex in orphan_hashes:
+                if not _VALID_HEX.match(hash_hex):
+                    continue
+                path = self.blob_path(hash_hex)
+                if path.exists():
+                    would_delete_count += 1
+                    with suppress(OSError):
+                        would_delete_bytes += path.stat().st_size
+            return CleanupOrphansResult(
+                deleted_count=0,
+                deleted_bytes=0,
+                errors=0,
+                error_details=(),
+                dry_run=True,
+                would_delete_count=would_delete_count,
+                would_delete_bytes=would_delete_bytes,
+            )
+
+        deleted_count = 0
+        deleted_bytes = 0
+        errors = 0
+        error_details: list[str] = []
+
+        for hash_hex in orphan_hashes:
+            if not _VALID_HEX.match(hash_hex):
+                errors += 1
+                error_details.append(f"invalid hash: {hash_hex[:32]}...")
+                continue
+            path = self.blob_path(hash_hex)
+            if not path.exists():
+                continue
+            try:
+                file_size = path.stat().st_size
+                path.unlink()
+                deleted_count += 1
+                deleted_bytes += file_size
+            except OSError as exc:
+                errors += 1
+                error_details.append(f"{hash_hex[:16]}...: {exc}")
+
+        return CleanupOrphansResult(
+            deleted_count=deleted_count,
+            deleted_bytes=deleted_bytes,
+            errors=errors,
+            error_details=tuple(error_details),
+            dry_run=False,
+            would_delete_count=0,
+            would_delete_bytes=0,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Result types
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class BlobVerifyFailure:
+    """A single blob integrity verification failure."""
+
+    hash: str
+    reason: str  # stat_failed | read_error | hash_mismatch
+    detail: str = ""
+
+
+@dataclass(frozen=True)
+class BlobVerifyAllResult:
+    """Summary of a batch blob integrity verification pass."""
+
+    checked: int
+    checked_bytes: int
+    failures: tuple[BlobVerifyFailure, ...]
+    truncated: bool  # True when stopped early at max_failures
+
+    @property
+    def passed(self) -> bool:
+        return len(self.failures) == 0
+
+    @property
+    def failed_count(self) -> int:
+        return len(self.failures)
+
+
+@dataclass(frozen=True)
+class OrphanDetectionResult:
+    """Result of scanning the blob store for unreferenced blobs."""
+
+    orphan_count: int
+    orphan_bytes: int
+    orphan_samples: tuple[str, ...]  # up to max_sample representative hashes
+
+
+@dataclass(frozen=True)
+class CleanupOrphansResult:
+    """Result of an orphan blob cleanup operation."""
+
+    deleted_count: int
+    deleted_bytes: int
+    errors: int
+    error_details: tuple[str, ...]
+    dry_run: bool
+    would_delete_count: int
+    would_delete_bytes: int
+
 
 # Avoid shadowing by the method name
 builtins_open = open
@@ -307,4 +541,13 @@ def load_raw_content(raw_id: str) -> bytes:
     return get_blob_store().read_all(raw_id)
 
 
-__all__ = ["BlobStore", "get_blob_store", "load_raw_content", "reset_blob_store"]
+__all__ = [
+    "BlobStore",
+    "BlobVerifyAllResult",
+    "BlobVerifyFailure",
+    "CleanupOrphansResult",
+    "OrphanDetectionResult",
+    "get_blob_store",
+    "load_raw_content",
+    "reset_blob_store",
+]
