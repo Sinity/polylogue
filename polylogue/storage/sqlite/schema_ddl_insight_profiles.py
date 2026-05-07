@@ -61,5 +61,4 @@ SESSION_INSIGHT_PROFILE_DDL = """
 
         CREATE INDEX IF NOT EXISTS idx_session_profiles_canonical_date
         ON session_profiles(canonical_session_date DESC);
-
 """

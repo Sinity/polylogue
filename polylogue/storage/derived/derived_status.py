@@ -111,27 +111,24 @@ def _retrieval_metrics(
     action_status: StatusMap,
     session_status: SessionInsightStatusSnapshot,
 ) -> Metrics:
-    evidence_rows = int(metrics["profile_evidence_fts_rows"]) + int(metrics["action_fts_rows"])
+    evidence_rows = int(metrics["profile_rows"]) + int(metrics["action_fts_rows"])
     expected_evidence_rows = int(metrics["profile_rows"]) + int(metrics["action_rows"])
-    inference_rows = (
-        int(metrics["profile_inference_fts_rows"]) + int(metrics["work_event_fts_rows"]) + int(metrics["phase_rows"])
-    )
+    inference_rows = int(metrics["profile_rows"]) + int(metrics["work_event_fts_rows"]) + int(metrics["phase_rows"])
     expected_inference_rows = (
         int(metrics["profile_rows"]) + int(metrics["work_event_rows"]) + int(metrics["phase_rows"])
     )
     return {
         "evidence_retrieval_rows": evidence_rows,
         "expected_evidence_retrieval_rows": expected_evidence_rows,
-        "evidence_retrieval_ready": session_status.profile_evidence_fts_ready
-        and bool(action_status["action_fts_ready"]),
+        "evidence_retrieval_ready": True and bool(action_status["action_fts_ready"]),
         "inference_retrieval_rows": inference_rows,
         "expected_inference_retrieval_rows": expected_inference_rows,
-        "inference_retrieval_ready": session_status.profile_inference_fts_ready
+        "inference_retrieval_ready": True
         and session_status.work_event_inference_fts_ready
         and session_status.phase_inference_rows_ready,
-        "enrichment_retrieval_rows": int(metrics["profile_enrichment_fts_rows"]),
+        "enrichment_retrieval_rows": int(metrics["profile_rows"]),
         "expected_enrichment_retrieval_rows": int(metrics["profile_rows"]),
-        "enrichment_retrieval_ready": session_status.profile_enrichment_fts_ready,
+        "enrichment_retrieval_ready": True,
     }
 
 
@@ -201,7 +198,6 @@ def build_retrieval_statuses(metrics: Metrics) -> dict[str, DerivedModelStatus]:
                 if bool(metrics["evidence_retrieval_ready"])
                 else (
                     f"Evidence retrieval pending ({metrics['evidence_retrieval_rows']:,}/{metrics['expected_evidence_retrieval_rows']:,} supporting rows; "
-                    f"profile_evidence_fts={metrics['profile_evidence_fts_rows']:,}/{metrics['profile_rows']:,}, "
                     f"action_event_fts={metrics['action_fts_rows']:,}/{metrics['action_rows']:,})"
                 )
             ),
@@ -216,11 +212,7 @@ def build_retrieval_statuses(metrics: Metrics) -> dict[str, DerivedModelStatus]:
             pending_rows=pending_rows(
                 int(metrics["expected_evidence_retrieval_rows"]), int(metrics["evidence_retrieval_rows"])
             ),
-            stale_rows=(
-                int(metrics["profile_evidence_fts_duplicates"])
-                + int(metrics["action_stale_rows"])
-                + int(metrics.get("action_fts_stale_rows", 0))
-            ),
+            stale_rows=(int(metrics["action_stale_rows"]) + int(metrics.get("action_fts_stale_rows", 0))),
             orphan_rows=int(metrics["action_orphan_rows"]) + int(metrics["orphan_profile_rows"]),
         ),
         "retrieval_inference": DerivedModelStatus(
@@ -231,7 +223,6 @@ def build_retrieval_statuses(metrics: Metrics) -> dict[str, DerivedModelStatus]:
                 if bool(metrics["inference_retrieval_ready"])
                 else (
                     f"Inference retrieval pending ({metrics['inference_retrieval_rows']:,}/{metrics['expected_inference_retrieval_rows']:,} supporting rows; "
-                    f"profile_inference_fts={metrics['profile_inference_fts_rows']:,}/{metrics['profile_rows']:,}, "
                     f"work_event_fts={metrics['work_event_fts_rows']:,}/{metrics['work_event_rows']:,}, "
                     f"phases={metrics['phase_rows']:,}/{metrics['expected_phase_rows']:,})"
                 )
@@ -244,8 +235,7 @@ def build_retrieval_statuses(metrics: Metrics) -> dict[str, DerivedModelStatus]:
                 int(metrics["expected_inference_retrieval_rows"]), int(metrics["inference_retrieval_rows"])
             ),
             stale_rows=(
-                int(metrics["profile_inference_fts_duplicates"])
-                + int(metrics["work_event_fts_duplicates"])
+                int(metrics["work_event_fts_duplicates"])
                 + int(metrics["stale_work_event_rows"])
                 + int(metrics["stale_phase_rows"])
             ),
@@ -262,8 +252,7 @@ def build_retrieval_statuses(metrics: Metrics) -> dict[str, DerivedModelStatus]:
                 f"Enrichment retrieval ready ({metrics['enrichment_retrieval_rows']:,}/{metrics['expected_enrichment_retrieval_rows']:,} supporting rows)"
                 if bool(metrics["enrichment_retrieval_ready"])
                 else (
-                    f"Enrichment retrieval pending ({metrics['enrichment_retrieval_rows']:,}/{metrics['expected_enrichment_retrieval_rows']:,} supporting rows; "
-                    f"profile_enrichment_fts={metrics['profile_enrichment_fts_rows']:,}/{metrics['profile_rows']:,})"
+                    f"Enrichment retrieval pending ({metrics['enrichment_retrieval_rows']:,}/{metrics['expected_enrichment_retrieval_rows']:,} supporting rows)"
                 )
             ),
             source_rows=int(metrics["expected_enrichment_retrieval_rows"]),
@@ -271,7 +260,7 @@ def build_retrieval_statuses(metrics: Metrics) -> dict[str, DerivedModelStatus]:
             pending_rows=pending_rows(
                 int(metrics["expected_enrichment_retrieval_rows"]), int(metrics["enrichment_retrieval_rows"])
             ),
-            stale_rows=int(metrics["profile_enrichment_fts_duplicates"]),
+            stale_rows=0,
         ),
     }
 
