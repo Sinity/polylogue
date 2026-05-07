@@ -64,3 +64,7 @@ exceptions:
   - path: polylogue/storage/sqlite/schema_bootstrap.py
     ceiling: 1200
     reason: "added v9→v10 provider-meta promotion migration (#864)"
+
+  - path: tests/unit/storage/test_backend.py
+    ceiling: 1750
+    reason: "added FK integrity, quarantine regression, FTS commit-ordering tests (#820/#844/#817)"
