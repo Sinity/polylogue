@@ -1,4 +1,11 @@
-"""Runtime configuration derived from filesystem defaults and env overrides."""
+"""Runtime configuration derived from filesystem defaults and env overrides.
+
+Precedence (highest wins):
+  1. CLI flag overrides
+  2. POLYLOGUE_* environment variables
+  3. polylogue.toml (XDG_CONFIG_HOME or project root)
+  4. Hardcoded defaults
+"""
 
 from __future__ import annotations
 
@@ -6,12 +13,15 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import tomllib
+
 from .errors import PolylogueError
 from .paths import (
     GEMINI_DRIVE_FOLDER,
     archive_root,
     claude_code_path,
     codex_path,
+    config_home,
     drive_cache_path,
     drive_credentials_path,
     drive_token_path,
@@ -149,6 +159,163 @@ def get_config() -> Config:
         drive_config=get_drive_config(),
         index_config=get_index_config(),
     )
+
+
+# ---------------------------------------------------------------------------
+# TOML config file support (#829)
+# ---------------------------------------------------------------------------
+
+
+def _config_file_path() -> Path | None:
+    """Resolve the polylogue.toml path.
+
+    Returns the first existing path from:
+      1. ``POLYLOGUE_CONFIG`` env var
+      2. ``{XDG_CONFIG_HOME}/polylogue/polylogue.toml``
+      3. ``{project_root}/polylogue.toml``
+    Returns None if no file exists.
+    """
+    override = os.environ.get("POLYLOGUE_CONFIG")
+    if override:
+        p = Path(override)
+        return p if p.is_file() else None
+
+    xdg_path = config_home() / "polylogue.toml"
+    if xdg_path.is_file():
+        return xdg_path
+
+    project_path = Path("polylogue.toml")
+    if project_path.is_file():
+        return project_path
+
+    return None
+
+
+def load_polylogue_config(
+    *,
+    config_path: Path | None = None,
+    cli_overrides: dict[str, object] | None = None,
+) -> dict[str, object]:
+    """Load resolved Polylogue config with four-layer precedence.
+
+    Returns a dict suitable for constructing typed config models.
+    The dict always has all known keys with defaults applied.
+    """
+    cfg: dict[str, object] = {
+        "archive_root": str(archive_root()),
+        "daemon_url": "http://127.0.0.1:8766",
+        "daemon_host": "127.0.0.1",
+        "daemon_port": 8766,
+        "embedding_enabled": False,
+        "embedding_model": "voyage-4",
+        "embedding_dimension": 1024,
+        "embedding_max_cost_usd": 0.0,
+        "hooks_enabled": False,
+        "log_level": "INFO",
+        "force_plain": False,
+    }
+
+    # Layer 2: TOML file
+    path = config_path or _config_file_path()
+    if path is not None:
+        try:
+            with open(path, "rb") as fh:
+                toml_data = tomllib.load(fh)
+            _merge_toml(cfg, toml_data)
+        except (OSError, tomllib.TOMLDecodeError):
+            pass
+
+    # Layer 3: Environment variables
+    _apply_env_overrides(cfg)
+
+    # Layer 4: CLI overrides
+    if cli_overrides:
+        for key, value in cli_overrides.items():
+            if value is not None:
+                cfg[key] = value
+
+    return cfg
+
+
+def _merge_toml(cfg: dict[str, object], toml_data: dict[str, object]) -> None:
+    """Merge TOML sections into the flat config dict."""
+    section_keys = {
+        "archive": ("archive_root",),
+        "daemon": ("daemon_host", "daemon_port"),
+        "embedding": ("embedding_enabled", "embedding_model", "embedding_dimension", "embedding_max_cost_usd"),
+        "hooks": ("hooks_enabled",),
+        "logging": ("log_level", "force_plain"),
+    }
+    for section, keys in section_keys.items():
+        section_data = toml_data.get(section)
+        if isinstance(section_data, dict):
+            for key in keys:
+                if key in section_data:
+                    cfg[key] = section_data[key]
+
+
+def _apply_env_overrides(cfg: dict[str, object]) -> None:
+    """Apply POLYLOGUE_* environment variable overrides."""
+    env_map = {
+        "POLYLOGUE_ARCHIVE_ROOT": "archive_root",
+        "POLYLOGUE_DAEMON_ENABLE_EMBEDDINGS": "embedding_enabled",
+        "VOYAGE_API_KEY": "voyage_api_key",
+        "POLYLOGUE_FORCE_PLAIN": "force_plain",
+        "POLYLOGUE_SLOW_QUERY_NOTICE_SECONDS": "slow_query_notice_seconds",
+        "POLYLOGUE_SCHEMA_VALIDATION": "schema_validation",
+    }
+    for env_var, cfg_key in env_map.items():
+        value = os.environ.get(env_var)
+        if value is not None:
+            # Coerce booleans
+            if value.lower() in ("1", "true", "yes"):
+                cfg[cfg_key] = True
+            elif value.lower() in ("0", "false", "no"):
+                cfg[cfg_key] = False
+            else:
+                cfg[cfg_key] = value
+
+
+def format_config_toml(cfg: dict[str, object]) -> str:
+    """Render loaded config as TOML for display."""
+    lines: list[str] = []
+    sections: dict[str, dict[str, object]] = {}
+
+    archive_keys = ("archive_root",)
+    daemon_keys = ("daemon_url", "daemon_host", "daemon_port")
+    embedding_keys = (
+        "embedding_enabled",
+        "embedding_model",
+        "embedding_dimension",
+        "embedding_max_cost_usd",
+        "voyage_api_key",
+    )
+    hooks_keys = ("hooks_enabled",)
+    logging_keys = ("log_level", "force_plain")
+
+    for section, keys in [
+        ("archive", archive_keys),
+        ("daemon", daemon_keys),
+        ("embedding", embedding_keys),
+        ("hooks", hooks_keys),
+        ("logging", logging_keys),
+    ]:
+        section_data = {k: cfg[k] for k in keys if k in cfg}
+        if section_data:
+            sections[section] = section_data
+
+    for section, data in sections.items():
+        lines.append(f"[{section}]")
+        for key, value in data.items():
+            if isinstance(value, str):
+                lines.append(f'{key} = "{value}"')
+            elif isinstance(value, bool):
+                lines.append(f"{key} = {str(value).lower()}")
+            else:
+                lines.append(f"{key} = {value}")
+        lines.append("")
+
+    return "\n".join(lines)
 
 
 __all__ = [

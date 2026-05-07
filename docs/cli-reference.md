@@ -141,6 +141,7 @@ Commands:
   auth         Authenticate with external services (Google Drive for...
   bulk-export  Bulk export every matched conversation in one process.
   completions  Generate shell completion scripts.
+  config       Show resolved Polylogue configuration with precedence...
   count        Print count of matched conversations.
   dashboard    Launch the dashboard TUI.
   delete       Delete matched conversations.

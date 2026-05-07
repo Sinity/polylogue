@@ -8,10 +8,10 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 
 ## Snapshot
 
-- subjects: `486`
+- subjects: `487`
 - claims: `41`
 - runner bindings: `41`
-- proof obligations: `534`
+- proof obligations: `537`
 
 ## Quality Checks
 
@@ -40,7 +40,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `assurance.coverage_gap` | 22 |
 | `assurance.coverage_item` | 102 |
 | `assurance.coverage_manifest` | 9 |
-| `cli.command` | 45 |
+| `cli.command` | 46 |
 | `cli.json_command` | 5 |
 | `diagnostic.observable` | 1 |
 | `error.surface` | 2 |
@@ -63,6 +63,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `polylogue auth` | `polylogue/cli/commands/auth.py:16` `polylogue.cli.commands.auth.auth_command` |
 | `polylogue bulk-export` | `polylogue/cli/query_verbs.py:112` `polylogue.cli.query_verbs.bulk_export_verb` |
 | `polylogue completions` | `polylogue/cli/commands/completions.py:9` `polylogue.cli.commands.completions.completions_command` |
+| `polylogue config` | `polylogue/cli/commands/config.py:10` `polylogue.cli.commands.config.config_command` |
 | `polylogue count` | `polylogue/cli/query_verbs.py:48` `polylogue.cli.query_verbs.count_verb` |
 | `polylogue dashboard` | `polylogue/cli/commands/dashboard.py:10` `polylogue.cli.commands.dashboard.dashboard_command` |
 | `polylogue delete` | `polylogue/cli/query_verbs.py:140` `polylogue.cli.query_verbs.delete_verb` |
@@ -275,10 +276,10 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `assurance.coverage.gap_has_closure_path` | 22 |
 | `assurance.coverage.item_declared` | 102 |
 | `assurance.coverage.manifest_structured` | 9 |
-| `cli.command.help` | 45 |
+| `cli.command.help` | 46 |
 | `cli.command.json_envelope` | 5 |
-| `cli.command.no_traceback` | 45 |
-| `cli.command.plain_mode` | 45 |
+| `cli.command.no_traceback` | 46 |
+| `cli.command.plain_mode` | 46 |
 | `diagnostic.observable_trace_mapping` | 1 |
 | `error.machine_user_context` | 2 |
 | `generated.scenario.family_registered` | 9 |
