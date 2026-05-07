@@ -109,6 +109,10 @@ class ContextPackPayload(BaseModel):
     action_summaries: list[ContextPackActionSummary] = Field(default_factory=list)
     unresolved_work: list[ContextPackUnresolvedWork] = Field(default_factory=list)
     provenance: ContextPackProvenance = Field(default_factory=ContextPackProvenance)
+    total_conversations: int = 0
+    total_messages: int = 0
+    total_tool_calls: int = 0
+    truncated: bool = False
 
 
 def redact_path(path: str) -> str:
