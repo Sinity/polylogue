@@ -77,14 +77,14 @@ def _generate_cluster_schema(
         conv_ids if any(conv_id is not None for conv_id in conv_ids) else None
     )
     field_stats = _collect_field_stats(samples, conversation_ids=conv_ids_for_stats)
+    pins = _load_pins_safe(provider)
+    schema = _annotate_semantic_and_relational(schema, field_stats, artifact_kind=artifact_kind, pins=pins)
     schema = _annotate_schema(
         schema,
         field_stats,
         min_conversation_count=3,
         privacy_config=privacy_config,
     )
-    pins = _load_pins_safe(provider)
-    schema = _annotate_semantic_and_relational(schema, field_stats, artifact_kind=artifact_kind, pins=pins)
     schema["$schema"] = "https://json-schema.org/draft/2020-12/schema"
 
     redaction_report = _build_redaction_report(
