@@ -12,11 +12,10 @@ from polylogue.rendering.core_markdown import (
     _normalize_markdown_message,
     render_markdown_document,
 )
-from polylogue.storage.repository import ConversationRepository
-from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
 if TYPE_CHECKING:
     from polylogue.storage.archive_views import ConversationRenderProjection
+    from polylogue.storage.repository import ConversationRepository
 
 
 @dataclass
@@ -43,21 +42,13 @@ class FormattedConversation:
 class ConversationFormatter:
     """Formats repository render projections to structured output."""
 
-    def __init__(self, archive_root: Path, db_path: Path | None = None, backend: SQLiteBackend | None = None):
+    def __init__(self, archive_root: Path, repository: ConversationRepository):
         self.archive_root = archive_root
-        self.db_path = db_path
-        self.backend = backend
+        self._repository = repository
 
     async def load_projection(self, conversation_id: str) -> ConversationRenderProjection:
         """Load the canonical repository-owned render projection."""
-        backend = self.backend or SQLiteBackend(db_path=self.db_path)
-        repository = ConversationRepository(backend=backend)
-        owns_backend = self.backend is None
-        try:
-            projection = await repository.get_render_projection(conversation_id)
-        finally:
-            if owns_backend:
-                await repository.close()
+        projection = await self._repository.get_render_projection(conversation_id)
         if projection is None:
             raise ValueError(f"Conversation not found: {conversation_id}")
         return projection
