@@ -3,12 +3,34 @@
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, Generic, TypeVar
+from typing import TYPE_CHECKING, Generic, Literal, TypeVar
 
 from pydantic import RootModel
 from typing_extensions import TypedDict
 
 from polylogue.core.json import JSONDocument
+from polylogue.mcp.context_pack import (
+    ContextPackActionSummary as MCPContextPackActionSummary,
+    ContextPackConversation as MCPContextPackConversation,
+    ContextPackDateRange as MCPContextPackDateRange,
+    ContextPackMessage as MCPContextPackMessage,
+    ContextPackPayload as MCPContextPackPayload,
+    ContextPackProject as MCPContextPackProject,
+    ContextPackProvenance as MCPContextPackProvenance,
+    ContextPackQueryContext as MCPContextPackQueryContext,
+    ContextPackUnresolvedWork as MCPContextPackUnresolvedWork,
+)
+from polylogue.mcp.context_pack import (
+    ContextPackActionSummary as MCPContextPackActionSummary,
+    ContextPackConversation as MCPContextPackConversation,
+    ContextPackDateRange as MCPContextPackDateRange,
+    ContextPackMessage as MCPContextPackMessage,
+    ContextPackPayload as MCPContextPackPayload,
+    ContextPackProject as MCPContextPackProject,
+    ContextPackProvenance as MCPContextPackProvenance,
+    ContextPackQueryContext as MCPContextPackQueryContext,
+    ContextPackUnresolvedWork as MCPContextPackUnresolvedWork,
+)
 from polylogue.surfaces.payloads import (
     ConversationDetailPayload as MCPConversationDetailPayload,
 )
@@ -57,6 +79,7 @@ class MCPErrorPayload(SurfacePayloadModel):
     detail: str | None = None
     tool: str | None = None
     conversation_id: str | None = None
+    is_error: Literal[True] = True
 
 
 class MCPFencedCodeBlock(TypedDict):
@@ -122,6 +145,27 @@ class MCPConversationSearchNoResultsPayload(SurfacePayloadModel):
     diagnostics: MCPQueryMissDiagnosticsPayload
 
 
+
+class MCPPaginatedQueryResultPayload(SurfacePayloadModel):
+    """Paginated query result envelope for list_conversations."""
+
+    items: tuple[MCPConversationSummaryPayload, ...]
+    total: int
+    limit: int
+    offset: int
+    diagnostics: MCPQueryMissDiagnosticsPayload | None = None
+
+
+class MCPPaginatedSearchResultPayload(SurfacePayloadModel):
+    """Paginated search result envelope for search."""
+
+    hits: tuple[MCPConversationSearchHitPayload, ...]
+    total: int
+    limit: int
+    offset: int
+    diagnostics: MCPQueryMissDiagnosticsPayload | None = None
+
+
 def conversation_summary_list_payload(
     conversations: Sequence[Conversation],
 ) -> MCPConversationSummaryListPayload:
@@ -133,12 +177,19 @@ def conversation_summary_list_payload(
 def conversation_query_result_payload(
     conversations: Sequence[Conversation],
     *,
+    total: int,
+    limit: int,
+    offset: int,
     diagnostics: QueryMissDiagnostics | None = None,
-) -> MCPConversationSummaryListPayload | MCPConversationQueryNoResultsPayload:
-    if conversations or diagnostics is None:
-        return conversation_summary_list_payload(conversations)
-    return MCPConversationQueryNoResultsPayload(
-        diagnostics=MCPQueryMissDiagnosticsPayload.from_diagnostics(diagnostics),
+) -> MCPPaginatedQueryResultPayload:
+    return MCPPaginatedQueryResultPayload(
+        items=tuple(MCPConversationSummaryPayload.from_conversation(conv) for conv in conversations),
+        total=total,
+        limit=limit,
+        offset=offset,
+        diagnostics=(
+            MCPQueryMissDiagnosticsPayload.from_diagnostics(diagnostics) if diagnostics else None
+        ),
     )
 
 
@@ -167,12 +218,25 @@ def conversation_neighbor_candidate_list_payload(
 def conversation_search_result_payload(
     hits: Sequence[ConversationSearchHit],
     *,
+    total: int,
+    limit: int,
+    offset: int,
     diagnostics: QueryMissDiagnostics | None = None,
-) -> MCPConversationSearchHitListPayload | MCPConversationSearchNoResultsPayload:
-    if hits or diagnostics is None:
-        return conversation_search_hit_list_payload(hits)
-    return MCPConversationSearchNoResultsPayload(
-        diagnostics=MCPQueryMissDiagnosticsPayload.from_diagnostics(diagnostics),
+) -> MCPPaginatedSearchResultPayload:
+    return MCPPaginatedSearchResultPayload(
+        hits=tuple(
+            MCPConversationSearchHitPayload.from_search_hit(
+                hit,
+                message_count=hit.summary.message_count,
+            )
+            for hit in hits
+        ),
+        total=total,
+        limit=limit,
+        offset=offset,
+        diagnostics=(
+            MCPQueryMissDiagnosticsPayload.from_diagnostics(diagnostics) if diagnostics else None
+        ),
     )
 
 
@@ -373,6 +437,24 @@ class MCPReadinessReportPayload(SurfacePayloadModel):
 
 __all__ = [
     "MCPArchiveStatsPayload",
+    "MCPContextPackActionSummary",
+    "MCPContextPackConversation",
+    "MCPContextPackDateRange",
+    "MCPContextPackMessage",
+    "MCPContextPackPayload",
+    "MCPContextPackProject",
+    "MCPContextPackProvenance",
+    "MCPContextPackQueryContext",
+    "MCPContextPackUnresolvedWork",
+    "MCPContextPackActionSummary",
+    "MCPContextPackConversation",
+    "MCPContextPackDateRange",
+    "MCPContextPackMessage",
+    "MCPContextPackPayload",
+    "MCPContextPackProject",
+    "MCPContextPackProvenance",
+    "MCPContextPackQueryContext",
+    "MCPContextPackUnresolvedWork",
     "MCPConversationDetailPayload",
     "MCPConversationNeighborCandidateListPayload",
     "MCPConversationNeighborCandidatePayload",
