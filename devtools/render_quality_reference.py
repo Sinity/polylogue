@@ -32,7 +32,9 @@ def _render_lane_table(entries: tuple[LaneEntry, ...]) -> list[str]:
     return lines
 
 
-def _render_validation_family_table(entries: tuple[object, ...]) -> list[str]:  # flattened — ValidationLaneFamily DSL removed in #805
+def _render_validation_family_table(
+    entries: tuple[object, ...],
+) -> list[str]:  # flattened — ValidationLaneFamily DSL removed in #805
     lines = [
         "| Family | Composite Lanes | Description |",
         "| --- | --- | --- |",

@@ -624,7 +624,6 @@ def build_daemon_status(
     *,
     sources: tuple[WatchSource, ...] | None = None,
     browser_capture_spool_path: Path | None = None,
-    *,
     include_expensive_health: bool = False,
 ) -> DaemonStatus:
     """Build a typed DaemonStatus from durable component state."""

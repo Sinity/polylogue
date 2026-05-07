@@ -16,7 +16,6 @@ import os
 import sqlite3
 from datetime import UTC, datetime
 from enum import Enum
-from pathlib import Path
 
 from pydantic import BaseModel, Field
 
@@ -252,14 +251,10 @@ def _check_fts_readiness_medium() -> HealthAlert:
         conn = sqlite3.connect(str(dbf))
         try:
             has_messages_fts = bool(
-                conn.execute(
-                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='messages_fts'"
-                ).fetchone()
+                conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='messages_fts'").fetchone()
             )
             has_action_fts = bool(
-                conn.execute(
-                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='action_events_fts'"
-                ).fetchone()
+                conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='action_events_fts'").fetchone()
             )
             total = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
             fts_count = conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0] if has_messages_fts else 0

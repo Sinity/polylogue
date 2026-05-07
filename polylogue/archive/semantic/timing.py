@@ -17,7 +17,6 @@ from typing import TYPE_CHECKING
 from polylogue.core.json import JSONDocument, json_document
 
 if TYPE_CHECKING:
-    from polylogue.archive.conversation.models import Conversation
     from polylogue.archive.message.models import Message
 
 
@@ -108,8 +107,7 @@ def compute_session_timing(
             # Classify the gap based on *this* message's content.
             # A tool-call gap is the time before a tool_result message.
             if (
-                message.is_tool_use
-                or any(block.get("type") == "tool_result" for block in message.content_blocks)
+                message.is_tool_use or any(block.get("type") == "tool_result" for block in message.content_blocks)
             ) and prev_message.is_assistant:
                 tool_duration_ms += gap
             elif message.is_thinking and not message.is_tool_use:
