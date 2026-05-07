@@ -5,19 +5,16 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, TypeVar, cast
 
 import click
 
-from polylogue.config import load_polylogue_config
 from polylogue.archive.query.retrieval_candidates import uses_action_read_model
-from polylogue.config import load_polylogue_config
 from polylogue.archive.query.spec import ConversationQuerySpec
-from polylogue.config import load_polylogue_config
 from polylogue.cli.query_contracts import QueryOutputSpec
+from polylogue.config import load_polylogue_config
 
 logger = logging.getLogger(__name__)
 

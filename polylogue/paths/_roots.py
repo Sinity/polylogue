@@ -7,7 +7,7 @@ from pathlib import Path
 
 
 def _xdg_path(env_var: str, fallback: Path) -> Path:
-    raw = os.environ.get(env_var, "").strip()
+    raw = os.environ.get(env_var, "").strip()  # XDG/legacy env kept for path bootstrapping
     if raw:
         return Path(raw).expanduser()
     return fallback

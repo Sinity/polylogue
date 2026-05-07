@@ -475,7 +475,7 @@ def run_runtime_readiness(config: Config) -> ReadinessReport:
     term = os.environ.get("TERM", "unknown")
     cols, rows = shutil.get_terminal_size()
     is_tty = sys.stdout.isatty()
-    force_plain = os.environ.get("POLYLOGUE_FORCE_PLAIN", "")
+    force_plain = "1" if load_polylogue_config().get("force_plain") else ""
 
     term_detail = f"TERM={term}, {cols}x{rows}, tty={is_tty}"
     if force_plain:

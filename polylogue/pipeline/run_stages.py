@@ -285,7 +285,6 @@ async def execute_embed_stage(
     """Execute the embedding stage using embed_runtime/embed_stats helpers."""
     del progress_callback
 
-    import os
 
     import click
 
@@ -311,7 +310,7 @@ async def execute_embed_stage(
             click.echo(f"  Pending:  {payload['pending_conversations']}")
         return EmbedStageOutcome(embedded_count=0, error_count=0, stats_only=True)
 
-    voyage_key = os.environ.get("VOYAGE_API_KEY")
+    voyage_key = str(load_polylogue_config().get("voyage_api_key") or "") or None
     if not voyage_key:
         click.echo("Error: VOYAGE_API_KEY environment variable not set", err=True)
         click.echo("Set it with: export VOYAGE_API_KEY=your-api-key", err=True)
