@@ -107,15 +107,6 @@ def _check_exit_code(result: ExerciseResult) -> str | None:
     return None
 
 
-def _check_clean_stderr(result: ExerciseResult) -> str | None:
-    """Read commands produce no unexpected stderr."""
-    if result.exercise.writes:
-        return SKIP
-    # We don't have separate stderr in ExerciseResult (CliRunner merges it),
-    # so this invariant checks for error-like patterns in output
-    return None
-
-
 def _check_nonempty_output(result: ExerciseResult) -> str | None:
     """Non-count read commands produce non-empty output."""
     if result.exercise.writes:
@@ -144,11 +135,6 @@ SHOWCASE_INVARIANTS: list[Invariant] = [
         "exit_code",
         "Exit code matches validation spec",
         _check_exit_code,
-    ),
-    Invariant(
-        "clean_stderr",
-        "Read commands produce no unexpected stderr",
-        _check_clean_stderr,
     ),
     Invariant(
         "nonempty_output",

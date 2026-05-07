@@ -13,7 +13,6 @@ from polylogue.showcase.invariants import (
     SKIP,
     Invariant,
     InvariantResult,
-    _check_clean_stderr,
     _check_exit_code,
     _check_json_valid,
     _check_nonempty_output,
@@ -90,10 +89,7 @@ def test_exit_code_invariant_uses_assertion_spec() -> None:
     assert _check_exit_code(failing) == "exit code 1, expected 0"
 
 
-def test_clean_stderr_and_nonempty_output_skip_expected_cases() -> None:
-    assert _check_clean_stderr(_make_result(args=("run",), writes=True)) == SKIP
-    assert _check_clean_stderr(_make_result(args=("stats",))) is None
-
+def test_nonempty_output_skip_expected_cases() -> None:
     assert _check_nonempty_output(_make_result(args=("stats", "--count"), output="")) == SKIP
     assert _check_nonempty_output(_make_result(args=("--help",), output="")) == SKIP
     assert _check_nonempty_output(_make_result(args=("--version",), output="")) == SKIP

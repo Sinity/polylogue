@@ -4,14 +4,53 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from enum import Enum
 
 from polylogue.insights.authored_payloads import PayloadDict, payload_float, payload_int, payload_items
 
 
+class AssertionClass(Enum):
+    """Classifies what kind of evidence an AssertionSpec provides.
+
+    The classification is auto-derived from which assertion fields are
+    populated, but callers may override it explicitly when the auto-derived
+    class does not match intent (e.g. a lane that runs pytest tests owns
+    its semantic checks in the test files, not in the AssertionSpec).
+    """
+
+    SMOKE_PROCESS = "smoke/process"
+    SEMANTIC_OUTPUT = "semantic-output"
+    RUNTIME_BUDGET = "runtime-budget"
+    LIVE_OBSERVABILITY = "live-observability"
+    METADATA_SPEC = "metadata/spec"
+
+
+def _classify_assertion(
+    stdout_contains: tuple[str, ...],
+    stdout_not_contains: tuple[str, ...],
+    stdout_is_valid_json: bool,
+    custom: object,
+    benchmark_warn_pct: object,
+    benchmark_fail_pct: object,
+) -> AssertionClass:
+    """Auto-classify an assertion spec from which fields are populated."""
+    if benchmark_warn_pct is not None or benchmark_fail_pct is not None:
+        return AssertionClass.RUNTIME_BUDGET
+    if stdout_contains or stdout_not_contains or stdout_is_valid_json or custom is not None:
+        return AssertionClass.SEMANTIC_OUTPUT
+    return AssertionClass.SMOKE_PROCESS
+
+
 @dataclass(frozen=True)
 class AssertionSpec:
-    """Expected success criteria for an authored executable scenario."""
+    """Expected success criteria for an authored executable scenario.
+
+    The default AssertionSpec(exit_code=0) only checks that the process exits
+    cleanly - it is a smoke/process check, not semantic proof.  Semantic
+    assertions require explicit stdout_contains, stdout_not_contains,
+    stdout_is_valid_json, or custom fields.
+    """
 
     exit_code: int | None = 0
     stdout_contains: tuple[str, ...] = ()
@@ -21,6 +60,21 @@ class AssertionSpec:
     benchmark_warn_pct: float | None = None
     benchmark_fail_pct: float | None = None
     custom: Callable[[str, int], str | None] | None = None
+    classification_override: AssertionClass | None = None
+
+    classification: AssertionClass = field(init=False)
+
+    def __post_init__(self) -> None:
+        """Auto-classify from populated fields unless explicitly overridden."""
+        klass = self.classification_override or _classify_assertion(
+            self.stdout_contains,
+            self.stdout_not_contains,
+            self.stdout_is_valid_json,
+            self.custom,
+            self.benchmark_warn_pct,
+            self.benchmark_fail_pct,
+        )
+        object.__setattr__(self, "classification", klass)
 
     def to_payload(self) -> PayloadDict:
         payload: PayloadDict = {}
@@ -38,6 +92,8 @@ class AssertionSpec:
             payload["benchmark_warn_pct"] = self.benchmark_warn_pct
         if self.benchmark_fail_pct is not None:
             payload["benchmark_fail_pct"] = self.benchmark_fail_pct
+        if self.classification_override is not None:
+            payload["classification"] = self.classification.value
         return payload
 
     @classmethod
@@ -52,6 +108,7 @@ class AssertionSpec:
             stdout_min_lines=payload_int(payload.get("stdout_min_lines"), "stdout_min_lines"),
             benchmark_warn_pct=payload_float(payload.get("benchmark_warn_pct"), "benchmark_warn_pct"),
             benchmark_fail_pct=payload_float(payload.get("benchmark_fail_pct"), "benchmark_fail_pct"),
+            classification_override=_parse_classification(payload.get("classification")),
         )
 
     def validate_process(self, output: str, exit_code: int) -> str | None:
@@ -89,4 +146,20 @@ class AssertionSpec:
         return default if self.benchmark_fail_pct is None else self.benchmark_fail_pct
 
 
-__all__ = ["AssertionSpec"]
+def _parse_classification(value: object) -> AssertionClass | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        try:
+            return AssertionClass(value)
+        except ValueError:
+            return None
+    return None
+
+
+def classification_label(klass: AssertionClass) -> str:
+    """Human-readable label for assertion classification."""
+    return klass.value
+
+
+__all__ = ["AssertionClass", "AssertionSpec", "classification_label"]
