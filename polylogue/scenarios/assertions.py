@@ -96,6 +96,31 @@ class AssertionSpec:
             payload["classification"] = self.classification.value
         return payload
 
+    def validate(self) -> list[str]:
+        """Return validation warnings if classification doesn't match assertion content.
+
+        A lane classified as SEMANTIC_OUTPUT should have at least one
+        stdout assertion or point to pytest tests.  This method flags
+        lanes that claim semantic evidence but only check exit codes.
+        """
+        if self.classification != AssertionClass.SEMANTIC_OUTPUT:
+            return []
+        has_semantic = bool(
+            self.stdout_contains
+            or self.stdout_not_contains
+            or self.stdout_is_valid_json
+            or self.stdout_min_lines is not None
+            or self.custom is not None
+        )
+        if not has_semantic:
+            return [
+                "SEMANTIC_OUTPUT classification requires stdout assertions "
+                "(stdout_contains, stdout_not_contains, stdout_is_valid_json, "
+                "stdout_min_lines, or custom). Either add semantic assertions "
+                "or override classification to SMOKE_PROCESS."
+            ]
+        return []
+
     @classmethod
     def from_payload(cls, payload: Mapping[str, object] | None) -> AssertionSpec:
         if payload is None:

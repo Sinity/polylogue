@@ -237,10 +237,29 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
     # POST
     # ------------------------------------------------------------------
 
+    def _check_cross_origin(self) -> bool:
+        """Reject browser cross-origin POSTs to mutating endpoints.
+
+        Returns True if the request is allowed, sends 403 and returns
+        False if the Origin header indicates a cross-origin browser request.
+        """
+        origin = self.headers.get("Origin", "")
+        if not origin:
+            return True  # Not a browser request
+        # Allow same-origin localhost requests (web reader, browser extension)
+        if origin.startswith("http://127.0.0.1:") or origin.startswith("http://localhost:"):
+            return True
+        if origin.startswith("https://127.0.0.1:") or origin.startswith("https://localhost:"):
+            return True
+        self._send_error(HTTPStatus.FORBIDDEN, "cross_origin_denied")
+        return False
+
     def do_POST(self) -> None:
         path, params = self._parse_path()
 
         if not self._check_auth():
+            return
+        if not self._check_cross_origin():
             return
 
         if path == ["api", "reset"]:

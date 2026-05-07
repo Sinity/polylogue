@@ -284,12 +284,18 @@ async def run_daemon_services(
 
     global _pidfile_path
 
-    # Non-localhost API binding requires explicit opt-in.
-    if enable_api and api_host not in ("127.0.0.1", "::1", "localhost") and not browser_capture_allow_remote:
-        raise click.UsageError(
-            f"--api-host={api_host} is not a loopback address. "
-            f"Add --insecure-allow-remote to accept the risk of exposing the daemon API."
-        )
+    # Non-localhost API binding requires explicit opt-in AND an auth token.
+    if enable_api and api_host not in ("127.0.0.1", "::1", "localhost"):
+        if not browser_capture_allow_remote:
+            raise click.UsageError(
+                f"--api-host={api_host} is not a loopback address. "
+                f"Add --insecure-allow-remote to accept the risk of exposing the daemon API."
+            )
+        if not api_auth_token:
+            raise click.UsageError(
+                f"--api-host={api_host} with --insecure-allow-remote requires --api-auth-token. "
+                f"Remote binding without authentication is not supported."
+            )
 
     logger.info("daemon started")
 
