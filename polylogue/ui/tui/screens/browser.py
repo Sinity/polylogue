@@ -9,7 +9,11 @@ from polylogue.ui.tui.screens.base import RepositoryBoundContainer
 
 
 class Browser(RepositoryBoundContainer):
-    """Browser widget for navigating conversations."""
+    """Browser widget for navigating conversations.
+
+    Routes list/stats operations through ``ArchiveOperations``
+    instead of calling repository methods directly.
+    """
 
     def compose(self) -> ComposeResult:
         with Horizontal():
@@ -23,16 +27,16 @@ class Browser(RepositoryBoundContainer):
     async def _fetch_tree(self) -> None:
         """Fetch tree data asynchronously, then update DOM."""
         try:
-            repo = self._get_repo("Browser")
+            ops = self._get_ops("Browser")
 
-            stats = await repo.get_archive_stats()
+            stats = await ops.storage_stats()
             providers = sorted(stats.providers.keys()) if stats.providers else []
 
             # Collect tree data: list of (provider_label, [(title, conv_id), ...])
             tree_data: list[tuple[str, list[tuple[str, str]]]] = []
             for provider in providers:
-                summaries = await repo.list_summaries(limit=50, provider=provider)
-                leaves = [(str(s.title or s.id), str(s.id)) for s in summaries]
+                conversations = await ops.list_conversations(limit=50, provider=provider)
+                leaves = [(conv.title or str(conv.id), str(conv.id)) for conv in conversations]
                 tree_data.append((provider.capitalize(), leaves))
 
         except Exception as e:
