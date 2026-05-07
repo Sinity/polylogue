@@ -18,6 +18,7 @@ _SYSTEM_REMINDER_PATTERN = re.compile(r"<system-reminder>.*?</system-reminder>\s
 _CONTEXT_START_MARKERS = (
     "<environment_context>",
     "<permissions instructions>",
+    "<subagent_notification>",
     "<system>",
     "<developer>",
     "Base directory for this skill:",
@@ -46,6 +47,8 @@ _CLAUDE_CODE_PROTOCOL_START_MARKERS = (
     "<ultraplan>",
 )
 
+_CONTENTS_OF_LINE_RE = re.compile(r"^Contents of .+:", re.MULTILINE)
+
 
 def strip_system_reminders(text: str) -> str:
     """Remove Claude Code system-reminder blocks from mixed message text."""
@@ -64,7 +67,11 @@ def strip_leading_system_reminders(text: str) -> str:
 
 
 def classify_text_message_type(text: str | None) -> MessageType | None:
-    """Classify full-message text that represents runtime context/protocol."""
+    """Classify full-message text that represents runtime context/protocol.
+
+    Used at materialization time to persist ``message_type``, and as a
+    resilience fallback at read time for pre-#839 archive rows.
+    """
     if not text:
         return None
 
@@ -75,6 +82,15 @@ def classify_text_message_type(text: str | None) -> MessageType | None:
         return MessageType.CONTEXT
     if stripped.startswith(_CLAUDE_CODE_PROTOCOL_START_MARKERS):
         return MessageType.PROTOCOL
+
+    # Additional context heuristics beyond start-of-text markers.
+    if "<system>" in stripped and "</system>" in stripped:
+        return MessageType.CONTEXT
+    if _CONTENTS_OF_LINE_RE.search(stripped):
+        return MessageType.CONTEXT
+    if stripped.startswith("<file path="):
+        return MessageType.CONTEXT
+
     return None
 
 

@@ -71,16 +71,6 @@ def _block_texts(blocks: Iterable[Mapping[str, object]], *, block_type: str) -> 
     return texts
 
 
-_CONTEXT_START_MARKERS = (
-    "<environment_context>",
-    "<subagent_notification>",
-    "<permissions instructions>",
-)
-_CONTEXT_LINE_PATTERNS = (
-    ("Contents of ", re.compile(r"^Contents of .+:", re.MULTILINE)),
-    ("<file path=", re.compile(r"^<file path=", re.MULTILINE)),
-)
-
 logger = get_logger(__name__)
 
 
@@ -235,31 +225,29 @@ class MessageRuntimeMixin:
 
     @cached_property
     def is_context_dump(self) -> bool:
-        message_type = MessageType.normalize(getattr(self, "message_type", MessageType.MESSAGE))
-        if message_type == MessageType.CONTEXT:
+        # Authoritative: stored message_type from materialization.
+        if self.message_type == MessageType.CONTEXT:
             return True
 
+        # Resilience: text-based classification for pre-#839 archive rows.
         text = self.text
         if not text:
             return False
         if classify_text_message_type(text) == MessageType.CONTEXT:
             return True
-        stripped = text.lstrip()
-        if stripped.startswith(_CONTEXT_START_MARKERS):
-            return True
+        # Narrow fallbacks that require context beyond message text.
         if self.attachments and len(text) < 100:
-            return True
-        if "<system>" in text and "</system>" in text:
             return True
         if "```" in text and text.count("```") >= 6:
             return True
-        return any(marker in text and pattern.search(text) for marker, pattern in _CONTEXT_LINE_PATTERNS)
+        return False
 
     @cached_property
     def is_protocol_artifact(self) -> bool:
-        message_type = MessageType.normalize(getattr(self, "message_type", MessageType.MESSAGE))
-        if message_type == MessageType.PROTOCOL:
+        # Authoritative: stored message_type from materialization.
+        if self.message_type == MessageType.PROTOCOL:
             return True
+        # Resilience: text-based classification for pre-#839 archive rows.
         return classify_text_message_type(self.text) == MessageType.PROTOCOL
 
     @cached_property
