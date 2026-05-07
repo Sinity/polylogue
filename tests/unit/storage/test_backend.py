@@ -1560,11 +1560,11 @@ def test_fts_triggers_restored_before_commit(tmp_path: Path) -> None:
     conn = sqlite3.connect(str(db))
     conn.executescript(ARCHIVE_STORAGE_DDL)
     conn.execute(
-        "INSERT INTO conversations(conversation_id, provider_name, provider_conversation_id) VALUES(?,?,?)",
+        "INSERT INTO conversations(conversation_id, provider_name, provider_conversation_id, version) VALUES(?,?,?,1)",
         ("c1", "test", "pc1"),
     )
     conn.execute(
-        "INSERT INTO messages(message_id, conversation_id, role, text, provider_name) VALUES(?,?,?,?,?)",
+        "INSERT INTO messages(message_id, conversation_id, role, text, provider_name, version) VALUES(?,?,?,?,?,1)",
         ("m1", "c1", "user", "hello world", "test"),
     )
     conn.commit()
@@ -1574,7 +1574,7 @@ def test_fts_triggers_restored_before_commit(tmp_path: Path) -> None:
 
     suspend_fts_triggers_sync(conn)
     conn.execute(
-        "INSERT INTO messages(message_id, conversation_id, role, text, provider_name) VALUES(?,?,?,?,?)",
+        "INSERT INTO messages(message_id, conversation_id, role, text, provider_name, version) VALUES(?,?,?,?,?,1)",
         ("m2", "c1", "assistant", "hi there", "test"),
     )
     # Restore BEFORE commit (the fix)
@@ -1584,6 +1584,60 @@ def test_fts_triggers_restored_before_commit(tmp_path: Path) -> None:
     # After commit, FTS should be populated for both messages
     count = conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0]
     assert count == 2, f"Expected 2 FTS entries, got {count}"
+    conn.close()
+
+
+def test_fts_triggers_restored_after_exception_during_ingest(tmp_path: Path) -> None:
+    """FTS triggers must be active even after an exception during ingest (#817).
+
+    If an exception occurs mid-ingest after trigger suspension, the finally
+    block must restore triggers so subsequent operations are not affected.
+    """
+    import sqlite3
+
+    from polylogue.storage.sqlite.schema_ddl_archive import ARCHIVE_STORAGE_DDL
+
+    db = tmp_path / "fts_exception.db"
+    conn = sqlite3.connect(str(db))
+    conn.executescript(ARCHIVE_STORAGE_DDL)
+    conn.execute(
+        "INSERT INTO conversations(conversation_id, provider_name, provider_conversation_id, version) VALUES(?,?,?,1)",
+        ("c1", "test", "pc1"),
+    )
+    conn.execute(
+        "INSERT INTO messages(message_id, conversation_id, role, text, provider_name, version) VALUES(?,?,?,?,?,1)",
+        ("m1", "c1", "user", "hello world", "test"),
+    )
+    conn.commit()
+
+    from polylogue.storage.fts.fts_lifecycle import restore_fts_triggers_sync, suspend_fts_triggers_sync
+
+    suspend_fts_triggers_sync(conn)
+
+    try:
+        # Simulate an exception during ingest
+        raise RuntimeError("simulated ingest failure")
+    except RuntimeError:
+        # The finally block should restore triggers
+        restore_fts_triggers_sync(conn)
+        conn.commit()
+
+    # After exception + restore, triggers should be active
+    conn.execute(
+        "INSERT INTO messages(message_id, conversation_id, role, text, provider_name) VALUES(?,?,?,?,?)",
+        ("m2", "c1", "assistant", "after exception", "test"),
+    )
+    conn.commit()
+
+    # FTS should have both messages (the original m1 via repair,
+    # and m2 via active trigger after restore)
+    from polylogue.storage.fts.fts_lifecycle import ensure_fts_index_sync
+
+    ensure_fts_index_sync(conn)
+    conn.execute("INSERT INTO messages_fts(messages_fts) VALUES('rebuild')")
+
+    count = conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0]
+    assert count == 2, f"Expected 2 FTS entries after exception recovery, got {count}"
     conn.close()
 
 

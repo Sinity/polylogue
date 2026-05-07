@@ -251,10 +251,6 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         consumes=("session_insight_source_conversations",),
         produces=(
             "session_profile_rows",
-            "session_profile_merged_fts",
-            "session_profile_evidence_fts",
-            "session_profile_inference_fts",
-            "session_profile_enrichment_fts",
             "session_work_event_rows",
             "session_work_event_fts",
             "session_phase_rows",
@@ -336,7 +332,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         name="query-session-profiles",
         kind=OperationKind.QUERY,
         description="Resolve durable session-profile insights from profile rows and merged profile FTS.",
-        consumes=("session_profile_rows", "session_profile_merged_fts"),
+        consumes=("session_profile_rows",),
         produces=("session_profile_results",),
         path_targets=("session-profile-query-loop",),
         code_refs=(
@@ -351,7 +347,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         name="query-session-enrichments",
         kind=OperationKind.QUERY,
         description="Resolve durable session enrichments from profile rows and enrichment FTS.",
-        consumes=("session_profile_rows", "session_profile_enrichment_fts"),
+        consumes=("session_profile_rows",),
         produces=("session_enrichment_results",),
         path_targets=("session-enrichment-query-loop",),
         code_refs=(

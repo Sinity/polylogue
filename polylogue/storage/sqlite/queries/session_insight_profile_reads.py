@@ -57,22 +57,17 @@ async def list_session_profiles(
     query: SessionProfileListQuery,
 ) -> list[SessionProfileRecord]:
     params: list[object] = []
-    secondary_order_by = _session_profile_order_by(query.sort).removeprefix("ORDER BY ")
     if query.query:
-        fts_table = {
-            "evidence": "session_profile_evidence_fts",
-            "inference": "session_profile_inference_fts",
-            "enrichment": "session_profile_enrichment_fts",
-            "merged": "session_profiles_fts",
-        }.get(query.tier, "session_profiles_fts")
-        from_clause = f"""
-            FROM session_profiles sp
-            JOIN {fts_table}
-              ON {fts_table}.conversation_id = sp.conversation_id
-        """
-        where = [f"{fts_table} MATCH ?"]
-        params.append(query.query)
-        order_by = f"ORDER BY bm25({fts_table}), {secondary_order_by}"
+        search_column = {
+            "evidence": "evidence_search_text",
+            "inference": "inference_search_text",
+            "enrichment": "enrichment_search_text",
+            "merged": "search_text",
+        }.get(query.tier, "search_text")
+        from_clause = "FROM session_profiles sp"
+        where = [f"sp.{search_column} LIKE ?"]
+        params.append(f"%{query.query}%")
+        order_by = _session_profile_order_by(query.sort)
     else:
         from_clause = "FROM session_profiles sp"
         where = []

@@ -12,6 +12,8 @@ FTS_MESSAGES_TABLE_SQL = """
         message_id UNINDEXED,
         conversation_id UNINDEXED,
         text,
+        content='messages',
+        content_rowid='rowid',
         tokenize='unicode61'
     );
 """
@@ -34,10 +36,7 @@ FTS_INDEXABLE_MESSAGE_COUNT_SQL = "SELECT COUNT(*) FROM messages WHERE text IS N
 ACTION_FTS_INDEX_EXISTS_SQL = "SELECT name FROM sqlite_master WHERE type='table' AND name='action_events_fts'"
 ACTION_FTS_INDEX_DOC_COUNT_SQL = "SELECT COUNT(*) FROM action_events_fts_docsize"
 FTS_REBUILD_SQL = """
-    INSERT INTO messages_fts (rowid, message_id, conversation_id, text)
-    SELECT messages.rowid, messages.message_id, messages.conversation_id, messages.text
-    FROM messages
-    WHERE messages.text IS NOT NULL
+    INSERT INTO messages_fts(messages_fts) VALUES('rebuild')
 """
 
 ACTION_FTS_REBUILD_SQL = """

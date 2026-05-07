@@ -60,7 +60,7 @@ def _resolve_credentials_path(ui: DriveUILike | _PromptBridge | None, config: Dr
     if configured := _configured_path(config, "credentials_path"):
         return configured
 
-    env_path = load_polylogue_config().get("drive_credentials_path") or str(drive_credentials_path())
+    env_path = load_polylogue_config().get("drive_credentials_path") or str(drive_credentials_path())  # type: ignore[arg-type]
     if env_path:
         return Path(env_path).expanduser()
 
@@ -89,7 +89,7 @@ def _resolve_token_path(config: DriveConfigLike | None = None) -> Path:
     if configured := _configured_path(config, "token_path"):
         return configured
 
-    env_path = load_polylogue_config().get("drive_token_path") or str(drive_token_path())
+    env_path = load_polylogue_config().get("drive_token_path") or str(drive_token_path())  # type: ignore[arg-type]
     if env_path:
         return Path(env_path).expanduser()
 
