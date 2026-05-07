@@ -25,6 +25,7 @@ class RawConversationRecord(BaseModel):
     validation_drift_count: int | None = None
     validation_provider: Provider | None = None
     validation_mode: ValidationMode | None = None
+    detection_warnings: str | None = None
 
     @field_validator("raw_id", "provider_name", "source_path")
     @classmethod

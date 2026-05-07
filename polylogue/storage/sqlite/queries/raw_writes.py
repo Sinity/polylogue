@@ -31,8 +31,9 @@ async def save_raw_conversation(
             validation_error,
             validation_drift_count,
             validation_provider,
-            validation_mode
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            validation_mode,
+            detection_warnings
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             record.raw_id,
@@ -52,6 +53,7 @@ async def save_raw_conversation(
             record.validation_drift_count,
             record.validation_provider,
             record.validation_mode,
+            record.detection_warnings,
         ),
     )
     inserted = bool(cursor.rowcount > 0)
