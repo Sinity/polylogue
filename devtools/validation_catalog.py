@@ -5,9 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 
 from .lane_models import LaneEntry
-from .validation_family_models import ValidationLaneFamily
-from .validation_lane_catalog_composites import COMPOSITE_LANES, VALIDATION_FAMILIES
-from .validation_lane_catalog_contracts import CONTRACT_LANES
+from .validation_lane_catalog_contracts import COMPOSITE_LANES, CONTRACT_LANES
 from .validation_lane_catalog_live import LIVE_LANES
 
 ALL_VALIDATION_LANES: dict[str, LaneEntry] = {
@@ -80,8 +78,9 @@ def build_composite_lane_entries() -> tuple[LaneEntry, ...]:
     return _category_entries("composite")
 
 
-def build_validation_family_entries() -> tuple[ValidationLaneFamily, ...]:
-    return tuple(sorted(VALIDATION_FAMILIES, key=lambda item: item.name))
+def build_validation_family_entries() -> tuple[object, ...]:
+    """Return validation family entries (flattened — families are now direct composites)."""
+    return ()
 
 
 __all__ = [

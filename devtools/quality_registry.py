@@ -9,7 +9,6 @@ from devtools.benchmark_catalog import BenchmarkCampaignEntry
 from devtools.lane_models import LaneEntry
 from devtools.mutation_catalog import MutationCampaignEntry
 from devtools.scenario_projection_catalog import build_scenario_projection_entries
-from devtools.validation_family_models import ValidationLaneFamily
 from polylogue.scenarios import CorpusScenario, ScenarioProjectionEntry
 from polylogue.showcase.exercise_models import Exercise
 
@@ -32,7 +31,7 @@ class QualityRegistry:
         return self.catalog.contract_lanes
 
     @property
-    def validation_families(self) -> tuple[ValidationLaneFamily, ...]:
+    def validation_families(self) -> tuple[object, ...]:  # flattened — ValidationLaneFamily DSL removed in #805
         return self.catalog.validation_families
 
     @property
