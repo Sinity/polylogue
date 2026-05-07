@@ -134,6 +134,10 @@ class DaemonStatus(BaseModel):
     fts_readiness: FTSReadiness = Field(default_factory=FTSReadiness)
     insight_freshness: InsightFreshness = Field(default_factory=InsightFreshness)
     browser_capture_active: bool = False
+    raw_parse_failures: int = 0
+    raw_validation_failures: int = 0
+    raw_quarantined: int = 0
+    raw_failure_samples: list[dict[str, object]] = Field(default_factory=list)
     checked_at: str = ""
 
 
@@ -263,6 +267,73 @@ def _insight_freshness_info() -> dict[str, object]:
         }
     except sqlite3.Error:
         return {"sessions_with_profiles": 0, "total_sessions": 0}
+
+
+def _raw_failure_info() -> dict[str, object]:
+    """Query raw_conversations for parse/validation failure counts and bounded samples."""
+    dbf = db_path()
+    if not dbf.exists():
+        return {"parse_failures": 0, "validation_failures": 0, "quarantined": 0, "samples": []}
+
+    try:
+        conn = open_readonly_connection(dbf)
+        try:
+            tables = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='raw_conversations'"
+                ).fetchall()
+            }
+            if "raw_conversations" not in tables:
+                return {"parse_failures": 0, "validation_failures": 0, "quarantined": 0, "samples": []}
+
+            parse_fail = int(
+                conn.execute("SELECT COUNT(*) FROM raw_conversations WHERE parse_error IS NOT NULL").fetchone()[0] or 0
+            )
+            validation_fail = int(
+                conn.execute("SELECT COUNT(*) FROM raw_conversations WHERE validation_status = 'FAILED'").fetchone()[0]
+                or 0
+            )
+            quarantined = int(
+                conn.execute(
+                    "SELECT COUNT(*) FROM raw_conversations WHERE parsed_at IS NULL AND (parse_error IS NOT NULL OR validation_status = 'FAILED')"
+                ).fetchone()[0]
+                or 0
+            )
+            # Bounded failure samples (most recent 50)
+            samples: list[dict[str, object]] = []
+            for row in conn.execute(
+                "SELECT raw_id, source_path, parse_error, validation_status "
+                "FROM raw_conversations "
+                "WHERE parse_error IS NOT NULL OR validation_status = 'FAILED' "
+                "ORDER BY acquired_at DESC LIMIT 50"
+            ).fetchall():
+                error_text = row["parse_error"] or ""
+                error_class = error_text.split("\n")[0].strip()[:120] if error_text else None
+                samples.append(
+                    {
+                        "raw_id": row["raw_id"],
+                        "source_path": row["source_path"] or "",
+                        "error_class": error_class,
+                        "validation_status": row["validation_status"] or "",
+                    }
+                )
+        finally:
+            conn.close()
+        return {
+            "parse_failures": parse_fail,
+            "validation_failures": validation_fail,
+            "quarantined": quarantined,
+            "samples": samples,
+        }
+    except sqlite3.Error:
+        return {"parse_failures": 0, "validation_failures": 0, "quarantined": 0, "samples": []}
+
+
+def _safe_list_of_dicts(value: object) -> list[dict[str, object]]:
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, dict)]
+    return []
 
 
 def _safe_int(value: object) -> int:
@@ -559,8 +630,13 @@ def build_daemon_status(
     freshness = _insight_freshness_info()
     live_cursor = _live_cursor_summary_info()
     live_ingest_attempts = _live_ingest_attempt_summary_info()
+    raw_failures = _raw_failure_info()
 
     return DaemonStatus(
+        raw_parse_failures=_safe_int(raw_failures.get("parse_failures", 0)),
+        raw_validation_failures=_safe_int(raw_failures.get("validation_failures", 0)),
+        raw_quarantined=_safe_int(raw_failures.get("quarantined", 0)),
+        raw_failure_samples=_safe_list_of_dicts(raw_failures.get("samples")),
         daemon_liveness=_check_daemon_liveness(),
         component_state=ComponentState(
             watcher="running" if watch_sources else "stopped",
