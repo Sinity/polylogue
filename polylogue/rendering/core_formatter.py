@@ -42,8 +42,15 @@ class FormattedConversation:
 class ConversationFormatter:
     """Formats repository render projections to structured output."""
 
+<<<<<<< Updated upstream
     def __init__(self, archive_root: Path, repository: ConversationRepository | None = None, **kwargs: object):
+||||||| Stash base
+    def __init__(self, archive_root: Path, db_path: Path | None = None, backend: SQLiteBackend | None = None):
+=======
+    def __init__(self, archive_root: Path, repository: ConversationRepository):
+>>>>>>> Stashed changes
         self.archive_root = archive_root
+<<<<<<< Updated upstream
         if repository is None:
             from polylogue.storage.repository import ConversationRepository
             from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
@@ -52,6 +59,12 @@ class ConversationFormatter:
             self._repository = ConversationRepository(backend=backend)
         else:
             self._repository = repository
+||||||| Stash base
+        self.db_path = db_path
+        self.backend = backend
+=======
+        self._repository = repository
+>>>>>>> Stashed changes
 
     async def load_projection(self, conversation_id: str) -> ConversationRenderProjection:
         """Load the canonical repository-owned render projection."""
