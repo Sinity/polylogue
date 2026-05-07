@@ -1544,3 +1544,49 @@ def test_fts_triggers_restored_after_exception() -> None:
                 os.unlink(db_path)
             except OSError:
                 pass
+
+
+def test_fts_index_recovers_from_corrupt_trigger_state() -> None:
+    """FTS index should be queryable after trigger suspend/restore cycle (#807)."""
+    import sqlite3
+
+    from polylogue.storage.fts.fts_lifecycle import restore_fts_triggers_sync, suspend_fts_triggers_sync
+    from polylogue.storage.sqlite.schema_ddl_archive import ARCHIVE_STORAGE_DDL
+
+    conn = sqlite3.connect(":memory:")
+    conn.executescript(ARCHIVE_STORAGE_DDL)
+    conn.execute(
+        "INSERT INTO conversations(conversation_id, provider_name, provider_conversation_id) VALUES(?,?,?)",
+        ("c1", "test", "pc1"),
+    )
+    conn.commit()
+
+    # Normal insert with triggers active
+    conn.execute(
+        "INSERT INTO messages(message_id, conversation_id, role, text, provider_name) VALUES(?,?,?,?,?)",
+        ("m1", "c1", "user", "hello world this is a test message", "test"),
+    )
+    conn.commit()
+    assert conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0] == 1
+
+    # Simulate crash recovery: triggers suspended, data inserted, triggers restored
+    suspend_fts_triggers_sync(conn)
+    conn.execute(
+        "INSERT INTO messages(message_id, conversation_id, role, text, provider_name) VALUES(?,?,?,?,?)",
+        ("m2", "c1", "assistant", "another message for testing", "test"),
+    )
+    restore_fts_triggers_sync(conn)
+    conn.commit()
+
+    # New message should be picked up
+    conn.execute(
+        "INSERT INTO messages(message_id, conversation_id, role, text, provider_name) VALUES(?,?,?,?,?)",
+        ("m3", "c1", "user", "third message here", "test"),
+    )
+    conn.commit()
+
+    count = conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0]
+    # m1 (pre-suspend) + m3 (post-restore) should be indexed
+    # m2 was inserted while triggers were suspended
+    assert count >= 2, f"Expected at least 2 FTS entries, got {count}"
+    conn.close()
