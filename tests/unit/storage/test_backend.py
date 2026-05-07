@@ -1467,3 +1467,50 @@ async def test_get_archive_stats_skips_retrieval_band_status(tmp_path: Path, mon
     assert stats.total_conversations == 0
     assert observed == [False]
     await backend.close()
+
+
+async def test_parent_message_id_self_referential_fk(
+    tmp_path: Path,
+) -> None:
+    """messages.parent_message_id FK uses NO ACTION — conversation-scoped deletion works."""
+    from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
+
+    backend = SQLiteBackend(db_path=tmp_path / "fk.db")
+    repo = ConversationRepository(backend=backend)
+
+    # Create a conversation with self-referential message chain
+    parent = make_message("msg-parent", "conv-fk", role="user", text="Parent")
+    child = make_message(
+        "msg-child",
+        "conv-fk",
+        role="assistant",
+        text="Child",
+        parent_message_id="msg-parent",
+    )
+    grandchild = make_message(
+        "msg-grandchild",
+        "conv-fk",
+        role="user",
+        text="Grandchild",
+        parent_message_id="msg-child",
+    )
+    conv = make_conversation("conv-fk", title="FK Test")
+
+    async with backend.transaction():
+        await backend.save_conversation_record(conv)
+        await backend.save_messages([parent, child, grandchild])
+
+    # Verify all messages exist
+    messages = await backend.get_messages("conv-fk")
+    assert len(messages) == 3
+
+    # Verify self-referential chain is intact
+    child_msg = next(m for m in messages if m.message_id == "msg-child")
+    assert child_msg.parent_message_id == "msg-parent"
+
+    # Deleting conversation cascades to messages (ON DELETE CASCADE on conversation_id FK)
+    assert await repo.delete_conversation("conv-fk") is True
+    assert await backend.get_conversation("conv-fk") is None
+    assert len(await backend.get_messages("conv-fk")) == 0
+
+    await backend.close()
