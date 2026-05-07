@@ -97,6 +97,7 @@ if TYPE_CHECKING:
     from polylogue.archive.query.search_hits import ConversationSearchHit
     from polylogue.archive.stats import ArchiveStats as StorageArchiveStats
     from polylogue.config import Config
+    from polylogue.storage.archive_views import ConversationRenderProjection
     from polylogue.storage.insights.session.runtime import SessionInsightCounts
     from polylogue.storage.repository import ConversationRepository
     from polylogue.storage.runtime import RawConversationRecord
@@ -301,6 +302,12 @@ class ArchiveSearchMixin:
     async def get_conversation_stats(self, conversation_id: str) -> dict[str, int]:
         full_id = await self.repository.resolve_id(conversation_id) or conversation_id
         return await self.repository.get_conversation_stats(str(full_id))
+
+    async def get_render_projection(
+        self, conversation_id: str
+    ) -> ConversationRenderProjection | None:
+        """Load the canonical render projection for a conversation."""
+        return await self.repository.get_render_projection(conversation_id)
 
     async def get_conversations(
         self,
