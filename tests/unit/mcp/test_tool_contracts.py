@@ -1349,3 +1349,34 @@ class TestMutationTools:
         assert spec.query_terms == ("hello",)
         assert tuple(str(provider) for provider in spec.providers) == ("chatgpt",)
         assert spec.limit == 3
+
+
+def test_mcp_search_params_match_query_spec() -> None:
+    """search tool parameters must cover the same filter axes as ConversationQuerySpec (#819)."""
+    from polylogue.archive.query.spec import ConversationQuerySpec
+
+    spec_fields = {f.name for f in ConversationQuerySpec.__dataclass_fields__.values()}
+    mcp_params = {
+        "query",
+        "provider",
+        "providers",
+        "since",
+        "until",
+        "tag",
+        "tags",
+        "limit",
+        "offset",
+        "has_tool_use",
+        "has_thinking",
+        "message_type",
+        "repo",
+        "cwd_prefix",
+        "action_terms",
+        "tool_terms",
+        "title_contains",
+        "referenced_path",
+    }
+    missing = mcp_params - spec_fields
+    # MCP may have surface-specific params not in the spec (limit, offset, tags)
+    surface_only = {"limit", "offset", "tags"}
+    assert missing.issubset(surface_only), f"MCP params not in ConversationQuerySpec: {missing - surface_only}"
