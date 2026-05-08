@@ -3,7 +3,8 @@ from __future__ import annotations
 import asyncio
 import atexit
 import threading
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Coroutine
+from concurrent.futures import Future
 from typing import TypeVar
 
 T = TypeVar("T")
@@ -41,6 +42,10 @@ def _stop_worker() -> None:
 atexit.register(_stop_worker)
 
 
+async def _await(awaitable: Awaitable[T]) -> T:
+    return await awaitable
+
+
 def run_coroutine_sync(coro: Awaitable[T]) -> T:
     """Run a coroutine from sync code, even when already inside an event loop.
 
@@ -48,13 +53,14 @@ def run_coroutine_sync(coro: Awaitable[T]) -> T:
     When inside an event loop, delegates to a persistent worker thread
     with its own event loop, avoiding per-call thread creation.
     """
+    wrapper: Coroutine[object, object, T] = _await(coro)
     try:
         asyncio.get_running_loop()
     except RuntimeError:
-        return asyncio.run(coro)
+        return asyncio.run(wrapper)
 
     loop = _ensure_worker()
-    future = asyncio.run_coroutine_threadsafe(coro, loop)
+    future: Future[T] = asyncio.run_coroutine_threadsafe(wrapper, loop)
     return future.result()
 
 
