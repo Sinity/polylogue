@@ -26,7 +26,8 @@ async def save_conversation_record(
     # explicitly set by the caller (test helpers, make_conversation, etc.).
     source_name = record.source_name
     if not source_name and record.provider_meta:
-        source_name = str(record.provider_meta.get("source", ""))
+        raw = record.provider_meta.get("source")
+        source_name = raw if isinstance(raw, str) else ""
 
     await conn.execute(
         _CONVERSATION_UPSERT_SQL,

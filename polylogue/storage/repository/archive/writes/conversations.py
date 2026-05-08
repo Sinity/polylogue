@@ -150,7 +150,8 @@ def conversation_to_record(conversation: Conversation) -> ConversationRecord:
     provider_meta: dict[str, object] = {}
     provider_meta.update(json_document(metadata.get("provider_meta")))
 
-    source_name_val = str(provider_meta.get("source", "")) if provider_meta else ""
+    raw_source = provider_meta.get("source") if provider_meta else None
+    source_name_val = raw_source if isinstance(raw_source, str) else ""
 
     return ConversationRecord(
         conversation_id=ConversationId(str(conversation.id)),

@@ -48,6 +48,7 @@ _CLAUDE_CODE_PROTOCOL_START_MARKERS = (
 )
 
 _CONTENTS_OF_LINE_RE = re.compile(r"^Contents of .+:", re.MULTILINE)
+_FILE_PATH_LINE_RE = re.compile(r"^<file path=", re.MULTILINE)
 
 
 def strip_system_reminders(text: str) -> str:
@@ -90,7 +91,7 @@ def classify_text_message_type(text: str | None) -> MessageType | None:
         return MessageType.CONTEXT
     # <file path=...> markers often appear on a non-first line in multiline
     # context-dump messages. Scan all lines rather than just the first.
-    if any(line.startswith("<file path=") for line in stripped.splitlines()):
+    if _FILE_PATH_LINE_RE.search(stripped):
         return MessageType.CONTEXT
 
     return None

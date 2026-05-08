@@ -373,9 +373,11 @@ def test_query_route_contract(
             assert any(provider in str(params) for _, params in executed_queries)
     else:
         assert result == []
-        # The provider may now open a connection in the embedding-empty branch
-        # for an early existence check before bailing out; the contract is
-        # that the result is empty, not that no IO is performed.
+        # Provider may open a connection for early existence check before
+        # bailing out. The result contract is still empty, and the connection
+        # should have been closed by the caller.
+        if mock_provider._get_connection.called:
+            assert connection.close.called
 
 
 @pytest.mark.parametrize(

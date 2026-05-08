@@ -148,8 +148,8 @@ class TestDaemonStatus:
         }
         _show_daemon_status(env, status_payload)
         combined = _combined_calls(env)
-        # Daemon-status output now uses "watching N sources" wording.
-        assert "watching" in combined.lower() or "no conversations ingested yet" in combined.lower()
+        # Daemon-status output should report watching sources.
+        assert "watching" in combined.lower(), f"expected 'watching' in status output, got: {combined[:200]}"
 
     def test_running_daemon_with_data(self) -> None:
         """When daemon runs with data, normal status is shown without first-run hints."""
