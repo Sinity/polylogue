@@ -117,6 +117,20 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     @mcp.tool()
     async def set_metadata(conversation_id: str, key: str, value: str) -> str:
         async def run() -> str:
+            # Validate metadata key
+            if not key or not key.strip():
+                return hooks.error_json(
+                    "metadata key must not be empty",
+                    conversation_id=conversation_id,
+                    code="invalid_key",
+                )
+            if len(key) > 200:
+                return hooks.error_json(
+                    "metadata key exceeds 200 characters",
+                    conversation_id=conversation_id,
+                    code="invalid_key",
+                )
+
             resolved, err = await _resolve_or_error(hooks, conversation_id)
             if err:
                 return err

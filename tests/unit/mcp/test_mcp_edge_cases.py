@@ -62,7 +62,7 @@ class TestSafeCall:
 
         from polylogue.errors import PolylogueError
 
-        with pytest.raises(PolylogueError, match="test_tool.*RuntimeError"):
+        with pytest.raises(PolylogueError, match="test_tool.*internal error"):
             _safe_call("test_tool", failing)
 
     def test_traceback_not_in_output(self) -> None:
@@ -74,6 +74,23 @@ class TestSafeCall:
         with pytest.raises(PolylogueError) as exc:
             _safe_call("test_tool", failing)
         assert "Traceback" not in str(exc.value)
+
+    def test_raw_exception_text_not_leaked(self) -> None:
+        """Exception message content is not exposed to MCP clients."""
+
+        def failing() -> None:
+            raise RuntimeError("secret connection string postgresql://admin:hunter2@db.internal")
+
+        from polylogue.errors import PolylogueError
+
+        with pytest.raises(PolylogueError) as exc:
+            _safe_call("test_tool", failing)
+        error_text = str(exc.value)
+        assert "secret" not in error_text
+        assert "hunter2" not in error_text
+        assert "admin" not in error_text
+        assert "internal error" in error_text
+        assert "RuntimeError" in error_text
 
 
 # =============================================================================

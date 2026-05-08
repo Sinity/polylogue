@@ -424,7 +424,7 @@ class TestQueryTools:
             mock_ops.search_conversation_hits = AsyncMock(return_value=[])
             mock_get_archive_ops.return_value = mock_ops
 
-            with pytest.raises(PolylogueError, match="search: ValueError"):
+            with pytest.raises(PolylogueError, match="search: internal error"):
                 await invoke_surface_async(
                     mcp_server._tool_manager._tools["search"].fn,
                     query="hello",
@@ -565,7 +565,7 @@ class TestGetConversationTool:
             mock_poly = make_polylogue_mock()
             mock_get_polylogue.return_value = mock_poly
 
-            with pytest.raises(PolylogueError, match="get_messages: ValueError"):
+            with pytest.raises(PolylogueError, match="get_messages: internal error"):
                 invoke_surface(
                     mcp_server._tool_manager._tools["get_messages"].fn,
                     conversation_id="test:long",
@@ -981,7 +981,7 @@ class TestMutationTools:
             mock_get_polylogue.return_value = mock_poly
             mock_get_query_store.return_value = make_query_store_mock(resolved_id="test:conv-123")
 
-            with pytest.raises(PolylogueError, match="add_tag: ValueError"):
+            with pytest.raises(PolylogueError, match="add_tag: internal error"):
                 invoke_surface(
                     mcp_server._tool_manager._tools["add_tag"].fn, conversation_id="test:conv-123", tag="invalid"
                 )
@@ -1018,7 +1018,7 @@ class TestMutationTools:
             mock_get_polylogue.return_value = mock_poly
             mock_get_query_store.return_value = make_query_store_mock(resolved_id="test:conv-123")
 
-            with pytest.raises(PolylogueError, match="remove_tag: RuntimeError"):
+            with pytest.raises(PolylogueError, match="remove_tag: internal error"):
                 invoke_surface(
                     mcp_server._tool_manager._tools["remove_tag"].fn,
                     conversation_id="test:conv-123",
@@ -1129,6 +1129,42 @@ class TestMutationTools:
 
         assert json.loads(result)["status"] == "ok"
         mock_poly.update_metadata.assert_called_once_with("test:conv-123", "config", "{'nested': True}")
+
+    def test_set_metadata_rejects_empty_key(self, mcp_server: MCPServerUnderTest) -> None:
+        """Empty metadata key returns structured error, not exception."""
+        result = invoke_surface(
+            mcp_server._tool_manager._tools["set_metadata"].fn,
+            conversation_id="test:conv-123",
+            key="",
+            value="some value",
+        )
+        parsed = json.loads(result)
+        assert parsed["is_error"] is True
+        assert "empty" in parsed["error"].lower()
+
+    def test_set_metadata_rejects_whitespace_key(self, mcp_server: MCPServerUnderTest) -> None:
+        """Whitespace-only metadata key returns structured error."""
+        result = invoke_surface(
+            mcp_server._tool_manager._tools["set_metadata"].fn,
+            conversation_id="test:conv-123",
+            key="   ",
+            value="some value",
+        )
+        parsed = json.loads(result)
+        assert parsed["is_error"] is True
+        assert "empty" in parsed["error"].lower()
+
+    def test_set_metadata_rejects_overlong_key(self, mcp_server: MCPServerUnderTest) -> None:
+        """Metadata key exceeding 200 characters returns structured error."""
+        result = invoke_surface(
+            mcp_server._tool_manager._tools["set_metadata"].fn,
+            conversation_id="test:conv-123",
+            key="k" * 201,
+            value="v",
+        )
+        parsed = json.loads(result)
+        assert parsed["is_error"] is True
+        assert "200" in parsed["error"]
 
     def test_delete_metadata_success(self, mcp_server: MCPServerUnderTest) -> None:
         with (
