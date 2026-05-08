@@ -78,6 +78,13 @@ class SessionProfileDocument(TypedDict):
     latency_percentiles_ms: dict[str, int]
     tool_calls_per_minute: float
     timing_provenance: str
+    total_input_tokens: int
+    total_output_tokens: int
+    total_cache_read_tokens: int
+    total_cache_write_tokens: int
+    total_credit_cost: float
+    cost_provenance: str
+    per_model_cost_json: str
 
 
 class WorkThreadMemberEvidenceDocument(TypedDict):

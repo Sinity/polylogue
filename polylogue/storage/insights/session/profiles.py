@@ -333,6 +333,13 @@ def hydrate_session_profile(record: SessionProfileRecord) -> SessionProfile:
         "latency_percentiles_ms": record.evidence_payload.latency_percentiles_ms,
         "tool_calls_per_minute": record.tool_calls_per_minute,
         "timing_provenance": record.timing_provenance,
+        "total_input_tokens": record.total_input_tokens,
+        "total_output_tokens": record.total_output_tokens,
+        "total_cache_read_tokens": record.total_cache_read_tokens,
+        "total_cache_write_tokens": record.total_cache_write_tokens,
+        "total_credit_cost": record.total_credit_cost,
+        "cost_provenance": record.cost_provenance,
+        "per_model_cost_json": record.per_model_cost_json,
     }
     return SessionProfile.from_dict(merged_payload)
 

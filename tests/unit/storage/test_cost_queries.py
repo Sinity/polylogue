@@ -46,7 +46,10 @@ def test_tokenizer_estimate() -> None:
 
 def test_subscription_credit_cost() -> None:
     """Credit cost computation uses per-model rates."""
-    from polylogue.archive.semantic.subscription_pricing import compute_credit_cost
+    from polylogue.archive.semantic.subscription_pricing import compute_credit_cost, get_credit_rate
 
     cost = compute_credit_cost("claude-sonnet-4-6", input_tokens=1000, output_tokens=500)
     assert cost > 0
+    # Verify the model-specific rate is non-trivial
+    rate = get_credit_rate("claude-sonnet-4-6")
+    assert rate is not None, "expected a credit rate for claude-sonnet-4-6"

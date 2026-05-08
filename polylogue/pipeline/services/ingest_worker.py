@@ -793,7 +793,8 @@ def ingest_record(
 def _conversation_tuple(conversation: MaterializedConversation, *, raw_id: str | None) -> ConversationTuple:
     source_name = ""
     if conversation.provider_meta and isinstance(conversation.provider_meta, dict):
-        source_name = str(conversation.provider_meta.get("source", ""))
+        raw = conversation.provider_meta.get("source")
+        source_name = raw if isinstance(raw, str) else ""
     return (
         conversation.conversation_id,
         conversation.provider_name,

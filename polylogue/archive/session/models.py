@@ -172,6 +172,13 @@ class SessionProfile:
             "latency_percentiles_ms": dict(self.latency_percentiles_ms),
             "tool_calls_per_minute": self.tool_calls_per_minute,
             "timing_provenance": self.timing_provenance,
+            "total_input_tokens": self.total_input_tokens,
+            "total_output_tokens": self.total_output_tokens,
+            "total_cache_read_tokens": self.total_cache_read_tokens,
+            "total_cache_write_tokens": self.total_cache_write_tokens,
+            "total_credit_cost": self.total_credit_cost,
+            "cost_provenance": self.cost_provenance,
+            "per_model_cost_json": self.per_model_cost_json,
         }
 
     @classmethod

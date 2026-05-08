@@ -327,11 +327,9 @@ def test_check_warns_when_message_index_is_incomplete(cli_workspace: WorkspacePa
     assert result.exit_code == 0
     payload = _extract_json(result.output)
     index_check = _find_named_check(payload, "index")
-    # The readiness model now treats an empty FTS on a seeded archive as "ok"
-    # because there are no content-table rows whose FTS counterparts are
-    # missing. A genuinely missing index (table absent) still surfaces as
-    # a warning.
-    assert index_check["status"] in ("ok", "warning")
+    # After using delete-all on messages_fts, the index is genuinely empty;
+    # the readiness check should flag this as a warning.
+    assert index_check["status"] == "warning", f"expected 'warning' after clearing FTS, got {index_check['status']}"
 
 
 def test_check_ignores_null_text_messages_in_fts_readiness(

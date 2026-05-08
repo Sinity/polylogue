@@ -63,8 +63,6 @@ class ConversationFormatter:
             resolved = db_path
             if resolved is None:
                 resolved = default_db_path()
-                if not resolved.exists():
-                    resolved = archive_root / "polylogue.db"
             backend = SQLiteBackend(db_path=resolved)
             self._repository = ConversationRepository(backend=backend)
         else:
