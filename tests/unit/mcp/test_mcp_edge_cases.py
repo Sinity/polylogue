@@ -6,7 +6,7 @@ and concurrent access patterns.
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -148,11 +148,16 @@ class TestBoundaryParameters:
 
         with (
             patch("polylogue.mcp.server._get_query_store") as mock_get_query_store,
+            patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops,
             patch("polylogue.archive.filter.filters.ConversationFilter") as mock_filter_cls,
         ):
             mock_query_store = make_query_store_mock()
             mock_query_store.list = AsyncMock(return_value=[])
             mock_get_query_store.return_value = mock_query_store
+            mock_ops = MagicMock()
+            mock_ops.query_conversations = AsyncMock(return_value=[])
+            mock_ops.diagnose_query_miss = AsyncMock(return_value=None)
+            mock_get_archive_ops.return_value = mock_ops
             mock_filter_cls.return_value = make_mock_filter(results=[])
 
             result = await _invoke_tool(
@@ -169,11 +174,16 @@ class TestBoundaryParameters:
 
         with (
             patch("polylogue.mcp.server._get_query_store") as mock_get_query_store,
+            patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops,
             patch("polylogue.archive.filter.filters.ConversationFilter") as mock_filter_cls,
         ):
             mock_query_store = make_query_store_mock()
             mock_query_store.list = AsyncMock(return_value=[])
             mock_get_query_store.return_value = mock_query_store
+            mock_ops = MagicMock()
+            mock_ops.query_conversations = AsyncMock(return_value=[])
+            mock_ops.diagnose_query_miss = AsyncMock(return_value=None)
+            mock_get_archive_ops.return_value = mock_ops
             mock_filter_cls.return_value = make_mock_filter(results=[])
 
             result = await _invoke_tool(

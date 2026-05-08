@@ -67,7 +67,6 @@ Classify every schema field, `provider_meta` key, insight projection, and storag
 | `instructions` | Codex (`codex.py:445`) | Native Codex session instructions. Provider-specific text. |
 | `display_label` | Various (read in `ConversationRuntimeMixin.display_title`) | Provider display hint, used only as fallback label. |
 | `session` / `capture` | Browser capture (`browser_capture.py:24-27`) | Raw capture metadata. Provider-specific. |
-| `polylogue_tail_overlay` | Tail overlay (`tail_overlay.py`) | Internal mechanism for shingled ingest. Not user-visible. Intentional internal metadata. |
 
 ---
 
@@ -295,7 +294,6 @@ Do not pursue a table descriptor layer until at least one schema column promotio
 - Attribution (cwd, gitBranch, git, working_directories)
 - Cost/duration fallback
 - Display label
-- Tail overlay info
 - Pricing
 - Repo source filter
 
@@ -352,7 +350,6 @@ Tracked in [#864](https://github.com/Sinity/polylogue/issues/864) (shrink after 
 | Browser capture `session`/`capture` metadata | Provider-specific | Intentional |
 | `display_label` fallback | Provider-specific | Intentional |
 | `is_archived` (ChatGPT UI state) | Provider-specific | Intentional |
-| `polylogue_tail_overlay` key | Internal metadata | Intentional |
 | `provider_events.source_message_id` / `raw_id` | Optional provenance | Intentional |
 | `work_threads.payload_json` (legacy single payload) | Legacy, intentional | None (revisit if thread search needs split) |
 | `day_session_summaries.payload_json` (legacy single payload) | Legacy, intentional | None (revisit if day search needs split) |
@@ -380,7 +377,6 @@ After schema v10 promotion, the following classification applies to all `provide
 - `display_label`, `instructions`, `is_archived`, `title_source`, `gizmo_id`, `gizmo_type`
 - `moderation`, `safe_urls`, `blocked_urls`, `internal_status_flags`
 - Browser capture `session`/`capture` metadata
-- `polylogue_tail_overlay` (internal metadata)
 
 ### Raw-only (exist in raw_conversations, not needed in canonical tables)
 - `raw` — full wire payload, preserved in raw_conversations + blob store

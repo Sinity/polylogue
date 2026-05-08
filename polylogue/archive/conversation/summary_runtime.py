@@ -5,7 +5,6 @@ from __future__ import annotations
 from datetime import datetime
 
 from polylogue.archive.conversation.branch_type import BranchType
-from polylogue.archive.conversation.tail_overlay import TailOverlayInfo, tail_overlay_from_provider_meta
 from polylogue.types import ConversationId
 
 
@@ -60,10 +59,6 @@ class ConversationSummaryRuntimeMixin:
     @property
     def tags(self) -> list[str]:
         return _metadata_tags(self.metadata)
-
-    @property
-    def tail_overlay(self) -> TailOverlayInfo | None:
-        return tail_overlay_from_provider_meta(self.provider_meta)
 
     @property
     def summary(self) -> str | None:

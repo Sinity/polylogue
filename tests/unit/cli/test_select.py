@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import cast
@@ -21,7 +19,6 @@ from polylogue.cli.select import (
     async_run_select,
     choose_select_row,
     render_select_row,
-    select_conversation_rows,
     select_row_from_result,
 )
 from polylogue.cli.shared.types import AppEnv
@@ -160,30 +157,3 @@ async def test_async_run_select_formats_query_errors(capsys: pytest.CaptureFixtu
     err = capsys.readouterr().err
     assert "Cannot parse date: 'bogus'" in err
     assert "Hint: use ISO format" in err
-
-
-@pytest.mark.asyncio
-async def test_select_conversation_rows_uses_tail_overlay_services() -> None:
-    stable_services = object()
-    overlay_config = object()
-    overlay_repo = object()
-    overlay_services = SimpleNamespace(
-        get_config=lambda: overlay_config,
-        get_repository=lambda: overlay_repo,
-    )
-    env = cast(AppEnv, SimpleNamespace(services=stable_services))
-    request = RootModeRequest(params={"tail": True}, query_terms=())
-
-    @asynccontextmanager
-    async def fake_tail_overlay(services: object) -> AsyncIterator[SimpleNamespace]:
-        assert services is stable_services
-        yield overlay_services
-
-    row = _row()
-    with (
-        patch("polylogue.cli.select.tail_overlay_services", fake_tail_overlay),
-        patch("polylogue.cli.select._select_conversation_rows_from_store", AsyncMock(return_value=[row])) as store,
-    ):
-        assert await select_conversation_rows(env, request, limit=10) == [row]
-
-    store.assert_awaited_once_with(overlay_config, overlay_repo, request, limit=10)

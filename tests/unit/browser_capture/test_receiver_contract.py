@@ -24,6 +24,7 @@ from polylogue.browser_capture.receiver import (
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _valid_payload(provider: str = "chatgpt", session_id: str = "conv-123") -> dict[str, object]:
     return {
         "polylogue_capture_kind": "browser_llm_session",
@@ -148,6 +149,7 @@ def _invalid_payloads() -> list[tuple[str, dict[str, object]]]:
 # Acceptance: valid payloads
 # ---------------------------------------------------------------------------
 
+
 class TestReceiverAcceptsValidPayload:
     def test_chatgpt_envelope_validates(self) -> None:
         envelope = BrowserCaptureEnvelope.model_validate(_valid_payload("chatgpt"))
@@ -162,7 +164,8 @@ class TestReceiverAcceptsValidPayload:
         assert envelope.provider_session_id == "claude-session"
 
     def test_write_capture_envelope_writes_and_returns_path(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         envelope = BrowserCaptureEnvelope.model_validate(_valid_payload())
         result = write_capture_envelope(envelope, spool_path=tmp_path)
@@ -203,6 +206,7 @@ class TestReceiverAcceptsValidPayload:
 # Rejection: invalid payloads
 # ---------------------------------------------------------------------------
 
+
 class TestReceiverRejectsInvalidPayload:
     @pytest.mark.parametrize(
         "label,payload",
@@ -210,7 +214,9 @@ class TestReceiverRejectsInvalidPayload:
         ids=[label for label, _ in _invalid_payloads()],
     )
     def test_invalid_payload_raises_validation_error(
-        self, label: str, payload: dict[str, object],
+        self,
+        label: str,
+        payload: dict[str, object],
     ) -> None:
         with pytest.raises(ValidationError):
             BrowserCaptureEnvelope.model_validate(payload)
@@ -252,6 +258,7 @@ class TestReceiverRejectsInvalidPayload:
 # looks_like_browser_capture
 # ---------------------------------------------------------------------------
 
+
 class TestLooksLikeBrowserCapture:
     def test_recognizes_valid_envelope(self) -> None:
         assert looks_like_browser_capture(_valid_payload()) is True
@@ -262,36 +269,40 @@ class TestLooksLikeBrowserCapture:
         assert looks_like_browser_capture([]) is False
 
     def test_rejects_unknown_kind(self) -> None:
-        assert (
-            looks_like_browser_capture({"polylogue_capture_kind": "other"}) is False
-        )
+        assert looks_like_browser_capture({"polylogue_capture_kind": "other"}) is False
 
     def test_rejects_wrong_schema_version(self) -> None:
         assert (
-            looks_like_browser_capture({
-                "polylogue_capture_kind": "browser_llm_session",
-                "schema_version": 0,
-            })
+            looks_like_browser_capture(
+                {
+                    "polylogue_capture_kind": "browser_llm_session",
+                    "schema_version": 0,
+                }
+            )
             is False
         )
 
     def test_rejects_missing_session(self) -> None:
         assert (
-            looks_like_browser_capture({
-                "polylogue_capture_kind": "browser_llm_session",
-                "schema_version": 1,
-                "provenance": {},
-            })
+            looks_like_browser_capture(
+                {
+                    "polylogue_capture_kind": "browser_llm_session",
+                    "schema_version": 1,
+                    "provenance": {},
+                }
+            )
             is False
         )
 
     def test_rejects_non_dict_session(self) -> None:
         assert (
-            looks_like_browser_capture({
-                "polylogue_capture_kind": "browser_llm_session",
-                "schema_version": 1,
-                "provenance": {},
-                "session": "not-a-dict",
-            })
+            looks_like_browser_capture(
+                {
+                    "polylogue_capture_kind": "browser_llm_session",
+                    "schema_version": 1,
+                    "provenance": {},
+                    "session": "not-a-dict",
+                }
+            )
             is False
         )

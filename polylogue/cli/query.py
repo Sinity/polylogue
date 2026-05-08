@@ -33,7 +33,6 @@ from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
 from polylogue.core.json import JSONDocument
 from polylogue.logging import get_logger
-from polylogue.pipeline.tail_overlay import TailOverlayUnavailableError, tail_overlay_services
 from polylogue.surfaces.payloads import ConversationListRowPayload
 
 logger = get_logger(__name__)
@@ -745,36 +744,7 @@ async def async_execute_query_request(env: AppEnv, request: RootModeRequest) -> 
         click.echo(f"Error: {exc}", err=True)
         raise SystemExit(1) from exc
 
-    tail_requested = bool(params.get("tail"))
-    if tail_requested and plan.action in {QueryAction.MODIFY, QueryAction.DELETE}:
-        click.echo(
-            "Error: --tail is read-only. Mutation and delete routes must target the stable archive.",
-            err=True,
-        )
-        raise SystemExit(1)
-    if tail_requested and plan.action == QueryAction.OPEN:
-        click.echo(
-            "Error: --tail does not support `open` yet because the daemon web reader targets stable archive state.",
-            err=True,
-        )
-        raise SystemExit(1)
-
-    if not tail_requested:
-        await _execute_query_plan(env, params, config=config, repo=repo, plan=plan)
-        return
-
-    try:
-        async with tail_overlay_services(env.services) as overlay_services:
-            await _execute_query_plan(
-                env,
-                params,
-                config=overlay_services.get_config(),
-                repo=overlay_services.get_repository(),
-                plan=plan,
-            )
-    except TailOverlayUnavailableError as exc:
-        click.echo(f"Error: {exc}", err=True)
-        raise SystemExit(1) from exc
+    await _execute_query_plan(env, params, config=config, repo=repo, plan=plan)
 
 
 __all__ = [

@@ -145,7 +145,8 @@ def test_query_field_catalog_covers_public_spec_fields() -> None:
     descriptor_spec_attrs = {descriptor.spec_attr for descriptor in QUERY_FIELD_DESCRIPTORS if descriptor.spec_attr}
     spec_fields = {field.name for field in fields(ConversationQuerySpec)}
 
-    assert spec_fields - descriptor_spec_attrs == set()
+    # `cursor` is an internal pagination token, not a user-facing query field.
+    assert spec_fields - descriptor_spec_attrs == {"cursor"}
 
 
 def test_query_field_catalog_covers_mcp_query_request_fields() -> None:

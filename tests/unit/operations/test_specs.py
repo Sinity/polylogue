@@ -40,6 +40,13 @@ def test_runtime_operation_catalog_covers_the_current_runtime_paths() -> None:
         "compile-inferred-corpus-scenarios",
         "query-schema-catalog",
         "query-schema-explanations",
+        # Mutation operations exposed via MCP and CLI write surfaces.
+        "mutate-add-tag",
+        "mutate-remove-tag",
+        "mutate-set-metadata",
+        "mutate-delete-metadata",
+        "mutate-delete-conversation",
+        "mutate-bulk-tag-conversations",
     }
     assert specs["acquire-raw-conversations"].kind is OperationKind.MATERIALIZATION
     assert specs["acquire-raw-conversations"].mutates_state is True

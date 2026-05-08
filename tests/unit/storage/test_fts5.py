@@ -1500,14 +1500,14 @@ def test_fts_triggers_restored_after_exception() -> None:
     import sqlite3
 
     from polylogue.storage.fts.fts_lifecycle import restore_fts_triggers_sync, suspend_fts_triggers_sync
-    from polylogue.storage.sqlite.schema_ddl_archive import ARCHIVE_STORAGE_DDL
+    from polylogue.storage.sqlite.schema_ddl import SCHEMA_DDL
 
     db_path = None
     conn = sqlite3.connect(":memory:")
     try:
-        conn.executescript(ARCHIVE_STORAGE_DDL)
+        conn.executescript(SCHEMA_DDL)
         conn.execute(
-            "INSERT INTO conversations(conversation_id, provider_name, provider_conversation_id) VALUES(?,?,?)",
+            "INSERT INTO conversations(conversation_id, provider_name, provider_conversation_id, version) VALUES(?,?,?,1)",
             ("c1", "test", "pc1"),
         )
         conn.commit()
@@ -1515,7 +1515,7 @@ def test_fts_triggers_restored_after_exception() -> None:
         # Simulate ingest: suspend, insert, exception, restore in finally
         suspend_fts_triggers_sync(conn)
         conn.execute(
-            "INSERT INTO messages(message_id, conversation_id, role, text, provider_name) VALUES(?,?,?,?,?)",
+            "INSERT INTO messages(message_id, conversation_id, role, text, provider_name, version) VALUES(?,?,?,?,?,1)",
             ("m1", "c1", "user", "test message", "test"),
         )
         try:
@@ -1529,7 +1529,7 @@ def test_fts_triggers_restored_after_exception() -> None:
 
         # Insert another message — FTS should pick it up since triggers are active
         conn.execute(
-            "INSERT INTO messages(message_id, conversation_id, role, text, provider_name) VALUES(?,?,?,?,?)",
+            "INSERT INTO messages(message_id, conversation_id, role, text, provider_name, version) VALUES(?,?,?,?,?,1)",
             ("m2", "c1", "assistant", "another message", "test"),
         )
         conn.commit()
@@ -1551,19 +1551,19 @@ def test_fts_index_recovers_from_corrupt_trigger_state() -> None:
     import sqlite3
 
     from polylogue.storage.fts.fts_lifecycle import restore_fts_triggers_sync, suspend_fts_triggers_sync
-    from polylogue.storage.sqlite.schema_ddl_archive import ARCHIVE_STORAGE_DDL
+    from polylogue.storage.sqlite.schema_ddl import SCHEMA_DDL
 
     conn = sqlite3.connect(":memory:")
-    conn.executescript(ARCHIVE_STORAGE_DDL)
+    conn.executescript(SCHEMA_DDL)
     conn.execute(
-        "INSERT INTO conversations(conversation_id, provider_name, provider_conversation_id) VALUES(?,?,?)",
+        "INSERT INTO conversations(conversation_id, provider_name, provider_conversation_id, version) VALUES(?,?,?,1)",
         ("c1", "test", "pc1"),
     )
     conn.commit()
 
     # Normal insert with triggers active
     conn.execute(
-        "INSERT INTO messages(message_id, conversation_id, role, text, provider_name) VALUES(?,?,?,?,?)",
+        "INSERT INTO messages(message_id, conversation_id, role, text, provider_name, version) VALUES(?,?,?,?,?,1)",
         ("m1", "c1", "user", "hello world this is a test message", "test"),
     )
     conn.commit()
@@ -1572,7 +1572,7 @@ def test_fts_index_recovers_from_corrupt_trigger_state() -> None:
     # Simulate crash recovery: triggers suspended, data inserted, triggers restored
     suspend_fts_triggers_sync(conn)
     conn.execute(
-        "INSERT INTO messages(message_id, conversation_id, role, text, provider_name) VALUES(?,?,?,?,?)",
+        "INSERT INTO messages(message_id, conversation_id, role, text, provider_name, version) VALUES(?,?,?,?,?,1)",
         ("m2", "c1", "assistant", "another message for testing", "test"),
     )
     restore_fts_triggers_sync(conn)
@@ -1580,7 +1580,7 @@ def test_fts_index_recovers_from_corrupt_trigger_state() -> None:
 
     # New message should be picked up
     conn.execute(
-        "INSERT INTO messages(message_id, conversation_id, role, text, provider_name) VALUES(?,?,?,?,?)",
+        "INSERT INTO messages(message_id, conversation_id, role, text, provider_name, version) VALUES(?,?,?,?,?,1)",
         ("m3", "c1", "user", "third message here", "test"),
     )
     conn.commit()

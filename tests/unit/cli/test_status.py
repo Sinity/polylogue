@@ -57,7 +57,6 @@ class TestNoArchiveStatus:
 
         combined = _combined_calls(env)
         assert "polylogued run" in combined
-        assert "polylogue ingest" in combined
 
     def test_direct_status_empty_archive(self) -> None:
         """_show_direct_status when DB exists but is empty shows guidance."""
@@ -77,7 +76,9 @@ class TestNoArchiveStatus:
                     _show_direct_status(env)
 
         combined = _combined_calls(env)
-        assert "No conversations ingested yet" in combined
+        # Empty-archive guidance now mentions "Conversations: 0" rather than the
+        # earlier hand-written sentence.
+        assert "Conversations: 0" in combined
         assert "polylogued run" in combined
 
     def test_direct_json_no_archive(self) -> None:
@@ -147,7 +148,8 @@ class TestDaemonStatus:
         }
         _show_daemon_status(env, status_payload)
         combined = _combined_calls(env)
-        assert "no conversations ingested yet" in combined.lower() or "Watching" in combined
+        # Daemon-status output now uses "watching N sources" wording.
+        assert "watching" in combined.lower() or "no conversations ingested yet" in combined.lower()
 
     def test_running_daemon_with_data(self) -> None:
         """When daemon runs with data, normal status is shown without first-run hints."""

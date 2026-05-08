@@ -47,7 +47,14 @@ SESSION_INSIGHT_PROFILE_DDL = """
             enrichment_version INTEGER NOT NULL DEFAULT 1,
             enrichment_family TEXT NOT NULL DEFAULT 'scored_session_enrichment',
             inference_version INTEGER NOT NULL DEFAULT 1,
-            inference_family TEXT NOT NULL DEFAULT 'heuristic_session_semantics'
+            inference_family TEXT NOT NULL DEFAULT 'heuristic_session_semantics',
+            total_input_tokens INTEGER NOT NULL DEFAULT 0,
+            total_output_tokens INTEGER NOT NULL DEFAULT 0,
+            total_cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+            total_cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+            total_credit_cost REAL NOT NULL DEFAULT 0.0,
+            cost_provenance TEXT NOT NULL DEFAULT 'unknown',
+            per_model_cost_json TEXT NOT NULL DEFAULT '{}'
         );
 
         CREATE INDEX IF NOT EXISTS idx_session_profiles_provider

@@ -112,6 +112,15 @@ class SessionProfile:
     tool_calls_per_minute: float = 0.0
     timing_provenance: str = "sort_key_estimated"
 
+    # Cost / token attribution (added by #942/#943 cost forecasting work).
+    total_input_tokens: int = 0
+    total_output_tokens: int = 0
+    total_cache_read_tokens: int = 0
+    total_cache_write_tokens: int = 0
+    total_credit_cost: float = 0.0
+    cost_provenance: str = "unknown"
+    per_model_cost_json: str = "{}"
+
     def __post_init__(self) -> None:
         if not isinstance(self.latency_percentiles_ms, dict):
             object.__setattr__(self, "latency_percentiles_ms", dict(self.latency_percentiles_ms or {}))

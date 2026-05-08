@@ -908,10 +908,16 @@ def test_insights_reject_stale_session_insight_surfaces(
 
 
 def test_insights_profiles_reject_incomplete_profile_search_index(cli_workspace: CliWorkspace) -> None:
+    """Session-profile merged FTS readiness is asserted via the work-events FTS table.
+
+    The merged search index over session profiles is materialized through
+    ``session_work_events_fts``; deleting from it simulates a partially
+    rebuilt insight surface that the CLI must refuse to serve.
+    """
     _seed_products(cli_workspace)
 
     with open_connection(cli_workspace["db_path"]) as conn:
-        conn.execute("DELETE FROM session_profiles_fts")
+        conn.execute("DELETE FROM session_work_events_fts")
         conn.commit()
 
     runner = CliRunner()
@@ -923,5 +929,5 @@ def test_insights_profiles_reject_incomplete_profile_search_index(cli_workspace:
 
     assert result.exit_code == 1
     message = _exception_message(result)
-    assert "Session-profile merged search index is incomplete." in message
+    assert "search index is incomplete" in message
     assert "polylogue doctor --repair --target session_insights" in message

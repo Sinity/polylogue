@@ -31,7 +31,9 @@ def test_raw_ingest_artifact_state_classifies_quarantine_and_backlogs() -> None:
 
     assert failed_schema_unparsed.needs_validation_backlog() is False
     assert failed_schema_unparsed.needs_parse_backlog() is False
-    assert failed_schema_unparsed.quarantined is False
+    # Validation-failed unparsed artifacts are now quarantined (previously
+    # they sat outside the backlog without a quarantine label).
+    assert failed_schema_unparsed.quarantined is True
 
     assert failed_parse_unparsed.needs_validation_backlog() is False
     assert failed_parse_unparsed.needs_parse_backlog() is False

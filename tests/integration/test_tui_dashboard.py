@@ -53,6 +53,9 @@ def test_dashboard_app_launches_headless_with_real_repository(
         text="Dashboard launch smoke",
     ).save()
 
-    app = PolylogueApp(repository=storage_repository)
+    from polylogue.operations import ArchiveOperations
+
+    operations = ArchiveOperations(repository=storage_repository)
+    app = PolylogueApp(operations=operations)
 
     app.run(headless=True, size=(100, 30), auto_pilot=_dashboard_autopilot(storage_repository))

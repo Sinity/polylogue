@@ -271,6 +271,7 @@ def _resolved_conversation_tuple(
         None,
         cdata.conversation_tuple[12],
         cdata.conversation_tuple[13],
+        cdata.conversation_tuple[14] if len(cdata.conversation_tuple) > 14 else "",
     )
 
 
@@ -301,6 +302,7 @@ def _conversation_tuple_with_hash(conversation: ConversationTuple, content_hash:
         conversation[11],
         conversation[12],
         conversation[13],
+        conversation[14] if len(conversation) > 14 else "",
     )
 
 

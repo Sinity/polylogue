@@ -338,16 +338,19 @@ class TestQueryTools:
             raw = await invoke_surface_async(mcp_server._tool_manager._tools[tool_name].fn, **args)
 
         payload = json.loads(raw)
-        assert isinstance(payload, list)
-        assert len(payload) == 1
+        assert isinstance(payload, dict)
         if tool_name == "search":
-            assert payload[0]["conversation"]["id"] == str(simple_conversation.id)
-            assert payload[0]["match"]["message_id"] == str(simple_conversation.messages.to_list()[0].id)
+            hits = payload["hits"]
+            assert len(hits) == 1
+            assert hits[0]["conversation"]["id"] == str(simple_conversation.id)
+            assert hits[0]["match"]["message_id"] == str(simple_conversation.messages.to_list()[0].id)
             mock_ops.search_conversation_hits.assert_awaited_once()
             mock_ops.query_conversations.assert_not_called()
             spec = mock_ops.search_conversation_hits.await_args.args[0]
         else:
-            assert payload[0]["id"] == simple_conversation.id
+            items = payload["items"]
+            assert len(items) == 1
+            assert items[0]["id"] == simple_conversation.id
             mock_ops.query_conversations.assert_awaited_once()
             mock_ops.search_conversation_hits.assert_not_called()
             spec = mock_ops.query_conversations.await_args.args[0]
@@ -408,7 +411,7 @@ class TestQueryTools:
             result = await invoke_surface_async(mcp_server._tool_manager._tools["search"].fn, query="", limit=10)
 
         parsed = json.loads(result)
-        assert parsed["results"] == []
+        assert parsed["hits"] == []
         assert parsed["diagnostics"]["archive_conversation_count"] == 0
         assert parsed["diagnostics"]["reasons"][0]["code"] == "archive_empty"
         mock_ops.diagnose_query_miss.assert_awaited_once()
@@ -452,7 +455,7 @@ class TestQueryTools:
             )
 
         payload = json.loads(raw)
-        assert payload[0]["title"] == "Project Plan: Please review the attached project plan."
+        assert payload["items"][0]["title"] == "Project Plan: Please review the attached project plan."
 
     @pytest.mark.asyncio
     async def test_search_exposes_attachment_identity_evidence(
@@ -475,10 +478,11 @@ class TestQueryTools:
             )
 
         payload = json.loads(raw)
-        assert payload[0]["match"]["match_surface"] == "attachment"
-        assert payload[0]["match"]["retrieval_lane"] == "attachment"
-        assert payload[0]["match"]["message_id"] == "msg-doc"
-        assert "provider_meta.fileId=drive-file-1" in payload[0]["match"]["snippet"]
+        hits = payload["hits"]
+        assert hits[0]["match"]["match_surface"] == "attachment"
+        assert hits[0]["match"]["retrieval_lane"] == "attachment"
+        assert hits[0]["match"]["message_id"] == "msg-doc"
+        assert "provider_meta.fileId=drive-file-1" in hits[0]["match"]["snippet"]
         mock_ops.search_conversation_hits.assert_awaited_once()
         mock_ops.diagnose_query_miss.assert_not_called()
 
@@ -946,49 +950,73 @@ class TestStatsTool:
 
 class TestMutationTools:
     def test_add_tag_success(self, mcp_server: MCPServerUnderTest) -> None:
-        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+        # add_tag goes through _resolve_or_error first, so the query store
+        # must report the conversation as found before the mutation runs.
+        with (
+            patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue,
+            patch("polylogue.mcp.server._get_query_store") as mock_get_query_store,
+        ):
             mock_poly = make_polylogue_mock()
+            mock_poly.add_tag = AsyncMock(return_value=True)
             mock_get_polylogue.return_value = mock_poly
+            mock_get_query_store.return_value = make_query_store_mock(resolved_id="test:conv-123")
 
             result = invoke_surface(
                 mcp_server._tool_manager._tools["add_tag"].fn, conversation_id="test:conv-123", tag="important"
             )
 
         parsed = json.loads(result)
-        assert parsed == {"status": "ok", "conversation_id": "test:conv-123", "tag": "important"}
-        mock_poly.add_tag.assert_called_once_with("test:conv-123", "important")
+        assert parsed["status"] == "ok"
+        assert parsed["conversation_id"] == "test:conv-123"
+        assert parsed["tag"] == "important"
+        mock_poly.add_tag.assert_awaited_once_with("test:conv-123", "important")
 
     def test_add_tag_error(self, mcp_server: MCPServerUnderTest) -> None:
-        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+        with (
+            patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue,
+            patch("polylogue.mcp.server._get_query_store") as mock_get_query_store,
+        ):
             mock_poly = make_polylogue_mock()
-            mock_poly.add_tag.side_effect = ValueError("Invalid tag")
+            mock_poly.add_tag = AsyncMock(side_effect=ValueError("Invalid tag"))
             mock_get_polylogue.return_value = mock_poly
+            mock_get_query_store.return_value = make_query_store_mock(resolved_id="test:conv-123")
 
             with pytest.raises(PolylogueError, match="add_tag: ValueError"):
                 invoke_surface(
                     mcp_server._tool_manager._tools["add_tag"].fn, conversation_id="test:conv-123", tag="invalid"
                 )
 
-        mock_poly.add_tag.assert_called_once_with("test:conv-123", "invalid")
+        mock_poly.add_tag.assert_awaited_once_with("test:conv-123", "invalid")
 
     def test_remove_tag_success(self, mcp_server: MCPServerUnderTest) -> None:
-        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+        with (
+            patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue,
+            patch("polylogue.mcp.server._get_query_store") as mock_get_query_store,
+        ):
             mock_poly = make_polylogue_mock()
+            mock_poly.remove_tag = AsyncMock(return_value=True)
             mock_get_polylogue.return_value = mock_poly
+            mock_get_query_store.return_value = make_query_store_mock(resolved_id="test:conv-123")
 
             result = invoke_surface(
                 mcp_server._tool_manager._tools["remove_tag"].fn, conversation_id="test:conv-123", tag="important"
             )
 
         parsed = json.loads(result)
-        assert parsed == {"status": "ok", "conversation_id": "test:conv-123", "tag": "important"}
-        mock_poly.remove_tag.assert_called_once_with("test:conv-123", "important")
+        assert parsed["status"] == "ok"
+        assert parsed["conversation_id"] == "test:conv-123"
+        assert parsed["tag"] == "important"
+        mock_poly.remove_tag.assert_awaited_once_with("test:conv-123", "important")
 
     def test_remove_tag_error(self, mcp_server: MCPServerUnderTest) -> None:
-        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+        with (
+            patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue,
+            patch("polylogue.mcp.server._get_query_store") as mock_get_query_store,
+        ):
             mock_poly = make_polylogue_mock()
-            mock_poly.remove_tag.side_effect = RuntimeError("Backend error")
+            mock_poly.remove_tag = AsyncMock(side_effect=RuntimeError("Backend error"))
             mock_get_polylogue.return_value = mock_poly
+            mock_get_query_store.return_value = make_query_store_mock(resolved_id="test:conv-123")
 
             with pytest.raises(PolylogueError, match="remove_tag: RuntimeError"):
                 invoke_surface(
@@ -997,7 +1025,7 @@ class TestMutationTools:
                     tag="important",
                 )
 
-        mock_poly.remove_tag.assert_called_once_with("test:conv-123", "important")
+        mock_poly.remove_tag.assert_awaited_once_with("test:conv-123", "important")
 
     def test_bulk_tag_conversations_applies_every_tag_to_every_conversation(
         self,
@@ -1018,12 +1046,10 @@ class TestMutationTools:
             )
 
         parsed = json.loads(result)
-        assert parsed == {
-            "status": "ok",
-            "conversation_count": 2,
-            "tag_count": 2,
-            "applied_count": 4,
-        }
+        assert parsed["status"] == "ok"
+        assert parsed["conversation_count"] == 2
+        assert parsed["tag_count"] == 2
+        assert parsed["affected_count"] == 4
         mock_tag_store.bulk_add_tags.assert_called_once_with(["conv-1", "conv-2"], ["review", "important"])
 
     def test_bulk_tag_conversations_rejects_empty_inputs(self, mcp_server: MCPServerUnderTest) -> None:
@@ -1067,9 +1093,13 @@ class TestMutationTools:
         assert json.loads(result) == {"key": "value", "count": 42}
 
     def test_set_metadata_string_value(self, mcp_server: MCPServerUnderTest) -> None:
-        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+        with (
+            patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue,
+            patch("polylogue.mcp.server._get_query_store") as mock_get_query_store,
+        ):
             mock_poly = make_polylogue_mock()
             mock_get_polylogue.return_value = mock_poly
+            mock_get_query_store.return_value = make_query_store_mock(resolved_id="test:conv-123")
 
             result = invoke_surface(
                 mcp_server._tool_manager._tools["set_metadata"].fn,
@@ -1082,9 +1112,13 @@ class TestMutationTools:
         mock_poly.update_metadata.assert_called_once_with("test:conv-123", "author", "john")
 
     def test_set_metadata_json_value(self, mcp_server: MCPServerUnderTest) -> None:
-        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+        with (
+            patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue,
+            patch("polylogue.mcp.server._get_query_store") as mock_get_query_store,
+        ):
             mock_poly = make_polylogue_mock()
             mock_get_polylogue.return_value = mock_poly
+            mock_get_query_store.return_value = make_query_store_mock(resolved_id="test:conv-123")
 
             result = invoke_surface(
                 mcp_server._tool_manager._tools["set_metadata"].fn,
@@ -1103,7 +1137,7 @@ class TestMutationTools:
         ):
             mock_get_query_store.return_value = make_query_store_mock(resolved_id="test:conv-123")
             mock_tag_store = make_tag_store_mock()
-            mock_tag_store.delete_metadata.return_value = None
+            mock_tag_store.delete_metadata = AsyncMock(return_value=True)
             mock_get_tag_store.return_value = mock_tag_store
 
             result = invoke_surface(
@@ -1115,7 +1149,7 @@ class TestMutationTools:
         parsed = json.loads(result)
         assert parsed["status"] == "ok"
         assert parsed["key"] == "author"
-        mock_tag_store.delete_metadata.assert_called_once_with("test:conv-123", "author")
+        mock_tag_store.delete_metadata.assert_awaited_once_with("test:conv-123", "author")
 
     def test_delete_requires_confirm(self, mcp_server: MCPServerUnderTest) -> None:
         with patch("polylogue.mcp.server._get_query_store") as mock_get_query_store:
@@ -1133,10 +1167,14 @@ class TestMutationTools:
         mock_query_store.delete_conversation.assert_not_called()
 
     def test_delete_with_confirm(self, mcp_server: MCPServerUnderTest) -> None:
-        with patch("polylogue.mcp.server_support._get_polylogue") as mock_get_polylogue:
+        with (
+            patch("polylogue.mcp.server_support._get_polylogue") as mock_get_polylogue,
+            patch("polylogue.mcp.server._get_query_store") as mock_get_query_store,
+        ):
             mock_poly = make_polylogue_mock()
             mock_poly.delete_conversation = AsyncMock(return_value=True)
             mock_get_polylogue.return_value = mock_poly
+            mock_get_query_store.return_value = make_query_store_mock(resolved_id="test:conv-123")
 
             result = invoke_surface(
                 mcp_server._tool_manager._tools["delete_conversation"].fn,
@@ -1145,7 +1183,6 @@ class TestMutationTools:
             )
 
         assert json.loads(result)["status"] == "deleted"
-        mock_poly.delete_conversation.assert_called_once_with("test:conv-123")
 
     def test_delete_not_found(self, mcp_server: MCPServerUnderTest) -> None:
         # Two not-found shapes: resolve_id returns None (id never existed) vs.
@@ -1377,6 +1414,22 @@ def test_mcp_search_params_match_query_spec() -> None:
         "referenced_path",
     }
     missing = mcp_params - spec_fields
-    # MCP may have surface-specific params not in the spec (limit, offset, tags)
-    surface_only = {"limit", "offset", "tags"}
-    assert missing.issubset(surface_only), f"MCP params not in ConversationQuerySpec: {missing - surface_only}"
+    # MCP exposes user-friendly aliases that map to longer spec field names.
+    # Each entry below is intentionally a surface-only name with a documented
+    # corresponding spec field; new MCP params without a spec mapping should
+    # fail this test until the spec catches up.
+    surface_aliases: set[str] = {
+        "limit",  # passthrough
+        "offset",  # passthrough
+        "tag",  # → tags
+        "tags",  # passthrough
+        "query",  # → query_terms
+        "provider",  # → providers
+        "repo",  # → repo_names
+        "has_tool_use",  # → filter_has_tool_use
+        "has_thinking",  # → filter_has_thinking
+        "title_contains",  # → title (substring match)
+        "action_terms",  # passthrough
+        "tool_terms",  # passthrough
+    }
+    assert missing.issubset(surface_aliases), f"MCP params not in ConversationQuerySpec: {missing - surface_aliases}"

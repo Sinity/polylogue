@@ -8,10 +8,10 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 
 ## Snapshot
 
-- subjects: `526`
+- subjects: `529`
 - claims: `41`
 - runner bindings: `41`
-- proof obligations: `572`
+- proof obligations: `577`
 
 ## Quality Checks
 
@@ -38,9 +38,9 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `archive.query_law` | 1 |
 | `artifact.path` | 25 |
 | `assurance.coverage_gap` | 22 |
-| `assurance.coverage_item` | 102 |
+| `assurance.coverage_item` | 104 |
 | `assurance.coverage_manifest` | 9 |
-| `cli.command` | 47 |
+| `cli.command` | 48 |
 | `cli.json_command` | 5 |
 | `diagnostic.observable` | 1 |
 | `error.surface` | 2 |
@@ -65,6 +65,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `polylogue bulk-export` | `polylogue/cli/query_verbs.py:112` `polylogue.cli.query_verbs.bulk_export_verb` |
 | `polylogue completions` | `polylogue/cli/commands/completions.py:9` `polylogue.cli.commands.completions.completions_command` |
 | `polylogue config` | `polylogue/cli/commands/config.py:10` `polylogue.cli.commands.config.config_command` |
+| `polylogue cost` | `polylogue/cli/commands/cost.py:13` `polylogue.cli.commands.cost.cost_command` |
 | `polylogue count` | `polylogue/cli/query_verbs.py:48` `polylogue.cli.query_verbs.count_verb` |
 | `polylogue dashboard` | `polylogue/cli/commands/dashboard.py:10` `polylogue.cli.commands.dashboard.dashboard_command` |
 | `polylogue delete` | `polylogue/cli/query_verbs.py:140` `polylogue.cli.query_verbs.delete_verb` |
@@ -151,7 +152,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `docs_media` | `assurance.coverage_item` | 17 |
 | `docs_media` | `assurance.coverage_manifest` | 1 |
 | `migration_safety` | `assurance.coverage_gap` | 1 |
-| `mutation_coverage` | `assurance.coverage_item` | 17 |
+| `mutation_coverage` | `assurance.coverage_item` | 19 |
 | `mutation_coverage` | `assurance.coverage_manifest` | 1 |
 | `operational_resilience` | `assurance.coverage_item` | 1 |
 | `performance` | `assurance.coverage_gap` | 1 |
@@ -275,12 +276,12 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `archive.query.provider_filter_consistency` | 1 |
 | `artifact.path.dependency_closure` | 9 |
 | `assurance.coverage.gap_has_closure_path` | 22 |
-| `assurance.coverage.item_declared` | 102 |
+| `assurance.coverage.item_declared` | 104 |
 | `assurance.coverage.manifest_structured` | 9 |
-| `cli.command.help` | 47 |
+| `cli.command.help` | 48 |
 | `cli.command.json_envelope` | 5 |
-| `cli.command.no_traceback` | 47 |
-| `cli.command.plain_mode` | 47 |
+| `cli.command.no_traceback` | 48 |
+| `cli.command.plain_mode` | 48 |
 | `diagnostic.observable_trace_mapping` | 1 |
 | `error.machine_user_context` | 2 |
 | `generated.scenario.family_registered` | 9 |

@@ -38,12 +38,15 @@ polylogued run --root /path/to/exports --root /another/path
 
 ## Configuration Flags
 
+By default `polylogued run` enables every component (watch, browser capture, HTTP API). Pass the corresponding `--no-*` flag to disable any one.
+
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--root` | (auto) | Override watch root (repeatable) |
 | `--debounce-s` | `2.0` | Quiet period in seconds before parsing a modified file |
 | `--no-watch` | off | Disable the live source watcher |
 | `--no-browser-capture` | off | Disable the browser-capture receiver |
+| `--no-api` | off | Disable the HTTP API + web reader |
 
 ### Browser Capture
 
@@ -60,14 +63,13 @@ polylogued run --root /path/to/exports --root /another/path
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--enable-api` | off | Start the daemon HTTP API server |
 | `--api-host` | `127.0.0.1` | API server host |
 | `--api-port` | `8766` | API server port |
 | `--api-auth-token` | auto | API auth token (auto-generated if not provided) |
 
 ## HTTP API Endpoints
 
-When `--enable-api` is set, the daemon exposes these endpoints.
+The HTTP API server runs by default. Pass `--no-api` to disable it. The endpoints below are exposed under the configured `--api-host:--api-port`.
 
 ### GET /api/health
 

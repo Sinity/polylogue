@@ -26,9 +26,12 @@ def config_command(env: AppEnv, output_format: str) -> None:
     if output_format == "json":
         import json
 
-        env.ui.console.print(json.dumps(cfg, indent=2, default=str))
+        # ``console.print`` interprets ``[brackets]`` as Rich markup, which
+        # would mangle JSON output and TOML section headers. Print without
+        # markup parsing to preserve exact bytes.
+        env.ui.console.print(json.dumps(cfg.raw, indent=2, default=str), markup=False, highlight=False)
     else:
-        env.ui.console.print(format_config_toml(cfg))
+        env.ui.console.print(format_config_toml(cfg.raw), markup=False, highlight=False)
 
 
 __all__ = ["config_command"]

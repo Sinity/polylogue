@@ -1605,11 +1605,11 @@ def test_fts_triggers_restored_after_exception_during_ingest(tmp_path: Path) -> 
     """
     import sqlite3
 
-    from polylogue.storage.sqlite.schema_ddl_archive import ARCHIVE_STORAGE_DDL
+    from polylogue.storage.sqlite.schema_ddl import SCHEMA_DDL
 
     db = tmp_path / "fts_exception.db"
     conn = sqlite3.connect(str(db))
-    conn.executescript(ARCHIVE_STORAGE_DDL)
+    conn.executescript(SCHEMA_DDL)
     conn.execute(
         "INSERT INTO conversations(conversation_id, provider_name, provider_conversation_id, version) VALUES(?,?,?,1)",
         ("c1", "test", "pc1"),
@@ -1634,49 +1634,13 @@ def test_fts_triggers_restored_after_exception_during_ingest(tmp_path: Path) -> 
 
     # After exception + restore, triggers should be active
     conn.execute(
-        "INSERT INTO messages(message_id, conversation_id, role, text, provider_name) VALUES(?,?,?,?,?)",
+        "INSERT INTO messages(message_id, conversation_id, role, text, provider_name, version) VALUES(?,?,?,?,?,1)",
         ("m2", "c1", "assistant", "after exception", "test"),
     )
     conn.commit()
 
     # FTS should have both messages (the original m1 via repair,
     # and m2 via active trigger after restore)
-    import sqlite3
-
-    from polylogue.storage.sqlite.schema_ddl_actions import ACTION_EVENT_DDL
-    from polylogue.storage.sqlite.schema_ddl_archive import ARCHIVE_STORAGE_DDL, MESSAGE_FTS_DDL
-
-    db = tmp_path / "fts_exception.db"
-    conn = sqlite3.connect(str(db))
-    conn.executescript(ARCHIVE_STORAGE_DDL)
-    conn.executescript(ACTION_EVENT_DDL)
-    conn.executescript(MESSAGE_FTS_DDL)
-    conn.execute(
-        "INSERT INTO conversations(conversation_id, provider_name, provider_conversation_id, version) VALUES(?,?,?,1)",
-        ("c1", "test", "pc1"),
-    )
-    conn.execute(
-        "INSERT INTO messages(message_id, conversation_id, role, text, provider_name, version) VALUES(?,?,?,?,?,1)",
-        ("m1", "c1", "user", "hello world", "test"),
-    )
-    conn.commit()
-
-    from polylogue.storage.fts.fts_lifecycle import restore_fts_triggers_sync, suspend_fts_triggers_sync
-
-    suspend_fts_triggers_sync(conn)
-
-    try:
-        raise RuntimeError("simulated ingest failure")
-    except RuntimeError:
-        restore_fts_triggers_sync(conn)
-        conn.commit()
-
-    conn.execute(
-        "INSERT INTO messages(message_id, conversation_id, role, text, provider_name, version) VALUES(?,?,?,?,?,1)",
-        ("m2", "c1", "assistant", "after exception", "test"),
-    )
-    conn.commit()
-
     from polylogue.storage.fts.fts_lifecycle import ensure_fts_index_sync
 
     ensure_fts_index_sync(conn)
@@ -1691,15 +1655,16 @@ def test_attachment_ref_fk_violation_surfaced(tmp_path: Path) -> None:
     """ON CONFLICT DO NOTHING surfaces FK violations rather than swallowing them (#820)."""
     import sqlite3
 
-    from polylogue.storage.sqlite.schema_ddl_archive import ARCHIVE_STORAGE_DDL
+    from polylogue.storage.sqlite.schema_ddl import SCHEMA_DDL
 
     db = tmp_path / "fk_surface.db"
     conn = sqlite3.connect(str(db))
-    conn.executescript(ARCHIVE_STORAGE_DDL)
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.executescript(SCHEMA_DDL)
 
     # Create a conversation so the FK to conversations is satisfied
     conn.execute(
-        "INSERT INTO conversations(conversation_id, provider_name, provider_conversation_id) VALUES(?,?,?)",
+        "INSERT INTO conversations(conversation_id, provider_name, provider_conversation_id, version) VALUES(?,?,?,1)",
         ("c1", "test", "pc1"),
     )
     conn.commit()

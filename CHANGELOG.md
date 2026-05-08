@@ -66,6 +66,8 @@ documentation polish do not require an entry.
 
 ### Changed
 
+- The root query `--tail` mode and tail-overlay JSON provenance were removed;
+  daemon-owned live ingestion is now the supported path for fresh session state.
 - `--resource-mode` and Polylogue CLI self-demotion were removed from
   foreground maintenance commands; workstation resource policy belongs in the
   host environment and daemon supervision, not in product-level CLI flags.

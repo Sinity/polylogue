@@ -161,7 +161,6 @@ class TestExercisesByGroup:
         assert profiles.path_targets == ("session-profile-query-loop",)
         assert profiles.artifact_targets == (
             "session_profile_rows",
-            "session_profile_merged_fts",
             "session_profile_results",
         )
         assert profiles.operation_targets == (

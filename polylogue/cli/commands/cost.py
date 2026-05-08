@@ -13,7 +13,9 @@ from polylogue.cli.shared.types import AppEnv
 @click.command("cost")
 @click.option("--plan", default="pro", help="Subscription plan name (pro, max).")
 @click.option("--anomaly-threshold", type=float, default=2.0, help="Multiplier for anomaly detection.")
-@click.option("--format", "-f", "output_format", type=click.Choice(["plain", "json"]), default="plain", help="Output format.")
+@click.option(
+    "--format", "-f", "output_format", type=click.Choice(["plain", "json"]), default="plain", help="Output format."
+)
 @click.pass_obj
 def cost_command(env: AppEnv, plan: str, anomaly_threshold: float, output_format: str) -> None:
     """Show subscription usage outlook and quota forecasting.
@@ -35,20 +37,22 @@ def cost_command(env: AppEnv, plan: str, anomaly_threshold: float, output_format
             async with Polylogue() as poly:
                 summaries = await poly.repository.list_summaries(limit=1000)
                 for s in summaries:
-                    cost_data.append({
-                        "created_at": s.created_at,
-                        "model": getattr(s, "model", "unknown"),
-                        "has_cost": getattr(s, "total_cost_usd", 0) > 0,
-                        "api_cost_usd": getattr(s, "total_cost_usd", 0) or 0,
-                        "cost_is_estimated": getattr(s, "cost_is_estimated", False),
-                    })
+                    cost_data.append(
+                        {
+                            "created_at": s.created_at,
+                            "model": getattr(s, "model", "unknown"),
+                            "has_cost": getattr(s, "total_cost_usd", 0) > 0,
+                            "api_cost_usd": getattr(s, "total_cost_usd", 0) or 0,
+                            "cost_is_estimated": getattr(s, "cost_is_estimated", False),
+                        }
+                    )
 
         asyncio.run(_fetch())
     except Exception:
         pass
 
     outlook = compute_usage_outlook(cost_data, plan_name=plan, anomaly_threshold=anomaly_threshold)
-    payload = UsageOutlookPayload(**outlook)
+    payload = UsageOutlookPayload.model_validate(outlook)
 
     if output_format == "json":
         env.ui.console.print(json.dumps(payload.model_dump(mode="json"), indent=2, default=str))

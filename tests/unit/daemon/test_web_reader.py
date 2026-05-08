@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 from http.server import HTTPServer
 from pathlib import Path
-from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 
@@ -33,12 +32,12 @@ def _seed_test_db(tmp_path: Path) -> None:
     conn.executescript(ARCHIVE_STORAGE_DDL)
     for cid, prov in [("c1", "claude-code"), ("c2", "chatgpt"), ("c3", "claude-ai")]:
         conn.execute(
-            "INSERT INTO conversations(conversation_id, provider_name, provider_conversation_id, title) VALUES(?,?,?,?)",
-            (cid, prov, f"p-{cid}", f"Test {prov}"),
+            "INSERT INTO conversations(conversation_id, provider_name, provider_conversation_id, title, version) VALUES(?,?,?,?,?)",
+            (cid, prov, f"p-{cid}", f"Test {prov}", 1),
         )
         conn.execute(
-            "INSERT INTO messages(message_id, conversation_id, role, text, provider_name) VALUES(?,?,?,?,?)",
-            (f"m-{cid}", cid, "user", "Hello", prov),
+            "INSERT INTO messages(message_id, conversation_id, role, text, provider_name, version) VALUES(?,?,?,?,?,?)",
+            (f"m-{cid}", cid, "user", "Hello", prov, 1),
         )
     conn.commit()
     conn.close()

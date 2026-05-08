@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import UTC, datetime, timedelta
+from typing import cast
+
+from polylogue.archive.semantic.subscription_models import SubscriptionPlanConfig
 
 
 def compute_usage_outlook(
@@ -77,10 +80,7 @@ def _resolve_cycle(now: datetime, cycle_start: str | None) -> tuple[datetime, da
         start = datetime.fromisoformat(cycle_start)
     else:
         start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    if now.month == 12:
-        end = start.replace(year=start.year + 1, month=1)
-    else:
-        end = start.replace(month=start.month + 1)
+    end = start.replace(year=start.year + 1, month=1) if now.month == 12 else start.replace(month=start.month + 1)
     return start, end
 
 
@@ -89,8 +89,8 @@ def _aggregate_daily(conversations: list[dict[str, object]]) -> dict[str, dict[s
     for c in conversations:
         date = str(c.get("created_at", ""))[:10]
         if date:
-            daily[date]["credits"] += float(c.get("credit_cost", 0) or 0)
-            daily[date]["api_usd"] += float(c.get("api_cost_usd", 0) or 0)
+            daily[date]["credits"] += _as_float(c.get("credit_cost"))
+            daily[date]["api_usd"] += _as_float(c.get("api_cost_usd"))
             daily[date]["count"] += 1
     return dict(daily)
 
@@ -117,21 +117,22 @@ def _detect_anomalies(daily: dict[str, dict[str, float]], *, threshold: float = 
     anomalies: list[dict[str, object]] = []
     for date, cost in costs:
         if cost > avg * threshold:
-            anomalies.append({
-                "date": date,
-                "cost_usd": cost,
-                "comparator_window_avg": avg,
-                "threshold_multiplier": threshold,
-                "affected_component": "daily_cost",
-                "explanation": f"Daily cost ${cost:.2f} exceeds {threshold}x the average (${avg:.2f})",
-            })
+            anomalies.append(
+                {
+                    "date": date,
+                    "cost_usd": cost,
+                    "comparator_window_avg": avg,
+                    "threshold_multiplier": threshold,
+                    "affected_component": "daily_cost",
+                    "explanation": f"Daily cost ${cost:.2f} exceeds {threshold}x the average (${avg:.2f})",
+                }
+            )
     return anomalies[:10]
 
 
 def _compute_confidence(conversations: list[dict[str, object]]) -> float:
     if not conversations:
         return 0.0
-    with_cost = sum(1 for c in conversations if c.get("has_cost"))
     with_estimate = sum(1 for c in conversations if c.get("cost_is_estimated"))
     return max(0.0, 1.0 - (with_estimate / max(1, len(conversations))))
 
@@ -140,19 +141,28 @@ def _per_model_breakdown(conversations: list[dict[str, object]]) -> list[dict[st
     models: dict[str, dict[str, float]] = defaultdict(lambda: {"tokens": 0, "api_usd": 0, "sessions": 0})
     for c in conversations:
         model = str(c.get("model", "unknown"))
-        models[model]["api_usd"] += float(c.get("api_cost_usd", 0) or 0)
+        models[model]["api_usd"] += _as_float(c.get("api_cost_usd"))
         models[model]["sessions"] += 1
     return [
-        {"model": m, "api_equivalent_usd": v["api_usd"], "subscription_equivalent_usd": 0.0, "session_count": int(v["sessions"])}
+        {
+            "model": m,
+            "api_equivalent_usd": v["api_usd"],
+            "subscription_equivalent_usd": 0.0,
+            "session_count": int(v["sessions"]),
+        }
         for m, v in sorted(models.items(), key=lambda x: -x[1]["api_usd"])
     ]
 
 
-def _plan_for_name(name: str) -> object:
-    from polylogue.archive.semantic.subscription_models import SubscriptionPlanConfig
-
+def _plan_for_name(name: str) -> SubscriptionPlanConfig:
     plans = {
         "pro": SubscriptionPlanConfig(plan_name="pro", monthly_credit_pool=0.0),
         "max": SubscriptionPlanConfig(plan_name="max", monthly_credit_pool=0.0),
     }
     return plans.get(name, SubscriptionPlanConfig(plan_name=name, monthly_credit_pool=0.0))
+
+
+def _as_float(value: object, default: float = 0.0) -> float:
+    if value is None:
+        return default
+    return float(cast(float, value))

@@ -120,7 +120,6 @@ def cli(
     set_meta: tuple[tuple[str, str], ...],
     add_tag: tuple[str, ...],
     # Global
-    tail: bool,
     plain: bool,
     verbose: bool,
 ) -> None:
@@ -149,7 +148,6 @@ def cli(
         polylogue --action-sequence file_read,file_edit,shell list
         polylogue --action-text "pytest -q" list
         polylogue "pytest -q tests/unit/core/test_semantic_facts.py" --retrieval-lane actions --limit 5
-        polylogue --tail --provider claude-code --latest list
         polylogue --action other stats --by tool --format json
         polylogue --provider claude-code --since 2026-01-01 stats --by repo --format json
         polylogue --tool bash --exclude-tool read list

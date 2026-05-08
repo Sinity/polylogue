@@ -72,7 +72,7 @@ class Polylogue(PolylogueArchiveMixin, PolylogueInsightsMixin, PolylogueIngestMi
         return self._services.get_repository()
 
     @property
-    def operations(self) -> ArchiveOperations:
+    def operations(self) -> ArchiveOperations:  # type: ignore[override]
         return self._operations
 
     def __repr__(self) -> str:

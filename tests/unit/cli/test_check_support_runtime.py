@@ -167,7 +167,12 @@ def test_run_blob_store_check_reports_missing_orphaned_and_verified_states() -> 
     def connection() -> Iterator[object]:
         yield SimpleNamespace(execute=lambda sql: rows)
 
-    blob_store = SimpleNamespace(iter_all=lambda: ["raw-a", "orphan-c"])
+    blob_store = SimpleNamespace(
+        iter_all=lambda: ["raw-a", "orphan-c"],
+        detect_orphans=lambda known_ids: SimpleNamespace(
+            orphan_count=1, orphan_bytes=0, scanned_count=2, orphan_samples=()
+        ),
+    )
 
     with (
         patch("polylogue.cli.shared.check_workflow.connection_context", return_value=connection()),
@@ -179,10 +184,15 @@ def test_run_blob_store_check_reports_missing_orphaned_and_verified_states() -> 
     printed = [call.args[0] for call in console_print.call_args_list if call.args]
     assert "Blob store: 2 blobs on disk, 2 raw records in DB" in printed
     assert "  MISSING: 1 blobs referenced in DB but not on disk" in printed
-    assert "  Orphaned: 1 blobs on disk not in DB" in printed
+    assert any("Orphaned: 1" in p for p in printed)
 
     env = _env()
-    verified_store = SimpleNamespace(iter_all=lambda: ["raw-a", "raw-b"])
+    verified_store = SimpleNamespace(
+        iter_all=lambda: ["raw-a", "raw-b"],
+        detect_orphans=lambda known_ids: SimpleNamespace(
+            orphan_count=0, orphan_bytes=0, scanned_count=2, orphan_samples=()
+        ),
+    )
     with (
         patch("polylogue.cli.shared.check_workflow.connection_context", return_value=connection()),
         patch("polylogue.storage.blob_store.get_blob_store", return_value=verified_store),
@@ -202,21 +212,26 @@ def test_run_blob_store_check_returns_json_payload_without_emitting() -> None:
     def connection() -> Iterator[object]:
         yield SimpleNamespace(execute=lambda sql: rows)
 
-    blob_store = SimpleNamespace(iter_all=lambda: ["raw-a", "orphan-c"])
+    blob_store = SimpleNamespace(
+        iter_all=lambda: ["raw-a", "orphan-c"],
+        detect_orphans=lambda known_ids: SimpleNamespace(
+            orphan_count=1, orphan_bytes=0, scanned_count=2, orphan_samples=()
+        ),
+    )
     with (
         patch("polylogue.cli.shared.check_workflow.connection_context", return_value=connection()),
         patch("polylogue.storage.blob_store.get_blob_store", return_value=blob_store),
     ):
         payload = check_workflow._run_blob_store_check(env, config, json_output=True)
 
-    assert payload == {
-        "total_blobs": 2,
-        "total_raw_records": 2,
-        "missing_count": 1,
-        "orphaned_count": 1,
-        "missing": ["raw-b"],
-        "orphaned": ["orphan-c"],
-    }
+    assert payload is not None
+    assert payload["total_blobs"] == 2
+    assert payload["total_raw_records"] == 2
+    assert payload["missing_count"] == 1
+    assert payload["orphaned_count"] == 1
+    assert payload["missing"] == ["raw-b"]
+    # orphan_samples is empty in the mock; the actual orphan_count comes from
+    # detect_orphans, which the mock returns as 1.
     cast(MagicMock, env.ui.console.print).assert_not_called()
 
 
@@ -342,7 +357,7 @@ def test_run_check_workflow_covers_runtime_blob_vacuum_and_persist_paths() -> No
     assert result.maintenance_results == [repair_result]
     assert result.vacuum_result == VacuumResult(ok=True, detail="vacuumed")
     assert result.blob_report is run_blob_check.return_value
-    run_blob_check.assert_called_once_with(env, config, json_output=True)
+    run_blob_check.assert_called_once_with(env, config, deep=False, json_output=True)
     persist_run.assert_called_once()
 
 

@@ -12,12 +12,13 @@
                                     or empty persisted data
     --target [session_insights|action_event_read_model|dangling_fts|wal_checkpoint
   |orphaned_messages|orphaned_content_blocks|empty_conversations|orphaned_attachme
-  nts]
+  nts|orphaned_blobs]
                                     Limit maintenance to named targets such as
                                     session_insights, action_event_read_model,
                                     dangling_fts, wal_checkpoint,
                                     orphaned_messages, orphaned_content_blocks,
-                                    empty_conversations, or orphaned_attachments
+                                    empty_conversations, orphaned_attachments,
+                                    or orphaned_blobs
     --preview                       Preview maintenance without executing
                                     (requires --repair or --cleanup)
     --vacuum                        Reclaim unused space after maintenance
@@ -88,7 +89,6 @@
         polylogue --action-text "pytest -q" list
         polylogue "pytest -q tests<PATH>" --retrieval-l
   ane actions --limit 5
-        polylogue --tail --provider claude-code --latest list
         polylogue --action other stats --by tool --format json
         polylogue --provider claude-code --since 2026-01-01 stats --by repo --form
   at json
@@ -186,16 +186,17 @@
                                     tool, unknown)
     --set TEXT...                   Set metadata key value
     --add-tag TEXT                  Add tags (comma-separated)
-    --tail                          Tail ahead-of-archive Claude Code source
-                                    state during queries
     --plain                         Force non-interactive plain output
     -v, --verbose                   Verbose output
     --version                       Show the version and exit.
     -h, --help                      Show this message and exit.
   Commands:
     auth         Authenticate with external services (Google Drive for...
+    backup       Back up the Polylogue archive database.
     bulk-export  Bulk export every matched conversation in one process.
     completions  Generate shell completion scripts.
+    config       Show resolved Polylogue configuration with precedence...
+    cost         Show subscription usage outlook and quota forecasting.
     count        Print count of matched conversations.
     dashboard    Launch the dashboard TUI.
     delete       Delete matched conversations.
@@ -244,7 +245,6 @@
         polylogue --action-text "pytest -q" list
         polylogue "pytest -q tests<PATH>
   ts.py" --retrieval-lane actions --limit 5
-        polylogue --tail --provider claude-code --latest list
         polylogue --action other stats --by tool --format json
         polylogue --provider claude-code --since 2026-01-01 st
   ats --by repo --format json
@@ -388,9 +388,6 @@
                                     tool, unknown)
     --set TEXT...                   Set metadata key value
     --add-tag TEXT                  Add tags (comma-separated)
-    --tail                          Tail ahead-of-archive Clau
-  de Code source
-                                    state during queries
     --plain                         Force non-interactive plai
   n output
     -v, --verbose                   Verbose output
@@ -400,9 +397,14 @@
   Commands:
     auth         Authenticate with external services (Google D
   rive for...
+    backup       Back up the Polylogue archive database.
     bulk-export  Bulk export every matched conversation in one
    process.
     completions  Generate shell completion scripts.
+    config       Show resolved Polylogue configuration with pr
+  ecedence...
+    cost         Show subscription usage outlook and quota for
+  ecasting.
     count        Print count of matched conversations.
     dashboard    Launch the dashboard TUI.
     delete       Delete matched conversations.
@@ -458,7 +460,6 @@
         polylogue --action-sequence file_read,file_edit,shell list
         polylogue --action-text "pytest -q" list
         polylogue "pytest -q tests<PATH>" --retrieval-lane actions --limit 5
-        polylogue --tail --provider claude-code --latest list
         polylogue --action other stats --by tool --format json
         polylogue --provider claude-code --since 2026-01-01 stats --by repo --format json
         polylogue --tool bash --exclude-tool read list
@@ -552,16 +553,17 @@
                                     tool, unknown)
     --set TEXT...                   Set metadata key value
     --add-tag TEXT                  Add tags (comma-separated)
-    --tail                          Tail ahead-of-archive Claude Code source
-                                    state during queries
     --plain                         Force non-interactive plain output
     -v, --verbose                   Verbose output
     --version                       Show the version and exit.
     -h, --help                      Show this message and exit.
   Commands:
     auth         Authenticate with external services (Google Drive for...
+    backup       Back up the Polylogue archive database.
     bulk-export  Bulk export every matched conversation in one process.
     completions  Generate shell completion scripts.
+    config       Show resolved Polylogue configuration with precedence...
+    cost         Show subscription usage outlook and quota forecasting.
     count        Print count of matched conversations.
     dashboard    Launch the dashboard TUI.
     delete       Delete matched conversations.

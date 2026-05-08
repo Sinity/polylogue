@@ -232,6 +232,8 @@ def make_mock_filter(results: Sequence[object] | None = None, **method_overrides
     ):
         getattr(filt, method).return_value = filt
     filt.list = AsyncMock(return_value=results or [])
+    filt.count = AsyncMock(return_value=len(results or []))
+    filt.delete = AsyncMock(return_value=0)
     for method_name, override_value in method_overrides.items():
         method = getattr(filt, method_name)
         if isinstance(override_value, Exception):

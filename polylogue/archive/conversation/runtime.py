@@ -8,7 +8,6 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Self, cast
 
 from polylogue.archive.conversation.branch_type import BranchType
-from polylogue.archive.conversation.tail_overlay import TailOverlayInfo, tail_overlay_from_provider_meta
 from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.message.models import DialoguePair, Message
 from polylogue.archive.message.roles import Role, normalize_message_roles
@@ -96,10 +95,6 @@ class ConversationRuntimeMixin:
     @property
     def tags(self) -> list[str]:
         return _metadata_tags(self.metadata)
-
-    @property
-    def tail_overlay(self) -> TailOverlayInfo | None:
-        return tail_overlay_from_provider_meta(self.provider_meta)
 
     def filter(self, predicate: Callable[[Message], bool]) -> Self:
         filtered_messages = [message for message in self.messages if predicate(message)]

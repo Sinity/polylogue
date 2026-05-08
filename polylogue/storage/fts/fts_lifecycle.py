@@ -128,11 +128,13 @@ _MESSAGE_FTS_TRIGGER_DDL = [
        END""",
     """CREATE TRIGGER IF NOT EXISTS messages_fts_ad
        AFTER DELETE ON messages BEGIN
-           DELETE FROM messages_fts WHERE rowid = old.rowid;
+           INSERT INTO messages_fts(messages_fts, rowid, message_id, conversation_id, text)
+           VALUES('delete', old.rowid, old.message_id, old.conversation_id, old.text);
        END""",
     """CREATE TRIGGER IF NOT EXISTS messages_fts_au
        AFTER UPDATE ON messages BEGIN
-           DELETE FROM messages_fts WHERE rowid = old.rowid;
+           INSERT INTO messages_fts(messages_fts, rowid, message_id, conversation_id, text)
+           VALUES('delete', old.rowid, old.message_id, old.conversation_id, old.text);
            INSERT INTO messages_fts(rowid, message_id, conversation_id, text)
            SELECT new.rowid, new.message_id, new.conversation_id, new.text
            WHERE new.text IS NOT NULL;
@@ -186,9 +188,16 @@ async def ensure_fts_index_async(conn: aiosqlite.Connection) -> None:
 
 
 def rebuild_fts_index_sync(conn: sqlite3.Connection) -> None:
-    """Rebuild the full FTS index from persisted archive rows."""
+    """Rebuild the full FTS index from persisted archive rows.
+
+    The messages FTS table is configured with ``content='messages'`` (external
+    content). Empty it via the FTS5 'delete-all' control command; on certain
+    SQLite versions plain ``DELETE FROM messages_fts`` after a suspend/restore
+    trigger cycle raises ``database disk image is malformed`` because the FTS
+    integrity validator checks the content table state.
+    """
     ensure_fts_index_sync(conn)
-    conn.execute("DELETE FROM messages_fts")
+    conn.execute("INSERT INTO messages_fts(messages_fts) VALUES('delete-all')")
     conn.execute("DELETE FROM action_events_fts")
     conn.execute(FTS_REBUILD_SQL)
     conn.execute(ACTION_FTS_REBUILD_SQL)
@@ -203,7 +212,7 @@ async def rebuild_fts_index_async(
 ) -> None:
     """Rebuild the full FTS index from persisted archive rows."""
     await ensure_fts_index_async(conn)
-    await conn.execute("DELETE FROM messages_fts")
+    await conn.execute("INSERT INTO messages_fts(messages_fts) VALUES('delete-all')")
     await conn.execute("DELETE FROM action_events_fts")
     if conversation_ids is not None:
         await repair_fts_index_async(

@@ -51,8 +51,8 @@ def slow_query_notice_threshold() -> float:
     if raw_value is None:
         return SLOW_QUERY_NOTICE_SECONDS
     try:
-        value = float(raw_value)
-    except ValueError:
+        value = float(raw_value)  # type: ignore[arg-type]
+    except (ValueError, TypeError):
         return SLOW_QUERY_NOTICE_SECONDS
     return max(value, 0.0)
 

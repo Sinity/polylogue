@@ -236,6 +236,24 @@ mutation_campaigns:
       - tests/unit/ui/test_tui.py
     status: active
 
+  - name: daemon-http
+    description: >
+      Daemon HTTP API endpoint handler contracts
+    paths_to_mutate:
+      - polylogue/daemon/http.py
+    tests:
+      - tests/unit/daemon/test_daemon_http.py
+    status: active
+
+  - name: repair-core
+    description: >
+      Storage repair logic, preview/idempotence/failure state effects
+    paths_to_mutate:
+      - polylogue/storage/repair.py
+    tests:
+      - tests/unit/storage/test_repair.py
+    status: active
+
 benchmark_campaigns:
   - name: pipeline
     description: >

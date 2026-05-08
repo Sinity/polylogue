@@ -326,7 +326,6 @@ async def run_daemon_services(
     await _ensure_fts_startup_readiness()
 
     pidfile = Path(archive_root()) / "daemon.pid"
-    _pidfile_path = pidfile
     pidfile_fd: int | None = None
 
     # Prevent concurrent daemon instances: verify existing pidfile, then
@@ -338,6 +337,11 @@ async def run_daemon_services(
         pidfile.unlink(missing_ok=True)
 
     pidfile_fd = _acquire_pidfile(pidfile)
+    # Only register the pidfile for atexit cleanup AFTER lock acquisition.
+    # Setting _pidfile_path before _acquire_pidfile() means a failed lock
+    # attempt by an ephemeral instance would still atexit-unlink the live
+    # daemon's pidfile.
+    _pidfile_path = pidfile
 
     # Periodic maintenance tasks.
     wal_task = asyncio.create_task(_periodic_wal_checkpoint())
@@ -636,10 +640,10 @@ def health_command(
     help="Additional allowed browser-capture origin (repeatable).",
 )
 @click.option(
-    "--enable-api",
+    "--no-api",
     is_flag=True,
     default=False,
-    help="Run the daemon HTTP API server.",
+    help="Disable the daemon HTTP API server (web reader + /api/*).",
 )
 @click.option(
     "--api-host",
@@ -670,7 +674,7 @@ def run_command(
     insecure_allow_remote: bool,
     browser_capture_auth_token: str | None,
     browser_capture_origins: tuple[str, ...],
-    enable_api: bool,
+    no_api: bool,
     api_host: str,
     api_port: int,
     api_auth_token: str | None,
@@ -684,6 +688,7 @@ def run_command(
 
     enable_watch = not no_watch
     enable_browser_capture = not no_browser_capture
+    enable_api = not no_api
     if not enable_watch and not enable_browser_capture and not enable_api:
         raise click.UsageError("at least one daemon component must be enabled")
 

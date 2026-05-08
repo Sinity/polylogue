@@ -146,7 +146,12 @@ def configure_logging(verbose: bool = False, json_logs: bool = False) -> None:
         processors.append(structlog.processors.JSONRenderer())
     else:
         env_force = load_polylogue_config().get("force_plain")
-        force_plain = bool(env_force and env_force.lower() not in {"0", "false", "no"})
+        if isinstance(env_force, bool):
+            force_plain = env_force
+        elif isinstance(env_force, str):
+            force_plain = env_force.lower() not in {"0", "false", "no", ""}
+        else:
+            force_plain = bool(env_force)
         processors.append(
             structlog.dev.ConsoleRenderer(
                 colors=sys.stderr.isatty() and not force_plain,

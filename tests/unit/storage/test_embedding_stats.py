@@ -30,7 +30,9 @@ def test_read_embedding_stats_sync_missing_tables_returns_zeroes() -> None:
 def test_read_embedding_stats_sync_counts_available_tables() -> None:
     conn = sqlite3.connect(":memory:")
     try:
-        conn.execute("CREATE TABLE embedding_status (conversation_id TEXT, needs_reindex INTEGER NOT NULL)")
+        conn.execute(
+            "CREATE TABLE embedding_status (conversation_id TEXT, needs_reindex INTEGER NOT NULL, error_message TEXT)"
+        )
         conn.execute("CREATE TABLE message_embeddings (message_id TEXT)")
         conn.executemany(
             "INSERT INTO embedding_status (conversation_id, needs_reindex) VALUES (?, ?)",
@@ -180,7 +182,9 @@ def test_read_embedding_stats_sync_can_skip_retrieval_band_status(
 @pytest.mark.asyncio
 async def test_read_embedding_stats_async_counts_available_tables() -> None:
     async with aiosqlite.connect(":memory:") as conn:
-        await conn.execute("CREATE TABLE embedding_status (conversation_id TEXT, needs_reindex INTEGER NOT NULL)")
+        await conn.execute(
+            "CREATE TABLE embedding_status (conversation_id TEXT, needs_reindex INTEGER NOT NULL, error_message TEXT)"
+        )
         await conn.execute("CREATE TABLE message_embeddings (message_id TEXT)")
         await conn.executemany(
             "INSERT INTO embedding_status (conversation_id, needs_reindex) VALUES (?, ?)",

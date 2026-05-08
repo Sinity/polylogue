@@ -374,7 +374,7 @@ def upsert_conversation(conn: sqlite3.Connection, record: ConversationRecord) ->
 
 
 def upsert_message(conn: sqlite3.Connection, record: MessageRecord) -> bool:
-    """Upsert a message record."""
+    """Upsert a message record — must match the canonical _MESSAGE_UPSERT_SQL column set."""
     res = conn.execute(
         """
         INSERT INTO messages (
@@ -391,8 +391,15 @@ def upsert_message(conn: sqlite3.Connection, record: MessageRecord) -> bool:
             provider_name,
             word_count,
             has_tool_use,
-            has_thinking
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            has_thinking,
+            has_paste,
+            input_tokens,
+            output_tokens,
+            cache_read_tokens,
+            cache_write_tokens,
+            model_name,
+            message_type
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(message_id) DO UPDATE SET
             role = excluded.role,
             text = excluded.text,
@@ -403,13 +410,27 @@ def upsert_message(conn: sqlite3.Connection, record: MessageRecord) -> bool:
             provider_name = excluded.provider_name,
             word_count = excluded.word_count,
             has_tool_use = excluded.has_tool_use,
-            has_thinking = excluded.has_thinking
+            has_thinking = excluded.has_thinking,
+            has_paste = excluded.has_paste,
+            input_tokens = excluded.input_tokens,
+            output_tokens = excluded.output_tokens,
+            cache_read_tokens = excluded.cache_read_tokens,
+            cache_write_tokens = excluded.cache_write_tokens,
+            model_name = excluded.model_name,
+            message_type = excluded.message_type
         WHERE
             content_hash != excluded.content_hash
             OR IFNULL(role, '') != IFNULL(excluded.role, '')
             OR IFNULL(text, '') != IFNULL(excluded.text, '')
             OR IFNULL(parent_message_id, '') != IFNULL(excluded.parent_message_id, '')
             OR branch_index != excluded.branch_index
+            OR has_paste != excluded.has_paste
+            OR input_tokens != excluded.input_tokens
+            OR output_tokens != excluded.output_tokens
+            OR cache_read_tokens != excluded.cache_read_tokens
+            OR cache_write_tokens != excluded.cache_write_tokens
+            OR IFNULL(model_name, '') != IFNULL(excluded.model_name, '')
+            OR IFNULL(message_type, '') != IFNULL(excluded.message_type, '')
         """,
         (
             record.message_id,
@@ -426,6 +447,13 @@ def upsert_message(conn: sqlite3.Connection, record: MessageRecord) -> bool:
             record.word_count,
             record.has_tool_use,
             record.has_thinking,
+            record.has_paste,
+            record.input_tokens,
+            record.output_tokens,
+            record.cache_read_tokens,
+            record.cache_write_tokens,
+            record.model_name,
+            record.message_type.value,
         ),
     )
     updated = bool(res.rowcount > 0)

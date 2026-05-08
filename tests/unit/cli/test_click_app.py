@@ -51,7 +51,6 @@ class TestHandleQueryMode:
             "message_role": (),
             "set_meta": (),
             "add_tag": (),
-            "tail": False,
             "plain": False,
             "verbose": False,
             "filter_has_tool_use": False,
@@ -319,11 +318,16 @@ class TestQueryFirstGroupParseArgs:
         assert "insights" in result.output
         assert "--provider" in result.output
         assert "--latest" in result.output
-        assert "--tail" in result.output
         assert "Subcommands:" not in result.output
         assert "polylogue --provider claude-code --since 2026-01-01 stats --by repo --format json" in result.output
-        assert "polylogue --tail --provider claude-code --latest list" in result.output
         assert "polylogue stats --by repo --provider claude-code --since 2026-01-01 --format json" not in result.output
+
+    def test_query_verb_help_renders_with_root_options(self, cli_runner: CliRunner) -> None:
+        from polylogue.cli.click_app import cli
+
+        result = cli_runner.invoke(cli, ["--plain", "list", "--help"], catch_exceptions=False)
+        assert result.exit_code == 0
+        assert "List matched conversations." in result.output
 
     def test_root_query_option_after_verb_gets_specific_usage_error(self, cli_runner: CliRunner) -> None:
         from polylogue.cli.click_app import cli
@@ -489,7 +493,10 @@ class TestShowStats:
         from polylogue.cli.click_app import _show_stats
 
         env = MagicMock()
-        with patch("polylogue.cli.shared.helpers.print_summary") as mock_print:
+        with (
+            patch("polylogue.cli.commands.status.show_fast_status", side_effect=RuntimeError("daemon offline")),
+            patch("polylogue.cli.shared.helpers.print_summary") as mock_print,
+        ):
             _show_stats(env, verbose=False)
         mock_print.assert_called_once_with(env, verbose=False)
 
@@ -520,7 +527,10 @@ class TestCliMetadata:
             "status",
             "ingest",
             "auth",
+            "backup",
             "completions",
+            "config",
+            "cost",
             "dashboard",
             "neighbors",
             "export",
@@ -625,7 +635,7 @@ class TestDashboardCommand:
             result = cli_runner.invoke(click_cli, ["--plain", "dashboard"])
         assert result.exit_code == 0
         kwargs = mock_app_cls.call_args.kwargs
-        assert kwargs["repository"] is not None
+        assert kwargs["operations"] is not None
 
 
 class TestCompletionsCommand:

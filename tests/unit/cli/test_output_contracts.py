@@ -24,8 +24,8 @@ def test_status_help_plain_output() -> None:
 
 
 def test_config_show_json_output() -> None:
-    """config show --format json produces valid JSON."""
-    exit_code, output = _invoke("config", "show", "--format", "json")
+    """``polylogue config --format json`` produces valid JSON."""
+    exit_code, output = _invoke("config", "--format", "json")
     assert exit_code == 0
     data = json.loads(output.strip())
     assert isinstance(data, dict)
@@ -33,8 +33,8 @@ def test_config_show_json_output() -> None:
 
 
 def test_config_show_toml_output() -> None:
-    """config show (default TOML) produces TOML-like output."""
-    exit_code, output = _invoke("config", "show")
+    """``polylogue config`` (default TOML) produces TOML-like output."""
+    exit_code, output = _invoke("config")
     assert exit_code == 0
     assert "[" in output  # TOML section headers
 

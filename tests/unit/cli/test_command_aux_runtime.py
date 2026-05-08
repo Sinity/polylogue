@@ -127,21 +127,37 @@ def test_completion_functions_cover_provider_conversation_tag_tool_and_open_targ
     message_type_items = shell_completion_values.complete_message_type_values(ctx, param, "m")
     retrieval_lane_items = shell_completion_values.complete_retrieval_lane_values(ctx, param, "h")
 
-    conversation_rows = [
-        {
-            "conversation_id": "conv-1",
-            "provider_name": "claude-code",
-            "display_title": "A long title " * 10,
-        }
-    ]
-    tag_rows = [{"tag_name": "review", "cnt": 3}]
     repo_rows = [{"repo_name": "polylogue", "cnt": 4}]
     cwd_rows = [{"cwd_path": "/realm/project/polylogue", "cnt": 2}]
     tool_rows = [{"normalized_tool_name": "read_file", "cnt": 7}]
 
-    with patch(
-        "polylogue.cli.shell_completion_values._fetch_rows",
-        side_effect=[conversation_rows, conversation_rows, tag_rows, repo_rows, cwd_rows, tool_rows],
+    # complete_conversation_ids and complete_tag_values go through
+    # ArchiveOperations now (not _fetch_rows), so we route them through a
+    # mocked _with_operations runner.
+    from polylogue.archive.conversation.models import Conversation
+
+    mock_conv = MagicMock(spec=Conversation)
+    mock_conv.id = "conv-1"
+    mock_conv.title = "Test Conv"
+    mock_conv.provider = "claude-code"
+    mock_ops = MagicMock(
+        list_conversations=AsyncMock(return_value=[mock_conv]),
+        list_tags=AsyncMock(return_value={"review": 3}),
+    )
+
+    async def _with_operations_stub(action):  # type: ignore[no-untyped-def]
+        return await action(mock_ops)
+
+    with (
+        patch(
+            "polylogue.cli.shell_completion_values._fetch_rows",
+            side_effect=[repo_rows, cwd_rows, tool_rows],
+        ),
+        patch(
+            "polylogue.cli.shell_completion_values._with_operations",
+            new=_with_operations_stub,
+        ),
+        patch("polylogue.cli.shell_completion_values._db_exists", return_value=True),
     ):
         conversation_items = shell_completion_values.complete_conversation_ids(ctx, param, "conv")
         open_items = shell_completion_values.complete_open_targets(ctx, param, "conv")

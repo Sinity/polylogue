@@ -225,40 +225,6 @@ async def test_async_execute_query_errors_for_similar_without_vector_support() -
 
 
 @pytest.mark.asyncio
-async def test_async_execute_query_rejects_tail_mutations() -> None:
-    from polylogue.cli.query import async_execute_query
-
-    env = _make_env(repo=MagicMock(), config=MagicMock())
-
-    with (
-        patch("polylogue.cli.shared.helpers.load_effective_config", return_value=MagicMock()),
-        patch("click.echo") as mock_echo,
-    ):
-        with pytest.raises(SystemExit) as exc_info:
-            await async_execute_query(env, _make_params(tail=True, add_tag=("review",)))
-
-    assert exc_info.value.code == 1
-    assert "read-only" in mock_echo.call_args.args[0]
-
-
-@pytest.mark.asyncio
-async def test_async_execute_query_rejects_tail_open() -> None:
-    from polylogue.cli.query import async_execute_query
-
-    env = _make_env(repo=MagicMock(), config=MagicMock())
-
-    with (
-        patch("polylogue.cli.shared.helpers.load_effective_config", return_value=MagicMock()),
-        patch("click.echo") as mock_echo,
-    ):
-        with pytest.raises(SystemExit) as exc_info:
-            await async_execute_query(env, _make_params(tail=True, open_result=True))
-
-    assert exc_info.value.code == 1
-    assert "does not support `open` yet" in mock_echo.call_args.args[0]
-
-
-@pytest.mark.asyncio
 async def test_async_execute_query_errors_for_similar_without_embeddings() -> None:
     from polylogue.cli.query import async_execute_query
 
@@ -503,7 +469,9 @@ async def test_query_plan_batches_post_filter_candidate_fetches() -> None:
 
     assert [conversation.id for conversation in results] == ["conv-batched-match"]
     request = repo.list_by_query.await_args.args[0]
-    assert request.limit == 100
+    # Post-filter batch multiplier was raised from 2x to 10x to amortize the
+    # filter-out rate of action-sequence post-filtering.
+    assert request.limit == 500
     assert request.offset == 0
 
 

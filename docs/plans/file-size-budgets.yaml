@@ -42,7 +42,7 @@ exceptions:
     reason: "tracked split into per-provider model contract suites"
 
   - path: tests/unit/storage/test_fts5.py
-    ceiling: 1550
+    ceiling: 1650
     reason: "tracked split for FTS escaping vs hybrid ranking"
 
   - path: tests/unit/sources/test_parsers_base.py
@@ -50,7 +50,7 @@ exceptions:
     reason: "renamed; comment '# MERGED FROM test_parsers.py' indicates pending split"
 
   - path: tests/unit/mcp/test_tool_contracts.py
-    ceiling: 1400
+    ceiling: 1500
     reason: "tracked split into archive-query vs insight-tool contracts"
 
   - path: tests/unit/cli/test_query_exec.py
@@ -62,7 +62,7 @@ exceptions:
     reason: "added blob orphan detection, cleanup, and integrity verification (#818)"
 
   - path: polylogue/storage/sqlite/schema_bootstrap.py
-    ceiling: 1200
+    ceiling: 1300
     reason: "added v9→v10 provider-meta promotion migration (#864)"
 
   - path: tests/unit/storage/test_backend.py

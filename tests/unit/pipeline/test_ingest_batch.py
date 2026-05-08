@@ -131,6 +131,7 @@ def _conversation_data(
         ConversationId(parent_conversation_id) if parent_conversation_id is not None else None,
         None,
         raw_id,
+        "",
     )
     return ConversationData(
         conversation_id=conversation_id,
@@ -173,6 +174,11 @@ def _message_tuple(
         0,
         0,
         0,
+        0,  # input_tokens
+        0,  # output_tokens
+        0,  # cache_read_tokens
+        0,  # cache_write_tokens
+        None,  # model_name
         "message",
     )
 
@@ -241,6 +247,9 @@ def _attachment_tuple(attachment_id: str, *, mime_type: str = "image/png") -> At
         None,
         0,
         None,
+        None,
+        None,
+        None,
     )
 
 
@@ -257,6 +266,9 @@ def _attachment_ref_tuple(
         typed_attachment_id,
         typed_conversation_id,
         typed_message_id,
+        None,
+        None,
+        None,
         None,
     )
 
@@ -1176,6 +1188,7 @@ def test_failed_raw_state_update_combines_parse_and_validation_fields() -> None:
         validation_status="failed",
         validation_error="schema mismatch",
         validation_mode="strict",
+        detection_warnings="parse failed",
     )
 
 
@@ -1202,6 +1215,7 @@ def test_failed_raw_state_update_keeps_validation_only_failure_out_of_parse_erro
         validation_status="failed",
         validation_error="schema mismatch",
         validation_mode="strict",
+        detection_warnings=None,
     )
 
 
