@@ -103,6 +103,29 @@ def _json_value_tuple(values: Iterable[JSONValue]) -> tuple[JSONValue, ...]:
     return tuple(require_json_value(value, context="query value") for value in values)
 
 
+SubjectKind = Literal[
+    "archive.query_law",
+    "artifact.path",
+    "assurance.coverage_gap",
+    "assurance.coverage_item",
+    "assurance.coverage_manifest",
+    "cli.command",
+    "cli.json_command",
+    "diagnostic.observable",
+    "error.surface",
+    "generated.scenario_family",
+    "insight.surface",
+    "maintenance.target",
+    "operation.spec",
+    "operation.spec.effect",
+    "provider.capability",
+    "schema.annotation",
+    "schema.roundtrip",
+    "trace.operation",
+    "workflow.claim",
+]
+
+
 @dataclass(frozen=True, slots=True)
 class SourceSpan:
     """Source provenance for a discovered subject or generated evidence."""
@@ -129,7 +152,7 @@ class SourceSpan:
 class SubjectRef:
     """A verifiable object discovered from code, schema, or an insight registry."""
 
-    kind: str
+    kind: SubjectKind
     id: str
     attrs: JSONDocument = field(default_factory=dict)
     source_span: SourceSpan | None = None
