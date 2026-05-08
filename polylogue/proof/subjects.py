@@ -235,7 +235,7 @@ def architecture_control_subjects() -> tuple[SubjectRef, ...]:
     )
     return tuple(
         SubjectRef(
-            kind=kind,
+            kind=kind,  # type: ignore[arg-type]  # dynamic from controls tuple, verified at construction
             id=subject_id,
             attrs=_json_document(
                 {

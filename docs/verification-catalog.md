@@ -65,7 +65,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `polylogue bulk-export` | `polylogue/cli/query_verbs.py:112` `polylogue.cli.query_verbs.bulk_export_verb` |
 | `polylogue completions` | `polylogue/cli/commands/completions.py:9` `polylogue.cli.commands.completions.completions_command` |
 | `polylogue config` | `polylogue/cli/commands/config.py:10` `polylogue.cli.commands.config.config_command` |
-| `polylogue context-pack` | `polylogue/cli/commands/context_pack.py:34` `polylogue.cli.commands.context_pack.context_pack_command` |
+| `polylogue context-pack` | `polylogue/cli/commands/context_pack.py:31` `polylogue.cli.commands.context_pack.context_pack_command` |
 | `polylogue cost` | `polylogue/cli/commands/cost.py:13` `polylogue.cli.commands.cost.cost_command` |
 | `polylogue count` | `polylogue/cli/query_verbs.py:48` `polylogue.cli.query_verbs.count_verb` |
 | `polylogue dashboard` | `polylogue/cli/commands/dashboard.py:10` `polylogue.cli.commands.dashboard.dashboard_command` |

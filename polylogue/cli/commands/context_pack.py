@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, cast
+from typing import Any
 
 import click
 
@@ -22,7 +22,6 @@ from polylogue.mcp.context_pack import (
     _summarize_action_events,
 )
 from polylogue.mcp.query_contracts import MCPConversationQueryRequest
-from polylogue.storage.repository import ConversationRepository
 
 _DEFAULT_MAX_CONVERSATIONS = 5
 _DEFAULT_MAX_MESSAGES = 20
@@ -67,7 +66,7 @@ def context_pack_command(
     msg_limit = max(1, min(max_messages, 100))
 
     ops = env.operations
-    repo = cast(ConversationRepository, env.repository)
+    repo = env.repository
 
     spec = MCPConversationQueryRequest(
         query=query,
@@ -101,9 +100,9 @@ def context_pack_command(
     dates: list[str] = []
     for conv in conversations:
         if conv.created_at is not None:
-            dates.append(conv.created_at.isoformat() if hasattr(conv.created_at, "isoformat") else str(conv.created_at))
+            dates.append(str(conv.created_at))
         if conv.updated_at is not None:
-            dates.append(conv.updated_at.isoformat() if hasattr(conv.updated_at, "isoformat") else str(conv.updated_at))
+            dates.append(str(conv.updated_at))
     earliest = min(dates) if dates else None
     latest = max(dates) if dates else None
 
@@ -113,7 +112,8 @@ def context_pack_command(
     for conv in conversations[:conv_limit]:
         conv_id = str(conv.id)
         total_msg += conv.message_count
-        total_tools += conv.tool_use_count or 0
+        tool_count = getattr(conv, "tool_use_count", 0) or 0
+        total_tools += tool_count
 
         messages: list[ContextPackMessage] = []
         try:
@@ -125,8 +125,6 @@ def context_pack_command(
                 ContextPackMessage(
                     role=m.role.value if m.role else "unknown",
                     text=m.text or "",
-                    has_tool_use=bool(m.has_tool_use),
-                    has_thinking=bool(m.has_thinking),
                 )
             )
 
@@ -135,10 +133,10 @@ def context_pack_command(
                 conversation_id=conv_id,
                 title=conv.title,
                 provider=conv.provider.value if conv.provider else "unknown",
-                created_at=conv.created_at.isoformat() if hasattr(conv.created_at, "isoformat") else conv.created_at,
-                updated_at=conv.updated_at.isoformat() if hasattr(conv.updated_at, "isoformat") else conv.updated_at,
+                created_at=str(conv.created_at) if conv.created_at is not None else None,
+                updated_at=str(conv.updated_at) if conv.updated_at is not None else None,
                 message_count=conv.message_count,
-                tool_use_count=conv.tool_use_count,
+                tool_use_count=tool_count if tool_count else None,
                 messages=messages,
             )
         )
@@ -164,7 +162,6 @@ def context_pack_command(
         ),
         conversations=pack_conversations,
         action_summaries=action_summaries,
-        unresolved_work=[],
         provenance=ContextPackProvenance(redacted=not no_redact),
         total_conversations=total_matching,
         total_messages=total_msg,
