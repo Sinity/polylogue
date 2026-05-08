@@ -10,7 +10,7 @@ from polylogue.mcp.payloads import (
     MCPErrorPayload,
     MCPReadinessReportPayload,
     MCPTagCountsPayload,
-    conversation_summary_list_payload,
+    conversation_query_result_payload,
 )
 from polylogue.mcp.query_contracts import MCPConversationQueryRequest
 
@@ -45,14 +45,18 @@ def register_resources(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     @mcp.resource("polylogue://conversations")
     async def conversations_resource() -> str:
         try:
-            convs = await MCPConversationQueryRequest().build_spec(hooks.clamp_limit).list(hooks.get_query_store())
+            spec = MCPConversationQueryRequest().build_spec(hooks.clamp_limit)
+            convs = await spec.list(hooks.get_query_store())
+            total = await spec.count(hooks.get_query_store())
         except Exception as exc:
             return hooks.error_json(
                 f"Failed to list conversations: {exc}",
                 code="internal_error",
                 detail=type(exc).__name__,
             )
-        return hooks.json_payload(conversation_summary_list_payload(convs))
+        return hooks.json_payload(
+            conversation_query_result_payload(convs, total=total, limit=spec.limit or 0, offset=spec.offset)
+        )
 
     @mcp.resource("polylogue://conversation/{conv_id}")
     async def conversation_resource(conv_id: str) -> str:
@@ -110,20 +114,23 @@ def register_resources(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 code="internal_error",
                 detail=type(exc).__name__,
             )
-        return hooks.json_payload(conversation_summary_list_payload(tree))
+        return hooks.json_payload(conversation_query_result_payload(tree, total=len(tree), limit=len(tree), offset=0))
 
     @mcp.resource("polylogue://provider/{name}/recent")
     async def provider_recent_resource(name: str) -> str:
         try:
             spec = MCPConversationQueryRequest(provider=name, sort="date", limit=10).build_spec(hooks.clamp_limit)
             convs = await spec.list(hooks.get_query_store())
+            total = await spec.count(hooks.get_query_store())
         except Exception as exc:
             return hooks.error_json(
                 f"Failed to list recent conversations for provider {name}: {exc}",
                 code="internal_error",
                 detail=type(exc).__name__,
             )
-        return hooks.json_payload(conversation_summary_list_payload(convs))
+        return hooks.json_payload(
+            conversation_query_result_payload(convs, total=total, limit=spec.limit or 0, offset=spec.offset)
+        )
 
     @mcp.resource("polylogue://readiness")
     def readiness_resource() -> str:
