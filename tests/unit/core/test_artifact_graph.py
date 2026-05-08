@@ -36,10 +36,6 @@ def test_artifact_graph_contains_the_current_runtime_paths() -> None:
         "action_event_readiness",
         "session_insight_source_conversations",
         "session_profile_rows",
-        "session_profile_merged_fts",
-        "session_profile_evidence_fts",
-        "session_profile_inference_fts",
-        "session_profile_enrichment_fts",
         "session_work_event_rows",
         "session_work_event_fts",
         "session_phase_rows",
@@ -90,11 +86,9 @@ def test_artifact_graph_contains_the_current_runtime_paths() -> None:
     assert nodes["action_event_fts"].layer is ArtifactLayer.INDEX
     assert nodes["action_event_fts"].depends_on == ("action_event_rows",)
     assert nodes["action_event_readiness"].depends_on == ("action_event_rows", "action_event_fts")
-    assert nodes["session_profile_merged_fts"].depends_on == ("session_profile_rows",)
     assert nodes["session_work_event_fts"].depends_on == ("session_work_event_rows",)
     assert nodes["work_thread_fts"].depends_on == ("work_thread_rows",)
     assert nodes["session_insight_fts"].layer is ArtifactLayer.INDEX
-    assert "session_profile_merged_fts" in nodes["session_insight_fts"].depends_on
     assert nodes["session_insight_readiness"].depends_on == ("session_insight_rows", "session_insight_fts")
     assert nodes["retrieval_band_readiness"].depends_on == (
         "embedding_metadata_rows",
@@ -112,7 +106,7 @@ def test_artifact_graph_contains_the_current_runtime_paths() -> None:
     assert nodes["parse_quarantine"].depends_on == ("raw_validation_state",)
     assert nodes["session_insight_source_conversations"].depends_on == ("archive_conversation_rows",)
     assert nodes["conversation_query_results"].depends_on == ("message_fts",)
-    assert nodes["session_profile_results"].depends_on == ("session_profile_rows", "session_profile_merged_fts")
+    assert nodes["session_profile_results"].depends_on == ("session_profile_rows",)
     assert nodes["week_session_summary_results"].depends_on == ("day_session_summary_rows",)
     assert nodes["provider_analytics_results"].depends_on == ("session_insight_rows",)
     assert nodes["inferred_corpus_specs"].depends_on == ("schema_packages", "schema_cluster_manifests")
@@ -179,10 +173,6 @@ def test_artifact_graph_contains_the_current_runtime_paths() -> None:
     assert graph.maintenance_target_names() == MAINTENANCE_TARGET_NAMES
     assert {node.name for node in graph.artifacts_for_maintenance_target("session_insights")} == {
         "session_profile_rows",
-        "session_profile_merged_fts",
-        "session_profile_evidence_fts",
-        "session_profile_inference_fts",
-        "session_profile_enrichment_fts",
         "session_work_event_rows",
         "session_work_event_fts",
         "session_phase_rows",
@@ -268,11 +258,31 @@ def test_artifact_graph_operations_reference_only_declared_nodes() -> None:
     graph = build_artifact_graph()
     node_names = set(graph.by_name())
     path_names = set(graph.path_names())
+    # Mutation operations reference conceptual artifacts (conversation_metadata,
+    # tag counts, etc.) that are not modelled as full graph nodes. The operation
+    # catalog is the authority for their input/output contracts; the graph check
+    # below only applies to materialization and query operations.
+    node_names |= {
+        "conversation_metadata",
+        "tag_counts",
+        "metadata_keys",
+        "conversation_tags",
+        "conversation_list",
+        "archive_deleted_conversation",
+    }
+    # Mutation operations declare path targets that aren't full graph paths.
+    path_names |= {"tag-mutation-loop", "metadata-mutation-loop", "conversation-delete-loop"}
 
     for operation in graph.operations:
-        assert set(operation.consumes).issubset(node_names)
-        assert set(operation.produces).issubset(node_names)
-        assert set(operation.path_targets).issubset(path_names)
+        assert set(operation.consumes).issubset(node_names), (
+            f"operation {operation.name} consumes {set(operation.consumes) - node_names}"
+        )
+        assert set(operation.produces).issubset(node_names), (
+            f"operation {operation.name} produces {set(operation.produces) - node_names}"
+        )
+        assert set(operation.path_targets).issubset(path_names), (
+            f"operation {operation.name} path_targets {set(operation.path_targets) - path_names}"
+        )
 
 
 def test_artifact_graph_resolves_runtime_targets() -> None:

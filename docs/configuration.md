@@ -32,11 +32,55 @@ Polylogue follows XDG Base Directory specification:
 
 ## Configuration Model
 
-Polylogue has no general-purpose config file. Runtime configuration is assembled
-by `polylogue.config`: it discovers sources, builds Drive/index settings, and
-captures the current database path in the `Config` value. Filesystem layout is
-owned by `polylogue.paths`, which reads directory environment variables lazily
-when its path functions are called.
+Polylogue has a layered configuration system with four sources (highest precedence first):
+
+1. CLI flag overrides
+2. `POLYLOGUE_*` environment variables
+3. `polylogue.toml` (resolved from `$POLYLOGUE_CONFIG`, then `$XDG_CONFIG_HOME/polylogue/polylogue.toml`, then `./polylogue.toml`)
+4. Built-in defaults (full-featured-by-default: watch + browser-capture + HTTP API all on)
+
+Use `polylogue config` to print the resolved configuration as TOML, or `polylogue config -f json` for a machine-readable form.
+
+### TOML schema
+
+```toml
+[archive]
+root = "/home/user/.local/share/polylogue"
+
+[daemon]
+host = "127.0.0.1"
+port = 8766
+
+[daemon.api]
+host = "127.0.0.1"
+port = 8766
+# auth_token = "..."   # optional; required for non-loopback API binding
+
+[daemon.browser_capture]
+port = 8765
+allowed_origins = "127.0.0.1"
+
+[embedding]
+# enabled defaults to true when VOYAGE_API_KEY is set, false otherwise
+enabled = true
+model = "voyage-4"
+dimension = 1024
+max_cost_usd = 5.0   # soft monthly cap; 0 = unlimited
+
+[logging]
+level = "INFO"
+force_plain = false
+
+[notifications]
+backend = "log"
+
+[health]
+check_interval_s = 300
+check_tiers = "fast,medium"
+```
+
+Filesystem layout is owned by `polylogue.paths`, which reads directory
+environment variables lazily when its path functions are called.
 
 Path-safety helpers are separate from both surfaces. Code that sanitizes
 provider or conversation names imports from `polylogue.paths.sanitize`.

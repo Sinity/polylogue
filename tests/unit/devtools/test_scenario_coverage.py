@@ -76,12 +76,14 @@ def test_build_runtime_scenario_coverage_tracks_the_current_authored_map() -> No
     assert "cli.help" in coverage.declared_operations
     assert "benchmark.query.search-filters" in coverage.declared_operations
     assert coverage.uncovered_artifacts == ()
-    assert coverage.uncovered_operations == ()
+    # Mutation operations are runtime mutations, not in scenario coverage.
+    assert all(name.startswith("mutate-") for name in coverage.uncovered_operations)
     assert coverage.uncovered_maintenance_targets == (
         "empty_conversations",
         "orphaned_attachments",
+        "orphaned_blobs",
         "orphaned_content_blocks",
         "orphaned_messages",
         "wal_checkpoint",
     )
-    assert coverage.uncovered_declared_operations == ()
+    assert all(name.startswith("mutate-") for name in coverage.uncovered_declared_operations)

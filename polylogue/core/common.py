@@ -24,8 +24,8 @@ INSERT INTO conversations (
     conversation_id, provider_name, provider_conversation_id, title,
     created_at, updated_at, sort_key, content_hash,
     provider_meta, metadata, version,
-    parent_conversation_id, branch_type, raw_id
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    parent_conversation_id, branch_type, raw_id, source_name
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(conversation_id) DO UPDATE SET
     title = excluded.title,
     created_at = excluded.created_at,
@@ -36,7 +36,8 @@ ON CONFLICT(conversation_id) DO UPDATE SET
     metadata = COALESCE(excluded.metadata, conversations.metadata),
     parent_conversation_id = excluded.parent_conversation_id,
     branch_type = excluded.branch_type,
-    raw_id = COALESCE(excluded.raw_id, conversations.raw_id)
+    raw_id = COALESCE(excluded.raw_id, conversations.raw_id),
+    source_name = COALESCE(NULLIF(excluded.source_name, ''), conversations.source_name)
 WHERE
     content_hash != excluded.content_hash
     OR IFNULL(title, '') != IFNULL(excluded.title, '')
@@ -56,7 +57,7 @@ INSERT INTO messages (
     provider_name, word_count, has_tool_use, has_thinking, has_paste,
     input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
     model_name, message_type
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(message_id) DO UPDATE SET
     role = excluded.role,
     text = excluded.text,

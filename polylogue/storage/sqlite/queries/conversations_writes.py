@@ -22,6 +22,12 @@ async def save_conversation_record(
     record: ConversationRecord,
     transaction_depth: int,
 ) -> None:
+    # Derive source_name from provider_meta.source when the field was not
+    # explicitly set by the caller (test helpers, make_conversation, etc.).
+    source_name = record.source_name
+    if not source_name and record.provider_meta:
+        source_name = str(record.provider_meta.get("source", ""))
+
     await conn.execute(
         _CONVERSATION_UPSERT_SQL,
         (
@@ -39,6 +45,7 @@ async def save_conversation_record(
             record.parent_conversation_id,
             record.branch_type,
             record.raw_id,
+            source_name,
         ),
     )
     if transaction_depth == 0:

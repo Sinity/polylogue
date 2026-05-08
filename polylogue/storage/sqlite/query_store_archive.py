@@ -155,11 +155,24 @@ class SQLiteQueryStoreArchiveMixin:
             for message in messages
         ], total
 
-    async def get_messages_batch(self, conversation_ids: list[str]) -> dict[str, list[MessageRecord]]:
+    async def get_messages_batch(
+        self,
+        conversation_ids: list[str],
+        *,
+        sort_key_since: float | None = None,
+        sort_key_until: float | None = None,
+        message_role: MessageRoleFilter = (),
+    ) -> dict[str, list[MessageRecord]]:
         if not conversation_ids:
             return {}
         async with self._connection_factory() as conn:
-            result, all_messages = await messages_q.get_messages_batch(conn, conversation_ids)
+            result, all_messages = await messages_q.get_messages_batch(
+                conn,
+                conversation_ids,
+                sort_key_since=sort_key_since,
+                sort_key_until=sort_key_until,
+                message_role=message_role,
+            )
         if not all_messages:
             return result
         blocks_by_message = await self.get_content_blocks([message.message_id for message in all_messages])

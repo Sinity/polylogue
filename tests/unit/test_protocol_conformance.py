@@ -209,9 +209,9 @@ class TestOutputRendererConformance:
 
         output_dir = tmp_path / "out"
         if cls is HTMLRenderer:
-            renderer: OutputRenderer = HTMLRenderer(archive_root=output_dir)
+            renderer: OutputRenderer = HTMLRenderer(archive_root=output_dir, db_path=db_path)
         else:
-            renderer = MarkdownRenderer(archive_root=output_dir)
+            renderer = MarkdownRenderer(archive_root=output_dir, db_path=db_path)
 
         result_path = await renderer.render(conv_id, output_dir)
 

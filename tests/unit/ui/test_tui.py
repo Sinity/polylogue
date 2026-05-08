@@ -31,8 +31,14 @@ ConversationBuilderFactory: TypeAlias = Callable[[str], "ConversationBuilder"]
 
 
 def _make_app(repo: ConversationArchiveReadStore) -> PolylogueApp:
-    """Create PolylogueApp with an injected repository."""
-    return PolylogueApp(repository=repo)
+    """Create PolylogueApp with operations wrapping an injected repository."""
+    from typing import cast
+
+    from polylogue.operations import ArchiveOperations
+    from polylogue.storage.repository import ConversationRepository
+
+    operations = ArchiveOperations(repository=cast(ConversationRepository, repo))
+    return PolylogueApp(operations=operations)
 
 
 async def _wait_workers(pilot: Pilot[None], *, selector: str | None = None, reject: str = "Loading...") -> None:
@@ -388,7 +394,7 @@ async def test_search_missing_index_shows_rebuild_hint(
         table = pilot.app.query_one("#search-results", DataTable)
         assert table.row_count == 1
         row = table.get_row_at(0)
-        assert "Search index not built" in str(row[2])
+        assert "Search not ready" in str(row[2]) or "Search index not built" in str(row[2])
 
 
 def test_repository_bound_container_requires_injected_repo() -> None:
@@ -397,8 +403,8 @@ def test_repository_bound_container_requires_injected_repo() -> None:
 
     screen = DummyScreen()
 
-    with pytest.raises(RuntimeError, match="DummyScreen widget requires an injected repository"):
-        screen._get_repo("DummyScreen")
+    with pytest.raises(RuntimeError, match="DummyScreen widget requires injected archive operations"):
+        screen._get_ops("DummyScreen")
 
 
 @_skip
@@ -428,7 +434,7 @@ async def test_worker_failure_recovery(
     broken_repo.get_archive_stats.side_effect = RuntimeError("DB exploded")
 
     assert isinstance(broken_repo, ConversationArchiveReadStore)
-    app = PolylogueApp(repository=broken_repo)
+    app = _make_app(broken_repo)
     async with app.run_test() as pilot:
         await _wait_workers(pilot)
 

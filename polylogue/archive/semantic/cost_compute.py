@@ -66,13 +66,15 @@ def compute_session_cost(conversation: Conversation) -> SessionCostSummary:
                 cache_read_tokens=breakdown.cache_read_tokens,
                 cache_write_tokens=breakdown.cache_write_tokens,
             )
-            credit_cost = float(compute_credit_cost(
-                norm,
-                breakdown.input_tokens,
-                breakdown.output_tokens,
-                breakdown.cache_read_tokens,
-                breakdown.cache_write_tokens,
-            ))
+            credit_cost = float(
+                compute_credit_cost(
+                    norm,
+                    breakdown.input_tokens,
+                    breakdown.output_tokens,
+                    breakdown.cache_read_tokens,
+                    breakdown.cache_write_tokens,
+                )
+            )
 
         sub_equivalent = 0.0
         credit_rate = get_credit_rate(norm) if norm else None

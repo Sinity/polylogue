@@ -167,3 +167,15 @@ def test_configure_logging_supports_console_and_json_modes_and_get_logger() -> N
     with patch("polylogue.logging.structlog.get_logger", return_value=bound_logger) as get_logger:
         assert logging_mod.get_logger("polylogue.tests") is bound_logger
     get_logger.assert_called_once_with("polylogue.tests")
+
+
+def test_configure_logging_accepts_typed_force_plain_config() -> None:
+    with (
+        patch("polylogue.logging.load_polylogue_config", return_value={"force_plain": True}),
+        patch("polylogue.logging.structlog.configure"),
+        patch("polylogue.logging.structlog.dev.ConsoleRenderer", return_value="console-renderer") as console_renderer,
+        patch("sys.stderr.isatty", return_value=True),
+    ):
+        logging_mod.configure_logging(verbose=False, json_logs=False)
+
+    console_renderer.assert_called_once_with(colors=False)

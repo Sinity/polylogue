@@ -150,6 +150,8 @@ def conversation_to_record(conversation: Conversation) -> ConversationRecord:
     provider_meta: dict[str, object] = {}
     provider_meta.update(json_document(metadata.get("provider_meta")))
 
+    source_name_val = str(provider_meta.get("source", "")) if provider_meta else ""
+
     return ConversationRecord(
         conversation_id=ConversationId(str(conversation.id)),
         provider_name=conversation.provider,
@@ -163,6 +165,7 @@ def conversation_to_record(conversation: Conversation) -> ConversationRecord:
         content_hash=ContentHash(_content_hash_from_metadata_or_domain(conversation, metadata_record)),
         provider_meta=provider_meta,
         metadata=metadata_record,
+        source_name=source_name_val,
     )
 
 

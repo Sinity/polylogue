@@ -26,15 +26,24 @@ class SubscriptionTier(BaseModel):
 
 SUBSCRIPTION_TIERS: dict[str, SubscriptionTier] = {
     "pro": SubscriptionTier(
-        name="pro", monthly_fee_usd=20.0, credit_pool=21_700_000, max_instances=1,
+        name="pro",
+        monthly_fee_usd=20.0,
+        credit_pool=21_700_000,
+        max_instances=1,
         description="Claude Code Pro ($20/mo, 21.7M credits)",
     ),
     "max_5x": SubscriptionTier(
-        name="max_5x", monthly_fee_usd=100.0, credit_pool=180_600_000, max_instances=5,
+        name="max_5x",
+        monthly_fee_usd=100.0,
+        credit_pool=180_600_000,
+        max_instances=5,
         description="Claude Code Max 5x ($100/mo, 180.6M credits)",
     ),
     "max_20x": SubscriptionTier(
-        name="max_20x", monthly_fee_usd=200.0, credit_pool=361_100_000, max_instances=20,
+        name="max_20x",
+        monthly_fee_usd=200.0,
+        credit_pool=361_100_000,
+        max_instances=20,
         description="Claude Code Max 20x ($200/mo, 361.1M credits)",
     ),
 }
@@ -55,8 +64,11 @@ class ModelCreditRate:
     provenance: str = SUBSCRIPTION_CATALOG_PROVENANCE
     effective_date: str = SUBSCRIPTION_CATALOG_EFFECTIVE_DATE
 
-    def credits_for(self, input_tokens: int, output_tokens: int, cache_read_tokens: int = 0, cache_write_tokens: int = 0) -> int:
+    def credits_for(
+        self, input_tokens: int, output_tokens: int, cache_read_tokens: int = 0, cache_write_tokens: int = 0
+    ) -> int:
         import math
+
         total = 0
         if input_tokens > 0:
             total += math.ceil(input_tokens * self.input_credits / self.input_divisor)
@@ -70,11 +82,21 @@ class ModelCreditRate:
 
 
 MODEL_CREDIT_RATES: dict[str, ModelCreditRate] = {
-    "claude-opus-4-6": ModelCreditRate("anthropic", "claude-opus-4-6", 10, 10, cache_read_credits=0, cache_write_credits=10),
-    "claude-opus-4-5": ModelCreditRate("anthropic", "claude-opus-4-5", 10, 10, cache_read_credits=0, cache_write_credits=10),
-    "claude-sonnet-4-6": ModelCreditRate("anthropic", "claude-sonnet-4-6", 6, 6, cache_read_credits=0, cache_write_credits=6),
-    "claude-sonnet-4-5": ModelCreditRate("anthropic", "claude-sonnet-4-5", 6, 6, cache_read_credits=0, cache_write_credits=6),
-    "claude-haiku-4-5": ModelCreditRate("anthropic", "claude-haiku-4-5", 2, 2, cache_read_credits=0, cache_write_credits=2),
+    "claude-opus-4-6": ModelCreditRate(
+        "anthropic", "claude-opus-4-6", 10, 10, cache_read_credits=0, cache_write_credits=10
+    ),
+    "claude-opus-4-5": ModelCreditRate(
+        "anthropic", "claude-opus-4-5", 10, 10, cache_read_credits=0, cache_write_credits=10
+    ),
+    "claude-sonnet-4-6": ModelCreditRate(
+        "anthropic", "claude-sonnet-4-6", 6, 6, cache_read_credits=0, cache_write_credits=6
+    ),
+    "claude-sonnet-4-5": ModelCreditRate(
+        "anthropic", "claude-sonnet-4-5", 6, 6, cache_read_credits=0, cache_write_credits=6
+    ),
+    "claude-haiku-4-5": ModelCreditRate(
+        "anthropic", "claude-haiku-4-5", 2, 2, cache_read_credits=0, cache_write_credits=2
+    ),
 }
 
 
@@ -82,7 +104,13 @@ def get_credit_rate(normalized_model: str) -> ModelCreditRate | None:
     return MODEL_CREDIT_RATES.get(normalized_model)
 
 
-def compute_credit_cost(normalized_model: str, input_tokens: int, output_tokens: int, cache_read_tokens: int = 0, cache_write_tokens: int = 0) -> int:
+def compute_credit_cost(
+    normalized_model: str,
+    input_tokens: int,
+    output_tokens: int,
+    cache_read_tokens: int = 0,
+    cache_write_tokens: int = 0,
+) -> int:
     rate = get_credit_rate(normalized_model)
     if rate is None:
         return 0

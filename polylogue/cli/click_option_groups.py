@@ -60,10 +60,6 @@ def _validate_message_role_tokens(
 
 FILTER_OPTION_DECORATORS: tuple[Callable[[ClickCallable], ClickCallable], ...] = (
     click.option(
-        "--view",
-        help="Load filter presets from a saved view by name",
-    ),
-    click.option(
         "--id",
         "-i",
         "conv_id",
@@ -256,7 +252,6 @@ MODIFIER_OPTION_DECORATORS: tuple[Callable[[ClickCallable], ClickCallable], ...]
 )
 
 GLOBAL_OPTION_DECORATORS: tuple[Callable[[ClickCallable], ClickCallable], ...] = (
-    click.option("--tail", is_flag=True, help="Tail ahead-of-archive Claude Code source state during queries"),
     click.option("--plain", is_flag=True, help="Force non-interactive plain output"),
     click.option("-v", "--verbose", is_flag=True, help="Verbose output"),
 )

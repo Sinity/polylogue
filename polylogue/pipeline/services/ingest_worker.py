@@ -87,6 +87,7 @@ ConversationTuple = tuple[
     ConversationId | None,
     BranchType | None,
     str | None,
+    str,  # source_name
 ]
 MessageTuple = tuple[
     MessageId,
@@ -104,7 +105,12 @@ MessageTuple = tuple[
     int,
     int,
     int,
-    str,
+    int,  # input_tokens
+    int,  # output_tokens
+    int,  # cache_read_tokens
+    int,  # cache_write_tokens
+    str | None,  # model_name
+    str,  # message_type
 ]
 ContentBlockTuple = tuple[
     str,
@@ -785,6 +791,9 @@ def ingest_record(
 
 
 def _conversation_tuple(conversation: MaterializedConversation, *, raw_id: str | None) -> ConversationTuple:
+    source_name = ""
+    if conversation.provider_meta and isinstance(conversation.provider_meta, dict):
+        source_name = str(conversation.provider_meta.get("source", ""))
     return (
         conversation.conversation_id,
         conversation.provider_name,
@@ -800,6 +809,7 @@ def _conversation_tuple(conversation: MaterializedConversation, *, raw_id: str |
         conversation.parent_conversation_id,
         conversation.branch_type,
         raw_id,
+        source_name,
     )
 
 
@@ -820,6 +830,11 @@ def _message_tuple(conversation: MaterializedConversation, message: Materialized
         message.has_tool_use,
         message.has_thinking,
         message.has_paste,
+        message.input_tokens,
+        message.output_tokens,
+        message.cache_read_tokens,
+        message.cache_write_tokens,
+        message.model_name,
         message.message_type.value,
     )
 

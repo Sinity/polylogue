@@ -17,6 +17,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from polylogue.config import load_polylogue_config
 from polylogue.daemon.convergence import ConvergenceStage
 from polylogue.logging import get_logger
 
@@ -479,10 +480,9 @@ def _fts_needs_repair_for_conversations(conn: sqlite3.Connection, conversation_i
 
 def _embedding_config_enabled() -> bool:
     """Check whether embedding convergence is enabled via the shared config layer."""
-    from polylogue.config import load_polylogue_config
 
     cfg = load_polylogue_config()
-    return bool(cfg.get("embedding_enabled")) and bool(cfg.get("voyage_api_key"))
+    return bool(cfg.embedding_enabled) and bool(cfg.voyage_api_key)
 
 
 def _reconcile_embedding_config_change(conn: sqlite3.Connection) -> None:
@@ -493,7 +493,6 @@ def _reconcile_embedding_config_change(conn: sqlite3.Connection) -> None:
     configured dimension differs, the vec0 table is also dropped so it can
     be recreated with the new dimension.
     """
-    from polylogue.config import load_polylogue_config
     from polylogue.storage.search_providers.sqlite_vec_runtime import _reconcile_vec0_dimension
     from polylogue.storage.search_providers.sqlite_vec_support import logger as vec_logger
 
@@ -569,7 +568,6 @@ def _pending_embedding_conversation_ids(
 
 def _embed_conversations_sync(db_path: Path, conversation_ids: Sequence[str]) -> bool:
     from polylogue.api.sync.bridge import run_coroutine_sync
-    from polylogue.config import load_polylogue_config
     from polylogue.storage.embeddings.materialization import embed_conversation_sync
     from polylogue.storage.repository import ConversationRepository
     from polylogue.storage.search_providers import create_vector_provider

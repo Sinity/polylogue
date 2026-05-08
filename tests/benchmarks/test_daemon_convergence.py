@@ -20,6 +20,8 @@ from typing import Any, cast
 
 import pytest
 
+from tests.benchmarks.helpers import BenchmarkFixture
+
 # ── Synthetic data generation ──────────────────────────────────────
 
 
@@ -267,7 +269,9 @@ def _run_convergence_memory_probe(
 
 @pytest.mark.benchmark
 @pytest.mark.parametrize("n_messages", [200, 1000, 5000])
-def test_convergence_large_session_memory(benchmark, n_messages: int, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:  # type: ignore[no-untyped-def]
+def test_convergence_large_session_memory(
+    benchmark: BenchmarkFixture, n_messages: int, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Measure convergence performance and memory on a single large session.
 
     Records RSS, cgroup memory, and timing metrics as benchmark extra_info.
@@ -277,7 +281,7 @@ def test_convergence_large_session_memory(benchmark, n_messages: int, tmp_path: 
     _write_jsonl(root / "large.jsonl", records)
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
 
-    result = benchmark(_run_convergence_memory_probe, root.parent, tmp_path)
+    result = benchmark(lambda: _run_convergence_memory_probe(root.parent, tmp_path))
 
     if result["total_s"] > 0:
         rss_peak_mb = result["rss_peak_self_mb"] + result["rss_peak_children_mb"]

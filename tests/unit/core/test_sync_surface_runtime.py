@@ -47,10 +47,20 @@ def test_sync_conversation_queries_forward_through_sync_bridge() -> None:
     facade = SimpleNamespace(
         get_conversation=lambda conversation_id: ("get_conversation", conversation_id),
         get_conversations=lambda conversation_ids: ("get_conversations", tuple(conversation_ids)),
+        get_messages_paginated=lambda conversation_id, **kwargs: ("messages-page", conversation_id, kwargs),
+        bulk_get_messages=lambda conversation_ids, **kwargs: ("messages-bulk", tuple(conversation_ids), kwargs),
         list_conversations=lambda **kwargs: ("list_conversations", kwargs),
+        query_conversations=lambda **kwargs: ("query_conversations", kwargs),
+        count_conversations=lambda **kwargs: ("count_conversations", kwargs),
         filter=lambda: filter_stub,
+        get_conversation_summary=lambda conversation_id: ("summary", conversation_id),
+        get_conversation_stats=lambda conversation_id: ("stats", conversation_id),
+        get_session_tree=lambda conversation_id: ("tree", conversation_id),
+        list_tags=lambda **kwargs: ("tags", kwargs),
         search=lambda query, **kwargs: ("search", query, kwargs),
         stats=lambda: "stats-coro",
+        health_check=lambda: "health-coro",
+        neighbor_candidates=lambda **kwargs: ("neighbors", kwargs),
     )
     archive = _SyncHarness()
     archive._facade = facade
@@ -58,9 +68,48 @@ def test_sync_conversation_queries_forward_through_sync_bridge() -> None:
     with patch("polylogue.api.sync.conversations.run_coroutine_sync", side_effect=lambda coro: coro) as mock_run:
         assert archive.get_conversation("conv-1") == ("get_conversation", "conv-1")
         assert archive.get_conversations(["a", "b"]) == ("get_conversations", ("a", "b"))
+        assert archive.get_messages_paginated("conv-1", limit=20, offset=5) == (
+            "messages-page",
+            "conv-1",
+            {
+                "message_role": (),
+                "message_type": None,
+                "limit": 20,
+                "offset": 5,
+                "content_projection": None,
+            },
+        )
+        assert archive.bulk_get_messages(["a", "b"], since="2026-01-01", until="2026-01-02") == (
+            "messages-bulk",
+            ("a", "b"),
+            {"since": "2026-01-01", "until": "2026-01-02", "message_role": (), "content_projection": None},
+        )
         assert archive.list_conversations(provider="claude-code", limit=3) == (
             "list_conversations",
             {"provider": "claude-code", "limit": 3},
+        )
+        assert archive.query_conversations(provider="claude-code", limit=3, has_tool_use=True) == (
+            "query_conversations",
+            {
+                "provider": "claude-code",
+                "tag": None,
+                "since": None,
+                "until": None,
+                "sort": None,
+                "limit": 3,
+                "offset": 0,
+                "has_tool_use": True,
+                "has_thinking": False,
+                "has_paste": False,
+                "typed_only": False,
+                "min_messages": None,
+                "max_messages": None,
+                "min_words": None,
+            },
+        )
+        assert archive.count_conversations(provider="claude-code", since="2026-01-01") == (
+            "count_conversations",
+            {"provider": "claude-code", "since": "2026-01-01", "until": None},
         )
         assert (
             archive.list_summaries(
@@ -71,12 +120,27 @@ def test_sync_conversation_queries_forward_through_sync_bridge() -> None:
             )
             == "summaries-coro"
         )
+        assert archive.get_conversation_summary("conv-1") == ("summary", "conv-1")
+        assert archive.get_conversation_stats("conv-1") == ("stats", "conv-1")
+        assert archive.get_session_tree("conv-1") == ("tree", "conv-1")
+        assert archive.list_tags(provider="claude-code") == ("tags", {"provider": "claude-code"})
         assert archive.search("query", limit=7, source="inbox", since="2026-01-01") == (
             "search",
             "query",
             {"limit": 7, "source": "inbox", "since": "2026-01-01"},
         )
         assert archive.stats() == "stats-coro"
+        assert archive.health_check() == "health-coro"
+        assert archive.neighbor_candidates(conversation_id="conv-1", limit=4) == (
+            "neighbors",
+            {
+                "conversation_id": "conv-1",
+                "query": None,
+                "provider": None,
+                "limit": 4,
+                "window_hours": 24,
+            },
+        )
 
     assert filter_stub.calls == [
         ("provider", "claude-code"),
@@ -85,7 +149,7 @@ def test_sync_conversation_queries_forward_through_sync_bridge() -> None:
         ("limit", 5),
         ("list_summaries", None),
     ]
-    assert mock_run.call_count == 6
+    assert mock_run.call_count == 16
 
 
 def test_sync_product_queries_forward_through_sync_bridge() -> None:
@@ -106,6 +170,7 @@ def test_sync_product_queries_forward_through_sync_bridge() -> None:
         list_week_session_summary_insights=lambda query=None: ("weeks", query),
         list_provider_analytics_insights=lambda query=None: ("analytics", query),
         list_archive_debt_insights=lambda query=None: ("debt", query),
+        insight_readiness_report=lambda query=None: ("readiness", query),
     )
     archive = _SyncHarness()
     archive._facade = facade
@@ -131,8 +196,9 @@ def test_sync_product_queries_forward_through_sync_bridge() -> None:
         assert archive.list_week_session_summary_insights("query") == ("weeks", "query")
         assert archive.list_provider_analytics_insights("query") == ("analytics", "query")
         assert archive.list_archive_debt_insights("query") == ("debt", "query")
+        assert archive.insight_readiness_report("query") == ("readiness", "query")
 
-    assert mock_run.call_count == 16
+    assert mock_run.call_count == 17
 
 
 def test_sync_polylogue_wraps_async_facade_and_context_manager() -> None:

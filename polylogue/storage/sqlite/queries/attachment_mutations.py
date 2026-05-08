@@ -31,6 +31,9 @@ async def save_attachments(
                 record.path,
                 0,
                 _json_or_none(record.provider_meta),
+                record.provider_attachment_id,
+                record.provider_file_id,
+                record.provider_drive_id,
             )
             for record in records
         ],
@@ -45,6 +48,9 @@ async def save_attachments(
                 record.conversation_id,
                 record.message_id,
                 _json_or_none(record.provider_meta),
+                record.provider_attachment_id,
+                record.provider_file_id,
+                record.provider_drive_id,
             )
         )
     await conn.executemany(

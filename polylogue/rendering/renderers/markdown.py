@@ -15,15 +15,22 @@ if TYPE_CHECKING:
 class MarkdownRenderer:
     """Renders conversations to plain Markdown format."""
 
-    def __init__(self, archive_root: Path, repository: ConversationRepository | None = None):
+    def __init__(
+        self,
+        archive_root: Path,
+        repository: ConversationRepository | None = None,
+        *,
+        db_path: Path | None = None,
+    ):
         """Initialize the Markdown renderer.
 
         Args:
             archive_root: Root directory for archived conversations
             repository: ConversationRepository for loading projections
+            db_path: Override the database path (defaults to canonical XDG layout)
         """
         self.archive_root = archive_root
-        self.formatter = ConversationFormatter(archive_root, repository=repository)
+        self.formatter = ConversationFormatter(archive_root, repository=repository, db_path=db_path)
 
     def supports_format(self) -> str:
         """Return the output format this renderer supports.

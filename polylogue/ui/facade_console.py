@@ -16,10 +16,12 @@ class ConsoleLike(Protocol):
     def print(self, *objects: object, **kwargs: object) -> None: ...
 
 
-def _render_plain_object(obj: object) -> str:
+def _render_plain_object(obj: object, *, markup: bool = True) -> str:
     if isinstance(obj, Text):
         return obj.plain
     if isinstance(obj, str):
+        if not markup:
+            return obj
         try:
             return Text.from_markup(obj).plain
         except MarkupError:
@@ -40,8 +42,9 @@ class PlainConsole:
     def __init__(self, *_: object, **__: object) -> None:
         pass
 
-    def print(self, *objects: object, **_: object) -> None:
-        parts = [_render_plain_object(obj) for obj in objects]
+    def print(self, *objects: object, **kwargs: object) -> None:
+        markup = bool(kwargs.get("markup", True))
+        parts = [_render_plain_object(obj, markup=markup) for obj in objects]
         print(" ".join(parts))
 
 

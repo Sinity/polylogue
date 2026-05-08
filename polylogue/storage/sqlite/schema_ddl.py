@@ -57,7 +57,7 @@ from polylogue.storage.sqlite.schema_ddl_provider_events import (
     PROVIDER_EVENT_DDL as _PROVIDER_EVENT_DDL,
 )
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12  # 2026-05-08: messages.input_tokens / output_tokens / cache_*_tokens / model_name (#943)
 
 
 # Complete target schema applied to fresh databases.

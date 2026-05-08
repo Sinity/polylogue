@@ -33,7 +33,6 @@ Usage: polylogue [OPTIONS] COMMAND [ARGS]...
       polylogue --action-sequence file_read,file_edit,shell list
       polylogue --action-text "pytest -q" list
       polylogue "pytest -q tests/unit/core/test_semantic_facts.py" --retrieval-lane actions --limit 5
-      polylogue --tail --provider claude-code --latest list
       polylogue --action other stats --by tool --format json
       polylogue --provider claude-code --since 2026-01-01 stats --by repo --format json
       polylogue --tool bash --exclude-tool read list
@@ -130,8 +129,6 @@ Options:
                                   tool, unknown)
   --set TEXT...                   Set metadata key value
   --add-tag TEXT                  Add tags (comma-separated)
-  --tail                          Tail ahead-of-archive Claude Code source
-                                  state during queries
   --plain                         Force non-interactive plain output
   -v, --verbose                   Verbose output
   --version                       Show the version and exit.
@@ -143,6 +140,7 @@ Commands:
   bulk-export  Bulk export every matched conversation in one process.
   completions  Generate shell completion scripts.
   config       Show resolved Polylogue configuration with precedence...
+  cost         Show subscription usage outlook and quota forecasting.
   count        Print count of matched conversations.
   dashboard    Launch the dashboard TUI.
   delete       Delete matched conversations.

@@ -42,9 +42,6 @@ let
         max_cost_usd = cfg.settings.embedding.max-cost-usd;
       }
     );
-    hooks = lib.optionalAttrs (cfg.settings.hooks != { }) {
-      enabled = cfg.settings.hooks.enabled;
-    };
     logging = lib.optionalAttrs (cfg.settings.logging != { }) (
       lib.filterAttrs (_: v: v != null) {
         level = cfg.settings.logging.level;
@@ -153,14 +150,6 @@ in
         };
       };
 
-      hooks = {
-        enabled = mkOption {
-          type = types.nullOr types.bool;
-          default = null;
-          description = "Enable hook-based session capture.";
-        };
-      };
-
       logging = {
         level = mkOption {
           type = types.nullOr (types.enum [ "DEBUG" "INFO" "WARNING" "ERROR" ]);
@@ -180,10 +169,13 @@ in
     environment.systemPackages = [ cfg.package ];
 
     systemd.services.polylogued = {
-      description = "Polylogue daemon";
+      description = "Polylogue daemon (live watcher, browser capture, HTTP API)";
       after = [ "network.target" ];
       wantedBy = [ "multi-user.target" ];
       serviceConfig = {
+        # `polylogued run` enables watch + browser-capture + HTTP API by default.
+        # Pass --no-watch / --no-browser-capture / --no-api at the unit level if
+        # a deployment needs a narrower component set.
         ExecStart = "${cfg.package}/bin/polylogued run";
         Restart = "on-failure";
         Environment = "POLYLOGUE_CONFIG=${cfg.configPath}";

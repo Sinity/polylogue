@@ -47,6 +47,13 @@ result-*
 
 AGENTS.override.md
 
+# Test pollution artifacts (side effects of running tests relative to CWD)
+/MagicMock/
+
+# Browser extension deps (installed per-developer)
+browser-extension/node_modules/
+browser-extension/package-lock.json
+
 # Local tooling/session artifacts
 .cclsp.json
 .mcp.json

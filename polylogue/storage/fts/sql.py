@@ -61,6 +61,9 @@ class IndexedMessage(Protocol):
 
 def delete_conversation_rows_sql(chunk_size: int) -> str:
     placeholders = ", ".join("?" for _ in range(chunk_size))
+    # DELETE on external-content FTS5 raises ``database disk image is malformed``
+    # when a rowid is not present in the FTS index.  Filter the deletion to
+    # rowids that actually have a docsize shadow entry (i.e., are indexed).
     return f"""
         DELETE FROM messages_fts
         WHERE rowid IN (
@@ -68,6 +71,7 @@ def delete_conversation_rows_sql(chunk_size: int) -> str:
             FROM messages
             WHERE messages.conversation_id IN ({placeholders})
         )
+        AND rowid IN (SELECT id FROM messages_fts_docsize)
     """
 
 

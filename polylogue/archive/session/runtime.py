@@ -54,7 +54,7 @@ def build_session_profile(
     analysis: SessionAnalysis | None = None,
     compaction_count: int | None = None,
 ) -> SessionProfile:
-    from polylogue.archive.cost.compute import compute_session_cost
+    from polylogue.archive.semantic.cost_compute import compute_session_cost
     from polylogue.archive.semantic.pricing import harmonize_session_cost
 
     session_analysis = analysis or build_session_analysis(conversation)
@@ -117,9 +117,7 @@ def build_session_profile(
         total_credit_cost=cost_summary.total_credit_cost,
         cost_provenance=cost_summary.cost_provenance,
         per_model_cost_json=_json.dumps(
-            [b.model_dump(mode="json") for b in cost_summary.per_model]
-            if cost_summary.per_model
-            else [],
+            [b.model_dump(mode="json") for b in cost_summary.per_model] if cost_summary.per_model else [],
             default=str,
         ),
         compaction_count=resolved_compaction_count,

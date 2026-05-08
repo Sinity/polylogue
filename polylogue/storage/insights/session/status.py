@@ -698,7 +698,7 @@ def _status_payload(
     }
     ready_flags.update({descriptor.ready_key: descriptor.ready(tables, counts) for descriptor in _FTS_DESCRIPTORS})
     return SessionInsightStatusSnapshot(
-        **counts,
+        **counts,  # type: ignore[arg-type]
         profile_rows_ready=ready_flags["profile_rows_ready"],
         work_event_inference_rows_ready=ready_flags["work_event_inference_rows_ready"],
         work_event_inference_fts_ready=ready_flags["work_event_inference_fts_ready"],

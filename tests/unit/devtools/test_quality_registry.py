@@ -136,7 +136,6 @@ def test_build_quality_registry_exposes_live_catalogs() -> None:
     assert insight_profiles.path_targets == ("session-profile-query-loop",)
     assert insight_profiles.artifact_targets == (
         "session_profile_rows",
-        "session_profile_merged_fts",
         "session_profile_results",
     )
     assert insight_profiles.operation_targets == ("cli.json-contract", "query-session-profiles")

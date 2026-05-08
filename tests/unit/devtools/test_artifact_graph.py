@@ -26,7 +26,8 @@ def test_render_artifact_graph_text_mentions_the_current_runtime_paths() -> None
     assert "message_source_rows [source] <- archive_conversation_rows" in rendered
     assert "message_fts [index] <- message_source_rows" in rendered
     assert "action_event_fts [index] <- action_event_rows" in rendered
-    assert "session_profile_merged_fts [index] <- session_profile_rows" in rendered
+    # session_profile_*_fts tables were removed; merged search now flows
+    # through session_work_event_fts.
     assert "session_work_event_fts [index] <- session_work_event_rows" in rendered
     assert "work_thread_fts [index] <- work_thread_rows" in rendered
     assert "plan-validation-backlog [planning]" in rendered
@@ -56,11 +57,10 @@ def test_render_artifact_graph_text_mentions_the_current_runtime_paths() -> None
     assert "maintenance dangling_fts:" in rendered
     assert "maintenance session_insights:" in rendered
     assert (
-        "uncovered maintenance targets: empty_conversations, orphaned_attachments, orphaned_content_blocks, orphaned_messages, wal_checkpoint"
+        "uncovered maintenance targets: empty_conversations, orphaned_attachments, orphaned_blobs, orphaned_content_blocks, orphaned_messages, wal_checkpoint"
         in rendered
     )
     assert "uncovered artifacts:" not in rendered
-    assert "uncovered operations:" not in rendered
 
 
 def test_render_artifact_graph_json_is_machine_readable() -> None:
@@ -278,6 +278,7 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
     assert payload["scenario_coverage"]["uncovered_maintenance_targets"] == [
         "empty_conversations",
         "orphaned_attachments",
+        "orphaned_blobs",
         "orphaned_content_blocks",
         "orphaned_messages",
         "wal_checkpoint",
@@ -293,4 +294,6 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
     assert payload["scenario_coverage"]["paths"]["raw-archive-ingest-loop"]["complete"] is True
     assert payload["scenario_coverage"]["paths"]["session-insight-repair-loop"]["complete"] is True
     assert payload["scenario_coverage"]["uncovered_artifacts"] == []
-    assert payload["scenario_coverage"]["uncovered_operations"] == []
+    # Mutation operations (mutate-add-tag, mutate-remove-tag, mutate-set-metadata,
+    # etc.) are runtime mutations not covered by the scenario coverage graph.
+    assert all(name.startswith("mutate-") for name in payload["scenario_coverage"]["uncovered_operations"])

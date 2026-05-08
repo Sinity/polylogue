@@ -95,7 +95,7 @@ See [docs/cli-reference.md](docs/cli-reference.md) for the full command referenc
 - Provider detection from file content (not filenames)
 - Full-text search with composable filters (provider, date, tag, repo, tool, action)
 - Precomputed message analytics: tool use, thinking blocks, paste detection
-- Query-time tail overlays for sessions newer than the archive
+- Daemon-backed live ingestion for active Claude Code and Codex sessions
 
 ### Durable insights
 

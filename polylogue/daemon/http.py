@@ -768,8 +768,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
     def _handle_facets(self, params: dict[str, list[str]]) -> None:
         query_params = _build_query_spec_params(params, self)
 
-        def _get(poly: Polylogue) -> object:
-            return asyncio.run(self._do_facets(poly, query_params))
+        async def _get(poly: Polylogue) -> object:
+            return await self._do_facets(poly, query_params)
 
         result = self._sync_run(_get)
         self._send_json(HTTPStatus.OK, result)

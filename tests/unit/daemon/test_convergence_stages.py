@@ -166,6 +166,9 @@ def test_embed_stage_scopes_changed_conversations_without_asyncio_run(
         def close(self) -> None:
             pass
 
+        def commit(self) -> None:
+            pass
+
     def fake_open_connection(path: Path, *, timeout: float) -> FakeConnection:
         assert path == db_path
         assert timeout == 5.0
@@ -192,6 +195,7 @@ def test_embed_stage_scopes_changed_conversations_without_asyncio_run(
     )
     monkeypatch.setattr(stages, "_pending_embedding_conversation_ids", fake_pending)
     monkeypatch.setattr(stages, "_embed_conversations_sync", fake_embed)
+    monkeypatch.setattr(stages, "_reconcile_embedding_config_change", lambda _conn: None)
 
     stage = make_embed_stage(db_path)
     assert stage.check_many is not None

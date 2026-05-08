@@ -46,6 +46,8 @@ class HTMLRenderer:
         repository: ConversationRepository | None = None,
         template_path: Path | None = None,
         theme: str = "dark",
+        *,
+        db_path: Path | None = None,
         **kwargs: object,
     ) -> None:
         """Initialize the HTML renderer.
@@ -55,11 +57,12 @@ class HTMLRenderer:
             template_path: Optional path to custom Jinja2 HTML template
             theme: Theme name ("dark" or "light"), default "dark"
             repository: Shared ConversationRepository (avoids per-render connection overhead)
+            db_path: Override the database path (defaults to canonical XDG layout)
         """
         self.archive_root = archive_root
         self.template_path = template_path
         self.theme = theme
-        self._formatter = ConversationFormatter(archive_root, repository=repository)
+        self._formatter = ConversationFormatter(archive_root, repository=repository, db_path=db_path)
 
         # Initialize Pygments highlighter
         style = "monokai" if theme == "dark" else "default"

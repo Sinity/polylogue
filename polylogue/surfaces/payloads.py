@@ -19,7 +19,6 @@ if TYPE_CHECKING:
     from collections.abc import Container
 
     from polylogue.archive.conversation.neighbor_candidates import ConversationNeighborCandidate, NeighborReason
-    from polylogue.archive.conversation.tail_overlay import TailOverlayInfo
     from polylogue.archive.models import Conversation, ConversationSummary, Message
     from polylogue.archive.query.search_hits import ConversationSearchHit
 
@@ -150,24 +149,6 @@ class ConversationMessagePayload(SurfacePayloadModel):
         )
 
 
-class TailOverlayPayload(SurfacePayloadModel):
-    """Machine-readable freshness/provenance for tailed query results."""
-
-    source_name: str
-    source_path: str
-    archive_state: str
-    file_mtime: str | None = None
-
-    @classmethod
-    def from_info(cls, info: TailOverlayInfo) -> TailOverlayPayload:
-        return cls(
-            source_name=info.source_name,
-            source_path=info.source_path,
-            archive_state=info.archive_state,
-            file_mtime=info.file_mtime,
-        )
-
-
 class ConversationSummaryPayload(SurfacePayloadModel):
     """Compact conversation summary payload used by MCP/search surfaces."""
 
@@ -177,11 +158,9 @@ class ConversationSummaryPayload(SurfacePayloadModel):
     message_count: int
     created_at: datetime | None = None
     updated_at: datetime | None = None
-    tail: TailOverlayPayload | None = None
 
     @classmethod
     def from_conversation(cls, conversation: Conversation) -> ConversationSummaryPayload:
-        tail = conversation.tail_overlay
         return cls(
             id=str(conversation.id),
             provider=str(conversation.provider),
@@ -189,7 +168,6 @@ class ConversationSummaryPayload(SurfacePayloadModel):
             message_count=len(conversation.messages),
             created_at=conversation.created_at,
             updated_at=conversation.updated_at,
-            tail=TailOverlayPayload.from_info(tail) if tail is not None else None,
         )
 
     @classmethod
@@ -199,7 +177,6 @@ class ConversationSummaryPayload(SurfacePayloadModel):
         *,
         message_count: int | None = None,
     ) -> ConversationSummaryPayload:
-        tail = summary.tail_overlay
         return cls(
             id=str(summary.id),
             provider=str(summary.provider),
@@ -207,7 +184,6 @@ class ConversationSummaryPayload(SurfacePayloadModel):
             message_count=summary.message_count or 0 if message_count is None else message_count,
             created_at=summary.created_at,
             updated_at=summary.updated_at,
-            tail=TailOverlayPayload.from_info(tail) if tail is not None else None,
         )
 
 
@@ -254,14 +230,12 @@ class ConversationListRowPayload(SurfacePayloadModel):
     tags: tuple[str, ...] = ()
     summary: str | None = None
     words: int | None = None
-    tail: TailOverlayPayload | None = None
     repo: str | None = None
     cwd_display: str | None = None
     flags: ConversationFlagsPayload | None = None
 
     @classmethod
     def from_conversation(cls, conversation: Conversation) -> ConversationListRowPayload:
-        tail = conversation.tail_overlay
         return cls(
             id=str(conversation.id),
             provider=str(conversation.provider),
@@ -271,7 +245,6 @@ class ConversationListRowPayload(SurfacePayloadModel):
             tags=tuple(conversation.tags),
             summary=conversation.summary,
             words=sum(message.word_count for message in conversation.messages),
-            tail=TailOverlayPayload.from_info(tail) if tail is not None else None,
             repo=_extract_repo(conversation.provider_meta),
             cwd_display=_extract_cwd(conversation.provider_meta),
             flags=_build_flags_from_conversation(conversation),
@@ -288,7 +261,6 @@ class ConversationListRowPayload(SurfacePayloadModel):
         repo: str | None = None,
         cwd_display: str | None = None,
     ) -> ConversationListRowPayload:
-        tail = summary.tail_overlay
         return cls(
             id=str(summary.id),
             provider=str(summary.provider),
@@ -298,7 +270,6 @@ class ConversationListRowPayload(SurfacePayloadModel):
             tags=tuple(summary.tags),
             summary=summary.summary,
             words=word_count,
-            tail=TailOverlayPayload.from_info(tail) if tail is not None else None,
             repo=repo or _extract_repo(summary.provider_meta),
             cwd_display=cwd_display or _extract_cwd(summary.provider_meta),
             flags=flags,
@@ -552,7 +523,6 @@ __all__ = [
     "QueryMissDiagnosticsPayload",
     "QueryMissReasonPayload",
     "SurfacePayloadModel",
-    "TailOverlayPayload",
     "JSONDocument",
     "JSONValue",
     "model_json_document",

@@ -25,7 +25,6 @@ from polylogue.cli.query_contracts import (
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
 from polylogue.core.json import JSONDocument, dumps
-from polylogue.pipeline.tail_overlay import TailOverlayUnavailableError, tail_overlay_services
 
 if TYPE_CHECKING:
     from polylogue.config import Config
@@ -181,14 +180,6 @@ async def _select_conversation_rows_from_store(
 
 async def select_conversation_rows(env: AppEnv, request: RootModeRequest, *, limit: int) -> list[SelectConversationRow]:
     """Return selector rows from the same query/filter path as query verbs."""
-    if request.params.get("tail"):
-        async with tail_overlay_services(env.services) as overlay_services:
-            return await _select_conversation_rows_from_store(
-                overlay_services.get_config(),
-                cast("_SelectQueryStore", overlay_services.get_repository()),
-                request,
-                limit=limit,
-            )
     return await _select_conversation_rows_from_store(
         env.config,
         cast("_SelectQueryStore", env.repository),
@@ -197,7 +188,7 @@ async def select_conversation_rows(env: AppEnv, request: RootModeRequest, *, lim
     )
 
 
-def _raise_select_query_error(exc: QuerySpecError | QueryPlanError | TailOverlayUnavailableError) -> None:
+def _raise_select_query_error(exc: QuerySpecError | QueryPlanError) -> None:
     if isinstance(exc, QuerySpecError):
         if exc.field in {"since", "until"}:
             click.echo(f"Error: Cannot parse date: '{exc.value}'", err=True)
@@ -221,7 +212,7 @@ async def async_run_select(
 ) -> None:
     try:
         rows = await select_conversation_rows(env, request, limit=limit)
-    except (QuerySpecError, QueryPlanError, TailOverlayUnavailableError) as exc:
+    except (QuerySpecError, QueryPlanError) as exc:
         _raise_select_query_error(exc)
     selected = choose_select_row(env, rows)
     if selected is None:

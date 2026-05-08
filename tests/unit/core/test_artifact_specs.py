@@ -19,7 +19,6 @@ def test_runtime_artifact_specs_expose_the_curated_vertical_paths() -> None:
         "action_event_readiness",
         "session_insight_source_conversations",
         "session_profile_rows",
-        "session_profile_merged_fts",
         "session_work_event_rows",
         "session_work_event_fts",
         "session_phase_rows",

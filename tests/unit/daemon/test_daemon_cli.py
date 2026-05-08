@@ -82,7 +82,7 @@ def test_polylogued_run_uses_default_sources() -> None:
         patch("polylogue.daemon.cli.default_sources", return_value=sources) as default_sources,
         patch("polylogue.daemon.cli.asyncio.run") as run,
     ):
-        result = CliRunner().invoke(main, ["run", "--no-browser-capture", "--debounce-s", "0.25"])
+        result = CliRunner().invoke(main, ["run", "--no-browser-capture", "--no-api", "--debounce-s", "0.25"])
 
     assert result.exit_code == 0
     default_sources.assert_called_once_with()
@@ -93,7 +93,9 @@ def test_polylogued_run_uses_default_sources() -> None:
 
 
 def test_polylogued_run_rejects_empty_component_set() -> None:
-    result = CliRunner().invoke(main, ["run", "--no-watch", "--no-browser-capture"])
+    # All three components default to ON; only when every one is explicitly
+    # disabled should `run` refuse to start.
+    result = CliRunner().invoke(main, ["run", "--no-watch", "--no-browser-capture", "--no-api"])
 
     assert result.exit_code != 0
     assert "at least one daemon component must be enabled" in result.output

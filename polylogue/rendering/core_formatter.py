@@ -42,13 +42,30 @@ class FormattedConversation:
 class ConversationFormatter:
     """Formats repository render projections to structured output."""
 
-    def __init__(self, archive_root: Path, repository: ConversationRepository | None = None, **kwargs: object):
+    def __init__(
+        self,
+        archive_root: Path,
+        repository: ConversationRepository | None = None,
+        *,
+        db_path: Path | None = None,
+        **_: object,
+    ):
         self.archive_root = archive_root
         if repository is None:
+            from polylogue.paths import db_path as default_db_path
             from polylogue.storage.repository import ConversationRepository
             from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
-            backend = SQLiteBackend(db_path=archive_root / "polylogue.db")
+            # Resolve the DB path with three-tier fallback:
+            #   1. explicit db_path kwarg (test fixtures, custom layouts)
+            #   2. canonical XDG path under data_home() (production default)
+            #   3. archive_root/polylogue.db (legacy in-tree fallback)
+            resolved = db_path
+            if resolved is None:
+                resolved = default_db_path()
+                if not resolved.exists():
+                    resolved = archive_root / "polylogue.db"
+            backend = SQLiteBackend(db_path=resolved)
             self._repository = ConversationRepository(backend=backend)
         else:
             self._repository = repository

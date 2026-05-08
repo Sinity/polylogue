@@ -304,6 +304,10 @@ class SemanticArchiveQueryStore(ArchiveMessageQueryStore, Protocol):
     async def get_messages_batch(
         self,
         conversation_ids: list[str],
+        *,
+        sort_key_since: float | None = None,
+        sort_key_until: float | None = None,
+        message_role: MessageRoleFilter = (),
     ) -> dict[str, list[MessageRecord]]: ...
 
     async def get_attachments_batch(
@@ -335,6 +339,10 @@ class ConversationSemanticStatsStore(ActionEventArtifactReader, Protocol):
     async def get_messages_batch(
         self,
         conversation_ids: list[str],
+        *,
+        sort_key_since: float | None = None,
+        sort_key_until: float | None = None,
+        message_role: MessageRoleFilter = (),
     ) -> dict[str, list[MessageRecord]]: ...
 
     async def get_attachments_batch(

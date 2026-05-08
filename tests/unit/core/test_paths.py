@@ -148,6 +148,7 @@ class TestPathsPublicBoundary:
             "drive_cache_path",
             "drive_credentials_path",
             "drive_token_path",
+            "hooks_sidecar_dir",
             "render_root",
             "state_home",
             "state_root",

@@ -95,6 +95,11 @@ ARCHIVE_STORAGE_DDL = """
             has_tool_use INTEGER NOT NULL DEFAULT 0,
             has_thinking INTEGER NOT NULL DEFAULT 0,
             has_paste INTEGER NOT NULL DEFAULT 0,
+            input_tokens INTEGER NOT NULL DEFAULT 0,
+            output_tokens INTEGER NOT NULL DEFAULT 0,
+            cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+            cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+            model_name TEXT,
             message_type TEXT NOT NULL DEFAULT 'message',
             FOREIGN KEY (conversation_id)
                 REFERENCES conversations(conversation_id) ON DELETE CASCADE
@@ -262,12 +267,14 @@ MESSAGE_FTS_DDL = """
 
         CREATE TRIGGER IF NOT EXISTS messages_fts_ad
         AFTER DELETE ON messages BEGIN
-            DELETE FROM messages_fts WHERE rowid = old.rowid;
+            INSERT INTO messages_fts(messages_fts, rowid, message_id, conversation_id, text)
+            VALUES('delete', old.rowid, old.message_id, old.conversation_id, old.text);
         END;
 
         CREATE TRIGGER IF NOT EXISTS messages_fts_au
         AFTER UPDATE ON messages BEGIN
-            DELETE FROM messages_fts WHERE rowid = old.rowid;
+            INSERT INTO messages_fts(messages_fts, rowid, message_id, conversation_id, text)
+            VALUES('delete', old.rowid, old.message_id, old.conversation_id, old.text);
             INSERT INTO messages_fts(rowid, message_id, conversation_id, text)
             SELECT new.rowid, new.message_id, new.conversation_id, new.text
             WHERE new.text IS NOT NULL;

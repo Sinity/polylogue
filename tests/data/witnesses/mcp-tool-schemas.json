@@ -67,6 +67,107 @@
     }
   },
   {
+    "name": "build_context_pack",
+    "parameters": {
+      "properties": {
+        "detail_level": {
+          "default": "compact",
+          "title": "Detail Level",
+          "type": "string"
+        },
+        "max_conversations": {
+          "default": 5,
+          "title": "Max Conversations",
+          "type": "integer"
+        },
+        "max_messages_per_conversation": {
+          "default": 20,
+          "title": "Max Messages Per Conversation",
+          "type": "integer"
+        },
+        "project_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Project Path"
+        },
+        "project_repo": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Project Repo"
+        },
+        "provider": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Provider"
+        },
+        "query": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Query"
+        },
+        "redact_paths": {
+          "default": true,
+          "title": "Redact Paths",
+          "type": "boolean"
+        },
+        "since": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Since"
+        },
+        "until": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Until"
+        }
+      },
+      "title": "build_context_packArguments",
+      "type": "object"
+    }
+  },
+  {
     "name": "bulk_tag_conversations",
     "parameters": {
       "properties": {

@@ -42,8 +42,8 @@ const States = () => (
 hint: drop --provider, or try \`polylogue select conversation\`.`}</pre>
         </StateRow>
         <StateRow tone="loading" title="streaming">
-<pre>{`polylogue --tail --provider claude-code list
-[live] 1 new · 0.4s lag · ⌃C to stop`}</pre>
+<pre>{`polylogue status --daemon
+[live] claude-code · caught up · lag 0.4s`}</pre>
         </StateRow>
         <StateRow tone="degraded" title="daemon down">
 <pre>{`polylogue --latest open

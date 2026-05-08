@@ -139,9 +139,7 @@ def _run_benchmarks(test_ids: set[str]) -> dict[str, dict[str, float]]:
             "median": float(entry_stats.get("median", 0)),
             "min": float(entry_stats.get("min", 0)),
             "max": float(entry_stats.get("max", 0)),
-            "stddev": float(entry_stats.get("stddev", 0))
-            if "stddev" in entry_stats
-            else 0.0,
+            "stddev": float(entry_stats.get("stddev", 0)) if "stddev" in entry_stats else 0.0,
             "rounds": int(entry_stats.get("rounds", 0)),
         }
 
@@ -269,13 +267,9 @@ def main(argv: list[str] | None = None) -> int:
             for v in violations:
                 parts = []
                 if not v["p50_ok"]:
-                    parts.append(
-                        f"p50={v['actual_p50_ms']:.1f}ms > {v['target_p50_ms']}ms"
-                    )
+                    parts.append(f"p50={v['actual_p50_ms']:.1f}ms > {v['target_p50_ms']}ms")
                 if not v["p95_ok"]:
-                    parts.append(
-                        f"p95={v['actual_p95_ms']:.1f}ms > {v['target_p95_ms']}ms"
-                    )
+                    parts.append(f"p95={v['actual_p95_ms']:.1f}ms > {v['target_p95_ms']}ms")
                 print(f"  {v['surface']}: {', '.join(parts)}")
             print()
 

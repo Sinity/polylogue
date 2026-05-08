@@ -23,7 +23,6 @@ from .paths import (
     drive_cache_path,
     drive_credentials_path,
     drive_token_path,
-    hooks_sidecar_dir,
     render_root,
 )
 from .paths import (
@@ -219,14 +218,6 @@ class PolylogueConfig:
         return v if isinstance(v, str) and v else None
 
     @property
-    def hooks_enabled(self) -> bool:
-        return bool(self._data.get("hooks_enabled"))
-
-    @property
-    def hooks_sidecar_dir(self) -> str:
-        return str(self._data.get("hooks_sidecar_dir", hooks_sidecar_dir()))
-
-    @property
     def log_level(self) -> str:
         return str(self._data.get("log_level", "INFO"))
 
@@ -263,10 +254,6 @@ class PolylogueConfig:
     @property
     def browser_capture_allowed_origins(self) -> str:
         return str(self._data.get("browser_capture_allowed_origins", "127.0.0.1"))
-
-    @property
-    def additional_sources(self) -> str:
-        return str(self._data.get("additional_sources", ""))
 
     @property
     def notification_backend(self) -> str:
@@ -329,16 +316,20 @@ def load_polylogue_config(
         "api_auth_token": None,
         "browser_capture_port": 8765,
         "browser_capture_allowed_origins": "127.0.0.1",
+        # Stays opt-in: the daemon embed stage is gated separately on a
+        # config TOML flag or POLYLOGUE_DAEMON_ENABLE_EMBEDDINGS so that
+        # supplying VOYAGE_API_KEY (e.g., for one-off CLI use) does not
+        # incur ongoing daemon-driven spend.
         "embedding_enabled": False,
         "embedding_model": "voyage-4",
         "embedding_dimension": 1024,
-        "embedding_max_cost_usd": 0.0,
-        "hooks_enabled": False,
-        "hooks_sidecar_dir": str(hooks_sidecar_dir()),
+        # Soft monthly cap on embedding spend. 0 = unlimited; the default
+        # below is intentionally low enough to act as a safety net for a
+        # first-time user without an explicit configuration.
+        "embedding_max_cost_usd": 5.0,
         "log_level": "INFO",
         "force_plain": False,
         "schema_validation": "advisory",
-        "additional_sources": "",
         "notification_backend": "log",
         "health_check_interval_s": 300,
         "health_check_tiers": "fast,medium",
@@ -367,20 +358,44 @@ def load_polylogue_config(
 
 
 def _merge_toml(cfg: dict[str, object], toml_data: dict[str, object]) -> None:
-    """Merge TOML sections into the flat config dict."""
-    section_keys = {
-        "archive": ("archive_root",),
-        "daemon": ("daemon_host", "daemon_port"),
-        "daemon.api": ("api_host", "api_port", "api_auth_token"),
-        "daemon.browser_capture": ("browser_capture_port", "browser_capture_allowed_origins"),
-        "embedding": ("embedding_enabled", "embedding_model", "embedding_dimension", "embedding_max_cost_usd"),
-        "hooks": ("hooks_enabled", "hooks_sidecar_dir"),
-        "logging": ("log_level", "force_plain"),
-        "notifications": ("notification_backend",),
-        "health": ("health_check_interval_s", "health_check_tiers"),
-        "sources": ("additional_sources",),
+    """Merge TOML sections into the flat config dict.
+
+    Each section maps short keys (as written in TOML) to canonical flat keys
+    in ``cfg``. For example, ``[archive] root = "/x"`` maps to
+    ``cfg["archive_root"] = "/x"``.
+    """
+    section_keys: dict[str, dict[str, str]] = {
+        "archive": {"root": "archive_root"},
+        "daemon": {
+            "host": "daemon_host",
+            "port": "daemon_port",
+        },
+        "daemon.api": {
+            "host": "api_host",
+            "port": "api_port",
+            "auth_token": "api_auth_token",
+        },
+        "daemon.browser_capture": {
+            "port": "browser_capture_port",
+            "allowed_origins": "browser_capture_allowed_origins",
+        },
+        "embedding": {
+            "enabled": "embedding_enabled",
+            "model": "embedding_model",
+            "dimension": "embedding_dimension",
+            "max_cost_usd": "embedding_max_cost_usd",
+        },
+        "logging": {
+            "level": "log_level",
+            "force_plain": "force_plain",
+        },
+        "notifications": {"backend": "notification_backend"},
+        "health": {
+            "check_interval_s": "health_check_interval_s",
+            "check_tiers": "health_check_tiers",
+        },
     }
-    for section, keys in section_keys.items():
+    for section, key_map in section_keys.items():
         # Walk dotted paths for nested TOML sections like [daemon.api]
         section_data: object = toml_data
         for part in section.split("."):
@@ -390,9 +405,9 @@ def _merge_toml(cfg: dict[str, object], toml_data: dict[str, object]) -> None:
                 section_data = None
                 break
         if isinstance(section_data, dict):
-            for key in keys:
-                if key in section_data:
-                    cfg[key] = section_data[key]
+            for short_key, flat_key in key_map.items():
+                if short_key in section_data:
+                    cfg[flat_key] = section_data[short_key]
 
 
 def _apply_env_overrides(cfg: dict[str, object]) -> None:
@@ -421,47 +436,83 @@ def _apply_env_overrides(cfg: dict[str, object]) -> None:
 
 
 def format_config_toml(cfg: dict[str, object]) -> str:
-    """Render loaded config as TOML for display."""
+    """Render loaded config as TOML for display.
+
+    Round-trips with :func:`_merge_toml`: the generated TOML uses short keys
+    inside their sections (``[archive] root = ...``) so the output can be
+    written back as a ``polylogue.toml`` file and re-loaded.
+    """
+    # (section_name, [(short_key, flat_key), ...])
+    sections_layout: list[tuple[str, list[tuple[str, str]]]] = [
+        ("archive", [("root", "archive_root")]),
+        (
+            "daemon",
+            [
+                ("host", "daemon_host"),
+                ("port", "daemon_port"),
+            ],
+        ),
+        (
+            "daemon.api",
+            [
+                ("host", "api_host"),
+                ("port", "api_port"),
+                ("auth_token", "api_auth_token"),
+            ],
+        ),
+        (
+            "daemon.browser_capture",
+            [
+                ("port", "browser_capture_port"),
+                ("allowed_origins", "browser_capture_allowed_origins"),
+            ],
+        ),
+        (
+            "embedding",
+            [
+                ("enabled", "embedding_enabled"),
+                ("model", "embedding_model"),
+                ("dimension", "embedding_dimension"),
+                ("max_cost_usd", "embedding_max_cost_usd"),
+                ("voyage_api_key", "voyage_api_key"),
+            ],
+        ),
+        (
+            "logging",
+            [
+                ("level", "log_level"),
+                ("force_plain", "force_plain"),
+            ],
+        ),
+        ("notifications", [("backend", "notification_backend")]),
+        (
+            "health",
+            [
+                ("check_interval_s", "health_check_interval_s"),
+                ("check_tiers", "health_check_tiers"),
+            ],
+        ),
+    ]
+
     lines: list[str] = []
-    sections: dict[str, dict[str, object]] = {}
-
-    archive_keys = ("archive_root",)
-    daemon_keys = ("daemon_url", "daemon_host", "daemon_port")
-    embedding_keys = (
-        "embedding_enabled",
-        "embedding_model",
-        "embedding_dimension",
-        "embedding_max_cost_usd",
-        "voyage_api_key",
-    )
-    hooks_keys = ("hooks_enabled", "hooks_sidecar_dir")
-    logging_keys = ("log_level", "force_plain")
-    notifications_keys = ("notification_backend",)
-    health_keys = ("health_check_interval_s", "health_check_tiers")
-
-    for section, keys in [
-        ("archive", archive_keys),
-        ("daemon", daemon_keys),
-        ("embedding", embedding_keys),
-        ("hooks", hooks_keys),
-        ("logging", logging_keys),
-        ("notifications", notifications_keys),
-        ("health", health_keys),
-    ]:
-        section_data = {k: cfg[k] for k in keys if k in cfg}
-        if section_data:
-            sections[section] = section_data
-
-    for section, data in sections.items():
-        lines.append(f"[{section}]")
-        for key, value in data.items():
+    for section, key_pairs in sections_layout:
+        section_lines: list[str] = []
+        for short_key, flat_key in key_pairs:
+            if flat_key not in cfg:
+                continue
+            value = cfg[flat_key]
+            if value is None:
+                continue
             if isinstance(value, str):
-                lines.append(f'{key} = "{value}"')
+                section_lines.append(f'{short_key} = "{value}"')
             elif isinstance(value, bool):
-                lines.append(f"{key} = {str(value).lower()}")
+                section_lines.append(f"{short_key} = {str(value).lower()}")
             else:
-                lines.append(f"{key} = {value}")
-        lines.append("")
+                section_lines.append(f"{short_key} = {value}")
+        if section_lines:
+            lines.append(f"[{section}]")
+            lines.extend(section_lines)
+            lines.append("")
 
     return "\n".join(lines)
 
