@@ -106,7 +106,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `polylogue show` | `polylogue/cli/query_verbs.py:83` `polylogue.cli.query_verbs.show_verb` |
 | `polylogue stats` | `polylogue/cli/query_verbs.py:55` `polylogue.cli.query_verbs.stats_verb` |
 | `polylogue status` | `polylogue/cli/commands/status.py:18` `polylogue.cli.commands.status.status_command` |
-| `polylogue tags` | `polylogue/cli/commands/tags.py:12` `polylogue.cli.commands.tags.tags_command` |
+| `polylogue tags` | `polylogue/cli/commands/tags.py:18` `polylogue.cli.commands.tags.tags_command` |
 
 ## Schema Annotation Subjects
 

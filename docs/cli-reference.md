@@ -161,7 +161,7 @@ Commands:
   show         Show matched conversations with default full-content output.
   stats        Show statistics for matched conversations.
   status       Show daemon and archive health.
-  tags         List all tags with conversation counts.
+  tags         List all tags with conversation counts, or add/remove tags.
 ```
 
 ## List Verb
@@ -323,20 +323,24 @@ Options:
 ## Tags
 
 ```text
-Usage: polylogue tags [OPTIONS]
+Usage: polylogue tags [OPTIONS] [CONVERSATION_ID]
 
-  List all tags with conversation counts.
+  List all tags with conversation counts, or add/remove tags.
 
   Examples:
-      polylogue tags                  # List all tags
-      polylogue tags -p claude-ai     # Tags for Claude conversations only
-      polylogue tags --format json    # Machine-readable output
-      polylogue tags -n 10            # Top 10 tags
+      polylogue tags                         # List all tags
+      polylogue tags -p claude-ai            # Tags for Claude conversations only
+      polylogue tags --format json           # Machine-readable output
+      polylogue tags -n 10                   # Top 10 tags
+      polylogue tags conv:abc --add-tag tps  # Add a tag
+      polylogue tags conv:abc --rm-tag tps   # Remove a tag
 
 Options:
   -p, --provider TEXT  Filter tags by provider
   -f, --format [json]  Output format
   -n, --count INTEGER  Show top N tags
+  --add-tag TEXT       Add a tag to the given conversation
+  --remove-tag TEXT    Remove a tag from the given conversation
   -h, --help           Show this message and exit.
 ```
 
