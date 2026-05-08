@@ -18,16 +18,21 @@ from polylogue.proof.catalog import VerificationCatalog, build_verification_cata
 from polylogue.proof.models import ProofObligation, SubjectRef
 
 ChangeKind = Literal[
+    "browser_extension",
+    "build_config",
+    "docs_media",
     "parser",
     "schema.annotation",
     "provider.capability",
     "command",
+    "daemon_runtime",
     "generated_surface",
     "architecture",
     "coverage_manifest",
     "schema_roundtrip",
     "proof_catalog",
     "operation.spec",
+    "site_template",
     "workflow",
     "test",
     "unknown",
@@ -597,6 +602,16 @@ def _classify_path(path: str) -> ChangeKind:
         return "operation.spec"
     if path.startswith(".github/") or path in {"CONTRIBUTING.md", "CLAUDE.md", "AGENTS.md"}:
         return "workflow"
+    if path.startswith("browser-extension/"):
+        return "browser_extension"
+    if path in {"pyproject.toml", "flake.nix", "flake.lock"}:
+        return "build_config"
+    if path.startswith("polylogue/site/") or path in {"polylogue/templates/style.css"}:
+        return "site_template"
+    if path.startswith("docs/assets/") or path.startswith("docs/media/"):
+        return "docs_media"
+    if path in {"polylogue/pipeline/tail_overlay.py"}:
+        return "daemon_runtime"
     if path.startswith("tests/"):
         return "test"
     return "unknown"
@@ -704,6 +719,17 @@ def _checks_for_change(kind: ChangeKind, *, path: str) -> tuple[RecommendedCheck
             ),
             _check(("devtools", "render-all", "--check"), "workflow docs may feed generated surfaces"),
         )
+    if kind == "browser_extension":
+        return (_check(("devtools", "build-package"), "browser extension sources changed"),)
+    if kind == "build_config":
+        return (
+            _check(("devtools", "verify"), "build configuration changed"),
+            _check(("devtools", "build-package"), "packaging surface may be affected"),
+        )
+    if kind in {"site_template", "docs_media"}:
+        return (_check(("devtools", "render-pages", "--check"), "site template or media changed"),)
+    if kind == "daemon_runtime":
+        return (_check(("pytest", "tests/unit/daemon"), "daemon runtime files changed"),)
     return ()
 
 
