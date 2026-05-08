@@ -1,12 +1,12 @@
 """Orchestrate the GitHub Pages documentation build.
 
 Reads pages.toml, calls feeder render commands, assembles output
-through Jinja2 templates, runs Pagefind, writes _site/.
+through Jinja2 templates, runs Pagefind, writes .cache/site/.
 
 Usage:
-    devtools render-pages              Build _site/
+    devtools render-pages              Build .cache/site/
     devtools render-pages --serve      Build and serve locally
-    devtools render-pages --check      Verify _site/ matches sources
+    devtools render-pages --check      Verify .cache/site/ matches sources
     devtools render-pages --watch      Rebuild on source changes
 """
 
@@ -29,12 +29,12 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--serve",
         action="store_true",
-        help="Serve _site/ on localhost:8080 after building.",
+        help="Serve .cache/site/ on localhost:8080 after building.",
     )
     parser.add_argument(
         "--check",
         action="store_true",
-        help="Verify _site/ is in sync with sources (exit non-zero on drift).",
+        help="Verify .cache/site/ is in sync with sources (exit non-zero on drift).",
     )
     parser.add_argument(
         "--watch",
