@@ -105,6 +105,12 @@ def _json_value_tuple(values: Iterable[JSONValue]) -> tuple[JSONValue, ...]:
 
 SubjectKind = Literal[
     "archive.query_law",
+    "architecture.file_budget",
+    "architecture.file_budget.loc",
+    "architecture.layering",
+    "architecture.manifest.consistency",
+    "architecture.topology",
+    "architecture.witness.lifecycle",
     "artifact.path",
     "assurance.coverage_gap",
     "assurance.coverage_item",
@@ -113,6 +119,7 @@ SubjectKind = Literal[
     "cli.json_command",
     "diagnostic.observable",
     "error.surface",
+    "example",
     "generated.scenario_family",
     "insight.surface",
     "maintenance.target",
@@ -121,6 +128,7 @@ SubjectKind = Literal[
     "provider.capability",
     "schema.annotation",
     "schema.roundtrip",
+    "showcase.exercise",
     "trace.operation",
     "workflow.claim",
 ]

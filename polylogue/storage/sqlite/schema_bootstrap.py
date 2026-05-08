@@ -83,6 +83,7 @@ class SchemaBootstrapDecision:
         "upgrade_v8_to_v9",
         "upgrade_v9_to_v10",
         "upgrade_v10_to_v11",
+        "upgrade_v11_to_v12",
         "version_mismatch",
     ]
     extension_plan: SchemaExtensionPlan | None = None
