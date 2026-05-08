@@ -40,6 +40,9 @@ from polylogue.core.common import (
     SQL_CONVERSATION_UPSERT as _CONVERSATION_UPSERT_SQL,
 )
 from polylogue.core.common import (
+    SQL_IDENTITY_LEDGER_UPSERT as _IDENTITY_LEDGER_UPSERT_SQL,
+)
+from polylogue.core.common import (
     SQL_MESSAGE_UPSERT as _MESSAGE_UPSERT_SQL,
 )
 from polylogue.core.common import (
@@ -384,8 +387,20 @@ def _append_conversation(
         return False, counts
 
     merged_hash = _append_content_hash(existing_hash, cdata.content_hash)
+    resolved_tuple = _resolved_conversation_tuple(conn, cdata)
+    conn.execute(_CONVERSATION_UPSERT_SQL, _conversation_tuple_with_hash(resolved_tuple, merged_hash))
+    # Record the identity mapping so re-ingest after reset preserves conversation_id.
+    # Tuple indices: 1=provider_name, 2=provider_conversation_id, 13=raw_id, 14=source_name
     conn.execute(
-        _CONVERSATION_UPSERT_SQL, _conversation_tuple_with_hash(_resolved_conversation_tuple(conn, cdata), merged_hash)
+        _IDENTITY_LEDGER_UPSERT_SQL,
+        (
+            resolved_tuple[1],  # provider
+            resolved_tuple[14],  # source (from provider_meta)
+            "",  # source_path (not available at this level)
+            resolved_tuple[2],  # provider_conversation_id
+            resolved_tuple[13] or "",  # raw_hash (raw_id)
+            resolved_tuple[0],  # current_conversation_id
+        ),
     )
 
     if cdata.message_tuples:

@@ -279,6 +279,7 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `exercise` | `completions-bash` | — | — | — | — | — | Bash shell completions |
 | `exercise` | `count-baseline` | — | — | — | — | — | Baseline count before mutations |
 | `exercise` | `count-decreased` | — | — | — | — | — | Verify count decreased after delete |
+| `exercise` | `daemon-embedding-readiness` | — | — | — | — | — | Embedding readiness surfaced in daemon status |
 | `exercise` | `delete-dry-run` | — | — | — | — | — | Dry-run delete |
 | `exercise` | `delete-one` | — | — | — | — | — | Delete one conversation |
 | `exercise` | `doctor-cohorts-json` | — | — | — | — | — | Artifact cohorts as JSON |
@@ -286,7 +287,6 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `exercise` | `doctor-proof-json` | — | — | — | — | — | Artifact proof as JSON |
 | `exercise` | `doctor-readiness` | — | — | — | — | — | Health check |
 | `exercise` | `doctor-verbose` | — | — | — | — | — | Verbose readiness check |
-| `exercise` | `embed-stats` | — | — | — | — | — | Embedding statistics |
 | `exercise` | `exclude-provider` | — | — | — | — | — | Exclude a provider |
 | `exercise` | `fields-selector` | — | — | — | — | — | Select specific JSON fields |
 | `exercise` | `gen-fmt-csv-latest` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `query-conversations` | — | `generated`<br>`formats`<br>`csv`<br>`latest` | Generated: csv format in latest mode |

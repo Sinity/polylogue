@@ -771,17 +771,21 @@
       "output_ext": ".json"
     },
     {
-      "name": "embed-stats",
+      "name": "daemon-embedding-readiness",
       "group": "subcommands",
-      "description": "Embedding statistics",
+      "description": "Embedding readiness surfaced in daemon status",
       "execution": {
         "kind": "polylogue",
         "argv": [
-          "embed",
-          "--stats"
+          "status",
+          "--format",
+          "json"
         ]
       },
-      "needs_data": true
+      "needs_data": true,
+      "assertions": [
+        {"path": "embedding_readiness", "op": "exists"}
+      ]
     },
     {
       "name": "tags-json",

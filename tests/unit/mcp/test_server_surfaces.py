@@ -211,9 +211,11 @@ class TestResourceSurfaces:
                     mcp_server._resource_manager._resources["polylogue://conversations"].fn
                 )
 
-        convs = json.loads(result)
-        assert len(convs) == 1
-        assert convs[0]["id"] == simple_conversation.id
+        payload = json.loads(result)
+        assert "items" in payload
+        assert payload["total"] == 1
+        assert len(payload["items"]) == 1
+        assert payload["items"][0]["id"] == simple_conversation.id
 
     def test_single_conversation_resource(
         self: object,
