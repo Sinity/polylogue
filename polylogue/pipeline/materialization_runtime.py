@@ -9,6 +9,7 @@ from typing import Protocol, TypeAlias
 
 from polylogue.archive.conversation.branch_type import BranchType
 from polylogue.archive.message.artifacts import classify_text_message_type
+from polylogue.archive.message.paste_detection import detect_paste
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
 from polylogue.archive.viewport.viewports import ToolCategory, classify_tool
@@ -319,7 +320,7 @@ def materialize_conversation(
             or message_type in {MessageType.TOOL_USE, MessageType.TOOL_RESULT}
         )
         has_thinking = int(has_thinking_block or message_type == MessageType.THINKING)
-        has_paste = 0
+        has_paste = detect_paste(msg.text)
         if message_type == MessageType.MESSAGE:
             if has_thinking_block:
                 message_type = MessageType.THINKING

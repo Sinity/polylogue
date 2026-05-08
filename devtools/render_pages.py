@@ -44,8 +44,8 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--output",
         type=Path,
-        default=ROOT / "_site",
-        help="Output directory (default: _site/).",
+        default=ROOT / ".cache" / "site",
+        help="Output directory (default: .cache/site/).",
     )
     parser.add_argument(
         "--skip-pagefind",
