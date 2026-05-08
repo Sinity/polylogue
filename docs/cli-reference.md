@@ -135,33 +135,34 @@ Options:
   -h, --help                      Show this message and exit.
 
 Commands:
-  auth         Authenticate with external services (Google Drive for...
-  backup       Back up the Polylogue archive database.
-  bulk-export  Bulk export every matched conversation in one process.
-  completions  Generate shell completion scripts.
-  config       Show resolved Polylogue configuration with precedence...
-  cost         Show subscription usage outlook and quota forecasting.
-  count        Print count of matched conversations.
-  dashboard    Launch the dashboard TUI.
-  delete       Delete matched conversations.
-  diagnostics  Temporal session diagnostics
-  doctor       Health check with optional maintenance and cleanup previews.
-  export       Export one known conversation by ID.
-  ingest       Schedule a file or directory for ingestion by the daemon.
-  insights     Inspect durable archive insights.
-  list         List matched conversations.
-  messages     Show paginated messages for a conversation.
-  neighbors    Show explainable neighboring or near-duplicate candidates.
-  open         Open matched conversation in the daemon web reader.
-  raw          Show raw archive artifacts for a conversation.
-  reset        Reset database, blob store, assets, cache, or auth state.
-  resume       Reconstruct work-state context for a fresh agent session.
-  schema       Inspect schema packages, versions, and evidence.
-  select       Select one matched conversation and print a field.
-  show         Show matched conversations with default full-content output.
-  stats        Show statistics for matched conversations.
-  status       Show daemon and archive health.
-  tags         List all tags with conversation counts, or add/remove tags.
+  auth          Authenticate with external services (Google Drive for...
+  backup        Back up the Polylogue archive database.
+  bulk-export   Bulk export every matched conversation in one process.
+  completions   Generate shell completion scripts.
+  config        Show resolved Polylogue configuration with precedence...
+  context-pack  Build a provenance-rich context pack for agent analysis.
+  cost          Show subscription usage outlook and quota forecasting.
+  count         Print count of matched conversations.
+  dashboard     Launch the dashboard TUI.
+  delete        Delete matched conversations.
+  diagnostics   Temporal session diagnostics
+  doctor        Health check with optional maintenance and cleanup previews.
+  export        Export one known conversation by ID.
+  ingest        Schedule a file or directory for ingestion by the daemon.
+  insights      Inspect durable archive insights.
+  list          List matched conversations.
+  messages      Show paginated messages for a conversation.
+  neighbors     Show explainable neighboring or near-duplicate candidates.
+  open          Open matched conversation in the daemon web reader.
+  raw           Show raw archive artifacts for a conversation.
+  reset         Reset database, blob store, assets, cache, or auth state.
+  resume        Reconstruct work-state context for a fresh agent session.
+  schema        Inspect schema packages, versions, and evidence.
+  select        Select one matched conversation and print a field.
+  show          Show matched conversations with default full-content output.
+  stats         Show statistics for matched conversations.
+  status        Show daemon and archive health.
+  tags          List all tags with conversation counts, or add/remove tags.
 ```
 
 ## List Verb

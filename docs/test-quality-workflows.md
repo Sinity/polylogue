@@ -14,10 +14,10 @@ Current registry snapshot:
 - mutation campaigns: `19`
 - benchmark campaigns: `3`
 - synthetic benchmark campaigns: `7`
-- scenario projections: `234`
+- scenario projections: `235`
 - inferred corpus scenarios: `5`
   - benchmark-campaign: `3`
-  - exercise: `132`
+  - exercise: `133`
   - inferred-corpus-scenario: `5`
   - mutation-campaign: `19`
   - synthetic-benchmark: `7`
@@ -316,6 +316,7 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `exercise` | `help-bulk-export` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | bulk-export help |
 | `exercise` | `help-completions` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | completions help |
 | `exercise` | `help-config` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | config help |
+| `exercise` | `help-context-pack` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | context-pack help |
 | `exercise` | `help-cost` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | cost help |
 | `exercise` | `help-count` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | count help |
 | `exercise` | `help-dashboard` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | dashboard help |

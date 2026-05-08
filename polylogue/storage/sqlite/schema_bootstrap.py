@@ -83,6 +83,7 @@ class SchemaBootstrapDecision:
         "upgrade_v8_to_v9",
         "upgrade_v9_to_v10",
         "upgrade_v10_to_v11",
+        "upgrade_v11_to_v12",
         "version_mismatch",
     ]
     extension_plan: SchemaExtensionPlan | None = None
@@ -1117,6 +1118,13 @@ def decide_schema_bootstrap(snapshot: SchemaSnapshot) -> SchemaBootstrapDecision
             current_version=snapshot.current_version,
         )
 
+    if snapshot.current_version == 11 and SCHEMA_VERSION >= 12:
+        return SchemaBootstrapDecision(
+            action="upgrade_v11_to_v12",
+            extension_plan=build_v11_to_v12_upgrade_plan(snapshot),
+            current_version=snapshot.current_version,
+        )
+
     if snapshot.current_version != SCHEMA_VERSION:
         return SchemaBootstrapDecision(
             action="version_mismatch",
@@ -1242,6 +1250,7 @@ __all__ = [
     "build_v3_to_v4_upgrade_plan",
     "build_v7_to_v8_upgrade_plan",
     "build_v8_to_v9_upgrade_plan",
+    "build_v9_to_v10_upgrade_plan",
     "build_v10_to_v11_upgrade_plan",
     "build_v11_to_v12_upgrade_plan",
     "capture_schema_snapshot",
