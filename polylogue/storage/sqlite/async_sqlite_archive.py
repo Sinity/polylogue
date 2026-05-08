@@ -147,9 +147,21 @@ class SQLiteArchiveMixin:
             offset=offset,
         )
 
-    async def get_messages_batch(self, conversation_ids: list[str]) -> dict[str, list[MessageRecord]]:
+    async def get_messages_batch(
+        self,
+        conversation_ids: list[str],
+        *,
+        sort_key_since: float | None = None,
+        sort_key_until: float | None = None,
+        message_role: MessageRoleFilter = (),
+    ) -> dict[str, list[MessageRecord]]:
         """Get messages for multiple conversations in a single query, with content_blocks."""
-        return await self.queries.get_messages_batch(conversation_ids)
+        return await self.queries.get_messages_batch(
+            conversation_ids,
+            sort_key_since=sort_key_since,
+            sort_key_until=sort_key_until,
+            message_role=message_role,
+        )
 
     @staticmethod
     def _topo_sort_messages(records: list[MessageRecord]) -> list[MessageRecord]:

@@ -19,6 +19,7 @@ from polylogue.archive.semantic.pricing import (
     generated_at,
 )
 from polylogue.config import ConfigError
+from polylogue.core.timestamps import parse_timestamp
 from polylogue.insights.archive import (
     ArchiveDebtInsight,
     ArchiveDebtInsightQuery,
@@ -66,6 +67,7 @@ from polylogue.insights.readiness import (
 from polylogue.insights.resume import ResumeBrief, ResumeOperations, build_resume_brief
 from polylogue.maintenance.targets import build_maintenance_target_catalog
 from polylogue.services import RuntimeServices, build_runtime_services
+from polylogue.storage.hydrators import message_from_record
 from polylogue.storage.insights.session.runtime import (
     SessionInsightReadyFlag,
     SessionInsightStatusSnapshot,
@@ -408,6 +410,37 @@ class ArchiveSearchMixin:
             offset=offset,
         )
         return project_message_content(messages, content_projection), total
+
+    async def bulk_get_messages(
+        self,
+        conversation_ids: Sequence[str],
+        *,
+        since: str | None = None,
+        until: str | None = None,
+        message_role: MessageRoleFilter = (),
+        content_projection: ContentProjectionSpec | None = None,
+    ) -> dict[str, list[Message]]:
+        """Return messages for multiple conversations with one batch read."""
+        ids = [str(conversation_id) for conversation_id in conversation_ids]
+        if not ids:
+            return {}
+
+        since_ts = parse_timestamp(since)
+        until_ts = parse_timestamp(until)
+        records_by_id = await self.repository.get_messages_batch(
+            ids,
+            sort_key_since=since_ts.timestamp() if since_ts is not None else None,
+            sort_key_until=until_ts.timestamp() if until_ts is not None else None,
+            message_role=message_role,
+        )
+        messages_by_id: dict[str, list[Message]] = {}
+        for conversation_id in ids:
+            messages = [
+                message_from_record(record, attachments=[], provider=record.provider_name)
+                for record in records_by_id.get(conversation_id, [])
+            ]
+            messages_by_id[conversation_id] = project_message_content(messages, content_projection)
+        return messages_by_id
 
     async def get_raw_artifacts_for_conversation(
         self,

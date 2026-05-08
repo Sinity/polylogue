@@ -55,6 +55,16 @@ if TYPE_CHECKING:
             content_projection: ContentProjectionSpec | None = None,
         ) -> tuple[list[Message], int]: ...
 
+        async def bulk_get_messages(
+            self,
+            conversation_ids: Sequence[str],
+            *,
+            since: str | None = None,
+            until: str | None = None,
+            message_role: MessageRoleFilter = (),
+            content_projection: ContentProjectionSpec | None = None,
+        ) -> dict[str, list[Message]]: ...
+
         async def get_conversations(
             self,
             conversation_ids: list[str],
@@ -309,6 +319,24 @@ class PolylogueArchiveMixin:
             message_type=message_type,
             limit=limit,
             offset=offset,
+            content_projection=content_projection,
+        )
+
+    async def bulk_get_messages(
+        self,
+        conversation_ids: Sequence[str],
+        *,
+        since: str | None = None,
+        until: str | None = None,
+        message_role: MessageRoleFilter = (),
+        content_projection: ContentProjectionSpec | None = None,
+    ) -> dict[str, list[Message]]:
+        """Return messages for many conversations using one archive batch read."""
+        return await self.operations.bulk_get_messages(
+            conversation_ids,
+            since=since,
+            until=until,
+            message_role=message_role,
             content_projection=content_projection,
         )
 

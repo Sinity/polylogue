@@ -327,6 +327,92 @@ class TestPolylogueReadSurfaces:
             await archive.get_messages_paginated("conv-read-api", message_type="summmary")  # type: ignore[arg-type]
 
     @pytest.mark.asyncio
+    async def test_bulk_get_messages_batches_role_and_date_filters(self: object, tmp_path: Path) -> None:
+        archive = _archive(tmp_path)
+        repository = archive.repository
+
+        await repository.save_conversation(
+            make_conversation(
+                "conv-bulk-a",
+                provider_name="claude-ai",
+                title="Bulk A",
+                provider_conversation_id="provider-conv-bulk-a",
+                created_at="2025-01-01T00:00:00Z",
+                updated_at="2025-01-01T00:00:04Z",
+                content_hash="hash-conv-bulk-a",
+            ),
+            [
+                make_message(
+                    "msg-a-early",
+                    "conv-bulk-a",
+                    role="user",
+                    text="before window",
+                    timestamp="2025-01-01T00:00:00Z",
+                    content_hash="hash-msg-a-early",
+                ),
+                make_message(
+                    "msg-a-assistant",
+                    "conv-bulk-a",
+                    role="assistant",
+                    text="wrong role",
+                    timestamp="2025-01-01T00:00:01Z",
+                    content_hash="hash-msg-a-assistant",
+                ),
+                make_message(
+                    "msg-a-user",
+                    "conv-bulk-a",
+                    role="user",
+                    text="a in window",
+                    timestamp="2025-01-01T00:00:02Z",
+                    content_hash="hash-msg-a-user",
+                ),
+            ],
+            [],
+        )
+        await repository.save_conversation(
+            make_conversation(
+                "conv-bulk-b",
+                provider_name="claude-ai",
+                title="Bulk B",
+                provider_conversation_id="provider-conv-bulk-b",
+                created_at="2025-01-01T00:00:00Z",
+                updated_at="2025-01-01T00:00:04Z",
+                content_hash="hash-conv-bulk-b",
+            ),
+            [
+                make_message(
+                    "msg-b-user",
+                    "conv-bulk-b",
+                    role="user",
+                    text="b in window",
+                    timestamp="2025-01-01T00:00:03Z",
+                    content_hash="hash-msg-b-user",
+                ),
+                make_message(
+                    "msg-b-late",
+                    "conv-bulk-b",
+                    role="user",
+                    text="after window",
+                    timestamp="2025-01-01T00:00:04Z",
+                    content_hash="hash-msg-b-late",
+                ),
+            ],
+            [],
+        )
+
+        result = await archive.bulk_get_messages(
+            ["conv-bulk-a", "conv-bulk-b", "missing"],
+            since="2025-01-01T00:00:02Z",
+            until="2025-01-01T00:00:03Z",
+            message_role=(Role.USER,),
+        )
+
+        assert [str(message.id) for message in result["conv-bulk-a"]] == ["msg-a-user"]
+        assert [str(message.id) for message in result["conv-bulk-b"]] == ["msg-b-user"]
+        assert result["missing"] == []
+        assert result["conv-bulk-a"][0].text == "a in window"
+
+    @pytest.mark.asyncio
     async def test_get_raw_artifacts_resolves_id_and_handles_missing(self: object, tmp_path: Path) -> None:
         archive = _archive(tmp_path)
         repository = archive.repository

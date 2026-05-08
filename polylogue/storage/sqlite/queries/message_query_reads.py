@@ -30,6 +30,10 @@ async def get_messages(
 async def get_messages_batch(
     conn: aiosqlite.Connection,
     conversation_ids: list[str],
+    *,
+    sort_key_since: float | None = None,
+    sort_key_until: float | None = None,
+    message_role: MessageRoleFilter = (),
 ) -> tuple[dict[str, list[MessageRecord]], list[MessageRecord]]:
     if not conversation_ids:
         return {}, []
@@ -37,9 +41,27 @@ async def get_messages_batch(
     result: dict[str, list[MessageRecord]] = {cid: [] for cid in conversation_ids}
     all_messages: list[MessageRecord] = []
     placeholders = ",".join("?" for _ in conversation_ids)
+    query = f"SELECT * FROM messages WHERE conversation_id IN ({placeholders})"
+    params: list[str | float] = list(conversation_ids)
+
+    role_values = message_role_sql_values(message_role)
+    if role_values:
+        role_placeholders = ",".join("?" for _ in role_values)
+        query += f" AND role IN ({role_placeholders})"
+        params.extend(role_values)
+
+    if sort_key_since is not None:
+        query += " AND sort_key >= ?"
+        params.append(sort_key_since)
+
+    if sort_key_until is not None:
+        query += " AND sort_key <= ?"
+        params.append(sort_key_until)
+
+    query += " ORDER BY (sort_key IS NULL), sort_key, message_id"
     cursor = await conn.execute(
-        f"SELECT * FROM messages WHERE conversation_id IN ({placeholders}) ORDER BY (sort_key IS NULL), sort_key, message_id",
-        conversation_ids,
+        query,
+        tuple(params),
     )
     rows = await cursor.fetchall()
 

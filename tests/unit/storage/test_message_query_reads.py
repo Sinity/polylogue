@@ -4,6 +4,8 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.archive.message.roles import Role
+from polylogue.core.timestamps import parse_timestamp
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.storage.sqlite.queries.message_query_reads import (
     get_messages,
@@ -93,6 +95,17 @@ async def test_message_query_reads_cover_type_filters_batches_and_stream_limits(
             "msg-user",
             "msg-assistant",
         ]
+
+        since = parse_timestamp("2026-01-01T00:00:03Z")
+        assert since is not None
+        filtered_by_conversation, filtered_messages = await get_messages_batch(
+            conn,
+            ["conv-message-reads", "missing"],
+            sort_key_since=since.timestamp(),
+            message_role=(Role.USER,),
+        )
+        assert [message.message_id for message in filtered_by_conversation["conv-message-reads"]] == ["msg-user"]
+        assert [message.message_id for message in filtered_messages] == ["msg-user"]
         assert [message.message_id for message in all_messages] == [
             "msg-summary",
             "msg-summary-2",

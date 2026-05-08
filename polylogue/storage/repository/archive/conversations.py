@@ -100,8 +100,17 @@ class RepositoryArchiveConversationMixin:
     async def get_messages_batch(
         self,
         conversation_ids: list[str],
+        *,
+        sort_key_since: float | None = None,
+        sort_key_until: float | None = None,
+        message_role: MessageRoleFilter = (),
     ) -> dict[str, list[MessageRecord]]:
-        return await self.queries.get_messages_batch(conversation_ids)
+        return await self.queries.get_messages_batch(
+            conversation_ids,
+            sort_key_since=sort_key_since,
+            sort_key_until=sort_key_until,
+            message_role=message_role,
+        )
 
     async def get_attachments_batch(
         self,

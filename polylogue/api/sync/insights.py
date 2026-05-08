@@ -35,6 +35,7 @@ from polylogue.storage.insights.session.runtime import SessionInsightStatusSnaps
 
 if TYPE_CHECKING:
     from polylogue.api import Polylogue
+    from polylogue.insights.readiness import InsightReadinessQuery, InsightReadinessReport
 
 
 class SyncInsightQueriesMixin:
@@ -136,6 +137,12 @@ class SyncInsightQueriesMixin:
         query: ArchiveDebtInsightQuery | None = None,
     ) -> list[ArchiveDebtInsight]:
         return run_coroutine_sync(self._facade.list_archive_debt_insights(query))
+
+    def insight_readiness_report(
+        self,
+        query: InsightReadinessQuery | None = None,
+    ) -> InsightReadinessReport:
+        return run_coroutine_sync(self._facade.insight_readiness_report(query))
 
 
 __all__ = ["SyncInsightQueriesMixin"]
