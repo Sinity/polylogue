@@ -55,6 +55,7 @@ def build_verify_steps(*, quick: bool, lab: bool) -> list[tuple[str, list[str]]]
         ("verify-suppressions", ["devtools", "verify-suppressions"]),
         ("verify-manifests", ["devtools", "verify-manifests"]),
         ("verify-witness-lifecycle", ["devtools", "verify-witness-lifecycle"]),
+        ("verify-lane-assertions", ["devtools", "verify-lane-assertions"]),
         ("proof-pack check", ["devtools", "proof-pack", "--check"]),
     ]
 
