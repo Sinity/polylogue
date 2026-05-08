@@ -44,8 +44,8 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--output",
         type=Path,
-        default=ROOT / "_site",
-        help="Output directory (default: _site/).",
+        default=ROOT / ".cache" / "site",
+        help="Output directory (default: .cache/site/).",
     )
     parser.add_argument(
         "--skip-pagefind",
@@ -109,9 +109,9 @@ def main(argv: list[str] | None = None) -> int:
             current_hash = _hash_directory(args.output) if args.output.exists() else ""
             new_hash = _hash_directory(tmp_dir)
             if current_hash != new_hash:
-                print("Error: _site/ is out of sync with sources. Run: devtools render-pages", file=sys.stderr)
+                print(f"Error: {args.output} is out of sync with sources. Run: devtools render-pages", file=sys.stderr)
                 return 1
-            print("OK: _site/ matches sources.")
+            print(f"OK: {args.output} matches sources.")
             return 0
 
     print("Building GitHub Pages site...", file=sys.stderr)
