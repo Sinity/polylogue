@@ -594,6 +594,14 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "devtools xtask stats --json",
         ),
     ),
+    CommandSpec(
+        "verify-lane-assertions",
+        "verification",
+        "Verify scenario lanes classified as SEMANTIC_OUTPUT carry semantic assertions.",
+        "devtools.verify_lane_assertions",
+        use_when="Catch vacuous semantic lanes that claim evidence but only check exit codes.",
+        examples=("devtools verify-lane-assertions",),
+    ),
 )
 
 COMMANDS: dict[str, CommandSpec] = {spec.name: spec for spec in COMMAND_SPECS}
