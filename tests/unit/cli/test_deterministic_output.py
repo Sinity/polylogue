@@ -282,10 +282,11 @@ class TestJsonEnvelopeParametrized:
     @pytest.mark.parametrize(
         "cmd_args,result_key",
         [
-            (["doctor", "--format", "json"], None),  # result has checks, summary, timestamp
-            (["tags", "--format", "json"], "tags"),  # result has tags
+            (["doctor", "--format", "json"], None),
+            (["tags", "--format", "json"], "tags"),
+            (["neighbors", "--format", "json", "--query", "test"], "neighbors"),
         ],
-        ids=["doctor", "tags"],
+        ids=["doctor", "tags", "neighbors"],
     )
     def test_json_envelope_shape(
         self: object,
@@ -311,8 +312,9 @@ class TestJsonEnvelopeParametrized:
         [
             ["doctor", "--format", "json"],
             ["tags", "--format", "json"],
+            ["neighbors", "--format", "json", "--query", "test"],
         ],
-        ids=["doctor", "tags"],
+        ids=["doctor", "tags", "neighbors"],
     )
     def test_json_output_no_ansi(
         self: object,
@@ -347,6 +349,26 @@ class TestJsonEnvelopeParametrized:
         # Round-trip through json.dumps/loads must be lossless
         round_tripped = json.loads(json.dumps(parsed))
         assert round_tripped == parsed
+
+    @pytest.mark.parametrize(
+        "cmd_args,expected_error",
+        [
+            (["tags", "--format", "yaml"], "Invalid value for '--format'"),
+            (["neighbors", "--format", "markdown", "--query", "test"], "Invalid value for '--format'"),
+        ],
+        ids=["tags-yaml-rejected", "neighbors-markdown-rejected"],
+    )
+    def test_json_only_commands_reject_other_formats(
+        self: object,
+        cli_workspace: dict[str, Path],
+        cmd_args: list[str],
+        expected_error: str,
+    ) -> None:
+        """JSON-only commands (tags, neighbors) reject non-json formats with a clear Click error."""
+        runner = CliRunner()
+        result = runner.invoke(cli, ["--plain", *cmd_args], catch_exceptions=False)
+        assert result.exit_code != 0
+        assert expected_error in result.output
 
 
 # ---------------------------------------------------------------------------
