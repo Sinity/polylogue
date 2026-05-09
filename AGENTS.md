@@ -87,7 +87,7 @@ Issues and PR bodies are durable artifacts. Write them for a reader who
 has no conversation context — they should stand alone. Include file
 paths, acceptance criteria, and design references where applicable.
 
-<!-- begin include: /realm/project/polylogue/CONTRIBUTING.md -->
+<!-- begin include: /realm/project/polylogue/.claude/worktrees/agent-a7d8f4ab/CONTRIBUTING.md -->
 # Contributing
 
 ## Development Environment
@@ -337,8 +337,8 @@ The PR title becomes the squash-merge subject on `master`. Rules:
 - ≤72 characters, conventional prefix, imperative mood
 - Describes what changed, not what was worked on
 - Accurate — do not claim alignment or unification unless the diff achieves it
-<!-- end include: /realm/project/polylogue/CONTRIBUTING.md -->
-<!-- begin include: /realm/project/polylogue/TESTING.md -->
+<!-- end include: /realm/project/polylogue/.claude/worktrees/agent-a7d8f4ab/CONTRIBUTING.md -->
+<!-- begin include: /realm/project/polylogue/.claude/worktrees/agent-a7d8f4ab/TESTING.md -->
 # Testing
 
 All commands below assume you are inside the project devshell. See
@@ -448,8 +448,8 @@ Never delete:
   shapes.
 - **`tests/unit/security/`**: Security boundary tests.
 
-<!-- end include: /realm/project/polylogue/TESTING.md -->
-<!-- begin include: /realm/project/polylogue/docs/architecture.md -->
+<!-- end include: /realm/project/polylogue/.claude/worktrees/agent-a7d8f4ab/TESTING.md -->
+<!-- begin include: /realm/project/polylogue/.claude/worktrees/agent-a7d8f4ab/docs/architecture.md -->
 # Polylogue Architecture
 
 Polylogue is a local archive for AI conversations. The system has four rings:
@@ -673,8 +673,8 @@ attachments, exports):
 - New semantics go into substrate or insights first, then surfaces adapt.
 - Proof subjects and claims live in `proof/`; devtools commands that exercise
   them live in `devtools/`.
-<!-- end include: /realm/project/polylogue/docs/architecture.md -->
-<!-- begin include: /realm/project/polylogue/docs/internals.md -->
+<!-- end include: /realm/project/polylogue/.claude/worktrees/agent-a7d8f4ab/docs/architecture.md -->
+<!-- begin include: /realm/project/polylogue/.claude/worktrees/agent-a7d8f4ab/docs/internals.md -->
 # Internals Reference
 
 Working map of the live codebase: invariants, hot files, extension points, and
@@ -841,8 +841,8 @@ devtools lab-scenario verify-baselines
 - `.cache/`: disposable caches (hypothesis, pytest, mypy, ruff)
 - `.local/`: untracked outputs (campaigns, showcases, build artifacts)
 - `.local/result`: out-link for `devtools build-package`
-<!-- end include: /realm/project/polylogue/docs/internals.md -->
-<!-- begin include: /realm/project/polylogue/docs/devtools.md -->
+<!-- end include: /realm/project/polylogue/.claude/worktrees/agent-a7d8f4ab/docs/internals.md -->
+<!-- begin include: /realm/project/polylogue/.claude/worktrees/agent-a7d8f4ab/docs/devtools.md -->
 # Developer Tools
 
 Use `devtools` for routine repository maintenance. Call individual
@@ -968,6 +968,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools verify-manifests` | Verify internal consistency across all docs/plans/*.yaml manifest files. |
 | `devtools verify-migrations` | Verify migration-completeness against docs/plans/migrations.yaml. |
 | `devtools verify-schema-roundtrip` | Verify committed provider schema packages reload and roundtrip cleanly. |
+| `devtools verify-slos` | Check read-surface latency budgets in docs/plans/slo-catalog.yaml against benchmark measurements. |
 | `devtools verify-suppressions` | Enforce suppression registry expiry dates from docs/plans/suppressions.yaml. |
 | `devtools verify-test-ownership` | Verify each production module is imported by at least one unit test. |
 | `devtools verify-topology` | Verify the realized polylogue tree against the topology projection. |
@@ -1016,4 +1017,4 @@ Campaign outputs live under `.local/`, not in tracked docs trees.
 
 Keep new repo-local outputs in `.cache/` or `.local/` instead of adding new
 top-level output roots.
-<!-- end include: /realm/project/polylogue/docs/devtools.md -->
+<!-- end include: /realm/project/polylogue/.claude/worktrees/agent-a7d8f4ab/docs/devtools.md -->

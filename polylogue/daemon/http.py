@@ -779,12 +779,38 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         poly: Polylogue,
         query_params: dict[str, object],
     ) -> object:
+        if query_params:
+            from polylogue.archive.query.spec import ConversationQuerySpec
+
+            spec = ConversationQuerySpec.from_params(query_params)
+            filter_obj = spec.build_filter(poly.repository)
+            summaries = await filter_obj.list_summaries()
+            providers: dict[str, int] = {}
+            tags: dict[str, int] = {}
+            total_messages = 0
+            for s in summaries:
+                providers[str(s.provider)] = providers.get(str(s.provider), 0) + 1
+                total_messages += s.message_count or 0
+                for t in s.tags:
+                    tags[t] = tags.get(t, 0) + 1
+            return {
+                "scoped_to_query": True,
+                "providers": providers,
+                "tags": tags,
+                "repos": {},
+                "cwd_prefixes": {},
+                "message_types": {},
+                "action_types": {},
+                "has_flags": {},
+                "time_range": None,
+                "total_conversations": len(summaries),
+                "total_messages": total_messages,
+            }
         stats = await poly.stats()
         tags = await poly.list_tags()
-        scoped_to_query = bool(query_params)
 
         return {
-            "scoped_to_query": scoped_to_query,
+            "scoped_to_query": False,
             "providers": stats.providers,
             "tags": tags,
             "repos": {},
