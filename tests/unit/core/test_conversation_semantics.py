@@ -15,6 +15,7 @@ import pytest
 
 from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.message.roles import Role
+from polylogue.archive.message.types import MessageType
 from polylogue.archive.models import Attachment, Conversation, DialoguePair, Message
 from polylogue.archive.projection.projections import ConversationProjection
 from polylogue.archive.semantic.pricing import harmonize_session_cost
@@ -229,10 +230,14 @@ class TestMessageSemanticProjection:
         assert tool.is_tool_use is True
 
     def test_context_wrappers_are_context_dumps(self) -> None:
+        # Stored message_type is the source of truth post-#839 AC #3;
+        # materialization (`pipeline/materialization_runtime.py`) classifies
+        # context markers and persists `message_type=CONTEXT`.
         msg = make_msg(
             id="m1",
             role="user",
             text="<environment_context>\n<cwd>/workspace/polylogue</cwd>\n</environment_context>",
+            message_type=MessageType.CONTEXT,
         )
         assert msg.is_context_dump is True
 
@@ -241,11 +246,13 @@ class TestMessageSemanticProjection:
             id="m2",
             role="user",
             text="Please inspect this.\nContents of /workspace/polylogue/README.md:\nhello",
+            message_type=MessageType.CONTEXT,
         )
         file_path_dump = make_msg(
             id="m3",
             role="user",
             text="Captured payload:\n<file path=/workspace/polylogue/README.md>\nhello",
+            message_type=MessageType.CONTEXT,
         )
 
         assert contents_dump.is_context_dump is True
@@ -515,8 +522,11 @@ class TestConversationProjectionContracts:
 
         assert [message.id for message in conversation.project().assistant_messages().to_list()] == ["a1", "a2", "a3"]
         assert [message.id for message in conversation.project().dialogue().to_list()] == ["u1", "a1", "a2", "a3"]
-        assert [message.id for message in conversation.project().substantive().to_list()] == ["a1"]
-        assert [message.id for message in conversation.project().without_noise().to_list()] == ["a1", "a2"]
+        # Post-#839 AC #3: an attachment + short text is no longer auto-classified
+        # as a context dump at runtime; only stored `message_type=CONTEXT` would
+        # exclude `u1` here.
+        assert [message.id for message in conversation.project().substantive().to_list()] == ["u1", "a1"]
+        assert [message.id for message in conversation.project().without_noise().to_list()] == ["u1", "a1", "a2"]
         assert [message.id for message in conversation.project().with_attachments().to_list()] == ["u1"]
         assert [message.id for message in conversation.project().min_words(3).to_list()] == ["u1", "a1"]
         assert [message.id for message in conversation.project().max_words(2).to_list()] == ["a2", "a3", "s1"]
