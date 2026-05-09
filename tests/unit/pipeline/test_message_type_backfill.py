@@ -96,7 +96,7 @@ class TestMessageTypeBackfill:
     ) -> None:
         """Messages matching context markers get message_type = 'context'."""
         db_path = Path(workspace_env["archive_root"]) / "polylogue.db"
-        conv_id = _make_db_with_messages(db_path)
+        _make_db_with_messages(db_path)
 
         cfg = _make_config(workspace_env, db_path)
         monkeypatch.setattr("polylogue.paths.db_path", lambda: db_path)
