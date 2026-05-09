@@ -1015,7 +1015,7 @@ class ArchiveMaintenanceMixin:
         except sqlite3.DatabaseError:
             return False
 
-    async def get_index_status(self) -> dict[str, object]:
+    async def get_index_status(self):  # -> IndexStatus (return type imported locally)
         """Return FTS5 index existence and document count."""
         import sqlite3
 
