@@ -18,6 +18,7 @@ from polylogue.insights.archive import (
 )
 from polylogue.storage.insights.session.runtime import SessionInsightStatusSnapshot
 from polylogue.storage.sqlite.queries.message_query_reads import MessageTypeName
+from polylogue.surfaces.payloads import TagMutationResult
 
 if TYPE_CHECKING:
     from polylogue.archive.conversation.models import Conversation, ConversationSummary
@@ -512,8 +513,6 @@ class PolylogueArchiveMixin:
         - ``outcome="added"`` if the tag was newly added
         - ``outcome="no_op"`` if the tag was already present
         """
-        from polylogue.surfaces.payloads import TagMutationResult
-
         resolved = await self.repository.resolve_id(conversation_id, strict=True)
         if resolved is None:
             raise ConversationNotFoundError(conversation_id)
@@ -533,8 +532,6 @@ class PolylogueArchiveMixin:
         - ``outcome="removed"`` if the tag was removed
         - ``outcome="not_present"`` if the tag was not present
         """
-        from polylogue.surfaces.payloads import TagMutationResult
-
         resolved = await self.repository.resolve_id(conversation_id, strict=True)
         if resolved is None:
             raise ConversationNotFoundError(conversation_id)

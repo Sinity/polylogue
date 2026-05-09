@@ -64,6 +64,9 @@ async def apply_modifiers(
     repo: TagStore | None = None,
 ) -> None:
     """Apply metadata modifiers to matched conversations."""
+    # When the caller passes a custom repo, use it directly.
+    # Otherwise route through the shared facade for centralized idempotency.
+    _custom_repo = repo is not None
     repo = repo or env.repository
     if not results:
         env.ui.console.print("No conversations matched.")
@@ -110,9 +113,13 @@ async def apply_modifiers(
 
         if mutation.add_tags:
             for tag in mutation.add_tags:
-                result = await env.polylogue.add_tag(result_id(conv), tag)
-                if result:
+                if _custom_repo:
+                    await repo.add_tag(result_id(conv), tag)
                     tags_added += 1
+                else:
+                    result = await env.polylogue.add_tag(result_id(conv), tag)
+                    if result:
+                        tags_added += 1
 
     reports: list[str] = []
     if tags_added:

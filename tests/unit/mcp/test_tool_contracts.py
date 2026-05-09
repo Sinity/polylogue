@@ -16,7 +16,6 @@ from polylogue.archive.query.spec import ConversationQuerySpec
 from polylogue.archive.semantic.pricing import CostEstimatePayload, CostUsagePayload
 from polylogue.archive.stats import ArchiveStats
 from polylogue.errors import PolylogueError
-from polylogue.surfaces.payloads import TagMutationResult
 from polylogue.insights.archive import (
     ArchiveDebtInsight,
     ArchiveEnrichmentProvenance,
@@ -47,6 +46,7 @@ from polylogue.insights.archive_models import (
     WorkThreadMemberEvidencePayload,
     WorkThreadPayload,
 )
+from polylogue.surfaces.payloads import TagMutationResult
 from polylogue.types import ConversationId, Provider
 from tests.infra.builders import make_conv, make_msg
 from tests.infra.mcp import (
