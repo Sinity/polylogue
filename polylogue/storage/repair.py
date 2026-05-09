@@ -77,6 +77,24 @@ class _SessionInsightRepairAssessment:
 
 
 # ---------------------------------------------------------------------------
+# Unclassified message_type count
+# ---------------------------------------------------------------------------
+
+
+def count_unclassified_message_type_sync(conn: sqlite3.Connection) -> int:
+    """Count messages whose ``message_type`` is still the default ``message``
+    and whose text could carry context or protocol markers.
+
+    This is the preview count for the #839 message_type backfill.
+    """
+    return int(
+        conn.execute(
+            "SELECT COUNT(*) FROM messages WHERE message_type = 'message'  AND text IS NOT NULL AND text != ''"
+        ).fetchone()[0]
+    )
+
+
+# ---------------------------------------------------------------------------
 # Orphan count queries (formerly archive_debt_counts)
 # ---------------------------------------------------------------------------
 
@@ -384,6 +402,7 @@ def collect_archive_debt_statuses_sync(
     session_insights = session_insight_repair_count(statuses)
     action_events = action_event_repair_count(statuses)
     dangling_fts = dangling_fts_repair_count(statuses)
+    _unclassified = count_unclassified_message_type_sync(conn)
 
     debt_statuses = {
         "orphaned_messages": _archive_debt_status(
@@ -429,6 +448,13 @@ def collect_archive_debt_statuses_sync(
             "dangling_fts",
             issue_count=dangling_fts,
             detail="FTS synchronized" if dangling_fts == 0 else f"{dangling_fts:,} dangling FTS rows",
+        ),
+        "message_type_backfill": _archive_debt_status(
+            "message_type_backfill",
+            issue_count=_unclassified,
+            detail="No unclassified messages"
+            if _unclassified == 0
+            else f"{_unclassified:,} candidate messages to classify",
         ),
     }
     if include_expensive:
@@ -1000,10 +1026,109 @@ def repair_wal_checkpoint(config: Config, dry_run: bool = False) -> RepairResult
         )
 
 
+def preview_message_type_backfill(*, count: int) -> RepairResult:
+    """Preview handler for the #839 message_type backfill."""
+    return _repair_result(
+        "message_type_backfill",
+        repaired_count=count,
+        success=True,
+        detail=(f"Would: {count:,} candidate messages to classify" if count else "No unclassified messages"),
+    )
+
+
+def repair_message_type_backfill(config: Config, dry_run: bool = False) -> RepairResult:
+    """Backfill ``message_type`` for pre-#839 rows using ``classify_text_message_type``.
+
+    Iterates messages whose ``message_type`` is still the default ``message``,
+    applies the same classification logic used for new-ingest materialization,
+    and updates to ``context`` or ``protocol`` where markers match.
+
+    Idempotent: rows already classified are skipped by the WHERE clause.
+    """
+    from polylogue.archive.message.artifacts import classify_text_message_type
+    from polylogue.storage.sqlite.connection import connection_context
+
+    try:
+        with connection_context(None) as conn:
+            if dry_run:
+                count = count_unclassified_message_type_sync(conn)
+                return preview_message_type_backfill(count=count)
+
+            updated = 0
+            batch_size = 1000
+            offset = 0
+
+            while True:
+                rows = conn.execute(
+                    "SELECT rowid, message_id, text FROM messages"
+                    " WHERE message_type = 'message'"
+                    "  AND text IS NOT NULL AND text != ''"
+                    " ORDER BY rowid"
+                    " LIMIT ? OFFSET ?",
+                    (batch_size, offset),
+                ).fetchall()
+
+                if not rows:
+                    break
+
+                context_ids: list[int] = []
+                protocol_ids: list[int] = []
+
+                for row in rows:
+                    rowid_val, _message_id, text = row
+                    mt = classify_text_message_type(text)
+                    if mt is not None:
+                        from polylogue.archive.message.types import MessageType
+
+                        if mt == MessageType.CONTEXT:
+                            context_ids.append(rowid_val)
+                        elif mt == MessageType.PROTOCOL:
+                            protocol_ids.append(rowid_val)
+
+                if context_ids:
+                    placeholders = ",".join("?" * len(context_ids))
+                    conn.execute(
+                        f"UPDATE messages SET message_type = 'context' WHERE rowid IN ({placeholders})",
+                        context_ids,
+                    )
+                    updated += conn.total_changes
+
+                if protocol_ids:
+                    placeholders = ",".join("?" * len(protocol_ids))
+                    conn.execute(
+                        f"UPDATE messages SET message_type = 'protocol' WHERE rowid IN ({placeholders})",
+                        protocol_ids,
+                    )
+                    updated += conn.total_changes
+
+                offset += batch_size
+
+            conn.commit()
+            logger.info(
+                "message_type_backfill_complete",
+                updated=updated,
+            )
+            return _repair_result(
+                "message_type_backfill",
+                repaired_count=updated,
+                success=True,
+                detail=f"Classified {updated:,} messages as context or protocol",
+            )
+    except Exception as exc:
+        logger.exception("message_type_backfill_failed", error=str(exc))
+        return _repair_result(
+            "message_type_backfill",
+            repaired_count=0,
+            success=False,
+            detail=f"Backfill failed: {exc}",
+        )
+
+
 _PREVIEW_HANDLERS: dict[str, Callable[..., RepairResult]] = {
     "session_insights": preview_session_insights,
     "action_event_read_model": preview_action_event_read_model,
     "dangling_fts": preview_dangling_fts,
+    "message_type_backfill": preview_message_type_backfill,
     "orphaned_messages": preview_orphaned_messages,
     "orphaned_content_blocks": preview_orphaned_content_blocks,
     "empty_conversations": preview_empty_conversations,
@@ -1015,6 +1140,7 @@ _REPAIR_HANDLERS: dict[str, Callable[..., RepairResult]] = {
     "session_insights": repair_session_insights,
     "action_event_read_model": repair_action_event_read_model,
     "dangling_fts": repair_dangling_fts,
+    "message_type_backfill": repair_message_type_backfill,
     "wal_checkpoint": repair_wal_checkpoint,
     "orphaned_messages": repair_orphaned_messages,
     "orphaned_content_blocks": repair_orphaned_content_blocks,
@@ -1126,6 +1252,7 @@ __all__ = [
     "count_orphaned_blobs_sync",
     "count_orphaned_content_blocks_sync",
     "count_orphaned_messages_sync",
+    "count_unclassified_message_type_sync",
     "dangling_fts_repair_count",
     "preview_action_event_read_model",
     "preview_counts_from_archive_debt",
@@ -1135,10 +1262,12 @@ __all__ = [
     "preview_orphaned_blobs",
     "preview_orphaned_content_blocks",
     "preview_orphaned_messages",
+    "preview_message_type_backfill",
     "preview_session_insights",
     "repair_action_event_read_model",
     "repair_dangling_fts",
     "repair_empty_conversations",
+    "repair_message_type_backfill",
     "repair_orphaned_attachments",
     "repair_orphaned_blobs",
     "repair_orphaned_content_blocks",
