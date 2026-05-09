@@ -6,6 +6,7 @@ import aiosqlite
 
 from polylogue.storage.query_models import SessionTimelineListQuery
 from polylogue.storage.runtime import SessionPhaseRecord, SessionWorkEventRecord
+from polylogue.storage.search.query_support import escape_fts5_query
 from polylogue.storage.sqlite.queries.mappers import (
     _row_to_session_phase_record,
     _row_to_session_work_event_record,
@@ -65,7 +66,7 @@ async def list_work_events(
               ON session_work_events_fts.event_id = swe.event_id
         """
         where = ["session_work_events_fts MATCH ?"]
-        params.append(query.query)
+        params.append(escape_fts5_query(query.query))
         order_by = "ORDER BY bm25(session_work_events_fts), COALESCE(swe.source_sort_key, 0) DESC, swe.event_index"
     else:
         from_clause = "FROM session_work_events swe"

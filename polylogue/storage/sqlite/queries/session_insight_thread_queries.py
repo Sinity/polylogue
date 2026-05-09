@@ -7,6 +7,7 @@ import aiosqlite
 from polylogue.storage.insights.session.storage import work_thread_insert_values
 from polylogue.storage.query_models import WorkThreadListQuery
 from polylogue.storage.runtime import WorkThreadRecord
+from polylogue.storage.search.query_support import escape_fts5_query
 from polylogue.storage.sqlite.queries.mappers import _row_to_work_thread_record
 
 __all__ = [
@@ -40,7 +41,7 @@ async def list_work_threads(
               ON work_threads_fts.thread_id = wt.thread_id
         """
         where = ["work_threads_fts MATCH ?"]
-        params.append(query.query)
+        params.append(escape_fts5_query(query.query))
         order_by = "ORDER BY bm25(work_threads_fts), COALESCE(wt.end_time, wt.start_time, wt.materialized_at) DESC, wt.thread_id"
     else:
         from_clause = "FROM work_threads wt"
