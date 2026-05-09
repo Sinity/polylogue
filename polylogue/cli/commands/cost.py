@@ -24,7 +24,6 @@ def cost_command(env: AppEnv, plan: str, anomaly_threshold: float, output_format
     Reads cost data from the archive computed by the #803 cost tracking pipeline.
     """
     from polylogue.archive.semantic.outlook import compute_usage_outlook
-    from polylogue.archive.semantic.subscription_models import UsageOutlookPayload
 
     # Collect cost data from archive
     cost_data: list[dict[str, object]] = []
@@ -52,13 +51,12 @@ def cost_command(env: AppEnv, plan: str, anomaly_threshold: float, output_format
         pass
 
     outlook = compute_usage_outlook(cost_data, plan_name=plan, anomaly_threshold=anomaly_threshold)
-    payload = UsageOutlookPayload.model_validate(outlook)
 
     if output_format == "json":
-        env.ui.console.print(json.dumps(payload.model_dump(mode="json"), indent=2, default=str))
+        env.ui.console.print(json.dumps(outlook.model_dump(mode="json"), indent=2, default=str))
         return
 
-    _render_plain(env, payload)
+    _render_plain(env, outlook)
 
 
 def _render_plain(env: Any, p: Any) -> None:
