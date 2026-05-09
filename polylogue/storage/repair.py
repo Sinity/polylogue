@@ -89,9 +89,7 @@ def count_unclassified_message_type_sync(conn: sqlite3.Connection) -> int:
     """
     return int(
         conn.execute(
-            "SELECT COUNT(*) FROM messages"
-            " WHERE message_type = 'message'"
-            "  AND text IS NOT NULL AND text != ''"
+            "SELECT COUNT(*) FROM messages WHERE message_type = 'message'  AND text IS NOT NULL AND text != ''"
         ).fetchone()[0]
     )
 
@@ -1034,11 +1032,7 @@ def preview_message_type_backfill(*, count: int) -> RepairResult:
         "message_type_backfill",
         repaired_count=count,
         success=True,
-        detail=(
-            f"Would: {count:,} candidate messages to classify"
-            if count
-            else "No unclassified messages"
-        ),
+        detail=(f"Would: {count:,} candidate messages to classify" if count else "No unclassified messages"),
     )
 
 
@@ -1110,8 +1104,6 @@ def repair_message_type_backfill(config: Config, dry_run: bool = False) -> Repai
                 offset += batch_size
 
             conn.commit()
-            from polylogue.logging import get_logger
-
             logger.info(
                 "message_type_backfill_complete",
                 updated=updated,

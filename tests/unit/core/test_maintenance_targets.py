@@ -37,11 +37,12 @@ def test_maintenance_target_catalog_reports_preview_and_help_semantics() -> None
         "session_insights",
         "action_event_read_model",
         "dangling_fts",
+        "message_type_backfill",
     )
     assert catalog.help_text() == (
         "Limit maintenance to named targets such as session_insights, action_event_read_model, "
-        "dangling_fts, wal_checkpoint, orphaned_messages, orphaned_content_blocks, "
-        "empty_conversations, orphaned_attachments, or orphaned_blobs"
+        "dangling_fts, message_type_backfill, wal_checkpoint, orphaned_messages, "
+        "orphaned_content_blocks, empty_conversations, orphaned_attachments, or orphaned_blobs"
     )
 
 
