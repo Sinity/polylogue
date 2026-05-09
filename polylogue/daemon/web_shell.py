@@ -301,7 +301,11 @@ async function loadConversationRaw(id) {
 }
 
 async function loadFacets() {
-  try { state.facets = await fetchJSON('/api/facets'); renderFacets(); } catch(e) {}
+  var params = new URLSearchParams();
+  if (state.query) params.set('query', state.query);
+  if (state.provider) params.set('provider', state.provider);
+  var qs = params.toString();
+  try { state.facets = await fetchJSON('/api/facets' + (qs ? '?' + qs : '')); renderFacets(); } catch(e) {}
 }
 
 async function loadStatus() {
@@ -609,7 +613,7 @@ document.getElementById('help-btn').addEventListener('click', function(e) { e.st
 var searchTimer;
 document.getElementById('search').addEventListener('input', function(e) {
   clearTimeout(searchTimer);
-  searchTimer = setTimeout(function() { state.query = e.target.value; state.offset = 0; loadConversations(); }, 280);
+  searchTimer = setTimeout(function() { state.query = e.target.value; state.offset = 0; loadConversations(); loadFacets(); }, 280);
 });
 
 document.getElementById('facet-bar').addEventListener('click', function(e) {

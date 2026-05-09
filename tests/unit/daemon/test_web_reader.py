@@ -114,3 +114,37 @@ def test_empty_archive_returns_zero(tmp_path: Path) -> None:
             assert data["items"] == []
     finally:
         server.shutdown()
+
+
+def test_api_facets_scoped_to_provider(tmp_path: Path) -> None:
+    """GET /api/facets?provider=chatgpt returns only that provider's counts."""
+    server, base_url = _start_server(tmp_path)
+    try:
+        req = Request(f"{base_url}/api/facets?provider=chatgpt")
+        with urlopen(req) as resp:
+            assert resp.status == 200
+            data = json.loads(resp.read())
+            assert data["scoped_to_query"] is True
+            assert data["total_conversations"] == 1
+            providers: dict[str, int] = data["providers"]
+            assert "chatgpt" in providers
+            assert providers["chatgpt"] == 1
+            assert "claude-code" not in providers
+    finally:
+        server.shutdown()
+
+
+def test_api_facets_scoped_to_query(tmp_path: Path) -> None:
+    """GET /api/facets?query=<term> returns scoped counts for matching convs."""
+    server, base_url = _start_server(tmp_path)
+    try:
+        req = Request(f"{base_url}/api/facets?query=Hello")
+        with urlopen(req) as resp:
+            assert resp.status == 200
+            data = json.loads(resp.read())
+            assert data["scoped_to_query"] is True
+            # All 3 seeded conversations have "Hello" in messages
+            assert data["total_conversations"] == 3
+            assert len(data["providers"]) == 3
+    finally:
+        server.shutdown()
