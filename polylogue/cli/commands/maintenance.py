@@ -19,7 +19,7 @@ def maintenance_group() -> None:
     """Preview and run maintenance backfill operations."""
 
 
-@maintenance_group.command("preview")
+@maintenance_group.command("plan")
 @click.option(
     "--target",
     "targets",
@@ -28,10 +28,10 @@ def maintenance_group() -> None:
     help=_MAINTENANCE_TARGET_HELP,
 )
 @click.pass_obj
-def preview_command(env: AppEnv, targets: tuple[str, ...]) -> None:
-    """Preview what would be rebuilt without executing.
+def plan_command(env: AppEnv, targets: tuple[str, ...]) -> None:
+    """Dry-run summary: show what would be rebuilt without executing.
 
-    Shows affected rows and estimated time for each target.
+    Displays affected rows and estimated time for each target.
     Read-only — no mutations are performed.
     """
     configure_logging()
@@ -123,4 +123,4 @@ def run_command(env: AppEnv, targets: tuple[str, ...], dry_run: bool) -> None:
             click.echo(f"\nElapsed: {elapsed:.1f}s")
 
 
-__all__ = ["maintenance_group", "preview_command", "run_command"]
+__all__ = ["maintenance_group", "plan_command", "run_command"]

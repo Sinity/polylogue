@@ -382,6 +382,12 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         if path == ["api", "ingest"]:
             self._handle_ingest()
             return
+        if path == ["api", "maintenance", "plan"]:
+            self._handle_maintenance_plan()
+            return
+        if path == ["api", "maintenance", "run"]:
+            self._handle_maintenance_run()
+            return
         self._send_error(HTTPStatus.NOT_FOUND, "not_found")
 
     # ------------------------------------------------------------------
@@ -910,6 +916,61 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             message="Ingestion scheduled. Check status for progress.",
         )
         self._send_json(HTTPStatus.ACCEPTED, operation.to_dict())
+
+    @daemon_safe_handler
+    def _handle_maintenance_plan(self) -> None:
+        """POST /api/maintenance/plan — dry-run summary for maintenance targets."""
+        content_length = int(self.headers.get("Content-Length", 0))
+        body_raw = self.rfile.read(content_length) if content_length > 0 else b"{}"
+        body_text = body_raw.decode("utf-8")
+        try:
+            body = json.loads(body_text)
+        except json.JSONDecodeError:
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
+            return
+
+        raw_targets: list[str] = body.get("targets", [])
+        targets: tuple[str, ...] = tuple(str(t) for t in raw_targets)
+
+        from polylogue.config import Config
+        from polylogue.maintenance.planner import preview_backfill
+        from polylogue.paths import archive_root, render_root
+
+        config = Config(
+            archive_root=archive_root(),
+            render_root=render_root(),
+            sources=[],
+        )
+        result = preview_backfill(config, targets=targets)
+        self._send_json(HTTPStatus.OK, result.to_dict())
+
+    @daemon_safe_handler
+    def _handle_maintenance_run(self) -> None:
+        """POST /api/maintenance/run — execute (or dry-run) maintenance."""
+        content_length = int(self.headers.get("Content-Length", 0))
+        body_raw = self.rfile.read(content_length) if content_length > 0 else b"{}"
+        body_text = body_raw.decode("utf-8")
+        try:
+            body = json.loads(body_text)
+        except json.JSONDecodeError:
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
+            return
+
+        raw_targets: list[str] = body.get("targets", [])
+        targets: tuple[str, ...] = tuple(str(t) for t in raw_targets)
+        dry_run: bool = bool(body.get("dry_run", False))
+
+        from polylogue.config import Config
+        from polylogue.maintenance.planner import execute_backfill
+        from polylogue.paths import archive_root, render_root
+
+        config = Config(
+            archive_root=archive_root(),
+            render_root=render_root(),
+            sources=[],
+        )
+        result = execute_backfill(config, targets=targets, dry_run=dry_run)
+        self._send_json(HTTPStatus.OK, result.to_dict())
 
 
 class DaemonAPIHTTPServer(ThreadingHTTPServer):

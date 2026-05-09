@@ -16,6 +16,7 @@ from polylogue.cli.commands.diagnostics import diagnostics_group
 from polylogue.cli.commands.export import export_command
 from polylogue.cli.commands.ingest import ingest_command
 from polylogue.cli.commands.insights import insights_command
+from polylogue.cli.commands.maintenance import maintenance_group
 from polylogue.cli.commands.neighbors import neighbors_command
 from polylogue.cli.commands.reset import reset_command
 from polylogue.cli.commands.resume import resume_command
@@ -42,6 +43,7 @@ ROOT_COMMANDS: tuple[click.Command, ...] = (
     tags_command,
     schema_command,
     diagnostics_group,
+    maintenance_group,
 )
 
 

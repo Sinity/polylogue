@@ -531,6 +531,7 @@ class TestCliMetadata:
             "completions",
             "config",
             "cost",
+            "context-pack",
             "dashboard",
             "neighbors",
             "export",
@@ -539,6 +540,7 @@ class TestCliMetadata:
             "schema",
             "tags",
             "diagnostics",
+            "maintenance",
             # Query verbs
             "list",
             "count",
