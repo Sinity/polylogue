@@ -9,7 +9,6 @@ from unittest.mock import patch
 import pytest
 from pydantic import ValidationError
 
-from polylogue.daemon import status as status_module
 from polylogue.daemon.status import (
     DaemonStatus,
     RawFailureSample,
@@ -42,7 +41,7 @@ class TestRawFailureSampleModel:
 
     def test_all_valid_failure_kinds(self) -> None:
         for kind in ("decode_error", "parse_error", "schema_violation", "unknown"):
-            sample = RawFailureSample(failure_kind=kind)  # type: ignore[arg-type]
+            sample = RawFailureSample(failure_kind=kind)
             assert sample.failure_kind == kind
 
     def test_redacts_absolute_file_paths(self) -> None:
@@ -133,7 +132,7 @@ class TestRawFailureSampleInDaemonStatus:
         assert dumped["raw_failure_samples"][0]["provider_hint"] is None
         assert "Missing required field" in dumped["raw_failure_samples"][0]["redacted_error"]
 
-    def test_rejects_non_RawFailureSample_items(self) -> None:
+    def test_rejects_non_raw_failure_sample_items(self) -> None:
         with pytest.raises(ValidationError):
             DaemonStatus(raw_failure_samples=["not a model"])  # type: ignore[list-item]
 
@@ -231,6 +230,7 @@ class TestRawFailureInfoProducesTypedSamples:
             info = _raw_failure_info()
 
         samples = info["samples"]
+        assert isinstance(samples, list)
         assert len(samples) == 1
         sample = samples[0]
         assert isinstance(sample, RawFailureSample)
@@ -277,6 +277,7 @@ class TestRawFailureInfoProducesTypedSamples:
             info = _raw_failure_info()
 
         samples = info["samples"]
+        assert isinstance(samples, list)
         assert len(samples) == 1
         sample = samples[0]
         assert isinstance(sample, RawFailureSample)
