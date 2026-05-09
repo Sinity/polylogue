@@ -123,6 +123,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools verify-manifests` | Verify internal consistency across all docs/plans/*.yaml manifest files. |
 | `devtools verify-migrations` | Verify migration-completeness against docs/plans/migrations.yaml. |
 | `devtools verify-schema-roundtrip` | Verify committed provider schema packages reload and roundtrip cleanly. |
+| `devtools verify-slos` | Check read-surface latency budgets in docs/plans/slo-catalog.yaml against benchmark measurements. |
 | `devtools verify-suppressions` | Enforce suppression registry expiry dates from docs/plans/suppressions.yaml. |
 | `devtools verify-test-ownership` | Verify each production module is imported by at least one unit test. |
 | `devtools verify-topology` | Verify the realized polylogue tree against the topology projection. |

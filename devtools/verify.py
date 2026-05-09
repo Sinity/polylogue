@@ -66,6 +66,7 @@ def build_verify_steps(*, quick: bool, lab: bool) -> list[tuple[str, list[str]]]
 
     if lab:
         steps.append(("lab scenario", ["devtools", "lab-scenario", "run", "archive-smoke", "--tier", "0"]))
+        steps.append(("verify-slos", ["devtools", "verify-slos"]))
     return steps
 
 
