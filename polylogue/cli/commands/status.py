@@ -128,6 +128,18 @@ def _show_daemon_status(env: AppEnv, status: dict[str, Any], *, compact: bool = 
     if db_bytes:
         env.ui.console.print(f"  DB: {_fmt_bytes(db_bytes)}  Free: {_fmt_bytes(disk_free)}")
 
+    # Raw failures
+    raw_parse = status.get("raw_parse_failures", 0)
+    raw_val = status.get("raw_validation_failures", 0)
+    raw_quarantined = status.get("raw_quarantined", 0)
+    total_raw = (raw_parse or 0) + (raw_val or 0)
+    if total_raw > 0:
+        fail_color = "red" if total_raw > 10 else "yellow"
+        env.ui.console.print(
+            f"  Raw failures: [{fail_color}]{total_raw} total ({raw_quarantined} quarantined)"
+            f" [{fail_color}]({raw_parse} parse + {raw_val} validation)[/{fail_color}]"
+        )
+
     if not compact:
         checked = status.get("checked_at", "")
         if checked:
