@@ -9,7 +9,6 @@ from functools import cached_property
 from typing import TYPE_CHECKING
 
 from polylogue.archive.attachment.models import Attachment
-from polylogue.archive.message.artifacts import classify_text_message_type
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
 from polylogue.core.json import JSONDocument, json_document, json_document_list
@@ -225,34 +224,21 @@ class MessageRuntimeMixin:
 
     @cached_property
     def is_context_dump(self) -> bool:
-        """Returns True if the message text is a context/protocol artifact.
+        """Returns True iff the persisted ``message_type`` is CONTEXT.
 
-        Authoritative check is stored message_type (set at materialization).
-        Text-based heuristics below are resilience fallbacks for pre-#839 rows
-        that were ingested before message_type was persisted.
+        Stored ``message_type`` is the only source of truth (issue #839 AC #3).
+        Pre-#839 rows without a persisted CONTEXT type are not recognized at
+        read time; backfill (issue #839 AC #2 / #971) reclassifies them.
         """
-        # Authoritative: stored message_type from materialization.
-        if self.message_type == MessageType.CONTEXT:
-            return True
-
-        # Resilience: text-based classification for pre-#839 archive rows.
-        text = self.text
-        if not text:
-            return False
-        if classify_text_message_type(text) == MessageType.CONTEXT:
-            return True
-        # Narrow fallbacks that require context beyond message text.
-        if self.attachments and len(text) < 100:
-            return True
-        return bool("```" in text and text.count("```") >= 6)
+        return self.message_type == MessageType.CONTEXT
 
     @cached_property
     def is_protocol_artifact(self) -> bool:
-        # Authoritative: stored message_type from materialization.
-        if self.message_type == MessageType.PROTOCOL:
-            return True
-        # Resilience: text-based classification for pre-#839 archive rows.
-        return classify_text_message_type(self.text) == MessageType.PROTOCOL
+        """Returns True iff the persisted ``message_type`` is PROTOCOL.
+
+        Stored ``message_type`` is the only source of truth (issue #839 AC #3).
+        """
+        return self.message_type == MessageType.PROTOCOL
 
     @cached_property
     def is_noise(self) -> bool:

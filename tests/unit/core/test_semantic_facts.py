@@ -9,6 +9,7 @@ import pytest
 
 from polylogue.archive.conversation import extraction as work_event_extraction
 from polylogue.archive.message.messages import MessageCollection
+from polylogue.archive.message.types import MessageType
 from polylogue.archive.models import Conversation as ConversationModel
 from polylogue.archive.models import ConversationSummary
 from polylogue.archive.phase.extraction import SessionPhase
@@ -824,6 +825,7 @@ def test_build_session_profile_ignores_context_dump_wrappers_for_work_event_inte
                     provider="codex",
                     text="<environment_context>\nerror: cached tool output\n</environment_context>",
                     timestamp=datetime(2026, 3, 23, 9, 0, tzinfo=timezone.utc),
+                    message_type=MessageType.CONTEXT,
                 ),
                 make_msg(
                     id="u1",
