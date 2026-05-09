@@ -324,6 +324,8 @@ class MCPMutationStatusPayload(SurfacePayloadModel):
     index_exists: bool | None = None
     indexed_messages: int | None = None
     conversation_count: int | None = None
+    outcome: str | None = None
+    """Tag idempotency outcome: ``added``, ``no_op``, ``removed``, or ``not_present``."""
 
 
 class MutationResultPayload(SurfacePayloadModel):
@@ -341,6 +343,9 @@ class MutationResultPayload(SurfacePayloadModel):
     detail: str | None = None
     """Machine-readable detail: ``already_present``, ``tag_not_present``,
     ``key_not_found``, ``value_unchanged``, ``conversation_not_found``."""
+
+    outcome: str | None = None
+    """Tag idempotency outcome: ``added``, ``no_op``, ``removed``, or ``not_present``."""
 
     affected_count: int | None = None
     skipped_count: int | None = None
