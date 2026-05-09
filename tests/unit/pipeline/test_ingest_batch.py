@@ -132,6 +132,9 @@ def _conversation_data(
         None,
         raw_id,
         "",
+        None,  # working_directories_json
+        None,  # git_branch
+        None,  # git_repository_url
     )
     return ConversationData(
         conversation_id=conversation_id,
