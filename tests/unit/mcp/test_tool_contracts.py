@@ -16,6 +16,7 @@ from polylogue.archive.query.spec import ConversationQuerySpec
 from polylogue.archive.semantic.pricing import CostEstimatePayload, CostUsagePayload
 from polylogue.archive.stats import ArchiveStats
 from polylogue.errors import PolylogueError
+from polylogue.surfaces.payloads import TagMutationResult
 from polylogue.insights.archive import (
     ArchiveDebtInsight,
     ArchiveEnrichmentProvenance,
@@ -957,7 +958,7 @@ class TestMutationTools:
             patch("polylogue.mcp.server._get_query_store") as mock_get_query_store,
         ):
             mock_poly = make_polylogue_mock()
-            mock_poly.add_tag = AsyncMock(return_value=True)
+            mock_poly.add_tag = AsyncMock(return_value=TagMutationResult(outcome="added"))
             mock_get_polylogue.return_value = mock_poly
             mock_get_query_store.return_value = make_query_store_mock(resolved_id="test:conv-123")
 
@@ -994,7 +995,7 @@ class TestMutationTools:
             patch("polylogue.mcp.server._get_query_store") as mock_get_query_store,
         ):
             mock_poly = make_polylogue_mock()
-            mock_poly.remove_tag = AsyncMock(return_value=True)
+            mock_poly.remove_tag = AsyncMock(return_value=TagMutationResult(outcome="removed"))
             mock_get_polylogue.return_value = mock_poly
             mock_get_query_store.return_value = make_query_store_mock(resolved_id="test:conv-123")
 

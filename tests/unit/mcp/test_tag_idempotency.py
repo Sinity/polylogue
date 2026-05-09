@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 from unittest.mock import AsyncMock, patch
 
+from polylogue.surfaces.payloads import TagMutationResult
 from tests.infra.mcp import (
     MCPServerUnderTest,
     invoke_surface,
@@ -22,6 +23,11 @@ _CONV_ID = "test:conv-tag-1"
 _TAG = "review"
 
 
+def _tag_result(outcome: str, detail: str | None = None) -> TagMutationResult:
+    """Build a ``TagMutationResult`` matching the centralized facade contract."""
+    return TagMutationResult(outcome=outcome, detail=detail)  # type: ignore[arg-type]
+
+
 class TestTagIdempotencyOutcomes:
     """Each mutation path must surface the correct outcome value."""
 
@@ -33,7 +39,7 @@ class TestTagIdempotencyOutcomes:
             patch("polylogue.mcp.server._get_query_store") as mock_get_query_store,
         ):
             mock_poly = make_polylogue_mock()
-            mock_poly.add_tag = AsyncMock(return_value=True)
+            mock_poly.add_tag = AsyncMock(return_value=_tag_result("added"))
             mock_get_polylogue.return_value = mock_poly
             mock_get_query_store.return_value = make_query_store_mock(resolved_id=_CONV_ID)
 
@@ -55,7 +61,7 @@ class TestTagIdempotencyOutcomes:
             patch("polylogue.mcp.server._get_query_store") as mock_get_query_store,
         ):
             mock_poly = make_polylogue_mock()
-            mock_poly.add_tag = AsyncMock(return_value=False)
+            mock_poly.add_tag = AsyncMock(return_value=_tag_result("no_op", "already_present"))
             mock_get_polylogue.return_value = mock_poly
             mock_get_query_store.return_value = make_query_store_mock(resolved_id=_CONV_ID)
 
@@ -93,7 +99,7 @@ class TestTagIdempotencyOutcomes:
             patch("polylogue.mcp.server._get_query_store") as mock_get_query_store,
         ):
             mock_poly = make_polylogue_mock()
-            mock_poly.remove_tag = AsyncMock(return_value=True)
+            mock_poly.remove_tag = AsyncMock(return_value=_tag_result("removed"))
             mock_get_polylogue.return_value = mock_poly
             mock_get_query_store.return_value = make_query_store_mock(resolved_id=_CONV_ID)
 
@@ -115,7 +121,7 @@ class TestTagIdempotencyOutcomes:
             patch("polylogue.mcp.server._get_query_store") as mock_get_query_store,
         ):
             mock_poly = make_polylogue_mock()
-            mock_poly.remove_tag = AsyncMock(return_value=False)
+            mock_poly.remove_tag = AsyncMock(return_value=_tag_result("not_present", "tag_not_present"))
             mock_get_polylogue.return_value = mock_poly
             mock_get_query_store.return_value = make_query_store_mock(resolved_id=_CONV_ID)
 

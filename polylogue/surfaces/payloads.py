@@ -10,7 +10,7 @@ from enum import Enum
 from typing import TYPE_CHECKING, Literal, NotRequired
 
 from pydantic import BaseModel, ConfigDict, Field
-from typing_extensions import TypedDict
+from typing_extensions import TypeAlias, TypedDict
 
 from polylogue.archive.semantic.content_projection import ContentProjectionSpec
 from polylogue.core.json import JSONDocument, JSONValue, require_json_document
@@ -444,6 +444,29 @@ class ConversationListResponse(SurfacePayloadModel):
     diagnostics: QueryMissDiagnosticsPayload | None = None
 
 
+TagMutationOutcome: TypeAlias = Literal["added", "no_op", "removed", "not_present"]
+"""Tag idempotency outcome exposed by all mutation surfaces."""
+
+
+class TagMutationResult(SurfacePayloadModel):
+    """Shared mutation-result contract returned by the archive facade.
+
+    Every surface (CLI, MCP, API, daemon) adapts this same result so the
+    ``bool → outcome`` mapping is centralized in one place.
+
+    Truthiness: ``added`` and ``removed`` are ``True`` (the tag changed);
+    ``no_op`` and ``not_present`` are ``False`` (nothing changed).
+    """
+
+    outcome: TagMutationOutcome
+    detail: str | None = None
+    """Machine-readable detail: ``already_present`` or ``tag_not_present``."""
+
+    def __bool__(self) -> bool:
+        """Backward-compatible truthiness for ``if result:`` patterns."""
+        return self.outcome in ("added", "removed")
+
+
 class ConversationDetailResponse(SurfacePayloadModel):
     """Shared response envelope for a single conversation detail."""
 
@@ -523,6 +546,8 @@ __all__ = [
     "QueryMissDiagnosticsPayload",
     "QueryMissReasonPayload",
     "SurfacePayloadModel",
+    "TagMutationOutcome",
+    "TagMutationResult",
     "JSONDocument",
     "JSONValue",
     "model_json_document",
