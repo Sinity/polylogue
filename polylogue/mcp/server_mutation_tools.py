@@ -42,6 +42,7 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                     conversation_id=resolved,
                     tag=tag,
                     detail=None if was_added else "already_present",
+                    outcome="added" if was_added else "no_op",
                 ),
                 exclude_none=True,
             )
@@ -63,6 +64,7 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                     conversation_id=resolved,
                     tag=tag,
                     detail=None if was_removed else "tag_not_present",
+                    outcome="removed" if was_removed else "not_present",
                 ),
                 exclude_none=True,
             )
