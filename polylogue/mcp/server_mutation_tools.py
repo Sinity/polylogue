@@ -35,14 +35,14 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 return err
             assert resolved is not None  # _resolve_or_error contract
             poly = hooks.get_polylogue()
-            was_added = await poly.add_tag(resolved, tag)
+            result = await poly.add_tag(resolved, tag)
             return hooks.json_payload(
                 MutationResultPayload(
-                    status="ok" if was_added else "unchanged",
+                    status="ok" if result.outcome == "added" else "unchanged",
                     conversation_id=resolved,
                     tag=tag,
-                    detail=None if was_added else "already_present",
-                    outcome="added" if was_added else "no_op",
+                    detail=result.detail,
+                    outcome=result.outcome,
                 ),
                 exclude_none=True,
             )
@@ -57,14 +57,14 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 return err
             assert resolved is not None  # _resolve_or_error contract
             poly = hooks.get_polylogue()
-            was_removed = await poly.remove_tag(resolved, tag)
+            result = await poly.remove_tag(resolved, tag)
             return hooks.json_payload(
                 MutationResultPayload(
-                    status="ok" if was_removed else "not_found",
+                    status="ok" if result.outcome == "removed" else "not_found",
                     conversation_id=resolved,
                     tag=tag,
-                    detail=None if was_removed else "tag_not_present",
-                    outcome="removed" if was_removed else "not_present",
+                    detail=result.detail,
+                    outcome=result.outcome,
                 ),
                 exclude_none=True,
             )

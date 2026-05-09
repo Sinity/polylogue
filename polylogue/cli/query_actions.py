@@ -110,8 +110,9 @@ async def apply_modifiers(
 
         if mutation.add_tags:
             for tag in mutation.add_tags:
-                await repo.add_tag(result_id(conv), tag)
-                tags_added += 1
+                result = await env.polylogue.add_tag(result_id(conv), tag)
+                if result:
+                    tags_added += 1
 
     reports: list[str] = []
     if tags_added:

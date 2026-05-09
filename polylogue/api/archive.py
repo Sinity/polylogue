@@ -505,25 +505,47 @@ class PolylogueArchiveMixin:
         deleted_count = await self.filter().id(conversation_id).delete()
         return deleted_count > 0
 
-    async def add_tag(self, conversation_id: str, tag: str) -> bool:
-        """Add a tag to a conversation. Returns ``True`` if the tag was newly added."""
+    async def add_tag(self, conversation_id: str, tag: str) -> TagMutationResult:
+        """Add a tag to a conversation.
+
+        Returns a ``TagMutationResult`` with:
+        - ``outcome="added"`` if the tag was newly added
+        - ``outcome="no_op"`` if the tag was already present
+        """
+        from polylogue.surfaces.payloads import TagMutationResult
+
         resolved = await self.repository.resolve_id(conversation_id, strict=True)
         if resolved is None:
             raise ConversationNotFoundError(conversation_id)
         from polylogue.storage.repository.archive.repository_writes import RepositoryWriteMixin
 
         store: RepositoryWriteMixin = self.repository
-        return await store.add_tag(str(resolved), tag)
+        was_added = await store.add_tag(str(resolved), tag)
+        return TagMutationResult(
+            outcome="added" if was_added else "no_op",
+            detail=None if was_added else "already_present",
+        )
 
-    async def remove_tag(self, conversation_id: str, tag: str) -> bool:
-        """Remove a tag from a conversation. Returns ``True`` if the tag was removed."""
+    async def remove_tag(self, conversation_id: str, tag: str) -> TagMutationResult:
+        """Remove a tag from a conversation.
+
+        Returns a ``TagMutationResult`` with:
+        - ``outcome="removed"`` if the tag was removed
+        - ``outcome="not_present"`` if the tag was not present
+        """
+        from polylogue.surfaces.payloads import TagMutationResult
+
         resolved = await self.repository.resolve_id(conversation_id, strict=True)
         if resolved is None:
             raise ConversationNotFoundError(conversation_id)
         from polylogue.storage.repository.archive.repository_writes import RepositoryWriteMixin
 
         store: RepositoryWriteMixin = self.repository
-        return await store.remove_tag(str(resolved), tag)
+        was_removed = await store.remove_tag(str(resolved), tag)
+        return TagMutationResult(
+            outcome="removed" if was_removed else "not_present",
+            detail=None if was_removed else "tag_not_present",
+        )
 
     async def get_metadata(self, conversation_id: str) -> dict[str, str]:
         """Return all metadata key-value pairs for a conversation."""

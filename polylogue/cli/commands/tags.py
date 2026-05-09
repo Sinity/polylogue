@@ -54,43 +54,41 @@ def tags_command(
             raise click.ClickException(f"Conversation not found: {conversation_id}")
 
         if add_tag_name:
-            was_added = run_coroutine_sync(env.polylogue.add_tag(resolved, add_tag_name))
-            status = "ok" if was_added else "unchanged"
-            detail = None if was_added else "already_present"
-            outcome = "added" if was_added else "no_op"
+            result = run_coroutine_sync(env.polylogue.add_tag(resolved, add_tag_name))
+            status = "ok" if result.outcome == "added" else "unchanged"
             if output_format == "json":
                 emit_success(
                     {
                         "status": status,
                         "conversation_id": resolved,
                         "tag": add_tag_name,
-                        "detail": detail,
-                        "outcome": outcome,
+                        "detail": result.detail,
+                        "outcome": result.outcome,
                     }
                 )
             else:
                 click.echo(
-                    f"Tag '{add_tag_name}' on {resolved}: {status} ({outcome})" + (f" ({detail})" if detail else "")
+                    f"Tag '{add_tag_name}' on {resolved}: {status} ({result.outcome})"
+                    + (f" ({result.detail})" if result.detail else "")
                 )
 
         if remove_tag_name:
-            was_removed = run_coroutine_sync(env.polylogue.remove_tag(resolved, remove_tag_name))
-            status = "ok" if was_removed else "not_found"
-            detail = None if was_removed else "tag_not_present"
-            outcome = "removed" if was_removed else "not_present"
+            result = run_coroutine_sync(env.polylogue.remove_tag(resolved, remove_tag_name))
+            status = "ok" if result.outcome == "removed" else "not_found"
             if output_format == "json":
                 emit_success(
                     {
                         "status": status,
                         "conversation_id": resolved,
                         "tag": remove_tag_name,
-                        "detail": detail,
-                        "outcome": outcome,
+                        "detail": result.detail,
+                        "outcome": result.outcome,
                     }
                 )
             else:
                 click.echo(
-                    f"Tag '{remove_tag_name}' on {resolved}: {status} ({outcome})" + (f" ({detail})" if detail else "")
+                    f"Tag '{remove_tag_name}' on {resolved}: {status} ({result.outcome})"
+                    + (f" ({result.detail})" if result.detail else "")
                 )
 
         return
