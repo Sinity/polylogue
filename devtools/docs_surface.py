@@ -24,7 +24,27 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
     DocsEntry("Library API", "docs/library-api.md", "Async archive API, filters, and query patterns."),
     DocsEntry("Data Model", "docs/data-model.md", "Archive entities, storage shape, and metadata rules."),
     DocsEntry("Configuration", "docs/configuration.md", "XDG paths, environment variables, and runtime configuration."),
+    DocsEntry(
+        "Daemon Threat Model",
+        "docs/daemon-threat-model.md",
+        "Local API threat model — assets, threats, mitigations, and API roles.",
+    ),
+    DocsEntry(
+        "Repository Layout",
+        "docs/repo-layout.md",
+        "Every top-level entry and its purpose.",
+    ),
     DocsEntry("Architecture", "docs/architecture.md", "System rings, ownership boundaries, and data flow."),
+    DocsEntry(
+        "Architecture Spine",
+        "docs/architecture-spine.md",
+        "Target shape, guardrails, and major decisions with rejected alternatives.",
+    ),
+    DocsEntry(
+        "Execution Plan",
+        "docs/execution-plan.md",
+        "Living sequencing plan — landed, in flight, queued, and frozen subsystems.",
+    ),
     DocsEntry("Internals", "docs/internals.md", "Working implementation reference and debugging landmarks."),
     DocsEntry("MCP Integration", "docs/mcp-integration.md", "Model Context Protocol server setup and usage."),
     DocsEntry(

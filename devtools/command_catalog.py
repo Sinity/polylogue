@@ -123,7 +123,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     CommandSpec(
         "render-pages",
         "generated surfaces",
-        "Build the GitHub Pages documentation site into _site/.",
+        "Build the GitHub Pages documentation site into .cache/site/.",
         "devtools.render_pages",
         use_when="Build or verify the full GitHub Pages documentation site after changing docs, templates, or design docs.",
         examples=("devtools render-pages", "devtools render-pages --check", "devtools render-pages --serve"),

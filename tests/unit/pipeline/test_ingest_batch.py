@@ -296,10 +296,19 @@ def test_topo_sort_conversation_entries_orders_parent_before_child() -> None:
 
 def test_write_conversation_clears_missing_parent_fk(tmp_path: Path) -> None:
     with open_connection(tmp_path / "ingest.db") as conn:
+        c_msg = _message_tuple(
+            "msg-c",
+            "codex:child",
+            role="user",
+            text="hello",
+            content_hash="hash-c",
+            sort_key=1.0,
+        )
         child = _conversation_data(
             "codex:child",
             content_hash="hash-child",
             parent_conversation_id="codex:missing-parent",
+            message_tuples=[c_msg],
         )
 
         _write_conversation(conn, child)
@@ -315,11 +324,32 @@ def test_write_conversation_clears_missing_parent_fk(tmp_path: Path) -> None:
 
 def test_write_conversation_preserves_existing_parent_fk(tmp_path: Path) -> None:
     with open_connection(tmp_path / "ingest.db") as conn:
-        parent = _conversation_data("codex:parent", content_hash="hash-parent")
+        p_msg = _message_tuple(
+            "msg-p",
+            "codex:parent",
+            role="user",
+            text="parent msg",
+            content_hash="hash-p",
+            sort_key=1.0,
+        )
+        c_msg = _message_tuple(
+            "msg-c",
+            "codex:child",
+            role="user",
+            text="child msg",
+            content_hash="hash-c",
+            sort_key=1.0,
+        )
+        parent = _conversation_data(
+            "codex:parent",
+            content_hash="hash-parent",
+            message_tuples=[p_msg],
+        )
         child = _conversation_data(
             "codex:child",
             content_hash="hash-child",
             parent_conversation_id="codex:parent",
+            message_tuples=[c_msg],
         )
 
         _write_conversation(conn, parent)
@@ -640,6 +670,64 @@ def test_write_conversation_skips_shorter_duplicate_raw_source(tmp_path: Path) -
         assert counts_stale["skipped_conversations"] == 1
         assert [row["text"] for row in messages] == ["first", "second"]
         assert raw_id == "raw-full"
+
+
+def test_write_conversation_skips_new_with_zero_messages(tmp_path: Path) -> None:
+    """A new conversation with zero messages is skipped, not left as a manifest-only row."""
+    with open_connection(tmp_path / "ingest.db") as conn:
+        empty = _conversation_data(
+            "codex:empty-manifest",
+            content_hash="hash-empty",
+            message_tuples=[],
+        )
+        changed, counts = _write_conversation(conn, empty)
+        conn.commit()
+
+        # Verify skipped
+        assert changed is False
+        assert counts["skipped_conversations"] == 1
+
+        # Verify no row was created
+        row = conn.execute(
+            "SELECT conversation_id FROM conversations WHERE conversation_id = ?",
+            ("codex:empty-manifest",),
+        ).fetchone()
+        assert row is None
+
+
+def test_write_conversation_allows_existing_upsert_even_without_messages(tmp_path: Path) -> None:
+    """An existing conversation with a changed hash and zero new messages is still upserted.
+    The guard only blocks *new* conversations from being created without messages.
+    Replacing existing content with empty content is a legitimate content update.
+    """
+    with open_connection(tmp_path / "ingest.db") as conn:
+        msg = _message_tuple(
+            "msg-1",
+            "codex:keep",
+            role="user",
+            text="hello",
+            content_hash="hash-msg",
+            sort_key=1.0,
+        )
+        first = _conversation_data(
+            "codex:keep",
+            content_hash="hash-1",
+            message_tuples=[msg],
+        )
+        _write_conversation(conn, first)
+        conn.commit()
+
+        # Same conversation, different hash, zero messages — should be allowed
+        update = _conversation_data(
+            "codex:keep",
+            content_hash="hash-2",
+            message_tuples=[],
+        )
+        changed, counts = _write_conversation(conn, update)
+        conn.commit()
+
+        assert changed is True
+        assert counts["skipped_conversations"] == 0
 
 
 def test_iter_ingest_results_sync_runs_inline_for_single_worker(
@@ -1000,11 +1088,32 @@ def test_select_ingest_worker_count_respects_limit(monkeypatch: pytest.MonkeyPat
 
 def test_drain_ready_conversation_entries_preserves_late_parent_fk(tmp_path: Path) -> None:
     with open_connection(tmp_path / "ingest.db") as conn:
-        parent = _conversation_data("codex:parent", content_hash="hash-parent")
+        p_msg = _message_tuple(
+            "msg-p",
+            "codex:parent",
+            role="user",
+            text="parent",
+            content_hash="hash-p",
+            sort_key=1.0,
+        )
+        c_msg = _message_tuple(
+            "msg-c",
+            "codex:child",
+            role="user",
+            text="child",
+            content_hash="hash-c",
+            sort_key=1.0,
+        )
+        parent = _conversation_data(
+            "codex:parent",
+            content_hash="hash-parent",
+            message_tuples=[p_msg],
+        )
         child = _conversation_data(
             "codex:child",
             content_hash="hash-child",
             parent_conversation_id="codex:parent",
+            message_tuples=[c_msg],
         )
 
         summary = _IngestBatchSummary()

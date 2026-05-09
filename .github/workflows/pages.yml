@@ -35,7 +35,7 @@ jobs:
           mv pagefind /usr/local/bin/
 
       - name: Build site
-        run: uv run devtools render-pages --skip-pagefind
+        run: uv run devtools render-pages --skip-pagefind --output _site
 
       - name: Index with Pagefind
         run: pagefind --site _site/

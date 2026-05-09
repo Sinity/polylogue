@@ -82,7 +82,7 @@ GENERATED_SURFACES: tuple[GeneratedSurface, ...] = (
     GeneratedSurface(
         name="pages",
         label="GitHub Pages",
-        description="Build the GitHub Pages documentation site into _site/.",
+        description="Build the GitHub Pages documentation site into .cache/site/.",
         command=control_plane_argv("render-pages"),
         main=render_pages.main,
     ),

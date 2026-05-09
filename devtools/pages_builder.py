@@ -119,7 +119,7 @@ def build_site(config_path: Path | None = None, output_dir: Path | None = None) 
     if config_path is None:
         config_path = ROOT / "pages.toml"
     if output_dir is None:
-        output_dir = ROOT / "_site"
+        output_dir = ROOT / ".cache" / "site"
 
     config = load_pages_config(config_path)
     env = _build_env()

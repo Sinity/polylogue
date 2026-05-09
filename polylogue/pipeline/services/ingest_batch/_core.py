@@ -477,6 +477,14 @@ def _write_conversation(
         counts["skipped_provider_events"] = len(cdata.provider_event_tuples)
         return False, counts
 
+    # Guard against manifest-only conversation rows: a new conversation with
+    # zero messages likely came from an interrupted bulk import that registered
+    # the ID before message ingestion completed. Skip it rather than leaving a
+    # row that has message_count=0, work_event_count=0, substantive_count=0.
+    if existing_row is None and not cdata.message_tuples and not force_write:
+        counts["skipped_conversations"] = 1
+        return False, counts
+
     conn.execute(_CONVERSATION_UPSERT_SQL, _resolved_conversation_tuple(conn, cdata))
 
     affected_attachment_ids: set[str] = set()
