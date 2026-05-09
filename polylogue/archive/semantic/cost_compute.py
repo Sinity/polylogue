@@ -34,7 +34,7 @@ def compute_session_cost(conversation: Conversation) -> SessionCostSummary:
         word_count: int = getattr(message, "word_count", 0) or 0
 
         if tokens is not None and getattr(tokens, "billable_tokens", 0) > 0:
-            _add_provider_reported_tokens(per_model[key], tokens, model_name)
+            per_model[key] = _add_provider_reported_tokens(per_model[key], tokens, model_name)
         elif word_count > 0:
             est = estimate_tokens_from_words(word_count)
             per_model[key] = SessionCostBreakdown(
@@ -143,8 +143,10 @@ def _get_message_token_counts(message: object) -> object | None:
     return None
 
 
-def _add_provider_reported_tokens(breakdown: SessionCostBreakdown, tokens: object, model_name: str | None) -> None:
-    new = SessionCostBreakdown(
+def _add_provider_reported_tokens(
+    breakdown: SessionCostBreakdown, tokens: object, model_name: str | None
+) -> SessionCostBreakdown:
+    return SessionCostBreakdown(
         normalized_model=breakdown.normalized_model,
         provider_model_name=model_name or breakdown.provider_model_name,
         input_tokens=breakdown.input_tokens + int(getattr(tokens, "input_tokens", 0) or 0),
@@ -161,7 +163,6 @@ def _add_provider_reported_tokens(breakdown: SessionCostBreakdown, tokens: objec
         confidence="reported",
         provenance="provider_reported",
     )
-    breakdown.__dict__.update(new.__dict__)
 
 
 __all__ = ["compute_session_cost"]
