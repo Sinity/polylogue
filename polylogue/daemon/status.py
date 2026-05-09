@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import contextlib
 import os
+import re
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from polylogue.browser_capture.receiver import BrowserCaptureReceiverConfig, receiver_status_payload
 from polylogue.core.json import JSONDocument, json_document
@@ -123,6 +125,57 @@ class LiveIngestAttemptSummary(BaseModel):
     recent: list[LiveIngestAttemptState] = Field(default_factory=list)
 
 
+class RawFailureSample(BaseModel):
+    """One bounded raw-ingest failure record surfaced in daemon status.
+
+    Constructed by ``_raw_failure_info()`` from the ``raw_conversations``
+    table and consumed by the typed ``DaemonStatus`` model. Every surface
+    (CLI, MCP, daemon HTTP) receives the same structured taxonomy.
+    """
+
+    failure_kind: Literal["decode_error", "parse_error", "schema_violation", "unknown"]
+    provider_hint: str | None = None
+    redacted_error: str = ""
+
+    @field_validator("redacted_error", mode="before")
+    @classmethod
+    def _redact_file_paths(cls, v: object) -> str:
+        """Strip absolute file paths from error strings at construction time.
+
+        Replaces absolute Unix paths (starting with ``/``) with
+        ``[redacted]`` so that local filesystem layout is never
+        exposed in status payloads.  URL path segments (e.g.
+        ``https://host/v1/data``) and relative paths are not redacted.
+        """
+        if not isinstance(v, str):
+            return ""
+
+        def _replace(m: re.Match[str]) -> str:
+            start = m.start()
+            # Absolute path at start of string is always redacted.
+            if start == 0:
+                return "[redacted]"
+            prev = v[start - 1]
+            # Keep when preceded by a letter, digit, dot, or colon
+            # (these indicate a URL host segment like "example.com/path").
+            if prev.isalnum() or prev in (".", ":"):
+                return m.group(0)
+            # Keep when the surrounding context contains a URL protocol.
+            # Look back up to 16 chars for "://".
+            prefix = v[max(0, start - 16) : start + 1]
+            if "://" in prefix:
+                return m.group(0)
+            return "[redacted]"
+
+        return _PATH_REDACTION_RE.sub(_replace, v)
+
+
+# Matches candidate absolute Unix paths: a ``/`` followed by one or more
+# path segments (alphanumeric, dots, dashes, underscores).  The
+# ``_redact_file_paths`` validator refines matches with context checks.
+_PATH_REDACTION_RE = re.compile(r"/(?:[a-zA-Z0-9._\-]+/)*[a-zA-Z0-9._\-]+")
+
+
 # ---------------------------------------------------------------------------
 # DaemonStatus — typed model consumed by all surfaces
 # ---------------------------------------------------------------------------
@@ -151,7 +204,7 @@ class DaemonStatus(BaseModel):
     raw_parse_failures: int = 0
     raw_validation_failures: int = 0
     raw_quarantined: int = 0
-    raw_failure_samples: list[dict[str, object]] = Field(default_factory=list)
+    raw_failure_samples: list[RawFailureSample] = Field(default_factory=list)
     raw_detection_warnings: int = 0
     health: DaemonHealth = Field(default_factory=DaemonHealth)
     checked_at: str = ""
@@ -337,23 +390,38 @@ def _raw_failure_info() -> dict[str, object]:
                     )
             except Exception:
                 pass
-            # Bounded failure samples (most recent 50)
-            samples: list[dict[str, object]] = []
+            # Bounded failure samples (most recent 50), typed.
+            samples: list[RawFailureSample] = []
             for row in conn.execute(
-                "SELECT raw_id, source_path, parse_error, validation_status "
+                "SELECT raw_id, provider_name, parse_error, validation_status, validation_error "
                 "FROM raw_conversations "
                 "WHERE parse_error IS NOT NULL OR validation_status = 'FAILED' "
                 "ORDER BY acquired_at DESC LIMIT 50"
             ).fetchall():
-                error_text = row["parse_error"] or ""
-                error_class = error_text.split("\n")[0].strip()[:120] if error_text else None
+                parse_err = str(row[2] or "") if row[2] else ""
+                val_status = str(row[3] or "") if row[3] else ""
+                val_err = str(row[4] or "") if row[4] else ""
+                provider = str(row[1]) if row[1] else None
+
+                # Classify failure kind from the available error signals.
+                if "JSONDecodeError" in parse_err or "decode error" in parse_err.lower():
+                    kind: Literal["decode_error", "parse_error", "schema_violation", "unknown"] = "decode_error"
+                elif val_status == "FAILED":
+                    kind = "schema_violation"
+                elif parse_err:
+                    kind = "parse_error"
+                else:
+                    kind = "unknown"
+
+                # Redacted error text: prefer parse_error, fall back to validation_error.
+                error_text = parse_err or val_err
+
                 samples.append(
-                    {
-                        "raw_id": row["raw_id"],
-                        "source_path": row["source_path"] or "",
-                        "error_class": error_class,
-                        "validation_status": row["validation_status"] or "",
-                    }
+                    RawFailureSample(
+                        failure_kind=kind,
+                        provider_hint=provider,
+                        redacted_error=error_text,
+                    )
                 )
         finally:
             conn.close()
@@ -368,9 +436,10 @@ def _raw_failure_info() -> dict[str, object]:
         return {"parse_failures": 0, "validation_failures": 0, "quarantined": 0, "detection_warnings": 0, "samples": []}
 
 
-def _safe_list_of_dicts(value: object) -> list[dict[str, object]]:
+def _typed_failure_samples(value: object) -> list[RawFailureSample]:
+    """Safely extract typed failure samples from a potentially heterogeneous source."""
     if isinstance(value, list):
-        return [item for item in value if isinstance(item, dict)]
+        return [item for item in value if isinstance(item, RawFailureSample)]
     return []
 
 
@@ -818,7 +887,7 @@ def build_daemon_status(
         raw_parse_failures=_safe_int(raw_failures.get("parse_failures", 0)),
         raw_validation_failures=_safe_int(raw_failures.get("validation_failures", 0)),
         raw_quarantined=_safe_int(raw_failures.get("quarantined", 0)),
-        raw_failure_samples=_safe_list_of_dicts(raw_failures.get("samples")),
+        raw_failure_samples=_typed_failure_samples(raw_failures.get("samples")),
         raw_detection_warnings=_safe_int(raw_failures.get("detection_warnings", 0)),
         daemon_liveness=_check_daemon_liveness(),
         component_state=ComponentState(
@@ -923,6 +992,11 @@ def daemon_status_payload(
                 "alert_count": len(status.health.alerts),
                 "tier_summary": status.health.tier_summary,
             },
+            "raw_parse_failures": status.raw_parse_failures,
+            "raw_validation_failures": status.raw_validation_failures,
+            "raw_quarantined": status.raw_quarantined,
+            "raw_detection_warnings": status.raw_detection_warnings,
+            "raw_failure_samples": [s.model_dump() for s in status.raw_failure_samples],
         }
     )
 
@@ -1005,6 +1079,23 @@ def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
     if isinstance(health, dict):
         overall = health.get("overall_status", "unknown")
         lines.append(f"Health: {overall} ({health.get('alert_count', 0)} alerts)")
+    # Raw failure summary
+    raw_parse = _safe_int(payload.get("raw_parse_failures"))
+    raw_val = _safe_int(payload.get("raw_validation_failures"))
+    raw_quarantined = _safe_int(payload.get("raw_quarantined"))
+    total_raw = raw_parse + raw_val
+    if total_raw > 0:
+        lines.append(
+            f"Raw failures: {total_raw} total ({raw_quarantined} quarantined), {raw_parse} parse + {raw_val} validation"
+        )
+        samples = payload.get("raw_failure_samples")
+        if isinstance(samples, list) and samples:
+            for s in samples[:5]:
+                if isinstance(s, dict):
+                    kind = s.get("failure_kind", "unknown")
+                    hint = s.get("provider_hint") or "?"
+                    error_text = str(s.get("redacted_error", ""))
+                    lines.append(f"  [{kind}] {hint}: {error_text[:120]}")
     # Embedding readiness
     embedding = payload.get("embedding_readiness")
     if isinstance(embedding, dict):
@@ -1028,6 +1119,7 @@ def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
 __all__ = [
     "DaemonStatus",
     "EmbeddingReadiness",
+    "RawFailureSample",
     "build_daemon_status",
     "browser_capture_status_payload",
     "daemon_status_payload",
