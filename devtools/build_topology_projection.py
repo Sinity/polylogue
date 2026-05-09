@@ -19,13 +19,14 @@ marked ``target: TBD`` with a reason. The intended workflow is:
 """
 
 from __future__ import annotations
+from devtools import repo_root as _get_root
 
 import sys
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = _get_root()
 PROJECTION = ROOT / "docs" / "plans" / "topology-target.yaml"
 
 

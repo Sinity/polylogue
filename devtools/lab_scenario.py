@@ -1,6 +1,7 @@
 """Verification-lab showcase scenario runner."""
 
 from __future__ import annotations
+from devtools import repo_root as _get_root
 
 import argparse
 import difflib
@@ -16,7 +17,7 @@ from polylogue.showcase.qa_session_payload import generate_qa_session
 from polylogue.showcase.showcase_runner_support import run_exercise
 
 _SCENARIO_NAMES = ("archive-smoke",)
-BASELINE_DIR = Path(__file__).resolve().parent.parent / "tests" / "baselines" / "showcase"
+BASELINE_DIR = _get_root() / "tests" / "baselines" / "showcase"
 TIER_0_GROUPS = frozenset({"structural"})
 _ENV_DEPENDENT: frozenset[str] = frozenset({"version"})
 

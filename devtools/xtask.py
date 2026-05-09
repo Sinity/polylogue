@@ -11,6 +11,7 @@ Subcommands:
 """
 
 from __future__ import annotations
+from devtools import repo_root as _get_root
 
 import argparse
 import json
@@ -22,7 +23,7 @@ from polylogue.core.json import JSONDocument
 
 XTaskDict = JSONDocument
 
-_XTASK_DIR = Path(__file__).resolve().parent.parent / ".agent" / "xtask"
+_XTASK_DIR = _get_root() / ".agent" / "xtask"
 _XTASK_FILE = _XTASK_DIR / "tasks.jsonl"
 
 

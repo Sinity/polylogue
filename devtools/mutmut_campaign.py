@@ -12,6 +12,7 @@ solve that by:
 """
 
 from __future__ import annotations
+from devtools import repo_root as _get_root
 
 import argparse
 import fnmatch
@@ -27,7 +28,7 @@ from pathlib import Path
 from .authored_scenario_catalog import get_authored_scenario_catalog
 from .mutation_catalog import MutationCampaignEntry
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = _get_root()
 CAMPAIGN_ARTIFACT_DIR = Path(".local/mutation-campaigns")
 STATUS_IGNORE_PREFIXES = (f"{CAMPAIGN_ARTIFACT_DIR.as_posix()}/",)
 DEFAULT_IGNORE_PATTERNS = shutil.ignore_patterns(

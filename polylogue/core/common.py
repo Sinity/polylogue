@@ -24,8 +24,9 @@ INSERT INTO conversations (
     conversation_id, provider_name, provider_conversation_id, title,
     created_at, updated_at, sort_key, content_hash,
     provider_meta, metadata, version,
-    parent_conversation_id, branch_type, raw_id, source_name
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    parent_conversation_id, branch_type, raw_id, source_name,
+    working_directories_json, git_branch, git_repository_url
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(conversation_id) DO UPDATE SET
     title = excluded.title,
     created_at = excluded.created_at,
@@ -37,7 +38,10 @@ ON CONFLICT(conversation_id) DO UPDATE SET
     parent_conversation_id = excluded.parent_conversation_id,
     branch_type = excluded.branch_type,
     raw_id = COALESCE(excluded.raw_id, conversations.raw_id),
-    source_name = COALESCE(NULLIF(excluded.source_name, ''), conversations.source_name)
+    source_name = COALESCE(NULLIF(excluded.source_name, ''), conversations.source_name),
+    working_directories_json = COALESCE(excluded.working_directories_json, conversations.working_directories_json),
+    git_branch = COALESCE(excluded.git_branch, conversations.git_branch),
+    git_repository_url = COALESCE(excluded.git_repository_url, conversations.git_repository_url)
 WHERE
     content_hash != excluded.content_hash
     OR IFNULL(title, '') != IFNULL(excluded.title, '')

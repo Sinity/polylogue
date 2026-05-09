@@ -9,12 +9,13 @@ Exit 0 when all schemas have annotations, 1 otherwise.
 """
 
 from __future__ import annotations
+from devtools import repo_root as _get_root
 
 import gzip
 import json
 from pathlib import Path
 
-PROVIDERS_DIR = Path(__file__).resolve().parent.parent / "polylogue" / "schemas" / "providers"
+PROVIDERS_DIR = _get_root() / "polylogue" / "schemas" / "providers"
 
 
 def check_provider(provider_dir: Path) -> tuple[str, bool, list[str]]:

@@ -11,6 +11,7 @@ The underlying structural contracts are enforced by ``verify-topology``
 """
 
 from __future__ import annotations
+from devtools import repo_root as _get_root
 
 import argparse
 import sys
@@ -20,7 +21,7 @@ from pathlib import Path
 
 from devtools.verify_topology import parse_yaml as parse_topology_yaml
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = _get_root()
 DASHBOARD = ROOT / "docs" / "topology-status.md"
 PROJECTION = ROOT / "docs" / "plans" / "topology-target.yaml"
 

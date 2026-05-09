@@ -275,6 +275,9 @@ def _resolved_conversation_tuple(
         cdata.conversation_tuple[12],
         cdata.conversation_tuple[13],
         cdata.conversation_tuple[14] if len(cdata.conversation_tuple) > 14 else "",
+        cdata.conversation_tuple[15] if len(cdata.conversation_tuple) > 15 else None,
+        cdata.conversation_tuple[16] if len(cdata.conversation_tuple) > 16 else None,
+        cdata.conversation_tuple[17] if len(cdata.conversation_tuple) > 17 else None,
     )
 
 
@@ -306,6 +309,9 @@ def _conversation_tuple_with_hash(conversation: ConversationTuple, content_hash:
         conversation[12],
         conversation[13],
         conversation[14] if len(conversation) > 14 else "",
+        conversation[15] if len(conversation) > 15 else None,
+        conversation[16] if len(conversation) > 16 else None,
+        conversation[17] if len(conversation) > 17 else None,
     )
 
 

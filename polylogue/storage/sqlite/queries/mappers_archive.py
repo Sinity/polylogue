@@ -59,6 +59,9 @@ def _row_to_conversation(row: sqlite3.Row) -> ConversationRecord:
         branch_type=BranchType(branch_type) if branch_type is not None else None,
         raw_id=_row_text(row, "raw_id"),
         source_name=_row_text(row, "source_name") or "",
+        working_directories_json=_row_text(row, "working_directories_json"),
+        git_branch=_row_text(row, "git_branch"),
+        git_repository_url=_row_text(row, "git_repository_url"),
     )
 
 

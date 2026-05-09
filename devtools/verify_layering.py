@@ -13,6 +13,7 @@ Usage:
 """
 
 from __future__ import annotations
+from devtools import repo_root as _get_root
 
 import argparse
 import ast
@@ -73,7 +74,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
-    repo_root = Path(__file__).resolve().parents[1]
+    repo_root = _get_root()
     rules_path = repo_root / "docs" / "plans" / "layering.yaml"
 
     if not rules_path.exists():

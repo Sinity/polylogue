@@ -12,6 +12,7 @@ active transition that must block until its done detector passes.
 """
 
 from __future__ import annotations
+from devtools import repo_root as _get_root
 
 import argparse
 import json
@@ -21,7 +22,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = _get_root()
 MANIFEST = ROOT / "docs" / "plans" / "migrations.yaml"
 
 

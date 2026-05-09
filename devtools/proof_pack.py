@@ -9,6 +9,7 @@ completeness assertions, and advisory noise.
 """
 
 from __future__ import annotations
+from devtools import repo_root as _get_root
 
 import argparse
 import json
@@ -695,7 +696,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    root = Path(__file__).resolve().parents[1]
+    root = _get_root()
 
     if args.slop:
         catalog = build_verification_catalog()

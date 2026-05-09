@@ -1,6 +1,7 @@
 """Verify installed distribution artifacts expose the intended runtime surface."""
 
 from __future__ import annotations
+from devtools import repo_root as _get_root
 
 import argparse
 import os
@@ -13,7 +14,7 @@ import zipfile
 from collections.abc import Iterable
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = _get_root()
 RUNTIME_SCRIPTS = ("polylogue", "polylogued", "polylogue-mcp")
 
 

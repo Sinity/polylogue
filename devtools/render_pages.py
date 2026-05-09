@@ -11,6 +11,7 @@ Usage:
 """
 
 from __future__ import annotations
+from devtools import repo_root as _get_root
 
 import argparse
 import http.server
@@ -19,7 +20,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = _get_root()
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:

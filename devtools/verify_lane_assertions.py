@@ -8,6 +8,7 @@ Exits 0 (clean) when no violations exist, 1 when violations found.
 """
 
 from __future__ import annotations
+from devtools import repo_root as _get_root
 
 import sys
 from pathlib import Path
@@ -19,7 +20,7 @@ def _load_assertion_specs() -> list[tuple[str, AssertionSpec]]:
     """Load assertion specs from the scenario coverage catalog."""
     import yaml
 
-    repo_root = Path(__file__).resolve().parent.parent
+    repo_root = _get_root()
     coverage_path = repo_root / "docs" / "plans" / "scenario-coverage.yaml"
     if not coverage_path.exists():
         print(f"verify-lane-assertions: missing {coverage_path}", file=sys.stderr)

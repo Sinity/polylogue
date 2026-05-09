@@ -6,6 +6,7 @@ Runs as part of devtools verify.
 """
 
 from __future__ import annotations
+from devtools import repo_root as _get_root
 
 import shlex
 import sys
@@ -494,7 +495,7 @@ def check_pydantic_models(plans_dir: Path) -> list[str]:
 
 def main(argv: list[str] | None = None) -> int:
     """Run all manifest consistency checks. Returns exit code."""
-    project_root = Path(__file__).resolve().parents[1]
+    project_root = _get_root()
     plans_dir = project_root / "docs" / "plans"
 
     if not plans_dir.is_dir():

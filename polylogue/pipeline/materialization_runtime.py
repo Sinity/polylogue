@@ -130,6 +130,9 @@ class MaterializedConversation:
     attachments: list[MaterializedAttachment]
     provider_events: list[MaterializedProviderEvent]
     stats: MaterializedConversationStats
+    working_directories_json: str | None = None
+    git_branch: str | None = None
+    git_repository_url: str | None = None
 
 
 def _timestamp_sort_key(ts: str | None) -> float | None:
@@ -381,6 +384,27 @@ def materialize_conversation(
             )
         )
 
+    # Extract promoted provider_meta fields for canonical columns (#864).
+    import json as _json
+
+    working_directories_json: str | None = None
+    git_branch: str | None = None
+    git_repository_url: str | None = None
+    if provider_meta:
+        wds = provider_meta.get("working_directories")
+        if isinstance(wds, list):
+            working_directories_json = _json.dumps(wds)
+        cwd = provider_meta.get("cwd")
+        if isinstance(cwd, str) and working_directories_json is None:
+            working_directories_json = _json.dumps([cwd])
+        gb = provider_meta.get("gitBranch")
+        if isinstance(gb, str):
+            git_branch = gb
+        git_obj = provider_meta.get("git")
+        if isinstance(git_obj, dict):
+            git_branch = git_branch or git_obj.get("branch")
+            git_repository_url = git_obj.get("repository_url")
+
     return MaterializedConversation(
         conversation_id=conversation_id,
         provider_name=normalized_convo.provider_name,
@@ -407,6 +431,9 @@ def materialize_conversation(
             thinking_count=0,
             paste_count=0,
         ),
+        working_directories_json=working_directories_json,
+        git_branch=git_branch,
+        git_repository_url=git_repository_url,
     )
 
 

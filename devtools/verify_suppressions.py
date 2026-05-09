@@ -6,6 +6,7 @@ review and either renewal or removal.
 """
 
 from __future__ import annotations
+from devtools import repo_root as _get_root
 
 import argparse
 import json
@@ -14,7 +15,7 @@ from pathlib import Path
 
 from polylogue.proof.suppressions import load_suppressions, validate_suppressions
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = _get_root()
 REGISTRY = ROOT / "docs" / "plans" / "suppressions.yaml"
 
 

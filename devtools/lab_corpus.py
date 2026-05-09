@@ -1,6 +1,7 @@
 """Verification-lab synthetic corpus and demo workspace command."""
 
 from __future__ import annotations
+from devtools import repo_root as _get_root
 
 import argparse
 import json
@@ -239,7 +240,7 @@ def _representative_verify(*, providers: tuple[str, ...]) -> int:
 
     from polylogue.proof.corpus import CorpusManifest, representatives_dir
 
-    base = Path(__file__).resolve().parents[1] / "polylogue" / "schemas" / "providers"
+    base = _get_root() / "polylogue" / "schemas" / "providers"
     candidates = providers or tuple(
         p.name for p in base.iterdir() if p.is_dir() and p.joinpath("representatives").is_dir()
     )

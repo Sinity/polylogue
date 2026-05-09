@@ -16,6 +16,7 @@ Exits 0 if everything passes, 1 if any blocking finding.
 """
 
 from __future__ import annotations
+from devtools import repo_root as _get_root
 
 import argparse
 import sys
@@ -23,7 +24,7 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = _get_root()
 PROJECTION = ROOT / "docs" / "plans" / "topology-target.yaml"
 
 KERNEL_OWNERS = frozenset({"kernel", "storage-root", "stable"})

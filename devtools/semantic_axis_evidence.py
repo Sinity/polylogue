@@ -1,6 +1,7 @@
 """Generate semantic-axis performance evidence from synthetic benchmark tiers."""
 
 from __future__ import annotations
+from devtools import repo_root as _get_root
 
 import argparse
 import asyncio
@@ -26,7 +27,7 @@ from polylogue.storage.sqlite.schema_ddl import SCHEMA_VERSION
 from .benchmark_campaigns import SYNTHETIC_CAMPAIGNS, run_synthetic_benchmark_campaign
 from .large_archive_generator import ScaleLevel, generate_archive, get_default_spec
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = _get_root()
 DEFAULT_OUTPUT_DIR = ROOT / ".local" / "performance-evidence"
 RUNNER_VERSION = "semantic-axis-evidence.v1"
 SCALE_ORDER = ("small", "medium", "large", "stretch")

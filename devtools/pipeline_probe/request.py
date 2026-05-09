@@ -1,6 +1,7 @@
 """CLI parsing, input selection, and request schema for pipeline probes."""
 
 from __future__ import annotations
+from devtools import repo_root as _get_root
 
 import argparse
 from pathlib import Path
@@ -27,7 +28,7 @@ _EXT_MAP = {
 }
 _INPUT_MODES = tuple(mode.value for mode in PipelineProbeInputMode)
 PROBE_STAGE_CHOICES: tuple[str, ...] = ("parse", "materialize", "index", "all")
-_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+_REPO_ROOT = _get_root()
 _SOURCE_BACKED_PROBE_STAGE_SEQUENCES: dict[str, tuple[str, ...]] = {
     "parse": ("acquire", "parse"),
     "materialize": ("acquire", "parse", "materialize"),

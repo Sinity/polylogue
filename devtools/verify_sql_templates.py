@@ -12,13 +12,14 @@ Exit 0 if clean, 1 with messages if violations found.
 """
 
 from __future__ import annotations
+from devtools import repo_root as _get_root
 
 import ast
 import hashlib
 import sys
 from pathlib import Path
 
-POLYLOGUE_ROOT = Path(__file__).resolve().parent.parent / "polylogue"
+POLYLOGUE_ROOT = _get_root() / "polylogue"
 
 # ---- SQL template source-of-truth ----
 # To add a new SQL template: add it to polylogue/core/common.py, then

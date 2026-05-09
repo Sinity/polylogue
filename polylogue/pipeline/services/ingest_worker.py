@@ -88,6 +88,9 @@ ConversationTuple = tuple[
     BranchType | None,
     str | None,
     str,  # source_name
+    str | None,  # working_directories_json
+    str | None,  # git_branch
+    str | None,  # git_repository_url
 ]
 MessageTuple = tuple[
     MessageId,
@@ -811,6 +814,9 @@ def _conversation_tuple(conversation: MaterializedConversation, *, raw_id: str |
         conversation.branch_type,
         raw_id,
         source_name,
+        conversation.working_directories_json,
+        conversation.git_branch,
+        conversation.git_repository_url,
     )
 
 

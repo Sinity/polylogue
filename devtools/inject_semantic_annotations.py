@@ -7,6 +7,7 @@ Usage: devtools inject-semantic-annotations [--dry-run]
 """
 
 from __future__ import annotations
+from devtools import repo_root as _get_root
 
 import gzip
 import json
@@ -16,7 +17,7 @@ from pathlib import Path
 from polylogue.core.json import JSONDocument, is_json_document, json_document
 from polylogue.schemas.registry import SchemaRegistry
 
-SCHEMAS_DIR = Path(__file__).resolve().parent.parent / "polylogue" / "schemas" / "providers"
+SCHEMAS_DIR = _get_root() / "polylogue" / "schemas" / "providers"
 
 # ---------------------------------------------------------------------------
 # Annotation map: provider → list of (json_path_segments, semantic_role)

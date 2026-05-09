@@ -1,6 +1,7 @@
 """Run and compare benchmark campaigns with durable artifacts."""
 
 from __future__ import annotations
+from devtools import repo_root as _get_root
 
 import argparse
 import json
@@ -19,7 +20,7 @@ from polylogue.scenarios import ExecutionKind, ScenarioMetadata, pytest_executio
 from .authored_scenario_catalog import get_authored_scenario_catalog
 from .benchmark_catalog import BenchmarkCampaignEntry
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = _get_root()
 ARTIFACT_DIR = Path(".local/benchmark-campaigns")
 STATUS_IGNORE_PREFIXES = (f"{ARTIFACT_DIR.as_posix()}/",)
 DEFAULT_WARN_PCT = 10.0

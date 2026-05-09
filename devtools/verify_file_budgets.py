@@ -6,6 +6,7 @@ stale exceptions are reported when the file disappears.
 """
 
 from __future__ import annotations
+from devtools import repo_root as _get_root
 
 import argparse
 import json
@@ -14,7 +15,7 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = _get_root()
 BUDGETS = ROOT / "docs" / "plans" / "file-size-budgets.yaml"
 
 

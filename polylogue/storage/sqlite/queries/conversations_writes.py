@@ -47,6 +47,9 @@ async def save_conversation_record(
             record.branch_type,
             record.raw_id,
             source_name,
+            record.working_directories_json,
+            record.git_branch,
+            record.git_repository_url,
         ),
     )
     if transaction_depth == 0:

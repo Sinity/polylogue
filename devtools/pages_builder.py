@@ -1,6 +1,7 @@
 """Documentation-site builder for GitHub Pages."""
 
 from __future__ import annotations
+from devtools import repo_root as _get_root
 
 import json
 import shutil
@@ -18,7 +19,7 @@ from devtools.pages_templates import PAGES_TEMPLATES
 from polylogue.rendering.renderers.html import PygmentsHighlighter
 from polylogue.rendering.renderers.html_sanitizer import sanitize_html
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = _get_root()
 
 
 @dataclass
