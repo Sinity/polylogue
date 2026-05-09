@@ -581,8 +581,8 @@ document.addEventListener('keydown', function(e) {
     e.preventDefault();
     var help = document.getElementById('help-overlay');
     if (help.classList.contains('visible')) { toggleHelp(); return; }
-    if (state.query) { state.query = ''; document.getElementById('search').value = ''; state.offset = 0; loadConversations(); return; }
-    if (state.provider) { state.provider = ''; state.offset = 0; loadConversations(); renderFacets(); return; }
+    if (state.query) { state.query = ''; document.getElementById('search').value = ''; state.offset = 0; loadConversations(); loadFacets(); return; }
+    if (state.provider) { state.provider = ''; state.offset = 0; loadConversations(); loadFacets(); return; }
     return;
   }
   if (e.key === 'j' || e.key === 'k') {
@@ -621,7 +621,7 @@ document.getElementById('facet-bar').addEventListener('click', function(e) {
   if (!chip) return;
   var facet = chip.dataset.facet;
   var value = chip.dataset.value;
-  if (facet === 'provider') { state.provider = value || ''; state.offset = 0; loadConversations(); renderFacets(); }
+  if (facet === 'provider') { state.provider = value || ''; state.offset = 0; loadConversations(); loadFacets(); }
 });
 
 document.getElementById('inspector-tabs').addEventListener('click', function(e) {
