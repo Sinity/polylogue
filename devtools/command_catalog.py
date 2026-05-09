@@ -314,6 +314,22 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools verify-suppressions", "devtools verify-suppressions --json"),
     ),
     CommandSpec(
+        "verify-slos",
+        "verification",
+        "Check read-surface latency budgets in docs/plans/slo-catalog.yaml against benchmark measurements.",
+        "devtools.verify_slos",
+        use_when=(
+            "Run as part of devtools verify --lab, or directly to confirm read-surface "
+            "(query / reader / facets / context / cost) latencies stay within their declared SLOs. "
+            "Exits non-zero when any measured surface exceeds its budget."
+        ),
+        examples=(
+            "devtools verify-slos",
+            "devtools verify-slos --json",
+            "devtools verify-slos --skip-benchmarks --json",
+        ),
+    ),
+    CommandSpec(
         "verify-manifests",
         "verification",
         "Verify internal consistency across all docs/plans/*.yaml manifest files.",

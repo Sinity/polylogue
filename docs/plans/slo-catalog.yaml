@@ -1,0 +1,59 @@
+# Read-surface SLO catalog.
+#
+# Each surface declares the read path, the benchmark test that exercises it,
+# and the latency budget enforced by `devtools verify-slos`. Budgets are
+# starting points (#872) calibrated against the synthetic 5k/10k benchmark
+# fixtures; they are tightened as evidence accumulates. Tighten by lowering
+# p50_ms / p95_ms once a measured surface stays comfortably under budget
+# across runs.
+#
+# Schema (parsed by devtools/verify_slos.py):
+#   surfaces:
+#     <name>:
+#       description:    "human-readable surface description"
+#       benchmark_test: "<pytest node id>"
+#       p50_ms:         <int milliseconds, median budget>
+#       p95_ms:         <int milliseconds, p95 budget — estimated mean+1.645*stddev>
+#       gate:           "required" | "informational"
+#
+# verify_slos exits non-zero when any surface exceeds its declared budget.
+# Surfaces without a `benchmark_test` (or whose test produced no result) are
+# reported as uncovered, not as failures — those are deferred read paths
+# whose benchmark fixtures or product paths do not yet exist.
+
+surfaces:
+
+  query:
+    description: "FTS5 search on a common term over the 5k synthetic archive"
+    benchmark_test: "tests/benchmarks/test_search_filters.py::test_bench_fts_search_common_term"
+    p50_ms: 100
+    p95_ms: 250
+    gate: "required"
+
+  reader:
+    description: "Reader list endpoint over the 5k synthetic archive"
+    benchmark_test: "tests/benchmarks/test_reader_api.py::test_bench_reader_list_conversations"
+    p50_ms: 300
+    p95_ms: 750
+    gate: "required"
+
+  facets:
+    description: "Facets endpoint aggregating provider/tag counts over the 5k synthetic archive"
+    benchmark_test: "tests/benchmarks/test_reader_api.py::test_bench_reader_facets"
+    p50_ms: 200
+    p95_ms: 500
+    gate: "required"
+
+  context:
+    description: "Context-pack assembly placeholder (deferred until #838 lands)"
+    benchmark_test: "tests/benchmarks/test_reader_api.py::test_bench_reader_context_pack"
+    p50_ms: 500
+    p95_ms: 1500
+    gate: "informational"
+
+  cost:
+    description: "Cost rollup placeholder (deferred until #803/#870 land)"
+    benchmark_test: "tests/benchmarks/test_reader_api.py::test_bench_reader_cost_rollup"
+    p50_ms: 300
+    p95_ms: 800
+    gate: "informational"
