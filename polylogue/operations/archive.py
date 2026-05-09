@@ -981,6 +981,51 @@ class ArchiveMaintenanceMixin:
                 transaction_depth=self.backend.transaction_depth,
             )
 
+    async def rebuild_index(self) -> bool:
+        """Rebuild the full-text search index from persisted message rows.
+
+        Delegates to the shared indexing service through the operation
+        contract, so callers (MCP, CLI, daemon) do not instantiate
+        ``IndexService`` directly.
+        """
+        import sqlite3
+
+        from polylogue.pipeline.services.indexing import rebuild_index as _rebuild_index
+
+        try:
+            conversation_ids = [cid async for cid in self.backend.iter_conversation_ids()]
+            await _rebuild_index(self.backend, conversation_ids=conversation_ids)
+            return True
+        except sqlite3.DatabaseError:
+            return False
+
+    async def update_index(self, conversation_ids: list[str]) -> bool:
+        """Repair FTS rows for specific conversations.
+
+        Delegates to the shared indexing-service free functions through
+        the operation contract.
+        """
+        import sqlite3
+
+        from polylogue.pipeline.services.indexing import update_index_for_conversations
+
+        try:
+            await update_index_for_conversations(conversation_ids, self.backend)
+            return True
+        except sqlite3.DatabaseError:
+            return False
+
+    async def get_index_status(self) -> dict[str, object]:
+        """Return FTS5 index existence and document count."""
+        import sqlite3
+
+        from polylogue.pipeline.services.indexing import index_status
+
+        try:
+            return await index_status(self.backend)
+        except sqlite3.DatabaseError:
+            return {"exists": False, "count": 0}
+
 
 class ArchiveResumeMixin:
     async def build_resume_brief(

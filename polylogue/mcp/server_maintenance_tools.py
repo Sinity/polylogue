@@ -22,11 +22,9 @@ def register_maintenance_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     @mcp.tool()
     async def rebuild_index() -> str:
         async def run() -> str:
-            from polylogue.pipeline.services.indexing import IndexService
-
-            service = IndexService(config=hooks.get_config(), backend=hooks.get_backend())
-            success = await service.rebuild_index()
-            status_info = await service.get_index_status()
+            ops = hooks.get_archive_ops()
+            success = await ops.rebuild_index()
+            status_info = await ops.get_index_status()
             index_exists_value = status_info.get("exists", False)
             indexed_messages_value = status_info.get("count", 0)
             return hooks.json_payload(
@@ -43,10 +41,8 @@ def register_maintenance_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     @mcp.tool()
     async def update_index(conversation_ids: list[str]) -> str:
         async def run() -> str:
-            from polylogue.pipeline.services.indexing import IndexService
-
-            service = IndexService(config=hooks.get_config(), backend=hooks.get_backend())
-            success = await service.update_index(conversation_ids)
+            ops = hooks.get_archive_ops()
+            success = await ops.update_index(conversation_ids)
             return hooks.json_payload(
                 MCPMutationStatusPayload(
                     status="ok" if success else "failed",

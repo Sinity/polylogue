@@ -1328,17 +1328,15 @@ class TestMutationTools:
 
     def test_rebuild_index_success(self, mcp_server: MCPServerUnderTest) -> None:
         with (
-            patch("polylogue.mcp.server._get_config") as mock_get_config,
-            patch("polylogue.mcp.server._get_backend") as mock_get_backend,
-            patch("polylogue.pipeline.services.indexing.IndexService") as mock_service_cls,
+            patch(
+                "polylogue.operations.archive.ArchiveMaintenanceMixin.rebuild_index",
+                new=AsyncMock(return_value=True),
+            ),
+            patch(
+                "polylogue.operations.archive.ArchiveMaintenanceMixin.get_index_status",
+                new=AsyncMock(return_value={"exists": True, "count": 500}),
+            ),
         ):
-            mock_get_config.return_value = MagicMock()
-            mock_get_backend.return_value = MagicMock()
-            mock_service = MagicMock()
-            mock_service.rebuild_index = AsyncMock(return_value=True)
-            mock_service.get_index_status = AsyncMock(return_value={"exists": True, "count": 500})
-            mock_service_cls.return_value = mock_service
-
             result = invoke_surface(mcp_server._tool_manager._tools["rebuild_index"].fn)
 
         parsed = json.loads(result)
@@ -1347,17 +1345,10 @@ class TestMutationTools:
         assert parsed["indexed_messages"] == 500
 
     def test_update_index_success(self, mcp_server: MCPServerUnderTest) -> None:
-        with (
-            patch("polylogue.mcp.server._get_config") as mock_get_config,
-            patch("polylogue.mcp.server._get_backend") as mock_get_backend,
-            patch("polylogue.pipeline.services.indexing.IndexService") as mock_service_cls,
+        with patch(
+            "polylogue.operations.archive.ArchiveMaintenanceMixin.update_index",
+            new=AsyncMock(return_value=True),
         ):
-            mock_get_config.return_value = MagicMock()
-            mock_get_backend.return_value = MagicMock()
-            mock_service = MagicMock()
-            mock_service.update_index = AsyncMock(return_value=True)
-            mock_service_cls.return_value = mock_service
-
             result = invoke_surface(
                 mcp_server._tool_manager._tools["update_index"].fn,
                 conversation_ids=["test:conv-1", "test:conv-2"],

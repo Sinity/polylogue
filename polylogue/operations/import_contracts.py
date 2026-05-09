@@ -10,9 +10,9 @@ Entrypoint inventory (which surfaces consume this contract):
     ``ImportOperation.from_dict()``
   - Low-level library: ``Polylogue.parse_file()`` / ``parse_sources()``
     are direct pipeline helpers, not scheduling operations
-  - Not yet adapted: MCP maintenance tools (``server_maintenance_tools.py``)
-    still instantiate ``IndexService`` directly — should route through
-    ``ImportOperation(kind=MAINTENANCE)``
+  - Adapted: MCP maintenance tools (``server_maintenance_tools.py``)
+    route through ``ArchiveMaintenanceMixin`` methods, which delegate
+    to the shared indexing-service free functions
   - Not yet adapted: live watcher cursor/fingerprint updates are not
     unified through shared helpers — convergence paths may drift
 """
