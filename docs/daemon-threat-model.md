@@ -5,9 +5,23 @@ serves the archive read API and ingests from the local filesystem.
 
 ## Trust Boundary
 
-The daemon binds to `127.0.0.1` only. All requests originate from the
-same machine. There is no network exposure, no TLS, and no authentication
-beyond loopback binding.
+The daemon binds to `127.0.0.1` by default. Non-loopback bind requires
+`--insecure-allow-remote` *and* `--api-auth-token`; the daemon refuses
+to start otherwise (`daemon/cli.py:309-319`).
+
+Authentication: optional bearer token (`--api-auth-token`). When set,
+every request — including from loopback — must present a matching
+`Authorization: Bearer <token>` header. When unset, the API is open
+on loopback; the loopback bind is the access boundary in that mode.
+
+Cross-origin POSTs (CSRF) are refused via an `Origin` allowlist of
+loopback URLs (`http://127.0.0.1:*`, `http://localhost:*`, and HTTPS
+equivalents). The web shell and same-machine clients pass; browser
+pages from any other origin are rejected with 403.
+
+For the full security policy and explicit decisions on raw-artifact
+redaction, `/api/sources` paths, and `OPTIONS` handling, see
+[`docs/security.md`](security.md).
 
 ## Assets
 
@@ -47,7 +61,7 @@ These are explicitly out of scope for the daemon threat model:
 - **Multi-user access**: Polylogue is a single-user tool. There is no user isolation.
 - **Network exposure**: The daemon does not bind to `0.0.0.0` or non-loopback interfaces.
 - **Encryption at rest**: Archive content is stored as plaintext SQLite. Disk encryption is the OS's responsibility.
-- **Authentication**: Loopback-only binding is the authentication mechanism. No tokens, no passwords.
+- **Multi-user authentication**: No user accounts, RBAC, or per-user tokens. Bearer-token auth (`--api-auth-token`) gates the entire API uniformly when configured.
 
 ## API Roles
 
