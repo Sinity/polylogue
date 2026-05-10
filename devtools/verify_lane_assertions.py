@@ -8,11 +8,10 @@ Exits 0 (clean) when no violations exist, 1 when violations found.
 """
 
 from __future__ import annotations
-from devtools import repo_root as _get_root
 
 import sys
-from pathlib import Path
 
+from devtools import repo_root as _get_root
 from polylogue.scenarios.assertions import AssertionClass, AssertionSpec
 
 

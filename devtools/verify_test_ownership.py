@@ -14,7 +14,6 @@ manifest with a justification.
 """
 
 from __future__ import annotations
-from devtools import repo_root as _get_root
 
 import argparse
 import ast
@@ -22,6 +21,8 @@ import json
 import sys
 from collections import defaultdict
 from pathlib import Path
+
+from devtools import repo_root as _get_root
 
 ROOT = _get_root()
 MANIFEST = ROOT / "docs" / "plans" / "test-ownership.yaml"

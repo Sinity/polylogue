@@ -16,13 +16,14 @@ Exits 0 if everything passes, 1 if any blocking finding.
 """
 
 from __future__ import annotations
-from devtools import repo_root as _get_root
 
 import argparse
 import sys
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
+
+from devtools import repo_root as _get_root
 
 ROOT = _get_root()
 PROJECTION = ROOT / "docs" / "plans" / "topology-target.yaml"

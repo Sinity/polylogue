@@ -12,11 +12,12 @@ The following files are exempt:
 """
 
 from __future__ import annotations
-from devtools import repo_root as _get_root
 
 import subprocess
 import sys
 from pathlib import Path
+
+from devtools import repo_root as _get_root
 
 _REPO_ROOT = _get_root()
 _POLYLOGUE_DIR = _REPO_ROOT / "polylogue"

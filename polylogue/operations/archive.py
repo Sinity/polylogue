@@ -99,6 +99,7 @@ if TYPE_CHECKING:
     from polylogue.archive.query.search_hits import ConversationSearchHit
     from polylogue.archive.stats import ArchiveStats as StorageArchiveStats
     from polylogue.config import Config
+    from polylogue.pipeline.services.indexing import IndexStatus
     from polylogue.storage.archive_views import ConversationRenderProjection
     from polylogue.storage.insights.session.runtime import SessionInsightCounts
     from polylogue.storage.repository import ConversationRepository
@@ -1015,7 +1016,7 @@ class ArchiveMaintenanceMixin:
         except sqlite3.DatabaseError:
             return False
 
-    async def get_index_status(self) -> dict[str, object]:
+    async def get_index_status(self) -> IndexStatus:
         """Return FTS5 index existence and document count."""
         import sqlite3
 
@@ -1024,7 +1025,7 @@ class ArchiveMaintenanceMixin:
         try:
             return await index_status(self.backend)
         except sqlite3.DatabaseError:
-            return {"exists": False, "count": 0}
+            return IndexStatus(exists=False, count=0)
 
 
 class ArchiveResumeMixin:

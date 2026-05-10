@@ -33,6 +33,7 @@ if TYPE_CHECKING:
     from polylogue.storage.insights.session.runtime import SessionInsightCounts
     from polylogue.storage.repository import ConversationRepository
     from polylogue.storage.search.models import SearchResult
+    from polylogue.surfaces.payloads import TagMutationResult
 
     class _ArchiveOperationsSurface(Protocol):
         async def get_conversation(

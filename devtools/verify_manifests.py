@@ -6,7 +6,6 @@ Runs as part of devtools verify.
 """
 
 from __future__ import annotations
-from devtools import repo_root as _get_root
 
 import shlex
 import sys
@@ -16,6 +15,7 @@ from typing import Any
 
 import yaml
 
+from devtools import repo_root as _get_root
 from devtools.authored_scenario_catalog import get_authored_scenario_catalog
 from devtools.command_catalog import COMMANDS
 from polylogue.verification.manifests.models import validate_manifest

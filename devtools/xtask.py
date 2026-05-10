@@ -11,14 +11,13 @@ Subcommands:
 """
 
 from __future__ import annotations
-from devtools import repo_root as _get_root
 
 import argparse
 import json
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
+from devtools import repo_root as _get_root
 from polylogue.core.json import JSONDocument
 
 XTaskDict = JSONDocument

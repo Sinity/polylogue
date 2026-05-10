@@ -9,7 +9,6 @@ completeness assertions, and advisory noise.
 """
 
 from __future__ import annotations
-from devtools import repo_root as _get_root
 
 import argparse
 import json
@@ -18,6 +17,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
+from devtools import repo_root as _get_root
 from polylogue.core.outcomes import OutcomeStatus
 from polylogue.proof.catalog import (
     VerificationCatalog,

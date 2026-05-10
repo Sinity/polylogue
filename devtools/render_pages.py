@@ -11,7 +11,6 @@ Usage:
 """
 
 from __future__ import annotations
-from devtools import repo_root as _get_root
 
 import argparse
 import http.server
@@ -19,6 +18,8 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+
+from devtools import repo_root as _get_root
 
 ROOT = _get_root()
 

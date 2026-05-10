@@ -1,7 +1,6 @@
 """Run and compare benchmark campaigns with durable artifacts."""
 
 from __future__ import annotations
-from devtools import repo_root as _get_root
 
 import argparse
 import json
@@ -14,6 +13,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TypedDict
 
+from devtools import repo_root as _get_root
 from polylogue.core.json import JSONDocument, json_document, json_document_list
 from polylogue.scenarios import ExecutionKind, ScenarioMetadata, pytest_execution, run_execution
 

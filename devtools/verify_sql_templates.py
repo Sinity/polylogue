@@ -12,12 +12,13 @@ Exit 0 if clean, 1 with messages if violations found.
 """
 
 from __future__ import annotations
-from devtools import repo_root as _get_root
 
 import ast
 import hashlib
 import sys
 from pathlib import Path
+
+from devtools import repo_root as _get_root
 
 POLYLOGUE_ROOT = _get_root() / "polylogue"
 

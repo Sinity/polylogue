@@ -9,11 +9,12 @@ Exit 0 when all schemas have annotations, 1 otherwise.
 """
 
 from __future__ import annotations
-from devtools import repo_root as _get_root
 
 import gzip
 import json
 from pathlib import Path
+
+from devtools import repo_root as _get_root
 
 PROVIDERS_DIR = _get_root() / "polylogue" / "schemas" / "providers"
 

@@ -1,7 +1,6 @@
 """Documentation-site builder for GitHub Pages."""
 
 from __future__ import annotations
-from devtools import repo_root as _get_root
 
 import json
 import shutil
@@ -14,6 +13,7 @@ from typing import Any
 import tomllib
 from jinja2 import DictLoader, Environment, select_autoescape
 
+from devtools import repo_root as _get_root
 from devtools.pages_style import PAGES_STYLE
 from devtools.pages_templates import PAGES_TEMPLATES
 from polylogue.rendering.renderers.html import PygmentsHighlighter
