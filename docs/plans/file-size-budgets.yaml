@@ -69,6 +69,10 @@ exceptions:
     ceiling: 1150
     reason: "typed status payloads for failure samples, embedding readiness, tier/notify (#844, #898, #915); split candidate: payload modules per status section"
 
+  - path: tests/unit/sources/test_live_watcher.py
+    ceiling: 1600
+    reason: "kitchen-sink live-ingest test file (cursor, watcher, batch, debounce, bootstrap); split candidate: per-subject suites under tests/unit/sources/live/"
+
   - path: polylogue/storage/sqlite/schema_bootstrap.py
     ceiling: 1300
     reason: "added v9→v10 provider-meta promotion migration (#864)"
