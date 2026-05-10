@@ -249,6 +249,49 @@ def _assert_structured_error(payload: str, *, expected_code: str | None = None) 
         assert body.get("code") == expected_code, f"expected code={expected_code}, got {body.get('code')}"
 
 
+class TestSessionTreeResourceShapeMatchesTool:
+    """The ``polylogue://session-tree/{conv_id}`` resource and the
+    ``get_session_tree`` tool must serialise the same domain entity in
+    the same envelope shape.
+
+    A previous closure of #819 left this gap — the tool was migrated
+    to ``MCPSessionTreePayload`` while the resource still used the
+    older ``MCPPaginatedQueryResultPayload`` (which carries unrelated
+    ``limit``/``offset``/``next_offset`` fields it doesn't use). This
+    test catches that coherence gap.
+    """
+
+    def test_resource_returns_session_tree_envelope_not_paginated_query(self, read_server: MCPServerUnderTest) -> None:
+        from unittest.mock import AsyncMock as _AsyncMock
+        from unittest.mock import MagicMock as _MagicMock
+        from unittest.mock import patch as _patch
+
+        from tests.infra.builders import make_conv
+        from tests.infra.mcp import invoke_surface
+
+        conv = make_conv(id="x:y", title="Resource shape probe")
+
+        with _patch("polylogue.mcp.server._get_archive_ops") as mock_get:
+            mock_ops = _MagicMock()
+            mock_ops.get_session_tree = _AsyncMock(return_value=[conv])
+            mock_get.return_value = mock_ops
+            result = invoke_surface(_resource(read_server, "polylogue://session-tree/{conv_id}"), conv_id="x:y")
+
+        body = json.loads(result)
+        assert "items" in body
+        assert "total" in body
+        assert body["total"] == 1
+        # Coherence pin: the resource must NOT carry the paginated-query
+        # fields. If a future refactor reintroduces ``limit``/``offset``
+        # to this resource, that's a deliberate scope change and this
+        # test should be updated alongside ``MCPSessionTreePayload``.
+        for forbidden in ("limit", "offset", "next_offset"):
+            assert forbidden not in body, (
+                f"session-tree resource leaked paginated-query field {forbidden!r}: "
+                f"resource and tool envelope shapes have drifted apart"
+            )
+
+
 class TestResourceErrorEnvelopes:
     """All 8 MCP resources must emit the structured error envelope.
 
@@ -358,14 +401,14 @@ def test_insight_envelope_uses_count_not_total() -> None:
     """``insight_items_payload`` returns ``{count: N, <key>: [...]}``.
 
     This deliberately diverges from the search/list ``total`` convention.
-    Aligning the names is a follow-up that would require coordinating with
-    every insight reader. Documenting the choice here makes the
-    inconsistency reviewable rather than silent.
+    Aligning the names is tracked at #1007 (would require coordinating
+    with every insight reader). Pinning the current shape here makes
+    any change deliberate rather than silent drift.
     """
     from polylogue.insights.registry import INSIGHT_REGISTRY, insight_items_payload
 
     pt = next(iter(INSIGHT_REGISTRY.values()))
     payload = insight_items_payload([], pt, item_key="items")
     assert "count" in payload
-    assert "total" not in payload  # by design — track in #819 followup if changed
+    assert "total" not in payload  # by design — change requires #1007
     assert payload["count"] == 0

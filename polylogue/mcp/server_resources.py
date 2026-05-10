@@ -11,6 +11,7 @@ from polylogue.mcp.payloads import (
     MCPReadinessReportPayload,
     MCPTagCountsPayload,
     conversation_query_result_payload,
+    session_tree_payload,
 )
 from polylogue.mcp.query_contracts import MCPConversationQueryRequest
 
@@ -114,7 +115,7 @@ def register_resources(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 code="internal_error",
                 detail=type(exc).__name__,
             )
-        return hooks.json_payload(conversation_query_result_payload(tree, total=len(tree), limit=len(tree), offset=0))
+        return hooks.json_payload(session_tree_payload(tree))
 
     @mcp.resource("polylogue://provider/{name}/recent")
     async def provider_recent_resource(name: str) -> str:
