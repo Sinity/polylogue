@@ -231,12 +231,14 @@ class LiveWatcher:
         )
         if same_inode and size > cursor.byte_offset:
             return True
-        if (
-            same_inode
-            and size == cursor.byte_size
-            and cursor.mtime_ns == stat.st_mtime_ns
-            and cursor.content_fingerprint is not None
-        ):
+        if same_inode and size == cursor.byte_size and cursor.content_fingerprint is not None:
+            # Same file (dev, ino), same size, fingerprint already recorded
+            # — trust the cursor. Mtime drift alone (filesystem touch,
+            # hardlink/rename-replace that preserves inode, fsync rounding,
+            # nanosecond-resolution rounding across filesystems) is not a
+            # content-change signal. Rehashing here costs O(file_size) per
+            # touched file across catch-up and active monitoring; refuted
+            # by the regression test in tests/integration/test_live_read_amplification.py.
             return False
         if cursor.content_fingerprint is None:
             return True
