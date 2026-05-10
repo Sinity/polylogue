@@ -6,7 +6,7 @@ import sqlite3
 
 import aiosqlite
 
-from polylogue.errors import DatabaseError
+from polylogue.errors import DatabaseError, SchemaIncompatibleError
 from polylogue.logging import get_logger
 from polylogue.storage.sqlite.schema_bootstrap import (
     SCHEMA_DDL,
@@ -47,7 +47,11 @@ def assert_readable_archive_layout(conn: sqlite3.Connection) -> None:
     assert_supported_archive_layout_snapshot(snapshot)
 
     if snapshot.current_version != SCHEMA_VERSION:
-        raise DatabaseError(schema_version_mismatch_message(snapshot.current_version))
+        raise SchemaIncompatibleError(
+            schema_version_mismatch_message(snapshot.current_version),
+            current_version=snapshot.current_version,
+            expected_version=SCHEMA_VERSION,
+        )
 
 
 def _log_index_replacement(snapshot: SchemaSnapshot, plan: SchemaExtensionPlan) -> None:
@@ -150,8 +154,12 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         return
 
     if decision.action == "version_mismatch":
-        raise DatabaseError(schema_version_mismatch_message(decision.current_version or 0))
-        return
+        current = decision.current_version or 0
+        raise SchemaIncompatibleError(
+            schema_version_mismatch_message(current),
+            current_version=current,
+            expected_version=SCHEMA_VERSION,
+        )
 
     if (
         decision.action
@@ -197,8 +205,12 @@ async def ensure_schema_async(conn: aiosqlite.Connection) -> None:
         return
 
     if decision.action == "version_mismatch":
-        raise DatabaseError(schema_version_mismatch_message(decision.current_version or 0))
-        return
+        current = decision.current_version or 0
+        raise SchemaIncompatibleError(
+            schema_version_mismatch_message(current),
+            current_version=current,
+            expected_version=SCHEMA_VERSION,
+        )
 
     if (
         decision.action

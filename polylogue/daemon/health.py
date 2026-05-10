@@ -271,9 +271,81 @@ def _check_source_availability_fast() -> HealthAlert:
         )
 
 
+def _check_schema_version_fast() -> HealthAlert:
+    """Compare the on-disk ``PRAGMA user_version`` to the runtime ``SCHEMA_VERSION``.
+
+    A mismatch means this binary cannot read or write the database safely —
+    every ingest attempt would raise :class:`SchemaIncompatibleError`, and
+    retrying produces only IO load with no progress. The check therefore
+    raises CRITICAL so the daemon's preflight can refuse to start the watcher
+    and an operator/dashboard immediately sees the structural cause.
+
+    The check uses ``PRAGMA user_version`` directly rather than the schema
+    snapshot machinery so it is tolerant of structural drift and stays cheap
+    (a single read on a read-only connection).
+    """
+    from polylogue.storage.sqlite.schema_bootstrap import SCHEMA_VERSION
+
+    now = datetime.now(UTC).isoformat()
+    dbf = db_path()
+    if not dbf.exists():
+        # Fresh install — fresh-init will create the DB at the current version.
+        return HealthAlert(
+            check_name="schema_version",
+            tier=HealthTier.FAST,
+            severity=HealthSeverity.OK,
+            message=f"no database yet (will create v{SCHEMA_VERSION})",
+            checked_at=now,
+            consecutive_failures=_record_failure("schema_version", True),
+        )
+    try:
+        # Open read-only via URI to avoid creating/locking on a misconfigured DB.
+        conn = sqlite3.connect(f"file:{dbf}?mode=ro", uri=True, timeout=2.0)
+        try:
+            current = int(conn.execute("PRAGMA user_version").fetchone()[0])
+        finally:
+            conn.close()
+
+        if current == SCHEMA_VERSION:
+            severity = HealthSeverity.OK
+            message = f"schema v{current} matches runtime"
+        elif current == 0:
+            # Empty DB file (created but never bootstrapped) — fresh-init will
+            # handle this, not a structural mismatch.
+            severity = HealthSeverity.OK
+            message = f"empty database (will bootstrap v{SCHEMA_VERSION})"
+        else:
+            severity = HealthSeverity.CRITICAL
+            if current > SCHEMA_VERSION:
+                hint = "rebuild or redeploy polylogue to a build that supports this schema"
+            else:
+                hint = "runtime is ahead of the database; run an explicit in-place upgrade or rebuild the archive"
+            message = f"schema v{current} incompatible with runtime v{SCHEMA_VERSION} — {hint}"
+
+        is_ok = severity == HealthSeverity.OK
+        return HealthAlert(
+            check_name="schema_version",
+            tier=HealthTier.FAST,
+            severity=severity,
+            message=message,
+            checked_at=now,
+            consecutive_failures=_record_failure("schema_version", is_ok),
+        )
+    except Exception as exc:
+        return HealthAlert(
+            check_name="schema_version",
+            tier=HealthTier.FAST,
+            severity=HealthSeverity.ERROR,
+            message=f"schema version check failed: {exc}",
+            checked_at=now,
+            consecutive_failures=_record_failure("schema_version", False),
+        )
+
+
 def _run_fast_checks() -> list[HealthAlert]:
     return [
         _check_daemon_liveness_fast(),
+        _check_schema_version_fast(),
         _check_disk_space_fast(),
         _check_wal_size_fast(),
         _check_source_availability_fast(),
@@ -829,6 +901,7 @@ __all__ = [
     "HealthAlert",
     "HealthSeverity",
     "HealthTier",
+    "_check_schema_version_fast",
     "check_health",
     "format_health_lines",
 ]

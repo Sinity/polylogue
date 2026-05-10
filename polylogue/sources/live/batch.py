@@ -23,6 +23,8 @@ from polylogue.core.metrics import (
     read_peak_rss_self_mb,
 )
 from polylogue.core.provider_identity import canonical_acquisition_provider
+from polylogue.daemon.degraded import DegradedReason, is_degraded, set_degraded
+from polylogue.errors import SchemaIncompatibleError
 from polylogue.logging import get_logger
 from polylogue.paths import blob_store_root
 from polylogue.pipeline.services.ingest_batch._core import (
@@ -69,6 +71,41 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 LiveBatchEventEmitter = Callable[[str, dict[str, object]], None]
+
+
+_SCHEMA_MISMATCH_DEDUP_WINDOW_S = 60.0
+"""Per-(source, signature) suppression window for schema-mismatch warnings."""
+
+
+class _RateLimiter:
+    """Tiny in-memory rate limiter keyed by an arbitrary tuple.
+
+    Returns ``True`` the first time a key is seen and again after ``window``
+    seconds have passed since its last admitted entry. Used to keep the
+    journal from getting flooded when every inotify event triggers the same
+    structural error.
+    """
+
+    __slots__ = ("_window", "_last", "_clock")
+
+    def __init__(self, window_s: float, *, clock: Callable[[], float] = time.monotonic) -> None:
+        self._window = window_s
+        self._clock = clock
+        self._last: dict[tuple[object, ...], float] = {}
+
+    def admit(self, key: tuple[object, ...]) -> bool:
+        now = self._clock()
+        last = self._last.get(key)
+        if last is None or now - last >= self._window:
+            self._last[key] = now
+            return True
+        return False
+
+    def reset(self) -> None:
+        self._last.clear()
+
+
+_schema_warning_limiter = _RateLimiter(_SCHEMA_MISMATCH_DEDUP_WINDOW_S)
 
 
 class LiveSourceRoot(Protocol):
@@ -119,6 +156,41 @@ class LiveBatchProcessor:
         emit_event: bool = True,
     ) -> LiveBatchMetrics:
         """Ingest files in batch, run post-ingest convergence, and return metrics."""
+        if is_degraded():
+            # The daemon has been marked structurally unable to ingest (e.g.
+            # schema mismatch detected at preflight or on the first batch).
+            # Do not enter the full-parse path — that is what produced the
+            # IOPS storm in #1003. Return an empty metrics record so the
+            # caller's bookkeeping stays consistent.
+            return LiveBatchMetrics(
+                queued_file_count=queued_file_count if queued_file_count is not None else len(paths),
+                needed_file_count=len(paths),
+                skipped_file_count=skipped_file_count + len(paths),
+                succeeded_file_count=0,
+                failed_file_count=0,
+                source_group_count=len({self._source_name_for(path) for path in paths}),
+                input_bytes=0,
+                source_payload_read_bytes=0,
+                cursor_fingerprint_read_bytes=0,
+                ingest_worker_count_max=0,
+                append_file_count=0,
+                full_file_count=0,
+                archive_bytes_before=0,
+                archive_bytes_after=0,
+                archive_write_bytes_delta=0,
+                parse_time_s=0.0,
+                convergence_time_s=0.0,
+                total_time_s=0.0,
+                rss_current_mb=read_current_rss_mb(),
+                rss_peak_self_mb=read_peak_rss_self_mb(),
+                rss_peak_children_mb=read_peak_rss_children_mb(),
+                cgroup_path=read_cgroup_path(),
+                cgroup_memory_current_mb=read_cgroup_memory_current_mb(),
+                cgroup_memory_peak_mb=read_cgroup_memory_peak_mb(),
+                cgroup_memory_swap_current_mb=read_cgroup_memory_swap_current_mb(),
+                stage_timings_s={},
+                failed_paths=[],
+            )
         batch_started = time.perf_counter()
         db_bytes_before = _path_size(self._cursor._db_path) + _path_size(self._cursor._db_path.with_suffix(".db-wal"))
         input_bytes = sum(_path_size(path) for path in paths)
@@ -159,7 +231,15 @@ class LiveBatchProcessor:
                 current_path=append_plans[0].path,
             )
             t0 = time.perf_counter()
-            append_result = await asyncio.to_thread(self._ingest_append_plans, append_plans)
+            try:
+                append_result = await asyncio.to_thread(self._ingest_append_plans, append_plans)
+            except SchemaIncompatibleError as exc:
+                self._handle_schema_incompatible(append_plans[0].source_name, exc)
+                for plan in append_plans:
+                    failed_paths.append(str(plan.path))
+                # Surface the failure but skip the rest of the batch — the
+                # by_source loop below also checks ``is_degraded()``.
+                append_result = _AppendResult(succeeded=[], failed=list(append_plans), worker_count=0)
             ingest_worker_count_max = max(ingest_worker_count_max, append_result.worker_count)
             parse_time_s += time.perf_counter() - t0
             self._record_attempt_progress(
@@ -195,8 +275,16 @@ class LiveBatchProcessor:
             by_source.setdefault(self._source_name_for(path), []).append(path)
 
         for source_name, grouped_paths in by_source.items():
+            if is_degraded():
+                # A prior source group hit a structural error this batch.
+                # Don't burn IOPS on remaining groups.
+                for path in grouped_paths:
+                    failed_paths.append(str(path))
+                continue
             for source_paths in _full_parse_progress_groups(grouped_paths):
                 if self._stop_requested():
+                    break
+                if is_degraded():
                     break
                 t0 = time.perf_counter()
                 try:
@@ -229,6 +317,25 @@ class LiveBatchProcessor:
                         ),
                     )
                     ingest_worker_count_max = max(ingest_worker_count_max, full_result.worker_count)
+                except SchemaIncompatibleError as exc:
+                    self._handle_schema_incompatible(source_name, exc)
+                    for path in source_paths:
+                        failed_paths.append(str(path))
+                    self._record_attempt_progress(
+                        attempt_id,
+                        phase="full_parse_failed",
+                        succeeded_file_count=len(succeeded_paths),
+                        failed_file_count=len(failed_paths),
+                        source_payload_read_bytes=source_payload_read_bytes,
+                        cursor_fingerprint_read_bytes=cursor_fingerprint_read_bytes,
+                        parse_time_s=parse_time_s,
+                        current_source=source_name,
+                        current_path=source_paths[0] if source_paths else None,
+                        error=str(exc),
+                    )
+                    # Stop processing this batch entirely — every remaining
+                    # source group would hit the same structural error.
+                    break
                 except Exception as exc:
                     logger.warning("live.watcher: batch failed for %s: %s", source_name, exc)
                     for path in source_paths:
@@ -349,6 +456,33 @@ class LiveBatchProcessor:
             error="; ".join(failed_paths[:3]) if failed_paths else None,
         )
         return metrics
+
+    def _handle_schema_incompatible(self, source_name: str, exc: SchemaIncompatibleError) -> None:
+        """Log once per dedup window and put the daemon in degraded mode.
+
+        Schema-version mismatch is a structural condition that does not change
+        across consecutive inotify events. Logging at WARNING for every event
+        is what produced the journal flood and IOPS storm in #1003.
+        """
+        signature = f"schema_incompatible:{exc.current_version}->{exc.expected_version}"
+        if _schema_warning_limiter.admit((source_name, signature)):
+            logger.warning(
+                "live.watcher: %s — refusing further ingest until restart (db schema v%s, runtime expects v%s)",
+                source_name,
+                exc.current_version,
+                exc.expected_version,
+            )
+        if not is_degraded():
+            set_degraded(
+                DegradedReason(
+                    code="schema_incompatible",
+                    message=str(exc),
+                    detail={
+                        "current_version": exc.current_version,
+                        "expected_version": exc.expected_version,
+                    },
+                )
+            )
 
     def _record_attempt_progress(
         self,

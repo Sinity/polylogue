@@ -38,4 +38,28 @@ class DatabaseError(PolylogueError):
     http_status_code: int = HTTPStatus.SERVICE_UNAVAILABLE
 
 
-__all__ = ["DatabaseError", "PolylogueError"]
+class SchemaIncompatibleError(DatabaseError):
+    """Raised when the on-disk schema version cannot be served by this runtime.
+
+    The runtime expects ``expected_version`` (the build-time ``SCHEMA_VERSION``
+    constant). The database reports ``current_version``. There is no automatic
+    migration path that the runtime is willing to apply for this transition.
+
+    Both versions are exposed as attributes so call sites can format a
+    structured message (and the daemon health surface can render it) without
+    re-parsing the human-readable string.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        current_version: int,
+        expected_version: int,
+    ) -> None:
+        super().__init__(message)
+        self.current_version = current_version
+        self.expected_version = expected_version
+
+
+__all__ = ["DatabaseError", "PolylogueError", "SchemaIncompatibleError"]

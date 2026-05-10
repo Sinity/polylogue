@@ -19,7 +19,14 @@ from polylogue.api import Polylogue
 from polylogue.browser_capture.server import BrowserCaptureHTTPServer, make_server
 from polylogue.core.json import dumps
 from polylogue.daemon.browser_capture import browser_capture_command
-from polylogue.daemon.health import HealthTier, check_health, format_health_lines
+from polylogue.daemon.degraded import DegradedReason, set_degraded
+from polylogue.daemon.health import (
+    HealthSeverity,
+    HealthTier,
+    _check_schema_version_fast,
+    check_health,
+    format_health_lines,
+)
 from polylogue.daemon.status import daemon_status_payload, format_daemon_status_lines
 from polylogue.logging import configure_logging, get_logger
 from polylogue.sources.live import LiveWatcher, WatchSource
@@ -402,7 +409,28 @@ async def run_daemon_services(
             api_server_task = asyncio.create_task(asyncio.to_thread(api_server.serve_forever, 0.5))
             tasks.append(api_server_task)
 
-        if enable_watch:
+        # Preflight: refuse to start the live watcher when the on-disk
+        # schema is incompatible with this runtime. Without this gate, every
+        # inotify event triggers a full ingest attempt that immediately
+        # raises SchemaIncompatibleError — see #1003 for the IOPS-storm
+        # incident this prevents.
+        schema_alert = _check_schema_version_fast()
+        watcher_blocked = enable_watch and schema_alert.severity == HealthSeverity.CRITICAL
+        if watcher_blocked:
+            logger.error(
+                "daemon: schema preflight CRITICAL — %s. Refusing to start the live watcher; "
+                "HTTP/health surfaces remain available so this state is observable.",
+                schema_alert.message,
+            )
+            set_degraded(
+                DegradedReason(
+                    code="schema_incompatible",
+                    message=schema_alert.message,
+                    detail={"check_name": schema_alert.check_name},
+                )
+            )
+
+        if enable_watch and not watcher_blocked:
             async with Polylogue() as polylogue:
                 watcher = LiveWatcher(
                     polylogue,
@@ -416,6 +444,8 @@ async def run_daemon_services(
                 all_tasks = tasks + maintenance_tasks
                 await asyncio.gather(*all_tasks)
         elif tasks:
+            # Watcher disabled or preflight-blocked: keep HTTP/health and
+            # other components serving so operators see the degraded state.
             all_tasks = tasks + maintenance_tasks
             await asyncio.gather(*all_tasks)
         else:
