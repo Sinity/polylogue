@@ -172,7 +172,6 @@ def test_run_blob_store_check_reports_missing_orphaned_and_verified_states() -> 
         detect_orphans=lambda known_ids: SimpleNamespace(
             orphan_count=1,
             orphan_bytes=4096,
-            scanned_count=2,
             orphan_samples=("orphan-c",),
         ),
     )
@@ -194,9 +193,7 @@ def test_run_blob_store_check_reports_missing_orphaned_and_verified_states() -> 
     env = _env()
     verified_store = SimpleNamespace(
         iter_all=lambda: ["raw-a", "raw-b"],
-        detect_orphans=lambda known_ids: SimpleNamespace(
-            orphan_count=0, orphan_bytes=0, scanned_count=2, orphan_samples=()
-        ),
+        detect_orphans=lambda known_ids: SimpleNamespace(orphan_count=0, orphan_bytes=0, orphan_samples=()),
     )
     with (
         patch("polylogue.cli.shared.check_workflow.connection_context", return_value=connection()),
@@ -219,9 +216,7 @@ def test_run_blob_store_check_returns_json_payload_without_emitting() -> None:
 
     blob_store = SimpleNamespace(
         iter_all=lambda: ["raw-a", "orphan-c"],
-        detect_orphans=lambda known_ids: SimpleNamespace(
-            orphan_count=1, orphan_bytes=0, scanned_count=2, orphan_samples=()
-        ),
+        detect_orphans=lambda known_ids: SimpleNamespace(orphan_count=1, orphan_bytes=0, orphan_samples=()),
     )
     with (
         patch("polylogue.cli.shared.check_workflow.connection_context", return_value=connection()),
