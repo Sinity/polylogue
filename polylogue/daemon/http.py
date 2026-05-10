@@ -360,10 +360,17 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         origin = self.headers.get("Origin", "")
         if not origin:
             return True  # Not a browser request
-        # Allow same-origin localhost requests (web reader, browser extension)
-        if origin.startswith("http://127.0.0.1:") or origin.startswith("http://localhost:"):
-            return True
-        if origin.startswith("https://127.0.0.1:") or origin.startswith("https://localhost:"):
+        # Allow same-origin localhost requests (web reader, browser extension).
+        # IPv6 loopback (`::1`) is bracketed in the URL form per RFC 3986.
+        loopback_prefixes = (
+            "http://127.0.0.1:",
+            "https://127.0.0.1:",
+            "http://localhost:",
+            "https://localhost:",
+            "http://[::1]:",
+            "https://[::1]:",
+        )
+        if any(origin.startswith(p) for p in loopback_prefixes):
             return True
         self._send_error(HTTPStatus.FORBIDDEN, "cross_origin_denied")
         return False

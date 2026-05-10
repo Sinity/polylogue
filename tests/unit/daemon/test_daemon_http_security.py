@@ -113,7 +113,12 @@ class TestCheckAuthLogic:
 
 
 def _origin_allowed(origin: str) -> bool:
-    """Reproduces the localhost-allowlist used by ``_check_cross_origin``."""
+    """Reproduces the localhost-allowlist used by ``_check_cross_origin``.
+
+    Includes the IPv6 loopback (``[::1]``) since the daemon admits ``::1``
+    as a loopback bind address (see ``_is_localhost``); a web shell
+    served from that bind would send ``Origin: http://[::1]:port``.
+    """
     if not origin:
         return True
     return any(
@@ -123,6 +128,8 @@ def _origin_allowed(origin: str) -> bool:
             "http://localhost:",
             "https://127.0.0.1:",
             "https://localhost:",
+            "http://[::1]:",
+            "https://[::1]:",
         )
     )
 
@@ -138,11 +145,14 @@ class TestOriginAllowlist:
             ("http://localhost:3000", True),  # browser extension dev port
             ("https://127.0.0.1:8766", True),  # TLS shim if any
             ("https://localhost:8766", True),
+            ("http://[::1]:8766", True),  # IPv6 loopback web shell
+            ("https://[::1]:8766", True),
             ("http://192.168.1.1:8766", False),  # LAN attacker
             ("https://evil.example.com", False),  # hostile page
             ("http://127.0.0.1.evil.com", False),  # subdomain trick
             ("file://", False),  # local file
             ("null", False),  # sandboxed iframe
+            ("http://[::1].evil.com", False),  # bracketed IPv6 trick
         ],
     )
     def test_origin_allowlist_decision(self, origin: str, expected_allowed: bool) -> None:
