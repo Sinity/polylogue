@@ -16,7 +16,7 @@ should support pagination". The author owns that decision.
 from __future__ import annotations
 
 import json
-from typing import cast
+from typing import Any, cast
 
 import pytest
 from pydantic import BaseModel
@@ -215,6 +215,143 @@ class TestEnvelopeRuntimeSerialisation:
 # but does not block the test (these tools predate the envelope contract
 # decision and would need a coordinated migration to align field names).
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Resource error envelope coverage — every resource error path returns the
+# structured MCPErrorPayload shape (#819-A2).
+# ---------------------------------------------------------------------------
+
+
+def _resource(server: MCPServerUnderTest, uri: str) -> Any:
+    """Resolve an MCP resource (concrete URI or template) by its URI string."""
+    if uri in server._resource_manager._resources:
+        return server._resource_manager._resources[uri].fn
+    if uri in server._resource_manager._templates:
+        return server._resource_manager._templates[uri].fn
+    raise KeyError(uri)
+
+
+@pytest.fixture
+def read_server() -> MCPServerUnderTest:
+    """Read-role server — resources are visible at this scope."""
+    from polylogue.mcp.server import build_server
+
+    return cast(MCPServerUnderTest, build_server(role="read"))
+
+
+def _assert_structured_error(payload: str, *, expected_code: str | None = None) -> None:
+    """Assert payload is a structured MCPErrorPayload with is_error and code."""
+    body = json.loads(payload)
+    assert "error" in body, f"missing 'error' field: {body}"
+    assert body.get("is_error") is True, f"missing or false 'is_error': {body}"
+    if expected_code is not None:
+        assert body.get("code") == expected_code, f"expected code={expected_code}, got {body.get('code')}"
+
+
+class TestResourceErrorEnvelopes:
+    """All 8 MCP resources must emit the structured error envelope.
+
+    Pins #819-A2: "Resource handlers produce structured, tested errors."
+    Each test forces an error path (backend exception or missing record)
+    and asserts the JSON has ``error``, ``is_error: true``, and the
+    declared ``code``.
+    """
+
+    def test_stats_resource_internal_error(self, read_server: MCPServerUnderTest) -> None:
+        from unittest.mock import AsyncMock as _AsyncMock
+        from unittest.mock import MagicMock as _MagicMock
+        from unittest.mock import patch as _patch
+
+        with _patch("polylogue.mcp.server._get_archive_ops") as mock_get:
+            mock_ops = _MagicMock()
+            mock_ops.storage_stats = _AsyncMock(side_effect=RuntimeError("boom"))
+            mock_get.return_value = mock_ops
+            from tests.infra.mcp import invoke_surface
+
+            result = invoke_surface(_resource(read_server, "polylogue://stats"))
+        _assert_structured_error(result, expected_code="internal_error")
+
+    def test_conversations_resource_internal_error(self, read_server: MCPServerUnderTest) -> None:
+        from unittest.mock import patch as _patch
+
+        with _patch("polylogue.mcp.server._get_query_store") as mock_get:
+            mock_get.side_effect = RuntimeError("boom")
+            from tests.infra.mcp import invoke_surface
+
+            result = invoke_surface(_resource(read_server, "polylogue://conversations"))
+        _assert_structured_error(result, expected_code="internal_error")
+
+    def test_conversation_resource_not_found(self, read_server: MCPServerUnderTest) -> None:
+        from unittest.mock import AsyncMock as _AsyncMock
+        from unittest.mock import MagicMock as _MagicMock
+        from unittest.mock import patch as _patch
+
+        with _patch("polylogue.mcp.server._get_archive_ops") as mock_get:
+            mock_ops = _MagicMock()
+            mock_ops.get_conversation_summary = _AsyncMock(return_value=None)
+            mock_get.return_value = mock_ops
+            from tests.infra.mcp import invoke_surface
+
+            result = invoke_surface(_resource(read_server, "polylogue://conversation/{conv_id}"), conv_id="missing")
+        _assert_structured_error(result, expected_code="not_found")
+
+    def test_tags_resource_internal_error(self, read_server: MCPServerUnderTest) -> None:
+        from unittest.mock import patch as _patch
+
+        with _patch("polylogue.mcp.server._get_tag_store") as mock_get:
+            mock_get.side_effect = RuntimeError("boom")
+            from tests.infra.mcp import invoke_surface
+
+            result = invoke_surface(_resource(read_server, "polylogue://tags"))
+        _assert_structured_error(result, expected_code="internal_error")
+
+    def test_messages_resource_not_found(self, read_server: MCPServerUnderTest) -> None:
+        from unittest.mock import AsyncMock as _AsyncMock
+        from unittest.mock import MagicMock as _MagicMock
+        from unittest.mock import patch as _patch
+
+        with _patch("polylogue.mcp.server._get_archive_ops") as mock_get:
+            mock_ops = _MagicMock()
+            mock_ops.get_conversation_summary = _AsyncMock(return_value=None)
+            mock_get.return_value = mock_ops
+            from tests.infra.mcp import invoke_surface
+
+            result = invoke_surface(_resource(read_server, "polylogue://messages/{conv_id}"), conv_id="missing")
+        _assert_structured_error(result, expected_code="not_found")
+
+    def test_session_tree_resource_internal_error(self, read_server: MCPServerUnderTest) -> None:
+        from unittest.mock import AsyncMock as _AsyncMock
+        from unittest.mock import MagicMock as _MagicMock
+        from unittest.mock import patch as _patch
+
+        with _patch("polylogue.mcp.server._get_archive_ops") as mock_get:
+            mock_ops = _MagicMock()
+            mock_ops.get_session_tree = _AsyncMock(side_effect=RuntimeError("boom"))
+            mock_get.return_value = mock_ops
+            from tests.infra.mcp import invoke_surface
+
+            result = invoke_surface(_resource(read_server, "polylogue://session-tree/{conv_id}"), conv_id="x")
+        _assert_structured_error(result, expected_code="internal_error")
+
+    def test_provider_recent_resource_internal_error(self, read_server: MCPServerUnderTest) -> None:
+        from unittest.mock import patch as _patch
+
+        with _patch("polylogue.mcp.server._get_query_store") as mock_get:
+            mock_get.side_effect = RuntimeError("boom")
+            from tests.infra.mcp import invoke_surface
+
+            result = invoke_surface(_resource(read_server, "polylogue://provider/{name}/recent"), name="chatgpt")
+        _assert_structured_error(result, expected_code="internal_error")
+
+    def test_readiness_resource_internal_error(self, read_server: MCPServerUnderTest) -> None:
+        from unittest.mock import patch as _patch
+
+        with _patch("polylogue.readiness.get_readiness", side_effect=RuntimeError("boom")):
+            from tests.infra.mcp import invoke_surface
+
+            result = invoke_surface(_resource(read_server, "polylogue://readiness"))
+        _assert_structured_error(result, expected_code="internal_error")
 
 
 def test_insight_envelope_uses_count_not_total() -> None:
