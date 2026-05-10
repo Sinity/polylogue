@@ -284,7 +284,11 @@ def _check_schema_version_fast() -> HealthAlert:
     snapshot machinery so it is tolerant of structural drift and stays cheap
     (a single read on a read-only connection).
     """
-    from polylogue.storage.sqlite.schema_bootstrap import SCHEMA_VERSION
+    from polylogue.storage.sqlite.schema_bootstrap import (
+        SCHEMA_VERSION,
+        capture_schema_snapshot,
+        decide_schema_bootstrap,
+    )
 
     now = datetime.now(UTC).isoformat()
     dbf = db_path()
@@ -302,9 +306,16 @@ def _check_schema_version_fast() -> HealthAlert:
         # Open read-only via URI to avoid creating/locking on a misconfigured DB.
         conn = sqlite3.connect(f"file:{dbf}?mode=ro", uri=True, timeout=2.0)
         try:
-            current = int(conn.execute("PRAGMA user_version").fetchone()[0])
+            snapshot = capture_schema_snapshot(conn)
         finally:
             conn.close()
+
+        current = snapshot.current_version
+        # Reuse the same compatibility decision the storage layer applies on
+        # bootstrap. Older versions for which an explicit upgrade plan exists
+        # are NOT structurally incompatible — the next write-mode connection
+        # applies the plan. Only ``version_mismatch`` (no plan) is fatal.
+        decision = decide_schema_bootstrap(snapshot)
 
         if current == SCHEMA_VERSION:
             severity = HealthSeverity.OK
@@ -314,13 +325,18 @@ def _check_schema_version_fast() -> HealthAlert:
             # handle this, not a structural mismatch.
             severity = HealthSeverity.OK
             message = f"empty database (will bootstrap v{SCHEMA_VERSION})"
-        else:
+        elif decision.action == "version_mismatch":
             severity = HealthSeverity.CRITICAL
             if current > SCHEMA_VERSION:
                 hint = "rebuild or redeploy polylogue to a build that supports this schema"
             else:
-                hint = "runtime is ahead of the database; run an explicit in-place upgrade or rebuild the archive"
+                hint = "runtime cannot upgrade this schema; rebuild the archive or move it aside"
             message = f"schema v{current} incompatible with runtime v{SCHEMA_VERSION} — {hint}"
+        else:
+            # An upgrade plan exists (e.g. upgrade_v11_to_v12). Do not block
+            # the watcher; the storage layer will apply the plan on demand.
+            severity = HealthSeverity.OK
+            message = f"schema v{current} will upgrade to v{SCHEMA_VERSION} on next write"
 
         is_ok = severity == HealthSeverity.OK
         return HealthAlert(

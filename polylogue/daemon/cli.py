@@ -327,10 +327,32 @@ async def run_daemon_services(
 
     logger.info("daemon started")
 
+    # Schema preflight runs FIRST, before any DB-touching startup task. A
+    # mismatched runtime/db combination must not even open the DB for FTS or
+    # heartbeat queries — that is the IO cost #1003 is meant to avoid.
+    schema_alert = _check_schema_version_fast()
+    watcher_blocked = enable_watch and schema_alert.severity == HealthSeverity.CRITICAL
+    if watcher_blocked:
+        logger.error(
+            "daemon: schema preflight CRITICAL — %s. Refusing to start the live watcher; "
+            "HTTP/health surfaces remain available so this state is observable.",
+            schema_alert.message,
+        )
+        set_degraded(
+            DegradedReason(
+                code="schema_incompatible",
+                message=schema_alert.message,
+                detail={"check_name": schema_alert.check_name},
+            )
+        )
+
     # Ensure FTS is consistent on startup. A gap can only exist from
     # pre-daemon historical data; once caught up, the write path maintains
-    # FTS atomically via commit_archive_write_effects().
-    await _ensure_fts_startup_readiness()
+    # FTS atomically via commit_archive_write_effects(). Skipped when the
+    # schema is structurally unusable for this runtime — opening the DB at
+    # all is what the preflight is preventing.
+    if not watcher_blocked:
+        await _ensure_fts_startup_readiness()
 
     pidfile = Path(archive_root()) / "daemon.pid"
     pidfile_fd: int | None = None
@@ -409,27 +431,8 @@ async def run_daemon_services(
             api_server_task = asyncio.create_task(asyncio.to_thread(api_server.serve_forever, 0.5))
             tasks.append(api_server_task)
 
-        # Preflight: refuse to start the live watcher when the on-disk
-        # schema is incompatible with this runtime. Without this gate, every
-        # inotify event triggers a full ingest attempt that immediately
-        # raises SchemaIncompatibleError — see #1003 for the IOPS-storm
-        # incident this prevents.
-        schema_alert = _check_schema_version_fast()
-        watcher_blocked = enable_watch and schema_alert.severity == HealthSeverity.CRITICAL
-        if watcher_blocked:
-            logger.error(
-                "daemon: schema preflight CRITICAL — %s. Refusing to start the live watcher; "
-                "HTTP/health surfaces remain available so this state is observable.",
-                schema_alert.message,
-            )
-            set_degraded(
-                DegradedReason(
-                    code="schema_incompatible",
-                    message=schema_alert.message,
-                    detail={"check_name": schema_alert.check_name},
-                )
-            )
-
+        # Preflight already ran at the top of run_daemon_services (see
+        # ``watcher_blocked`` above); reuse that result.
         if enable_watch and not watcher_blocked:
             async with Polylogue() as polylogue:
                 watcher = LiveWatcher(

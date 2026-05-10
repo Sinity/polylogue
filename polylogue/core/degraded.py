@@ -16,16 +16,37 @@ operator action; a process restart picks up a new value naturally.
 from __future__ import annotations
 
 import threading
+from collections.abc import Mapping
 from dataclasses import dataclass
+from types import MappingProxyType
+from typing import Any
+
+
+def _freeze_detail(value: Mapping[str, Any] | None) -> Mapping[str, Any] | None:
+    """Wrap a detail mapping in a read-only view so callers can't mutate shared state."""
+    if value is None:
+        return None
+    if isinstance(value, MappingProxyType):
+        return value
+    return MappingProxyType(dict(value))
 
 
 @dataclass(frozen=True, slots=True)
 class DegradedReason:
-    """Why the daemon refuses to ingest until restart or recheck."""
+    """Why the daemon refuses to ingest until restart or recheck.
+
+    ``detail`` is normalized to a read-only mapping on construction so that
+    holders of the original dict — or the value returned by ``degraded_reason()``
+    — cannot mutate process-wide shared state outside the lock.
+    """
 
     code: str
     message: str
-    detail: dict[str, object] | None = None
+    detail: Mapping[str, Any] | None = None
+
+    def __post_init__(self) -> None:
+        # ``frozen=True`` blocks normal assignment; bypass via object.__setattr__.
+        object.__setattr__(self, "detail", _freeze_detail(self.detail))
 
 
 _lock = threading.Lock()

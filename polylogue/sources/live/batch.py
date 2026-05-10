@@ -174,9 +174,13 @@ class LiveBatchProcessor:
                 handle_schema_incompatible(append_plans[0].source_name, exc)
                 for plan in append_plans:
                     failed_paths.append(str(plan.path))
-                # Surface the failure but skip the rest of the batch — the
-                # by_source loop below also checks ``is_degraded()``.
-                append_result = _AppendResult(succeeded=[], failed=list(append_plans), worker_count=0)
+                # Use an empty result so the per-plan cleanup loop below
+                # (``for plan in append_result.failed``) does NOT re-push the
+                # same paths into ``failed_paths`` and does NOT call
+                # ``_record_failed_cursor`` against the DB we already know is
+                # structurally unusable. The by_source loop further down also
+                # checks ``is_degraded()`` and skips the full-parse phase.
+                append_result = _AppendResult(succeeded=[], failed=[], worker_count=0)
             ingest_worker_count_max = max(ingest_worker_count_max, append_result.worker_count)
             parse_time_s += time.perf_counter() - t0
             self._record_attempt_progress(
@@ -256,7 +260,10 @@ class LiveBatchProcessor:
                     ingest_worker_count_max = max(ingest_worker_count_max, full_result.worker_count)
                 except SchemaIncompatibleError as exc:
                     handle_schema_incompatible(source_name, exc)
-                    for path in source_paths:
+                    # Account for every queued path in this source group, not
+                    # only the current progress chunk — later chunks would
+                    # hit the same structural error with no information gain.
+                    for path in grouped_paths:
                         failed_paths.append(str(path))
                     self._record_attempt_progress(
                         attempt_id,
