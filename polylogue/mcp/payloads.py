@@ -173,6 +173,31 @@ class MCPPaginatedSearchResultPayload(SurfacePayloadModel):
     diagnostics: MCPQueryMissDiagnosticsPayload | None = None
 
 
+class MCPSessionTreePayload(SurfacePayloadModel):
+    """Bounded envelope for ``get_session_tree``.
+
+    The tree of related conversations can be unbounded in principle; the
+    envelope makes the size visible to callers and preserves room for
+    future ``limit``/``offset`` pagination without breaking the response
+    shape.
+    """
+
+    items: tuple[MCPConversationSummaryPayload, ...]
+    total: int
+
+
+class MCPNeighborCandidatesPayload(SurfacePayloadModel):
+    """Bounded envelope for ``neighbor_candidates``.
+
+    Records the ``limit`` actually applied so the caller can recognise
+    truncation and decide whether to widen the request.
+    """
+
+    items: tuple[MCPConversationNeighborCandidatePayload, ...]
+    total: int
+    limit: int
+
+
 def conversation_summary_list_payload(
     conversations: Sequence[Conversation],
 ) -> MCPConversationSummaryListPayload:
@@ -220,6 +245,22 @@ def conversation_neighbor_candidate_list_payload(
     return MCPConversationNeighborCandidateListPayload(
         root=[MCPConversationNeighborCandidatePayload.from_candidate(candidate) for candidate in candidates]
     )
+
+
+def session_tree_payload(
+    conversations: Sequence[Conversation],
+) -> MCPSessionTreePayload:
+    items = tuple(MCPConversationSummaryPayload.from_conversation(conv) for conv in conversations)
+    return MCPSessionTreePayload(items=items, total=len(items))
+
+
+def neighbor_candidates_payload(
+    candidates: Sequence[ConversationNeighborCandidate],
+    *,
+    limit: int,
+) -> MCPNeighborCandidatesPayload:
+    items = tuple(MCPConversationNeighborCandidatePayload.from_candidate(candidate) for candidate in candidates)
+    return MCPNeighborCandidatesPayload(items=items, total=len(items), limit=limit)
 
 
 def _build_search_cursor(hits: Sequence[ConversationSearchHit]) -> str | None:
@@ -512,6 +553,9 @@ __all__ = [
     "MCPMetadataPayload",
     "MCPMutationStatusPayload",
     "MutationResultPayload",
+    "MCPNeighborCandidatesPayload",
+    "MCPPaginatedQueryResultPayload",
+    "MCPPaginatedSearchResultPayload",
     "MCPQueryMissDiagnosticsPayload",
     "MCPQueryMissReasonPayload",
     "MCPRawArtifactPayload",
@@ -519,6 +563,7 @@ __all__ = [
     "MCPReadinessCheckPayload",
     "MCPReadinessReportPayload",
     "MCPRootPayload",
+    "MCPSessionTreePayload",
     "MCPStatsByPayload",
     "MCPTagCountsPayload",
     "conversation_neighbor_candidate_list_payload",
@@ -527,5 +572,7 @@ __all__ = [
     "conversation_search_result_payload",
     "conversation_summary_list_payload",
     "model_json_document",
+    "neighbor_candidates_payload",
     "normalize_role",
+    "session_tree_payload",
 ]

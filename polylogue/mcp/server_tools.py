@@ -14,10 +14,10 @@ from polylogue.mcp.payloads import (
     MCPRawArtifactsListPayload,
     MCPReadinessReportPayload,
     MCPStatsByPayload,
-    conversation_neighbor_candidate_list_payload,
     conversation_query_result_payload,
     conversation_search_result_payload,
-    conversation_summary_list_payload,
+    neighbor_candidates_payload,
+    session_tree_payload,
 )
 from polylogue.mcp.query_contracts import (
     MCPContentProjectionRequest,
@@ -278,14 +278,18 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 return hooks.error_json("neighbor_candidates requires id or query")
 
             poly = hooks.get_polylogue()
+            clamped_limit = hooks.clamp_limit(limit)
             candidates = await poly.neighbor_candidates(
                 conversation_id=id,
                 query=query,
                 provider=provider,
-                limit=hooks.clamp_limit(limit),
+                limit=clamped_limit,
                 window_hours=max(1, window_hours),
             )
-            return hooks.json_payload(conversation_neighbor_candidate_list_payload(candidates), exclude_none=True)
+            return hooks.json_payload(
+                neighbor_candidates_payload(candidates, limit=clamped_limit),
+                exclude_none=True,
+            )
 
         return await hooks.async_safe_call("neighbor_candidates", run)
 
@@ -327,7 +331,7 @@ def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         async def run() -> str:
             poly = hooks.get_polylogue()
             tree = await poly.get_session_tree(conversation_id)
-            return hooks.json_payload(conversation_summary_list_payload(tree))
+            return hooks.json_payload(session_tree_payload(tree))
 
         return await hooks.async_safe_call("get_session_tree", run)
 
