@@ -868,6 +868,11 @@ files:
     target: polylogue/core/dates.py
     owner: core-primitive
     reason: core primitive
+  - path: polylogue/core/degraded.py
+    loc: 65
+    target: polylogue/core/degraded.py
+    owner: core-primitive
+    reason: core primitive
   - path: polylogue/core/hashing.py
     loc: 60
     target: polylogue/core/hashing.py
@@ -2127,6 +2132,10 @@ files:
   - path: polylogue/sources/live/cursor.py
     loc: 684
     target: polylogue/sources/live/cursor.py
+    owner: stable
+  - path: polylogue/sources/live/dedup.py
+    loc: 90
+    target: polylogue/sources/live/dedup.py
     owner: stable
   - path: polylogue/sources/live/metrics.py
     loc: 72

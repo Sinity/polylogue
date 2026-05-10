@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.daemon.degraded import (
+from polylogue.core.degraded import (
     DegradedReason,
     clear_degraded,
     degraded_reason,
@@ -27,10 +27,11 @@ from polylogue.daemon.health import (
     _check_schema_version_fast,
 )
 from polylogue.errors import DatabaseError, SchemaIncompatibleError
-from polylogue.sources.live.batch import (
-    _SCHEMA_MISMATCH_DEDUP_WINDOW_S,
-    _RateLimiter,
-    _schema_warning_limiter,
+from polylogue.sources.live.dedup import (
+    SCHEMA_MISMATCH_DEDUP_WINDOW_S,
+    RateLimiter,
+    handle_schema_incompatible,
+    schema_warning_limiter,
 )
 from polylogue.storage.sqlite.schema import _ensure_schema
 from polylogue.storage.sqlite.schema_bootstrap import SCHEMA_VERSION
@@ -40,10 +41,10 @@ from polylogue.storage.sqlite.schema_bootstrap import SCHEMA_VERSION
 def _reset_degraded_state() -> Iterator[None]:
     """Each test starts from a clean process-local degraded flag and limiter."""
     clear_degraded()
-    _schema_warning_limiter.reset()
+    schema_warning_limiter.reset()
     yield
     clear_degraded()
-    _schema_warning_limiter.reset()
+    schema_warning_limiter.reset()
 
 
 # ---------------------------------------------------------------------------
@@ -162,7 +163,7 @@ def test_rate_limiter_admits_first_then_suppresses_within_window() -> None:
     def clock() -> float:
         return fake_now[0]
 
-    limiter = _RateLimiter(window_s=60.0, clock=clock)
+    limiter = RateLimiter(window_s=60.0, clock=clock)
 
     assert limiter.admit(("source-a", "sig-1")) is True
     # Within window — suppressed.
@@ -177,7 +178,7 @@ def test_rate_limiter_admits_first_then_suppresses_within_window() -> None:
 
 def test_rate_limiter_keys_independent() -> None:
     fake_now = [0.0]
-    limiter = _RateLimiter(window_s=60.0, clock=lambda: fake_now[0])
+    limiter = RateLimiter(window_s=60.0, clock=lambda: fake_now[0])
 
     assert limiter.admit(("source-a", "sig-1")) is True
     # Different source — independent admission.
@@ -188,7 +189,7 @@ def test_rate_limiter_keys_independent() -> None:
 
 def test_schema_dedup_window_is_one_minute() -> None:
     """AC item: ≤1 mismatch warning per minute per source."""
-    assert _SCHEMA_MISMATCH_DEDUP_WINDOW_S == 60.0
+    assert SCHEMA_MISMATCH_DEDUP_WINDOW_S == 60.0
 
 
 # ---------------------------------------------------------------------------
@@ -271,41 +272,24 @@ async def test_ingest_files_short_circuits_when_degraded(tmp_path: Path) -> None
 # ---------------------------------------------------------------------------
 
 
-def test_handle_schema_incompatible_dedups_and_marks_degraded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_handle_schema_incompatible_dedups_and_marks_degraded(monkeypatch: pytest.MonkeyPatch) -> None:
     """Repeated schema mismatches in the same window log once and pin degraded mode.
 
     This exercises the path that was previously a generic ``except Exception``:
     every inotify event would log the mismatch and try again on the next event.
     """
-    from polylogue.sources.live.batch import LiveBatchProcessor
-
-    cursor = _StubCursor(tmp_path / "polylogue.db")
-
-    class _StubPolylogue:
-        archive_root = tmp_path
-        backend = None
-        config = None
-
-    sources_root = type("SourceRoot", (), {"name": "claude-code", "root": tmp_path})()
-    processor = LiveBatchProcessor(
-        _StubPolylogue(),  # type: ignore[arg-type]
-        [sources_root],
-        cursor=cursor,  # type: ignore[arg-type]
-        parser_fingerprint="test-fp",
-    )
-
     exc = SchemaIncompatibleError(
         "Database schema version 12 is newer than this Polylogue runtime expects (9).",
         current_version=12,
         expected_version=9,
     )
 
-    # Capture warning calls by intercepting the module-level logger.
+    # Capture warning calls by intercepting the module-level logger in dedup.
     warnings: list[tuple[str, tuple[object, ...]]] = []
 
-    import polylogue.sources.live.batch as batch_module
+    import polylogue.sources.live.dedup as dedup_module
 
-    real_logger = batch_module.logger
+    real_logger = dedup_module._logger
 
     class _RecordingLogger:
         def warning(self, message: str, *args: object, **kwargs: object) -> None:
@@ -314,10 +298,10 @@ def test_handle_schema_incompatible_dedups_and_marks_degraded(tmp_path: Path, mo
         def __getattr__(self, name: str) -> object:
             return getattr(real_logger, name)
 
-    monkeypatch.setattr(batch_module, "logger", _RecordingLogger())
+    monkeypatch.setattr(dedup_module, "_logger", _RecordingLogger())
 
     # First call: warns once and flips degraded.
-    processor._handle_schema_incompatible("claude-code", exc)
+    handle_schema_incompatible("claude-code", exc)
     assert is_degraded()
     reason = degraded_reason()
     assert reason is not None
@@ -326,7 +310,7 @@ def test_handle_schema_incompatible_dedups_and_marks_degraded(tmp_path: Path, mo
 
     # Many subsequent attempts within the dedup window: still only one warning.
     for _ in range(150):
-        processor._handle_schema_incompatible("claude-code", exc)
+        handle_schema_incompatible("claude-code", exc)
 
     refusal_warnings = [w for w in warnings if "refusing further ingest" in w[0]]
     assert len(refusal_warnings) == 1, warnings

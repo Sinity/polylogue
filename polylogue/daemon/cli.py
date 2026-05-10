@@ -17,9 +17,9 @@ import click
 
 from polylogue.api import Polylogue
 from polylogue.browser_capture.server import BrowserCaptureHTTPServer, make_server
+from polylogue.core.degraded import DegradedReason, set_degraded
 from polylogue.core.json import dumps
 from polylogue.daemon.browser_capture import browser_capture_command
-from polylogue.daemon.degraded import DegradedReason, set_degraded
 from polylogue.daemon.health import (
     HealthSeverity,
     HealthTier,
