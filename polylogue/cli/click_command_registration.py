@@ -57,7 +57,8 @@ __all__ = [
     "completions_command",
     "dashboard_command",
     "export_command",
+    "maintenance_group",
     "neighbors_command",
-    "resume_command",
     "register_root_commands",
+    "resume_command",
 ]

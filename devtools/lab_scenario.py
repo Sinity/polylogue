@@ -1,13 +1,13 @@
 """Verification-lab showcase scenario runner."""
 
 from __future__ import annotations
-from devtools import repo_root as _get_root
 
 import argparse
 import difflib
 import json
 from pathlib import Path
 
+from devtools import repo_root as _get_root
 from polylogue.showcase.cli_boundary import invoke_showcase_cli
 from polylogue.showcase.exercises import EXERCISES, Exercise
 from polylogue.showcase.qa_runner_reporting import format_qa_summary

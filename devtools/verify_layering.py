@@ -13,13 +13,13 @@ Usage:
 """
 
 from __future__ import annotations
-from devtools import repo_root as _get_root
 
 import argparse
 import ast
 import sys
 from pathlib import Path
 
+from devtools import repo_root as _get_root
 from polylogue.core.json import dumps
 
 

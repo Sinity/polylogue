@@ -14,10 +14,10 @@ Current registry snapshot:
 - mutation campaigns: `19`
 - benchmark campaigns: `3`
 - synthetic benchmark campaigns: `7`
-- scenario projections: `235`
+- scenario projections: `238`
 - inferred corpus scenarios: `5`
   - benchmark-campaign: `3`
-  - exercise: `133`
+  - exercise: `136`
   - inferred-corpus-scenario: `5`
   - mutation-campaign: `19`
   - synthetic-benchmark: `7`
@@ -33,7 +33,7 @@ Current registry snapshot:
 - uncovered runtime paths: —
 - uncovered runtime artifacts: —
 - uncovered runtime operations: `mutate-add-tag`, `mutate-bulk-tag-conversations`, `mutate-delete-conversation`, `mutate-delete-metadata`, `mutate-remove-tag`, `mutate-set-metadata`
-- uncovered maintenance targets: `empty_conversations`, `orphaned_attachments`, `orphaned_blobs`, `orphaned_content_blocks`, `orphaned_messages`, `wal_checkpoint`
+- uncovered maintenance targets: `empty_conversations`, `message_type_backfill`, `orphaned_attachments`, `orphaned_blobs`, `orphaned_content_blocks`, `orphaned_messages`, `wal_checkpoint`
 - uncovered declared operation targets: `mutate-add-tag`, `mutate-bulk-tag-conversations`, `mutate-delete-conversation`, `mutate-delete-metadata`, `mutate-remove-tag`, `mutate-set-metadata`
 
 Inspect the full authored map with:
@@ -345,6 +345,9 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `exercise` | `help-insights-work-events` | `session-work-event-query-loop` | `session_work_event_rows`<br>`session_work_event_fts`<br>`session_work_event_results` | `cli.help`<br>`query-session-work-events` | — | `generated`<br>`help`<br>`structural` | insights work-events help |
 | `exercise` | `help-list` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | list help |
 | `exercise` | `help-main` | — | — | — | — | — | Main help screen |
+| `exercise` | `help-maintenance` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | maintenance help |
+| `exercise` | `help-maintenance-plan` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | maintenance plan help |
+| `exercise` | `help-maintenance-run` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | maintenance run help |
 | `exercise` | `help-messages` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | messages help |
 | `exercise` | `help-neighbors` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | neighbors help |
 | `exercise` | `help-open` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | open help |

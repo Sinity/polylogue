@@ -6,13 +6,13 @@ review and either renewal or removal.
 """
 
 from __future__ import annotations
-from devtools import repo_root as _get_root
 
 import argparse
 import json
 import sys
 from pathlib import Path
 
+from devtools import repo_root as _get_root
 from polylogue.proof.suppressions import load_suppressions, validate_suppressions
 
 ROOT = _get_root()

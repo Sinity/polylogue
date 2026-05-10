@@ -1,7 +1,6 @@
 """CLI parsing, input selection, and request schema for pipeline probes."""
 
 from __future__ import annotations
-from devtools import repo_root as _get_root
 
 import argparse
 from pathlib import Path
@@ -9,6 +8,7 @@ from typing import NotRequired
 
 from typing_extensions import TypedDict
 
+from devtools import repo_root as _get_root
 from devtools.regression_cases import DEFAULT_REGRESSION_CASE_DIR
 from polylogue.core.json import JSONDocument, JSONValue
 from polylogue.scenarios import (

@@ -11,7 +11,6 @@ The underlying structural contracts are enforced by ``verify-topology``
 """
 
 from __future__ import annotations
-from devtools import repo_root as _get_root
 
 import argparse
 import sys
@@ -19,6 +18,7 @@ from collections import Counter, defaultdict
 from collections.abc import Iterable
 from pathlib import Path
 
+from devtools import repo_root as _get_root
 from devtools.verify_topology import parse_yaml as parse_topology_yaml
 
 ROOT = _get_root()

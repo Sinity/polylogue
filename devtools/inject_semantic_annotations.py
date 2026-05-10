@@ -7,13 +7,12 @@ Usage: devtools inject-semantic-annotations [--dry-run]
 """
 
 from __future__ import annotations
-from devtools import repo_root as _get_root
 
 import gzip
 import json
 import sys
-from pathlib import Path
 
+from devtools import repo_root as _get_root
 from polylogue.core.json import JSONDocument, is_json_document, json_document
 from polylogue.schemas.registry import SchemaRegistry
 

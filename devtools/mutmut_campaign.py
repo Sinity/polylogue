@@ -12,7 +12,6 @@ solve that by:
 """
 
 from __future__ import annotations
-from devtools import repo_root as _get_root
 
 import argparse
 import fnmatch
@@ -24,6 +23,8 @@ from collections import Counter
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+
+from devtools import repo_root as _get_root
 
 from .authored_scenario_catalog import get_authored_scenario_catalog
 from .mutation_catalog import MutationCampaignEntry

@@ -12,12 +12,13 @@ Diagrams:
 """
 
 from __future__ import annotations
-from devtools import repo_root as _get_root
 
 import argparse
 import shutil
 import subprocess
 from pathlib import Path
+
+from devtools import repo_root as _get_root
 
 _DOCS_MEDIA = _get_root() / "docs" / "media"
 

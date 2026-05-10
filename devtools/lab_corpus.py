@@ -1,13 +1,13 @@
 """Verification-lab synthetic corpus and demo workspace command."""
 
 from __future__ import annotations
-from devtools import repo_root as _get_root
 
 import argparse
 import json
 import sys
 from pathlib import Path
 
+from devtools import repo_root as _get_root
 from polylogue.scenarios import CorpusSourceKind
 from polylogue.showcase.lab_corpus import generate_lab_corpus, seed_lab_demo
 

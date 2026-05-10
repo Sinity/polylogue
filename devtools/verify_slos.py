@@ -11,7 +11,6 @@ are deferred surfaces, not failures.
 """
 
 from __future__ import annotations
-from devtools import repo_root as _get_root
 
 import argparse
 import json
@@ -19,6 +18,8 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+from devtools import repo_root as _get_root
 
 ROOT = _get_root()
 SLO_CATALOG = ROOT / "docs" / "plans" / "slo-catalog.yaml"

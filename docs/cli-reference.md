@@ -151,6 +151,7 @@ Commands:
   ingest        Schedule a file or directory for ingestion by the daemon.
   insights      Inspect durable archive insights.
   list          List matched conversations.
+  maintenance   Preview and run maintenance backfill operations.
   messages      Show paginated messages for a conversation.
   neighbors     Show explainable neighboring or near-duplicate candidates.
   open          Open matched conversation in the daemon web reader.
@@ -274,11 +275,12 @@ Options:
                                   maintenance repairs
   --cleanup                       Run destructive archive cleanup for orphaned
                                   or empty persisted data
-  --target [session_insights|action_event_read_model|dangling_fts|wal_checkpoint|orphaned_messages|orphaned_content_blocks|empty_conversations|orphaned_attachments|orphaned_blobs]
+  --target [session_insights|action_event_read_model|dangling_fts|message_type_backfill|wal_checkpoint|orphaned_messages|orphaned_content_blocks|empty_conversations|orphaned_attachments|orphaned_blobs]
                                   Limit maintenance to named targets such as
                                   session_insights, action_event_read_model,
-                                  dangling_fts, wal_checkpoint,
-                                  orphaned_messages, orphaned_content_blocks,
+                                  dangling_fts, message_type_backfill,
+                                  wal_checkpoint, orphaned_messages,
+                                  orphaned_content_blocks,
                                   empty_conversations, orphaned_attachments,
                                   or orphaned_blobs
   --preview                       Preview maintenance without executing

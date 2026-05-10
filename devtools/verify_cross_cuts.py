@@ -17,7 +17,6 @@ layering/import rules once the cross-cut tag set is wider.
 """
 
 from __future__ import annotations
-from devtools import repo_root as _get_root
 
 import argparse
 import json
@@ -25,6 +24,7 @@ import sys
 from collections.abc import Iterable
 from pathlib import Path
 
+from devtools import repo_root as _get_root
 from devtools.verify_topology import parse_yaml as parse_topology_yaml
 
 ROOT = _get_root()

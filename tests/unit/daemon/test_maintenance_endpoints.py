@@ -6,9 +6,14 @@ Uses the DaemonAPIHandler class itself (unit-style), not a live server.
 from __future__ import annotations
 
 import json
+from email.message import Message
 from http import HTTPStatus
 from io import BytesIO
+from typing import TYPE_CHECKING, cast
 from unittest.mock import patch
+
+if TYPE_CHECKING:
+    from polylogue.daemon.http import DaemonAPIHandler, DaemonAPIHTTPServer
 
 
 class MockServer:
@@ -24,25 +29,31 @@ class MockHeaders:
         return self._headers.get(key, default)
 
 
-def _make_handler(path: str, body: dict | None = None, content_length: int | None = None):
+def _make_handler(
+    path: str,
+    body: dict[str, object] | None = None,
+    content_length: int | None = None,
+) -> DaemonAPIHandler:
     """Build a DaemonAPIHandler with mocked request attributes."""
     from polylogue.daemon.http import DaemonAPIHandler
 
     handler = DaemonAPIHandler.__new__(DaemonAPIHandler)
-    handler.server = MockServer()
+    # Stand-ins: BaseHTTPRequestHandler typing wants the real server/Message,
+    # but the routes under test never touch fields we don't simulate here.
+    handler.server = cast("DaemonAPIHTTPServer", MockServer())
     handler.client_address = ("127.0.0.1", 12345)
     handler.path = path
     handler.command = "POST"
     handler.requestline = f"POST {path} HTTP/1.1"
-    handler.headers = MockHeaders()
+    handler.headers = cast("Message[str, str]", MockHeaders())
 
     if body is not None:
         raw = json.dumps(body).encode("utf-8")
         cl = content_length if content_length is not None else len(raw)
-        handler.headers._headers["Content-Length"] = str(cl)
+        cast(MockHeaders, handler.headers)._headers["Content-Length"] = str(cl)
         handler.rfile = BytesIO(raw)
     else:
-        handler.headers._headers["Content-Length"] = "0"
+        cast(MockHeaders, handler.headers)._headers["Content-Length"] = "0"
         handler.rfile = BytesIO(b"")
 
     return handler
@@ -123,7 +134,7 @@ class TestMaintenanceAPIRoutes:
         """_handle_maintenance_plan returns 400 on invalid JSON body."""
         handler = _make_handler("/api/maintenance/plan")
         handler.rfile = BytesIO(b"not-json")
-        handler.headers._headers["Content-Length"] = str(len(b"not-json"))
+        cast(MockHeaders, handler.headers)._headers["Content-Length"] = str(len(b"not-json"))
         with patch.object(handler, "_send_error") as mock:
             with patch.object(handler, "_send_json"):
                 handler._handle_maintenance_plan()
@@ -133,7 +144,7 @@ class TestMaintenanceAPIRoutes:
         """_handle_maintenance_run returns 400 on invalid JSON body."""
         handler = _make_handler("/api/maintenance/run")
         handler.rfile = BytesIO(b"{broken")
-        handler.headers._headers["Content-Length"] = str(len(b"{broken"))
+        cast(MockHeaders, handler.headers)._headers["Content-Length"] = str(len(b"{broken"))
         with patch.object(handler, "_send_error") as mock:
             with patch.object(handler, "_send_json"):
                 handler._handle_maintenance_run()

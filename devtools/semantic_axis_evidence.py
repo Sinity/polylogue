@@ -1,7 +1,6 @@
 """Generate semantic-axis performance evidence from synthetic benchmark tiers."""
 
 from __future__ import annotations
-from devtools import repo_root as _get_root
 
 import argparse
 import asyncio
@@ -18,6 +17,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from devtools import repo_root as _get_root
 from polylogue.core.json import JSONDocument, require_json_value
 from polylogue.core.outcomes import OutcomeStatus
 from polylogue.proof.models import EvidenceEnvelope, TrustMetadata
