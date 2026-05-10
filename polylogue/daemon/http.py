@@ -13,6 +13,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlparse
 
+from polylogue.core.loopback import is_loopback_host, is_loopback_origin
 from polylogue.daemon.events import emit_daemon_event
 from polylogue.daemon.status import daemon_status_payload
 from polylogue.errors import PolylogueError
@@ -81,8 +82,14 @@ def _get_or_create_polylogue() -> Polylogue:
 
 
 def _is_localhost(host: str) -> bool:
-    """Return True if host is a loopback address."""
-    return host in ("127.0.0.1", "::1", "localhost")
+    """Return True if host is a loopback bind address or name.
+
+    Thin alias preserved for the daemon test surface; defers to the shared
+    :func:`polylogue.core.loopback.is_loopback_host` so the daemon API and
+    browser-capture receiver agree on RFC 5735 (the full ``127.0.0.0/8``
+    block plus ``::1`` and the ``localhost`` name).
+    """
+    return is_loopback_host(host)
 
 
 def _build_query_spec_params(
@@ -151,18 +158,6 @@ def _build_query_spec_params(
     return spec_params
 
 
-def _advertised_cors_headers(host: str) -> dict[str, str]:
-    """Return CORS headers appropriate for the bind address.
-
-    On loopback, allow the same origin (local web UI and browser extension
-    need to reach the daemon). On non-loopback, require an explicit origin
-    configuration.
-    """
-    if _is_localhost(host):
-        return {}
-    return {}
-
-
 def _check_auth_logic(
     auth_token: str | None,
     client_host: str,  # noqa: ARG001
@@ -210,11 +205,6 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
     @property
     def _api_host(self) -> str:
         return getattr(self.server, "api_host", "127.0.0.1")
-
-    @property
-    def _auth_required(self) -> bool:
-        """Auth is always required on non-loopback, always from the web shell."""
-        return not _is_localhost(self._client_host)
 
     @property
     def _client_host(self) -> str:
@@ -360,17 +350,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         origin = self.headers.get("Origin", "")
         if not origin:
             return True  # Not a browser request
-        # Allow same-origin localhost requests (web reader, browser extension).
-        # IPv6 loopback (`::1`) is bracketed in the URL form per RFC 3986.
-        loopback_prefixes = (
-            "http://127.0.0.1:",
-            "https://127.0.0.1:",
-            "http://localhost:",
-            "https://localhost:",
-            "http://[::1]:",
-            "https://[::1]:",
-        )
-        if any(origin.startswith(p) for p in loopback_prefixes):
+        if is_loopback_origin(origin):
             return True
         self._send_error(HTTPStatus.FORBIDDEN, "cross_origin_denied")
         return False

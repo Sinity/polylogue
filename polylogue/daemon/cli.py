@@ -19,6 +19,7 @@ from polylogue.api import Polylogue
 from polylogue.browser_capture.server import BrowserCaptureHTTPServer, make_server
 from polylogue.core.degraded import DegradedReason, set_degraded
 from polylogue.core.json import dumps
+from polylogue.core.loopback import is_loopback_host
 from polylogue.daemon.browser_capture import browser_capture_command
 from polylogue.daemon.health import (
     HealthSeverity,
@@ -313,7 +314,7 @@ async def run_daemon_services(
     global _pidfile_path
 
     # Non-localhost API binding requires explicit opt-in AND an auth token.
-    if enable_api and api_host not in ("127.0.0.1", "::1", "localhost"):
+    if enable_api and not is_loopback_host(api_host):
         if not browser_capture_allow_remote:
             raise click.UsageError(
                 f"--api-host={api_host} is not a loopback address. "

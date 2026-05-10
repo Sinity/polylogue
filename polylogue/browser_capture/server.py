@@ -18,8 +18,7 @@ from polylogue.browser_capture.receiver import (
     write_capture_envelope,
 )
 from polylogue.core.json import dumps_bytes
-
-_LOOPBACK_HOSTS: frozenset[str] = frozenset({"127.0.0.1", "::1", "localhost"})
+from polylogue.core.loopback import is_loopback_host
 
 
 def _json_bytes(payload: object) -> bytes:
@@ -35,7 +34,7 @@ def _origin_allowed(origin: str | None, config: BrowserCaptureReceiverConfig) ->
 
 
 def _is_loopback(host: str) -> bool:
-    return host in _LOOPBACK_HOSTS or host.startswith("127.") or host == "::1"
+    return is_loopback_host(host)
 
 
 def _check_token(headers: dict[str, str], config: BrowserCaptureReceiverConfig) -> bool:
