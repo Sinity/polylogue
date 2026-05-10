@@ -501,9 +501,13 @@ class TestQueryTools:
             )
 
         payload = json.loads(raw)
-        assert payload[0]["conversation"]["id"] == "candidate"
-        assert payload[0]["reasons"][0]["kind"] == "nearby_time"
-        assert payload[0]["source_conversation_id"] == "target"
+        # 819: bounded envelope rather than bare array.
+        assert payload["limit"] == 3
+        assert payload["total"] == 1
+        items = payload["items"]
+        assert items[0]["conversation"]["id"] == "candidate"
+        assert items[0]["reasons"][0]["kind"] == "nearby_time"
+        assert items[0]["source_conversation_id"] == "target"
         mock_poly.neighbor_candidates.assert_awaited_once_with(
             conversation_id="target",
             query=None,
@@ -1271,7 +1275,9 @@ class TestMutationTools:
 
         assert "not found" in json.loads(result)["error"].lower()
 
-    def test_session_tree_returns_list(self, simple_conversation: Conversation, mcp_server: MCPServerUnderTest) -> None:
+    def test_session_tree_returns_envelope(
+        self, simple_conversation: Conversation, mcp_server: MCPServerUnderTest
+    ) -> None:
         with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
             mock_poly = make_polylogue_mock()
             mock_poly.get_session_tree = AsyncMock(return_value=[simple_conversation])
@@ -1281,9 +1287,12 @@ class TestMutationTools:
                 mcp_server._tool_manager._tools["get_session_tree"].fn, conversation_id="test:conv-123"
             )
 
+        # 819: bounded envelope rather than bare array.
         parsed = json.loads(result)
-        assert isinstance(parsed, list)
-        assert parsed[0]["id"] == "test:conv-123"
+        assert parsed["total"] == 1
+        items = parsed["items"]
+        assert isinstance(items, list)
+        assert items[0]["id"] == "test:conv-123"
 
     @pytest.mark.parametrize(
         ("group_by", "expected"),
