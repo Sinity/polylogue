@@ -17,9 +17,16 @@ import click
 
 from polylogue.api import Polylogue
 from polylogue.browser_capture.server import BrowserCaptureHTTPServer, make_server
+from polylogue.core.degraded import DegradedReason, set_degraded
 from polylogue.core.json import dumps
 from polylogue.daemon.browser_capture import browser_capture_command
-from polylogue.daemon.health import HealthTier, check_health, format_health_lines
+from polylogue.daemon.health import (
+    HealthSeverity,
+    HealthTier,
+    _check_schema_version_fast,
+    check_health,
+    format_health_lines,
+)
 from polylogue.daemon.status import daemon_status_payload, format_daemon_status_lines
 from polylogue.logging import configure_logging, get_logger
 from polylogue.sources.live import LiveWatcher, WatchSource
@@ -320,10 +327,32 @@ async def run_daemon_services(
 
     logger.info("daemon started")
 
+    # Schema preflight runs FIRST, before any DB-touching startup task. A
+    # mismatched runtime/db combination must not even open the DB for FTS or
+    # heartbeat queries — that is the IO cost #1003 is meant to avoid.
+    schema_alert = _check_schema_version_fast()
+    watcher_blocked = enable_watch and schema_alert.severity == HealthSeverity.CRITICAL
+    if watcher_blocked:
+        logger.error(
+            "daemon: schema preflight CRITICAL — %s. Refusing to start the live watcher; "
+            "HTTP/health surfaces remain available so this state is observable.",
+            schema_alert.message,
+        )
+        set_degraded(
+            DegradedReason(
+                code="schema_incompatible",
+                message=schema_alert.message,
+                detail={"check_name": schema_alert.check_name},
+            )
+        )
+
     # Ensure FTS is consistent on startup. A gap can only exist from
     # pre-daemon historical data; once caught up, the write path maintains
-    # FTS atomically via commit_archive_write_effects().
-    await _ensure_fts_startup_readiness()
+    # FTS atomically via commit_archive_write_effects(). Skipped when the
+    # schema is structurally unusable for this runtime — opening the DB at
+    # all is what the preflight is preventing.
+    if not watcher_blocked:
+        await _ensure_fts_startup_readiness()
 
     pidfile = Path(archive_root()) / "daemon.pid"
     pidfile_fd: int | None = None
@@ -402,7 +431,9 @@ async def run_daemon_services(
             api_server_task = asyncio.create_task(asyncio.to_thread(api_server.serve_forever, 0.5))
             tasks.append(api_server_task)
 
-        if enable_watch:
+        # Preflight already ran at the top of run_daemon_services (see
+        # ``watcher_blocked`` above); reuse that result.
+        if enable_watch and not watcher_blocked:
             async with Polylogue() as polylogue:
                 watcher = LiveWatcher(
                     polylogue,
@@ -416,6 +447,8 @@ async def run_daemon_services(
                 all_tasks = tasks + maintenance_tasks
                 await asyncio.gather(*all_tasks)
         elif tasks:
+            # Watcher disabled or preflight-blocked: keep HTTP/health and
+            # other components serving so operators see the degraded state.
             all_tasks = tasks + maintenance_tasks
             await asyncio.gather(*all_tasks)
         else:
