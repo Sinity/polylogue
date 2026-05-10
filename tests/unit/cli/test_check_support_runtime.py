@@ -170,7 +170,10 @@ def test_run_blob_store_check_reports_missing_orphaned_and_verified_states() -> 
     blob_store = SimpleNamespace(
         iter_all=lambda: ["raw-a", "orphan-c"],
         detect_orphans=lambda known_ids: SimpleNamespace(
-            orphan_count=1, orphan_bytes=0, scanned_count=2, orphan_samples=()
+            orphan_count=1,
+            orphan_bytes=4096,
+            scanned_count=2,
+            orphan_samples=("orphan-c",),
         ),
     )
 
@@ -184,7 +187,9 @@ def test_run_blob_store_check_reports_missing_orphaned_and_verified_states() -> 
     printed = [call.args[0] for call in console_print.call_args_list if call.args]
     assert "Blob store: 2 blobs on disk, 2 raw records in DB" in printed
     assert "  MISSING: 1 blobs referenced in DB but not on disk" in printed
-    assert any("Orphaned: 1" in p for p in printed)
+    # 818-A4: orphan summary must include count, bytes, and at least one sample.
+    assert "  Orphaned: 1 blobs (4,096 bytes) not referenced in DB" in printed
+    assert "    orphan-c..." in printed
 
     env = _env()
     verified_store = SimpleNamespace(
