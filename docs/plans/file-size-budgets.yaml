@@ -58,8 +58,16 @@ exceptions:
     reason: "tracked split into routing/execution/output suites"
 
   - path: polylogue/storage/repair.py
+    ceiling: 1300
+    reason: "blob orphan/integrity (#818) + message_type backfill (#839); split candidate: lift backfill into pipeline/services"
+
+  - path: polylogue/operations/archive.py
     ceiling: 1200
-    reason: "added blob orphan detection, cleanup, and integrity verification (#818)"
+    reason: "shared operation contracts for ingest/maintenance/mutation routes (#861, #862); split candidate: per-domain operation modules under operations/"
+
+  - path: polylogue/daemon/status.py
+    ceiling: 1150
+    reason: "typed status payloads for failure samples, embedding readiness, tier/notify (#844, #898, #915); split candidate: payload modules per status section"
 
   - path: polylogue/storage/sqlite/schema_bootstrap.py
     ceiling: 1300
