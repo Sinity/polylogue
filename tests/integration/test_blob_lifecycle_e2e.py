@@ -199,3 +199,78 @@ class TestRepairOrphanedBlobsHandler:
         assert result.name == "orphaned_blobs"
         assert result.success is True
         assert result.repaired_count == 0
+
+
+class TestOrphanedBlobsCatalogRouting:
+    """Pin the wiring from the maintenance-target catalog to the handler.
+
+    818-A6: ``polylogue doctor --repair --target orphaned_blobs`` resolves
+    via ``MaintenanceTargetCatalog`` to the ``orphaned_blobs`` spec and
+    the ``_REPAIR_HANDLERS["orphaned_blobs"]`` entry. A regression that
+    deletes the spec, deletes the handler dict entry, drops the destructive
+    flag, or splits the name across the two structures would not be
+    caught by handler-only unit tests.
+    """
+
+    def test_catalog_resolves_orphaned_blobs_target(self) -> None:
+        from polylogue.maintenance.models import MaintenanceCategory
+        from polylogue.maintenance.targets import (
+            MaintenanceTargetMode,
+            build_maintenance_target_catalog,
+        )
+
+        catalog = build_maintenance_target_catalog()
+        spec = catalog.resolve_name("orphaned_blobs")
+        assert spec is not None, "orphaned_blobs target must be registered"
+        assert spec.name == "orphaned_blobs"
+        assert spec.mode is MaintenanceTargetMode.CLEANUP
+        assert spec.category is MaintenanceCategory.ARCHIVE_CLEANUP
+        assert spec.destructive is True, (
+            "blob deletion must be marked destructive so doctor requires explicit --repair / --cleanup confirmation"
+        )
+
+    def test_repair_handler_dict_routes_orphaned_blobs(self) -> None:
+        """``_REPAIR_HANDLERS["orphaned_blobs"]`` must dispatch to the
+        function under test in ``TestRepairOrphanedBlobsHandler``.
+        """
+        from polylogue.storage import repair
+
+        assert "orphaned_blobs" in repair._REPAIR_HANDLERS
+        assert repair._REPAIR_HANDLERS["orphaned_blobs"] is repair.repair_orphaned_blobs
+        assert "orphaned_blobs" in repair._PREVIEW_HANDLERS
+        assert repair._PREVIEW_HANDLERS["orphaned_blobs"] is repair.preview_orphaned_blobs
+
+    def test_catalog_resolution_drives_end_to_end_cleanup(self, cli_workspace: CliWorkspace) -> None:
+        """End-to-end via catalog → handler dict → handler call.
+
+        Mirrors the doctor command's actual dispatch sequence: resolve a
+        target name through the catalog, look up the handler in the
+        repair-handler dict, invoke it against a real archive. This is
+        the routing path that was previously untested.
+        """
+        from polylogue.config import get_config
+        from polylogue.maintenance.targets import build_maintenance_target_catalog
+        from polylogue.storage import repair
+        from polylogue.storage.blob_store import get_blob_store
+
+        store = get_blob_store()
+        referenced_hash, ref_size = store.write_from_bytes(_REFERENCED_BLOB)
+        orphan_hash, _ = store.write_from_bytes(_ORPHAN_BLOB)
+        _seed_raw_row(
+            cli_workspace["db_path"],
+            referenced_hash,
+            cli_workspace["inbox_dir"] / "ingested.json",
+            ref_size,
+        )
+
+        catalog = build_maintenance_target_catalog()
+        spec = catalog.resolve_name("orphaned_blobs")
+        assert spec is not None
+        handler = repair._REPAIR_HANDLERS[spec.name]
+
+        result = handler(get_config(), dry_run=False)
+        assert result.name == "orphaned_blobs"
+        assert result.repaired_count == 1
+        assert result.success is True
+        assert store.exists(orphan_hash) is False
+        assert store.exists(referenced_hash) is True
