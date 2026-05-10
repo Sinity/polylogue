@@ -8,10 +8,10 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 
 ## Snapshot
 
-- subjects: `530`
+- subjects: `534`
 - claims: `41`
 - runner bindings: `41`
-- proof obligations: `580`
+- proof obligations: `590`
 
 ## Quality Checks
 
@@ -40,13 +40,13 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `assurance.coverage_gap` | 22 |
 | `assurance.coverage_item` | 104 |
 | `assurance.coverage_manifest` | 9 |
-| `cli.command` | 49 |
+| `cli.command` | 52 |
 | `cli.json_command` | 5 |
 | `diagnostic.observable` | 1 |
 | `error.surface` | 2 |
 | `generated.scenario_family` | 9 |
 | `insight.surface` | 12 |
-| `maintenance.target` | 9 |
+| `maintenance.target` | 10 |
 | `operation.spec` | 47 |
 | `operation.spec.effect` | 128 |
 | `provider.capability` | 3 |
@@ -93,6 +93,9 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `polylogue insights week-summaries` | `polylogue/cli/commands/insights.py:100` `polylogue.cli.commands.insights._make_callback.<locals>.callback` |
 | `polylogue insights work-events` | `polylogue/cli/commands/insights.py:100` `polylogue.cli.commands.insights._make_callback.<locals>.callback` |
 | `polylogue list` | `polylogue/cli/query_verbs.py:25` `polylogue.cli.query_verbs.list_verb` |
+| `polylogue maintenance` | `polylogue/cli/commands/maintenance.py:17` `polylogue.cli.commands.maintenance.maintenance_group` |
+| `polylogue maintenance plan` | `polylogue/cli/commands/maintenance.py:22` `polylogue.cli.commands.maintenance.plan_command` |
+| `polylogue maintenance run` | `polylogue/cli/commands/maintenance.py:67` `polylogue.cli.commands.maintenance.run_command` |
 | `polylogue messages` | `polylogue/cli/query_verbs.py:182` `polylogue.cli.query_verbs.messages_verb` |
 | `polylogue neighbors` | `polylogue/cli/commands/neighbors.py:42` `polylogue.cli.commands.neighbors.neighbors_command` |
 | `polylogue open` | `polylogue/cli/query_verbs.py:97` `polylogue.cli.query_verbs.open_verb` |
@@ -279,17 +282,17 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `assurance.coverage.gap_has_closure_path` | 22 |
 | `assurance.coverage.item_declared` | 104 |
 | `assurance.coverage.manifest_structured` | 9 |
-| `cli.command.help` | 49 |
+| `cli.command.help` | 52 |
 | `cli.command.json_envelope` | 5 |
-| `cli.command.no_traceback` | 49 |
-| `cli.command.plain_mode` | 49 |
+| `cli.command.no_traceback` | 52 |
+| `cli.command.plain_mode` | 52 |
 | `diagnostic.observable_trace_mapping` | 1 |
 | `error.machine_user_context` | 2 |
 | `generated.scenario.family_registered` | 9 |
 | `generated.scenario.local_deterministic` | 4 |
 | `generated.scenario.semantic_claim_mapping` | 9 |
 | `insight.surface.registered` | 12 |
-| `maintenance.repair.crash_consistency` | 9 |
+| `maintenance.repair.crash_consistency` | 10 |
 | `operation.effect.atomic` | 17 |
 | `operation.effect.confirmed_before_execute` | 1 |
 | `operation.effect.deterministic` | 8 |
