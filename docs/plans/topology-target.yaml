@@ -883,6 +883,11 @@ files:
     target: polylogue/core/json.py
     owner: core-primitive
     reason: core primitive
+  - path: polylogue/core/loopback.py
+    loc: 65
+    target: polylogue/core/loopback.py
+    owner: core-primitive
+    reason: core primitive
   - path: polylogue/core/metrics.py
     loc: 265
     target: polylogue/core/metrics.py

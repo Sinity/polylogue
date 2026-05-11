@@ -366,13 +366,16 @@ class TestIsLocalhost:
     ``daemon/cli.py``. Pin its contract.
     """
 
-    @pytest.mark.parametrize("host", ["127.0.0.1", "::1", "localhost"])
+    @pytest.mark.parametrize(
+        "host",
+        ["127.0.0.1", "127.0.0.2", "127.1.2.3", "127.255.255.254", "::1", "localhost"],
+    )
     def test_loopback_addresses(self, host: str) -> None:
         assert _is_localhost(host) is True
 
     @pytest.mark.parametrize(
         "host",
-        ["0.0.0.0", "192.168.1.1", "10.0.0.1", "8.8.8.8", "::", ""],
+        ["0.0.0.0", "192.168.1.1", "10.0.0.1", "8.8.8.8", "128.0.0.1", "::", ""],
     )
     def test_non_loopback_addresses(self, host: str) -> None:
         assert _is_localhost(host) is False

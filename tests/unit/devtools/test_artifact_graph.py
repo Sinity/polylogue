@@ -57,7 +57,7 @@ def test_render_artifact_graph_text_mentions_the_current_runtime_paths() -> None
     assert "maintenance dangling_fts:" in rendered
     assert "maintenance session_insights:" in rendered
     assert (
-        "uncovered maintenance targets: empty_conversations, orphaned_attachments, orphaned_blobs, orphaned_content_blocks, orphaned_messages, wal_checkpoint"
+        "uncovered maintenance targets: empty_conversations, message_type_backfill, orphaned_attachments, orphaned_blobs, orphaned_content_blocks, orphaned_messages, wal_checkpoint"
         in rendered
     )
     assert "uncovered artifacts:" not in rendered
@@ -277,6 +277,7 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
     assert payload["scenario_coverage"]["paths"]["day-summary-query-loop"]["complete"] is True
     assert payload["scenario_coverage"]["uncovered_maintenance_targets"] == [
         "empty_conversations",
+        "message_type_backfill",
         "orphaned_attachments",
         "orphaned_blobs",
         "orphaned_content_blocks",

@@ -55,18 +55,29 @@ loopback ports.
    `_dispatch_get` and `do_POST` before any handler runs.
 
 2. **Loopback-only by default.** The daemon binds to `127.0.0.1` by
-   default. Non-loopback bind (`--api-host 0.0.0.0` etc.) requires
-   *both* `--insecure-allow-remote` (operator opts into the risk) *and*
-   `--api-auth-token` (refusal at `daemon/cli.py:309-319` if either is
-   missing).
+   default. The "loopback" predicate is the shared
+   `polylogue/core/loopback.py:is_loopback_host` (RFC 5735: full
+   `127.0.0.0/8`, `::1`, and `localhost`). Non-loopback bind
+   (`--api-host 0.0.0.0` etc.) requires *both* `--insecure-allow-remote`
+   (operator opts into the risk) *and* `--api-auth-token`; the
+   enforcement lives in `polylogue/daemon/cli.py` and rejects either
+   missing flag at startup.
 
 3. **Origin allowlist for mutating endpoints.** POST endpoints reject
-   requests whose `Origin` header is set to anything other than
-   `http://127.0.0.1:*`, `http://localhost:*`, or the corresponding
-   HTTPS forms. This is the CSRF boundary: a hostile page loaded in
-   the user's browser cannot POST to the daemon even if it somehow
-   learned the bearer token, because the browser attaches its own
-   `Origin`. The check lives at `polylogue/daemon/http.py:_check_cross_origin`.
+   requests whose `Origin` header points to a non-loopback host. The
+   loopback host definition is shared with the browser-capture
+   receiver via `polylogue/core/loopback.py:is_loopback_host` (which
+   the receiver uses for bind validation); the daemon HTTP API
+   additionally uses `is_loopback_origin` from the same module to
+   parse browser-supplied `Origin` headers. Both follow RFC 5735: the
+   entire `127.0.0.0/8` block, `::1`, and the literal `localhost`
+   name (both `http` and `https` schemes). The `Origin` parser rejects
+   malformed bracketed IPv6 forms such as `http://[::1].evil.com` or
+   `http://[::1]:bad`. This is the CSRF boundary: a hostile page
+   loaded in the user's browser cannot POST to the daemon even if it
+   somehow learned the bearer token, because the browser attaches its
+   own `Origin`. The check lives at
+   `polylogue/daemon/http.py:_check_cross_origin`.
 
 4. **No CORS preflight.** `OPTIONS` requests return `405 Method Not
    Allowed` by design. The daemon does not advertise `Access-Control-Allow-*`

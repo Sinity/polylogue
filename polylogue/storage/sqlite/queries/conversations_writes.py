@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json as _json
+
 import aiosqlite
 
 from polylogue.core.common import SQL_CONVERSATION_UPSERT as _CONVERSATION_UPSERT_SQL
@@ -17,6 +19,27 @@ async def conversation_exists_by_hash(conn: aiosqlite.Connection, content_hash: 
     return row is not None
 
 
+def _derive_working_directories_json(provider_meta: dict[str, object] | None) -> str | None:
+    """Promote ``provider_meta.working_directories`` (or ``cwd``) into the
+    typed ``working_directories_json`` column when the canonical pipeline
+    derivation in ``pipeline.prepare_enrichment`` was bypassed.
+
+    Mirrors the same fallback pattern as ``source_name`` so direct write
+    callers (test helpers, ad-hoc backfills) get a column the
+    ``cwd_prefix`` filter can read.
+    """
+    if not provider_meta:
+        return None
+    wds = provider_meta.get("working_directories")
+    if isinstance(wds, list):
+        cleaned = [item for item in wds if isinstance(item, str)]
+        return _json.dumps(cleaned) if cleaned else None
+    cwd = provider_meta.get("cwd")
+    if isinstance(cwd, str):
+        return _json.dumps([cwd])
+    return None
+
+
 async def save_conversation_record(
     conn: aiosqlite.Connection,
     record: ConversationRecord,
@@ -28,6 +51,12 @@ async def save_conversation_record(
     if not source_name and record.provider_meta:
         raw = record.provider_meta.get("source")
         source_name = raw if isinstance(raw, str) else ""
+
+    working_directories_json = (
+        record.working_directories_json
+        if record.working_directories_json is not None
+        else _derive_working_directories_json(record.provider_meta)
+    )
 
     await conn.execute(
         _CONVERSATION_UPSERT_SQL,
@@ -47,7 +76,7 @@ async def save_conversation_record(
             record.branch_type,
             record.raw_id,
             source_name,
-            record.working_directories_json,
+            working_directories_json,
             record.git_branch,
             record.git_repository_url,
         ),
