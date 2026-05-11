@@ -126,9 +126,67 @@ class TestBaselinePersistence:
         assert mod.load_baselines() == {}
 
 
-def test_main_returns_1_when_no_baselines_and_no_update(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """main() exits 1 when baselines directory is empty and --update not passed."""
-    import devtools.lab_scenario as mod
+class TestVerifyShowcaseBaselinesControlFlow:
+    """verify_showcase_baselines control flow without subprocess overhead.
 
-    monkeypatch.setattr(mod, "BASELINE_DIR", tmp_path / "nonexistent")
-    assert mod.main(["verify-baselines"]) == 1
+    run_tier_0() is mocked so we test the comparison/drift logic, not
+    the exercise subprocesses (those are a CI step, not a unit test).
+    """
+
+    def test_no_baselines_fails_fast_without_running_exercises(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When baselines are missing, return 1 immediately — don't run exercises."""
+        import devtools.lab_scenario as mod
+
+        monkeypatch.setattr(mod, "BASELINE_DIR", tmp_path / "nonexistent")
+        # If run_tier_0 were called, it would fail because exercises need real CLI
+        ran = []
+
+        def fake_run() -> dict[str, str]:
+            ran.append(True)
+            return {}
+
+        monkeypatch.setattr(mod, "run_tier_0", fake_run)
+        assert mod.verify_showcase_baselines(update=False) == 1
+        assert ran == []  # run_tier_0 was never called
+
+    def test_all_match_returns_zero(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """When all exercise outputs match baselines, return 0."""
+        import devtools.lab_scenario as mod
+
+        baseline_dir = tmp_path / "baselines"
+        baseline_dir.mkdir()
+        (baseline_dir / "cmd-a.txt").write_text("output A\n", encoding="utf-8")
+        monkeypatch.setattr(mod, "BASELINE_DIR", baseline_dir)
+        monkeypatch.setattr(mod, "run_tier_0", lambda: {"cmd-a": "output A\n"})
+        assert mod.verify_showcase_baselines(update=False) == 0
+
+    def test_drift_detected_returns_one(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """When exercise output differs from baseline, return 1."""
+        import devtools.lab_scenario as mod
+
+        baseline_dir = tmp_path / "baselines"
+        baseline_dir.mkdir()
+        (baseline_dir / "cmd-a.txt").write_text("expected\n", encoding="utf-8")
+        monkeypatch.setattr(mod, "BASELINE_DIR", baseline_dir)
+        monkeypatch.setattr(mod, "run_tier_0", lambda: {"cmd-a": "actual\n"})
+        assert mod.verify_showcase_baselines(update=False) == 1
+
+    def test_update_saves_baselines(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """--update writes current outputs to the baseline directory."""
+        import devtools.lab_scenario as mod
+
+        baseline_dir = tmp_path / "baselines"
+        monkeypatch.setattr(mod, "BASELINE_DIR", baseline_dir)
+        monkeypatch.setattr(mod, "run_tier_0", lambda: {"cmd-a": "fresh output\n"})
+        assert mod.verify_showcase_baselines(update=True) == 0
+        assert (baseline_dir / "cmd-a.txt").read_text() == "fresh output\n"
+
+    def test_main_no_baselines_returns_1(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """main(["verify-baselines"]) returns 1 when no baselines exist."""
+        import devtools.lab_scenario as mod
+
+        monkeypatch.setattr(mod, "BASELINE_DIR", tmp_path / "nonexistent")
+        monkeypatch.setattr(mod, "run_tier_0", lambda: {})
+        assert mod.main(["verify-baselines"]) == 1
