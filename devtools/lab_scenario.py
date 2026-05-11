@@ -88,7 +88,18 @@ def compare_outputs(
 
 
 def verify_showcase_baselines(*, update: bool) -> int:
-    """Verify or update committed tier-0 showcase baselines."""
+    """Verify or update committed tier-0 showcase baselines.
+
+    Checks baseline existence before running exercises when *update* is
+    False so that the "no baselines" path fails in <1 ms instead of
+    after running all tier-0 subprocesses (#1026).
+    """
+    if not update:
+        baselines = load_baselines()
+        if not baselines:
+            print("ERROR: No baselines found. Run with --update to create them.")
+            return 1
+
     print("Running tier 0 showcase exercises...")
     current = run_tier_0()
     print(f"  Ran {len(current)} exercises")
@@ -97,11 +108,6 @@ def verify_showcase_baselines(*, update: bool) -> int:
         save_baselines(current)
         print(f"  Updated baselines in {BASELINE_DIR}")
         return 0
-
-    baselines = load_baselines()
-    if not baselines:
-        print("ERROR: No baselines found. Run with --update to create them.")
-        return 1
 
     drifts = compare_outputs(current, baselines)
     if not drifts:
