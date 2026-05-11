@@ -1,7 +1,7 @@
 """Direct tests for polylogue.schemas.sampling module.
 
 Covers ProviderConfig, PROVIDERS dict, load_samples_from_db with missing DB,
-and load_samples_from_sessions with JSONL fixtures.
+and load_samples_from_sessions with JSON/JSONL fixtures.
 """
 
 from __future__ import annotations
@@ -54,8 +54,17 @@ class TestProviderConfig:
 
 
 class TestProvidersConfig:
-    def test_all_five_providers_present(self) -> None:
-        expected = {"chatgpt", "claude-code", "claude-ai", "gemini", "codex"}
+    def test_all_configured_providers_present(self) -> None:
+        expected = {
+            "chatgpt",
+            "claude-code",
+            "claude-ai",
+            "gemini",
+            "gemini-cli",
+            "hermes",
+            "antigravity",
+            "codex",
+        }
         assert {provider.value for provider in PROVIDERS} == expected
 
     def test_each_has_name_and_description(self) -> None:
@@ -76,6 +85,11 @@ class TestProvidersConfig:
 
     def test_gemini_has_db_provider(self) -> None:
         assert PROVIDERS[Provider.GEMINI].db_provider_name is Provider.GEMINI
+
+    def test_local_agent_sources_have_db_providers(self) -> None:
+        assert PROVIDERS[Provider.GEMINI_CLI].db_provider_name is Provider.GEMINI_CLI
+        assert PROVIDERS[Provider.HERMES].db_provider_name is Provider.HERMES
+        assert PROVIDERS[Provider.ANTIGRAVITY].db_provider_name is Provider.ANTIGRAVITY
 
     def test_codex_has_session_dir(self) -> None:
         assert PROVIDERS[Provider.CODEX].session_dir is not None
@@ -247,6 +261,15 @@ class TestLoadSamplesFromSessions:
         assert len(result) == 2
         assert result[0]["type"] == "session_meta"
         assert result[1]["type"] == "message"
+
+    def test_reads_json_session_documents(self, tmp_path: Path) -> None:
+        session_dir = tmp_path / "sessions"
+        session_dir.mkdir()
+        json_file = session_dir / "session-001.json"
+        json_file.write_text(json.dumps({"sessionId": "s1", "messages": [{"type": "user", "content": "hi"}]}))
+
+        result = load_samples_from_sessions(session_dir)
+        assert result == [{"sessionId": "s1", "messages": [{"type": "user", "content": "hi"}]}]
 
     def test_multiple_jsonl_files(self, tmp_path: Path) -> None:
         session_dir = tmp_path / "sessions"

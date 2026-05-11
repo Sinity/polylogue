@@ -131,7 +131,7 @@ def get_sources() -> list[Source]:
     if gemini_cache.exists() or drive_credentials_path().exists() or drive_token_path().exists():
         sources.append(
             Source(
-                name="gemini",
+                name="aistudio",
                 folder=GEMINI_DRIVE_FOLDER,
                 path=gemini_cache,
             )

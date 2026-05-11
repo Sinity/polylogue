@@ -31,7 +31,10 @@ _PROVIDER_DESCRIPTIONS: Final[dict[str, str]] = {
     "claude-ai": "Anthropic Claude web exports",
     "claude-code": "Claude Code local sessions",
     "codex": "OpenAI Codex sessions",
-    "gemini": "Google Gemini exports",
+    "gemini": "Google AI Studio exports",
+    "gemini-cli": "Gemini CLI local sessions",
+    "hermes": "Hermes agent sessions",
+    "antigravity": "Antigravity local brain artifacts",
 }
 
 _MAX_ID_COMPLETIONS = 24

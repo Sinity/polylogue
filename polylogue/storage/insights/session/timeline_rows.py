@@ -60,6 +60,8 @@ def event_evidence_payload(event: WorkEvent) -> WorkEventEvidencePayload:
         start_time=event.start_time.isoformat() if event.start_time else None,
         end_time=event.end_time.isoformat() if event.end_time else None,
         canonical_session_date=event.canonical_session_date.isoformat() if event.canonical_session_date else None,
+        timing_provenance=_range_timing_provenance(event.start_time, event.end_time),
+        date_provenance=_date_provenance(event.canonical_session_date, event.start_time, event.end_time),
         duration_ms=event.duration_ms,
         file_paths=event.file_paths,
         tools_used=event.tools_used,
@@ -183,6 +185,8 @@ def hydrate_work_event(record: SessionWorkEventRecord) -> WorkEvent:
         "start_time": record.evidence_payload.start_time,
         "end_time": record.evidence_payload.end_time,
         "canonical_session_date": record.evidence_payload.canonical_session_date,
+        "timing_provenance": record.evidence_payload.timing_provenance,
+        "date_provenance": record.evidence_payload.date_provenance,
         "duration_ms": record.evidence_payload.duration_ms,
         "confidence": record.inference_payload.confidence,
         "evidence": list(record.inference_payload.evidence),
@@ -224,6 +228,8 @@ def phase_evidence_payload(phase: SessionPhase) -> SessionPhaseEvidencePayload:
         start_time=phase.start_time.isoformat() if phase.start_time else None,
         end_time=phase.end_time.isoformat() if phase.end_time else None,
         canonical_session_date=phase.canonical_session_date.isoformat() if phase.canonical_session_date else None,
+        timing_provenance=_range_timing_provenance(phase.start_time, phase.end_time),
+        date_provenance=_date_provenance(phase.canonical_session_date, phase.start_time, phase.end_time),
         message_range=phase.message_range,
         duration_ms=phase.duration_ms,
         tool_counts=dict(phase.tool_counts),
@@ -337,6 +343,28 @@ def hydrate_session_phase(record: SessionPhaseRecord) -> SessionPhase:
             str(value) for value in (payload.get("evidence", record.evidence_reasons) or record.evidence_reasons)
         ),
     )
+
+
+def _range_timing_provenance(start_time: datetime | None, end_time: datetime | None) -> str:
+    if start_time is not None and end_time is not None:
+        return "timestamped_range"
+    if start_time is not None:
+        return "start_timestamp_only"
+    if end_time is not None:
+        return "end_timestamp_only"
+    return "untimestamped"
+
+
+def _date_provenance(
+    canonical_session_date: object | None,
+    start_time: datetime | None,
+    end_time: datetime | None,
+) -> str:
+    if canonical_session_date is None:
+        return "none"
+    if start_time is not None or end_time is not None:
+        return "event_timestamp"
+    return "date_only"
 
 
 __all__ = [

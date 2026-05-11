@@ -622,7 +622,9 @@ def test_ingest_worker_reuses_schema_resolution_and_skips_drift_walk(
         _depth: int = 0,
         *,
         schema_resolution: SchemaResolution | None = None,
+        source_path: str | None = None,
     ) -> Sequence[ParsedConversation]:
+        del source_path
         observed["parse_provider"] = provider
         observed["parse_schema_resolution"] = schema_resolution
         observed["parse_fallback_id"] = fallback_id

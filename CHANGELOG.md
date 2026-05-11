@@ -27,6 +27,16 @@ documentation polish do not require an entry.
 
 ### Added
 
+- Local source discovery and parsing for Gemini CLI `~/.gemini/tmp` sessions
+  and Hermes `~/.hermes/sessions` session documents, with distinct
+  `gemini-cli` / `hermes` source identities.
+- Antigravity source ingestion through its local language-server Markdown
+  export surface, with parseable brain artifacts retained as auxiliary
+  documents and raw protobuf state classified as non-directly-parseable
+  sidecar storage.
+- `polylogue insights work-events` now accepts `--session-date-since` and
+  `--session-date-until`, exposing canonical-date bounded work-event reads
+  through the public insight facade.
 - `polylogue select` as a query-backed selector that prints one matched
   conversation field for shell pipelines, with interactive `fzf`/prompt
   selection when attached to a terminal.
@@ -66,6 +76,9 @@ documentation polish do not require an entry.
 
 ### Changed
 
+- Session work-event and phase evidence payloads now expose timing/date
+  provenance, and work-event insight reads order by event time instead of
+  conversation recency.
 - The root query `--tail` mode and tail-overlay JSON provenance were removed;
   daemon-owned live ingestion is now the supported path for fresh session state.
 - `--resource-mode` and Polylogue CLI self-demotion were removed from

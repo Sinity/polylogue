@@ -54,6 +54,8 @@ class _SyntheticBatchContext(Protocol):
 
     def _generate_from_schema(self, schema: SchemaRecord, rng: random.Random) -> JSONValue: ...
 
+    def _role_cycle(self) -> list[str]: ...
+
     def _serialize(self, data: JSONValue) -> bytes: ...
 
 
@@ -187,6 +189,13 @@ def _generate_conversation(
         return _as_json_value(self._generate_tree_json(n_messages, rng, theme=theme))
     if wf.messages_path:
         return _as_json_value(self._generate_linear_json(n_messages, rng, theme=theme))
+    roles = self._role_cycle()
+    self._semantic_gen = SemanticValueGenerator(
+        rng,
+        theme=theme,
+        base_ts=rng.uniform(1670000000, 1760000000),
+        role_cycle=roles,
+    )
     return _as_json_value(self._generate_from_schema(self.schema, rng))
 
 

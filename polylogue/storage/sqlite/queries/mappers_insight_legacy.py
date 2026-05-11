@@ -149,14 +149,20 @@ def session_work_event_evidence_from_legacy(
     row: sqlite3.Row,
     legacy_payload: LegacyPayload,
 ) -> WorkEventEvidencePayload:
+    start_time = _row_text(row, "start_time") or _legacy_text(legacy_payload.get("start_time"))
+    end_time = _row_text(row, "end_time") or _legacy_text(legacy_payload.get("end_time"))
+    canonical_session_date = _row_text(row, "canonical_session_date") or _legacy_text(
+        legacy_payload.get("canonical_session_date")
+    )
     return WorkEventEvidencePayload.model_validate(
         {
             "start_index": _row_int(row, "start_index", legacy_payload, legacy_key="start_index"),
             "end_index": _row_int(row, "end_index", legacy_payload, legacy_key="end_index"),
-            "start_time": _row_text(row, "start_time") or _legacy_text(legacy_payload.get("start_time")),
-            "end_time": _row_text(row, "end_time") or _legacy_text(legacy_payload.get("end_time")),
-            "canonical_session_date": _row_text(row, "canonical_session_date")
-            or _legacy_text(legacy_payload.get("canonical_session_date")),
+            "start_time": start_time,
+            "end_time": end_time,
+            "canonical_session_date": canonical_session_date,
+            "timing_provenance": _range_timing_provenance(start_time, end_time),
+            "date_provenance": _date_provenance(canonical_session_date, start_time, end_time),
             "duration_ms": _row_int(row, "duration_ms", legacy_payload, legacy_key="duration_ms"),
             "file_paths": _row_text_tuple(row, "file_paths_json", legacy_payload, legacy_key="file_paths"),
             "tools_used": _row_text_tuple(row, "tools_used_json", legacy_payload, legacy_key="tools_used"),
@@ -182,12 +188,18 @@ def session_phase_evidence_from_legacy(
     row: sqlite3.Row,
     legacy_payload: LegacyPayload,
 ) -> SessionPhaseEvidencePayload:
+    start_time = _row_text(row, "start_time") or _legacy_text(legacy_payload.get("start_time"))
+    end_time = _row_text(row, "end_time") or _legacy_text(legacy_payload.get("end_time"))
+    canonical_session_date = _row_text(row, "canonical_session_date") or _legacy_text(
+        legacy_payload.get("canonical_session_date")
+    )
     return SessionPhaseEvidencePayload.model_validate(
         {
-            "start_time": _row_text(row, "start_time") or _legacy_text(legacy_payload.get("start_time")),
-            "end_time": _row_text(row, "end_time") or _legacy_text(legacy_payload.get("end_time")),
-            "canonical_session_date": _row_text(row, "canonical_session_date")
-            or _legacy_text(legacy_payload.get("canonical_session_date")),
+            "start_time": start_time,
+            "end_time": end_time,
+            "canonical_session_date": canonical_session_date,
+            "timing_provenance": _range_timing_provenance(start_time, end_time),
+            "date_provenance": _date_provenance(canonical_session_date, start_time, end_time),
             "message_range": (
                 _row_int(row, "start_index", legacy_payload, legacy_key="start_index"),
                 _row_int(row, "end_index", legacy_payload, legacy_key="end_index"),
@@ -197,6 +209,24 @@ def session_phase_evidence_from_legacy(
             "word_count": _row_int(row, "word_count", legacy_payload, legacy_key="word_count"),
         }
     )
+
+
+def _range_timing_provenance(start_time: str | None, end_time: str | None) -> str:
+    if start_time is not None and end_time is not None:
+        return "timestamped_range"
+    if start_time is not None:
+        return "start_timestamp_only"
+    if end_time is not None:
+        return "end_timestamp_only"
+    return "untimestamped"
+
+
+def _date_provenance(canonical_session_date: str | None, start_time: str | None, end_time: str | None) -> str:
+    if canonical_session_date is None:
+        return "none"
+    if start_time is not None or end_time is not None:
+        return "event_timestamp"
+    return "date_only"
 
 
 def session_phase_inference_from_legacy(
@@ -350,14 +380,19 @@ def _legacy_work_event_documents(
 ) -> tuple[WorkEventDocument, ...]:
     documents: list[WorkEventDocument] = []
     for item in _legacy_dict_tuple(value):
+        start_time = _legacy_text(item.get("start_time"))
+        end_time = _legacy_text(item.get("end_time"))
+        canonical_session_date = _legacy_text(item.get("canonical_session_date"))
         documents.append(
             {
                 "kind": _legacy_text(item.get("kind")) or "conversation",
                 "start_index": _legacy_int(item.get("start_index")),
                 "end_index": _legacy_int(item.get("end_index")),
-                "start_time": _legacy_text(item.get("start_time")),
-                "end_time": _legacy_text(item.get("end_time")),
-                "canonical_session_date": _legacy_text(item.get("canonical_session_date")),
+                "start_time": start_time,
+                "end_time": end_time,
+                "canonical_session_date": canonical_session_date,
+                "timing_provenance": _range_timing_provenance(start_time, end_time),
+                "date_provenance": _date_provenance(canonical_session_date, start_time, end_time),
                 "duration_ms": _legacy_int(item.get("duration_ms")),
                 "confidence": _legacy_float(item.get("confidence")),
                 "evidence": list(_legacy_text_tuple(item.get("evidence"))),
@@ -376,11 +411,16 @@ def _legacy_phase_documents(
     for item in _legacy_dict_tuple(value):
         start_index = _legacy_int(item.get("start_index"))
         end_index = _legacy_int(item.get("end_index"))
+        start_time = _legacy_text(item.get("start_time"))
+        end_time = _legacy_text(item.get("end_time"))
+        canonical_session_date = _legacy_text(item.get("canonical_session_date"))
         documents.append(
             {
-                "start_time": _legacy_text(item.get("start_time")),
-                "end_time": _legacy_text(item.get("end_time")),
-                "canonical_session_date": _legacy_text(item.get("canonical_session_date")),
+                "start_time": start_time,
+                "end_time": end_time,
+                "canonical_session_date": canonical_session_date,
+                "timing_provenance": _range_timing_provenance(start_time, end_time),
+                "date_provenance": _date_provenance(canonical_session_date, start_time, end_time),
                 "message_range": [start_index, end_index],
                 "duration_ms": _legacy_int(item.get("duration_ms")),
                 "tool_counts": _legacy_int_dict(item.get("tool_counts")),

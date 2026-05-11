@@ -109,6 +109,7 @@ def check_annotation_coverage(schema: Mapping[str, object] | SchemaNode) -> Chec
         "x-polylogue-frequency",
         "x-polylogue-range",
         "x-polylogue-multiline",
+        "x-polylogue-high-cardinality-keys",
     }
 
     def _count(node: SchemaNode) -> None:
@@ -121,6 +122,8 @@ def check_annotation_coverage(schema: Mapping[str, object] | SchemaNode) -> Chec
             total_fields += 1
             if any(key in child for key in annotation_keys):
                 annotated_fields += 1
+            if child.get("x-polylogue-high-cardinality-keys") is True:
+                continue
             _count(child)
         items = json_document(node.get("items"))
         if items:

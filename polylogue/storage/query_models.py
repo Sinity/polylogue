@@ -194,6 +194,8 @@ class SessionTimelineListQuery:
     provider: str | None = None
     since: str | None = None
     until: str | None = None
+    session_date_since: str | None = None
+    session_date_until: str | None = None
     kind: str | None = None
     limit: int | None = 50
     offset: int = 0

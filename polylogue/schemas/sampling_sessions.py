@@ -12,31 +12,42 @@ from polylogue.schemas.observation import ProviderConfig, extract_schema_units_f
 from polylogue.schemas.observation_models import SchemaUnit
 from polylogue.types import Provider
 
+_SESSION_SAMPLE_SUFFIXES = (".jsonl", ".json")
+
 
 def _iter_session_json_documents(session_dir: Path, *, max_sessions: int | None) -> Iterator[tuple[Path, JSONDocument]]:
     if not session_dir.exists():
         return
 
-    jsonl_files = sorted(
-        session_dir.rglob("*.jsonl"),
+    session_files = sorted(
+        (path for path in session_dir.rglob("*") if path.is_file() and path.suffix.lower() in _SESSION_SAMPLE_SUFFIXES),
         key=lambda p: p.stat().st_mtime,
         reverse=True,
     )
-    if max_sessions and len(jsonl_files) > max_sessions:
-        step = max(1, len(jsonl_files) // max_sessions)
-        jsonl_files = jsonl_files[::step][:max_sessions]
+    if max_sessions and len(session_files) > max_sessions:
+        step = max(1, len(session_files) // max_sessions)
+        session_files = session_files[::step][:max_sessions]
 
-    for path in jsonl_files:
+    for path in session_files:
         try:
+            if path.suffix.lower() == ".json":
+                with contextlib.suppress(ValueError):
+                    if record := json_document(loads(path.read_text(encoding="utf-8"))):
+                        yield path, record
+                continue
             with path.open(encoding="utf-8") as handle:
-                for line in handle:
-                    if not line.strip():
-                        continue
-                    with contextlib.suppress(ValueError):
-                        if record := json_document(loads(line)):
-                            yield path, record
+                yield from _iter_jsonl_records(path, handle)
         except OSError:
             continue
+
+
+def _iter_jsonl_records(path: Path, handle: Iterator[str]) -> Iterator[tuple[Path, JSONDocument]]:
+    for line in handle:
+        if not line.strip():
+            continue
+        with contextlib.suppress(ValueError):
+            if record := json_document(loads(line)):
+                yield path, record
 
 
 def _iter_schema_units_from_sessions(

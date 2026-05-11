@@ -154,6 +154,41 @@ def _fallback_extract_gemini(raw: JSONDocument) -> HarmonizedMessage:
     )
 
 
+def _fallback_extract_local_agent(provider: Provider, raw: JSONDocument) -> HarmonizedMessage:
+    payload = _payload_record(raw)
+    content = _content_blocks(payload.get("content"))
+    role = _string_value(payload.get("role")) or _string_value(payload.get("type")) or _missing_role()
+    if provider is Provider.GEMINI_CLI and role == "gemini":
+        role = "assistant"
+    content_block_models = extract_content_blocks(content)
+    return HarmonizedMessage(
+        id=_string_value(payload.get("id")) or _string_value(payload.get("tool_call_id")),
+        role=Role.normalize(role),
+        text="\n".join(block.text for block in content_block_models if block.text),
+        timestamp=parse_timestamp(_timestamp_candidate(payload.get("timestamp"))),
+        reasoning_traces=extract_reasoning_traces(content, provider),
+        tool_calls=extract_tool_calls(content, provider),
+        content_blocks=content_block_models,
+        model=_string_value(payload.get("model")),
+        tokens=extract_token_usage(dict(usage) if (usage := _record(payload.get("tokens"))) else None),
+        provider=provider,
+        raw=_object_record(payload),
+    )
+
+
+def _fallback_extract_antigravity(raw: JSONDocument) -> HarmonizedMessage:
+    payload = _payload_record(raw)
+    text = _string_value(payload.get("summary")) or ""
+    return HarmonizedMessage(
+        id=None,
+        role=Role.ASSISTANT,
+        text=text,
+        timestamp=parse_timestamp(_timestamp_candidate(payload.get("updatedAt"))),
+        provider=Provider.ANTIGRAVITY,
+        raw=_object_record(payload),
+    )
+
+
 def _fallback_extract_codex(raw: JSONDocument) -> HarmonizedMessage:
     """Fallback extraction for malformed Codex records."""
     raw_payload = _payload_record(raw)
@@ -192,6 +227,9 @@ _FALLBACK_EXTRACTORS: dict[Provider, FallbackExtractor] = {
     Provider.CLAUDE_AI: _fallback_extract_claude_ai,
     Provider.CHATGPT: _fallback_extract_chatgpt,
     Provider.GEMINI: _fallback_extract_gemini,
+    Provider.GEMINI_CLI: lambda raw: _fallback_extract_local_agent(Provider.GEMINI_CLI, raw),
+    Provider.HERMES: lambda raw: _fallback_extract_local_agent(Provider.HERMES, raw),
+    Provider.ANTIGRAVITY: _fallback_extract_antigravity,
     Provider.CODEX: _fallback_extract_codex,
 }
 

@@ -615,6 +615,7 @@ def _parse_plan_conversations(
         plan.payload,
         fallback_id,
         schema_resolution=plan.schema_resolution,
+        source_path=context.raw_record.source_path,
     )
 
 

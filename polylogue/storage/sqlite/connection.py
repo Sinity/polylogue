@@ -70,6 +70,18 @@ def _configure_read_connection(conn: sqlite3.Connection) -> None:
 # ---------------------------------------------------------------------------
 
 _connection_cache: threading.local = threading.local()
+_schema_lock_guard = threading.Lock()
+_schema_locks: dict[str, threading.Lock] = {}
+
+
+def _schema_lock_for_path(path: Path) -> threading.Lock:
+    key = str(path.resolve())
+    with _schema_lock_guard:
+        lock = _schema_locks.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _schema_locks[key] = lock
+        return lock
 
 
 def _get_cached_connection(path: Path) -> sqlite3.Connection:
@@ -93,7 +105,8 @@ def _get_cached_connection(path: Path) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     _apply_pragma_statements(conn, WRITE_CONNECTION_PRAGMA_STATEMENTS)
     _load_sqlite_vec(conn)
-    _ensure_schema(conn)
+    with _schema_lock_for_path(path):
+        _ensure_schema(conn)
 
     cache[key] = conn
     return conn

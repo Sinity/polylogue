@@ -1412,7 +1412,9 @@ def test_conversation_emitter_resolves_schema_for_payloads(monkeypatch: pytest.M
         _depth: int = 0,
         *,
         schema_resolution: object | None = None,
+        source_path: str | None = None,
     ) -> list[ParsedConversation]:
+        del source_path
         fake_parse(provider=provider, payload=payload, fallback_id=fallback_id, schema_resolution=schema_resolution)
         return [fake_conversation]
 

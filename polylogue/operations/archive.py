@@ -690,6 +690,8 @@ class ArchiveInsightSessionMixin:
             provider=request.provider,
             since=request.since,
             until=request.until,
+            session_date_since=request.session_date_since,
+            session_date_until=request.session_date_until,
             kind=request.kind,
             limit=request.limit,
             offset=request.offset,

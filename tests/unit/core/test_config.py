@@ -267,7 +267,7 @@ class TestConfiguredSources:
         from polylogue.config import get_sources
 
         sources = get_sources()
-        assert [source.name for source in sources] == ["gemini"]
+        assert [source.name for source in sources] == ["aistudio"]
 
 
 class TestConfigPublicBoundary:

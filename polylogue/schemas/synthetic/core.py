@@ -7,6 +7,7 @@ from collections import Counter
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from polylogue.core.json import json_document, loads
 from polylogue.scenarios import CorpusSpec
 from polylogue.schemas.runtime_registry import SchemaRegistry, canonical_schema_provider
 from polylogue.schemas.synthetic import builders as synthetic_builders
@@ -119,7 +120,15 @@ class SyntheticCorpus:
         batch = cls.generate_batch_for_spec(spec)
         written_files: list[Path] = []
         for idx, artifact in enumerate(batch.artifacts):
-            file_path = output_dir / f"{prefix}-{idx:0{index_width}d}{ext}"
+            if corpus.provider == "antigravity":
+                file_path = output_dir / f"{prefix}-{idx:0{index_width}d}.md.metadata.json"
+                markdown_path = output_dir / f"{prefix}-{idx:0{index_width}d}.md"
+                payload = json_document(loads(artifact.raw_bytes))
+                markdown_path.write_text(
+                    str(payload.get("summary") or "Synthetic Antigravity artifact"), encoding="utf-8"
+                )
+            else:
+                file_path = output_dir / f"{prefix}-{idx:0{index_width}d}{ext}"
             file_path.write_bytes(artifact.raw_bytes)
             written_files.append(file_path)
         return SyntheticWrittenBatch(batch=batch, files=tuple(written_files))

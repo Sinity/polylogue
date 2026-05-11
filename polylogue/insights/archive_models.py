@@ -6,7 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from polylogue.archive.session.documents import SessionPhaseDocument, WorkEventDocument
 
-ARCHIVE_INSIGHT_CONTRACT_VERSION = 5
+ARCHIVE_INSIGHT_CONTRACT_VERSION = 6
 
 
 class ArchiveInsightModel(BaseModel):
@@ -14,7 +14,7 @@ class ArchiveInsightModel(BaseModel):
 
     # extra="ignore" tolerates legacy fields from older materialized records
     # (e.g. primary_work_kind, decisions removed in the March 2026 cleanup)
-    model_config = ConfigDict(extra="ignore", frozen=True)
+    model_config = ConfigDict(extra="ignore", frozen=True, protected_namespaces=())
 
     def to_json(self, *, exclude_none: bool = False) -> str:
         return self.model_dump_json(indent=2, exclude_none=exclude_none)
@@ -102,6 +102,8 @@ class WorkEventEvidencePayload(ArchiveInsightModel):
     start_time: str | None = None
     end_time: str | None = None
     canonical_session_date: str | None = None
+    timing_provenance: str = "untimestamped"
+    date_provenance: str = "none"
     duration_ms: int = 0
     file_paths: tuple[str, ...] = ()
     tools_used: tuple[str, ...] = ()
@@ -121,6 +123,8 @@ class SessionPhaseEvidencePayload(ArchiveInsightModel):
     start_time: str | None = None
     end_time: str | None = None
     canonical_session_date: str | None = None
+    timing_provenance: str = "untimestamped"
+    date_provenance: str = "none"
     message_range: tuple[int, int] = (0, 0)
     duration_ms: int = 0
     tool_counts: dict[str, int] = Field(default_factory=dict)

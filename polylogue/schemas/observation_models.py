@@ -70,6 +70,27 @@ PROVIDERS: dict[Provider, ProviderConfig] = {
         db_provider_name=Provider.GEMINI,
         sample_granularity="document",
     ),
+    Provider.GEMINI_CLI: ProviderConfig(
+        name=Provider.GEMINI_CLI,
+        description="Gemini CLI local session format",
+        db_provider_name=Provider.GEMINI_CLI,
+        session_dir=Path.home() / ".gemini/tmp",
+        sample_granularity="document",
+    ),
+    Provider.HERMES: ProviderConfig(
+        name=Provider.HERMES,
+        description="Hermes agent session format",
+        db_provider_name=Provider.HERMES,
+        session_dir=Path.home() / ".hermes/sessions",
+        sample_granularity="document",
+    ),
+    Provider.ANTIGRAVITY: ProviderConfig(
+        name=Provider.ANTIGRAVITY,
+        description="Antigravity local brain artifact metadata format",
+        db_provider_name=Provider.ANTIGRAVITY,
+        session_dir=Path.home() / ".gemini/antigravity",
+        sample_granularity="document",
+    ),
     Provider.CODEX: ProviderConfig(
         name=Provider.CODEX,
         description="OpenAI Codex CLI session format",

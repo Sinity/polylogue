@@ -19,6 +19,7 @@ from .cursor import _log_source_iteration_summary, _ParseContext, _record_cursor
 from .decoders import _process_zip
 from .dispatch import GROUP_PROVIDERS as _GROUP_PROVIDERS
 from .emitter import _ConversationEmitter
+from .parsers import antigravity
 from .parsers.base import ParsedConversation, RawConversationData
 from .source_walk import _setup_source_walk
 
@@ -52,6 +53,18 @@ def iter_source_conversations_with_raw(
     if not source.path:
         return
 
+    provider_hint = Provider.from_string(source.name)
+    if provider_hint is Provider.ANTIGRAVITY and (source.path / "conversations").is_dir():
+        try:
+            for conversation in antigravity.iter_language_server_exports(source.path):
+                yield (None, conversation)
+        except antigravity.AntigravityExportError as exc:
+            logger.warning(
+                "Antigravity language-server export failed for %s; falling back to parseable artifacts: %s",
+                source.path,
+                exc,
+            )
+
     walk = _setup_source_walk(
         source,
         cursor_state=cursor_state,
@@ -68,7 +81,6 @@ def iter_source_conversations_with_raw(
             path_classification = classify_artifact_path(path, provider=source.name)
             if path_classification is not None and not path_classification.parse_as_conversation:
                 continue
-            provider_hint = Provider.from_string(source.name)
             should_group = provider_hint in _GROUP_PROVIDERS
 
             if path.suffix.lower() == ".zip":

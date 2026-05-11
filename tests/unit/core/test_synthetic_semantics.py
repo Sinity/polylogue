@@ -506,7 +506,7 @@ class TestSemanticFallback:
 class TestWireFormatShape:
     """Validate the wire format configuration data structure."""
 
-    EXPECTED_PROVIDERS = {"chatgpt", "claude-code", "claude-ai", "codex", "gemini"}
+    EXPECTED_PROVIDERS = {"chatgpt", "claude-code", "claude-ai", "codex", "gemini", "antigravity"}
 
     def test_all_expected_providers_have_entries(self) -> None:
         """Every known provider has a wire format config."""
@@ -523,7 +523,7 @@ class TestWireFormatShape:
         """JSON-encoded providers have either tree or messages_path."""
         for name, wf in PROVIDER_WIRE_FORMATS.items():
             if wf.encoding == "json":
-                has_structure = wf.tree is not None or wf.messages_path is not None
+                has_structure = wf.tree is not None or wf.messages_path is not None or name == "antigravity"
                 assert has_structure, f"{name}: JSON provider needs tree or messages_path"
 
     def test_chatgpt_has_tree_with_container(self) -> None:
@@ -824,7 +824,7 @@ class TestProviderAvailability:
         assert len(providers) > 0
 
     def test_available_providers_are_known(self) -> None:
-        known = {"chatgpt", "claude-ai", "claude-code", "codex", "gemini"}
+        known = {"chatgpt", "claude-ai", "claude-code", "codex", "gemini", "antigravity"}
         for provider in SyntheticCorpus.available_providers():
             assert provider in known, f"Unknown provider: {provider}"
 
