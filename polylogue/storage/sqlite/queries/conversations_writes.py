@@ -32,7 +32,8 @@ def _derive_working_directories_json(provider_meta: dict[str, object] | None) ->
         return None
     wds = provider_meta.get("working_directories")
     if isinstance(wds, list):
-        return _json.dumps(wds)
+        cleaned = [item for item in wds if isinstance(item, str)]
+        return _json.dumps(cleaned) if cleaned else None
     cwd = provider_meta.get("cwd")
     if isinstance(cwd, str):
         return _json.dumps([cwd])
@@ -51,7 +52,11 @@ async def save_conversation_record(
         raw = record.provider_meta.get("source")
         source_name = raw if isinstance(raw, str) else ""
 
-    working_directories_json = record.working_directories_json or _derive_working_directories_json(record.provider_meta)
+    working_directories_json = (
+        record.working_directories_json
+        if record.working_directories_json is not None
+        else _derive_working_directories_json(record.provider_meta)
+    )
 
     await conn.execute(
         _CONVERSATION_UPSERT_SQL,

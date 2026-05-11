@@ -65,13 +65,18 @@ loopback ports.
 
 3. **Origin allowlist for mutating endpoints.** POST endpoints reject
    requests whose `Origin` header points to a non-loopback host. The
-   loopback definition is shared with the browser-capture receiver via
-   `polylogue/core/loopback.py:is_loopback_origin` and follows RFC 5735:
-   the entire `127.0.0.0/8` block, `::1`, and the literal `localhost`
-   name (both `http` and `https` schemes). This is the CSRF boundary:
-   a hostile page loaded in the user's browser cannot POST to the
-   daemon even if it somehow learned the bearer token, because the
-   browser attaches its own `Origin`. The check lives at
+   loopback host definition is shared with the browser-capture
+   receiver via `polylogue/core/loopback.py:is_loopback_host` (which
+   the receiver uses for bind validation); the daemon HTTP API
+   additionally uses `is_loopback_origin` from the same module to
+   parse browser-supplied `Origin` headers. Both follow RFC 5735: the
+   entire `127.0.0.0/8` block, `::1`, and the literal `localhost`
+   name (both `http` and `https` schemes). The `Origin` parser rejects
+   malformed bracketed IPv6 forms such as `http://[::1].evil.com` or
+   `http://[::1]:bad`. This is the CSRF boundary: a hostile page
+   loaded in the user's browser cannot POST to the daemon even if it
+   somehow learned the bearer token, because the browser attaches its
+   own `Origin`. The check lives at
    `polylogue/daemon/http.py:_check_cross_origin`.
 
 4. **No CORS preflight.** `OPTIONS` requests return `405 Method Not

@@ -51,13 +51,21 @@ def is_loopback_origin(origin: str) -> bool:
         if not origin.startswith(scheme):
             continue
         rest = origin[len(scheme) :]
-        host = rest.split("/", 1)[0]
-        if host.startswith("["):
-            end = host.find("]")
+        authority = rest.split("/", 1)[0]
+        if authority.startswith("["):
+            end = authority.find("]")
             if end == -1:
                 return False
-            return is_loopback_host(host[1:end])
-        host = host.split(":", 1)[0]
+            tail = authority[end + 1 :]
+            # Per RFC 3986 the only thing allowed after ``]`` is ``:port``.
+            # Reject anything else so ``http://[::1].evil.com`` and
+            # ``http://[::1]:bad`` do not classify as loopback.
+            if tail and not (tail.startswith(":") and tail[1:].isdigit()):
+                return False
+            return is_loopback_host(authority[1:end])
+        host, _, port = authority.partition(":")
+        if port and not port.isdigit():
+            return False
         return is_loopback_host(host)
     return False
 
