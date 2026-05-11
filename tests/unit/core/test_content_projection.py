@@ -149,12 +149,14 @@ def test_prose_only_drops_claude_code_protocol_artifacts() -> None:
         make_msg(
             id="direct-user",
             role=Role.USER,
+            message_type=MessageType.MESSAGE,
             text="This is a real typed request.",
             content_blocks=[{"type": "text", "text": "This is a real typed request."}],
         ),
         make_msg(
             id="leading-reminder",
             role=Role.USER,
+            message_type=MessageType.MESSAGE,
             text="<system-reminder>model-only reminder</system-reminder>\n\nActual user prompt.",
             content_blocks=[
                 {
@@ -178,6 +180,7 @@ def test_prose_only_drops_claude_code_protocol_artifacts() -> None:
         make_msg(
             id="inline-reminder-example",
             role=Role.USER,
+            message_type=MessageType.MESSAGE,
             text="Please explain literal <system-reminder> tags.",
             content_blocks=[{"type": "text", "text": "Please explain literal <system-reminder> tags."}],
         ),
