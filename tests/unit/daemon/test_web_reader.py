@@ -313,6 +313,152 @@ def test_reader_smoke_lane_is_documented() -> None:
     assert "polylogue.local_reader.conversation" in body
 
 
+# ---------------------------------------------------------------------------
+# Shared surface payload contract tests (#859)
+# ---------------------------------------------------------------------------
+
+
+class TestSharedQueryPayloads:
+    """QueryMissDiagnosticsPayload, QueryErrorPayload, and response envelopes."""
+
+    def test_query_error_payload_roundtrip(self) -> None:
+        from polylogue.surfaces.payloads import QueryErrorPayload
+
+        p = QueryErrorPayload(error="QuerySpecError", detail="invalid since: bogus", field="since")
+        d = p.model_dump(mode="json")
+        assert d["ok"] is False
+        assert d["error"] == "QuerySpecError"
+        assert d["detail"] == "invalid since: bogus"
+        assert d["field"] == "since"
+
+    def test_query_error_payload_minimal(self) -> None:
+        from polylogue.surfaces.payloads import QueryErrorPayload
+
+        p = QueryErrorPayload(error="internal_error")
+        d = p.model_dump(mode="json")
+        assert d["ok"] is False
+        assert d["detail"] is None
+        assert d["field"] is None
+
+    def test_query_miss_diagnostics_roundtrip(self) -> None:
+        from polylogue.surfaces.payloads import QueryMissDiagnosticsPayload, QueryMissReasonPayload
+
+        p = QueryMissDiagnosticsPayload(
+            message="No conversations matched the query.",
+            filters=("provider=gemini", "tag=api"),
+            reasons=(QueryMissReasonPayload(code="no_results", severity="info", summary="empty archive"),),
+            archive_conversation_count=42,
+            raw_conversation_count=100,
+        )
+        d = p.model_dump(mode="json")
+        assert d["message"] == "No conversations matched the query."
+        assert d["filters"] == ["provider=gemini", "tag=api"]
+        assert len(d["reasons"]) == 1
+        assert d["archive_conversation_count"] == 42
+
+    def test_conversation_list_response_shape(self) -> None:
+        from polylogue.surfaces.payloads import ConversationListResponse
+
+        r = ConversationListResponse(items=(), total=0, limit=50, offset=0)
+        d = r.model_dump(mode="json")
+        assert d["items"] == []
+        assert d["total"] == 0
+        assert d["limit"] == 50
+        assert d["offset"] == 0
+
+    def test_conversation_list_response_with_diagnostics(self) -> None:
+        from polylogue.surfaces.payloads import (
+            ConversationListResponse,
+            QueryMissDiagnosticsPayload,
+            QueryMissReasonPayload,
+        )
+
+        diag = QueryMissDiagnosticsPayload(
+            message="No results.",
+            filters=("tag=missing",),
+            reasons=(QueryMissReasonPayload(code="no_results", severity="info", summary="no match"),),
+        )
+        r = ConversationListResponse(items=(), total=0, limit=10, offset=0, diagnostics=diag)
+        d = r.model_dump(mode="json")
+        assert d["diagnostics"] is not None
+        assert d["diagnostics"]["message"] == "No results."
+
+    def test_facets_response_shape(self) -> None:
+        from polylogue.surfaces.payloads import FacetsResponse, FacetTimeRange
+
+        r = FacetsResponse(
+            scoped_to_query=False,
+            providers={"claude-code": 10, "chatgpt": 5},
+            total_conversations=15,
+            total_messages=100,
+            time_range=FacetTimeRange(min="2024-01-01", max="2024-12-31"),
+        )
+        d = r.model_dump(mode="json")
+        assert d["scoped_to_query"] is False
+        assert d["providers"] == {"claude-code": 10, "chatgpt": 5}
+        assert d["total_conversations"] == 15
+        assert d["time_range"]["min"] == "2024-01-01"
+
+
+class TestQueryNoResultsDiagnosticPath:
+    """Cross-surface contract: one filtered query → diagnostics path."""
+
+    def test_search_with_bad_date_returns_query_error(self, workspace_env: dict[str, Path]) -> None:
+        """A query with a malformed date produces a QueryErrorPayload-shaped error."""
+        with _running_server(workspace_env) as (_, base_url):
+            status, body = _get_json_ex(base_url, "/api/conversations?since=not-a-date")
+        assert status == 400
+        # The error shape is compatible with QueryErrorPayload
+        assert "error" in body
+        assert body.get("ok") is False
+
+    def test_list_with_no_match_returns_diagnostics(self, workspace_env: dict[str, Path]) -> None:
+        """A list with a tag that doesn't exist returns items=[] with total=0."""
+        with _running_server(workspace_env) as (_, base_url):
+            payload = _get_json(base_url, "/api/conversations?tag=nonexistent")
+        assert isinstance(payload, dict)
+        assert "items" in payload
+        assert "total" in payload
+        assert payload["total"] == 0
+        assert payload["items"] == []
+
+    def test_facets_global_returns_providers(self, workspace_env: dict[str, Path]) -> None:
+        """Unscoped /api/facets returns scoped_to_query=False with provider counts."""
+        with _running_server(workspace_env) as (_, base_url):
+            payload = _get_json(base_url, "/api/facets")
+        assert isinstance(payload, dict)
+        assert payload["scoped_to_query"] is False
+        assert isinstance(payload["providers"], dict)
+
+    def test_facets_scoped_returns_subset(self, workspace_env: dict[str, Path]) -> None:
+        """Scoped /api/facets?provider=... returns scoped_to_query=True."""
+        with _running_server(workspace_env) as (_, base_url):
+            payload = _get_json(base_url, "/api/facets?provider=chatgpt")
+        assert isinstance(payload, dict)
+        assert payload["scoped_to_query"] is True
+
+
+def _get_json_ex(base_url: str, path: str) -> tuple[int, dict[str, object]]:
+    """GET a path and return (status, parsed-body-or-empty-dict).
+
+    Unlike ``_get_json``, this helper reads the response body even for
+    error status codes so contract tests can assert on error-envelope shape.
+    """
+    from urllib.error import HTTPError
+    from urllib.request import Request, urlopen
+
+    req = Request(f"{base_url}{path}")
+    try:
+        with urlopen(req, timeout=5) as resp:
+            return resp.status, json.loads(resp.read().decode())
+    except HTTPError as e:
+        body = e.read().decode() if e.fp else ""
+        try:
+            return e.code, json.loads(body)
+        except (json.JSONDecodeError, ValueError):
+            return e.code, {}
+
+
 @pytest.mark.parametrize("path", ["/", "/api/conversations", "/api/facets", "/api/status", "/api/health"])
 def test_each_reader_route_responds_within_a_reasonable_budget(workspace_env: dict[str, Path], path: str) -> None:
     """Each reader-facing route returns within 10 s on a synthetic

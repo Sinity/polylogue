@@ -1,4 +1,65 @@
-"""Provider identity normalization shared across runtime and schema flows."""
+"""Provider identity normalization shared across runtime and schema flows.
+
+Vocabulary boundary
+-------------------
+
+Polylogue distinguishes four concepts that the legacy ``provider`` term
+conflated.  This module defines the canonical tokens and alias rules for
+each layer; other code should reference this table when choosing a name
+for a public field, flag, or doc string.
+
+===================== ====================== ===========================================
+Concept                Examples                Where used
+===================== ====================== ===========================================
+**source family**      claude-code, codex,     Public filters, CLI --provider completions,
+                       gemini-cli, aistudio,   daemon source discovery, watcher roots,
+                       hermes, antigravity     MCP list/search params, docs + help text.
+
+**provider / lab**     OpenAI, Google,         Physical schema column ``provider_name``
+                       Anthropic              (storage compat), provider-wire schemas,
+                                              lab/model pricing lookups.
+
+**model identity**     gpt-5, claude-opus-4-7, provider_meta payloads, cost rollups,
+                       gemini-2.5-pro         stats by model.
+
+**configured source    ~/.claude/projects/,    Config TOML ``[sources] roots``, daemon
+   root**              ~/.codex/sessions/,     watcher file system discovery, CLI --root.
+                       /inbox
+===================== ====================== ===========================================
+
+Surviving ``provider`` uses and their classification
+-----------------------------------------------------
+
+=================================== ===================================================
+Location                             Classification
+=================================== ===================================================
+DB column ``provider_name``          Physical schema compatibility — do not rename
+                                     without a reviewed migration.
+``Provider`` enum in types.py        Backend canonical form; maps source-family tokens
+                                     to storage values via ``canonical_runtime_provider``.
+CLI ``--provider`` / ``--exclude-provider``
+                                     Public source-family filter (alias-aware).
+MCP ``provider`` param               Same as CLI — source-family filter.
+``ConversationSummaryPayload.provider``
+                                     Public surface field; carries source-family token.
+Provider-wire schemas under          Lab/provider scope (OpenAI/Google/Anthropic) —
+  ``schemas/providers/``             describes raw export shapes, not ingestion sources.
+Daemon ``/api/facets`` providers     Source-family counts.
+=================================== ===================================================
+
+Key alias rules
+---------------
+
+- ``aistudio`` canonicalizes to ``gemini`` at the storage/enum layer
+  (Google AI Studio exports are Gemini-provider conversations) but
+  remains a distinct *source family* for watcher discovery and source
+  name display.
+- ``gemini-cli`` is a separate runtime/schema token from ``gemini``
+  (different raw export shape, different watcher root).
+- ``hermes`` and ``antigravity`` are distinct source-family tokens with
+  their own watcher roots and schema providers.
+- ``claude`` and ``anthropic`` are aliases for ``claude-ai`` (Claude web).
+"""
 
 from __future__ import annotations
 

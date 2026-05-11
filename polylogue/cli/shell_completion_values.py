@@ -27,14 +27,14 @@ from polylogue.storage.sqlite.connection import open_read_connection
 Callback = Callable[[_ArchiveOperations], Awaitable[list[CompletionItem]]]
 
 _PROVIDER_DESCRIPTIONS: Final[dict[str, str]] = {
-    "chatgpt": "OpenAI ChatGPT exports",
-    "claude-ai": "Anthropic Claude web exports",
-    "claude-code": "Claude Code local sessions",
-    "codex": "OpenAI Codex sessions",
-    "gemini": "Google AI Studio exports",
-    "gemini-cli": "Gemini CLI local sessions",
-    "hermes": "Hermes agent sessions",
-    "antigravity": "Antigravity local brain artifacts",
+    "chatgpt": "ChatGPT web exports (lab: OpenAI)",
+    "claude-ai": "Claude web exports (lab: Anthropic)",
+    "claude-code": "Claude Code local sessions (source: claude-code)",
+    "codex": "Codex CLI local sessions (source: codex)",
+    "gemini": "Google AI Studio exports (source: aistudio, lab: Google)",
+    "gemini-cli": "Gemini CLI local sessions (source: gemini-cli, lab: Google)",
+    "hermes": "Hermes agent sessions (source: hermes)",
+    "antigravity": "Antigravity brain artifacts (source: antigravity)",
 }
 
 _MAX_ID_COMPLETIONS = 24
