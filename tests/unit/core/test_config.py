@@ -289,6 +289,284 @@ class TestConfigPublicBoundary:
 
 
 # =============================================================================
+# PolylogueConfig TOML/env/CLI precedence tests (#829)
+# =============================================================================
+
+
+class TestPolylogueConfigDefaults:
+    """PolylogueConfig returns sensible defaults with no TOML or env."""
+
+    def test_archive_root_default(self, workspace_env: dict[str, Path]) -> None:
+        from polylogue.config import load_polylogue_config
+
+        cfg = load_polylogue_config()
+        assert cfg.archive_root
+
+    def test_api_host_default(self, workspace_env: dict[str, Path]) -> None:
+        from polylogue.config import load_polylogue_config
+
+        cfg = load_polylogue_config()
+        assert cfg.api_host == "127.0.0.1"
+
+    def test_api_port_default(self, workspace_env: dict[str, Path]) -> None:
+        from polylogue.config import load_polylogue_config
+
+        cfg = load_polylogue_config()
+        assert cfg.api_port == 8766
+
+    def test_embedding_disabled_by_default(self, workspace_env: dict[str, Path]) -> None:
+        from polylogue.config import load_polylogue_config
+
+        cfg = load_polylogue_config()
+        assert cfg.embedding_enabled is False
+
+    def test_embedding_model_default(self, workspace_env: dict[str, Path]) -> None:
+        from polylogue.config import load_polylogue_config
+
+        cfg = load_polylogue_config()
+        assert cfg.embedding_model == "voyage-4"
+
+    def test_embedding_dimension_default(self, workspace_env: dict[str, Path]) -> None:
+        from polylogue.config import load_polylogue_config
+
+        cfg = load_polylogue_config()
+        assert cfg.embedding_dimension == 1024
+
+    def test_embedding_max_cost_default(self, workspace_env: dict[str, Path]) -> None:
+        from polylogue.config import load_polylogue_config
+
+        cfg = load_polylogue_config()
+        assert cfg.embedding_max_cost_usd == 5.0
+
+    def test_notification_backend_default(self, workspace_env: dict[str, Path]) -> None:
+        from polylogue.config import load_polylogue_config
+
+        cfg = load_polylogue_config()
+        assert cfg.notification_backend == "log"
+
+    def test_health_interval_default(self, workspace_env: dict[str, Path]) -> None:
+        from polylogue.config import load_polylogue_config
+
+        cfg = load_polylogue_config()
+        assert cfg.health_check_interval_s == 300
+
+    def test_health_tiers_default(self, workspace_env: dict[str, Path]) -> None:
+        from polylogue.config import load_polylogue_config
+
+        cfg = load_polylogue_config()
+        assert cfg.health_check_tiers == "fast,medium"
+
+    def test_source_roots_default(self, workspace_env: dict[str, Path]) -> None:
+        from polylogue.config import load_polylogue_config
+
+        cfg = load_polylogue_config()
+        assert cfg.source_roots == ()
+
+    def test_watch_debounce_default(self, workspace_env: dict[str, Path]) -> None:
+        from polylogue.config import load_polylogue_config
+
+        cfg = load_polylogue_config()
+        assert cfg.watch_debounce_s == 2.0
+
+
+class TestPolylogueConfigEnvOverrides:
+    """POLYLOGUE_* env vars override defaults."""
+
+    def test_env_overrides_api_host(self, monkeypatch: pytest.MonkeyPatch, workspace_env: dict[str, Path]) -> None:
+        from polylogue.config import load_polylogue_config
+
+        monkeypatch.setenv("POLYLOGUE_API_HOST", "0.0.0.0")
+        cfg = load_polylogue_config()
+        assert cfg.api_host == "0.0.0.0"
+
+    def test_env_overrides_api_port(self, monkeypatch: pytest.MonkeyPatch, workspace_env: dict[str, Path]) -> None:
+        from polylogue.config import load_polylogue_config
+
+        monkeypatch.setenv("POLYLOGUE_API_PORT", "9999")
+        cfg = load_polylogue_config()
+        assert cfg.api_port == 9999
+
+    def test_env_overrides_api_auth_token(
+        self, monkeypatch: pytest.MonkeyPatch, workspace_env: dict[str, Path]
+    ) -> None:
+        from polylogue.config import load_polylogue_config
+
+        monkeypatch.setenv("POLYLOGUE_API_AUTH_TOKEN", "secret-token")
+        cfg = load_polylogue_config()
+        assert cfg.api_auth_token == "secret-token"
+
+    def test_env_overrides_embedding_enabled(
+        self, monkeypatch: pytest.MonkeyPatch, workspace_env: dict[str, Path]
+    ) -> None:
+        from polylogue.config import load_polylogue_config
+
+        monkeypatch.setenv("POLYLOGUE_DAEMON_ENABLE_EMBEDDINGS", "true")
+        cfg = load_polylogue_config()
+        assert cfg.embedding_enabled is True
+
+    def test_env_overrides_notification_backend(
+        self, monkeypatch: pytest.MonkeyPatch, workspace_env: dict[str, Path]
+    ) -> None:
+        from polylogue.config import load_polylogue_config
+
+        monkeypatch.setenv("POLYLOGUE_NOTIFICATION_BACKEND", "stdout")
+        cfg = load_polylogue_config()
+        assert cfg.notification_backend == "stdout"
+
+    def test_env_overrides_health_interval(
+        self, monkeypatch: pytest.MonkeyPatch, workspace_env: dict[str, Path]
+    ) -> None:
+        from polylogue.config import load_polylogue_config
+
+        monkeypatch.setenv("POLYLOGUE_HEALTH_CHECK_INTERVAL_S", "60")
+        cfg = load_polylogue_config()
+        assert cfg.health_check_interval_s == 60
+
+    def test_env_overrides_health_tiers(self, monkeypatch: pytest.MonkeyPatch, workspace_env: dict[str, Path]) -> None:
+        from polylogue.config import load_polylogue_config
+
+        monkeypatch.setenv("POLYLOGUE_HEALTH_CHECK_TIERS", "fast")
+        cfg = load_polylogue_config()
+        assert cfg.health_check_tiers == "fast"
+
+    def test_env_overrides_browser_capture_port(
+        self, monkeypatch: pytest.MonkeyPatch, workspace_env: dict[str, Path]
+    ) -> None:
+        from polylogue.config import load_polylogue_config
+
+        monkeypatch.setenv("POLYLOGUE_BROWSER_CAPTURE_PORT", "8888")
+        cfg = load_polylogue_config()
+        assert cfg.browser_capture_port == 8888
+
+    def test_env_overrides_watch_debounce(
+        self, monkeypatch: pytest.MonkeyPatch, workspace_env: dict[str, Path]
+    ) -> None:
+        from polylogue.config import load_polylogue_config
+
+        monkeypatch.setenv("POLYLOGUE_WATCH_DEBOUNCE_S", "5.0")
+        cfg = load_polylogue_config()
+        assert cfg.watch_debounce_s == 5.0
+
+
+class TestPolylogueConfigCLIOverrides:
+    """CLI overrides take highest precedence."""
+
+    def test_cli_overrides_api_port(self, workspace_env: dict[str, Path]) -> None:
+        from polylogue.config import load_polylogue_config
+
+        cfg = load_polylogue_config(cli_overrides={"api_port": 7777})
+        assert cfg.api_port == 7777
+
+    def test_cli_overrides_auth_token(self, workspace_env: dict[str, Path]) -> None:
+        from polylogue.config import load_polylogue_config
+
+        cfg = load_polylogue_config(cli_overrides={"api_auth_token": "cli-token"})
+        assert cfg.api_auth_token == "cli-token"
+
+    def test_cli_trumps_env(self, monkeypatch: pytest.MonkeyPatch, workspace_env: dict[str, Path]) -> None:
+        from polylogue.config import load_polylogue_config
+
+        monkeypatch.setenv("POLYLOGUE_API_PORT", "9999")
+        cfg = load_polylogue_config(cli_overrides={"api_port": 7777})
+        assert cfg.api_port == 7777
+
+    def test_cli_overrides_embedding_max_cost(self, workspace_env: dict[str, Path]) -> None:
+        from polylogue.config import load_polylogue_config
+
+        cfg = load_polylogue_config(cli_overrides={"embedding_max_cost_usd": 10.0})
+        assert cfg.embedding_max_cost_usd == 10.0
+
+
+class TestPolylogueConfigTOML:
+    """TOML config file overrides defaults but is overridden by env/CLI."""
+
+    def test_toml_sets_api_port(self, tmp_path: Path, workspace_env: dict[str, Path]) -> None:
+        from polylogue.config import load_polylogue_config
+
+        toml_path = tmp_path / "polylogue.toml"
+        toml_path.write_text(
+            "[daemon.api]\nport = 9998\n",
+            encoding="utf-8",
+        )
+        cfg = load_polylogue_config(config_path=toml_path)
+        assert cfg.api_port == 9998
+
+    def test_toml_sets_browser_capture(self, tmp_path: Path, workspace_env: dict[str, Path]) -> None:
+        from polylogue.config import load_polylogue_config
+
+        toml_path = tmp_path / "polylogue.toml"
+        toml_path.write_text(
+            '[daemon.browser_capture]\nhost = "0.0.0.0"\nport = 9997\n',
+            encoding="utf-8",
+        )
+        cfg = load_polylogue_config(config_path=toml_path)
+        assert cfg.browser_capture_host == "0.0.0.0"
+        assert cfg.browser_capture_port == 9997
+
+    def test_toml_sets_source_roots(self, tmp_path: Path, workspace_env: dict[str, Path]) -> None:
+        from polylogue.config import load_polylogue_config
+
+        toml_path = tmp_path / "polylogue.toml"
+        toml_path.write_text(
+            '[sources]\nroots = ["/tmp/extra", "/tmp/more"]\n',
+            encoding="utf-8",
+        )
+        cfg = load_polylogue_config(config_path=toml_path)
+        assert cfg.source_roots == ("/tmp/extra", "/tmp/more")
+
+    def test_toml_env_cli_precedence(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, workspace_env: dict[str, Path]
+    ) -> None:
+        from polylogue.config import load_polylogue_config
+
+        toml_path = tmp_path / "polylogue.toml"
+        toml_path.write_text(
+            "[daemon.api]\nport = 9000\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("POLYLOGUE_API_PORT", "9001")
+        cfg = load_polylogue_config(config_path=toml_path)
+        # env overrides TOML
+        assert cfg.api_port == 9001
+
+        # CLI overrides env
+        cfg2 = load_polylogue_config(config_path=toml_path, cli_overrides={"api_port": 9002})
+        assert cfg2.api_port == 9002
+
+    def test_toml_sets_embedding(self, tmp_path: Path, workspace_env: dict[str, Path]) -> None:
+        from polylogue.config import load_polylogue_config
+
+        toml_path = tmp_path / "polylogue.toml"
+        toml_path.write_text(
+            '[embedding]\nenabled = true\nmodel = "voyage-3"\ndimension = 512\n',
+            encoding="utf-8",
+        )
+        cfg = load_polylogue_config(config_path=toml_path)
+        assert cfg.embedding_enabled is True
+        assert cfg.embedding_model == "voyage-3"
+        assert cfg.embedding_dimension == 512
+
+
+class TestPolylogueConfigFormatTOML:
+    """format_config_toml produces loadable TOML."""
+
+    def test_roundtrip_defaults(self) -> None:
+        from polylogue.config import format_config_toml, load_polylogue_config
+
+        cfg = load_polylogue_config()
+        formatted = format_config_toml(cfg.raw)
+        assert "[archive]" in formatted
+        assert "[daemon]" in formatted
+
+    def test_source_roots_formatted_as_array(self, workspace_env: dict[str, Path]) -> None:
+        from polylogue.config import format_config_toml, load_polylogue_config
+
+        cfg = load_polylogue_config(cli_overrides={"source_roots": ("/a", "/b")})
+        formatted = format_config_toml(cfg.raw)
+        assert 'roots = ["/a", "/b"]' in formatted
+
+
+# =============================================================================
 # Merged from test_logging.py (2024-03-15)
 # =============================================================================
 
