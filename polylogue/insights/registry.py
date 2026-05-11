@@ -392,6 +392,16 @@ register(
         cli_help="List durable work-event insights.",
         cli_options=(
             CliOption("conversation_id", ("--conversation-id",), help="Only events from one conversation"),
+            CliOption(
+                "session_date_since",
+                ("--session-date-since",),
+                help="Only events whose canonical session date is on/after this date",
+            ),
+            CliOption(
+                "session_date_until",
+                ("--session-date-until",),
+                help="Only events whose canonical session date is on/before this date",
+            ),
             CliOption("kind", ("--kind",), help="Only this work-event kind"),
             _QUERY_OPTION,
         ),

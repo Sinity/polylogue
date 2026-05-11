@@ -167,6 +167,8 @@ def test_row_to_session_work_event_record_falls_back_to_legacy_payloads(typed_pa
     assert record.evidence_payload.start_index == 3
     assert record.evidence_payload.duration_ms == 240000
     assert record.evidence_payload.file_paths == ("/workspace/polylogue/app.py",)
+    assert record.evidence_payload.timing_provenance == "timestamped_range"
+    assert record.evidence_payload.date_provenance == "event_timestamp"
     assert record.inference_payload.kind == "file_edit"
     assert record.inference_payload.summary == "Patched the failing test path"
     assert record.inference_payload.confidence == pytest.approx(0.91)

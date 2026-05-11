@@ -2154,6 +2154,30 @@
           "default": null,
           "title": "Provider"
         },
+        "session_date_since": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Session Date Since"
+        },
+        "session_date_until": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Session Date Until"
+        },
         "since": {
           "anyOf": [
             {
@@ -2487,6 +2511,30 @@
           ],
           "default": null,
           "title": "Query"
+        },
+        "session_date_since": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Session Date Since"
+        },
+        "session_date_until": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Session Date Until"
         },
         "since": {
           "anyOf": [

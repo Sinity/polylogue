@@ -571,11 +571,11 @@ def test_format_sources_summary_contract() -> None:
 
     sources = [
         Source(name="inbox", path=Path("/inbox")),
-        Source(name="gemini", folder="folder-id"),
+        Source(name="aistudio", folder="folder-id"),
     ]
     result = format_sources_summary(sources)
     assert "inbox" in result
-    assert "gemini (drive)" in result
+    assert "aistudio (drive)" in result
 
 
 def test_format_sources_summary_marks_missing() -> None:

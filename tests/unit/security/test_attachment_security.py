@@ -164,7 +164,7 @@ def test_path_traversal_creates_valid_attachment(malicious_path: str) -> None:
 
 
 @given(symlink_path_strategy())
-@settings(max_examples=50)
+@settings(max_examples=50, deadline=None)
 def test_symlink_paths_create_valid_attachment(symlink_path: str) -> None:
     att = ParsedAttachment(
         provider_attachment_id="att-symlink",

@@ -345,10 +345,15 @@ def hydrate_session_profile(record: SessionProfileRecord) -> SessionProfile:
 
 
 def _phase_document(payload: SessionPhasePayload) -> SessionPhaseDocument:
+    start_time = payload["start_time"]
+    end_time = payload["end_time"]
+    canonical_session_date = payload["canonical_session_date"]
     return {
-        "start_time": payload["start_time"],
-        "end_time": payload["end_time"],
-        "canonical_session_date": payload["canonical_session_date"],
+        "start_time": start_time,
+        "end_time": end_time,
+        "canonical_session_date": canonical_session_date,
+        "timing_provenance": _range_timing_provenance(start_time, end_time),
+        "date_provenance": _date_provenance(canonical_session_date, start_time, end_time),
         "message_range": list(payload["message_range"]),
         "duration_ms": payload["duration_ms"],
         "tool_counts": dict(payload["tool_counts"]),
@@ -359,10 +364,15 @@ def _phase_document(payload: SessionPhasePayload) -> SessionPhaseDocument:
 
 
 def _phase_payload_from_phase(phase: SessionPhase) -> SessionPhasePayload:
+    start_time = phase.start_time.isoformat() if phase.start_time else None
+    end_time = phase.end_time.isoformat() if phase.end_time else None
+    canonical_session_date = phase.canonical_session_date.isoformat() if phase.canonical_session_date else None
     return {
-        "start_time": phase.start_time.isoformat() if phase.start_time else None,
-        "end_time": phase.end_time.isoformat() if phase.end_time else None,
-        "canonical_session_date": phase.canonical_session_date.isoformat() if phase.canonical_session_date else None,
+        "start_time": start_time,
+        "end_time": end_time,
+        "canonical_session_date": canonical_session_date,
+        "timing_provenance": _range_timing_provenance(start_time, end_time),
+        "date_provenance": _date_provenance(canonical_session_date, start_time, end_time),
         "message_range": list(phase.message_range),
         "duration_ms": phase.duration_ms,
         "tool_counts": dict(phase.tool_counts),
@@ -387,13 +397,18 @@ def _phase_from_payload_mapping(payload: SessionPhaseDocument | dict[str, object
 
 
 def _work_event_document(payload: WorkEventPayload) -> WorkEventDocument:
+    start_time = payload["start_time"]
+    end_time = payload["end_time"]
+    canonical_session_date = payload["canonical_session_date"]
     return {
         "kind": payload["kind"],
         "start_index": payload["start_index"],
         "end_index": payload["end_index"],
-        "start_time": payload["start_time"],
-        "end_time": payload["end_time"],
-        "canonical_session_date": payload["canonical_session_date"],
+        "start_time": start_time,
+        "end_time": end_time,
+        "canonical_session_date": canonical_session_date,
+        "timing_provenance": _range_timing_provenance(start_time, end_time),
+        "date_provenance": _date_provenance(canonical_session_date, start_time, end_time),
         "duration_ms": payload["duration_ms"],
         "confidence": payload["confidence"],
         "evidence": list(payload["evidence"]),
@@ -442,6 +457,10 @@ def event_support_signals(event: WorkEvent) -> tuple[str, ...]:
         signals.append("tool_calls")
     if event.start_time and event.end_time:
         signals.append("timestamped_range")
+    elif event.start_time or event.end_time:
+        signals.append("partial_timestamp_range")
+    elif event.canonical_session_date:
+        signals.append("date_only_range")
     return tuple(dict.fromkeys(signals))
 
 
@@ -456,9 +475,31 @@ def phase_support_signals(phase: SessionPhase) -> tuple[str, ...]:
         signals.append("tool_counts")
     if phase.start_time and phase.end_time:
         signals.append("timestamped_range")
+    elif phase.start_time or phase.end_time:
+        signals.append("partial_timestamp_range")
+    elif phase.canonical_session_date:
+        signals.append("date_only_range")
     if phase.word_count > 0:
         signals.append("word_count")
     return tuple(dict.fromkeys(signals))
+
+
+def _range_timing_provenance(start_time: str | None, end_time: str | None) -> str:
+    if start_time is not None and end_time is not None:
+        return "timestamped_range"
+    if start_time is not None:
+        return "start_timestamp_only"
+    if end_time is not None:
+        return "end_timestamp_only"
+    return "untimestamped"
+
+
+def _date_provenance(canonical_session_date: str | None, start_time: str | None, end_time: str | None) -> str:
+    if canonical_session_date is None:
+        return "none"
+    if start_time is not None or end_time is not None:
+        return "event_timestamp"
+    return "date_only"
 
 
 def phase_fallback(phase: SessionPhase) -> bool:

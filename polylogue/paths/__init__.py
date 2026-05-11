@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from polylogue.paths._roots import (
     GEMINI_DRIVE_FOLDER,
+    antigravity_path,
     archive_root,
     blob_store_root,
     browser_capture_spool_root,
@@ -24,6 +25,8 @@ from polylogue.paths._roots import (
     drive_cache_path,
     drive_credentials_path,
     drive_token_path,
+    gemini_cli_path,
+    hermes_sessions_path,
     hooks_sidecar_dir,
     render_root,
     state_home,
@@ -32,6 +35,7 @@ from polylogue.paths._roots import (
 
 __all__ = [
     "GEMINI_DRIVE_FOLDER",
+    "antigravity_path",
     "archive_root",
     "blob_store_root",
     "browser_capture_spool_root",
@@ -47,6 +51,8 @@ __all__ = [
     "drive_cache_path",
     "drive_credentials_path",
     "drive_token_path",
+    "gemini_cli_path",
+    "hermes_sessions_path",
     "hooks_sidecar_dir",
     "render_root",
     "state_home",

@@ -9,6 +9,7 @@ from polylogue.core.json import JSONDocument, JSONValue, json_document
 _PATH_ONLY_SIDECARS = {
     "bridge-pointer.json": "bridge pointer sidecar",
     "sessions-index.json": "session index sidecar",
+    "logs.json": "agent log sidecar",
 }
 _SUBAGENT_SUFFIXES = (".jsonl", ".jsonl.txt", ".ndjson")
 _SCALAR_TYPES = (str, int, float, bool, type(None))
@@ -31,6 +32,15 @@ _HOOK_EVENT_KEYS = frozenset({"event_type", "session_id", "timestamp", "provider
 
 def path_only_sidecars() -> dict[str, str]:
     return _PATH_ONLY_SIDECARS
+
+
+def path_only_sidecar_reason(name: str) -> str | None:
+    lowered = name.lower()
+    if lowered in _PATH_ONLY_SIDECARS:
+        return _PATH_ONLY_SIDECARS[lowered]
+    if lowered.startswith("request_dump_") and lowered.endswith(".json"):
+        return "Hermes request dump sidecar"
+    return None
 
 
 def looks_like_conversation_document(payload: JSONDocument) -> bool:

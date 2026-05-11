@@ -63,6 +63,9 @@ PROVIDER_WIRE_FORMATS: dict[str, WireFormat] = {
         encoding="json",
         messages_path="chunkedPrompt.chunks",
     ),
+    "antigravity": WireFormat(
+        encoding="json",
+    ),
 }
 
 

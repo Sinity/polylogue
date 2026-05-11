@@ -381,11 +381,12 @@ def _make_watcher(
     *,
     debounce_s: float = 0.01,
     event_emitter: MagicMock | None = None,
+    sources: tuple[WatchSource, ...] | None = None,
 ) -> tuple[LiveWatcher, _FullIngestMock]:
     polylogue = MagicMock()
     polylogue.archive_root = tmp_path
     cursor = CursorStore(tmp_path / "cursor.sqlite")
-    sources = (WatchSource(name="test", root=root),)
+    sources = sources or (WatchSource(name="test", root=root),)
     watcher = LiveWatcher(polylogue, sources, debounce_s=debounce_s, cursor=cursor, event_emitter=event_emitter)
     full_ingest = _FullIngestMock()
     watcher._batch_processor._ingest_full_paths = full_ingest  # type: ignore[method-assign]
@@ -1373,6 +1374,22 @@ def test_catch_up_ignores_non_jsonl(tmp_path: Path) -> None:
     assert parse_sources.await_count == 1
 
 
+def test_catch_up_uses_source_suffix_contract_for_json_sessions(tmp_path: Path) -> None:
+    root = tmp_path / "gemini"
+    root.mkdir()
+    (root / "session.json").write_text('{"sessionId":"s1","messages":[]}\n')
+    (root / "notes.md").write_text("# no")
+    watcher, parse_sources = _make_watcher(
+        tmp_path,
+        root,
+        sources=(WatchSource(name="gemini-cli", root=root, suffixes=(".json", ".jsonl")),),
+    )
+
+    asyncio.run(watcher._catch_up([root]))
+
+    assert parse_sources.await_count == 1
+
+
 def test_catch_up_recurses_like_live_watch(tmp_path: Path) -> None:
     root = tmp_path / "src"
     root.mkdir()
@@ -1429,6 +1446,13 @@ def test_watch_source_exists_true(tmp_path: Path) -> None:
 def test_watch_source_exists_false(tmp_path: Path) -> None:
     src = WatchSource(name="x", root=tmp_path / "nope")
     assert src.exists() is False
+
+
+def test_watch_source_accepts_configured_suffixes(tmp_path: Path) -> None:
+    src = WatchSource(name="x", root=tmp_path, suffixes=(".json", ".jsonl"))
+    assert src.accepts(tmp_path / "session.json") is True
+    assert src.accepts(tmp_path / "session.jsonl") is True
+    assert src.accepts(tmp_path / "README.md") is False
 
 
 # --- end-to-end via watchfiles -------------------------------------------------

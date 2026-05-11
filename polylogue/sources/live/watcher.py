@@ -33,13 +33,18 @@ _PARSER_FINGERPRINT = "live-batched-v2"
 
 @dataclass(frozen=True, slots=True)
 class WatchSource:
-    """A directory to watch for live JSONL session files."""
+    """A directory to watch for live session files."""
 
     name: str
     root: Path
+    suffixes: tuple[str, ...] = (".jsonl",)
 
     def exists(self) -> bool:
         return self.root.exists()
+
+    def accepts(self, path: Path) -> bool:
+        name = path.name.lower()
+        return any(name.endswith(suffix) for suffix in self.suffixes)
 
 
 class LiveWatcher:
@@ -99,7 +104,7 @@ class LiveWatcher:
                 if change is Change.deleted:
                     continue
                 path = Path(raw_path)
-                if path.suffix != ".jsonl":
+                if not self._source_accepts(path):
                     continue
                 self._enqueue(path)
 
@@ -114,9 +119,13 @@ class LiveWatcher:
     # ------------------------------------------------------------------
 
     async def _catch_up(self, roots: list[Path]) -> None:
+        root_set = {root.resolve() for root in roots}
         files: list[Path] = []
-        for root in roots:
-            files.extend(p for p in root.rglob("*.jsonl") if p.is_file())
+        for source in self._sources:
+            if not source.exists() or source.root.resolve() not in root_set:
+                continue
+            for suffix in source.suffixes:
+                files.extend(p for p in source.root.rglob(f"*{suffix}") if p.is_file())
         if not files:
             return
         logger.info("live.watcher: catch-up scan over %d file(s)", len(files))
@@ -272,6 +281,16 @@ class LiveWatcher:
                 continue
         return path.parent.name
 
+    def _source_accepts(self, path: Path) -> bool:
+        resolved = path.resolve()
+        for source in self._sources:
+            try:
+                if resolved.is_relative_to(source.root.resolve()):
+                    return source.accepts(path)
+            except OSError:
+                continue
+        return path.suffix == ".jsonl"
+
 
 def default_sources() -> tuple[WatchSource, ...]:
     """Discover the default live-source roots from XDG/home conventions.
@@ -280,11 +299,22 @@ def default_sources() -> tuple[WatchSource, ...]:
     (which stages to ``archive_root()/inbox``) is observed by the
     daemon-owned watcher.
     """
-    from polylogue.paths import archive_root, claude_code_path, codex_path, hooks_sidecar_dir
+    from polylogue.paths import (
+        antigravity_path,
+        archive_root,
+        claude_code_path,
+        codex_path,
+        gemini_cli_path,
+        hermes_sessions_path,
+        hooks_sidecar_dir,
+    )
 
     return (
         WatchSource(name="claude-code", root=claude_code_path()),
         WatchSource(name="codex", root=codex_path()),
+        WatchSource(name="gemini-cli", root=gemini_cli_path(), suffixes=(".json", ".jsonl")),
+        WatchSource(name="hermes", root=hermes_sessions_path(), suffixes=(".json",)),
+        WatchSource(name="antigravity", root=antigravity_path(), suffixes=(".metadata.json",)),
         WatchSource(name="inbox", root=archive_root() / "inbox"),
         WatchSource(name="hooks", root=hooks_sidecar_dir()),
     )

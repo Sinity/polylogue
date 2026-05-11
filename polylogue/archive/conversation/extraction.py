@@ -161,15 +161,18 @@ class WorkEvent:
     duration_ms: int = 0
 
     def to_dict(self) -> WorkEventPayload:
+        start_time = self.start_time.isoformat() if self.start_time else None
+        end_time = self.end_time.isoformat() if self.end_time else None
+        canonical_session_date = self.canonical_session_date.isoformat() if self.canonical_session_date else None
         return {
             "kind": self.kind.value,
             "start_index": self.start_index,
             "end_index": self.end_index,
-            "start_time": self.start_time.isoformat() if self.start_time else None,
-            "end_time": self.end_time.isoformat() if self.end_time else None,
-            "canonical_session_date": (
-                self.canonical_session_date.isoformat() if self.canonical_session_date else None
-            ),
+            "start_time": start_time,
+            "end_time": end_time,
+            "canonical_session_date": canonical_session_date,
+            "timing_provenance": _range_timing_provenance(start_time, end_time),
+            "date_provenance": _date_provenance(canonical_session_date, start_time, end_time),
             "duration_ms": self.duration_ms,
             "confidence": self.confidence,
             "evidence": list(self.evidence),
@@ -448,6 +451,24 @@ def _range_timing(
         canonical_session_date=_canonical_event_date(start_time, end_time),
         duration_ms=_duration_ms_between(start_time, end_time),
     )
+
+
+def _range_timing_provenance(start_time: str | None, end_time: str | None) -> str:
+    if start_time is not None and end_time is not None:
+        return "timestamped_range"
+    if start_time is not None:
+        return "start_timestamp_only"
+    if end_time is not None:
+        return "end_timestamp_only"
+    return "untimestamped"
+
+
+def _date_provenance(canonical_session_date: str | None, start_time: str | None, end_time: str | None) -> str:
+    if canonical_session_date is None:
+        return "none"
+    if start_time is not None or end_time is not None:
+        return "event_timestamp"
+    return "date_only"
 
 
 def _merge_adjacent(events: list[WorkEvent]) -> list[WorkEvent]:

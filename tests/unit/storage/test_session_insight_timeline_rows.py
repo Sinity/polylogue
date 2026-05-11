@@ -88,8 +88,13 @@ def test_session_timeline_row_builders_roundtrip_work_events_and_phases() -> Non
     assert work_event.summary == work_event_records[0].summary
     assert work_event_records[0].inference_payload.summary == work_event.summary
     assert work_event.kind.value == work_event_records[0].kind
+    assert work_event_records[0].evidence_payload.timing_provenance == "timestamped_range"
+    assert work_event_records[0].evidence_payload.date_provenance == "event_timestamp"
+    assert "timestamped_range" in work_event_records[0].inference_payload.support_signals
     assert work_event_records[0].search_text
 
     assert phase.message_range == (phase_records[0].start_index, phase_records[0].end_index)
     assert phase.tool_counts == phase_records[0].tool_counts
+    assert phase_records[0].evidence_payload.timing_provenance == "timestamped_range"
+    assert phase_records[0].evidence_payload.date_provenance == "event_timestamp"
     assert phase_records[0].search_text

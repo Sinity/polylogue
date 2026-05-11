@@ -27,7 +27,7 @@ CATALOG_EFFECTIVE_DATE = "2026-04-24"
 class PricingModel(BaseModel):
     """Base model for immutable cost-estimation payloads."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, protected_namespaces=())
 
 
 class CostUsagePayload(PricingModel):

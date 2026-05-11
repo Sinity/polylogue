@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from polylogue.archive.conversation.branch_type import BranchType
 from polylogue.archive.message.roles import Role
@@ -105,6 +105,8 @@ class ContentBlockRecord(BaseModel):
 
 
 class MessageRecord(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
     message_id: MessageId
     conversation_id: ConversationId
     provider_message_id: str | None = None

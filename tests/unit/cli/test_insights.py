@@ -540,9 +540,59 @@ def test_insights_reconstructs_tiered_payloads_from_blank_migrated_rows(cli_work
     )
     assert all(json_int(json_object(item["inference"])["work_event_count"]) >= 0 for item in inference_profiles_payload)
     assert json_int(json_object(work_event["evidence"])["start_index"]) >= 0
+    assert json_object(work_event["evidence"])["timing_provenance"] in {
+        "timestamped_range",
+        "start_timestamp_only",
+        "end_timestamp_only",
+        "untimestamped",
+    }
+    assert json_object(work_event["evidence"])["date_provenance"] in {
+        "event_timestamp",
+        "date_only",
+        "none",
+    }
     assert json_object(work_event["inference"])["kind"] in {"implementation", "testing", "planning", "debugging"}
     assert json_int(json_array(json_object(phase["evidence"])["message_range"])[0]) >= 0
     assert json_number(json_object(phase["inference"])["confidence"]) >= 0.0
+
+
+def test_insights_work_events_filter_by_canonical_session_date(cli_workspace: CliWorkspace) -> None:
+    _seed_products(cli_workspace)
+
+    runner = CliRunner()
+    matched = runner.invoke(
+        cli,
+        [
+            "insights",
+            "work-events",
+            "--session-date-since",
+            "2026-03-01",
+            "--session-date-until",
+            "2026-03-01",
+            "--format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+    missed = runner.invoke(
+        cli,
+        [
+            "insights",
+            "work-events",
+            "--session-date-since",
+            "2026-03-02",
+            "--session-date-until",
+            "2026-03-02",
+            "--format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert matched.exit_code == 0
+    assert missed.exit_code == 0
+    assert json_int(extract_json_result(matched.output)["total"]) >= 1
+    assert json_int(extract_json_result(missed.output)["total"]) == 0
 
 
 def test_insights_profile_date_filters_and_phases_json(cli_workspace: CliWorkspace) -> None:

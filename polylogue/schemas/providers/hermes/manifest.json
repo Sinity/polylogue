@@ -1,0 +1,81 @@
+{
+  "provider": "hermes",
+  "generated_at": "2026-05-11T04:14:45.729400+00:00",
+  "cluster_count": 1,
+  "artifact_counts": {
+    "conversation_document": 37
+  },
+  "default_version": "v1",
+  "clusters": [
+    {
+      "cluster_id": "f99c39ed0e5df7ea",
+      "provider": "hermes",
+      "sample_count": 37,
+      "first_seen": "2026-05-06T01:31:55.304373+00:00",
+      "last_seen": "2026-05-07T06:40:04.881242+00:00",
+      "representative_paths": [
+        "/home/sinity/.hermes/sessions/session_20260507_083943_1c5a03.json",
+        "/home/sinity/.hermes/sessions/session_20260507_083312_e0736a.json",
+        "/home/sinity/.hermes/sessions/session_20260507_030608_ca2709.json",
+        "/home/sinity/.hermes/sessions/session_20260507_082431_855a4c.json",
+        "/home/sinity/.hermes/sessions/session_20260507_080130_6de1e1.json"
+      ],
+      "dominant_keys": [
+        "base_url",
+        "last_updated",
+        "message_count",
+        "messages",
+        "model",
+        "platform",
+        "session_id",
+        "session_start",
+        "system_prompt",
+        "tools"
+      ],
+      "confidence": 1.0,
+      "artifact_kind": "conversation_document",
+      "profile_tokens": [
+        "anchor:messages",
+        "field:base_url",
+        "field:last_updated",
+        "field:message_count",
+        "field:messages",
+        "field:model",
+        "field:platform",
+        "field:session_id",
+        "field:session_start",
+        "field:system_prompt",
+        "field:tools",
+        "item:messages:content",
+        "item:messages:finish_reason",
+        "item:messages:reasoning",
+        "item:messages:reasoning_content",
+        "item:messages:role",
+        "item:messages:tool_call_id",
+        "item:messages:tool_calls",
+        "item:tools:function",
+        "item:tools:type",
+        "shape:messages:array",
+        "shape:tools:array",
+        "type:base_url:string",
+        "type:last_updated:string",
+        "type:message_count:number",
+        "type:messages:array",
+        "type:model:string",
+        "type:platform:string",
+        "type:session_id:string",
+        "type:session_start:string",
+        "type:system_prompt:string",
+        "type:tools:array"
+      ],
+      "exact_structure_ids": [
+        "1f07371f61076dba",
+        "b5b4a1b2fa6e9e49",
+        "d4869334f538c2bc",
+        "ffe2518ccd4fb36c"
+      ],
+      "bundle_scope_count": 37,
+      "promoted_package_version": "v1"
+    }
+  ]
+}

@@ -150,6 +150,7 @@ class _ConversationEmitter:
             payloads,
             self._ctx.fallback_id,
             schema_resolution=resolved.schema_resolution,
+            source_path=self._ctx.source_path_str,
         ):
             yield (raw_data, self._maybe_enrich(conv))
 
@@ -204,6 +205,7 @@ class _ConversationEmitter:
                     payload,
                     self._ctx.fallback_id,
                     schema_resolution=resolved.schema_resolution,
+                    source_path=self._ctx.source_path_str,
                 ):
                     yield (raw_data, self._maybe_enrich(conv, resolved.provider))
                 source_index += 1

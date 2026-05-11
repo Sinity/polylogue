@@ -23,6 +23,9 @@ class Provider(str, Enum):
     CLAUDE_CODE = "claude-code"
     CODEX = "codex"
     GEMINI = "gemini"
+    GEMINI_CLI = "gemini-cli"
+    HERMES = "hermes"
+    ANTIGRAVITY = "antigravity"
     DRIVE = "drive"
     UNKNOWN = "unknown"
 

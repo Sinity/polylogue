@@ -1,0 +1,141 @@
+{
+  "provider": "antigravity",
+  "generated_at": "2026-05-11T04:57:24.939523+00:00",
+  "latest_version": "v1",
+  "default_version": "v1",
+  "recommended_version": "v1",
+  "orphan_adjunct_counts": {},
+  "packages": [
+    {
+      "provider": "antigravity",
+      "version": "v1",
+      "anchor_kind": "conversation_document",
+      "default_element_kind": "conversation_document",
+      "first_seen": "2025-12-09T02:29:52.403557+00:00",
+      "last_seen": "2026-03-03T15:52:35.826969+00:00",
+      "bundle_scope_count": 35,
+      "sample_count": 39,
+      "anchor_profile_family_id": "fd950579a81649c6",
+      "bundle_scopes": [
+        "architecture_strategy.md.metadata",
+        "architecture_v2_vision.md.metadata",
+        "audit_report.md.metadata",
+        "cleanup_summary.md.metadata",
+        "completion_report.md.metadata",
+        "comprehensive_audit.md.metadata",
+        "conceptual_overview.md.metadata",
+        "dissolution_plan.md.metadata",
+        "dms_michab_deep_dive.md.metadata",
+        "final_status.md.metadata",
+        "imperative_to_declarative_blueprint.md.metadata",
+        "implementation_plan.md.metadata",
+        "meta_analysis.md.metadata",
+        "phase_2_5_2_6_findings.md.metadata",
+        "phase_3_5_doc_findings.md.metadata",
+        "phase_3_investigation.md.metadata",
+        "plan.md.metadata",
+        "project_evaluation_methodology.md.metadata",
+        "remaining_tasks.md.metadata",
+        "remaining_work.md.metadata",
+        "remaining_work_plan.md.metadata",
+        "report.md.metadata",
+        "simplification_opportunities.md.metadata",
+        "sinex_analysis_playbook.md.metadata",
+        "sinex_total_analysis.md.metadata",
+        "sinex_total_analysis_part_2.md.metadata",
+        "sql-as-automata-flow-concept.md.metadata",
+        "system_abstract.md.metadata",
+        "task.md.metadata",
+        "test_harness.md.metadata",
+        "test_plan.md.metadata",
+        "test_results.md.metadata",
+        "ui_analysis.md.metadata",
+        "walkthrough.md.metadata",
+        "xtask_audit.md.metadata"
+      ],
+      "profile_family_ids": [
+        "fd950579a81649c6"
+      ],
+      "representative_paths": [
+        "/home/sinity/.gemini/antigravity/brain/6eb6aa8e-11aa-4cc2-aab3-880561d704b6/dms_michab_deep_dive.md.metadata.json",
+        "/home/sinity/.gemini/antigravity/brain/77ae7359-7427-44de-9f45-cec310a98509/task.md.metadata.json",
+        "/home/sinity/.gemini/antigravity/brain/6b9a41de-7b5a-44c1-9de7-a0ad3d17691b/task.md.metadata.json",
+        "/home/sinity/.gemini/antigravity/brain/7022699c-9f6c-4d75-8740-95dfaadd2beb/sql-as-automata-flow-concept.md.metadata.json",
+        "/home/sinity/.gemini/antigravity/brain/7022699c-9f6c-4d75-8740-95dfaadd2beb/imperative_to_declarative_blueprint.md.metadata.json"
+      ],
+      "elements": [
+        {
+          "element_kind": "conversation_document",
+          "schema_file": "conversation_document.schema.json.gz",
+          "sample_count": 39,
+          "artifact_count": 39,
+          "supported": true,
+          "first_seen": "2025-12-09T02:29:52.403557+00:00",
+          "last_seen": "2026-03-03T15:52:35.826969+00:00",
+          "bundle_scope_count": 35,
+          "bundle_scopes": [
+            "architecture_strategy.md.metadata",
+            "architecture_v2_vision.md.metadata",
+            "audit_report.md.metadata",
+            "cleanup_summary.md.metadata",
+            "completion_report.md.metadata",
+            "comprehensive_audit.md.metadata",
+            "conceptual_overview.md.metadata",
+            "dissolution_plan.md.metadata",
+            "dms_michab_deep_dive.md.metadata",
+            "final_status.md.metadata",
+            "imperative_to_declarative_blueprint.md.metadata",
+            "implementation_plan.md.metadata",
+            "meta_analysis.md.metadata",
+            "phase_2_5_2_6_findings.md.metadata",
+            "phase_3_5_doc_findings.md.metadata",
+            "phase_3_investigation.md.metadata",
+            "plan.md.metadata",
+            "project_evaluation_methodology.md.metadata",
+            "remaining_tasks.md.metadata",
+            "remaining_work.md.metadata",
+            "remaining_work_plan.md.metadata",
+            "report.md.metadata",
+            "simplification_opportunities.md.metadata",
+            "sinex_analysis_playbook.md.metadata",
+            "sinex_total_analysis.md.metadata",
+            "sinex_total_analysis_part_2.md.metadata",
+            "sql-as-automata-flow-concept.md.metadata",
+            "system_abstract.md.metadata",
+            "task.md.metadata",
+            "test_harness.md.metadata",
+            "test_plan.md.metadata",
+            "test_results.md.metadata",
+            "ui_analysis.md.metadata",
+            "walkthrough.md.metadata",
+            "xtask_audit.md.metadata"
+          ],
+          "exact_structure_ids": [
+            "21f9bf3ee1efe680",
+            "fcfa792f1da4a3ea"
+          ],
+          "profile_family_ids": [
+            "fd950579a81649c6"
+          ],
+          "profile_tokens": [
+            "field:artifactType",
+            "field:summary",
+            "field:updatedAt",
+            "type:artifactType:string",
+            "type:summary:string",
+            "type:updatedAt:string"
+          ],
+          "representative_paths": [
+            "/home/sinity/.gemini/antigravity/brain/6eb6aa8e-11aa-4cc2-aab3-880561d704b6/dms_michab_deep_dive.md.metadata.json",
+            "/home/sinity/.gemini/antigravity/brain/77ae7359-7427-44de-9f45-cec310a98509/task.md.metadata.json",
+            "/home/sinity/.gemini/antigravity/brain/6b9a41de-7b5a-44c1-9de7-a0ad3d17691b/task.md.metadata.json",
+            "/home/sinity/.gemini/antigravity/brain/7022699c-9f6c-4d75-8740-95dfaadd2beb/sql-as-automata-flow-concept.md.metadata.json",
+            "/home/sinity/.gemini/antigravity/brain/7022699c-9f6c-4d75-8740-95dfaadd2beb/imperative_to_declarative_blueprint.md.metadata.json"
+          ],
+          "observed_artifact_count": 39
+        }
+      ],
+      "orphan_adjunct_counts": {}
+    }
+  ]
+}

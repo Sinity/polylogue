@@ -93,6 +93,21 @@ def codex_path() -> Path:
     return Path.home() / ".codex" / "sessions"
 
 
+def gemini_cli_path() -> Path:
+    """Gemini CLI local session workspace directory."""
+    return Path.home() / ".gemini" / "tmp"
+
+
+def hermes_sessions_path() -> Path:
+    """Hermes agent session directory."""
+    return Path.home() / ".hermes" / "sessions"
+
+
+def antigravity_path() -> Path:
+    """Antigravity local state directory."""
+    return Path.home() / ".gemini" / "antigravity"
+
+
 GEMINI_DRIVE_FOLDER = "Google AI Studio"
 
 

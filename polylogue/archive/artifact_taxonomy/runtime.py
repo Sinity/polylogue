@@ -15,7 +15,7 @@ from polylogue.archive.artifact_taxonomy.support import (
     looks_metadataish_dict,
     looks_metadataish_list,
     normalize_source_path,
-    path_only_sidecars,
+    path_only_sidecar_reason,
 )
 from polylogue.core.json import JSONDocument, JSONValue, json_document
 from polylogue.types import Provider
@@ -33,7 +33,34 @@ def classify_artifact_path(
         return None
 
     inner_name = Path(normalized.rsplit(":", 1)[-1]).name.lower()
-    if inner_name in path_only_sidecars():
+    if provider_token is Provider.ANTIGRAVITY:
+        if inner_name.endswith(".md.metadata.json"):
+            return None
+        if inner_name.endswith((".pb", ".pbtxt", ".resolved")) or ".resolved." in inner_name:
+            return ArtifactClassification(
+                provider=provider_token,
+                kind=ArtifactKind.METADATA_DOCUMENT,
+                parse_as_conversation=False,
+                schema_eligible=False,
+                default_priority=0,
+                reason="Antigravity opaque or resolved sidecar",
+            )
+        if inner_name in {
+            "browserallowlist.txt",
+            "installation_id",
+            "knowledge.lock",
+            "mcp_config.json",
+            "user_settings.pb",
+        }:
+            return ArtifactClassification(
+                provider=provider_token,
+                kind=ArtifactKind.METADATA_DOCUMENT,
+                parse_as_conversation=False,
+                schema_eligible=False,
+                default_priority=0,
+                reason="Antigravity configuration sidecar",
+            )
+    if sidecar_reason := path_only_sidecar_reason(inner_name):
         kind = ArtifactKind.BRIDGE_POINTER if inner_name == "bridge-pointer.json" else ArtifactKind.SESSION_INDEX
         return ArtifactClassification(
             provider=provider_token,
@@ -41,7 +68,7 @@ def classify_artifact_path(
             parse_as_conversation=False,
             schema_eligible=False,
             default_priority=0,
-            reason=path_only_sidecars()[inner_name],
+            reason=sidecar_reason,
         )
 
     if inner_name.startswith("agent-") and inner_name.endswith(".meta.json"):
@@ -159,6 +186,26 @@ def _classify_dict(
     provider: Provider,
     source_path: str | Path | None,
 ) -> ArtifactClassification:
+    if provider is Provider.ANTIGRAVITY and _is_antigravity_markdown_export(payload):
+        return ArtifactClassification(
+            provider=provider,
+            kind=ArtifactKind.CONVERSATION_DOCUMENT,
+            parse_as_conversation=True,
+            schema_eligible=True,
+            default_priority=120,
+            reason="Antigravity language-server Markdown export",
+        )
+
+    if provider is Provider.ANTIGRAVITY and _is_antigravity_brain_metadata(payload, source_path):
+        return ArtifactClassification(
+            provider=provider,
+            kind=ArtifactKind.CONVERSATION_DOCUMENT,
+            parse_as_conversation=True,
+            schema_eligible=True,
+            default_priority=100,
+            reason="Antigravity brain artifact metadata with sibling Markdown",
+        )
+
     if looks_like_hook_event(payload):
         return ArtifactClassification(
             provider=provider,
@@ -206,4 +253,22 @@ def _classify_dict(
         schema_eligible=False,
         default_priority=0,
         reason="unrecognized document payload",
+    )
+
+
+def _is_antigravity_brain_metadata(payload: JSONDocument, source_path: str | Path | None) -> bool:
+    normalized = normalize_source_path(source_path)
+    name = Path(normalized.rsplit(":", 1)[-1]).name.lower() if normalized else ""
+    return (
+        (not name or name.endswith((".json", ".md.metadata.json")))
+        and isinstance(payload.get("artifactType"), str)
+        and ("summary" in payload or "updatedAt" in payload)
+    )
+
+
+def _is_antigravity_markdown_export(payload: JSONDocument) -> bool:
+    return (
+        payload.get("source") == "antigravity_language_server"
+        and isinstance(payload.get("cascadeId"), str)
+        and isinstance(payload.get("markdown"), str)
     )

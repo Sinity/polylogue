@@ -32,10 +32,15 @@ SessionProfilePayload = SessionProfileDocument
 
 
 def _phase_to_dict(phase: SessionPhase) -> SessionPhasePayload:
+    start_time = phase.start_time.isoformat() if phase.start_time else None
+    end_time = phase.end_time.isoformat() if phase.end_time else None
+    canonical_session_date = phase.canonical_session_date.isoformat() if phase.canonical_session_date else None
     return {
-        "start_time": phase.start_time.isoformat() if phase.start_time else None,
-        "end_time": phase.end_time.isoformat() if phase.end_time else None,
-        "canonical_session_date": phase.canonical_session_date.isoformat() if phase.canonical_session_date else None,
+        "start_time": start_time,
+        "end_time": end_time,
+        "canonical_session_date": canonical_session_date,
+        "timing_provenance": _range_timing_provenance(start_time, end_time),
+        "date_provenance": _date_provenance(canonical_session_date, start_time, end_time),
         "message_range": list(phase.message_range),
         "duration_ms": phase.duration_ms,
         "tool_counts": phase.tool_counts,
@@ -57,6 +62,24 @@ def _phase_from_mapping(payload: SessionPhasePayload | Mapping[str, object]) -> 
         confidence=coerce_float(payload.get("confidence"), 0.0),
         evidence=string_sequence(payload.get("evidence")),
     )
+
+
+def _range_timing_provenance(start_time: str | None, end_time: str | None) -> str:
+    if start_time is not None and end_time is not None:
+        return "timestamped_range"
+    if start_time is not None:
+        return "start_timestamp_only"
+    if end_time is not None:
+        return "end_timestamp_only"
+    return "untimestamped"
+
+
+def _date_provenance(canonical_session_date: str | None, start_time: str | None, end_time: str | None) -> str:
+    if canonical_session_date is None:
+        return "none"
+    if start_time is not None or end_time is not None:
+        return "event_timestamp"
+    return "date_only"
 
 
 @dataclass(frozen=True)

@@ -84,6 +84,8 @@ class SessionWindowInsightQuery(ProviderSearchInsightQuery):
 class ConversationTimelineWindowInsightQuery(ProviderTimeWindowInsightQuery):
     conversation_id: str | None = None
     kind: str | None = None
+    session_date_since: str | None = None
+    session_date_until: str | None = None
 
 
 class SearchableConversationTimelineInsightQuery(ConversationTimelineWindowInsightQuery):

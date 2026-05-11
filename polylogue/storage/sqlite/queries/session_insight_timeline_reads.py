@@ -67,11 +67,14 @@ async def list_work_events(
         """
         where = ["session_work_events_fts MATCH ?"]
         params.append(escape_fts5_query(query.query))
-        order_by = "ORDER BY bm25(session_work_events_fts), COALESCE(swe.source_sort_key, 0) DESC, swe.event_index"
+        order_by = (
+            "ORDER BY bm25(session_work_events_fts), "
+            "COALESCE(swe.start_time, swe.end_time, swe.source_updated_at, swe.materialized_at) DESC, swe.event_index"
+        )
     else:
         from_clause = "FROM session_work_events swe"
         where = []
-        order_by = "ORDER BY COALESCE(swe.source_sort_key, 0) DESC, swe.event_index"
+        order_by = "ORDER BY COALESCE(swe.start_time, swe.end_time, swe.source_updated_at, swe.materialized_at) DESC, swe.event_index"
 
     if query.conversation_id:
         where.append("swe.conversation_id = ?")
@@ -88,6 +91,12 @@ async def list_work_events(
     if query.until:
         where.append("COALESCE(swe.start_time, swe.end_time, swe.source_updated_at, swe.materialized_at) <= ?")
         params.append(query.until)
+    if query.session_date_since:
+        where.append("swe.canonical_session_date >= date(?)")
+        params.append(query.session_date_since)
+    if query.session_date_until:
+        where.append("swe.canonical_session_date <= date(?)")
+        params.append(query.session_date_until)
 
     sql = "SELECT swe.* " + from_clause
     if where:
@@ -122,6 +131,12 @@ async def list_session_phases(
     if query.until:
         where.append("COALESCE(start_time, end_time, source_updated_at, materialized_at) <= ?")
         params.append(query.until)
+    if query.session_date_since:
+        where.append("canonical_session_date >= date(?)")
+        params.append(query.session_date_since)
+    if query.session_date_until:
+        where.append("canonical_session_date <= date(?)")
+        params.append(query.session_date_until)
 
     sql = """
         SELECT *

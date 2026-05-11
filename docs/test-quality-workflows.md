@@ -14,11 +14,11 @@ Current registry snapshot:
 - mutation campaigns: `19`
 - benchmark campaigns: `3`
 - synthetic benchmark campaigns: `7`
-- scenario projections: `238`
-- inferred corpus scenarios: `5`
+- scenario projections: `244`
+- inferred corpus scenarios: `8`
   - benchmark-campaign: `3`
-  - exercise: `136`
-  - inferred-corpus-scenario: `5`
+  - exercise: `139`
+  - inferred-corpus-scenario: `8`
   - mutation-campaign: `19`
   - synthetic-benchmark: `7`
   - validation-lane: `68`
@@ -260,11 +260,14 @@ These inferred corpus specs come from the live schema registry and participate i
 
 | Provider | Package | Variants | Targets | Tags |
 | --- | --- | ---: | --- | --- |
+| `antigravity` | `v1` | `1` | `fd950579a81649c6` | `inferred`<br>`schema`<br>`synthetic`<br>`scenario` |
 | `chatgpt` | `v1` | `1` | `conversation_document` | `inferred`<br>`schema`<br>`synthetic`<br>`scenario` |
 | `claude-ai` | `v1` | `1` | `conversation_document` | `inferred`<br>`schema`<br>`synthetic`<br>`scenario` |
 | `claude-code` | `v1` | `1` | `conversation_record_stream` | `inferred`<br>`schema`<br>`synthetic`<br>`scenario` |
 | `codex` | `v1` | `1` | `conversation_record_stream` | `inferred`<br>`schema`<br>`synthetic`<br>`scenario` |
 | `gemini` | `v1` | `1` | `conversation_document` | `inferred`<br>`schema`<br>`synthetic`<br>`scenario` |
+| `gemini-cli` | `v1` | `1` | `2ea47ff433ce1026` | `inferred`<br>`schema`<br>`synthetic`<br>`scenario` |
+| `hermes` | `v1` | `1` | `f99c39ed0e5df7ea` | `inferred`<br>`schema`<br>`synthetic`<br>`scenario` |
 
 ## Scenario Projection Catalog
 
@@ -305,11 +308,14 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `exercise` | `gen-fmt-plaintext-list` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `query-conversations` | — | `generated`<br>`formats`<br>`plaintext`<br>`list` | Generated: plaintext format in list mode |
 | `exercise` | `gen-fmt-yaml-latest` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `query-conversations` | — | `generated`<br>`formats`<br>`yaml`<br>`latest` | Generated: yaml format in latest mode |
 | `exercise` | `gen-fmt-yaml-list` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `query-conversations` | — | `generated`<br>`formats`<br>`yaml`<br>`list` | Generated: yaml format in list mode |
+| `exercise` | `gen-schema-explain-antigravity` | `schema-explain-query-loop` | `schema_packages`<br>`schema_explanation_results` | `query-schema-explanations` | — | `generated`<br>`schema`<br>`antigravity` | Generated: schema explain --provider antigravity |
 | `exercise` | `gen-schema-explain-chatgpt` | `schema-explain-query-loop` | `schema_packages`<br>`schema_explanation_results` | `query-schema-explanations` | — | `generated`<br>`schema`<br>`chatgpt` | Generated: schema explain --provider chatgpt |
 | `exercise` | `gen-schema-explain-claude-ai` | `schema-explain-query-loop` | `schema_packages`<br>`schema_explanation_results` | `query-schema-explanations` | — | `generated`<br>`schema`<br>`claude-ai` | Generated: schema explain --provider claude-ai |
 | `exercise` | `gen-schema-explain-claude-code` | `schema-explain-query-loop` | `schema_packages`<br>`schema_explanation_results` | `query-schema-explanations` | — | `generated`<br>`schema`<br>`claude-code` | Generated: schema explain --provider claude-code |
 | `exercise` | `gen-schema-explain-codex` | `schema-explain-query-loop` | `schema_packages`<br>`schema_explanation_results` | `query-schema-explanations` | — | `generated`<br>`schema`<br>`codex` | Generated: schema explain --provider codex |
 | `exercise` | `gen-schema-explain-gemini` | `schema-explain-query-loop` | `schema_packages`<br>`schema_explanation_results` | `query-schema-explanations` | — | `generated`<br>`schema`<br>`gemini` | Generated: schema explain --provider gemini |
+| `exercise` | `gen-schema-explain-gemini-cli` | `schema-explain-query-loop` | `schema_packages`<br>`schema_explanation_results` | `query-schema-explanations` | — | `generated`<br>`schema`<br>`gemini-cli` | Generated: schema explain --provider gemini-cli |
+| `exercise` | `gen-schema-explain-hermes` | `schema-explain-query-loop` | `schema_packages`<br>`schema_explanation_results` | `query-schema-explanations` | — | `generated`<br>`schema`<br>`hermes` | Generated: schema explain --provider hermes |
 | `exercise` | `gen-schema-list` | `schema-list-query-loop` | `schema_packages`<br>`schema_cluster_manifests`<br>`inferred_corpus_specs`<br>`inferred_corpus_scenarios`<br>`schema_list_results` | `query-schema-catalog` | — | `generated`<br>`schema`<br>`list` | Generated: schema list --format json returns valid JSON |
 | `exercise` | `help-auth` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | auth help |
 | `exercise` | `help-backup` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | backup help |
@@ -411,11 +417,14 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `exercise` | `tags-json` | — | — | — | — | — | Tags as JSON |
 | `exercise` | `transform-strip` | — | — | — | — | — | Strip tool calls from output |
 | `exercise` | `version` | — | — | — | — | — | Version output |
+| `inferred-corpus-scenario` | `antigravity:v1` | `inferred-corpus-compilation-loop` | `schema_packages`<br>`schema_cluster_manifests`<br>`inferred_corpus_specs`<br>`inferred_corpus_scenarios` | `compile-inferred-corpus-specs`<br>`compile-inferred-corpus-scenarios` | — | `inferred`<br>`schema`<br>`synthetic`<br>`scenario` | Compiled inferred corpus scenario for antigravity v1 across 1 corpus variant(s). |
 | `inferred-corpus-scenario` | `chatgpt:v1` | `inferred-corpus-compilation-loop` | `schema_packages`<br>`schema_cluster_manifests`<br>`inferred_corpus_specs`<br>`inferred_corpus_scenarios` | `compile-inferred-corpus-specs`<br>`compile-inferred-corpus-scenarios` | — | `inferred`<br>`schema`<br>`synthetic`<br>`scenario` | Compiled inferred corpus scenario for chatgpt v1 across 1 corpus variant(s). |
 | `inferred-corpus-scenario` | `claude-ai:v1` | `inferred-corpus-compilation-loop` | `schema_packages`<br>`schema_cluster_manifests`<br>`inferred_corpus_specs`<br>`inferred_corpus_scenarios` | `compile-inferred-corpus-specs`<br>`compile-inferred-corpus-scenarios` | — | `inferred`<br>`schema`<br>`synthetic`<br>`scenario` | Compiled inferred corpus scenario for claude-ai v1 across 1 corpus variant(s). |
 | `inferred-corpus-scenario` | `claude-code:v1` | `inferred-corpus-compilation-loop` | `schema_packages`<br>`schema_cluster_manifests`<br>`inferred_corpus_specs`<br>`inferred_corpus_scenarios` | `compile-inferred-corpus-specs`<br>`compile-inferred-corpus-scenarios` | — | `inferred`<br>`schema`<br>`synthetic`<br>`scenario` | Compiled inferred corpus scenario for claude-code v1 across 1 corpus variant(s). |
 | `inferred-corpus-scenario` | `codex:v1` | `inferred-corpus-compilation-loop` | `schema_packages`<br>`schema_cluster_manifests`<br>`inferred_corpus_specs`<br>`inferred_corpus_scenarios` | `compile-inferred-corpus-specs`<br>`compile-inferred-corpus-scenarios` | — | `inferred`<br>`schema`<br>`synthetic`<br>`scenario` | Compiled inferred corpus scenario for codex v1 across 1 corpus variant(s). |
+| `inferred-corpus-scenario` | `gemini-cli:v1` | `inferred-corpus-compilation-loop` | `schema_packages`<br>`schema_cluster_manifests`<br>`inferred_corpus_specs`<br>`inferred_corpus_scenarios` | `compile-inferred-corpus-specs`<br>`compile-inferred-corpus-scenarios` | — | `inferred`<br>`schema`<br>`synthetic`<br>`scenario` | Compiled inferred corpus scenario for gemini-cli v1 across 1 corpus variant(s). |
 | `inferred-corpus-scenario` | `gemini:v1` | `inferred-corpus-compilation-loop` | `schema_packages`<br>`schema_cluster_manifests`<br>`inferred_corpus_specs`<br>`inferred_corpus_scenarios` | `compile-inferred-corpus-specs`<br>`compile-inferred-corpus-scenarios` | — | `inferred`<br>`schema`<br>`synthetic`<br>`scenario` | Compiled inferred corpus scenario for gemini v1 across 1 corpus variant(s). |
+| `inferred-corpus-scenario` | `hermes:v1` | `inferred-corpus-compilation-loop` | `schema_packages`<br>`schema_cluster_manifests`<br>`inferred_corpus_specs`<br>`inferred_corpus_scenarios` | `compile-inferred-corpus-specs`<br>`compile-inferred-corpus-scenarios` | — | `inferred`<br>`schema`<br>`synthetic`<br>`scenario` | Compiled inferred corpus scenario for hermes v1 across 1 corpus variant(s). |
 | `mutation-campaign` | `cli-query` | — | — | — | — | `mutation` | Query command planning, action routing, and summary output contracts |
 | `mutation-campaign` | `daemon-http` | — | — | — | — | `mutation` | Daemon HTTP API endpoint handler contracts |
 | `mutation-campaign` | `drive-client` | — | — | — | — | `mutation` | Drive auth, transport, JSON payload parsing, and ingest attachment contracts |

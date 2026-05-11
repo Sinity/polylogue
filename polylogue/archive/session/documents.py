@@ -12,6 +12,8 @@ class WorkEventDocument(TypedDict):
     start_time: str | None
     end_time: str | None
     canonical_session_date: str | None
+    timing_provenance: str
+    date_provenance: str
     duration_ms: int
     confidence: float
     evidence: list[str]
@@ -24,6 +26,8 @@ class SessionPhaseDocument(TypedDict):
     start_time: str | None
     end_time: str | None
     canonical_session_date: str | None
+    timing_provenance: str
+    date_provenance: str
     message_range: list[int]
     duration_ms: int
     tool_counts: dict[str, int]

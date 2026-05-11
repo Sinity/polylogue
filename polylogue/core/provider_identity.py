@@ -10,6 +10,9 @@ CORE_RUNTIME_PROVIDERS: Final[tuple[str, ...]] = (
     "claude-code",
     "codex",
     "gemini",
+    "gemini-cli",
+    "hermes",
+    "antigravity",
     "drive",
     "unknown",
 )
@@ -20,6 +23,9 @@ CORE_SCHEMA_PROVIDERS: Final[tuple[str, ...]] = (
     "claude-code",
     "codex",
     "gemini",
+    "gemini-cli",
+    "hermes",
+    "antigravity",
 )
 
 _RUNTIME_PROVIDER_ALIASES: Final[dict[str, str]] = {
@@ -28,6 +34,9 @@ _RUNTIME_PROVIDER_ALIASES: Final[dict[str, str]] = {
     "openai": "chatgpt",
     "google": "gemini",
     "google-gemini": "gemini",
+    "aistudio": "gemini",
+    "ai-studio": "gemini",
+    "hermes-agent": "hermes",
     "cursor": "codex",
 }
 

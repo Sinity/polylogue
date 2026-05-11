@@ -465,6 +465,25 @@ class TestCheckAnnotationCoverage:
         # Should count nested properties
         assert result.status in (PASS, WARN, FAIL)
 
+    def test_high_cardinality_schema_boundary_is_not_recursed(self) -> None:
+        schema = {
+            "properties": {
+                "tool_parameters": {
+                    "type": "object",
+                    "x-polylogue-high-cardinality-keys": True,
+                    "additionalProperties": {
+                        "type": "object",
+                        "properties": {f"generated_{i}": {"type": "string"} for i in range(50)},
+                    },
+                },
+            },
+        }
+
+        result = check_annotation_coverage(schema)
+
+        assert result.status is PASS
+        assert "1/1" in result.message
+
     def test_message_includes_counts(self) -> None:
         schema = {
             "properties": {

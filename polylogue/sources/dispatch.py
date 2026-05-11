@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from io import BytesIO
 from itertools import islice
+from pathlib import Path
 from typing import TYPE_CHECKING, Literal, TypeAlias
 
 from polylogue.core.json import JSONDocument, JSONValue, is_json_document, is_json_value
@@ -16,7 +17,7 @@ from polylogue.logging import get_logger
 from polylogue.types import Provider
 
 from .decoders import _decode_json_bytes, _iter_json_stream
-from .parsers import browser_capture, chatgpt, claude, codex, drive
+from .parsers import antigravity, browser_capture, chatgpt, claude, codex, drive, local_agent
 from .parsers.base import ParsedConversation, extract_messages_from_list
 
 if TYPE_CHECKING:
@@ -38,6 +39,8 @@ LoweredPayloadMode: TypeAlias = Literal[
     "chunked_prompt",
     "generic_messages",
     "grouped_records",
+    "local_artifact_document",
+    "local_agent_document",
     "single_record",
 ]
 
@@ -48,6 +51,7 @@ class LoweredPayloadSpec:
     fallback_id: str
     mode: LoweredPayloadMode
     payload: PayloadRecord | PayloadSequence
+    source_path: str | None = None
 
 
 def _payload_record(value: object) -> PayloadRecord | None:
@@ -95,6 +99,16 @@ def _detect_provider_from_record(record: PayloadRecord) -> Provider | None:
         session = record.get("session")
         provider = session.get("provider") if isinstance(session, dict) else None
         return Provider.from_string(provider if isinstance(provider, str) else None)
+    # Local-agent JSON session documents share enough generic message keys with
+    # Claude Code that they must be recognized before broader validators.
+    if local_agent.looks_like_gemini_cli(record):
+        return Provider.GEMINI_CLI
+    if local_agent.looks_like_hermes(record):
+        return Provider.HERMES
+    if antigravity.looks_like_markdown_export(record):
+        return Provider.ANTIGRAVITY
+    if antigravity.looks_like_brain_metadata(record, None):
+        return Provider.ANTIGRAVITY
     # Specific type-level checks first (Codex, Claude Code use Pydantic
     # validation), then weaker dict-key checks (ChatGPT, Claude AI, Gemini).
     if codex.looks_like([dict(record)]):
@@ -256,6 +270,35 @@ def _generic_messages_spec(
     )
 
 
+def _local_agent_document_spec(
+    provider: Provider,
+    payload: PayloadRecord,
+    fallback_id: str,
+) -> LoweredPayloadSpec:
+    return LoweredPayloadSpec(
+        provider=provider,
+        fallback_id=fallback_id,
+        mode="local_agent_document",
+        payload=payload,
+    )
+
+
+def _local_artifact_document_spec(
+    provider: Provider,
+    payload: PayloadRecord,
+    fallback_id: str,
+    *,
+    source_path: str | None,
+) -> LoweredPayloadSpec:
+    return LoweredPayloadSpec(
+        provider=provider,
+        fallback_id=fallback_id,
+        mode="local_artifact_document",
+        payload=payload,
+        source_path=source_path,
+    )
+
+
 def _grouped_records_spec(
     provider: Provider,
     payload: PayloadRecord | PayloadSequence,
@@ -344,6 +387,8 @@ def _lower_drive_like_payload(
     record = _payload_record(shaped_payload)
     if record is None:
         return []
+    if local_agent.looks_like_gemini_cli(record):
+        return [_local_agent_document_spec(Provider.GEMINI_CLI, record, fallback_id)]
     if _record_messages(record) is not None:
         return [_generic_messages_spec(provider, record, fallback_id)]
     if chatgpt.looks_like(record):
@@ -377,6 +422,7 @@ def _lower_payload_specs(
     *,
     depth: int = 0,
     schema_resolution: SchemaResolution | None = None,
+    source_path: str | None = None,
 ) -> list[LoweredPayloadSpec]:
     runtime_provider = Provider.from_string(provider)
     if depth > _MAX_PARSE_DEPTH:
@@ -414,6 +460,11 @@ def _lower_payload_specs(
         return _lower_bundle_payload(runtime_provider, shaped_payload, fallback_id)
     if runtime_provider in {Provider.CLAUDE_CODE, Provider.CODEX}:
         return _lower_grouped_payload(runtime_provider, shaped_payload, fallback_id)
+    if runtime_provider is Provider.GEMINI_CLI:
+        record = _payload_record(shaped_payload)
+        if record is not None and local_agent.looks_like_gemini_cli(record):
+            return [_local_agent_document_spec(runtime_provider, record, fallback_id)]
+        return []
     if runtime_provider in DRIVE_LIKE_PROVIDERS:
         return _lower_drive_like_payload(
             runtime_provider,
@@ -422,6 +473,25 @@ def _lower_payload_specs(
             depth=depth,
             schema_resolution=schema_resolution,
         )
+    if runtime_provider is Provider.HERMES:
+        record = _payload_record(shaped_payload)
+        if record is not None and local_agent.looks_like_hermes(record):
+            return [_local_agent_document_spec(runtime_provider, record, fallback_id)]
+        return []
+    if runtime_provider is Provider.ANTIGRAVITY:
+        record = _payload_record(shaped_payload)
+        if record is not None and (
+            antigravity.looks_like_markdown_export(record) or antigravity.looks_like_brain_metadata(record, source_path)
+        ):
+            return [
+                _local_artifact_document_spec(
+                    runtime_provider,
+                    record,
+                    fallback_id,
+                    source_path=source_path,
+                )
+            ]
+        return []
     return _lower_fallback_payload(runtime_provider, shaped_payload, fallback_id)
 
 
@@ -468,6 +538,27 @@ def _parse_lowered_spec(spec: LoweredPayloadSpec) -> list[ParsedConversation]:
         payloads = _payload_sequence(spec.payload)
         return [codex.parse(payloads, spec.fallback_id)] if payloads is not None else []
 
+    if spec.mode == "local_agent_document":
+        record = _payload_record(spec.payload)
+        if record is None:
+            return []
+        if spec.provider is Provider.GEMINI_CLI:
+            return [local_agent.parse_gemini_cli(record, spec.fallback_id)]
+        if spec.provider is Provider.HERMES:
+            return [local_agent.parse_hermes(record, spec.fallback_id)]
+        return []
+
+    if spec.mode == "local_artifact_document":
+        record = _payload_record(spec.payload)
+        if record is None:
+            return []
+        if spec.provider is Provider.ANTIGRAVITY:
+            if antigravity.looks_like_markdown_export(record):
+                return [antigravity.parse_markdown_export_payload(record, spec.fallback_id)]
+            source_path = Path(spec.source_path) if spec.source_path is not None else Path(f"{spec.fallback_id}.md")
+            return [antigravity.parse_brain_metadata(record, source_path, spec.fallback_id)]
+        return []
+
     if spec.mode == "chunked_prompt":
         record = _payload_record(spec.payload)
         payload = record if record is not None else {"chunks": _payload_sequence(spec.payload) or []}
@@ -490,6 +581,7 @@ def parse_payload(
     _depth: int = 0,
     *,
     schema_resolution: SchemaResolution | None = None,
+    source_path: str | None = None,
 ) -> list[ParsedConversation]:
     """Dispatch parsed payload to the appropriate provider parser."""
     lowered_specs = _lower_payload_specs(
@@ -498,6 +590,7 @@ def parse_payload(
         fallback_id,
         depth=_depth,
         schema_resolution=schema_resolution,
+        source_path=source_path,
     )
     conversations: list[ParsedConversation] = []
     for spec in lowered_specs:
