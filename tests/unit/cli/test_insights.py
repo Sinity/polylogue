@@ -60,9 +60,9 @@ def test_insight_items_payload_can_render_cli_and_mcp_keys() -> None:
     cli_payload = insight_items_payload([product], insight_type)
     mcp_payload = insight_items_payload([product], insight_type, item_key="items")
 
-    assert cli_payload["count"] == 1
+    assert cli_payload["total"] == 1
     assert json_object_list(cli_payload["provider_analytics"])[0]["insight_kind"] == "provider_analytics"
-    assert mcp_payload["count"] == 1
+    assert mcp_payload["total"] == 1
     assert json_object_list(mcp_payload["items"])[0]["provider_name"] == "claude-code"
 
 
@@ -179,7 +179,7 @@ def test_insights_profiles_json(cli_workspace: CliWorkspace) -> None:
 
     assert result.exit_code == 0
     payload = extract_json_result(result.output)
-    assert json_int(payload["count"]) == 2
+    assert json_int(payload["total"]) == 2
     profiles = json_object_list(payload["session_profiles"])
     first = next(item for item in profiles if item["conversation_id"] == "conv-root")
     evidence = json_object(first["evidence"])
@@ -257,7 +257,7 @@ def test_insights_profiles_support_wallclock_filters_and_sort(cli_workspace: Cli
     assert result.exit_code == 0
     payload = extract_json_result(result.output)
     profiles = json_object_list(payload["session_profiles"])
-    assert json_int(payload["count"]) == 1
+    assert json_int(payload["total"]) == 1
     assert profiles[0]["conversation_id"] == "conv-root"
 
     result = runner.invoke(
@@ -293,7 +293,7 @@ def test_insights_profiles_format_json_alias(cli_workspace: CliWorkspace) -> Non
 
     assert result.exit_code == 0
     payload = extract_json_result(result.output)
-    assert json_int(payload["count"]) == 2
+    assert json_int(payload["total"]) == 2
 
 
 def test_insights_profiles_inherit_root_format_json(cli_workspace: CliWorkspace) -> None:
@@ -308,7 +308,7 @@ def test_insights_profiles_inherit_root_format_json(cli_workspace: CliWorkspace)
 
     assert result.exit_code == 0
     payload = extract_json_result(result.output)
-    assert json_int(payload["count"]) == 1
+    assert json_int(payload["total"]) == 1
 
 
 def test_insights_status_json(cli_workspace: CliWorkspace) -> None:
@@ -416,7 +416,7 @@ def test_insights_enrichments_json(cli_workspace: CliWorkspace) -> None:
 
     assert result.exit_code == 0
     payload = extract_json_result(result.output)
-    assert json_int(payload["count"]) == 2
+    assert json_int(payload["total"]) == 2
     first = json_object_list(payload["session_enrichments"])[0]
     enrichment_provenance = json_object(first["enrichment_provenance"])
     enrichment = json_object(first["enrichment"])
@@ -498,8 +498,8 @@ def test_insights_profiles_json_handles_blank_tier_search_text_from_migrated_row
 
     assert evidence_result.exit_code == 0
     assert inference_result.exit_code == 0
-    assert json_int(extract_json_result(evidence_result.output)["count"]) == 2
-    assert json_int(extract_json_result(inference_result.output)["count"]) == 2
+    assert json_int(extract_json_result(evidence_result.output)["total"]) == 2
+    assert json_int(extract_json_result(inference_result.output)["total"]) == 2
 
 
 def test_insights_reconstructs_tiered_payloads_from_blank_migrated_rows(cli_workspace: CliWorkspace) -> None:
@@ -570,8 +570,8 @@ def test_insights_profile_date_filters_and_phases_json(cli_workspace: CliWorkspa
 
     profile_payload = extract_json_result(profiles.output)
     phase_payload = extract_json_result(phases.output)
-    assert json_int(profile_payload["count"]) == 2
-    assert json_int(phase_payload["count"]) >= 1
+    assert json_int(profile_payload["total"]) == 2
+    assert json_int(phase_payload["total"]) >= 1
     assert json_object_list(phase_payload["session_phases"])[0]["insight_kind"] == "session_phase"
 
 
@@ -713,7 +713,7 @@ def test_insights_threads_json(cli_workspace: CliWorkspace) -> None:
     assert threads.exit_code == 0
 
     threads_payload = extract_json_result(threads.output)
-    assert json_int(threads_payload["count"]) == 1
+    assert json_int(threads_payload["total"]) == 1
     thread = json_object_list(threads_payload["work_threads"])[0]
     assert thread["insight_kind"] == "work_thread"
     thread_payload = json_object(thread["thread"])
@@ -742,9 +742,9 @@ def test_insights_tag_and_summary_rollups_json(cli_workspace: CliWorkspace) -> N
     day_payload = extract_json_result(days.output)
     week_payload = extract_json_result(weeks.output)
     assert any(item["tag"] == "provider:claude-code" for item in json_object_list(tag_payload["session_tag_rollups"]))
-    assert json_int(day_payload["count"]) == 1
+    assert json_int(day_payload["total"]) == 1
     assert json_object_list(day_payload["day_session_summaries"])[0]["insight_kind"] == "day_session_summary"
-    assert json_int(week_payload["count"]) == 1
+    assert json_int(week_payload["total"]) == 1
     assert json_object_list(week_payload["week_session_summaries"])[0]["insight_kind"] == "week_session_summary"
 
 
@@ -760,7 +760,7 @@ def test_insights_analytics_json(cli_workspace: CliWorkspace) -> None:
 
     assert result.exit_code == 0
     payload = extract_json_result(result.output)
-    assert json_int(payload["count"]) == 1
+    assert json_int(payload["total"]) == 1
     item = json_object_list(payload["provider_analytics"])[0]
     assert item["insight_kind"] == "provider_analytics"
     assert item["provider_name"] == "claude-code"
@@ -774,7 +774,7 @@ def test_insights_debt_json(cli_workspace: CliWorkspace) -> None:
 
     assert result.exit_code == 0
     payload = extract_json_result(result.output)
-    assert json_int(payload["count"]) >= 1
+    assert json_int(payload["total"]) >= 1
     first = json_object_list(payload["archive_debt"])[0]
     assert first["insight_kind"] == "archive_debt"
     assert "maintenance_target" in first

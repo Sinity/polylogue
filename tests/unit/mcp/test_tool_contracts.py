@@ -860,7 +860,7 @@ class TestInsightTools:
         cost_rollups_payload = json.loads(cost_rollups_raw)
         debt_payload = json.loads(debt_raw)
 
-        assert profiles_payload["count"] == 1
+        assert profiles_payload["total"] == 1
         assert profiles_payload["items"][0]["insight_kind"] == "session_profile"
         assert enrichments_payload["items"][0]["insight_kind"] == "session_enrichment"
         assert events_payload["items"][0]["insight_kind"] == "session_work_event"
