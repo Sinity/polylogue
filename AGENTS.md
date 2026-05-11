@@ -816,8 +816,48 @@ Content-addressed blob storage for large binary data:
   to one session). `blob_links` table maps conversations to their blobs.
 - **Operations**: Blobs are write-once, read-many. No in-place modification.
   GC identifies unreferenced blobs via link counting.
+
+### GC concurrency model — leases plus snapshot reference check
+
+`run_blob_gc` deletes orphan blob files using two independent safety
+invariants combined:
+
+1. **DB reference check** — `_still_referenced` queries
+   `raw_conversations` for the blob's `raw_id`. If a raw record points at
+   the blob, GC skips it. This is the snapshot/mark-and-sweep view of
+   "this blob is in active use right now."
+2. **Pending lease check** — `_has_active_lease` queries
+   `pending_blob_refs` for an in-flight operation that has *announced*
+   it intends to reference the blob but hasn't committed yet. If a write
+   path acquired a lease but its transaction hasn't yet inserted the
+   `raw_conversations` row, the snapshot check alone would
+   misclassify the blob as orphan and delete it.
+
+The lease tables (`pending_blob_refs`, `gc_generations`) are therefore
+load-bearing — they exist specifically to bridge the
+acquire-blob → write-DB-row commit window. Removing them would
+re-open the exact race the lease design was added to close: a GC pass
+running between blob materialization and the corresponding archive
+write would delete blobs the write was about to reference.
+
+The write path that exercises the leases is
+`polylogue/archive/write_effects.py:commit_archive_write_effects` —
+calls `acquire_blob_leases(db_path, blob_hashes, operation_id)` on a
+separate immediate-commit connection so the lease is visible to a
+concurrent GC before the main transaction commits, then calls
+`release_operation_leases(conn, operation_id)` after the commit so
+the blob is now durably referenced by `raw_conversations` and the
+lease can drop.
+
+`gc_generations` tracks the high-water mark of completed GC runs. The
+"defense-in-depth" age check requires candidate blobs to be older than
+the previous generation plus `MIN_AGE_S` so that a brand-new blob is
+never considered for deletion within the same GC run cycle that
+created it.
+
 - **Known issues**: GC has bugs with orphan detection and integrity
-  verification ([#818](https://github.com/Sinity/polylogue/issues/818)).
+  verification ([#818](https://github.com/Sinity/polylogue/issues/818))
+  — independent of the lease design audited above.
 
 ## Debugging Landmarks
 

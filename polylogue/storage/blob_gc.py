@@ -200,8 +200,19 @@ def acquire_blob_leases(
 ) -> None:
     """Acquire leases on blob hashes to prevent GC during active operations.
 
-    Uses a fresh connection that commits immediately so leases are visible
-    to concurrent GC runs before the main data transaction commits.
+    The lease tables are deliberately retained alongside the
+    snapshot-based reference check in ``_still_referenced`` (audited in
+    #1000). They bridge the acquire-blob → write-DB-row commit window:
+    without leases, a GC pass running between blob materialization and
+    the corresponding ``raw_conversations`` write would misclassify the
+    blob as orphan.
+
+    Uses a fresh connection that commits immediately so leases are
+    visible to concurrent GC runs before the main data transaction
+    commits.
+
+    See ``docs/internals.md`` ("GC concurrency model") for the full
+    contract.
     """
     if not blob_hashes:
         return
