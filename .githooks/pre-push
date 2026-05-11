@@ -1,30 +1,24 @@
 #!/usr/bin/env bash
-# Pre-push gate: full verification baseline (quick mode).
-# Runs format + lint + render-all --check. Tests run in CI.
-# Installed automatically by the devshell (shellHook in flake.nix).
+# Pre-push gate: quick verification baseline (format + lint only).
+# Full verification (mypy, render-all, pytest) is expected to have already
+# run via `devtools verify` before the push (see CONTRIBUTING.md).
+# CI runs the complete baseline.
 #
-# Distinguishes "verify rejected your changes" from "devtools could not even
-# import in this shell" — the latter usually means polylogue's devshell isn't
-# loaded in the current terminal (see #423).
+# When `devtools verify` completed successfully at the current HEAD, the
+# stamp file at .cache/last-verify-head matches and this hook is a no-op.
 
 set -euo pipefail
 
-# Pre-flight: confirm devtools imports cleanly. If it doesn't, the active
-# shell isn't pointing at polylogue's Python env, and a verify failure here
-# is environmental, not a defect in the diff being pushed.
-if ! devtools --help >/dev/null 2>&1; then
-    cat >&2 <<'MSG'
-pre-push: devtools is not importable in this shell.
+STAMP_FILE=".cache/last-verify-head"
 
-This usually means polylogue's devshell isn't loaded — the push isn't being
-rejected for any defect in your diff. To run the gate against the diff:
-
-    nix develop --command git push <args...>
-
-or re-enter the project directory under direnv (run `direnv allow` once if
-you haven't), and try the push again.
-MSG
-    exit 1
+if [[ -f "$STAMP_FILE" ]]; then
+    STAMPED=$(head -n1 "$STAMP_FILE")
+    CURRENT=$(git rev-parse HEAD)
+    if [[ "$STAMPED" == "$CURRENT" ]]; then
+        echo "pre-push: HEAD already verified (${STAMPED:0:8}); skipping." >&2
+        exit 0
+    fi
+    echo "pre-push: HEAD changed since last verify; running gate." >&2
 fi
 
 echo "pre-push: running quick verification baseline" >&2

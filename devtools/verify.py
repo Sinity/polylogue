@@ -100,5 +100,22 @@ def main(argv: list[str] | None = None) -> int:
         sys.stderr.write("\nverify: FAILED — fix before pushing\n")
     else:
         sys.stderr.write("\nverify: all checks passed\n")
+        _stamp_head()
 
     return exit_code
+
+
+def _stamp_head() -> None:
+    """Record HEAD SHA so the pre-push hook can skip already-verified commits."""
+    import subprocess
+
+    result = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return
+    stamp_dir = __import__("pathlib").Path(".cache")
+    stamp_dir.mkdir(parents=True, exist_ok=True)
+    (stamp_dir / "last-verify-head").write_text(result.stdout.strip() + "\n")
