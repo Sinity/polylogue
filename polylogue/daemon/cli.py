@@ -173,6 +173,34 @@ async def _periodic_heartbeat() -> None:
             logger.warning("daemon: heartbeat query failed", exc_info=True)
 
 
+async def _periodic_db_optimize() -> None:
+    """Run SQLite PRAGMA optimize once daily to keep query plans current.
+
+    On a 60 GB archive with millions of rows, the query planner's
+    internal statistics drift as the table sizes change.  PRAGMA optimize
+    is a lightweight maintenance pass — it only runs ANALYZE on tables
+    that need it and never blocks reads.  It is NOT a VACUUM and does
+    not rewrite the file.
+    """
+    from polylogue.paths import archive_root, db_path
+    from polylogue.storage.sqlite.connection_profile import open_connection
+
+    db = db_path() or Path(archive_root()) / "polylogue.db"
+    while True:
+        await asyncio.sleep(86_400)  # 24 hours
+        if not db.exists():
+            continue
+        try:
+            conn = open_connection(db, timeout=30.0)
+            try:
+                conn.execute("PRAGMA optimize")
+                logger.info("daemon: DB optimize completed")
+            finally:
+                conn.close()
+        except Exception:
+            logger.warning("daemon: DB optimize failed", exc_info=True)
+
+
 async def _periodic_convergence_check(
     sources: tuple[WatchSource, ...],
 ) -> None:
@@ -378,7 +406,8 @@ async def run_daemon_services(
     heartbeat_task = asyncio.create_task(_periodic_heartbeat())
     convergence_task = asyncio.create_task(_periodic_convergence_check(sources))
     health_task = asyncio.create_task(_periodic_health_check())
-    maintenance_tasks = [wal_task, heartbeat_task, convergence_task, health_task]
+    db_optimize_task = asyncio.create_task(_periodic_db_optimize())
+    maintenance_tasks = [wal_task, heartbeat_task, convergence_task, health_task, db_optimize_task]
 
     api_server: ThreadingHTTPServer | None = None
     api_server_task: asyncio.Task[None] | None = None

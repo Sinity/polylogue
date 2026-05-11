@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import stat as _stat
+import sys
 from collections.abc import AsyncIterator, Callable, Iterator, Mapping
 from pathlib import Path
 from types import ModuleType
@@ -13,6 +15,13 @@ from hypothesis import HealthCheck, settings
 from hypothesis.configuration import set_hypothesis_home_dir
 from hypothesis.database import DirectoryBasedExampleDatabase
 
+# ---------------------------------------------------------------------------
+# Move pytest temp directories onto tmpfs when /dev/shm is available.
+# Test SQLite databases are write-heavy and share the same disk as the
+# 60 GB production archive when /tmp is on the root filesystem.  Moving
+# them to RAM eliminates IO contention between test workers and lets
+# pytest-xdist parallelism actually deliver wall-clock speedup (#1026).
+# ---------------------------------------------------------------------------
 from polylogue.archive.models import Conversation
 from polylogue.scenarios import CorpusSpec, build_default_corpus_specs
 from polylogue.storage.runtime import RawConversationRecord
@@ -34,8 +43,20 @@ if TYPE_CHECKING:
 
 
 def pytest_configure(config: pytest.Config) -> None:
-    """Register custom markers for scale and benchmark tests."""
+    """Register custom markers and detect tmpfs for test databases.
+
+    On Linux, ``/dev/shm`` is a RAM-backed tmpfs.  Route pytest temp
+    directories there when available so SQLite test databases don't
+    contend for IO with polylogued's 60 GB production archive (#1026).
+    Tmpfs detection uses the sticky bit (S_ISVTX) — Linux tmpfs always
+    sets it; regular directories on btrfs/ext4/xfs never do.
+    """
     config.addinivalue_line("markers", "scale(level): parametric scale marker (small/medium/large/stretch)")
+
+    shm = Path("/dev/shm")
+    if shm.is_dir() and (_stat.S_ISVTX & shm.stat().st_mode) and config.option.basetemp is None:
+        config.option.basetemp = str(shm / "pytest-polylogue")
+        sys.stderr.write(f"pytest: basetemp → {config.option.basetemp} (tmpfs, #1026)\n")
 
 
 # ---------------------------------------------------------------------------
