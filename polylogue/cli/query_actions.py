@@ -63,7 +63,17 @@ async def apply_modifiers(
     mutation: QueryMutationSpec,
     repo: TagStore | None = None,
 ) -> None:
-    """Apply metadata modifiers to matched conversations."""
+    """Apply metadata modifiers to matched conversations.
+
+    When the caller supplies a custom ``repo`` (test harnesses with
+    fictional summaries, batch tools that have already validated
+    existence), tag mutations are routed straight at the repo. With no
+    custom repo, mutations go through ``env.polylogue.add_tag`` so the
+    shared facade enforces idempotency and conversation-existence
+    checks. Mixing the two paths against summaries that are not in
+    the polylogue archive raises ``ConversationNotFoundError`` (#1012).
+    """
+    custom_repo = repo is not None
     repo = repo or env.repository
     if not results:
         env.ui.console.print("No conversations matched.")
@@ -110,9 +120,13 @@ async def apply_modifiers(
 
         if mutation.add_tags:
             for tag in mutation.add_tags:
-                result = await env.polylogue.add_tag(result_id(conv), tag)
-                if result:
+                if custom_repo:
+                    await repo.add_tag(result_id(conv), tag)
                     tags_added += 1
+                else:
+                    result = await env.polylogue.add_tag(result_id(conv), tag)
+                    if result:
+                        tags_added += 1
 
     reports: list[str] = []
     if tags_added:
