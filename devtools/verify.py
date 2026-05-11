@@ -23,6 +23,28 @@ import sys
 import time
 
 
+def _mypy_cmd() -> list[str]:
+    """Return the mypy command, preferring dmypy for warm-cache speed.
+
+    Probes whether the dmypy daemon is already running (fast status check).
+    If alive, subsequent ``dmypy run`` calls check only changed files
+    (~0.5s vs ~13s). If the daemon isn't running, fall back to ``mypy``
+    to avoid the cold-start penalty on every invocation.
+    """
+    try:
+        result = subprocess.run(
+            ["dmypy", "status"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            return ["dmypy", "run", "--", "--no-error-summary"]
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+    return ["mypy"]
+
+
 def _run(label: str, cmd: list[str], *, cwd: str | None = None) -> int:
     t0 = time.monotonic()
     sys.stderr.write(f"  {label} ... ")
@@ -44,7 +66,7 @@ def build_verify_steps(*, quick: bool, lab: bool, skip_slow: bool) -> list[tuple
     steps: list[tuple[str, list[str]]] = [
         ("ruff format", ["ruff", "format", "--check", "polylogue/", "tests/", "devtools/"]),
         ("ruff check", ["ruff", "check", "polylogue/", "tests/", "devtools/"]),
-        ("mypy", ["mypy"]),
+        ("mypy", _mypy_cmd()),
         ("render-all", ["devtools", "render-all", "--check"]),
         ("verify-topology", ["devtools", "verify-topology"]),
         ("verify-layering", ["devtools", "verify-layering"]),
