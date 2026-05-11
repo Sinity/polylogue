@@ -267,6 +267,36 @@ class PolylogueConfig:
     def health_check_tiers(self) -> str:
         return str(self._data.get("health_check_tiers", "fast,medium"))
 
+    @property
+    def watch_debounce_s(self) -> float:
+        return float(str(self._data.get("watch_debounce_s", 2.0)))
+
+    @property
+    def browser_capture_host(self) -> str:
+        return str(self._data.get("browser_capture_host", "127.0.0.1"))
+
+    @property
+    def browser_capture_spool_path(self) -> str:
+        return str(self._data.get("browser_capture_spool_path", ""))
+
+    @property
+    def browser_capture_auth_token(self) -> str | None:
+        v = self._data.get("browser_capture_auth_token")
+        return v if isinstance(v, str) and v else None
+
+    @property
+    def browser_capture_allow_remote(self) -> bool:
+        return bool(self._data.get("browser_capture_allow_remote"))
+
+    @property
+    def source_roots(self) -> tuple[str, ...]:
+        v = self._data.get("source_roots")
+        if isinstance(v, (list, tuple)):
+            return tuple(str(item) for item in v)
+        if isinstance(v, str) and v.strip():
+            return tuple(s.strip() for s in v.split(",") if s.strip())
+        return ()
+
     def get(self, key: str, default: object = None) -> object:
         return self._data.get(key, default)
 
@@ -333,6 +363,12 @@ def load_polylogue_config(
         "notification_backend": "log",
         "health_check_interval_s": 300,
         "health_check_tiers": "fast,medium",
+        "watch_debounce_s": 2.0,
+        "browser_capture_host": "127.0.0.1",
+        "browser_capture_spool_path": "",
+        "browser_capture_auth_token": None,
+        "browser_capture_allow_remote": False,
+        "source_roots": (),
     }
 
     # Layer 2: TOML file
@@ -376,8 +412,17 @@ def _merge_toml(cfg: dict[str, object], toml_data: dict[str, object]) -> None:
             "auth_token": "api_auth_token",
         },
         "daemon.browser_capture": {
+            "host": "browser_capture_host",
             "port": "browser_capture_port",
             "allowed_origins": "browser_capture_allowed_origins",
+            "allow_remote": "browser_capture_allow_remote",
+            "auth_token": "browser_capture_auth_token",
+        },
+        "daemon.watch": {
+            "debounce_s": "watch_debounce_s",
+        },
+        "sources": {
+            "roots": "source_roots",
         },
         "embedding": {
             "enabled": "embedding_enabled",
@@ -407,7 +452,11 @@ def _merge_toml(cfg: dict[str, object], toml_data: dict[str, object]) -> None:
         if isinstance(section_data, dict):
             for short_key, flat_key in key_map.items():
                 if short_key in section_data:
-                    cfg[flat_key] = section_data[short_key]
+                    value = section_data[short_key]
+                    if isinstance(value, list):
+                        cfg[flat_key] = tuple(value)
+                    else:
+                        cfg[flat_key] = value
 
 
 def _apply_env_overrides(cfg: dict[str, object]) -> None:
@@ -422,7 +471,15 @@ def _apply_env_overrides(cfg: dict[str, object]) -> None:
         "POLYLOGUE_NOTIFICATION_BACKEND": "notification_backend",
         "POLYLOGUE_HEALTH_CHECK_INTERVAL_S": "health_check_interval_s",
         "POLYLOGUE_HEALTH_CHECK_TIERS": "health_check_tiers",
+        "POLYLOGUE_API_HOST": "api_host",
+        "POLYLOGUE_API_PORT": "api_port",
+        "POLYLOGUE_API_AUTH_TOKEN": "api_auth_token",
+        "POLYLOGUE_BROWSER_CAPTURE_PORT": "browser_capture_port",
+        "POLYLOGUE_BROWSER_CAPTURE_HOST": "browser_capture_host",
+        "POLYLOGUE_WATCH_DEBOUNCE_S": "watch_debounce_s",
     }
+    # Keys that must be stored as int
+    _int_keys = {"api_port", "daemon_port", "browser_capture_port", "health_check_interval_s"}
     for env_var, cfg_key in env_map.items():
         value = os.environ.get(env_var)
         if value is not None:
@@ -431,6 +488,9 @@ def _apply_env_overrides(cfg: dict[str, object]) -> None:
                 cfg[cfg_key] = True
             elif value.lower() in ("0", "false", "no"):
                 cfg[cfg_key] = False
+            elif cfg_key in _int_keys:
+                with __import__("contextlib").suppress(ValueError):
+                    cfg[cfg_key] = int(value)
             else:
                 cfg[cfg_key] = value
 
@@ -463,9 +523,20 @@ def format_config_toml(cfg: dict[str, object]) -> str:
         (
             "daemon.browser_capture",
             [
+                ("host", "browser_capture_host"),
                 ("port", "browser_capture_port"),
                 ("allowed_origins", "browser_capture_allowed_origins"),
+                ("allow_remote", "browser_capture_allow_remote"),
+                ("auth_token", "browser_capture_auth_token"),
             ],
+        ),
+        (
+            "daemon.watch",
+            [("debounce_s", "watch_debounce_s")],
+        ),
+        (
+            "sources",
+            [("roots", "source_roots")],
         ),
         (
             "embedding",
@@ -503,7 +574,10 @@ def format_config_toml(cfg: dict[str, object]) -> str:
             value = cfg[flat_key]
             if value is None:
                 continue
-            if isinstance(value, str):
+            if isinstance(value, (list, tuple)):
+                items = ", ".join(f'"{v}"' for v in value)
+                section_lines.append(f"{short_key} = [{items}]")
+            elif isinstance(value, str):
                 section_lines.append(f'{short_key} = "{value}"')
             elif isinstance(value, bool):
                 section_lines.append(f"{short_key} = {str(value).lower()}")
