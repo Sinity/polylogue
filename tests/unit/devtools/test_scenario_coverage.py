@@ -80,6 +80,7 @@ def test_build_runtime_scenario_coverage_tracks_the_current_authored_map() -> No
     assert all(name.startswith("mutate-") for name in coverage.uncovered_operations)
     assert coverage.uncovered_maintenance_targets == (
         "empty_conversations",
+        "message_type_backfill",
         "orphaned_attachments",
         "orphaned_blobs",
         "orphaned_content_blocks",
