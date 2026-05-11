@@ -3,16 +3,22 @@
 Runs the checks that CI will enforce, locally and fast. Exit 0 means
 the branch is ready to push; non-zero means fix before pushing.
 
-Steps:
+Tiers:
+  --commit   Pre-commit tier: ruff format + check + mypy + proof-pack (~3s warm).
+  --quick    Pre-push tier: all non-pytest gates (~15s warm).
+  (default)  Full baseline: all gates + pytest (~3 min).
+  --lab      Full baseline + verification-lab scenario checks.
+
+Individual steps:
   1. ruff format --check (fast, <2s)
   2. ruff check (fast, <2s)
   3. mypy (polylogue + tests + devtools) (warm ~1s, cold ~25s)
   4. devtools render-all --check (fast, <5s)
   5. devtools proof-pack --check (fast proof-policy gate)
-  6. pytest --ignore=tests/integration (slow but essential, ~3min)
+  6..15. verify-* structural gates (fast, <1s each)
+  16. pytest --ignore=tests/integration (slow but essential, ~3min)
 
-Use --quick to run only the non-pytest gates (suitable for pre-commit).
-Use --lab to add verification-lab scenario checks through lab commands.
+Use --skip-slow to exclude @pytest.mark.slow tests from the pytest step.
 """
 
 from __future__ import annotations
@@ -62,26 +68,37 @@ def _run(label: str, cmd: list[str], *, cwd: str | None = None) -> int:
     return result.returncode
 
 
-def build_verify_steps(*, quick: bool, lab: bool, skip_slow: bool) -> list[tuple[str, list[str]]]:
+def build_verify_steps(*, quick: bool, lab: bool, skip_slow: bool, commit: bool = False) -> list[tuple[str, list[str]]]:
     steps: list[tuple[str, list[str]]] = [
         ("ruff format", ["ruff", "format", "--check", "polylogue/", "tests/", "devtools/"]),
         ("ruff check", ["ruff", "check", "polylogue/", "tests/", "devtools/"]),
         ("mypy", _mypy_cmd()),
-        ("render-all", ["devtools", "render-all", "--check"]),
-        ("verify-topology", ["devtools", "verify-topology"]),
-        ("verify-layering", ["devtools", "verify-layering"]),
-        ("verify-file-budgets", ["devtools", "verify-file-budgets"]),
-        ("verify-test-ownership", ["devtools", "verify-test-ownership"]),
-        ("verify-schema-roundtrip", ["devtools", "verify-schema-roundtrip", "--all"]),
-        ("verify-cross-cuts", ["devtools", "verify-cross-cuts"]),
-        ("verify-suppressions", ["devtools", "verify-suppressions"]),
-        ("verify-manifests", ["devtools", "verify-manifests"]),
-        ("verify-witness-lifecycle", ["devtools", "verify-witness-lifecycle"]),
-        ("verify-lane-assertions", ["devtools", "verify-lane-assertions"]),
-        ("proof-pack check", ["devtools", "proof-pack", "--check"]),
     ]
 
-    if not quick:
+    # Structural verify-* steps and proof-pack — skip in --commit tier
+    # (which is designed for fast pre-commit confidence).
+    if not commit:
+        steps.extend(
+            [
+                ("render-all", ["devtools", "render-all", "--check"]),
+                ("verify-topology", ["devtools", "verify-topology"]),
+                ("verify-layering", ["devtools", "verify-layering"]),
+                ("verify-file-budgets", ["devtools", "verify-file-budgets"]),
+                ("verify-test-ownership", ["devtools", "verify-test-ownership"]),
+                ("verify-schema-roundtrip", ["devtools", "verify-schema-roundtrip", "--all"]),
+                ("verify-cross-cuts", ["devtools", "verify-cross-cuts"]),
+                ("verify-suppressions", ["devtools", "verify-suppressions"]),
+                ("verify-manifests", ["devtools", "verify-manifests"]),
+                ("verify-witness-lifecycle", ["devtools", "verify-witness-lifecycle"]),
+                ("verify-lane-assertions", ["devtools", "verify-lane-assertions"]),
+            ]
+        )
+
+    # proof-pack runs in all tiers (it's fast and load-bearing)
+    steps.append(("proof-pack check", ["devtools", "proof-pack", "--check"]))
+
+    # pytest is skipped in --quick and --commit tiers.
+    if not quick and not commit:
         pytest_cmd = ["pytest", "-q", "--tb=short", "--ignore=tests/integration"]
         if skip_slow:
             pytest_cmd.extend(["-m", "not slow"])
@@ -97,6 +114,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run the local verification baseline.")
     parser.add_argument("--quick", action="store_true", help="Skip pytest and run only fast local gates.")
     parser.add_argument(
+        "--commit", action="store_true", help="Pre-commit tier: format + lint + mypy + proof-pack only."
+    )
+    parser.add_argument(
         "--skip-slow",
         action="store_true",
         help="Exclude @pytest.mark.slow tests from the pytest step.",
@@ -111,7 +131,12 @@ def main(argv: list[str] | None = None) -> int:
     sys.stderr.write("verify: running local verification baseline\n")
 
     exit_code = 0
-    steps = build_verify_steps(quick=bool(args.quick), lab=bool(args.lab), skip_slow=bool(args.skip_slow))
+    steps = build_verify_steps(
+        quick=bool(args.quick),
+        commit=bool(args.commit),
+        lab=bool(args.lab),
+        skip_slow=bool(args.skip_slow),
+    )
 
     for label, cmd in steps:
         rc = _run(label, cmd)

@@ -12,7 +12,7 @@
       nixpkgs,
       flake-utils,
     }:
-    flake-utils.lib.eachDefaultSystem (
+    flake-utils.lib.eachSystem [ "x86_64-linux" ] (
       system:
       let
         pkgs = import nixpkgs {
@@ -37,8 +37,8 @@
 
           postPatch = ''
             cat > polylogue/_build_info.py << BUILDEOF
-            BUILD_COMMIT = "${self.rev or self.dirtyRev or "unknown"}"
-            BUILD_DIRTY = ${if self ? dirtyRev then "True" else "False"}
+            BUILD_COMMIT = "${self.shortRev or self.dirtyShortRev or "unknown"}"
+            BUILD_DIRTY = ${if self ? dirtyShortRev then "True" else "False"}
             BUILDEOF
           '';
 
@@ -142,15 +142,34 @@
               rm result
             fi
 
+            # One-time cleanup of legacy repo-root cache dirs migrated under .cache/.
             for legacy_cache_root in __pycache__ .pytest_cache .hypothesis .mypy_cache .ruff_cache .benchmarks; do
               if [ -e "$legacy_cache_root" ]; then
                 rm -rf "$legacy_cache_root"
               fi
             done
 
-            # Install repo git hooks (format/lint on commit, verify on push).
-            git config --local core.hooksPath .githooks 2>/dev/null || true
-            find polylogue tests devtools -type d -name __pycache__ -prune -exec rm -r {} + 2>/dev/null || true
+            # Install repo git hooks — skip if already set correctly.
+            current_hooks_path=$(git config --local core.hooksPath 2>/dev/null || true)
+            if [ "$current_hooks_path" != ".githooks" ]; then
+              git config --local core.hooksPath .githooks 2>/dev/null || true
+            fi
+
+            # Clean stale __pycache__ dirs under source trees — skip if stamp
+            # is fresh (sources haven't changed since last cleanup).
+            pyc_stamp=".cache/.last-pyc-cleanup"
+            pyc_should_clean=1
+            if [ -f "$pyc_stamp" ]; then
+              last_clean=$(stat -c %Y "$pyc_stamp" 2>/dev/null || echo 0)
+              newest_src=$(find polylogue tests devtools -name '*.py' -printf '%T@\n' 2>/dev/null | sort -rn | head -1 | cut -d. -f1)
+              if [ -n "$newest_src" ] && [ "$last_clean" -ge "$newest_src" ]; then
+                pyc_should_clean=0
+              fi
+            fi
+            if [ "$pyc_should_clean" -eq 1 ]; then
+              find polylogue tests devtools -type d -name __pycache__ -prune -exec rm -r {} + 2>/dev/null || true
+              touch "$pyc_stamp"
+            fi
 
             # Create venv if it doesn't exist
             if [ ! -d .venv ]; then
@@ -179,8 +198,15 @@
               printf '%s' "$sync_fingerprint" > "$sync_fingerprint_file"
             fi
 
+            # Render AGENTS.md when CLAUDE.md or its inclusions change.
+            agents_stamp=".cache/.last-agents-render"
             if [ -f CLAUDE.md ]; then
-              devtools render-agents >/dev/null
+              agents_src_mtime=$(stat -c %Y CLAUDE.md 2>/dev/null || echo 0)
+              agents_last_mtime=$(stat -c %Y "$agents_stamp" 2>/dev/null || echo 0)
+              if [ "$agents_src_mtime" -gt "$agents_last_mtime" ]; then
+                devtools render-agents >/dev/null
+                touch "$agents_stamp"
+              fi
             fi
 
             if [[ $- == *i* ]]; then
@@ -192,8 +218,8 @@
 
         # Smoke check the packaged CLI inside a Nix sandbox. Full test coverage
         # lives in GitHub Actions and local dev workflows.
-        checks.default =
-          pkgs.runCommand "polylogue-smoke"
+        checks = {
+          default = pkgs.runCommand "polylogue-smoke"
             {
               nativeBuildInputs = [
                 polylogue
@@ -206,6 +232,35 @@
               polylogue-mcp --help >/dev/null
               touch $out
             '';
+
+          # Gate: code must be formatted.
+          format = pkgs.runCommand "polylogue-format"
+            {
+              nativeBuildInputs = [
+                pkgs.ruff
+              ];
+            }
+            ''
+              cd ${self}
+              ruff format --check polylogue/ tests/ devtools/
+              touch $out
+            '';
+
+          # Gate: code must pass lint.
+          lint = pkgs.runCommand "polylogue-lint"
+            {
+              nativeBuildInputs = [
+                pkgs.ruff
+              ];
+            }
+            ''
+              cd ${self}
+              ruff check polylogue/ tests/ devtools/
+              touch $out
+            '';
+        };
+
+        formatter = pkgs.nixfmt;
       }
     ) // {
       nixosModules.default = import ./nix/module.nix;

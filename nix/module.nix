@@ -173,14 +173,23 @@ in
       after = [ "network.target" ];
       wantedBy = [ "multi-user.target" ];
       serviceConfig = {
+        Type = "simple";
         # `polylogued run` enables watch + browser-capture + HTTP API by default.
         # Pass --no-watch / --no-browser-capture / --no-api at the unit level if
         # a deployment needs a narrower component set.
         ExecStart = "${cfg.package}/bin/polylogued run";
         Restart = "on-failure";
+        RestartSec = "5s";
         Environment = "POLYLOGUE_CONFIG=${cfg.configPath}";
         StateDirectory = "polylogue";
         CacheDirectory = "polylogue";
+        # Practical hardening: the daemon needs read access to source directories
+        # (e.g. ~/.claude, ~/.codex) and read/write to the archive root, so full
+        # filesystem lockdowns are deferred to the operator. These settings are
+        # safe for any deployment.
+        PrivateTmp = true;
+        NoNewPrivileges = true;
+        RestrictAddressFamilies = "AF_UNIX AF_INET AF_INET6";
       };
     };
   };
