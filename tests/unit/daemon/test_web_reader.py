@@ -6,8 +6,11 @@ payload served at ``/`` is asserted at the DOM-shape level (semantic
 selectors, never pixel diffs); JSON envelopes are asserted by shape so
 any regression in the daemon's contract surface fails here loudly.
 
-The harness is also reused by the ``reader-smoke`` lab scenario to
-produce an evidence envelope; see ``devtools/lab_scenario.py``.
+This is the documented reader visual smoke lane (see
+``docs/visual-evidence.md``). The lane runs as part of the standard
+unit suite and ``devtools verify``; a separate ``devtools lab-scenario``
+entrypoint can be added later if Playwright-based screenshot evidence
+is bolted on.
 """
 
 from __future__ import annotations
@@ -241,11 +244,12 @@ class TestReaderDegradedStates:
 class TestReaderPrivacy:
     """The reader must never expose absolute local paths or auth tokens.
 
-    The bare web shell HTML, status JSON, and facets JSON all come from
-    the same daemon and must be auditable for absolute filesystem
-    paths, raw stack traces, or credentials. ``/api/sources`` *does*
-    return absolute paths by design (see ``docs/security.md``), so only
-    the unauthenticated/UI-facing surfaces are checked here.
+    The unauthenticated web shell HTML and the read-only ``/api/facets``
+    JSON are audited here for absolute filesystem path leaks across the
+    standard POSIX prefixes. ``/api/sources``, ``/api/raw_artifacts/:id``,
+    and ``/api/status`` deliberately surface absolute paths under the
+    operator-level token (see ``docs/security.md``) and are out of scope
+    for this lane.
     """
 
     def test_web_shell_does_not_leak_absolute_local_paths(self, workspace_env: dict[str, Path]) -> None:
@@ -309,12 +313,15 @@ def test_reader_smoke_lane_is_documented() -> None:
     assert "polylogue.local_reader.conversation" in body
 
 
-@pytest.mark.parametrize("path", ["/", "/api/conversations", "/api/facets", "/api/status"])
+@pytest.mark.parametrize("path", ["/", "/api/conversations", "/api/facets", "/api/status", "/api/health"])
 def test_each_reader_route_responds_within_a_reasonable_budget(workspace_env: dict[str, Path], path: str) -> None:
     """Each reader-facing route returns within 10 s on a synthetic
-    three-conversation archive. The budget is loose by design — this is
-    a smoke that catches "endpoint hangs forever" regressions, not a
-    latency benchmark.
+    three-conversation archive. ``/api/health`` is included because the
+    web shell pings it on every render cycle (see
+    ``polylogue/daemon/web_shell.py::loadStatus``); a regression there
+    would freeze the reader UI even if the data routes were healthy.
+    The budget is loose by design — this is a smoke that catches
+    "endpoint hangs forever" regressions, not a latency benchmark.
     """
     with _running_server(workspace_env) as (_, base_url):
         status, _, _ = _get_text(base_url, path)

@@ -47,9 +47,11 @@ in #848 so the visual-evidence companion can cross-reference them.
   that drops a region fails here loudly without depending on pixel
   differences.
 - **Envelope shapes.** Every reader-facing JSON envelope is asserted by
-  shape: `items`/`messages`/`raw_artifacts` plus `total`, scoped facet
-  flags, and the documented filter behaviour for `?provider=` and
-  `?query=`.
+  shape: `items`/`messages`/`raw_artifacts` plus `total` for the
+  paginated list/detail surfaces, and the search route's `hits`/`total`
+  envelope when `?query=` is supplied. Facets carry the
+  `scoped_to_query`/`providers` shape and honour the `?provider=`
+  filter contract.
 - **Empty / no-results state.** Distinguishes "archive is empty" from
   "query matched no rows", a discrimination the reader UI is required to
   expose.
