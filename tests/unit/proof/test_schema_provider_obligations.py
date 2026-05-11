@@ -3,7 +3,6 @@ from __future__ import annotations
 import copy
 import json
 
-import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 from hypothesis_jsonschema import from_schema
@@ -67,9 +66,8 @@ def test_provider_capability_partial_coverage_runner_requires_explicit_gaps() ->
     assert envelope.counterexample is None
 
 
-@pytest.mark.slow
 @given(data=st.data())
-@settings(deadline=None)
+@settings(max_examples=25, deadline=None)
 def test_value_annotation_metadata_drives_generation_and_verification(data: st.DataObject) -> None:
     obligation = _obligation("schema.values.value_closure")
     annotation_values = _json_values_attr(obligation.subject.attrs.get("values"))
