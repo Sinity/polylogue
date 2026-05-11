@@ -515,18 +515,19 @@ def cli_runner() -> CliRunner:
 
 
 @pytest.fixture(scope="session")
-def seeded_db(tmp_path_factory: pytest.TempPathFactory) -> Path:
+def seeded_db(tmp_path_factory: pytest.TempPathFactory, worker_id: str) -> Path:
     """Create a database seeded with synthetic data from all providers.
 
-    Uses SyntheticCorpus to generate schema-driven test data for each provider,
-    then ingests through the full pipeline. No fixture files required.
-
-    Scope is 'session' for efficiency - the seeded DB is created once and reused.
+    Built once across all pytest-xdist workers via a file lock on a
+    shared tmpfs path.  Only ``gw0`` pays the build cost (~15 s per
+    provider); all other workers wait for the lock, then open the
+    already-built read-only database.
 
     Returns:
-        Path to the seeded database file
+        Path to the seeded database file (shared across workers).
     """
     import asyncio
+    import fcntl
     import hashlib
     from datetime import datetime, timezone
 
@@ -540,85 +541,107 @@ def seeded_db(tmp_path_factory: pytest.TempPathFactory) -> Path:
     from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
     from polylogue.storage.sqlite.connection import open_connection
 
-    # Create session-scoped temp directory
-    tmp_dir = tmp_path_factory.mktemp("seeded_db")
-    db_path = tmp_dir / "polylogue.db"
-    blob_store = BlobStore(tmp_dir / "blob")
+    # Shared tmpfs location so all xdist workers reuse the same DB.
+    # Falls back to the conventional tmp_path_factory when /dev/shm
+    # isn't available (macOS, CI without tmpfs).
+    shm = Path("/dev/shm")
+    if shm.is_dir() and (_stat.S_ISVTX & shm.stat().st_mode):
+        shared_root = shm / "pytest-polylogue-seeded"
+    else:
+        shared_root = tmp_path_factory.getbasetemp() / "seeded-shared"
+    shared_root.mkdir(parents=True, exist_ok=True)
 
-    # Initialize schema
-    with open_connection(db_path):
-        pass
+    db_path = shared_root / "polylogue.db"
+    lock_path = shared_root / ".build.lock"
 
-    backend = SQLiteBackend(db_path=db_path)
-    repository = ConversationRepository(backend=backend)
+    # ------------------------------------------------------------------
+    # Cross-worker coordination: only one worker builds; others wait.
+    # ------------------------------------------------------------------
+    with lock_path.open("a+") as lock_fh:
+        fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX)
+        # Re-check after acquiring the lock — another worker may have
+        # finished building while we waited.
+        done_marker = shared_root / ".build.done"
+        if done_marker.exists() and db_path.exists():
+            return db_path
 
-    # Generate synthetic data and write to temp files
-    corpus_dir = tmp_dir / "corpus"
-    corpus_dir.mkdir()
+        # We hold the lock and the DB doesn't exist yet — build it.
+        # Intermediate artifacts use a per-worker tmpdir; only the
+        # final SQLite file lives in the shared location.
+        tmp_dir = tmp_path_factory.mktemp(f"seeded-build-{worker_id}")
+        blob_store = BlobStore(tmp_dir / "blob")
 
-    async def _seed() -> None:
-        specs = build_default_corpus_specs(
-            providers=SyntheticCorpus.available_providers(),
-            count=3,
-            messages_min=4,
-            messages_max=11,
-            seed=42,
-            origin="generated.test-seeded-db",
-            tags=("synthetic", "test", "seeded-db"),
-        )
-        for spec in specs:
-            provider_dir = corpus_dir / spec.provider
-            written = SyntheticCorpus.write_spec_artifacts(spec, provider_dir, prefix="synthetic")
+        with open_connection(db_path):
+            pass
 
-            for file_path, artifact in zip(written.files, written.batch.artifacts, strict=True):
-                raw_bytes = artifact.raw_bytes
+        backend = SQLiteBackend(db_path=db_path)
+        repository = ConversationRepository(backend=backend)
 
-                # Step 1: Store as raw conversation (acquire stage)
-                try:
-                    raw_id, blob_size = blob_store.write_from_bytes(raw_bytes)
-                    record = RawConversationRecord(
-                        raw_id=raw_id,
-                        provider_name=spec.provider,
-                        source_name=spec.provider,
-                        source_path=str(file_path),
-                        blob_size=blob_size,
-                        acquired_at=datetime.now(timezone.utc).isoformat(),
-                    )
-                    await backend.save_raw_conversation(record)
-                except Exception as e:
-                    import warnings
+        corpus_dir = tmp_dir / "corpus"
+        corpus_dir.mkdir()
 
-                    warnings.warn(f"Failed to store raw {spec.provider}/{file_path.name}: {e}", stacklevel=2)
+        async def _seed() -> None:
+            specs = build_default_corpus_specs(
+                providers=SyntheticCorpus.available_providers(),
+                count=3,
+                messages_min=4,
+                messages_max=11,
+                seed=42,
+                origin="generated.test-seeded-db",
+                tags=("synthetic", "test", "seeded-db"),
+            )
+            for spec in specs:
+                provider_dir = corpus_dir / spec.provider
+                written = SyntheticCorpus.write_spec_artifacts(spec, provider_dir, prefix="synthetic")
 
-        # Step 2: Parse and ingest (parse stage)
-        archive_root = tmp_dir / "archive"
-        archive_root.mkdir()
+                for file_path, artifact in zip(written.files, written.batch.artifacts, strict=True):
+                    raw_bytes = artifact.raw_bytes
 
-        for provider_dir in sorted(corpus_dir.iterdir()):
-            provider = provider_dir.name
-            for file_path in sorted(provider_dir.iterdir()):
-                try:
-                    source = Source(name=provider, path=file_path)
-                    raw_id = hashlib.sha256(file_path.read_bytes()).hexdigest()
-                    for convo in iter_source_conversations(source):
-                        await prepare_records(
-                            convo,
-                            source_name=provider,
-                            archive_root=archive_root,
-                            backend=backend,
-                            repository=repository,
+                    try:
+                        raw_id, blob_size = blob_store.write_from_bytes(raw_bytes)
+                        record = RawConversationRecord(
                             raw_id=raw_id,
+                            provider_name=spec.provider,
+                            source_name=spec.provider,
+                            source_path=str(file_path),
+                            blob_size=blob_size,
+                            acquired_at=datetime.now(timezone.utc).isoformat(),
                         )
-                except Exception as e:
-                    import warnings
+                        await backend.save_raw_conversation(record)
+                    except Exception as e:
+                        import warnings
 
-                    warnings.warn(f"Failed to ingest {file_path.name}: {e}", stacklevel=2)
+                        warnings.warn(f"Failed to store raw {spec.provider}/{file_path.name}: {e}", stacklevel=2)
 
-        await backend.close()
+            archive_root = tmp_dir / "archive"
+            archive_root.mkdir()
 
-    asyncio.run(_seed())
+            for provider_dir in sorted(corpus_dir.iterdir()):
+                provider = provider_dir.name
+                for file_path in sorted(provider_dir.iterdir()):
+                    try:
+                        source = Source(name=provider, path=file_path)
+                        raw_id = hashlib.sha256(file_path.read_bytes()).hexdigest()
+                        for convo in iter_source_conversations(source):
+                            await prepare_records(
+                                convo,
+                                source_name=provider,
+                                archive_root=archive_root,
+                                backend=backend,
+                                repository=repository,
+                                raw_id=raw_id,
+                            )
+                    except Exception as e:
+                        import warnings
 
-    return db_path
+                        warnings.warn(f"Failed to ingest {file_path.name}: {e}", stacklevel=2)
+
+            await backend.close()
+
+        asyncio.run(_seed())
+
+        done_marker.touch()
+        return db_path
 
 
 @pytest.fixture
