@@ -101,10 +101,15 @@ def insight_items_payload(
     *,
     item_key: str | None = None,
 ) -> dict[str, object]:
-    """Return the shared machine payload for an insight list surface."""
+    """Return the shared machine payload for an insight list surface.
+
+    The envelope follows the same ``{<key>: [...], "total": N}`` shape as
+    every other paginated MCP/CLI list surface; the historical
+    ``"count"`` field was renamed in #1007.
+    """
 
     return {
-        "count": len(items),
+        "total": len(items),
         item_key or insight_type.json_key: [_model_payload(item) for item in items],
     }
 

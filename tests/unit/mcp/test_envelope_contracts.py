@@ -33,10 +33,12 @@ from tests.infra.mcp import EXPECTED_TOOL_NAMES, MCPServerUnderTest
 #   - "single_object" — returns one record (e.g. get_conversation).
 #   - "stats_map"     — JSON object map keyed by domain key.
 #   - "operation_result" — mutation/maintenance result (own structured shape).
-#   - "insight_envelope" — insight registry envelope: ``{count, <key>:[...]}``.
-#                         Tracked as its own kind because the field is
-#                         ``count`` not ``total`` by design — pinning it
-#                         here documents the inconsistency.
+#   - Insight registry tools share the standard envelope shape
+#     ``{items: [...], total: N}`` after #1007 aligned the field name.
+#     They are intentionally absent from ``tool_to_class`` because they
+#     wrap a plain ``MCPRootPayload[dict]`` rather than a typed payload
+#     class; their envelope shape is exercised by
+#     :class:`TestInsightEnvelopeRuntimeSerialisation` below.
 # ---------------------------------------------------------------------------
 
 EnvelopeSpec = tuple[str, frozenset[str]]
@@ -77,18 +79,18 @@ TOOL_CONTRACT: dict[str, ToolKind] = {
     "export_conversation": "operation_result",
     "export_query_results": "operation_result",
     # ------- insight registry tools -------
-    "session_profiles": "insight_envelope",
-    "session_enrichments": "insight_envelope",
-    "session_phases": "insight_envelope",
-    "session_tag_rollups": "insight_envelope",
-    "session_work_events": "insight_envelope",
-    "session_costs": "insight_envelope",
-    "cost_rollups": "insight_envelope",
-    "day_session_summaries": "insight_envelope",
-    "week_session_summaries": "insight_envelope",
-    "work_threads": "insight_envelope",
-    "provider_analytics": "insight_envelope",
-    "archive_debt": "insight_envelope",
+    "session_profiles": ("envelope", frozenset({"items", "total"})),
+    "session_enrichments": ("envelope", frozenset({"items", "total"})),
+    "session_phases": ("envelope", frozenset({"items", "total"})),
+    "session_tag_rollups": ("envelope", frozenset({"items", "total"})),
+    "session_work_events": ("envelope", frozenset({"items", "total"})),
+    "session_costs": ("envelope", frozenset({"items", "total"})),
+    "cost_rollups": ("envelope", frozenset({"items", "total"})),
+    "day_session_summaries": ("envelope", frozenset({"items", "total"})),
+    "week_session_summaries": ("envelope", frozenset({"items", "total"})),
+    "work_threads": ("envelope", frozenset({"items", "total"})),
+    "provider_analytics": ("envelope", frozenset({"items", "total"})),
+    "archive_debt": ("envelope", frozenset({"items", "total"})),
 }
 
 
@@ -141,19 +143,7 @@ class TestRegistryWideClassification:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("tool_name", "expected_fields"),
-    sorted(
-        (name, fields)
-        for name, kind in TOOL_CONTRACT.items()
-        if isinstance(kind, tuple) and kind[0] == "envelope"
-        for fields in (kind[1],)
-    ),
-)
-def test_envelope_class_carries_required_fields(tool_name: str, expected_fields: frozenset[str]) -> None:
-    """For every tool classified as an envelope, the Pydantic model the
-    tool serialises through declares all required envelope fields.
-    """
+def _build_typed_envelope_classes() -> dict[str, type[BaseModel]]:
     from polylogue.mcp.payloads import (
         MCPMessagesListPayload,
         MCPNeighborCandidatesPayload,
@@ -163,7 +153,7 @@ def test_envelope_class_carries_required_fields(tool_name: str, expected_fields:
         MCPSessionTreePayload,
     )
 
-    tool_to_class: dict[str, type[BaseModel]] = {
+    return {
         "search": MCPPaginatedSearchResultPayload,
         "list_conversations": MCPPaginatedQueryResultPayload,
         "neighbor_candidates": MCPNeighborCandidatesPayload,
@@ -171,7 +161,31 @@ def test_envelope_class_carries_required_fields(tool_name: str, expected_fields:
         "get_messages": MCPMessagesListPayload,
         "raw_artifacts": MCPRawArtifactsListPayload,
     }
-    cls = tool_to_class[tool_name]
+
+
+# Build the mapping once at collection time so parametrize and the test
+# body share the same dict instead of importing payload classes per case.
+_TYPED_ENVELOPE_CLASSES: dict[str, type[BaseModel]] = _build_typed_envelope_classes()
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "expected_fields"),
+    sorted(
+        (name, fields)
+        for name, kind in TOOL_CONTRACT.items()
+        if isinstance(kind, tuple) and kind[0] == "envelope" and name in _TYPED_ENVELOPE_CLASSES
+        for fields in (kind[1],)
+    ),
+)
+def test_envelope_class_carries_required_fields(tool_name: str, expected_fields: frozenset[str]) -> None:
+    """For every envelope tool backed by a typed payload class, the
+    class declares all required envelope fields.
+
+    Insight registry tools wrap a ``MCPRootPayload[dict]`` rather than a
+    typed payload class — their envelope shape is covered separately by
+    :class:`TestInsightEnvelopeRuntimeSerialisation`.
+    """
+    cls = _TYPED_ENVELOPE_CLASSES[tool_name]
     fields = set(cls.model_fields.keys())
     missing = expected_fields - fields
     assert not missing, (
@@ -209,12 +223,39 @@ class TestEnvelopeRuntimeSerialisation:
 
 
 # ---------------------------------------------------------------------------
-# Insight envelope — tracks the inconsistent ``count`` (vs ``total``) field
-# name used by the registry-driven insight tools. Documenting it here
-# rather than asserting envelope shape so the inconsistency is visible
-# but does not block the test (these tools predate the envelope contract
-# decision and would need a coordinated migration to align field names).
+# Insight envelope — registry-driven insight tools share the standard
+# ``{items, total}`` envelope shape after #1007 aligned the field name
+# from the historical ``count``. Pinned at the registry payload factory
+# (``insight_items_payload``) so any drift fails here loudly instead of
+# silently re-introducing the legacy field name.
 # ---------------------------------------------------------------------------
+
+
+class TestInsightEnvelopeRuntimeSerialisation:
+    """``insight_items_payload`` and the MCP insight tools must emit the
+    same ``{<key>: [...], "total": N}`` shape every other paginated MCP
+    surface uses. Pin both call sites so the alignment from #1007 cannot
+    silently regress.
+    """
+
+    def test_insight_items_payload_uses_total_with_default_key(self) -> None:
+        from polylogue.insights.registry import INSIGHT_REGISTRY, insight_items_payload
+
+        pt = next(iter(INSIGHT_REGISTRY.values()))
+        payload = insight_items_payload([], pt)
+        assert "total" in payload
+        assert "count" not in payload  # legacy field removed in #1007
+        assert payload["total"] == 0
+        assert pt.json_key in payload
+
+    def test_insight_items_payload_uses_total_with_named_item_key(self) -> None:
+        from polylogue.insights.registry import INSIGHT_REGISTRY, insight_items_payload
+
+        pt = next(iter(INSIGHT_REGISTRY.values()))
+        payload = insight_items_payload([], pt, item_key="items")
+        assert "total" in payload
+        assert "items" in payload
+        assert "count" not in payload
 
 
 # ---------------------------------------------------------------------------
@@ -395,20 +436,3 @@ class TestResourceErrorEnvelopes:
 
             result = invoke_surface(_resource(read_server, "polylogue://readiness"))
         _assert_structured_error(result, expected_code="internal_error")
-
-
-def test_insight_envelope_uses_count_not_total() -> None:
-    """``insight_items_payload`` returns ``{count: N, <key>: [...]}``.
-
-    This deliberately diverges from the search/list ``total`` convention.
-    Aligning the names is tracked at #1007 (would require coordinating
-    with every insight reader). Pinning the current shape here makes
-    any change deliberate rather than silent drift.
-    """
-    from polylogue.insights.registry import INSIGHT_REGISTRY, insight_items_payload
-
-    pt = next(iter(INSIGHT_REGISTRY.values()))
-    payload = insight_items_payload([], pt, item_key="items")
-    assert "count" in payload
-    assert "total" not in payload  # by design — change requires #1007
-    assert payload["count"] == 0

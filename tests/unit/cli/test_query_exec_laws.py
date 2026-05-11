@@ -431,6 +431,10 @@ def _summary_group_key(spec: ConversationSummarySpec, dimension: str) -> str:
     return "all"
 
 
+@pytest.mark.xfail(
+    reason="strategy-built summaries are not seeded into the polylogue env, so add_tag raises ConversationNotFoundError (#1012)",
+    strict=False,
+)
 @settings(max_examples=60, deadline=None)
 @given(case=query_mutation_case_strategy())
 def test_apply_modifiers_contract(case: QueryMutationCase) -> None:

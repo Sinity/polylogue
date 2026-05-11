@@ -105,7 +105,7 @@ def test_insight_items_payload_and_rendering_cover_json_plain_and_empty_paths() 
     insight_type = get_insight_type("provider_analytics")
 
     payload = insight_items_payload([insight], insight_type, item_key="items")
-    assert payload["count"] == 1
+    assert payload["total"] == 1
     assert payload["items"][0]["provider_name"] == "claude-code"
 
     with patch("polylogue.cli.shared.machine_errors.emit_success") as mock_emit:
