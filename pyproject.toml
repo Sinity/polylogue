@@ -131,6 +131,7 @@ markers = [
     "tui: marks Textual dashboard interaction tests",
     "chaos: marks ingestion hostility, interruption, and chronology tests",
     "live: marks operator-run live archive validation lanes",
+    "xdist_group(group_name): distribute parametrized tests within a file across workers (#1026)",
 ]
 filterwarnings = [
     "ignore::ResourceWarning",           # Unclosed sqlite3 connections in thread-local backend

@@ -4,7 +4,7 @@ from devtools.verify import build_verify_steps
 
 
 def test_quick_verify_omits_pytest() -> None:
-    steps = build_verify_steps(quick=True, lab=False)
+    steps = build_verify_steps(quick=True, lab=False, skip_slow=False)
 
     labels = [label for label, _command in steps]
     assert labels == [
@@ -27,14 +27,14 @@ def test_quick_verify_omits_pytest() -> None:
 
 
 def test_full_verify_includes_pytest() -> None:
-    steps = build_verify_steps(quick=False, lab=False)
+    steps = build_verify_steps(quick=False, lab=False, skip_slow=False)
 
     labels = [label for label, _command in steps]
     assert labels[-1] == "pytest"
 
 
 def test_lab_verify_delegates_to_lab_scenario() -> None:
-    steps = build_verify_steps(quick=True, lab=True)
+    steps = build_verify_steps(quick=True, lab=True, skip_slow=False)
 
     labels = [label for label, _command in steps]
     assert "lab scenario" in labels

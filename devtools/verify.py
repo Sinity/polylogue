@@ -40,7 +40,7 @@ def _run(label: str, cmd: list[str], *, cwd: str | None = None) -> int:
     return result.returncode
 
 
-def build_verify_steps(*, quick: bool, lab: bool) -> list[tuple[str, list[str]]]:
+def build_verify_steps(*, quick: bool, lab: bool, skip_slow: bool) -> list[tuple[str, list[str]]]:
     steps: list[tuple[str, list[str]]] = [
         ("ruff format", ["ruff", "format", "--check", "polylogue/", "tests/", "devtools/"]),
         ("ruff check", ["ruff", "check", "polylogue/", "tests/", "devtools/"]),
@@ -60,9 +60,10 @@ def build_verify_steps(*, quick: bool, lab: bool) -> list[tuple[str, list[str]]]
     ]
 
     if not quick:
-        steps.append(
-            ("pytest", ["pytest", "-q", "--tb=short", "--ignore=tests/integration"]),
-        )
+        pytest_cmd = ["pytest", "-q", "--tb=short", "--ignore=tests/integration"]
+        if skip_slow:
+            pytest_cmd.extend(["-m", "not slow"])
+        steps.append(("pytest", pytest_cmd))
 
     if lab:
         steps.append(("lab scenario", ["devtools", "lab-scenario", "run", "archive-smoke", "--tier", "0"]))
@@ -74,6 +75,11 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run the local verification baseline.")
     parser.add_argument("--quick", action="store_true", help="Skip pytest and run only fast local gates.")
     parser.add_argument(
+        "--skip-slow",
+        action="store_true",
+        help="Exclude @pytest.mark.slow tests from the pytest step.",
+    )
+    parser.add_argument(
         "--lab",
         action="store_true",
         help="Delegate additional domain proof checks through verification-lab commands.",
@@ -83,7 +89,7 @@ def main(argv: list[str] | None = None) -> int:
     sys.stderr.write("verify: running local verification baseline\n")
 
     exit_code = 0
-    steps = build_verify_steps(quick=bool(args.quick), lab=bool(args.lab))
+    steps = build_verify_steps(quick=bool(args.quick), lab=bool(args.lab), skip_slow=bool(args.skip_slow))
 
     for label, cmd in steps:
         rc = _run(label, cmd)
