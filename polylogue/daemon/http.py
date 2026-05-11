@@ -20,7 +20,9 @@ from polylogue.errors import PolylogueError
 from polylogue.logging import get_logger
 from polylogue.paths import db_path
 from polylogue.surfaces.payloads import (
+    MutationResultPayload,
     QueryErrorPayload,
+    QueryMissDiagnosticsPayload,
     _build_flags_from_conversation,
     _extract_cwd,
     _extract_repo,
@@ -506,11 +508,10 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         if not summaries and spec.has_filters():
             with contextlib.suppress(ImportError):
                 from polylogue.config import ConfigError
-                from polylogue.mcp.payloads import MCPQueryMissDiagnosticsPayload
 
                 try:
                     raw_diag = await poly.operations.diagnose_query_miss(spec)
-                    diagnostics = MCPQueryMissDiagnosticsPayload.from_diagnostics(raw_diag)
+                    diagnostics = QueryMissDiagnosticsPayload.from_diagnostics(raw_diag)
                 except ConfigError:
                     pass
 
@@ -553,7 +554,6 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
     ) -> object:
         """Return ranked search hits with match evidence for queries with search terms."""
         from polylogue.archive.query.search_hits import search_hits_for_plan
-        from polylogue.mcp.payloads import MCPQueryMissDiagnosticsPayload
 
         plan = spec.to_plan()
         hits = await search_hits_for_plan(plan, poly.repository)
@@ -564,7 +564,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             with contextlib.suppress(Exception):
                 try:
                     raw_diag = await poly.operations.diagnose_query_miss(spec)
-                    diagnostics = MCPQueryMissDiagnosticsPayload.from_diagnostics(raw_diag)
+                    diagnostics = QueryMissDiagnosticsPayload.from_diagnostics(raw_diag)
                 except Exception:
                     pass
 
@@ -864,7 +864,6 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         result = self._sync_run(lambda p: _do_reset())
 
         emit_daemon_event("reset", operation_id=op_id, payload=result if isinstance(result, dict) else None)
-        from polylogue.mcp.payloads import MutationResultPayload
 
         deleted = result.get("deleted", False) if isinstance(result, dict) else False
         response = MutationResultPayload(
