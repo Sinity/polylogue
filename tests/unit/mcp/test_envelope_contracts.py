@@ -143,7 +143,7 @@ class TestRegistryWideClassification:
 # ---------------------------------------------------------------------------
 
 
-def _typed_envelope_classes() -> dict[str, type[BaseModel]]:
+def _build_typed_envelope_classes() -> dict[str, type[BaseModel]]:
     from polylogue.mcp.payloads import (
         MCPMessagesListPayload,
         MCPNeighborCandidatesPayload,
@@ -163,12 +163,17 @@ def _typed_envelope_classes() -> dict[str, type[BaseModel]]:
     }
 
 
+# Build the mapping once at collection time so parametrize and the test
+# body share the same dict instead of importing payload classes per case.
+_TYPED_ENVELOPE_CLASSES: dict[str, type[BaseModel]] = _build_typed_envelope_classes()
+
+
 @pytest.mark.parametrize(
     ("tool_name", "expected_fields"),
     sorted(
         (name, fields)
         for name, kind in TOOL_CONTRACT.items()
-        if isinstance(kind, tuple) and kind[0] == "envelope" and name in _typed_envelope_classes()
+        if isinstance(kind, tuple) and kind[0] == "envelope" and name in _TYPED_ENVELOPE_CLASSES
         for fields in (kind[1],)
     ),
 )
@@ -180,7 +185,7 @@ def test_envelope_class_carries_required_fields(tool_name: str, expected_fields:
     typed payload class — their envelope shape is covered separately by
     :class:`TestInsightEnvelopeRuntimeSerialisation`.
     """
-    cls = _typed_envelope_classes()[tool_name]
+    cls = _TYPED_ENVELOPE_CLASSES[tool_name]
     fields = set(cls.model_fields.keys())
     missing = expected_fields - fields
     assert not missing, (
