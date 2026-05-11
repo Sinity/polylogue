@@ -132,7 +132,22 @@ def _generate_from_schema(
         variants = _schema_records(schema.get(keyword))
         if variants:
             non_null = [variant for variant in variants if variant.get("type") != "null"]
-            chosen = rng.choice(non_null) if non_null else rng.choice(variants)
+            candidates = non_null if non_null else variants
+
+            # Weight by x-polylogue-frequency when available on variants.
+            # Falls back to uniform when no variant carries the annotation
+            # (backward-compatible with un-annotated schemas).
+            weights: list[float] = []
+            for variant in candidates:
+                f = variant.get("x-polylogue-frequency")
+                weights.append(float(f) if isinstance(f, (int, float)) and f > 0 else 0.0)
+            if sum(weights) > 0:
+                # Normalize so random.choices treats them as relative weights
+                total = sum(weights)
+                weights = [w / total for w in weights]
+                chosen = rng.choices(candidates, weights=weights, k=1)[0]
+            else:
+                chosen = rng.choice(candidates)
             return self._generate_from_schema(
                 chosen,
                 rng,

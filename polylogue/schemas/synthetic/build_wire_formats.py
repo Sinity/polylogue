@@ -161,9 +161,39 @@ def _ensure_wire_claude_code(
     msg = _record_field(data, "message")
     msg.setdefault("role", role)
     if "content" not in msg:
-        msg["content"] = [{"type": "text", "text": _text_for_role(rng, role, turn_index=index, theme=theme)}]
+        msg["content"] = _claude_code_content_fallback(rng, role, index, theme)  # type: ignore[assignment]
     if "timestamp" not in data:
         data["timestamp"] = datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+
+
+def _claude_code_content_fallback(rng: random.Random, role: str, index: int, theme: ConversationTheme | None) -> object:
+    """Diverse content fallback matching production block-type distribution."""
+    block_type = rng.choices(
+        ["text", "tool_use", "tool_result", "thinking"],
+        weights=[0.25, 0.14, 0.57, 0.04],
+        k=1,
+    )[0]
+    if block_type == "text":
+        return [{"type": "text", "text": _text_for_role(rng, role, turn_index=index, theme=theme)}]
+    if block_type == "tool_use":
+        return [
+            {
+                "type": "tool_use",
+                "name": rng.choice(["Read", "Grep", "Bash", "Edit", "Write"]),
+                "id": str(uuid.UUID(int=rng.getrandbits(128), version=4)),
+                "input": {"query": _text_for_role(rng, role, turn_index=index, theme=theme)},
+            }
+        ]
+    if block_type == "tool_result":
+        return [
+            {
+                "type": "tool_result",
+                "tool_use_id": str(uuid.UUID(int=rng.getrandbits(128), version=4)),
+                "content": _text_for_role(rng, "assistant", turn_index=index, theme=theme),
+            }
+        ]
+    # thinking
+    return [{"type": "thinking", "thinking": _text_for_role(rng, role, turn_index=index, theme=theme)}]
 
 
 def _ensure_wire_codex(
@@ -179,12 +209,36 @@ def _ensure_wire_codex(
     data["type"] = "message"
     data.setdefault("role", role)
     if "content" not in data:
-        content_type = "input_text" if role == "user" else "output_text"
-        data["content"] = [{"type": content_type, "text": _text_for_role(rng, role, turn_index=index, theme=theme)}]
+        data["content"] = _codex_content_fallback(rng, role, index, theme)  # type: ignore[assignment]
     data.setdefault("id", str(uuid.UUID(int=rng.getrandbits(128), version=4)))
-    if "timestamp" not in data:
-        data["timestamp"] = datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
-    data.pop("payload", None)
+
+
+def _codex_content_fallback(rng: random.Random, role: str, index: int, theme: ConversationTheme | None) -> object:
+    """Diverse content fallback matching production block-type distribution."""
+    block_type = rng.choices(
+        ["text", "tool_use", "tool_result", "thinking"],
+        weights=[0.25, 0.14, 0.57, 0.04],
+        k=1,
+    )[0]
+    text = _text_for_role(rng, role, turn_index=index, theme=theme)
+    if block_type == "tool_use":
+        return [
+            {
+                "type": "tool_use",
+                "name": rng.choice(["Bash", "Read", "Write", "Grep", "Search"]),
+                "id": str(uuid.UUID(int=rng.getrandbits(128), version=4)),
+                "input": {"query": text},
+            }
+        ]
+    if block_type == "tool_result":
+        return [
+            {"type": "tool_result", "tool_use_id": str(uuid.UUID(int=rng.getrandbits(128), version=4)), "output": text}
+        ]
+    if block_type == "thinking":
+        return [{"type": "thinking", "thinking": text}]
+    # text (including the old input_text/output_text distinction for backward compat)
+    content_type = "input_text" if role == "user" else "output_text"
+    return [{"type": content_type, "text": text}]
 
 
 def _ensure_wire_gemini(
