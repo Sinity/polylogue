@@ -583,9 +583,9 @@ def seeded_db(tmp_path_factory: pytest.TempPathFactory, worker_id: str) -> Path:
         async def _seed() -> None:
             specs = build_default_corpus_specs(
                 providers=SyntheticCorpus.available_providers(),
-                count=3,
-                messages_min=4,
-                messages_max=11,
+                count=20,
+                messages_min=10,
+                messages_max=40,
                 seed=42,
                 origin="generated.test-seeded-db",
                 tags=("synthetic", "test", "seeded-db"),
@@ -646,15 +646,42 @@ def seeded_db(tmp_path_factory: pytest.TempPathFactory, worker_id: str) -> Path:
 
 @pytest.fixture
 def seeded_repository(seeded_db: Path) -> ConversationRepository:
-    """Repository backed by the seeded database.
+    """Repository backed by the shared read-only seeded database.
 
-    Use this when tests need a ConversationRepository with real provider data.
+    Tests that only read (query, search, stats, schema inspection) should
+    use this fixture.  The underlying database is shared across xdist
+    workers — do NOT write through this repository.
+
+    Use ``seeded_db_writable`` for tests that need to mutate data.
     """
     from polylogue.storage.repository import ConversationRepository
     from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
     backend = SQLiteBackend(db_path=seeded_db)
     return ConversationRepository(backend=backend)
+
+
+@pytest.fixture
+def seeded_db_writable(seeded_db: Path, tmp_path: Path) -> Path:
+    """Copy-on-write clone of the shared seeded database.
+
+    Returns a path to a private writable copy.  Tests that need to insert,
+    update, or delete rows should use this fixture so they don't corrupt
+    the shared read-only database used by all other workers.
+
+    The copy is cheap (~1-2 MB on tmpfs).
+    """
+    import shutil
+
+    dest = tmp_path / "polylogue-writable.db"
+    shutil.copy2(seeded_db, dest)
+    # Also copy WAL/SHM sidecars if they exist, though the shared DB is
+    # built with a clean checkpoint so they normally don't.
+    for suffix in ("-wal", "-shm"):
+        sidecar = seeded_db.with_suffix(seeded_db.suffix + suffix)
+        if sidecar.exists():
+            shutil.copy2(sidecar, dest.with_suffix(dest.suffix + suffix))
+    return dest
 
 
 # =============================================================================
