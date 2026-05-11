@@ -324,7 +324,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             self._handle_sources()
         elif len(path) == 3 and path[:2] == ["api", "conversations"] and path[2]:
             self._handle_get_conversation(path[2])
-        elif len(path) == 5 and path[:2] == ["api", "conversations"] and path[3] == "messages":
+        elif len(path) == 4 and path[:2] == ["api", "conversations"] and path[3] == "messages":
             self._handle_get_messages(path[2], params)
         elif len(path) == 4 and path[:2] == ["api", "conversations"] and path[3] == "raw":
             self._handle_get_conversation_raw(path[2])
