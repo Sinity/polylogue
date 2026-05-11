@@ -24,7 +24,7 @@ from polylogue.core.metrics import (
     read_peak_rss_self_mb,
 )
 from polylogue.core.provider_identity import canonical_acquisition_provider
-from polylogue.errors import SchemaIncompatibleError
+from polylogue.errors import DatabaseError, SchemaIncompatibleError
 from polylogue.logging import get_logger
 from polylogue.paths import blob_store_root
 from polylogue.pipeline.services.ingest_batch._core import (
@@ -60,7 +60,7 @@ from polylogue.sources.live.batch_support import (
     last_complete_newline_from_tail,
 )
 from polylogue.sources.live.cursor import CursorStore
-from polylogue.sources.live.dedup import handle_schema_incompatible
+from polylogue.sources.live.dedup import handle_schema_incompatible, handle_structural_database_error
 from polylogue.sources.live.metrics import LiveBatchMetrics
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.runtime import RawConversationRecord
@@ -279,6 +279,23 @@ class LiveBatchProcessor:
                     )
                     # Stop processing this batch entirely — every remaining
                     # source group would hit the same structural error.
+                    break
+                except DatabaseError as exc:
+                    handle_structural_database_error(source_name, exc)
+                    for path in grouped_paths:
+                        failed_paths.append(str(path))
+                    self._record_attempt_progress(
+                        attempt_id,
+                        phase="full_parse_failed",
+                        succeeded_file_count=len(succeeded_paths),
+                        failed_file_count=len(failed_paths),
+                        source_payload_read_bytes=source_payload_read_bytes,
+                        cursor_fingerprint_read_bytes=cursor_fingerprint_read_bytes,
+                        parse_time_s=parse_time_s,
+                        current_source=source_name,
+                        current_path=source_paths[0] if source_paths else None,
+                        error=str(exc),
+                    )
                     break
                 except Exception as exc:
                     logger.warning("live.watcher: batch failed for %s: %s", source_name, exc)
@@ -686,6 +703,8 @@ class LiveBatchProcessor:
         source_payload_read_bytes = 0
         fallback_provider = Provider.from_string(canonical_acquisition_provider(source_name, source_name=source_name))
 
+        self._assert_writable_archive_layout()
+
         for path in paths:
             try:
                 stat = path.stat()
@@ -859,6 +878,13 @@ class LiveBatchProcessor:
             raw_fingerprints={path: raw_id for raw_id, path in raw_by_id.items()},
             worker_count=int(getattr(summary, "worker_count", 0)) if raw_records else 0,
         )
+
+    def _assert_writable_archive_layout(self) -> None:
+        from polylogue.storage.sqlite.connection_profile import open_connection
+        from polylogue.storage.sqlite.schema import assert_supported_archive_layout
+
+        with open_connection(self._cursor._db_path, timeout=10.0) as conn:
+            assert_supported_archive_layout(conn)
 
     def _mark_excluded_cursor(self, path: Path, stat: object, *, source_name: str) -> None:
         st_size = int(getattr(stat, "st_size", 0))

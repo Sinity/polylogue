@@ -122,6 +122,65 @@ def test_schema_version_health_critical_when_db_ahead(
     assert "rebuild" in alert.message.lower() or "redeploy" in alert.message.lower()
 
 
+def test_schema_health_critical_when_source_name_is_generated(
+    workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Same user_version is not enough: generated source_name is not writable."""
+    db = workspace_env["archive_root"] / "polylogue.db"
+    db.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(db)
+    try:
+        conn.executescript(
+            f"""
+            CREATE TABLE raw_conversations (
+                raw_id TEXT PRIMARY KEY
+            );
+            CREATE TABLE conversations (
+                conversation_id TEXT PRIMARY KEY,
+                provider_meta TEXT,
+                source_name TEXT GENERATED ALWAYS AS (json_extract(provider_meta, '$.source')) STORED
+            );
+            PRAGMA user_version = {SCHEMA_VERSION};
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    monkeypatch.setattr("polylogue.daemon.health.db_path", lambda: db)
+
+    alert = _check_schema_version_fast()
+
+    assert alert.severity == HealthSeverity.CRITICAL
+    assert "generated conversations.source_name" in alert.message
+
+
+def test_ensure_schema_rejects_generated_source_name_layout(tmp_path: Path) -> None:
+    """Write-mode bootstrap rejects v12 databases with unwritable source_name."""
+    db = tmp_path / "generated-source-name.db"
+    conn = sqlite3.connect(db)
+    try:
+        conn.executescript(
+            f"""
+            CREATE TABLE raw_conversations (
+                raw_id TEXT PRIMARY KEY
+            );
+            CREATE TABLE conversations (
+                conversation_id TEXT PRIMARY KEY,
+                provider_meta TEXT,
+                source_name TEXT GENERATED ALWAYS AS (json_extract(provider_meta, '$.source')) STORED
+            );
+            PRAGMA user_version = {SCHEMA_VERSION};
+            """
+        )
+        conn.commit()
+
+        with pytest.raises(DatabaseError, match="generated conversations.source_name"):
+            _ensure_schema(conn)
+    finally:
+        conn.close()
+
+
 def test_schema_version_health_ok_when_no_database(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Fresh-install case: bootstrap will create at the right version."""
     monkeypatch.setattr("polylogue.daemon.health.db_path", lambda: tmp_path / "missing.db")
@@ -315,10 +374,10 @@ def test_handle_schema_incompatible_dedups_and_marks_degraded(monkeypatch: pytes
     refusal_warnings = [w for w in warnings if "refusing further ingest" in w[0]]
     assert len(refusal_warnings) == 1, warnings
     args = refusal_warnings[0][1]
-    # Args: (source_name, current_version, expected_version)
+    # Args include source name, version suffix, and error text.
     assert args[0] == "claude-code"
-    assert args[1] == 12
-    assert args[2] == 9
+    assert "db schema v12" in str(args[1])
+    assert "runtime expects v9" in str(args[1])
 
 
 @pytest.mark.asyncio
@@ -370,3 +429,52 @@ async def test_ingest_files_short_circuits_under_burst_after_degraded(
     # full-parse path because the degraded gate fired first.
     assert total_read == 0
     assert db_path.stat().st_size == db_size_before
+
+
+@pytest.mark.asyncio
+async def test_live_batch_marks_structural_database_error_degraded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A layout error stops future live batches instead of retrying per file."""
+    from polylogue.sources.live.batch import LiveBatchProcessor
+
+    f = tmp_path / "event.jsonl"
+    f.write_bytes(b'{"ok": true}\n')
+
+    db_path = tmp_path / "polylogue.db"
+    db_path.touch()
+    cursor = _StubCursor(db_path)
+
+    class _StubPolylogue:
+        archive_root = tmp_path
+        backend = None
+        config = None
+
+    sources_root = type("SourceRoot", (), {"name": "claude-code", "root": tmp_path})()
+    processor = LiveBatchProcessor(
+        _StubPolylogue(),  # type: ignore[arg-type]
+        [sources_root],
+        cursor=cursor,  # type: ignore[arg-type]
+        parser_fingerprint="test-fp",
+    )
+
+    monkeypatch.setattr(
+        processor,
+        "_assert_writable_archive_layout",
+        lambda: (_ for _ in ()).throw(DatabaseError("generated conversations.source_name layout")),
+    )
+
+    first = await processor.ingest_files([f])
+
+    assert first.failed_file_count == 1
+    assert first.source_payload_read_bytes == 0
+    assert is_degraded()
+    reason = degraded_reason()
+    assert reason is not None
+    assert reason.code == "database_layout_incompatible"
+
+    second = await processor.ingest_files([f])
+
+    assert second.source_payload_read_bytes == 0
+    assert second.full_file_count == 0
+    assert second.skipped_file_count == 1

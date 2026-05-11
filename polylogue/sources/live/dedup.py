@@ -12,10 +12,10 @@ guards against.
 from __future__ import annotations
 
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 
 from polylogue.core.degraded import DegradedReason, is_degraded, set_degraded
-from polylogue.errors import SchemaIncompatibleError
+from polylogue.errors import DatabaseError, SchemaIncompatibleError
 from polylogue.logging import get_logger
 
 SCHEMA_MISMATCH_DEDUP_WINDOW_S = 60.0
@@ -54,37 +54,53 @@ schema_warning_limiter = RateLimiter(SCHEMA_MISMATCH_DEDUP_WINDOW_S)
 _logger = get_logger("polylogue.sources.live.batch")
 
 
-def handle_schema_incompatible(source_name: str, exc: SchemaIncompatibleError) -> None:
+def handle_structural_database_error(source_name: str, exc: DatabaseError) -> None:
     """Log once per dedup window and put the daemon in degraded mode.
 
-    Schema-version mismatch is a structural condition that does not change
-    across consecutive inotify events. Logging at WARNING for every event
-    is what produced the journal flood and IOPS storm in #1003.
+    Schema/layout mismatch is a structural condition that does not change
+    across consecutive inotify events. Logging at WARNING for every event is
+    what produced the journal flood and IOPS storm in #1003.
     """
-    signature = f"schema_incompatible:{exc.current_version}->{exc.expected_version}"
+    detail: Mapping[str, object]
+    if isinstance(exc, SchemaIncompatibleError):
+        code = "schema_incompatible"
+        signature = f"{code}:{exc.current_version}->{exc.expected_version}"
+        detail = {
+            "current_version": exc.current_version,
+            "expected_version": exc.expected_version,
+        }
+        version_suffix = f" (db schema v{exc.current_version}, runtime expects v{exc.expected_version})"
+    else:
+        code = "database_layout_incompatible"
+        signature = f"{code}:{type(exc).__name__}:{str(exc)}"
+        detail = {"error": str(exc)}
+        version_suffix = ""
     if schema_warning_limiter.admit((source_name, signature)):
         _logger.warning(
-            "live.watcher: %s — refusing further ingest until restart (db schema v%s, runtime expects v%s)",
+            "live.watcher: %s — refusing further ingest until restart%s: %s",
             source_name,
-            exc.current_version,
-            exc.expected_version,
+            version_suffix,
+            exc,
         )
     if not is_degraded():
         set_degraded(
             DegradedReason(
-                code="schema_incompatible",
+                code=code,
                 message=str(exc),
-                detail={
-                    "current_version": exc.current_version,
-                    "expected_version": exc.expected_version,
-                },
+                detail=detail,
             )
         )
+
+
+def handle_schema_incompatible(source_name: str, exc: SchemaIncompatibleError) -> None:
+    """Compatibility wrapper for callers and tests naming the v-only case."""
+    handle_structural_database_error(source_name, exc)
 
 
 __all__ = [
     "SCHEMA_MISMATCH_DEDUP_WINDOW_S",
     "RateLimiter",
     "handle_schema_incompatible",
+    "handle_structural_database_error",
     "schema_warning_limiter",
 ]

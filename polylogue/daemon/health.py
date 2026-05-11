@@ -20,6 +20,7 @@ from enum import Enum
 
 from pydantic import BaseModel, Field
 
+from polylogue.errors import DatabaseError
 from polylogue.logging import get_logger
 from polylogue.paths import archive_root, db_path
 
@@ -315,7 +316,17 @@ def _check_schema_version_fast() -> HealthAlert:
         # bootstrap. Older versions for which an explicit upgrade plan exists
         # are NOT structurally incompatible — the next write-mode connection
         # applies the plan. Only ``version_mismatch`` (no plan) is fatal.
-        decision = decide_schema_bootstrap(snapshot)
+        try:
+            decision = decide_schema_bootstrap(snapshot)
+        except DatabaseError as exc:
+            return HealthAlert(
+                check_name="schema_version",
+                tier=HealthTier.FAST,
+                severity=HealthSeverity.CRITICAL,
+                message=f"schema layout incompatible with runtime v{SCHEMA_VERSION}: {exc}",
+                checked_at=now,
+                consecutive_failures=_record_failure("schema_version", False),
+            )
 
         if current == SCHEMA_VERSION:
             severity = HealthSeverity.OK

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal, TypeAlias
 
 import aiosqlite
@@ -47,12 +47,16 @@ class SchemaSnapshot:
     current_version: int
     table_columns: dict[str, frozenset[str]]
     index_sql: dict[str, str | None]
+    table_generated_columns: dict[str, frozenset[str]] = field(default_factory=dict)
 
     def has_table(self, table_name: str) -> bool:
         return table_name in self.table_columns
 
     def columns(self, table_name: str) -> frozenset[str]:
         return self.table_columns.get(table_name, frozenset())
+
+    def generated_columns(self, table_name: str) -> frozenset[str]:
+        return self.table_generated_columns.get(table_name, frozenset())
 
     def sql_for_index(self, index_name: str) -> str | None:
         return self.index_sql.get(index_name)
@@ -770,6 +774,12 @@ def assert_supported_archive_layout_snapshot(snapshot: SchemaSnapshot) -> None:
             "archive format. Move the database aside or run `polylogue reset --database` before re-importing."
         )
 
+    if "source_name" in snapshot.generated_columns("conversations"):
+        raise DatabaseError(
+            "Database uses the legacy generated conversations.source_name layout, but this runtime writes "
+            "source_name directly. Run the reviewed v12 layout repair or rebuild the archive before ingesting."
+        )
+
 
 def build_current_schema_extension_plan(snapshot: SchemaSnapshot) -> SchemaExtensionPlan:
     """Build the canonical extension sequence for current-version databases."""
@@ -1140,6 +1150,7 @@ def decide_schema_bootstrap(snapshot: SchemaSnapshot) -> SchemaBootstrapDecision
 def capture_schema_snapshot(conn: sqlite3.Connection) -> SchemaSnapshot:
     current_version = conn.execute("PRAGMA user_version").fetchone()[0]
     table_columns: dict[str, frozenset[str]] = {}
+    table_generated_columns: dict[str, frozenset[str]] = {}
     index_sql: dict[str, str | None] = {}
 
     for table_name in schema_extension_snapshot_tables():
@@ -1151,11 +1162,23 @@ def capture_schema_snapshot(conn: sqlite3.Connection) -> SchemaSnapshot:
             continue
         columns = {item[1] for item in conn.execute(f"PRAGMA table_info({table_name})").fetchall()}
         table_columns[table_name] = frozenset(columns)
+        generated_columns = {
+            item[1]
+            for item in conn.execute(f"PRAGMA table_xinfo({table_name})").fetchall()
+            if len(item) >= 7 and int(item[6] or 0) != 0
+        }
+        if generated_columns:
+            table_generated_columns[table_name] = frozenset(generated_columns)
 
     for index_name in schema_extension_snapshot_indexes():
         row = conn.execute("SELECT sql FROM sqlite_master WHERE type='index' AND name=?", (index_name,)).fetchone()
         index_sql[index_name] = row[0] if row and isinstance(row[0], str) else None
-    return SchemaSnapshot(current_version=current_version, table_columns=table_columns, index_sql=index_sql)
+    return SchemaSnapshot(
+        current_version=current_version,
+        table_columns=table_columns,
+        table_generated_columns=table_generated_columns,
+        index_sql=index_sql,
+    )
 
 
 async def capture_schema_snapshot_async(conn: aiosqlite.Connection) -> SchemaSnapshot:
@@ -1163,6 +1186,7 @@ async def capture_schema_snapshot_async(conn: aiosqlite.Connection) -> SchemaSna
     row = await cursor.fetchone()
     current_version = row[0] if row else 0
     table_columns: dict[str, frozenset[str]] = {}
+    table_generated_columns: dict[str, frozenset[str]] = {}
     index_sql: dict[str, str | None] = {}
 
     for table_name in schema_extension_snapshot_tables():
@@ -1176,12 +1200,21 @@ async def capture_schema_snapshot_async(conn: aiosqlite.Connection) -> SchemaSna
         cursor = await conn.execute(f"PRAGMA table_info({table_name})")
         columns = {item[1] for item in await cursor.fetchall()}
         table_columns[table_name] = frozenset(columns)
+        cursor = await conn.execute(f"PRAGMA table_xinfo({table_name})")
+        generated_columns = {item[1] for item in await cursor.fetchall() if len(item) >= 7 and int(item[6] or 0) != 0}
+        if generated_columns:
+            table_generated_columns[table_name] = frozenset(generated_columns)
 
     for index_name in schema_extension_snapshot_indexes():
         cursor = await conn.execute("SELECT sql FROM sqlite_master WHERE type='index' AND name=?", (index_name,))
         row = await cursor.fetchone()
         index_sql[index_name] = row[0] if row and isinstance(row[0], str) else None
-    return SchemaSnapshot(current_version=current_version, table_columns=table_columns, index_sql=index_sql)
+    return SchemaSnapshot(
+        current_version=current_version,
+        table_columns=table_columns,
+        table_generated_columns=table_generated_columns,
+        index_sql=index_sql,
+    )
 
 
 def apply_schema_extension_plan(conn: sqlite3.Connection, plan: SchemaExtensionPlan) -> None:
