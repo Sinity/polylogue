@@ -11,9 +11,17 @@ This is the documented reader visual smoke lane (see
 unit suite and ``devtools verify``; a separate ``devtools lab-scenario``
 entrypoint can be added later if Playwright-based screenshot evidence
 is bolted on.
+
+All test classes in this module start real HTTP servers — they share an
+xdist group to prevent cross-worker port/event-loop interference under
+parallel execution.
 """
 
 from __future__ import annotations
+
+import pytest
+
+pytestmark = pytest.mark.xdist_group("web-reader")
 
 import json
 import threading
