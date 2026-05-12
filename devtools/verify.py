@@ -287,11 +287,16 @@ def _read_cached_result(fp: str) -> dict[str, Any] | None:
     if not RESULT_CACHE.exists():
         return None
     try:
-        cached = json.loads(RESULT_CACHE.read_text())
+        raw: object = json.loads(RESULT_CACHE.read_text())
     except (json.JSONDecodeError, OSError):
         return None
+    if not isinstance(raw, dict):
+        return None
+    cached: dict[str, Any] = raw
     if cached.get("fingerprint") == fp:
-        return cached.get("result")
+        result: object = cached.get("result")
+        if isinstance(result, dict):
+            return result
     return None
 
 
@@ -341,8 +346,8 @@ def main(argv: list[str] | None = None) -> int:
         fp = _worktree_fingerprint()
         cached = _read_cached_result(fp)
         if cached is not None:
-            ec = cached.get("exit_code", 0)
-            dur = cached.get("total_duration_s", 0)
+            ec: int = cached.get("exit_code", 0)
+            dur: object = cached.get("total_duration_s", 0)
             if use_json:
                 _print_json(cached)
             elif ec == 0:
