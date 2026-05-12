@@ -38,18 +38,18 @@ dependencies = [
   "click>=8.3.3,<9.0",
   "tenacity>=8.0.0",
   "dateparser>=1.1.0",
-  "orjson>=3.11.8",
+  "orjson>=3.11.9",
   "structlog>=24.1.0",
   "pydantic>=2.0,<3.0",
   "aiosqlite>=0.19.0",  # Async SQLite support
-  "mcp>=1.27.0",  # Model Context Protocol SDK
+  "mcp>=1.27.1",  # Model Context Protocol SDK
   "pyyaml>=6.0",  # YAML output format
   "typing-extensions>=4.7",  # TypedDict that pydantic accepts on Py<3.12
   "watchfiles>=0.21",  # Rust-backed filesystem watcher for live ingestion
   "nh3>=0.2.18",  # Rust-backed HTML sanitizer (ammonia bindings) for defense-in-depth
   # Transitive constraints to avoid known CVEs surfaced by pip-audit:
   "cryptography>=48.0.0",  # CVE-2026-39892 (transitive via google-auth)
-  "python-multipart>=0.0.27",  # CVE-2026-40347 (transitive via mcp)
+  "python-multipart>=0.0.28",  # CVE-2026-40347 (transitive via mcp)
 ]
 
 [project.optional-dependencies]
@@ -61,7 +61,7 @@ dev = [
   "pytest-randomly>=3.0",  # Detect order-dependent tests; adds --randomly-seed
   "pytest-benchmark>=5.0",  # Microbenchmark suite (run with --benchmark-enable -p no:xdist)
   "coverage[toml]>=7.6",
-  "hypothesis>=6.152.4",
+  "hypothesis>=6.152.6",
   "hypothesis-jsonschema>=0.23.0",  # Generate test data from JSON schemas
   "genson>=1.2.0",  # Infer JSON schemas from samples
   "jsonschema>=4.0.0",  # Validate JSON against schemas
