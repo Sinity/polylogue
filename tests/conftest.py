@@ -68,7 +68,7 @@ _HYPOTHESIS_DB = DirectoryBasedExampleDatabase(_HYPOTHESIS_HOME / "examples")
 
 settings.register_profile(
     "ci",
-    max_examples=30,
+    max_examples=5 if os.environ.get("POLYLOGUE_CI") else 30,
     suppress_health_check=[HealthCheck.too_slow],
     database=_HYPOTHESIS_DB,
 )

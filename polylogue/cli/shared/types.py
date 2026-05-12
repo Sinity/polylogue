@@ -59,6 +59,8 @@ class AppEnv:
 
     @property
     def operations(self) -> ArchiveOperations:
+        from polylogue.operations import ArchiveOperations
+
         return ArchiveOperations.from_services(self.services)
 
     @property

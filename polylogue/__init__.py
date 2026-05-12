@@ -14,6 +14,7 @@ than being implied as part of the same root-level insight surface.
 
 from __future__ import annotations
 
+import importlib
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -26,6 +27,27 @@ if TYPE_CHECKING:
 
 
 def __getattr__(name: str) -> object:
+    lazy_submodules = {
+        "api",
+        "archive",
+        "config",
+        "daemon",
+        "insights",
+        "mcp",
+        "operations",
+        "pipeline",
+        "proof",
+        "rendering",
+        "scenarios",
+        "services",
+        "showcase",
+        "sources",
+        "storage",
+        "ui",
+    }
+    if name in lazy_submodules:
+        return importlib.import_module(f"polylogue.{name}")
+
     lazy_exports = {
         "ArchiveStats": ("polylogue.api", "ArchiveStats"),
         "Conversation": ("polylogue.archive.conversation.models", "Conversation"),

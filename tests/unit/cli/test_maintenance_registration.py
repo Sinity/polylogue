@@ -6,20 +6,26 @@ import click
 from click.testing import CliRunner
 
 from polylogue.cli.click_app import cli as root_cli
-from polylogue.cli.click_command_registration import maintenance_group
 from polylogue.cli.commands.maintenance import plan_command, run_command
+
+
+def _registered_maintenance_command() -> click.Command:
+    from polylogue.cli.click_command_registration import ROOT_COMMANDS
+
+    for command in ROOT_COMMANDS:
+        if command.name == "maintenance":
+            return command
+    raise AssertionError("maintenance command is not registered")
 
 
 def test_maintenance_group_in_root_commands() -> None:
     """maintenance_group is registered in ROOT_COMMANDS."""
-    from polylogue.cli.click_command_registration import ROOT_COMMANDS
-
-    assert maintenance_group in ROOT_COMMANDS
+    assert _registered_maintenance_command() is not None
 
 
 def test_maintenance_group_is_click_group() -> None:
     """maintenance_group is a Click Group."""
-    assert isinstance(maintenance_group, click.Group)
+    assert isinstance(_registered_maintenance_command(), click.Group)
 
 
 def test_maintenance_plan_is_click_command() -> None:
@@ -42,6 +48,7 @@ def test_maintenance_appears_in_help() -> None:
 
 def test_maintenance_group_has_plan_and_run() -> None:
     """maintenance group lists plan and run as subcommands."""
+    maintenance_group = _registered_maintenance_command()
     ctx = click.Context(maintenance_group)
     cmds = maintenance_group.list_commands(ctx)  # type: ignore[attr-defined]
     assert "plan" in cmds

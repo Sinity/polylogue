@@ -590,6 +590,10 @@ files:
     loc: 64
     target: polylogue/cli/click_command_registration.py
     owner: stable
+  - path: polylogue/cli/verb_names.py
+    loc: 25
+    target: polylogue/cli/verb_names.py
+    owner: stable
   - path: polylogue/cli/click_option_groups.py
     loc: 291
     target: polylogue/cli/click_option_groups.py

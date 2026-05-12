@@ -5,17 +5,19 @@ from __future__ import annotations
 import sys
 from collections.abc import Mapping
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from polylogue.config import Source, load_polylogue_config
-from polylogue.core.timestamps import format_timestamp
-from polylogue.pipeline.run_activity import conversation_activity_counts
-from polylogue.storage.cursor_state import CursorStatePayload
-from polylogue.storage.run_state import PlanCounts, PlanDetails, RunCounts
+if TYPE_CHECKING:
+    from polylogue.config import Source
+    from polylogue.storage.cursor_state import CursorStatePayload
+    from polylogue.storage.run_state import PlanCounts, PlanDetails, RunCounts
 
 _FALSEY_ENV_VALUES = frozenset({"0", "false", "no"})
 
 
 def plain_forced_by_env() -> bool:
+    from polylogue.config import load_polylogue_config
+
     return load_polylogue_config().force_plain
 
 
@@ -47,6 +49,8 @@ def format_cursors(cursors: Mapping[str, object] | dict[str, CursorStatePayload]
             latest_mtime = cursor.get("latest_mtime")
             latest_label = None
             if isinstance(latest_mtime, (int, float)):
+                from polylogue.core.timestamps import format_timestamp
+
                 latest_label = format_timestamp(int(latest_mtime))
             else:
                 latest_name = cursor.get("latest_file_name")
@@ -63,6 +67,8 @@ def format_cursors(cursors: Mapping[str, object] | dict[str, CursorStatePayload]
 
 
 def format_counts(counts: Mapping[str, object] | RunCounts) -> str:
+    from polylogue.pipeline.run_activity import conversation_activity_counts
+
     ordered_labels = [
         ("acquired", "acquired"),
         ("skipped", "skipped"),
@@ -101,6 +107,8 @@ def format_counts(counts: Mapping[str, object] | RunCounts) -> str:
 
 
 def format_run_details(counts: Mapping[str, object] | RunCounts) -> list[str]:
+    from polylogue.pipeline.run_activity import conversation_activity_counts
+
     lines: list[str] = []
     total_conv, new_conv, changed_conv = conversation_activity_counts(counts)
 

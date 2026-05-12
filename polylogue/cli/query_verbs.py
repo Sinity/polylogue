@@ -16,8 +16,7 @@ if TYPE_CHECKING:
 
 from polylogue.cli.click_option_groups import _LazyChoice  # noqa: F401
 from polylogue.cli.shared.types import AppEnv
-
-VERB_NAMES = frozenset({"list", "count", "stats", "open", "show", "bulk-export", "delete", "messages", "raw", "select"})
+from polylogue.cli.verb_names import VERB_NAMES
 
 
 # Deferred imports: RootModeRequest triggers the archive.query.spec →

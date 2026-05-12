@@ -18,7 +18,7 @@ def _split_query_mode_args(group: click.Group, args: list[str]) -> tuple[list[st
     Lives here (not in query.py) so that parse_args can use it without
     importing the heavy query.py module.
     """
-    from polylogue.cli.query_verbs import VERB_NAMES
+    from polylogue.cli.verb_names import VERB_NAMES
 
     option_arity = _option_arity(group)
     option_args: list[str] = []
@@ -56,13 +56,10 @@ def _option_arity(group: click.Group) -> dict[str, int]:
     """Return a mapping of long-option -> nargs for all root group params."""
     arity: dict[str, int] = {}
     for param in group.params:
-        if isinstance(param, click.Option):
-            n = param.nargs if param.nargs != 1 else 0
-            if param.name:
-                arity[f"--{param.name}"] = n
-            for opt in param.opts:
-                if opt.startswith("--"):
-                    arity[opt] = n
+        if isinstance(param, click.Option) and not param.is_flag:
+            n = param.nargs if param.nargs > 0 else 1
+            for opt in param.opts + param.secondary_opts:
+                arity[opt] = n
     return arity
 
 
@@ -79,8 +76,16 @@ def _find_root_option_after_verb(group: click.Group, verb: str, remaining: list[
         if isinstance(param, click.Option):
             for opt in param.opts:
                 root_opts.add(opt)
+    command = group.commands.get(verb)
+    command_opts: set[str] = set()
+    if command is not None:
+        ctx = click.Context(command)
+        for param in command.get_params(ctx):
+            if isinstance(param, click.Option):
+                command_opts.update(param.opts)
+                command_opts.update(param.secondary_opts)
     for arg in remaining:
-        if arg in root_opts:
+        if arg in root_opts and arg not in command_opts:
             return arg
     return None
 

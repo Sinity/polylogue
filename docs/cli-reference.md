@@ -128,38 +128,38 @@ Options:
   --plain                         Force non-interactive plain output
   -v, --verbose                   Verbose output
   --version                       Show the version and exit.
-  -h, --help                      Show this message and exit.
+  --help                          Show this message and exit.
 
 Commands:
-  auth          Authenticate with external services (Google Drive for...
-  backup        Back up the Polylogue archive database.
+  auth          Authenticate optional external services.
+  backup        Create a timestamped backup of the archive database.
   bulk-export   Bulk export every matched conversation in one process.
-  check         Health check with optional maintenance and cleanup previews.
-  completions   Generate shell completion scripts.
-  config        Show resolved Polylogue configuration with precedence...
-  context_pack  Build a provenance-rich context pack for agent analysis.
-  cost          Show subscription usage outlook and quota forecasting.
+  completions   Emit shell completion setup for polylogue.
+  config        Show configuration paths and resolved settings.
+  context-pack  Build a provenance-rich context pack for agent analysis.
+  cost          Summarize conversation cost telemetry.
   count         Print count of matched conversations.
-  dashboard     Launch the dashboard TUI.
+  dashboard     Open the local dashboard.
   delete        Delete matched conversations.
   diagnostics   Temporal session diagnostics
-  export        Export one known conversation by ID.
-  ingest        Schedule a file or directory for ingestion by the daemon.
-  insights      Inspect durable archive insights.
+  doctor        Run archive health checks and repairs.
+  export        Export conversations.
+  ingest        Import conversations from configured sources.
+  insights      Rebuild and inspect derived session insights.
   list          List matched conversations.
   maintenance   Preview and run maintenance backfill operations.
-  messages      Show paginated messages for a conversation.
-  neighbors     Show explainable neighboring or near-duplicate candidates.
+  messages      List messages from matched conversations.
+  neighbors     Show semantic neighbors for a conversation.
   open          Open matched conversation in the daemon web reader.
-  raw           Show raw archive artifacts for a conversation.
-  reset         Reset database, blob store, assets, cache, or auth state.
-  resume        Reconstruct work-state context for a fresh agent session.
-  schema        Inspect schema packages, versions, and evidence.
+  raw           Show raw archive payloads for matched conversations.
+  reset         Reset local archive state.
+  resume        Resume from recent conversation context.
+  schema        Inspect and audit provider schemas.
   select        Select one matched conversation and print a field.
   show          Show matched conversations with default full-content output.
   stats         Show statistics for matched conversations.
-  status        Show daemon and archive health.
-  tags          List all tags with conversation counts, or add/remove tags.
+  status        Show daemon and archive status.
+  tags          Manage conversation tags.
 ```
 
 ## List Verb
@@ -175,7 +175,7 @@ Options:
   --fields TEXT                   Fields: id, title, provider, date, messages,
                                   words, tags, summary
   -n, --limit INTEGER             Max results
-  -h, --help                      Show this message and exit.
+  --help                          Show this message and exit.
 ```
 
 ## Stats Verb
@@ -191,7 +191,7 @@ Options:
   -f, --format [markdown|json|html|obsidian|org|yaml|plaintext|csv]
                                   Output format
   -n, --limit INTEGER             Max matched conversations before grouping
-  -h, --help                      Show this message and exit.
+  --help                          Show this message and exit.
 ```
 
 ## Count Verb
@@ -202,7 +202,7 @@ Usage: polylogue count [OPTIONS]
   Print count of matched conversations.
 
 Options:
-  -h, --help  Show this message and exit.
+  --help  Show this message and exit.
 ```
 
 ## Open Verb
@@ -214,7 +214,7 @@ Usage: polylogue open [OPTIONS] [TARGET_TERMS]...
 
 Options:
   --print-url  Print the matched daemon web URL instead of opening it
-  -h, --help   Show this message and exit.
+  --help       Show this message and exit.
 ```
 
 ## Delete Verb
@@ -225,9 +225,9 @@ Usage: polylogue delete [OPTIONS]
   Delete matched conversations.
 
 Options:
-  --dry-run   Preview without deleting
-  --force     Skip confirmation
-  -h, --help  Show this message and exit.
+  --dry-run  Preview without deleting
+  --force    Skip confirmation
+  --help     Show this message and exit.
 ```
 
 ## Insights
@@ -238,7 +238,7 @@ Usage: polylogue insights [OPTIONS] COMMAND [ARGS]...
   Inspect durable archive insights.
 
 Options:
-  -h, --help  Show this message and exit.
+  --help  Show this message and exit.
 
 Commands:
   analytics       List provider-level analytics insights.
@@ -260,157 +260,63 @@ Commands:
 ## Doctor
 
 ```text
-Usage: polylogue [OPTIONS] COMMAND [ARGS]...
+Usage: polylogue doctor [OPTIONS]
 
-  Polylogue - AI conversation archive.
-
-  Query mode (default):
-      polylogue "search terms"
-      polylogue -p claude-ai --since "last week"
-      polylogue --latest --output browser
-
-  Verbs (actions on matched conversations):
-      polylogue "error" -p claude-ai --since 2025-01 list
-      polylogue --has thinking --sort tokens list --limit 10
-      polylogue -p chatgpt count
-      polylogue --provider codex stats --by provider
-      polylogue --latest open
-      polylogue "urgent" --tag review delete --dry-run
-      polylogue list --format json
-
-  Combined filters:
-      polylogue --referenced-path README.md --action file_read list
-      polylogue --action search --action file_edit list
-      polylogue --action-sequence file_read,file_edit,shell list
-      polylogue --action-text "pytest -q" list
-      polylogue "pytest -q tests/unit/core/test_semantic_facts.py" --retrieval-lane actions --limit 5
-      polylogue --action other stats --by tool --format json
-      polylogue --provider claude-code --since 2026-01-01 stats --by repo --format json
-      polylogue --tool bash --exclude-tool read list
-      polylogue --similar "sqlite locking bug in parser" --limit 5
-
-  Modifiers (write operations):
-      polylogue "urgent" --add-tag review
-
-  Run `polylogue <command> --help` for subcommand details.
+  Health check with optional maintenance and cleanup previews.
 
 Options:
-  -i, --id TEXT                   Conversation ID (exact or prefix match)
-  -c, --contains TEXT             FTS term (repeatable = AND)
-  --exclude-text TEXT             Exclude FTS term
-  --retrieval-lane LANE           Query lane: dialogue FTS, action text, or
-                                  hybrid
-  -p, --provider TEXT             Include providers (comma = OR)
-  --exclude-provider TEXT         Exclude providers
-  -r, --repo TEXT                 Filter by repository name (comma = OR)
-  -t, --tag TEXT                  Include tags (comma = OR, supports
-                                  key:value)
-  --exclude-tag TEXT              Exclude tags
-  --title TEXT                    Title contains
-  --referenced-path TEXT          Referenced file path contains substring
-                                  (repeatable = AND)
-  --cwd-prefix TEXT               Filter conversations whose recorded working
-                                  directory starts with this prefix
-  --action ACTION                 Require semantic action category (repeatable
-                                  = AND)
-  --exclude-action ACTION         Exclude semantic action category (repeatable
-                                  = AND)
-  --action-sequence TEXT          Require ordered semantic action subsequence
-                                  (comma-separated)
-  --action-text TEXT              Require text within normalized action
-                                  evidence (repeatable = AND)
-  --tool TEXT                     Require normalized tool name (repeatable =
-                                  AND)
-  --exclude-tool TEXT             Exclude normalized tool name (repeatable =
-                                  AND)
-  --similar TEXT                  Semantic similarity query (requires
-                                  embeddings)
-  --has TEXT                      Filter by content: thinking (reasoning),
-                                  tools (calls), summary, attachments
-  --has-tool-use                  Only conversations with tool use (SQL
-                                  pushdown)
-  --has-thinking                  Only conversations with thinking blocks (SQL
-                                  pushdown)
-  --has-paste                     Only conversations with pasted content (SQL
-                                  pushdown)
-  --typed-only                    Only conversations without pasted content
-                                  (typed prose only)
-  --min-messages INTEGER          Minimum message count
-  --max-messages INTEGER          Maximum message count
-  --min-words INTEGER             Minimum total word count
-  --message-type TYPE             Filter by message content type (message,
-                                  summary, tool_use, tool_result, thinking,
-                                  context, protocol)
-  --since-session TEXT            Show sessions in same cwd after this
-                                  conversation ID
-  --since TEXT                    After date (ISO, 'yesterday', 'last week')
-  --until TEXT                    Before date
-  -n, --limit INTEGER             Max results
-  --offset INTEGER                Offset for paginated results
-  --latest                        Most recent (= --sort date --limit 1)
-  --sort [date|tokens|messages|words|longest|random]
-                                  Sort by field
-  --reverse                       Reverse sort order
-  --sample INTEGER                Random sample of N conversations
-  -o, --output TEXT               Output destinations: browser, clipboard,
-                                  stdout (comma-separated)
-  -f, --format [markdown|json|html|obsidian|org|yaml|plaintext|csv]
-                                  Output format (for --latest, --stream, or
-                                  verb output)
-  --transform [strip-tools|strip-thinking|strip-all]
-                                  Remove content: strip-tools (tool calls),
-                                  strip-thinking (reasoning), strip-all (both)
-  --no-code-blocks                Exclude fenced and structured code blocks
-                                  from output
-  --no-tool-calls                 Exclude tool invocation records from output
-  --no-tool-outputs               Exclude tool-result payloads from output
-  --no-file-reads                 Exclude file-read payloads while keeping
-                                  other tool output
-  --prose-only                    Show only authored prose text
-  --stream                        Stream output (low memory). Requires
-                                  --latest or -i ID. Incompatible with
-                                  --transform
-  -d, --dialogue-only             Show only user/assistant messages
-  --message-role TEXT             Show only selected message roles (repeatable
-                                  or comma-separated: user, assistant, system,
-                                  tool, unknown)
-  --set TEXT...                   Set metadata key value
-  --add-tag TEXT                  Add tags (comma-separated)
-  --plain                         Force non-interactive plain output
-  -v, --verbose                   Verbose output
-  --version                       Show the version and exit.
-  -h, --help                      Show this message and exit.
-
-Commands:
-  auth          Authenticate with external services (Google Drive for...
-  backup        Back up the Polylogue archive database.
-  bulk-export   Bulk export every matched conversation in one process.
-  check         Health check with optional maintenance and cleanup previews.
-  completions   Generate shell completion scripts.
-  config        Show resolved Polylogue configuration with precedence...
-  context_pack  Build a provenance-rich context pack for agent analysis.
-  cost          Show subscription usage outlook and quota forecasting.
-  count         Print count of matched conversations.
-  dashboard     Launch the dashboard TUI.
-  delete        Delete matched conversations.
-  diagnostics   Temporal session diagnostics
-  export        Export one known conversation by ID.
-  ingest        Schedule a file or directory for ingestion by the daemon.
-  insights      Inspect durable archive insights.
-  list          List matched conversations.
-  maintenance   Preview and run maintenance backfill operations.
-  messages      Show paginated messages for a conversation.
-  neighbors     Show explainable neighboring or near-duplicate candidates.
-  open          Open matched conversation in the daemon web reader.
-  raw           Show raw archive artifacts for a conversation.
-  reset         Reset database, blob store, assets, cache, or auth state.
-  resume        Reconstruct work-state context for a fresh agent session.
-  schema        Inspect schema packages, versions, and evidence.
-  select        Select one matched conversation and print a field.
-  show          Show matched conversations with default full-content output.
-  stats         Show statistics for matched conversations.
-  status        Show daemon and archive health.
-  tags          List all tags with conversation counts, or add/remove tags.
+  --format [json]                 Output format
+  -v, --verbose                   Show breakdown by provider
+  --repair                        Run safe derived-data and database
+                                  maintenance repairs
+  --cleanup                       Run destructive archive cleanup for orphaned
+                                  or empty persisted data
+  --target [session_insights|action_event_read_model|dangling_fts|message_type_backfill|wal_checkpoint|orphaned_messages|orphaned_content_blocks|empty_conversations|orphaned_attachments|orphaned_blobs]
+                                  Limit maintenance to named targets such as
+                                  session_insights, action_event_read_model,
+                                  dangling_fts, message_type_backfill,
+                                  wal_checkpoint, orphaned_messages,
+                                  orphaned_content_blocks,
+                                  empty_conversations, orphaned_attachments,
+                                  or orphaned_blobs
+  --preview                       Preview maintenance without executing
+                                  (requires --repair or --cleanup)
+  --vacuum                        Reclaim unused space after maintenance
+                                  (requires --repair or --cleanup)
+  --deep                          Run SQLite integrity and expensive orphan
+                                  scans (slow on large databases)
+  --runtime                       Run environment and runtime verification
+                                  checks
+  --daemon                        Show daemon component status
+  --blob                          Verify blob store integrity
+                                  (missing/orphaned blobs)
+  --schemas                       Run raw-corpus schema verification (non-
+                                  mutating)
+  --proof                         Run durable artifact support proof
+  --artifacts                     List durable artifact observations
+  --cohorts                       Summarize durable artifact cohorts
+  --schema-provider TEXT          Limit schema verification to DB provider
+                                  name (repeatable)
+  --artifact-provider TEXT        Limit artifact proof/listing/cohorting to
+                                  effective provider (repeatable)
+  --artifact-status TEXT          Limit artifact listing/cohorting to support
+                                  status (repeatable)
+  --artifact-kind TEXT            Limit artifact listing/cohorting to artifact
+                                  kind (repeatable)
+  --artifact-limit INTEGER        Limit artifact proof/listing/cohorting to N
+                                  observation rows
+  --artifact-offset INTEGER       Start offset for artifact
+                                  proof/listing/cohorting  [default: 0]
+  --schema-samples TEXT           Validation samples per raw payload: positive
+                                  integer or 'all'  [default: all]
+  --schema-record-limit INTEGER   Limit schema verification to N raw records
+                                  (for chunked runs)
+  --schema-record-offset INTEGER  Start offset for chunked schema verification
+                                  [default: 0]
+  --schema-quarantine-malformed   Mark malformed raw payloads as failed
+                                  validation during schema verification
+                                  (mutates DB)
+  --help                          Show this message and exit.
 ```
 
 ## Tags
@@ -434,7 +340,7 @@ Options:
   -n, --count INTEGER  Show top N tags
   --add-tag TEXT       Add a tag to the given conversation
   --remove-tag TEXT    Remove a tag from the given conversation
-  -h, --help           Show this message and exit.
+  --help               Show this message and exit.
 ```
 
 ## Auth
@@ -453,7 +359,7 @@ Options:
   --service TEXT  Auth service (default: drive)
   --refresh       Force token refresh
   --revoke        Revoke existing credentials
-  -h, --help      Show this message and exit.
+  --help          Show this message and exit.
 ```
 
 ## Reset
@@ -480,7 +386,7 @@ Options:
   -y, --yes            Skip confirmation prompt
   --conversation TEXT  Tombstone a specific conversation by ID
   --source PATH        Tombstone all conversations from a source path
-  -h, --help           Show this message and exit.
+  --help               Show this message and exit.
 ```
 
 ## Schema
@@ -491,7 +397,7 @@ Usage: polylogue schema [OPTIONS] COMMAND [ARGS]...
   Inspect schema packages, versions, and evidence.
 
 Options:
-  -h, --help  Show this message and exit.
+  --help  Show this message and exit.
 
 Commands:
   compare  Compare two schema package versions for a provider.
@@ -508,7 +414,7 @@ Usage: polylogue completions [OPTIONS]
 
 Options:
   --shell [bash|zsh|fish]  [required]
-  -h, --help               Show this message and exit.
+  --help                   Show this message and exit.
 ```
 
 ## Dashboard
@@ -519,5 +425,5 @@ Usage: polylogue dashboard [OPTIONS]
   Launch the dashboard TUI.
 
 Options:
-  -h, --help  Show this message and exit.
+  --help  Show this message and exit.
 ```

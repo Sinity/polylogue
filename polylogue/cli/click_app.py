@@ -8,22 +8,23 @@ The CLI uses a hybrid structure:
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import click
 
-from polylogue.cli.click_command_registration import (
-    completions_command,
-    dashboard_command,
-    register_root_commands,
-)
+from polylogue.cli.click_command_registration import _LazyCommand, register_root_commands
 from polylogue.cli.click_option_groups import apply_query_mode_options
 from polylogue.cli.machine_main import extract_option as _extract_option
 from polylogue.cli.machine_main import run_machine_entry
 from polylogue.cli.query_group import QueryFirstGroupBase
-from polylogue.cli.query_verbs import QUERY_VERBS
 from polylogue.cli.shared.formatting import should_use_plain
 from polylogue.cli.shared.types import AppEnv
+from polylogue.cli.verb_names import QUERY_VERB_NAMES
 from polylogue.logging import configure_logging
 from polylogue.version import POLYLOGUE_VERSION
+
+if TYPE_CHECKING:
+    from polylogue.ui import UI
 
 
 class QueryFirstGroup(QueryFirstGroupBase):
@@ -53,6 +54,13 @@ def _show_stats(env: AppEnv, *, verbose: bool = False) -> None:
     from polylogue.cli.shared.helpers import print_summary
 
     print_summary(env, verbose=verbose)
+
+
+def create_ui(plain: bool) -> UI:
+    """Create the CLI UI without importing the UI stack during CLI definition."""
+    from polylogue.ui import create_ui as _create_ui
+
+    return _create_ui(plain)
 
 
 # Main CLI group with query-mode options
@@ -163,9 +171,6 @@ def cli(
     # Set up logging early so all output goes to stderr
     configure_logging(verbose=verbose)
 
-    # Set up environment
-    from polylogue.ui import create_ui
-
     use_plain = should_use_plain(plain=plain)
     env = AppEnv(ui=create_ui(use_plain))
     ctx.obj = env
@@ -173,8 +178,29 @@ def cli(
 
 register_root_commands(cli)
 
-for _verb in QUERY_VERBS:
-    cli.add_command(_verb)
+_QUERY_VERB_HELP: dict[str, str] = {
+    "bulk-export": "Bulk export every matched conversation in one process.",
+    "count": "Print count of matched conversations.",
+    "delete": "Delete matched conversations.",
+    "list": "List matched conversations.",
+    "messages": "List messages from matched conversations.",
+    "open": "Open matched conversation in the daemon web reader.",
+    "raw": "Show raw archive payloads for matched conversations.",
+    "select": "Select one matched conversation and print a field.",
+    "show": "Show matched conversations with default full-content output.",
+    "stats": "Show statistics for matched conversations.",
+}
+
+for _verb in sorted(QUERY_VERB_NAMES):
+    _attr = f"{_verb.replace('-', '_')}_verb"
+    cli.add_command(
+        _LazyCommand(
+            _verb,
+            "polylogue.cli.query_verbs",
+            _attr,
+            short_help=_QUERY_VERB_HELP.get(_verb),
+        )
+    )
 
 
 def main() -> None:
@@ -194,7 +220,5 @@ __all__ = [
     "_extract_option",
     "_handle_query_mode",
     "cli",
-    "completions_command",
-    "dashboard_command",
     "main",
 ]

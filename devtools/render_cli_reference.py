@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import argparse
-import os
-import subprocess
 import sys
+from functools import cache
 from pathlib import Path
+
+from click import Command, Context, Group
 
 from devtools.command_catalog import control_plane_command
 from devtools.render_support import write_if_changed
@@ -29,11 +30,35 @@ SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
 )
 
 
+class HelpRenderError(RuntimeError):
+    """Raised when live Click help rendering fails."""
+
+    def __init__(self, command: tuple[str, ...], output: str, exit_code: int) -> None:
+        super().__init__(" ".join(("polylogue", *command, "--help")))
+        self.command = command
+        self.output = output
+        self.exit_code = exit_code
+
+
+@cache
+def _cli() -> Command:
+    from polylogue.cli.click_app import cli
+
+    return cli
+
+
 def render_help(command: tuple[str, ...]) -> str:
-    argv = ["polylogue", "--plain", *command, "--help"]
-    env = {**os.environ, "POLYLOGUE_FORCE_PLAIN": "1"}
-    completed = subprocess.run(argv, check=True, capture_output=True, text=True, env=env)
-    return completed.stdout.rstrip()
+    current = _cli()
+    ctx = Context(current, info_name="polylogue")
+    for part in command:
+        if not isinstance(current, Group):
+            raise HelpRenderError(command, f"{current.name} is not a group", 2)
+        child = current.get_command(ctx, part)
+        if child is None:
+            raise HelpRenderError(command, f"unknown command: {part}", 2)
+        current = child
+        ctx = Context(current, info_name=part, parent=ctx)
+    return current.get_help(ctx).rstrip()
 
 
 def build_document(sections: list[tuple[str, str]]) -> str:
@@ -70,14 +95,10 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         sections = [(title, render_help(command)) for title, command in SECTIONS]
-    except FileNotFoundError:
-        print("render-cli-reference: `polylogue` not found in PATH", file=sys.stderr)
-        return 1
-    except subprocess.CalledProcessError as exc:
-        stderr = exc.stderr.strip() if exc.stderr else ""
-        detail = f": {stderr}" if stderr else ""
-        print(f"render-cli-reference: failed to render help for {' '.join(exc.cmd)}{detail}", file=sys.stderr)
-        return exc.returncode or 1
+    except HelpRenderError as exc:
+        detail = f": {exc.output.strip()}" if exc.output.strip() else ""
+        print(f"render-cli-reference: failed to render help for {exc}{detail}", file=sys.stderr)
+        return exc.exit_code or 1
 
     rendered = build_document(sections)
 

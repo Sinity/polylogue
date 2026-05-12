@@ -158,7 +158,89 @@ def _run(label: str, cmd: list[str], *, cwd: str | None = None) -> tuple[int, fl
 # ── step builder ────────────────────────────────────────────────────
 
 
-def build_verify_steps(*, quick: bool, lab: bool, skip_slow: bool, commit: bool = False) -> list[tuple[str, list[str]]]:
+def _changed_files_against_base() -> list[str] | None:
+    """Return files changed against origin/master plus untracked files."""
+    result = subprocess.run(
+        ["git", "diff", "--name-only", "origin/master...HEAD"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        result = subprocess.run(
+            ["git", "diff", "--name-only", "HEAD"],
+            capture_output=True,
+            text=True,
+        )
+    if result.returncode != 0:
+        return None
+    changed = [line for line in result.stdout.splitlines() if line.strip()]
+    untracked = subprocess.run(
+        ["git", "ls-files", "--others", "--exclude-standard"],
+        capture_output=True,
+        text=True,
+    )
+    if untracked.returncode == 0:
+        changed.extend(line for line in untracked.stdout.splitlines() if line.strip())
+    return sorted(set(changed))
+
+
+def _affected_test_files() -> list[str] | None:
+    """Return affected test files, [] for no pytest needed, or None for full pytest."""
+    changed = _changed_files_against_base()
+    if changed is None or not changed:
+        return None
+
+    broad_prefixes = (
+        "tests/conftest.py",
+        "tests/infra/",
+        "pyproject.toml",
+        "uv.lock",
+        "nix/",
+        "flake.",
+    )
+    if any(path == prefix or path.startswith(prefix) for path in changed for prefix in broad_prefixes):
+        return None
+
+    direct_tests = {path for path in changed if path.startswith("tests/") and path.endswith(".py")}
+
+    production_changes = [
+        path
+        for path in changed
+        if path.endswith(".py") and (path.startswith("polylogue/") or path.startswith("devtools/"))
+    ]
+    if not production_changes:
+        return sorted(direct_tests)
+
+    from devtools import verify_test_ownership
+
+    name_to_path = verify_test_ownership.production_module_names()
+    path_to_name = {path: name for name, path in name_to_path.items()}
+    changed_names = {path_to_name[path] for path in production_changes if path in path_to_name}
+    if not changed_names:
+        return None
+
+    affected = set(direct_tests)
+    for test_path in verify_test_ownership.test_files():
+        imports = verify_test_ownership.imports_in(test_path)
+        for imported in imports:
+            if any(
+                imported == name or imported.startswith(name + ".") or name.startswith(imported + ".")
+                for name in changed_names
+            ):
+                affected.add(test_path.relative_to(Path.cwd()).as_posix())
+                break
+
+    return sorted(affected) if affected else None
+
+
+def build_verify_steps(
+    *,
+    quick: bool,
+    lab: bool,
+    skip_slow: bool,
+    commit: bool = False,
+    affected_tests: list[str] | None = None,
+) -> list[tuple[str, list[str]]]:
     steps: list[tuple[str, list[str]]] = [
         ("ruff format", ["ruff", "format", "--check", "polylogue/", "tests/", "devtools/"]),
         ("ruff check", ["ruff", "check", "polylogue/", "tests/", "devtools/"]),
@@ -188,7 +270,12 @@ def build_verify_steps(*, quick: bool, lab: bool, skip_slow: bool, commit: bool 
         pytest_cmd = ["pytest", "-q", "--tb=short", "--ignore=tests/integration"]
         if skip_slow:
             pytest_cmd.extend(["-m", "not slow"])
-        steps.append(("pytest", pytest_cmd))
+        if affected_tests is not None:
+            if affected_tests:
+                pytest_cmd.extend(affected_tests)
+                steps.append(("pytest affected", pytest_cmd))
+        else:
+            steps.append(("pytest", pytest_cmd))
 
     if lab:
         steps.append(("lab scenario", ["devtools", "lab-scenario", "run", "archive-smoke", "--tier", "0"]))
@@ -257,22 +344,30 @@ RESULT_CACHE = Path(".cache/last-verify-result.json")
 
 
 def _worktree_fingerprint() -> str:
-    """Return a hash of HEAD + dirty file paths so unchanged worktrees
-    skip redundant verification entirely."""
+    """Return a hash of HEAD + dirty content so unchanged worktrees skip verify."""
     head = _git_head() or ""
     diff = subprocess.run(
-        ["git", "diff", "--name-only", "HEAD"],
+        ["git", "diff", "--binary", "HEAD"],
         capture_output=True,
         text=True,
     )
-    diff_files = diff.stdout.strip()
+    diff_payload = diff.stdout
     unstaged = subprocess.run(
         ["git", "ls-files", "--others", "--exclude-standard"],
         capture_output=True,
         text=True,
     )
-    untracked = unstaged.stdout.strip()
-    payload = f"{head}\n{diff_files}\n{untracked}"
+    untracked_payload = ""
+    if unstaged.returncode == 0:
+        chunks: list[str] = []
+        for raw_path in sorted(line for line in unstaged.stdout.splitlines() if line.strip()):
+            path = Path(raw_path)
+            chunks.append(raw_path)
+            if path.is_file():
+                with contextlib.suppress(OSError, UnicodeDecodeError):
+                    chunks.append(path.read_text(encoding="utf-8"))
+        untracked_payload = "\n".join(chunks)
+    payload = f"{head}\n{diff_payload}\n{untracked_payload}"
     return _hash_text(payload)
 
 
@@ -311,6 +406,10 @@ def _write_cached_result(fp: str, result: dict[str, Any]) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run the local verification baseline.")
     parser.add_argument("--quick", action="store_true", help="Skip pytest and run only fast local gates.")
+    parser.add_argument("--affected", action="store_true", help="Run only tests affected by changed files when known.")
+    parser.add_argument(
+        "--all", action="store_true", help="Force the full pytest baseline even with --affected defaults."
+    )
     parser.add_argument(
         "--commit", action="store_true", help="Pre-commit tier: format + lint + mypy + proof-pack only."
     )
@@ -337,6 +436,8 @@ def main(argv: list[str] | None = None) -> int:
         tier = "commit"
     elif args.quick:
         tier = "quick"
+    elif args.affected:
+        tier = "affected"
     elif args.lab:
         tier = "lab"
 
@@ -367,12 +468,17 @@ def main(argv: list[str] | None = None) -> int:
     if not args.quick and not args.commit:
         _warn_low_memory()
 
+    affected_tests = None
+    if args.affected and not args.all and not args.quick and not args.commit:
+        affected_tests = _affected_test_files()
+
     exit_code = 0
     steps = build_verify_steps(
         quick=bool(args.quick),
         commit=bool(args.commit),
         lab=bool(args.lab),
         skip_slow=bool(args.skip_slow),
+        affected_tests=affected_tests,
     )
 
     step_results: list[dict[str, Any]] = []

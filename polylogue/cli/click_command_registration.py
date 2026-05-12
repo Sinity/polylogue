@@ -1,10 +1,4 @@
-"""Command registration for the root Click application.
-
-Commands that pull in the heavy archive/storage/daemon import chain are
-loaded lazily so ``--help`` and tab-completion never pay the ~2.5 s
-startup cost.  Lightweight commands (no archive/storage/daemon deps)
-are imported eagerly so their Click metadata is available immediately.
-"""
+"""Lazy command registration for the root Click application."""
 
 from __future__ import annotations
 
@@ -12,25 +6,14 @@ import importlib
 
 import click
 
-# ── lightweight (eager) commands ────────────────────────────────────
-from polylogue.cli.commands.completions import completions_command
-from polylogue.cli.commands.config import config_command
-from polylogue.cli.commands.cost import cost_command
-from polylogue.cli.commands.dashboard import dashboard_command
-from polylogue.cli.commands.export import export_command
-from polylogue.cli.commands.neighbors import neighbors_command
-from polylogue.cli.commands.reset import reset_command
-from polylogue.cli.commands.resume import resume_command
-from polylogue.cli.commands.tags import tags_command
-
 # ── lazy-command wrapper ───────────────────────────────────────────
 
 
 class _LazyCommand(click.Command):
     """Click command that defers module import until invocation or help."""
 
-    def __init__(self, module: str, attr: str) -> None:
-        super().__init__(name=attr.replace("_command", "").replace("_group", ""))
+    def __init__(self, name: str, module: str, attr: str, *, short_help: str | None = None) -> None:
+        super().__init__(name=name, short_help=short_help)
         self.__lazy_module = module
         self.__lazy_attr = attr
         self.__resolved: click.Command | None = None
@@ -48,7 +31,7 @@ class _LazyCommand(click.Command):
         return self._resolve().get_help(ctx)
 
     def get_short_help_str(self, limit: int = 45) -> str:
-        return self._resolve().get_short_help_str(limit)
+        return super().get_short_help_str(limit)
 
     def get_params(self, ctx: click.Context) -> list[click.Parameter]:
         return self._resolve().get_params(ctx)
@@ -59,21 +42,76 @@ class _LazyCommand(click.Command):
     def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
         return self._resolve().parse_args(ctx, args)
 
-    def get_help_record(self, ctx: click.Context) -> tuple[str, str] | None:
-        return self._resolve().get_help_record(ctx)  # type: ignore[no-any-return,attr-defined]
-
     def shell_complete(self, ctx: click.Context, incomplete: str) -> list[click.shell_completion.CompletionItem]:
         return self._resolve().shell_complete(ctx, incomplete)
 
-    def list_commands(self, ctx: click.Context):  # type: ignore[no-untyped-def]
-        return self._resolve().list_commands(ctx)  # type: ignore[attr-defined]
+
+class _LazyGroup(_LazyCommand, click.Group):
+    """Lazy proxy for Click groups that need nested command dispatch."""
+
+    def get_command(self, ctx: click.Context, cmd_name: str) -> click.Command | None:
+        resolved = self._resolve()
+        if not isinstance(resolved, click.Group):
+            return None
+        return resolved.get_command(ctx, cmd_name)
+
+    def resolve_command(
+        self,
+        ctx: click.Context,
+        args: list[str],
+    ) -> tuple[str | None, click.Command | None, list[str]]:
+        resolved = self._resolve()
+        if not isinstance(resolved, click.Group):
+            return super().resolve_command(ctx, args)
+        return resolved.resolve_command(ctx, args)
+
+    def add_command(self, cmd: click.Command, name: str | None = None) -> None:
+        resolved = self._resolve()
+        if not isinstance(resolved, click.Group):
+            raise TypeError(f"{self.name} is not a Click group")
+        resolved.add_command(cmd, name)
+
+    def list_commands(self, ctx: click.Context) -> list[str]:
+        resolved = self._resolve()
+        if not isinstance(resolved, click.Group):
+            return []
+        return resolved.list_commands(ctx)
+
+
+_SHORT_HELP: dict[str, str] = {
+    "auth": "Authenticate optional external services.",
+    "backup": "Create a timestamped backup of the archive database.",
+    "check": "Run archive health checks and repairs.",
+    "completions": "Emit shell completion setup for polylogue.",
+    "config": "Show configuration paths and resolved settings.",
+    "context_pack": "Build a provenance-rich context pack for agent analysis.",
+    "cost": "Summarize conversation cost telemetry.",
+    "dashboard": "Open the local dashboard.",
+    "diagnostics": "Temporal session diagnostics",
+    "export": "Export conversations.",
+    "ingest": "Import conversations from configured sources.",
+    "insights": "Rebuild and inspect derived session insights.",
+    "maintenance": "Preview and run maintenance backfill operations.",
+    "neighbors": "Show semantic neighbors for a conversation.",
+    "reset": "Reset local archive state.",
+    "resume": "Resume from recent conversation context.",
+    "schema": "Inspect and audit provider schemas.",
+    "status": "Show daemon and archive status.",
+    "tags": "Manage conversation tags.",
+}
+
+_COMMAND_NAMES: dict[str, str] = {
+    "check": "doctor",
+}
 
 
 def _L(name: str) -> _LazyCommand:  # noqa: N802
     """Shorthand for constructing lazy commands in the ROOT_COMMANDS tuple."""
     module = f"polylogue.cli.commands.{name}"
     attr = f"{name}_group" if name in ("diagnostics", "maintenance") else f"{name}_command"
-    return _LazyCommand(module, attr)
+    command_name = _COMMAND_NAMES.get(name, name.replace("_", "-"))
+    cls = _LazyGroup if attr.endswith("_group") else _LazyCommand
+    return cls(command_name, module, attr, short_help=_SHORT_HELP.get(name))
 
 
 # ── command list ───────────────────────────────────────────────────
@@ -82,19 +120,19 @@ ROOT_COMMANDS: tuple[click.Command, ...] = (
     _L("context_pack"),
     _L("backup"),
     _L("check"),
-    config_command,
-    cost_command,
-    reset_command,
+    _L("config"),
+    _L("cost"),
+    _L("reset"),
     _L("status"),
     _L("ingest"),
     _L("auth"),
-    completions_command,
-    dashboard_command,
-    neighbors_command,
-    export_command,
-    resume_command,
+    _L("completions"),
+    _L("dashboard"),
+    _L("neighbors"),
+    _L("export"),
+    _L("resume"),
     _L("insights"),
-    tags_command,
+    _L("tags"),
     _L("schema"),
     _L("diagnostics"),
     _L("maintenance"),
@@ -107,16 +145,4 @@ def register_root_commands(group: click.Group) -> None:
         group.add_command(command)
 
 
-# Backward-compat aliases for callers that import individual commands
-# directly (tests).  These resolve lazily like the tuple entries above.
-maintenance_group: click.Command = _L("maintenance")
-
-__all__ = [
-    "completions_command",
-    "dashboard_command",
-    "export_command",
-    "maintenance_group",
-    "neighbors_command",
-    "register_root_commands",
-    "resume_command",
-]
+__all__ = ["register_root_commands"]
