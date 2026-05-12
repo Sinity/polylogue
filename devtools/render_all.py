@@ -1,11 +1,90 @@
-"""Refresh or verify generated repository surfaces."""
+"""Refresh or verify generated repository surfaces.
+
+Each surface declares its input files via ``GeneratedSurface.inputs``.
+Before rendering, a content hash of those files is compared against a
+stored stamp (``.cache/.render-<name>-stamp``). If the hash matches, the
+surface is skipped — its last render is still current.
+
+Independent surfaces render in parallel via a thread pool.
+"""
 
 from __future__ import annotations
 
 import argparse
+import contextlib
+import hashlib
 import sys
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 from devtools.generated_surfaces import GENERATED_SURFACES, GeneratedSurface
+
+CACHE_DIR = Path(".cache")
+
+
+def _surface_input_hash(surface: GeneratedSurface) -> str:
+    """SHA-256 of all files matched by the surface's input globs."""
+    h = hashlib.sha256()
+    for pattern in surface.inputs:
+        p = Path(pattern)
+        if p.is_file():
+            h.update(p.read_bytes())
+        elif p.is_dir():
+            for f in sorted(p.rglob("*.py")):
+                with contextlib.suppress(OSError):
+                    h.update(f.read_bytes())
+            for f in sorted(p.rglob("*.yaml")):
+                with contextlib.suppress(OSError):
+                    h.update(f.read_bytes())
+            for f in sorted(p.rglob("*.md")):
+                with contextlib.suppress(OSError):
+                    h.update(f.read_bytes())
+        elif "*" in pattern or "?" in pattern:
+            for f in sorted(Path().glob(pattern)):
+                if f.is_file():
+                    with contextlib.suppress(OSError):
+                        h.update(f.read_bytes())
+    return h.hexdigest()
+
+
+def _stamp_path(name: str) -> Path:
+    return CACHE_DIR / f".render-{name}-stamp"
+
+
+def _is_fresh(surface: GeneratedSurface) -> bool:
+    """Return True if the surface's rendered output is current."""
+    if not surface.inputs:
+        return False
+    stamp = _stamp_path(surface.name)
+    if not stamp.exists():
+        return False
+    try:
+        current_hash = _surface_input_hash(surface)
+        return stamp.read_text().strip() == current_hash
+    except OSError:
+        return False
+
+
+def _stamp(surface: GeneratedSurface) -> None:
+    """Record the current input hash after a successful render."""
+    if not surface.inputs:
+        return
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    _stamp_path(surface.name).write_text(_surface_input_hash(surface) + "\n")
+
+
+def _render_one(surface: GeneratedSurface, check: bool) -> int:
+    """Render or check a single surface. Returns exit code."""
+    if not check and _is_fresh(surface):
+        print(f"render-all: skip {surface.name} (inputs unchanged)", file=sys.stderr)
+        return 0
+
+    mode = "check" if check else "render"
+    print(f"render-all: {mode} {surface.name}", file=sys.stderr)
+    result = surface.main(["--check"] if check else [])
+    if result == 0 and not check:
+        _stamp(surface)
+    return result
 
 
 def _selected_surfaces(skip: set[str]) -> list[GeneratedSurface]:
@@ -34,12 +113,13 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     exit_code = 0
-    for surface in selected:
-        mode = "check" if args.check else "render"
-        print(f"render-all: {mode} {surface.name}", file=sys.stderr)
-        result = surface.main(["--check"] if args.check else [])
-        if result != 0:
-            exit_code = result if exit_code == 0 else exit_code
+    # Render independent surfaces in parallel.
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures = {pool.submit(_render_one, s, bool(args.check)): s for s in selected}
+        for future in futures:
+            result = future.result()
+            if result != 0:
+                exit_code = result if exit_code == 0 else exit_code
     return exit_code
 
 

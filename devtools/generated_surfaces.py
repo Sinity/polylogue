@@ -27,6 +27,7 @@ class GeneratedSurface:
     description: str
     command: tuple[str, ...]
     main: SurfaceMain
+    inputs: tuple[str, ...] = ()  # glob patterns whose content hash invalidates the render
 
 
 GENERATED_SURFACES: tuple[GeneratedSurface, ...] = (
@@ -36,6 +37,14 @@ GENERATED_SURFACES: tuple[GeneratedSurface, ...] = (
         description="Render AGENTS.md from the root CLAUDE transclusion surface.",
         command=control_plane_argv("render-agents"),
         main=render_agents.main,
+        inputs=(
+            "CLAUDE.md",
+            "CONTRIBUTING.md",
+            "TESTING.md",
+            "docs/architecture.md",
+            "docs/internals.md",
+            "docs/devtools.md",
+        ),
     ),
     GeneratedSurface(
         name="cli-reference",
@@ -43,6 +52,7 @@ GENERATED_SURFACES: tuple[GeneratedSurface, ...] = (
         description="Render docs/cli-reference.md from live CLI help.",
         command=control_plane_argv("render-cli-reference"),
         main=render_cli_reference.main,
+        inputs=("polylogue/cli/",),
     ),
     GeneratedSurface(
         name="devtools-reference",
@@ -50,6 +60,7 @@ GENERATED_SURFACES: tuple[GeneratedSurface, ...] = (
         description="Render the generated command catalog inside docs/devtools.md.",
         command=control_plane_argv("render-devtools-reference"),
         main=render_devtools_reference.main,
+        inputs=("devtools/command_catalog.py",),
     ),
     GeneratedSurface(
         name="quality-reference",
@@ -57,6 +68,7 @@ GENERATED_SURFACES: tuple[GeneratedSurface, ...] = (
         description="Render docs/test-quality-workflows.md from quality registries.",
         command=control_plane_argv("render-quality-reference"),
         main=render_quality_reference.main,
+        inputs=("devtools/run_validation_lanes.py", "pyproject.toml"),
     ),
     GeneratedSurface(
         name="verification-catalog",
@@ -64,6 +76,7 @@ GENERATED_SURFACES: tuple[GeneratedSurface, ...] = (
         description="Render docs/verification-catalog.md from proof-obligation registries.",
         command=control_plane_argv("render-verification-catalog"),
         main=render_verification_catalog.main,
+        inputs=("proof/",),
     ),
     GeneratedSurface(
         name="docs-surface",
@@ -71,6 +84,7 @@ GENERATED_SURFACES: tuple[GeneratedSurface, ...] = (
         description="Render docs/README.md and the generated docs table in README.md.",
         command=control_plane_argv("render-docs-surface"),
         main=render_docs_surface.main,
+        inputs=("docs/", "README.md"),
     ),
     GeneratedSurface(
         name="topology-status",
@@ -78,6 +92,7 @@ GENERATED_SURFACES: tuple[GeneratedSurface, ...] = (
         description="Render docs/topology-status.md from the topology projection and realized tree.",
         command=control_plane_argv("render-topology-status"),
         main=render_topology_status.main,
+        inputs=("docs/plans/topology-target.yaml",),
     ),
     GeneratedSurface(
         name="pages",
@@ -85,6 +100,7 @@ GENERATED_SURFACES: tuple[GeneratedSurface, ...] = (
         description="Build the GitHub Pages documentation site into .cache/site/.",
         command=control_plane_argv("render-pages"),
         main=render_pages.main,
+        inputs=("docs/", "README.md", "polylogue/", "pyproject.toml"),
     ),
 )
 
