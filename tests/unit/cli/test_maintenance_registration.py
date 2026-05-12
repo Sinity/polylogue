@@ -43,7 +43,7 @@ def test_maintenance_appears_in_help() -> None:
 def test_maintenance_group_has_plan_and_run() -> None:
     """maintenance group lists plan and run as subcommands."""
     ctx = click.Context(maintenance_group)
-    cmds = maintenance_group.list_commands(ctx)
+    cmds = maintenance_group.list_commands(ctx)  # type: ignore[attr-defined]
     assert "plan" in cmds
     assert "run" in cmds
 

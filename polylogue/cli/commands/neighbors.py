@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import click
 
-from polylogue.api.sync.bridge import run_coroutine_sync
-from polylogue.archive.conversation.neighbor_candidates import ConversationNeighborCandidate, NeighborDiscoveryError
+if TYPE_CHECKING:
+    from polylogue.archive.conversation.neighbor_candidates import ConversationNeighborCandidate
+
 from polylogue.cli.shared.helper_support import fail
 from polylogue.cli.shared.machine_errors import emit_success
 from polylogue.cli.shared.types import AppEnv
@@ -63,6 +66,8 @@ def neighbors_command(
     output_format: str | None,
 ) -> None:
     """Show explainable neighboring or near-duplicate candidates."""
+    from polylogue.api.sync.bridge import run_coroutine_sync
+
     if not conversation_id and not (query and query.strip()):
         fail("neighbors", "provide --id or --query")
 
@@ -76,7 +81,11 @@ def neighbors_command(
                 window_hours=max(1, window_hours),
             )
         )
-    except NeighborDiscoveryError as exc:
+    except Exception as exc:
+        from polylogue.archive.conversation.neighbor_candidates import NeighborDiscoveryError
+
+        if not isinstance(exc, NeighborDiscoveryError):
+            raise
         fail("neighbors", str(exc))
 
     if output_format == "json":

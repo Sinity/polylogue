@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import click
 
-from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.cli.shared.helper_support import fail
 from polylogue.cli.shared.insight_command_contracts import find_root_params
 from polylogue.cli.shared.machine_errors import emit_success
@@ -31,6 +30,8 @@ def resume_command(
     output_format: str | None,
 ) -> None:
     """Reconstruct work-state context for a fresh agent session."""
+    from polylogue.api.sync.bridge import run_coroutine_sync
+
     env: AppEnv = ctx.obj
     brief = run_coroutine_sync(
         env.operations.build_resume_brief(

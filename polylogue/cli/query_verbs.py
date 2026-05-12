@@ -6,20 +6,61 @@ a specific action on the matched conversations.
 
 from __future__ import annotations
 
-from typing import cast
+from collections.abc import Callable
+from typing import TYPE_CHECKING, cast
 
 import click
 
-from polylogue.archive.message.types import MessageType
-from polylogue.cli.root_request import RootModeRequest
+if TYPE_CHECKING:
+    from polylogue.cli.root_request import RootModeRequest
+
+from polylogue.cli.click_option_groups import _LazyChoice  # noqa: F401
 from polylogue.cli.shared.types import AppEnv
-from polylogue.cli.shell_completion_values import complete_open_targets, complete_query_source
 
 VERB_NAMES = frozenset({"list", "count", "stats", "open", "show", "bulk-export", "delete", "messages", "raw", "select"})
 
+
+# Deferred imports: RootModeRequest triggers the archive.query.spec →
+# operations.archive chain (~780 ms).  Only import it when a verb
+# actually executes, never during --help.
+def _get_root_request_class() -> object:  # pragma: no cover — returns RootModeRequest
+    from polylogue.cli.root_request import RootModeRequest
+
+    return RootModeRequest
+
+
+def _get_message_type_class() -> object:  # pragma: no cover — returns MessageType
+    from polylogue.archive.message.types import MessageType
+
+    return MessageType
+
+
+def _get_message_type_choices() -> list[str]:
+    return [m.value for m in _get_message_type_class()]  # type: ignore[attr-defined]
+
+
+def _lazy_open_targets() -> Callable[..., object]:
+    def _complete(ctx: click.Context, param: click.Parameter, incomplete: str):  # type: ignore[no-untyped-def]
+        from polylogue.cli.shell_completion_values import complete_open_targets
+
+        return complete_open_targets(ctx, param, incomplete)
+
+    return _complete
+
+
+def _lazy_shell_complete(source: str) -> Callable[..., object]:
+    def _complete(ctx: click.Context, param: click.Parameter, incomplete: str):  # type: ignore[no-untyped-def]
+        from polylogue.cli.shell_completion_values import complete_query_source
+
+        return complete_query_source(source)(ctx, param, incomplete)  # type: ignore[arg-type]
+
+    _complete.__name__ = f"complete_{source}"
+    return _complete
+
+
 _BULK_EXPORT_FORMATS = ("jsonl", "json", "markdown", "yaml", "plaintext", "html", "obsidian", "org")
-_complete_conversation_id = complete_query_source("conversation_id")
-_complete_message_type = complete_query_source("message_type")
+_complete_conversation_id = _lazy_shell_complete("conversation_id")
+_complete_message_type = _lazy_shell_complete("message_type")
 
 
 @click.command("list")
@@ -96,7 +137,7 @@ def show_verb(ctx: click.Context, target_terms: tuple[str, ...]) -> None:
 
 @click.command("open")
 @click.option("--print-url", is_flag=True, help="Print the matched daemon web URL instead of opening it")
-@click.argument("target_terms", nargs=-1, shell_complete=complete_open_targets)
+@click.argument("target_terms", nargs=-1, shell_complete=_lazy_open_targets())
 @click.pass_context
 def open_verb(ctx: click.Context, print_url: bool, target_terms: tuple[str, ...]) -> None:
     """Open matched conversation in the daemon web reader."""
@@ -157,7 +198,7 @@ def _parent_query_terms(ctx: click.Context) -> tuple[str, ...]:
 
 def _parent_request(ctx: click.Context) -> RootModeRequest:
     """Build the typed request from the parent query context."""
-    return RootModeRequest.from_context(_require_parent_context(ctx))
+    return _get_root_request_class().from_context(_require_parent_context(ctx))  # type: ignore[no-any-return,attr-defined]
 
 
 def _require_parent_context(ctx: click.Context) -> click.Context:
@@ -185,7 +226,7 @@ def _execute_query_verb(
 @click.option(
     "--message-type",
     "message_type",
-    type=click.Choice([message_type.value for message_type in MessageType]),
+    type=_LazyChoice(_get_message_type_choices, "type"),
     shell_complete=_complete_message_type,
     help="Filter by message content type",
 )

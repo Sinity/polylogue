@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import click
 
-from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.cli.shared.machine_errors import emit_success
 from polylogue.cli.shared.types import AppEnv
 
 
 def _resolve_id(env: AppEnv, raw: str) -> str | None:
     """Resolve a short or full conversation ID via get_conversation."""
+    from polylogue.api.sync.bridge import run_coroutine_sync
+
     conv = run_coroutine_sync(env.polylogue.get_conversation(raw))
     return str(conv.id) if conv is not None else None
 
@@ -45,6 +46,8 @@ def tags_command(
         polylogue tags conv:abc --add-tag tps  # Add a tag
         polylogue tags conv:abc --rm-tag tps   # Remove a tag
     """
+    from polylogue.api.sync.bridge import run_coroutine_sync
+
     if add_tag_name or remove_tag_name:
         if not conversation_id:
             raise click.UsageError("A conversation_id is required with --add-tag or --remove-tag")

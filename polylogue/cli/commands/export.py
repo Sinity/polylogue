@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import click
 
-from polylogue.api.sync.bridge import run_coroutine_sync
-from polylogue.archive.message.roles import normalize_message_roles
 from polylogue.cli.shared.helper_support import fail
 from polylogue.cli.shared.types import AppEnv
 from polylogue.rendering.formatting import CONVERSATION_OUTPUT_FORMATS, format_conversation
@@ -13,6 +11,8 @@ from polylogue.rendering.formatting import CONVERSATION_OUTPUT_FORMATS, format_c
 
 def _root_message_roles(ctx: click.Context) -> tuple[object, ...]:
     """Read the parent ``--message-role`` filter; honor ``--dialogue-only``."""
+    from polylogue.archive.message.roles import normalize_message_roles
+
     parent = ctx.parent
     if parent is None:
         return ()
@@ -41,6 +41,8 @@ def _root_message_roles(ctx: click.Context) -> tuple[object, ...]:
 @click.pass_context
 def export_command(ctx: click.Context, conversation_id: str, output_format: str, fields: str | None) -> None:
     """Export one known conversation by ID. IDs can use the provider:id-prefix form (e.g. claude-ai:abc123)."""
+    from polylogue.api.sync.bridge import run_coroutine_sync
+
     env: AppEnv = ctx.obj
     conversation = run_coroutine_sync(env.polylogue.get_conversation(conversation_id))
     if conversation is None:

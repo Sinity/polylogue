@@ -690,6 +690,10 @@ files:
     loc: 771
     target: polylogue/cli/query.py
     owner: stable
+  - path: polylogue/cli/query_group.py
+    loc: 112
+    target: polylogue/cli/query_group.py
+    owner: stable
   - path: polylogue/cli/query_actions.py
     loc: 219
     target: polylogue/cli/query_actions.py

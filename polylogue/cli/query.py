@@ -220,33 +220,10 @@ def handle_query_mode(
     execute_query_request(env, request)
 
 
-class QueryFirstGroupBase(click.Group):
-    """Custom Click group that routes to query mode by default."""
-
-    def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
-        """Parse args, preserving raw query terms instead of rewriting them as hidden options."""
-        parse_args, query_terms, has_subcommand = _split_query_mode_args(self, args)
-        ctx.meta["polylogue_has_subcommand"] = has_subcommand
-        if not has_subcommand:
-            ctx.meta["polylogue_query_terms"] = query_terms
-        return list(super().parse_args(ctx, parse_args))
-
-    def invoke(self, ctx: click.Context) -> object:
-        """Invoke the group, dispatching to query or stats mode if no subcommand."""
-        if ctx.meta.get("polylogue_has_subcommand", False):
-            return super().invoke(ctx)
-
-        assert self.callback is not None, "QueryFirstGroup requires a callback"
-        with ctx:
-            ctx.invoke(self.callback, **ctx.params)
-
-        self.handle_default_mode(ctx)
-        return None
-
-    def handle_default_mode(self, ctx: click.Context) -> None:
-        """Dispatch no-subcommand mode for subclasses."""
-        raise NotImplementedError
-
+# Re-exported from the lightweight query_group module so that
+# click_app can import the base class without pulling in the full
+# archive/storage/operations import chain.
+from polylogue.cli.query_group import QueryFirstGroupBase  # noqa: F401, E402, F811
 
 # ---------------------------------------------------------------------------
 # Query execution (original query.py)

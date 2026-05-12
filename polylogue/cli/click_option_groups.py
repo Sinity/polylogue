@@ -1,4 +1,9 @@
-"""Grouped query-mode option decorators for the root CLI."""
+"""Grouped query-mode option decorators for the root CLI.
+
+Heavy imports (archive.message.types, archive.query.spec, query_contracts,
+shell_completion_values) are deferred inside the functions that need them
+so that ``--help`` and simple subcommands never pay the storage import cost.
+"""
 
 from __future__ import annotations
 
@@ -7,26 +12,78 @@ from typing import TypeAlias
 
 import click
 
-from polylogue.archive.message.types import MessageType
-from polylogue.archive.query.spec import QUERY_ACTION_TYPES, QUERY_RETRIEVAL_LANES
-from polylogue.cli.query_contracts import normalize_message_role_option
-from polylogue.cli.shell_completion_values import complete_query_source
 from polylogue.core.provider_identity import CORE_SCHEMA_PROVIDERS
 
 ClickCallable: TypeAlias = Callable[..., object]
 
 # Providers the user can filter by (excludes "unknown" and "drive" which are internal).
 _CLI_PROVIDER_CHOICES: tuple[str, ...] = CORE_SCHEMA_PROVIDERS
-_complete_action = complete_query_source("action")
-_complete_action_sequence = complete_query_source("action_sequence")
-_complete_conversation_id = complete_query_source("conversation_id")
-_complete_cwd_prefix = complete_query_source("cwd_prefix")
-_complete_message_type = complete_query_source("message_type")
-_complete_provider = complete_query_source("provider")
-_complete_repo = complete_query_source("repo")
-_complete_retrieval_lane = complete_query_source("retrieval_lane")
-_complete_tag = complete_query_source("tag")
-_complete_tool = complete_query_source("tool")
+
+
+def _lazy_shell_complete(source: str) -> Callable[..., object]:
+    """Return a shell-completion callback that imports the completion machinery lazily."""
+
+    def _complete(ctx: click.Context, param: click.Parameter, incomplete: str):  # type: ignore[no-untyped-def]
+        from polylogue.cli.shell_completion_values import complete_query_source
+
+        return complete_query_source(source)(ctx, param, incomplete)  # type: ignore[arg-type]
+
+    _complete.__name__ = f"complete_{source}"
+    return _complete
+
+
+_complete_action = _lazy_shell_complete("action")
+_complete_action_sequence = _lazy_shell_complete("action_sequence")
+_complete_conversation_id = _lazy_shell_complete("conversation_id")
+_complete_cwd_prefix = _lazy_shell_complete("cwd_prefix")
+_complete_message_type = _lazy_shell_complete("message_type")
+_complete_provider = _lazy_shell_complete("provider")
+_complete_repo = _lazy_shell_complete("repo")
+_complete_retrieval_lane = _lazy_shell_complete("retrieval_lane")
+_complete_tag = _lazy_shell_complete("tag")
+_complete_tool = _lazy_shell_complete("tool")
+
+
+class _LazyChoice(click.Choice):  # type: ignore[type-arg]
+    """Click Choice that resolves its options list on first access."""
+
+    def __init__(self, loader: Callable[[], list[str]], name: str = "") -> None:
+        super().__init__([name])  # placeholder — replaced on first resolve
+        self._loader = loader
+        self._name = name
+        self._resolved = False
+
+    def _resolve(self) -> None:
+        if not self._resolved:
+            self.choices = self._loader()
+            self._resolved = True
+
+    def convert(self, value: object, param: click.Parameter | None, ctx: click.Context | None) -> object:
+        self._resolve()
+        return super().convert(value, param, ctx)
+
+    def get_metavar(self, param: click.Parameter, ctx: click.Context | None = None) -> str:
+        if self._name:
+            return self._name.upper()
+        return "TEXT"
+
+
+def _load_message_types() -> list[str]:
+    from polylogue.archive.message.types import MessageType
+
+    return [m.value for m in MessageType]
+
+
+def _load_retrieval_lanes() -> list[str]:
+    from polylogue.archive.query.spec import QUERY_RETRIEVAL_LANES
+
+    return list(QUERY_RETRIEVAL_LANES)
+
+
+def _load_action_types() -> list[str]:
+    from polylogue.archive.query.spec import QUERY_ACTION_TYPES
+
+    return list(QUERY_ACTION_TYPES)
 
 
 def _validate_provider_tokens(
@@ -53,6 +110,8 @@ def _validate_message_role_tokens(
     value: tuple[str, ...],
 ) -> tuple[str, ...]:
     try:
+        from polylogue.cli.query_contracts import normalize_message_role_option
+
         return normalize_message_role_option(value)
     except ValueError as exc:
         raise click.BadParameter(str(exc), param_hint="--message-role") from exc
@@ -70,7 +129,7 @@ FILTER_OPTION_DECORATORS: tuple[Callable[[ClickCallable], ClickCallable], ...] =
     click.option("--exclude-text", multiple=True, help="Exclude FTS term"),
     click.option(
         "--retrieval-lane",
-        type=click.Choice(QUERY_RETRIEVAL_LANES),
+        type=_LazyChoice(_load_retrieval_lanes, "lane"),
         help="Query lane: dialogue FTS, action text, or hybrid",
         shell_complete=_complete_retrieval_lane,
     ),
@@ -112,14 +171,14 @@ FILTER_OPTION_DECORATORS: tuple[Callable[[ClickCallable], ClickCallable], ...] =
     click.option(
         "--action",
         multiple=True,
-        type=click.Choice(QUERY_ACTION_TYPES),
+        type=_LazyChoice(_load_action_types, "action"),
         help="Require semantic action category (repeatable = AND)",
         shell_complete=_complete_action,
     ),
     click.option(
         "--exclude-action",
         multiple=True,
-        type=click.Choice(QUERY_ACTION_TYPES),
+        type=_LazyChoice(_load_action_types, "action"),
         help="Exclude semantic action category (repeatable = AND)",
         shell_complete=_complete_action,
     ),
@@ -182,7 +241,7 @@ FILTER_OPTION_DECORATORS: tuple[Callable[[ClickCallable], ClickCallable], ...] =
     click.option(
         "--message-type",
         "message_type",
-        type=click.Choice([message_type.value for message_type in MessageType]),
+        type=_LazyChoice(_load_message_types, "type"),
         help="Filter by message content type (message, summary, tool_use, tool_result, thinking, context, protocol)",
         shell_complete=_complete_message_type,
     ),
