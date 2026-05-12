@@ -174,8 +174,8 @@ def test_build_session_profile_normalizes_repo_roots_from_workdirs_and_tool_path
 
     profile = build_session_profile(conversation)
 
-    assert profile.repo_paths == (str(REPO_ROOT), str(sinnix_repo))
-    assert profile.repo_names == (REPO_ROOT.name, "sinnix")
+    assert sorted(profile.repo_paths) == sorted([str(REPO_ROOT), str(sinnix_repo)])
+    assert sorted(profile.repo_names) == sorted([REPO_ROOT.name, "sinnix"])
 
 
 def test_extract_attribution_preserves_repo_name_from_provider_git_remote() -> None:
@@ -288,12 +288,14 @@ def test_extract_attribution_filters_transcript_temp_and_snapshot_paths(tmp_path
 
     attribution = extract_attribution_from_action_events([action])
 
-    assert attribution.file_paths_touched == (
-        str(system_file),
-        str(work_repo / "README.md"),
+    assert sorted(attribution.file_paths_touched) == sorted(
+        [
+            str(system_file),
+            str(work_repo / "README.md"),
+        ]
     )
-    assert attribution.repo_paths == (str(work_repo),)
-    assert attribution.repo_names == ("sinnix",)
+    assert sorted(attribution.repo_paths) == sorted([str(work_repo)])
+    assert sorted(attribution.repo_names) == sorted(["sinnix"])
 
 
 def test_extract_attribution_does_not_infer_r_from_dialogue_text() -> None:

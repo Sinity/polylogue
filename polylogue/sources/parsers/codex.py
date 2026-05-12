@@ -408,12 +408,18 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedConvers
             timestamp_pair = _timestamp_pair(_record_timestamp(message_record))
             timestamp = timestamp_pair[1] if timestamp_pair is not None else None
 
-            if not raw_role or raw_role == "unknown" or not text:
+            content_blocks = content_blocks_from_segments(content)
+            has_structured = any(
+                cb.type in (ContentBlockType.TOOL_USE, ContentBlockType.TOOL_RESULT, ContentBlockType.THINKING)
+                for cb in content_blocks
+            )
+            if not raw_role or raw_role == "unknown":
+                continue
+            if not text and not has_structured:
                 continue
             role = Role.normalize(raw_role)
 
             msg_id = _record_id(message_record) or f"msg-{idx}"
-            content_blocks = content_blocks_from_segments(content)
             if not content_blocks and text:
                 from .base import ParsedContentBlock
 

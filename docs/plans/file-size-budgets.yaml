@@ -75,7 +75,11 @@ exceptions:
 
   - path: polylogue/storage/sqlite/schema_bootstrap.py
     ceiling: 1300
-    reason: "added v9→v10 provider-meta promotion migration (#864)"
+    reason: "added v9→v10 provider-meta promotion migration (#864) and v6 upgrade assertion relaxation"
+
+  - path: polylogue/sources/live/batch.py
+    ceiling: 1150
+    reason: "live ingestion batch processor with metrics, fingerprinting, and multi-stage progress tracking"
 
   - path: tests/unit/storage/test_backend.py
     ceiling: 1750

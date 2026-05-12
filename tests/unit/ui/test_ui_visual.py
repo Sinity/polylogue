@@ -728,7 +728,7 @@ async def test_markdown_structure_comprehensive(
 def normalize_markdown(text: str) -> str:
     """Normalize markdown for comparison (handle whitespace differences)."""
     text = text.replace("\r\n", "\n")
-    text = re.sub(r"/tmp/(?:nix-shell\.[^/]+/)?pytest-of-[^)>\s]+", "$TMPDIR", text)
+    text = re.sub(r"(?:/tmp|/dev/shm)/(?:nix-shell\.[^/]+/)?(?:pytest-of-|pytest-polylogue/)[^)>\s]+", "$TMPDIR", text)
     lines = [line.rstrip() for line in text.split("\n")]
     return "\n".join(lines).strip() + "\n"
 

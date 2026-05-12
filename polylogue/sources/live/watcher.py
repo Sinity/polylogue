@@ -128,6 +128,7 @@ class LiveWatcher:
                 files.extend(p for p in source.root.rglob(f"*{suffix}") if p.is_file())
         if not files:
             return
+        files.sort()
         logger.info("live.watcher: catch-up scan over %d file(s)", len(files))
         cursor_records = self._cursor.get_records(files)
         needed: list[Path] = []

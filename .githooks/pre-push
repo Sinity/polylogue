@@ -9,6 +9,12 @@
 
 set -euo pipefail
 
+# Pre-flight: ensure devtools is available before attempting verification.
+if ! devtools --help >/dev/null 2>&1; then
+    echo "pre-push: devtools is not importable; enter the project devshell (nix develop) first." >&2
+    exit 2
+fi
+
 STAMP_FILE=".cache/last-verify-head"
 
 if [[ -f "$STAMP_FILE" ]]; then

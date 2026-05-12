@@ -294,7 +294,19 @@ def test_claude_code_message_type_contract(msg: JSONDocument) -> None:
     if isinstance(message, dict):
         inner_role = message.get("role")
     if isinstance(inner_role, str) and inner_role in {"user", "assistant", "system", "tool"}:
-        assert parsed.role == inner_role
+        # reclassify_tool_result_envelope may override role to "tool"
+        # when content contains tool_result blocks, even if message.role
+        # says "user" or "assistant".
+        raw_content = message.get("content") if isinstance(message, dict) else None
+        content_list = raw_content if isinstance(raw_content, list) else []
+        if any(
+            isinstance(block, dict) and block.get("type") == "tool_result"
+            for block in content_list
+            if isinstance(block, dict)
+        ):
+            assert parsed.role in {inner_role, "tool"}
+        else:
+            assert parsed.role == inner_role
     elif msg.get("type") == "user":
         assert parsed.role == "user"
     elif msg.get("type") == "assistant":

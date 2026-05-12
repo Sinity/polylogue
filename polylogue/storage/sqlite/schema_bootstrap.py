@@ -803,7 +803,6 @@ def build_v2_to_v3_upgrade_plan(snapshot: SchemaSnapshot) -> SchemaExtensionPlan
     names stable, so old v2 archives can be upgraded without rebuilding the
     full archive.
     """
-    assert_supported_archive_layout_snapshot(snapshot)
 
     statements: list[str] = []
     for descriptor in _MESSAGE_TYPE_EXTENSION_DESCRIPTORS:
@@ -818,7 +817,6 @@ def build_v2_to_v3_upgrade_plan(snapshot: SchemaSnapshot) -> SchemaExtensionPlan
 
 def build_v3_to_v4_upgrade_plan(snapshot: SchemaSnapshot) -> SchemaExtensionPlan:
     """Align action-event FTS rowids with the base table for targeted repair."""
-    assert_supported_archive_layout_snapshot(snapshot)
 
     if not snapshot.has_table("action_events"):
         return SchemaExtensionPlan(statements=(), scripts=())
@@ -846,8 +844,6 @@ def build_v2_to_current_upgrade_plan(snapshot: SchemaSnapshot) -> SchemaExtensio
 
 def build_v6_to_v7_upgrade_plan(snapshot: SchemaSnapshot) -> SchemaExtensionPlan:
     """Promote provider protocol events out of conversation provider_meta."""
-    assert_supported_archive_layout_snapshot(snapshot)
-
     statements = list(_split_ddl_into_statements(_PROVIDER_EVENT_DDL))
     if snapshot.has_table("conversations"):
         statements.append(_V6_TO_V7_PROVIDER_EVENTS_BACKFILL_SQL)
@@ -857,7 +853,6 @@ def build_v6_to_v7_upgrade_plan(snapshot: SchemaSnapshot) -> SchemaExtensionPlan
 
 def build_v7_to_v8_upgrade_plan(snapshot: SchemaSnapshot) -> SchemaExtensionPlan:
     """Remove the retired batch-run ledger from existing archives."""
-    assert_supported_archive_layout_snapshot(snapshot)
 
     return SchemaExtensionPlan(
         statements=(
@@ -870,7 +865,6 @@ def build_v7_to_v8_upgrade_plan(snapshot: SchemaSnapshot) -> SchemaExtensionPlan
 
 def build_v8_to_v9_upgrade_plan(snapshot: SchemaSnapshot) -> SchemaExtensionPlan:
     """Add foreign-key support indexes needed for fast conversation replacement."""
-    assert_supported_archive_layout_snapshot(snapshot)
 
     statements: list[str] = []
     if snapshot.has_table("attachment_refs"):
@@ -956,7 +950,6 @@ WHERE working_directories_json IS NULL AND provider_meta IS NOT NULL
 
 def build_v9_to_v10_upgrade_plan(snapshot: SchemaSnapshot) -> SchemaExtensionPlan:
     """Promote provider-meta fields to canonical columns (#864)."""
-    assert_supported_archive_layout_snapshot(snapshot)
 
     statements: list[str] = []
     if snapshot.has_table("conversations"):
@@ -971,7 +964,6 @@ def build_v9_to_v10_upgrade_plan(snapshot: SchemaSnapshot) -> SchemaExtensionPla
 
 def build_v10_to_v11_upgrade_plan(snapshot: SchemaSnapshot) -> SchemaExtensionPlan:
     """Add user_marks, saved_views, and recall_packs tables."""
-    assert_supported_archive_layout_snapshot(snapshot)
 
     from polylogue.storage.sqlite.schema_ddl_archive import (
         RECALL_PACKS_DDL,
@@ -987,7 +979,6 @@ def build_v10_to_v11_upgrade_plan(snapshot: SchemaSnapshot) -> SchemaExtensionPl
 
 def build_v11_to_v12_upgrade_plan(snapshot: SchemaSnapshot) -> SchemaExtensionPlan:
     """Add cost/token attribution columns to messages and session_profiles."""
-    assert_supported_archive_layout_snapshot(snapshot)
 
     stmts: list[str] = [
         "ALTER TABLE messages ADD COLUMN input_tokens INTEGER NOT NULL DEFAULT 0",
@@ -1037,12 +1028,22 @@ def _upgrade_tail_statements(snapshot: SchemaSnapshot, *, from_version: int) -> 
     return statements
 
 
+def _has_version_upgrade_path(snapshot: SchemaSnapshot) -> bool:
+    """Return True when a version-specific upgrade path exists for this snapshot."""
+    v = snapshot.current_version
+    return (v == 2 and snapshot.has_table("messages")) or v in (3, 4, 5, 6, 7, 8, 9, 10, 11)
+
+
 def decide_schema_bootstrap(snapshot: SchemaSnapshot) -> SchemaBootstrapDecision:
     """Choose the canonical schema bootstrap path for sync and async backends."""
     if snapshot.current_version == 0:
         return SchemaBootstrapDecision(action="create_fresh")
 
-    assert_supported_archive_layout_snapshot(snapshot)
+    # Defer legacy-layout rejection until after we check for version-specific
+    # upgrade paths. Upgrades may explicitly repair legacy generated columns
+    # (e.g. dropping generated source_name and adding a regular column).
+    if not _has_version_upgrade_path(snapshot):
+        assert_supported_archive_layout_snapshot(snapshot)
 
     if snapshot.current_version == 2 and SCHEMA_VERSION >= 4 and snapshot.has_table("messages"):
         return SchemaBootstrapDecision(

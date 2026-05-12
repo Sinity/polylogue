@@ -211,13 +211,18 @@ def _ensure_wire_codex(
     if "content" not in data:
         data["content"] = _codex_content_fallback(rng, role, index, theme)  # type: ignore[assignment]
     data.setdefault("id", str(uuid.UUID(int=rng.getrandbits(128), version=4)))
+    # Strip schema-generated payload envelope so the parser reads the
+    # top-level role/content directly. Without this, _effective_role finds
+    # the payload dict but no role inside it, returns "unknown", and the
+    # message is silently dropped.
+    data.pop("payload", None)
 
 
 def _codex_content_fallback(rng: random.Random, role: str, index: int, theme: ConversationTheme | None) -> object:
     """Diverse content fallback matching production block-type distribution."""
     block_type = rng.choices(
         ["text", "tool_use", "tool_result", "thinking"],
-        weights=[0.25, 0.14, 0.57, 0.04],
+        weights=[0.45, 0.20, 0.30, 0.05],
         k=1,
     )[0]
     text = _text_for_role(rng, role, turn_index=index, theme=theme)
@@ -232,7 +237,12 @@ def _codex_content_fallback(rng: random.Random, role: str, index: int, theme: Co
         ]
     if block_type == "tool_result":
         return [
-            {"type": "tool_result", "tool_use_id": str(uuid.UUID(int=rng.getrandbits(128), version=4)), "output": text}
+            {
+                "type": "tool_result",
+                "tool_use_id": str(uuid.UUID(int=rng.getrandbits(128), version=4)),
+                "content": text,
+                "text": text,
+            }
         ]
     if block_type == "thinking":
         return [{"type": "thinking", "thinking": text}]

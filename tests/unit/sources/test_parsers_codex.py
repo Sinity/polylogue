@@ -235,8 +235,10 @@ class TestMessageParsing:
             },
         ]
         result = parse(payload, "fallback")
-        # Message has no text content → skipped
-        assert len(result.messages) == 0
+        # Message has structured content (tool_use) → now preserved even
+        # without text, since tool_use/tool_result/thinking blocks are
+        # independently meaningful.
+        assert len(result.messages) == 1
 
     def test_message_role_normalization(self) -> None:
         """Roles are normalized via Role.normalize()."""
