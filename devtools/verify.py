@@ -251,6 +251,55 @@ def _stamp_head() -> None:
     (stamp_dir / "last-verify-head").write_text(head + "\n")
 
 
+# ── worktree-fingerprint result cache ──────────────────────────────
+
+RESULT_CACHE = Path(".cache/last-verify-result.json")
+
+
+def _worktree_fingerprint() -> str:
+    """Return a hash of HEAD + dirty file paths so unchanged worktrees
+    skip redundant verification entirely."""
+    head = _git_head() or ""
+    diff = subprocess.run(
+        ["git", "diff", "--name-only", "HEAD"],
+        capture_output=True,
+        text=True,
+    )
+    diff_files = diff.stdout.strip()
+    unstaged = subprocess.run(
+        ["git", "ls-files", "--others", "--exclude-standard"],
+        capture_output=True,
+        text=True,
+    )
+    untracked = unstaged.stdout.strip()
+    payload = f"{head}\n{diff_files}\n{untracked}"
+    return _hash_text(payload)
+
+
+def _hash_text(text: str) -> str:
+    import hashlib
+
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def _read_cached_result(fp: str) -> dict[str, Any] | None:
+    """Return the cached result if the worktree fingerprint matches, else None."""
+    if not RESULT_CACHE.exists():
+        return None
+    try:
+        cached = json.loads(RESULT_CACHE.read_text())
+    except (json.JSONDecodeError, OSError):
+        return None
+    if cached.get("fingerprint") == fp:
+        return cached.get("result")
+    return None
+
+
+def _write_cached_result(fp: str, result: dict[str, Any]) -> None:
+    RESULT_CACHE.parent.mkdir(parents=True, exist_ok=True)
+    RESULT_CACHE.write_text(json.dumps({"fingerprint": fp, "result": result}, ensure_ascii=False) + "\n")
+
+
 # ── main ────────────────────────────────────────────────────────────
 
 
@@ -268,6 +317,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--history", action="store_true", help="Print last 10 verify runs and exit.")
     parser.add_argument("--json", action="store_true", default=None, help="Write structured JSON to stdout.")
+    parser.add_argument("--force", action="store_true", help="Bypass worktree-fingerprint cache and re-verify.")
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
 
     if args.history:
@@ -284,6 +334,23 @@ def main(argv: list[str] | None = None) -> int:
         tier = "quick"
     elif args.lab:
         tier = "lab"
+
+    # Worktree-fingerprint cache: if nothing changed since last verify,
+    # replay the cached result instantly instead of re-running tests.
+    if not args.commit and not args.quick and not args.lab and not args.force:
+        fp = _worktree_fingerprint()
+        cached = _read_cached_result(fp)
+        if cached is not None:
+            ec = cached.get("exit_code", 0)
+            dur = cached.get("total_duration_s", 0)
+            if use_json:
+                _print_json(cached)
+            elif ec == 0:
+                sys.stderr.write(f"verify: HEAD already verified ({dur:.0f}s cached); nothing to do.\n")
+            else:
+                failed = [s["name"] for s in cached.get("steps", []) if s["exit"] != 0]
+                sys.stderr.write(f"verify: HEAD unchanged — cached failures: {', '.join(failed)}\n")
+            return ec
 
     head = _git_head()
     t0 = time.monotonic()
@@ -342,10 +409,15 @@ def main(argv: list[str] | None = None) -> int:
         else:
             sys.stderr.write(f"\nverify: FAILED ({total_duration:.1f}s) — fix before pushing\n")
 
-    # Persist history and stamp.
+    # Persist history, stamp, and worktree-fingerprint cache.
     _save_history(history_entry)
     if exit_code == 0:
         _stamp_head()
+    # Cache the result keyed by worktree fingerprint — next invocation
+    # at the same tree state replays this instantly.
+    if not args.commit and not args.quick and not args.lab:
+        fp = _worktree_fingerprint()
+        _write_cached_result(fp, history_entry)
 
     # Notify on long-running verify.
     if total_duration > 30:
