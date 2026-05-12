@@ -87,7 +87,7 @@ Issues and PR bodies are durable artifacts. Write them for a reader who
 has no conversation context — they should stand alone. Include file
 paths, acceptance criteria, and design references where applicable.
 
-<!-- begin include: /tmp/polylogue-hot-session/CONTRIBUTING.md -->
+<!-- begin include: CONTRIBUTING.md -->
 # Contributing
 
 ## Development Environment
@@ -337,8 +337,8 @@ The PR title becomes the squash-merge subject on `master`. Rules:
 - ≤72 characters, conventional prefix, imperative mood
 - Describes what changed, not what was worked on
 - Accurate — do not claim alignment or unification unless the diff achieves it
-<!-- end include: /tmp/polylogue-hot-session/CONTRIBUTING.md -->
-<!-- begin include: /tmp/polylogue-hot-session/TESTING.md -->
+<!-- end include: CONTRIBUTING.md -->
+<!-- begin include: TESTING.md -->
 # Testing
 
 All commands below assume you are inside the project devshell. See
@@ -448,8 +448,8 @@ Never delete:
   shapes.
 - **`tests/unit/security/`**: Security boundary tests.
 
-<!-- end include: /tmp/polylogue-hot-session/TESTING.md -->
-<!-- begin include: /tmp/polylogue-hot-session/docs/architecture.md -->
+<!-- end include: TESTING.md -->
+<!-- begin include: docs/architecture.md -->
 # Polylogue Architecture
 
 Polylogue is a local archive for AI conversations. The system has four rings:
@@ -673,8 +673,8 @@ attachments, exports):
 - New semantics go into substrate or insights first, then surfaces adapt.
 - Proof subjects and claims live in `proof/`; devtools commands that exercise
   them live in `devtools/`.
-<!-- end include: /tmp/polylogue-hot-session/docs/architecture.md -->
-<!-- begin include: /tmp/polylogue-hot-session/docs/internals.md -->
+<!-- end include: docs/architecture.md -->
+<!-- begin include: docs/internals.md -->
 # Internals Reference
 
 Working map of the live codebase: invariants, hot files, extension points, and
@@ -881,8 +881,8 @@ devtools lab-scenario verify-baselines
 - `.cache/`: disposable caches (hypothesis, pytest, mypy, ruff)
 - `.local/`: untracked outputs (campaigns, showcases, build artifacts)
 - `.local/result`: out-link for `devtools build-package`
-<!-- end include: /tmp/polylogue-hot-session/docs/internals.md -->
-<!-- begin include: /tmp/polylogue-hot-session/docs/devtools.md -->
+<!-- end include: docs/internals.md -->
+<!-- begin include: docs/devtools.md -->
 # Developer Tools
 
 Use `devtools` for routine repository maintenance. Call individual
@@ -985,6 +985,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools affected-obligations` | Route changed paths or refs to affected verification-lab proof obligations and focused checks. |
 | `devtools artifact-graph` | Render the runtime artifact, operation, and scenario-coverage map. |
 | `devtools coverage-gate` | Run pytest with the repository coverage floor from pyproject.toml. |
+| `devtools daemon-workload-probe` | Inspect daemon ingest workload, convergence debt, and hot query plans. |
 | `devtools lab-corpus` | Generate verification-lab synthetic corpus fixtures and demo archives. |
 | `devtools lab-scenario` | Run verification-lab showcase scenario sets and baseline checks. |
 | `devtools obligation-diff` | Diff proof obligations between two git refs to surface affected assurance domains. |
@@ -1057,4 +1058,4 @@ Campaign outputs live under `.local/`, not in tracked docs trees.
 
 Keep new repo-local outputs in `.cache/` or `.local/` instead of adding new
 top-level output roots.
-<!-- end include: /tmp/polylogue-hot-session/docs/devtools.md -->
+<!-- end include: docs/devtools.md -->
