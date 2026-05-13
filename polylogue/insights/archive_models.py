@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field
+from collections.abc import Mapping
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from polylogue.archive.session.documents import SessionPhaseDocument, WorkEventDocument
 
@@ -95,6 +98,16 @@ class SessionInferencePayload(ArchiveInsightModel):
     work_events: tuple[WorkEventDocument, ...] = ()
     phases: tuple[SessionPhaseDocument, ...] = ()
 
+    @field_validator("work_events", mode="before")
+    @classmethod
+    def _normalize_work_event_documents(cls, value: object) -> object:
+        return _normalize_timed_documents(value)
+
+    @field_validator("phases", mode="before")
+    @classmethod
+    def _normalize_phase_documents(cls, value: object) -> object:
+        return _normalize_timed_documents(value)
+
 
 class WorkEventEvidencePayload(ArchiveInsightModel):
     start_index: int
@@ -147,6 +160,46 @@ class SessionEnrichmentPayload(ArchiveInsightModel):
     support_level: str = "weak"
     support_signals: tuple[str, ...] = ()
     input_band_summary: dict[str, int] = Field(default_factory=dict)
+
+
+def _normalize_timed_documents(value: object) -> object:
+    if not isinstance(value, list | tuple):
+        return value
+    return tuple(_normalize_timed_document(item) for item in value)
+
+
+def _normalize_timed_document(value: object) -> object:
+    if not isinstance(value, Mapping):
+        return value
+    document: dict[str, Any] = dict(value)
+    start_time = _optional_str(document.get("start_time"))
+    end_time = _optional_str(document.get("end_time"))
+    canonical_session_date = _optional_str(document.get("canonical_session_date"))
+    document.setdefault("timing_provenance", _range_timing_provenance(start_time, end_time))
+    document.setdefault("date_provenance", _date_provenance(canonical_session_date, start_time, end_time))
+    return document
+
+
+def _optional_str(value: object) -> str | None:
+    return value if isinstance(value, str) and value else None
+
+
+def _range_timing_provenance(start_time: str | None, end_time: str | None) -> str:
+    if start_time is not None and end_time is not None:
+        return "timestamped_range"
+    if start_time is not None:
+        return "start_timestamp_only"
+    if end_time is not None:
+        return "end_timestamp_only"
+    return "untimestamped"
+
+
+def _date_provenance(canonical_session_date: str | None, start_time: str | None, end_time: str | None) -> str:
+    if canonical_session_date is None:
+        return "none"
+    if start_time is not None or end_time is not None:
+        return "event_timestamp"
+    return "date_only"
 
 
 class WorkThreadMemberEvidencePayload(ArchiveInsightModel):
