@@ -4,12 +4,28 @@ from __future__ import annotations
 
 import sys
 from collections.abc import Mapping
+from dataclasses import dataclass, field
+from typing import Literal, NotRequired, TypedDict
 
 from polylogue.core.json import JSONDocument, require_json_document
-from polylogue.surfaces.payloads import (
-    MachineErrorPayload,
-    MachineSuccessPayload,
-)
+
+
+class MachineErrorEnvelope(TypedDict):
+    """Serialized machine-error envelope with sparse optional keys."""
+
+    status: Literal["error"]
+    code: str
+    message: str
+    command: NotRequired[list[str]]
+    details: NotRequired[JSONDocument]
+
+
+class MachineSuccessEnvelope(TypedDict):
+    """Serialized machine-success envelope."""
+
+    status: Literal["ok"]
+    result: JSONDocument
+
 
 # ---------------------------------------------------------------------------
 # Error codes
@@ -23,20 +39,68 @@ UNSUPPORTED_ENVIRONMENT = "unsupported_environment"
 NO_RESULTS = "no_results"
 
 
-class MachineError(MachineErrorPayload):
+@dataclass(frozen=True, slots=True)
+class MachineError:
     """CLI-visible machine-error envelope."""
 
+    code: str
+    message: str
+    command: tuple[str, ...] | list[str] = ()
+    details: Mapping[str, object] = field(default_factory=dict)
+    status: Literal["error"] = "error"
 
-class MachineSuccess(MachineSuccessPayload):
+    def to_dict(self) -> MachineErrorEnvelope:
+        payload: MachineErrorEnvelope = {
+            "status": self.status,
+            "code": self.code,
+            "message": self.message,
+        }
+        if self.command:
+            payload["command"] = list(self.command)
+        if self.details:
+            payload["details"] = require_json_document(dict(self.details), context="machine error details")
+        return payload
+
+    def to_json(self, *, exclude_none: bool = False) -> str:
+        import json
+
+        del exclude_none
+        return json.dumps(self.to_dict(), indent=2)
+
+    def emit(self, *, exit_code: int = 1) -> None:
+        """Write the payload to stdout and exit."""
+        sys.stdout.write(self.to_json(exclude_none=True))
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+        raise SystemExit(exit_code)
+
+
+@dataclass(frozen=True, slots=True)
+class MachineSuccess:
     """CLI-visible machine-success envelope."""
+
+    result: Mapping[str, object] = field(default_factory=dict)
+    status: Literal["ok"] = "ok"
+
+    def to_dict(self) -> MachineSuccessEnvelope:
+        return {
+            "status": self.status,
+            "result": require_json_document(dict(self.result), context="machine success result"),
+        }
+
+    def to_json(self, *, exclude_none: bool = False) -> str:
+        import json
+
+        del exclude_none
+        return json.dumps(self.to_dict(), indent=2)
 
 
 def _normalize_result_payload(
-    result: Mapping[str, object] | MachineSuccessPayload | None,
+    result: Mapping[str, object] | MachineSuccess | None,
 ) -> JSONDocument:
     if result is None:
         return {}
-    if isinstance(result, MachineSuccessPayload):
+    if isinstance(result, MachineSuccess):
         return require_json_document(result.result, context="machine success result")
     return require_json_document(
         {str(key): value for key, value in result.items()},

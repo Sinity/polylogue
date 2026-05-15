@@ -121,6 +121,22 @@ def test_daemon_status_reports_live_ingest_attempts(tmp_path: Path) -> None:
         cgroup_memory_current_mb=2048.0,
         cgroup_memory_peak_mb=4096.0,
     )
+    cursor.record_ingest_stage_event(
+        attempt_id,
+        phase="full_parse",
+        status="running",
+        queued_file_count=1,
+        needed_file_count=1,
+        skipped_file_count=0,
+        succeeded_file_count=0,
+        failed_file_count=0,
+        input_bytes=source.stat().st_size,
+        source_payload_read_bytes=0,
+        cursor_fingerprint_read_bytes=0,
+        parse_time_s=0.0,
+        current_source="codex",
+        current_path=source,
+    )
 
     with (
         patch("polylogue.daemon.status.db_path", return_value=db),
@@ -144,10 +160,61 @@ def test_daemon_status_reports_live_ingest_attempts(tmp_path: Path) -> None:
     assert latest["cgroup_path"] == "/user.slice/test.scope"
     assert latest["cgroup_memory_current_mb"] == 2048.0
     assert latest["cgroup_memory_peak_mb"] == 4096.0
+    catchup = payload["catchup"]
+    assert isinstance(catchup, dict)
+    assert catchup["mode"] == "catching_up"
+    assert catchup["current_phase"] == "full_parse"
+    assert catchup["queued_file_count"] == 1
+    assert catchup["read_amplification"] == 0.0
+    recent_events = catchup["recent_events"]
+    assert isinstance(recent_events, list)
+    first_event = recent_events[0]
+    assert isinstance(first_event, dict)
+    assert first_event["current_path"] == str(source)
     lines = format_daemon_status_lines(payload)
     assert "Live ingest attempts: 1 running" in lines
     assert "  latest: running full_parse 0/1 files" in lines
     assert "  memory: cgroup 2048.0 MiB peak 4096.0 MiB" in lines
+    assert "Catch-up: catching_up 0/1 files, read amp 0.0x" in lines
+
+
+def test_daemon_status_reports_convergence_debt_separately(tmp_path: Path) -> None:
+    db = tmp_path / "polylogue.db"
+    source = tmp_path / "session.jsonl"
+    source.write_text('{"a":1}\n')
+    cursor = CursorStore(db)
+    cursor.record_convergence_debt(
+        stage="insights",
+        subject_type="source_path",
+        subject_id=str(source),
+        error="legacy payload missing provenance",
+    )
+
+    with (
+        patch("polylogue.daemon.status.db_path", return_value=db),
+        patch("polylogue.daemon.status._check_daemon_liveness", return_value=False),
+        patch("polylogue.daemon.status._blob_size_info", return_value=0),
+        patch("polylogue.daemon.status._fts_readiness_info", return_value={}),
+        patch("polylogue.daemon.status._insight_freshness_info", return_value={}),
+    ):
+        payload = daemon_status_payload(sources=())
+
+    convergence = payload["convergence"]
+    assert isinstance(convergence, dict)
+    assert convergence["failed_count"] == 1
+    stages = convergence["stage_summaries"]
+    assert isinstance(stages, list)
+    first_stage = stages[0]
+    assert isinstance(first_stage, dict)
+    assert first_stage["stage"] == "insights"
+    recent = convergence["recent"]
+    assert isinstance(recent, list)
+    first_recent = recent[0]
+    assert isinstance(first_recent, dict)
+    assert first_recent["subject_id"] == str(source)
+    lines = format_daemon_status_lines(payload)
+    assert "Convergence debt: 1 failed, 0 retry due" in lines
+    assert "  insights: 1 failed, 0 retry due" in lines
 
 
 def test_daemon_status_payload_reuses_bounded_probe_results(tmp_path: Path) -> None:

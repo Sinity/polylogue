@@ -137,7 +137,8 @@ def _iter_option_values(args: list[str], start: int, nargs: int) -> Iterable[str
 
 def _command_option_names(command: click.Command) -> frozenset[str]:
     options: set[str] = set()
-    for param in command.params:
+    ctx = click.Context(command)
+    for param in command.get_params(ctx):
         if isinstance(param, click.Option):
             options.update(param.opts)
             options.update(param.secondary_opts)
@@ -165,7 +166,7 @@ def _find_root_option_after_verb(
 
 
 def _split_query_mode_args(group: click.Group, args: list[str]) -> tuple[list[str], tuple[str, ...], bool]:
-    from polylogue.cli.query_verbs import VERB_NAMES
+    from polylogue.cli.verb_names import VERB_NAMES
 
     option_arity = _option_arity(group)
     option_args: list[str] = []

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import json
 import shutil
+import sqlite3
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -16,6 +16,7 @@ from jinja2 import DictLoader, Environment, select_autoescape
 from devtools import repo_root as _get_root
 from devtools.pages_style import PAGES_STYLE
 from devtools.pages_templates import PAGES_TEMPLATES
+from polylogue.paths import db_path
 from polylogue.rendering.renderers.html import PygmentsHighlighter
 from polylogue.rendering.renderers.html_sanitizer import sanitize_html
 
@@ -116,6 +117,37 @@ def _find_prev_next(page: PageEntry, all_pages: list[PageEntry]) -> tuple[dict[s
     return prev_dict, next_dict
 
 
+def _site_archive_stats() -> dict[str, Any]:
+    """Return cheap archive counts for the site hero without invoking the CLI."""
+    path = db_path()
+    if not path.exists():
+        return {}
+    try:
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=1.0)
+        try:
+            row = conn.execute(
+                """
+                SELECT
+                    COUNT(*) AS total_conversations,
+                    COALESCE(SUM(message_count), 0) AS total_messages,
+                    COUNT(DISTINCT provider_name) AS provider_count
+                FROM conversation_stats
+                """
+            ).fetchone()
+            total_conversations = int(row[0] or 0)
+            total_messages = int(row[1] or 0)
+            provider_count = int(row[2] or 0)
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return {}
+    return {
+        "total_conversations": total_conversations,
+        "total_messages": total_messages,
+        "provider_count": provider_count,
+    }
+
+
 def build_site(config_path: Path | None = None, output_dir: Path | None = None) -> Path:
     if config_path is None:
         config_path = ROOT / "pages.toml"
@@ -138,16 +170,7 @@ def build_site(config_path: Path | None = None, output_dir: Path | None = None) 
         shutil.rmtree(output_dir)
     output_dir.mkdir(parents=True)
 
-    try:
-        result = subprocess.run(
-            ["polylogue", "--plain", "stats", "--format", "json"],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        stats_raw: dict[str, Any] = json.loads(result.stdout) if result.returncode == 0 else {}
-    except Exception:
-        stats_raw = {}
+    stats_raw = _site_archive_stats()
 
     stats = {
         "session_count": f"{stats_raw.get('total_conversations', 0):,}",

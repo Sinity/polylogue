@@ -48,6 +48,10 @@ class ConvergenceStage:
     # changed source paths into one repair transaction.
     check_many: Callable[[Sequence[Path]], set[Path]] | None = None
     execute_many: Callable[[Sequence[Path]], bool] | None = None
+    # Optional conversation-scoped pair for durable convergence debt retries.
+    # These avoid resolving a failed derived subject back to source files.
+    check_conversations: Callable[[Sequence[str]], set[str]] | None = None
+    execute_conversations: Callable[[Sequence[str]], bool] | None = None
     # Can run in a worker process (CPU-bound, no SQLite write).
     cpu_bound: bool = False
 
@@ -72,6 +76,22 @@ class FileState:
         return [name for name, s in self.stages.items() if s == StageState.PENDING]
 
 
+@dataclass(slots=True)
+class ConversationState:
+    """Tracked convergence state for one conversation subject."""
+
+    conversation_id: str
+    stages: dict[str, StageState] = field(default_factory=dict)
+    stage_times: dict[str, float] = field(default_factory=dict)
+    last_stage_times: dict[str, float] = field(default_factory=dict)
+    error_count: int = 0
+    last_error: str | None = None
+
+    @property
+    def converged(self) -> bool:
+        return all(s in (StageState.DONE, StageState.SKIPPED) for s in self.stages.values())
+
+
 class DaemonConverger:
     """Drives archive state toward desired state for all source files.
 
@@ -89,6 +109,7 @@ class DaemonConverger:
         self._stages: dict[str, ConvergenceStage] = {s.name: s for s in stages}
         self._max_workers = max_workers or 2
         self._file_states: dict[Path, FileState] = {}
+        self._conversation_states: dict[str, ConversationState] = {}
         self._executor: ProcessPoolExecutor | None = None
 
     @property
@@ -283,6 +304,72 @@ class DaemonConverger:
 
         return {path: self._file_states[path] for path in paths}, batch_stage_times
 
+    def converge_conversations(
+        self,
+        conversation_ids: Iterable[str],
+    ) -> tuple[dict[str, ConversationState], dict[str, float]]:
+        """Converge derived state for known conversation IDs without source-path lookup."""
+        ids = tuple(dict.fromkeys(str(conversation_id) for conversation_id in conversation_ids if conversation_id))
+        if not ids:
+            return {}, {}
+
+        for conversation_id in ids:
+            if conversation_id not in self._conversation_states:
+                self._conversation_states[conversation_id] = ConversationState(conversation_id=conversation_id)
+            state = self._conversation_states[conversation_id]
+            state.stages.clear()
+            state.last_stage_times.clear()
+
+        batch_stage_times: dict[str, float] = {}
+        for stage_name, stage in self._stages.items():
+            if stage.check_conversations is None or stage.execute_conversations is None or stage.cpu_bound:
+                for conversation_id in ids:
+                    state = self._conversation_states[conversation_id]
+                    state.stages[stage_name] = StageState.SKIPPED
+                continue
+
+            try:
+                batch_needs_work = stage.check_conversations(ids)
+            except Exception:
+                logger.warning("converger: conversation batch check failed stage=%s", stage_name, exc_info=True)
+                for conversation_id in ids:
+                    state = self._conversation_states[conversation_id]
+                    state.stages[stage_name] = StageState.FAILED
+                    state.error_count += 1
+                continue
+
+            for conversation_id in ids:
+                if conversation_id not in batch_needs_work:
+                    self._conversation_states[conversation_id].stages[stage_name] = StageState.DONE
+
+            if not batch_needs_work:
+                continue
+
+            for conversation_id in batch_needs_work:
+                self._conversation_states[conversation_id].stages[stage_name] = StageState.IN_PROGRESS
+
+            t_stage = time.perf_counter()
+            try:
+                success = stage.execute_conversations(tuple(batch_needs_work))
+            except Exception as exc:
+                logger.warning("converger: conversation batch execute failed stage=%s: %s", stage_name, exc)
+                success = False
+
+            elapsed = time.perf_counter() - t_stage
+            batch_stage_times[stage_name] = elapsed
+            for conversation_id in batch_needs_work:
+                state = self._conversation_states[conversation_id]
+                state.stage_times[stage_name] = elapsed
+                state.last_stage_times[stage_name] = elapsed
+                state.stages[stage_name] = StageState.DONE if success else StageState.FAILED
+                if not success:
+                    state.error_count += 1
+                    state.last_error = f"conversation stage {stage_name} returned False"
+
+        return {
+            conversation_id: self._conversation_states[conversation_id] for conversation_id in ids
+        }, batch_stage_times
+
     def converge_all(
         self,
         files: Iterable[Path],
@@ -313,6 +400,7 @@ class DaemonConverger:
 
 
 __all__ = [
+    "ConversationState",
     "ConvergenceStage",
     "DaemonConverger",
     "FileState",

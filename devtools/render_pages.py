@@ -15,7 +15,6 @@ from __future__ import annotations
 import argparse
 import http.server
 import os
-import subprocess
 import sys
 from pathlib import Path
 
@@ -64,21 +63,33 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def _run_render_commands(verbose: bool = False) -> None:
     """Run feeder render-* commands to generate reference docs."""
-    commands = [
-        [sys.executable, "-m", "devtools", "render-cli-reference"],
-        [sys.executable, "-m", "devtools", "render-devtools-reference"],
-        [sys.executable, "-m", "devtools", "render-docs-surface"],
-        [sys.executable, "-m", "devtools", "render-verification-catalog"],
-        [sys.executable, "-m", "devtools", "render-quality-reference"],
-        [sys.executable, "-m", "devtools", "render-topology-status"],
+    from devtools import (
+        render_cli_reference,
+        render_devtools_reference,
+        render_docs_surface,
+        render_quality_reference,
+        render_topology_status,
+        render_verification_catalog,
+    )
+
+    renderers = [
+        ("render-cli-reference", render_cli_reference.main),
+        ("render-devtools-reference", render_devtools_reference.main),
+        ("render-docs-surface", render_docs_surface.main),
+        ("render-verification-catalog", render_verification_catalog.main),
+        ("render-quality-reference", render_quality_reference.main),
+        ("render-topology-status", render_topology_status.main),
     ]
-    for cmd in commands:
+    for name, render in renderers:
         if verbose:
-            print(f"  Running: {' '.join(cmd)}", file=sys.stderr)
+            print(f"  Running: devtools {name}", file=sys.stderr)
         try:
-            subprocess.run(cmd, check=True, capture_output=not verbose, cwd=ROOT)
-        except subprocess.CalledProcessError as e:
-            print(f"  Warning: {' '.join(cmd)} failed: {e}", file=sys.stderr)
+            result = render([])
+        except Exception as exc:
+            print(f"  Warning: devtools {name} failed: {exc}", file=sys.stderr)
+            continue
+        if result != 0:
+            print(f"  Warning: devtools {name} failed with exit code {result}", file=sys.stderr)
 
 
 def _hash_directory(dir_path: Path) -> str:

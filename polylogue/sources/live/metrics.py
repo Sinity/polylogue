@@ -38,6 +38,13 @@ class LiveBatchMetrics:
     failed_paths: list[str] = field(default_factory=list)
 
     def to_payload(self) -> dict[str, object]:
+        read_amplification = (
+            round(self.source_payload_read_bytes / self.input_bytes, 6) if self.input_bytes > 0 else 0.0
+        )
+        files_per_second = round(self.succeeded_file_count / self.total_time_s, 6) if self.total_time_s > 0 else 0.0
+        source_mb_per_second = (
+            round((self.source_payload_read_bytes / 1_000_000) / self.total_time_s, 6) if self.total_time_s > 0 else 0.0
+        )
         return {
             "queued_file_count": self.queued_file_count,
             "needed_file_count": self.needed_file_count,
@@ -48,6 +55,9 @@ class LiveBatchMetrics:
             "input_bytes": self.input_bytes,
             "source_payload_read_bytes": self.source_payload_read_bytes,
             "cursor_fingerprint_read_bytes": self.cursor_fingerprint_read_bytes,
+            "read_amplification": read_amplification,
+            "files_per_second": files_per_second,
+            "source_mb_per_second": source_mb_per_second,
             "ingest_worker_count_max": self.ingest_worker_count_max,
             "append_file_count": self.append_file_count,
             "full_file_count": self.full_file_count,

@@ -14,10 +14,10 @@ Current registry snapshot:
 - mutation campaigns: `19`
 - benchmark campaigns: `3`
 - synthetic benchmark campaigns: `7`
-- scenario projections: `211`
+- scenario projections: `244`
 - inferred corpus scenarios: `8`
   - benchmark-campaign: `3`
-  - exercise: `106`
+  - exercise: `139`
   - inferred-corpus-scenario: `8`
   - mutation-campaign: `19`
   - synthetic-benchmark: `7`
@@ -25,16 +25,16 @@ Current registry snapshot:
 
 ## Runtime Coverage
 
-- covered runtime paths: `22`
-- covered runtime artifacts: `48`
-- covered runtime operations: `26`
+- covered runtime paths: `25`
+- covered runtime artifacts: `50`
+- covered runtime operations: `29`
 - covered maintenance targets: `3`
-- covered declared operation targets: `38`
-- uncovered runtime paths: `action-event-repair-loop`, `week-summary-query-loop`, `work-thread-query-loop`
-- uncovered runtime artifacts: `week_session_summary_results`, `work_thread_results`
-- uncovered runtime operations: `mutate-add-tag`, `mutate-bulk-tag-conversations`, `mutate-delete-conversation`, `mutate-delete-metadata`, `mutate-remove-tag`, `mutate-set-metadata`, `project-action-event-readiness`, `query-week-session-summaries`, `query-work-threads`
+- covered declared operation targets: `41`
+- uncovered runtime paths: —
+- uncovered runtime artifacts: —
+- uncovered runtime operations: `mutate-add-tag`, `mutate-bulk-tag-conversations`, `mutate-delete-conversation`, `mutate-delete-metadata`, `mutate-remove-tag`, `mutate-set-metadata`
 - uncovered maintenance targets: `empty_conversations`, `message_type_backfill`, `orphaned_attachments`, `orphaned_blobs`, `orphaned_content_blocks`, `orphaned_messages`, `wal_checkpoint`
-- uncovered declared operation targets: `mutate-add-tag`, `mutate-bulk-tag-conversations`, `mutate-delete-conversation`, `mutate-delete-metadata`, `mutate-remove-tag`, `mutate-set-metadata`, `project-action-event-readiness`, `query-week-session-summaries`, `query-work-threads`
+- uncovered declared operation targets: `mutate-add-tag`, `mutate-bulk-tag-conversations`, `mutate-delete-conversation`, `mutate-delete-metadata`, `mutate-remove-tag`, `mutate-set-metadata`
 
 Inspect the full authored map with:
 
@@ -320,22 +320,40 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `exercise` | `help-auth` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | auth help |
 | `exercise` | `help-backup` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | backup help |
 | `exercise` | `help-bulk-export` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | bulk-export help |
-| `exercise` | `help-check` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | check help |
 | `exercise` | `help-completions` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | completions help |
 | `exercise` | `help-config` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | config help |
-| `exercise` | `help-context_pack` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | context_pack help |
+| `exercise` | `help-context-pack` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | context-pack help |
 | `exercise` | `help-cost` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | cost help |
 | `exercise` | `help-count` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | count help |
 | `exercise` | `help-dashboard` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | dashboard help |
 | `exercise` | `help-delete` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | delete help |
 | `exercise` | `help-diagnostics` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | diagnostics help |
-| `exercise` | `help-doctor` | — | — | — | — | — | Doctor subcommand help |
+| `exercise` | `help-diagnostics-pace` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | diagnostics pace help |
+| `exercise` | `help-diagnostics-tools` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | diagnostics tools help |
+| `exercise` | `help-diagnostics-turns` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | diagnostics turns help |
+| `exercise` | `help-doctor` | `message-fts-readiness-loop`<br>`retrieval-band-readiness-loop` | `message_fts`<br>`action_event_readiness`<br>`session_insight_readiness`<br>`retrieval_band_readiness`<br>`archive_readiness` | `cli.help`<br>`project-archive-readiness` | — | `generated`<br>`help`<br>`structural` | doctor help |
 | `exercise` | `help-export` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | export help |
 | `exercise` | `help-ingest` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | ingest help |
 | `exercise` | `help-insights` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | insights help |
+| `exercise` | `help-insights-analytics` | `provider-analytics-query-loop` | `session_insight_rows`<br>`provider_analytics_results` | `cli.help`<br>`query-provider-analytics` | — | `generated`<br>`help`<br>`structural` | insights analytics help |
+| `exercise` | `help-insights-cost-rollups` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | insights cost-rollups help |
+| `exercise` | `help-insights-costs` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | insights costs help |
+| `exercise` | `help-insights-day-summaries` | `day-summary-query-loop` | `day_session_summary_rows`<br>`day_session_summary_results` | `cli.help`<br>`query-day-session-summaries` | — | `generated`<br>`help`<br>`structural` | insights day-summaries help |
+| `exercise` | `help-insights-debt` | `archive-debt-query-loop` | `action_event_readiness`<br>`session_insight_readiness`<br>`archive_readiness`<br>`archive_debt_results` | `cli.help`<br>`query-archive-debt` | — | `generated`<br>`help`<br>`structural` | insights debt help |
+| `exercise` | `help-insights-enrichments` | `session-enrichment-query-loop` | `session_profile_rows`<br>`session_enrichment_results` | `cli.help`<br>`query-session-enrichments` | — | `generated`<br>`help`<br>`structural` | insights enrichments help |
+| `exercise` | `help-insights-export` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | insights export help |
+| `exercise` | `help-insights-phases` | `session-phase-query-loop` | `session_phase_rows`<br>`session_phase_results` | `cli.help`<br>`query-session-phases` | — | `generated`<br>`help`<br>`structural` | insights phases help |
+| `exercise` | `help-insights-profiles` | `session-profile-query-loop` | `session_profile_rows`<br>`session_profile_results` | `cli.help`<br>`query-session-profiles` | — | `generated`<br>`help`<br>`structural` | insights profiles help |
+| `exercise` | `help-insights-status` | `session-insight-status-query-loop` | `session_insight_readiness`<br>`session_insight_status_results` | `cli.help`<br>`query-session-insight-status` | — | `generated`<br>`help`<br>`structural` | insights status help |
+| `exercise` | `help-insights-tags` | `session-tag-rollup-query-loop` | `session_tag_rollup_rows`<br>`session_tag_rollup_results` | `cli.help`<br>`query-session-tag-rollups` | — | `generated`<br>`help`<br>`structural` | insights tags help |
+| `exercise` | `help-insights-threads` | `work-thread-query-loop` | `work_thread_rows`<br>`work_thread_fts`<br>`work_thread_results` | `cli.help`<br>`query-work-threads` | — | `generated`<br>`help`<br>`structural` | insights threads help |
+| `exercise` | `help-insights-week-summaries` | `week-summary-query-loop` | `day_session_summary_rows`<br>`week_session_summary_results` | `cli.help`<br>`query-week-session-summaries` | — | `generated`<br>`help`<br>`structural` | insights week-summaries help |
+| `exercise` | `help-insights-work-events` | `session-work-event-query-loop` | `session_work_event_rows`<br>`session_work_event_fts`<br>`session_work_event_results` | `cli.help`<br>`query-session-work-events` | — | `generated`<br>`help`<br>`structural` | insights work-events help |
 | `exercise` | `help-list` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | list help |
 | `exercise` | `help-main` | — | — | — | — | — | Main help screen |
 | `exercise` | `help-maintenance` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | maintenance help |
+| `exercise` | `help-maintenance-plan` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | maintenance plan help |
+| `exercise` | `help-maintenance-run` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | maintenance run help |
 | `exercise` | `help-messages` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | messages help |
 | `exercise` | `help-neighbors` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | neighbors help |
 | `exercise` | `help-open` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | open help |
@@ -343,11 +361,26 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `exercise` | `help-reset` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | reset help |
 | `exercise` | `help-resume` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | resume help |
 | `exercise` | `help-schema` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | schema help |
+| `exercise` | `help-schema-compare` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | schema compare help |
+| `exercise` | `help-schema-explain` | `schema-explain-query-loop` | `schema_packages`<br>`schema_explanation_results` | `cli.help`<br>`query-schema-explanations` | — | `generated`<br>`help`<br>`structural` | schema explain help |
+| `exercise` | `help-schema-list` | `schema-list-query-loop` | `schema_packages`<br>`schema_cluster_manifests`<br>`inferred_corpus_specs`<br>`inferred_corpus_scenarios`<br>`schema_list_results` | `cli.help`<br>`query-schema-catalog` | — | `generated`<br>`help`<br>`structural` | schema list help |
 | `exercise` | `help-select` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | select help |
 | `exercise` | `help-show` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | show help |
 | `exercise` | `help-stats` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | stats help |
 | `exercise` | `help-status` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | status help |
 | `exercise` | `help-tags` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | tags help |
+| `exercise` | `json-doctor` | `message-fts-readiness-loop`<br>`retrieval-band-readiness-loop` | `message_fts`<br>`action_event_readiness`<br>`session_insight_readiness`<br>`retrieval_band_readiness`<br>`archive_readiness` | `cli.json-contract`<br>`project-archive-readiness` | — | `generated`<br>`json-contract`<br>`maintenance`<br>`readiness` | doctor JSON contract |
+| `exercise` | `json-doctor-action-event-preview` | `action-event-repair-loop` | `action_event_rows`<br>`action_event_fts`<br>`action_event_readiness` | `cli.json-contract`<br>`project-action-event-readiness` | — | `generated`<br>`json-contract`<br>`maintenance`<br>`action-events` | doctor JSON contract |
+| `exercise` | `json-doctor-session-insights-preview` | `session-insight-repair-loop` | `session_insight_rows`<br>`session_insight_fts`<br>`session_insight_readiness` | `cli.json-contract`<br>`project-session-insight-readiness` | — | `generated`<br>`json-contract`<br>`maintenance`<br>`session-insights` | doctor JSON contract |
+| `exercise` | `json-insights-analytics` | `provider-analytics-query-loop` | `session_insight_rows`<br>`provider_analytics_results` | `cli.json-contract`<br>`query-provider-analytics` | — | `generated`<br>`json-contract`<br>`insights`<br>`analytics` | insights analytics JSON contract |
+| `exercise` | `json-insights-day-summaries` | `day-summary-query-loop` | `day_session_summary_rows`<br>`day_session_summary_results` | `cli.json-contract`<br>`query-day-session-summaries` | — | `generated`<br>`json-contract`<br>`insights`<br>`day-summaries` | insights day-summaries JSON contract |
+| `exercise` | `json-insights-phases` | `session-phase-query-loop` | `session_phase_rows`<br>`session_phase_results` | `cli.json-contract`<br>`query-session-phases` | — | `generated`<br>`json-contract`<br>`insights`<br>`phases` | insights phases JSON contract |
+| `exercise` | `json-insights-profiles` | `session-profile-query-loop` | `session_profile_rows`<br>`session_profile_results` | `cli.json-contract`<br>`query-session-profiles` | — | `generated`<br>`json-contract`<br>`insights`<br>`session-profiles` | insights profiles JSON contract |
+| `exercise` | `json-insights-tags` | `session-tag-rollup-query-loop` | `session_tag_rollup_rows`<br>`session_tag_rollup_results` | `cli.json-contract`<br>`query-session-tag-rollups` | — | `generated`<br>`json-contract`<br>`insights`<br>`tags` | insights tags JSON contract |
+| `exercise` | `json-insights-threads` | `work-thread-query-loop` | `work_thread_rows`<br>`work_thread_fts`<br>`work_thread_results` | `cli.json-contract`<br>`query-work-threads` | — | `generated`<br>`json-contract`<br>`insights`<br>`threads` | insights threads JSON contract |
+| `exercise` | `json-insights-week-summaries` | `week-summary-query-loop` | `day_session_summary_rows`<br>`week_session_summary_results` | `cli.json-contract`<br>`query-week-session-summaries` | — | `generated`<br>`json-contract`<br>`insights`<br>`week-summaries` | insights week-summaries JSON contract |
+| `exercise` | `json-insights-work-events` | `session-work-event-query-loop` | `session_work_event_rows`<br>`session_work_event_fts`<br>`session_work_event_results` | `cli.json-contract`<br>`query-session-work-events` | — | `generated`<br>`json-contract`<br>`insights`<br>`work-events` | insights work-events JSON contract |
+| `exercise` | `json-schema-list` | `schema-list-query-loop` | `schema_packages`<br>`schema_cluster_manifests`<br>`inferred_corpus_specs`<br>`inferred_corpus_scenarios`<br>`schema_list_results` | `cli.json-contract`<br>`query-schema-catalog` | — | `generated`<br>`json-contract` | schema list JSON contract |
 | `exercise` | `json-tags` | — | — | `cli.json-contract` | — | `generated`<br>`json-contract` | tags JSON contract |
 | `exercise` | `query-count` | — | — | — | — | — | Count conversations |
 | `exercise` | `query-dialogue-only` | — | — | — | — | — | Latest with dialogue only |

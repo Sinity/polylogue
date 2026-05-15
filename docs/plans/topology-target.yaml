@@ -2,7 +2,7 @@
 
 files:
   - path: polylogue/__init__.py
-    loc: 54
+    loc: 76
     target: polylogue/__init__.py
     owner: kernel
     reason: kernel root rule
@@ -91,7 +91,7 @@ files:
     owner: archive-artifact-taxonomy
     reason: archive-domain semantics
   - path: polylogue/archive/artifact_taxonomy/runtime.py
-    loc: 209
+    loc: 274
     target: polylogue/archive/artifact_taxonomy/runtime.py
     owner: archive-artifact-taxonomy
     reason: archive-domain semantics
@@ -583,15 +583,15 @@ files:
     target: polylogue/cli/bulk_export.py
     owner: stable
   - path: polylogue/cli/click_app.py
-    loc: 197
+    loc: 224
     target: polylogue/cli/click_app.py
     owner: stable
   - path: polylogue/cli/click_command_registration.py
-    loc: 64
+    loc: 148
     target: polylogue/cli/click_command_registration.py
     owner: stable
   - path: polylogue/cli/click_option_groups.py
-    loc: 291
+    loc: 350
     target: polylogue/cli/click_option_groups.py
     owner: stable
   - path: polylogue/cli/command_inventory.py
@@ -639,7 +639,7 @@ files:
     target: polylogue/cli/commands/diagnostics.py
     owner: stable
   - path: polylogue/cli/commands/export.py
-    loc: 54
+    loc: 56
     target: polylogue/cli/commands/export.py
     owner: stable
   - path: polylogue/cli/commands/ingest.py
@@ -655,7 +655,7 @@ files:
     target: polylogue/cli/commands/maintenance.py
     owner: stable
   - path: polylogue/cli/commands/neighbors.py
-    loc: 99
+    loc: 108
     target: polylogue/cli/commands/neighbors.py
     owner: stable
   - path: polylogue/cli/commands/reset.py
@@ -663,7 +663,7 @@ files:
     target: polylogue/cli/commands/reset.py
     owner: stable
   - path: polylogue/cli/commands/resume.py
-    loc: 49
+    loc: 50
     target: polylogue/cli/commands/resume.py
     owner: stable
   - path: polylogue/cli/commands/schema.py
@@ -675,7 +675,7 @@ files:
     target: polylogue/cli/commands/status.py
     owner: stable
   - path: polylogue/cli/commands/tags.py
-    loc: 111
+    loc: 114
     target: polylogue/cli/commands/tags.py
     owner: stable
   - path: polylogue/cli/machine_main.py
@@ -687,12 +687,8 @@ files:
     target: polylogue/cli/messages.py
     owner: stable
   - path: polylogue/cli/query.py
-    loc: 771
+    loc: 749
     target: polylogue/cli/query.py
-    owner: stable
-  - path: polylogue/cli/query_group.py
-    loc: 112
-    target: polylogue/cli/query_group.py
     owner: stable
   - path: polylogue/cli/query_actions.py
     loc: 219
@@ -705,6 +701,10 @@ files:
   - path: polylogue/cli/query_feedback.py
     loc: 53
     target: polylogue/cli/query_feedback.py
+    owner: stable
+  - path: polylogue/cli/query_group.py
+    loc: 118
+    target: polylogue/cli/query_group.py
     owner: stable
   - path: polylogue/cli/query_output.py
     loc: 850
@@ -727,7 +727,7 @@ files:
     target: polylogue/cli/query_stats.py
     owner: stable
   - path: polylogue/cli/query_verbs.py
-    loc: 334
+    loc: 374
     target: polylogue/cli/query_verbs.py
     owner: stable
   - path: polylogue/cli/root_request.py
@@ -781,7 +781,7 @@ files:
     target: polylogue/cli/shared/embed_stats.py
     owner: stable
   - path: polylogue/cli/shared/formatting.py
-    loc: 220
+    loc: 228
     target: polylogue/cli/shared/formatting.py
     owner: stable
   - path: polylogue/cli/shared/helper_source_selection.py
@@ -801,7 +801,7 @@ files:
     target: polylogue/cli/shared/helper_support.py
     owner: stable
   - path: polylogue/cli/shared/helpers.py
-    loc: 48
+    loc: 51
     target: polylogue/cli/shared/helpers.py
     owner: stable
   - path: polylogue/cli/shared/insight_command_contracts.py
@@ -809,7 +809,7 @@ files:
     target: polylogue/cli/shared/insight_command_contracts.py
     owner: stable
   - path: polylogue/cli/shared/machine_errors.py
-    loc: 303
+    loc: 367
     target: polylogue/cli/shared/machine_errors.py
     owner: stable
   - path: polylogue/cli/shared/qa_capture.py
@@ -845,15 +845,19 @@ files:
     target: polylogue/cli/shared/schema_rendering_results.py
     owner: stable
   - path: polylogue/cli/shared/types.py
-    loc: 46
+    loc: 70
     target: polylogue/cli/shared/types.py
     owner: stable
   - path: polylogue/cli/shell_completion_values.py
-    loc: 390
+    loc: 391
     target: polylogue/cli/shell_completion_values.py
     owner: stable
+  - path: polylogue/cli/verb_names.py
+    loc: 22
+    target: polylogue/cli/verb_names.py
+    owner: stable
   - path: polylogue/config.py
-    loc: 533
+    loc: 607
     target: polylogue/config.py
     owner: kernel
     reason: kernel root rule
@@ -908,7 +912,7 @@ files:
     owner: core-primitive
     reason: core primitive
   - path: polylogue/core/provider_identity.py
-    loc: 109
+    loc: 172
     target: polylogue/core/provider_identity.py
     owner: core-primitive
     reason: core primitive
@@ -934,13 +938,21 @@ files:
     loc: 52
     target: polylogue/daemon/browser_capture.py
     owner: stable
+  - path: polylogue/daemon/catchup_status.py
+    loc: 286
+    target: polylogue/daemon/catchup_status.py
+    owner: stable
   - path: polylogue/daemon/cli.py
-    loc: 800
+    loc: 949
     target: polylogue/daemon/cli.py
     owner: stable
   - path: polylogue/daemon/convergence.py
     loc: 320
     target: polylogue/daemon/convergence.py
+    owner: stable
+  - path: polylogue/daemon/convergence_debt_status.py
+    loc: 150
+    target: polylogue/daemon/convergence_debt_status.py
     owner: stable
   - path: polylogue/daemon/convergence_stages.py
     loc: 686
@@ -951,11 +963,11 @@ files:
     target: polylogue/daemon/events.py
     owner: stable
   - path: polylogue/daemon/health.py
-    loc: 923
+    loc: 934
     target: polylogue/daemon/health.py
     owner: stable
   - path: polylogue/daemon/http.py
-    loc: 1005
+    loc: 1004
     target: polylogue/daemon/http.py
     owner: stable
   - path: polylogue/daemon/notifications.py
@@ -963,7 +975,7 @@ files:
     target: polylogue/daemon/notifications.py
     owner: stable
   - path: polylogue/daemon/status.py
-    loc: 1128
+    loc: 1145
     target: polylogue/daemon/status.py
     owner: stable
   - path: polylogue/daemon/web_shell.py
@@ -984,7 +996,7 @@ files:
     target: polylogue/insights/archive.py
     owner: stable
   - path: polylogue/insights/archive_models.py
-    loc: 220
+    loc: 273
     target: polylogue/insights/archive_models.py
     owner: stable
     cross_cut: { lifecycle: model }
@@ -1058,7 +1070,7 @@ files:
     target: polylogue/mcp/insight_tool_contracts.py
     owner: stable
   - path: polylogue/mcp/payloads.py
-    loc: 578
+    loc: 551
     target: polylogue/mcp/payloads.py
     owner: stable
   - path: polylogue/mcp/query_contracts.py
@@ -1118,11 +1130,11 @@ files:
     target: polylogue/operations/specs.py
     owner: stable
   - path: polylogue/paths/__init__.py
-    loc: 58
+    loc: 60
     target: polylogue/paths/__init__.py
     owner: stable
   - path: polylogue/paths/_roots.py
-    loc: 125
+    loc: 130
     target: polylogue/paths/_roots.py
     owner: stable
   - path: polylogue/paths/sanitize.py
@@ -1225,7 +1237,7 @@ files:
     owner: stable
     cross_cut: { lifecycle: model }
   - path: polylogue/pipeline/services/ingest_worker.py
-    loc: 1146
+    loc: 1147
     target: polylogue/pipeline/services/ingest_worker.py
     owner: stable
   - path: polylogue/pipeline/services/parsing.py
@@ -1480,7 +1492,7 @@ files:
     target: polylogue/schemas/audit/__init__.py
     owner: stable
   - path: polylogue/schemas/audit/checks.py
-    loc: 300
+    loc: 303
     target: polylogue/schemas/audit/checks.py
     owner: stable
   - path: polylogue/schemas/audit/models.py
@@ -1664,7 +1676,7 @@ files:
     target: polylogue/schemas/observation_identity.py
     owner: stable
   - path: polylogue/schemas/observation_models.py
-    loc: 106
+    loc: 113
     target: polylogue/schemas/observation_models.py
     owner: stable
     cross_cut: { lifecycle: model }
@@ -1758,7 +1770,7 @@ files:
     target: polylogue/schemas/synthetic/__init__.py
     owner: stable
   - path: polylogue/schemas/synthetic/build_batch.py
-    loc: 213
+    loc: 222
     target: polylogue/schemas/synthetic/build_batch.py
     owner: stable
   - path: polylogue/schemas/synthetic/build_records.py
@@ -1766,7 +1778,7 @@ files:
     target: polylogue/schemas/synthetic/build_records.py
     owner: stable
   - path: polylogue/schemas/synthetic/build_wire_formats.py
-    loc: 211
+    loc: 275
     target: polylogue/schemas/synthetic/build_wire_formats.py
     owner: stable
   - path: polylogue/schemas/synthetic/builders.py
@@ -1774,7 +1786,7 @@ files:
     target: polylogue/schemas/synthetic/builders.py
     owner: stable
   - path: polylogue/schemas/synthetic/core.py
-    loc: 373
+    loc: 382
     target: polylogue/schemas/synthetic/core.py
     owner: stable
   - path: polylogue/schemas/synthetic/models.py
@@ -1791,7 +1803,7 @@ files:
     target: polylogue/schemas/synthetic/relations.py
     owner: stable
   - path: polylogue/schemas/synthetic/runtime.py
-    loc: 350
+    loc: 365
     target: polylogue/schemas/synthetic/runtime.py
     owner: stable
   - path: polylogue/schemas/synthetic/selection.py
@@ -1807,7 +1819,7 @@ files:
     target: polylogue/schemas/synthetic/showcase.py
     owner: stable
   - path: polylogue/schemas/synthetic/wire_formats.py
-    loc: 74
+    loc: 77
     target: polylogue/schemas/synthetic/wire_formats.py
     owner: stable
   - path: polylogue/schemas/tooling_diff.py
@@ -1832,7 +1844,7 @@ files:
     target: polylogue/schemas/unified/adapters.py
     owner: stable
   - path: polylogue/schemas/unified/fallbacks.py
-    loc: 232
+    loc: 246
     target: polylogue/schemas/unified/fallbacks.py
     owner: stable
   - path: polylogue/schemas/unified/models.py
@@ -2079,7 +2091,7 @@ files:
     target: polylogue/sources/decoders.py
     owner: stable
   - path: polylogue/sources/dispatch.py
-    loc: 627
+    loc: 678
     target: polylogue/sources/dispatch.py
     owner: stable
   - path: polylogue/sources/drive/__init__.py
@@ -2123,7 +2135,7 @@ files:
     target: polylogue/sources/drive/types.py
     owner: stable
   - path: polylogue/sources/emitter.py
-    loc: 426
+    loc: 428
     target: polylogue/sources/emitter.py
     owner: stable
   - path: polylogue/sources/live/__init__.py
@@ -2131,36 +2143,44 @@ files:
     target: polylogue/sources/live/__init__.py
     owner: stable
   - path: polylogue/sources/live/batch.py
-    loc: 1093
+    loc: 1150
     target: polylogue/sources/live/batch.py
+    owner: stable
+  - path: polylogue/sources/live/batch_observability.py
+    loc: 124
+    target: polylogue/sources/live/batch_observability.py
     owner: stable
   - path: polylogue/sources/live/batch_support.py
     loc: 268
     target: polylogue/sources/live/batch_support.py
     owner: stable
+  - path: polylogue/sources/live/convergence_debt.py
+    loc: 75
+    target: polylogue/sources/live/convergence_debt.py
+    owner: stable
   - path: polylogue/sources/live/cursor.py
-    loc: 684
+    loc: 1022
     target: polylogue/sources/live/cursor.py
     owner: stable
   - path: polylogue/sources/live/dedup.py
-    loc: 90
+    loc: 106
     target: polylogue/sources/live/dedup.py
     owner: stable
   - path: polylogue/sources/live/metrics.py
-    loc: 72
+    loc: 82
     target: polylogue/sources/live/metrics.py
     owner: stable
   - path: polylogue/sources/live/watcher.py
-    loc: 342
+    loc: 397
     target: polylogue/sources/live/watcher.py
+    owner: stable
+  - path: polylogue/sources/parsers/antigravity.py
+    loc: 415
+    target: polylogue/sources/parsers/antigravity.py
     owner: stable
   - path: polylogue/sources/parsers/base.py
     loc: 32
     target: polylogue/sources/parsers/base.py
-    owner: stable
-  - path: polylogue/sources/parsers/antigravity.py
-    loc: 93
-    target: polylogue/sources/parsers/antigravity.py
     owner: stable
   - path: polylogue/sources/parsers/base_models.py
     loc: 154
@@ -2204,7 +2224,7 @@ files:
     target: polylogue/sources/parsers/claude/index.py
     owner: stable
   - path: polylogue/sources/parsers/codex.py
-    loc: 469
+    loc: 475
     target: polylogue/sources/parsers/codex.py
     owner: stable
   - path: polylogue/sources/parsers/drive.py
@@ -2288,7 +2308,7 @@ files:
     target: polylogue/sources/source_acquisition_components.py
     owner: stable
   - path: polylogue/sources/source_parsing.py
-    loc: 144
+    loc: 156
     target: polylogue/sources/source_parsing.py
     owner: stable
   - path: polylogue/sources/source_walk.py
@@ -2659,7 +2679,7 @@ files:
     target: polylogue/storage/runtime/archive/__init__.py
     owner: stable
   - path: polylogue/storage/runtime/archive/records.py
-    loc: 221
+    loc: 223
     target: polylogue/storage/runtime/archive/records.py
     owner: stable
   - path: polylogue/storage/runtime/raw/__init__.py
@@ -2756,7 +2776,7 @@ files:
     target: polylogue/storage/sqlite/async_sqlite_raw.py
     owner: stable
   - path: polylogue/storage/sqlite/connection.py
-    loc: 239
+    loc: 252
     target: polylogue/storage/sqlite/connection.py
     owner: stable
   - path: polylogue/storage/sqlite/connection_profile.py
@@ -2946,7 +2966,7 @@ files:
     target: polylogue/storage/sqlite/schema.py
     owner: stable
   - path: polylogue/storage/sqlite/schema_bootstrap.py
-    loc: 1264
+    loc: 1298
     target: polylogue/storage/sqlite/schema_bootstrap.py
     owner: stable
   - path: polylogue/storage/sqlite/schema_ddl.py
@@ -2998,11 +3018,11 @@ files:
     target: polylogue/surfaces/__init__.py
     owner: stable
   - path: polylogue/surfaces/payloads.py
-    loc: 556
+    loc: 585
     target: polylogue/surfaces/payloads.py
     owner: stable
   - path: polylogue/types.py
-    loc: 199
+    loc: 200
     target: polylogue/types.py
     owner: kernel
     reason: kernel root rule
