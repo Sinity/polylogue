@@ -288,19 +288,13 @@ class LiveWatcher:
         parser_matches = cursor.parser_fingerprint == _PARSER_FINGERPRINT
         if not parser_matches:
             return True
-        same_inode = (cursor.st_dev is None or cursor.st_dev == stat.st_dev) and (
-            cursor.st_ino is None or cursor.st_ino == stat.st_ino
-        )
-        if same_inode and size > cursor.byte_offset:
+        if size > cursor.byte_offset:
             return True
-        if same_inode and size == cursor.byte_size and cursor.content_fingerprint is not None:
-            # Same file (dev, ino), same size, fingerprint already recorded
-            # — trust the cursor. Mtime drift alone (filesystem touch,
-            # hardlink/rename-replace that preserves inode, fsync rounding,
-            # nanosecond-resolution rounding across filesystems) is not a
-            # content-change signal. Rehashing here costs O(file_size) per
-            # touched file across catch-up and active monitoring; refuted
-            # by the regression test in tests/integration/test_live_read_amplification.py.
+        if size == cursor.byte_size and cursor.content_fingerprint is not None:
+            # Stable path + size + recorded content fingerprint is the hot
+            # catch-up skip path. Device/inode churn across bind mounts,
+            # restored homes, or filesystem rebuilds must not force a full
+            # content rehash of every historical session file.
             return False
         if cursor.content_fingerprint is None:
             return True
