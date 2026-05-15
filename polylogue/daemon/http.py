@@ -54,6 +54,13 @@ def _dump_actions(actions: Mapping[str, ReaderActionAvailabilityPayload]) -> dic
     return {name: availability.model_dump(mode="json", exclude_none=True) for name, availability in actions.items()}
 
 
+def _message_type_value(message: object) -> str:
+    message_type = getattr(message, "message_type", "")
+    if hasattr(message_type, "value"):
+        return str(message_type.value)
+    return str(message_type)
+
+
 def daemon_safe_handler(fn: Callable[..., Any]) -> Callable[..., Any]:
     """Decorator that discriminates PolylogueError types to HTTP status codes.
 
@@ -318,7 +325,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
     def _dispatch_get(self, path: list[str], params: dict[str, list[str]]) -> None:
         """Dispatch GET requests via route table."""
         # Web shell is the only unauthenticated endpoint (localhost only).
-        if path == [""]:
+        if path == [""] or (len(path) == 2 and path[0] == "c" and bool(path[1])):
             self._serve_web_shell()
             return
 
@@ -688,7 +695,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                     "anchor": reader_anchor("message", msg.id),
                     "actions": _dump_actions(reader_message_actions()),
                     "timestamp": msg.timestamp.isoformat() if msg.timestamp else None,
-                    "message_type": str(getattr(msg, "message_type", "")),
+                    "message_type": _message_type_value(msg),
                     "word_count": msg.word_count,
                     "has_tool_use": bool(msg.has_tool_use) if hasattr(msg, "has_tool_use") else False,
                     "has_thinking": bool(msg.has_thinking) if hasattr(msg, "has_thinking") else False,
@@ -777,7 +784,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                     "anchor": reader_anchor("message", msg.id),
                     "actions": _dump_actions(reader_message_actions()),
                     "timestamp": msg.timestamp.isoformat() if msg.timestamp else None,
-                    "message_type": str(getattr(msg, "message_type", "")),
+                    "message_type": _message_type_value(msg),
                     "word_count": msg.word_count,
                 }
                 for msg in messages
