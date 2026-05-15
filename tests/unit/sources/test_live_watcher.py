@@ -596,6 +596,18 @@ def test_unchanged_file_uses_stat_fast_path_without_fingerprint_read(
 
     assert watcher._needs_work(f) is False
 
+    watcher._cursor.set(
+        f,
+        stat.st_size,
+        byte_offset=stat.st_size,
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+        content_fingerprint="already-known",
+        st_dev=stat.st_dev + 1,
+        st_ino=stat.st_ino + 1,
+        mtime_ns=stat.st_mtime_ns,
+    )
+    assert watcher._needs_work(f) is False
+
 
 def test_new_file_needs_work_without_prefingerprint_read(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     root = tmp_path / "src"
