@@ -17,7 +17,7 @@ Updated: 2026-05-15
 | Reader evidence shell | #848, #865, #956, #993 | Blocked on enough contract stability for full UI, but evidence harness can advance | Expand synthetic reader DOM/browser smoke toward MK3 states | `pytest tests/unit/daemon/test_web_reader.py`, future browser lane, `devtools verify --quick` |
 | Paste/attachment/provenance | #839, #864, #848, #993 | Blocked on message envelope/provenance vocabulary | Implement paste-span projection MVP after contract spine | focused storage/payload tests, daemon API tests, visual state tests |
 | Topology/workspace | #866, #993, #848, #865 | Substrate can start once source identity is stable | Materialize topology edges before graph UI | topology storage tests, parser fixtures, visual graph states |
-| User state/advanced panels | #867, #993, #1019, #995 | Blocked on TargetRef/query serialization | Add TargetRef-based marks/annotations first | user-state CRUD tests, content-hash exclusion tests, saved-view roundtrip tests |
+| User state/advanced panels | #867, #993, #1019, #995 | Active initial API slice | Expose existing conversation marks, saved views, and recall packs through daemon reader APIs; keep annotations/message targets open | daemon user-state API tests, saved-view roundtrip tests, visual state tests |
 | Verification throughput | #1026, #997, #998, #594, #590, #1012 | Ready to start independently | Add affected-test workflow and reduce outlier runtime | `devtools verify --affected --skip-slow`, durations capture, focused regression tests |
 
 ## Subagent Parallelization Model
@@ -205,6 +205,43 @@ Verification:
 
 - `pytest -q tests/unit/devtools/test_lab_list_subcommands.py tests/unit/devtools/test_lab_surface.py -k "lab_scenario"`
 - `devtools lab-scenario run reader-visual-smoke --json`
+
+### 2026-05-15 - Reader user-state API launch
+
+Target:
+
+- #867 initial daemon reader API for durable conversation user state.
+
+Coordination:
+
+- Main branch: `feature/feat/reader-user-state-api`.
+- Serialized implementation. The write surface overlaps `polylogue/daemon/http.py`
+  and the existing user-state query helpers, so no worker lane is useful.
+
+Owned files:
+
+- `polylogue/daemon/http.py`
+- `polylogue/storage/sqlite/queries/conversations_identity.py`
+- `tests/unit/daemon/test_web_reader.py`
+- `docs/plans/mk3-execution-log.md`
+
+Outcome:
+
+- Exposed conversation-target marks through `/api/user/marks`.
+- Exposed saved views through `/api/user/saved-views`, with strict
+  `ConversationQuerySpec` validation before storing query JSON.
+- Exposed recall packs through `/api/user/recall-packs`, preserving cited
+  conversation IDs and payload JSON.
+- Fixed existing mark/saved-view/recall write helpers so writes commit across
+  request boundaries.
+- Kept annotations, message/range targets, UI controls, CLI parity, and MCP
+  parity open under #867 rather than pretending this slice completes the issue.
+
+Verification:
+
+- `pytest -q tests/unit/daemon/test_web_reader.py -k "UserState or marks or saved_views or recall_packs"`
+- `pytest -q tests/unit/daemon/test_web_reader.py`
+- `pytest -q tests/visual`
 
 ### 2026-05-15 - Wave 1 reader query smoke closure
 

@@ -185,6 +185,7 @@ async def add_mark(conn: aiosqlite.Connection, conversation_id: str, mark_type: 
         "INSERT OR IGNORE INTO user_marks (conversation_id, mark_type, created_at) VALUES (?, ?, ?)",
         (conversation_id, mark_type, created_at),
     )
+    await conn.commit()
     return cursor.rowcount > 0
 
 
@@ -194,6 +195,7 @@ async def remove_mark(conn: aiosqlite.Connection, conversation_id: str, mark_typ
         "DELETE FROM user_marks WHERE conversation_id = ? AND mark_type = ?",
         (conversation_id, mark_type),
     )
+    await conn.commit()
     return cursor.rowcount > 0
 
 
@@ -240,6 +242,7 @@ async def save_view(conn: aiosqlite.Connection, view_id: str, name: str, query_j
         "INSERT OR REPLACE INTO saved_views (view_id, name, query_json, created_at) VALUES (?, ?, ?, ?)",
         (view_id, name, query_json, created_at),
     )
+    await conn.commit()
     return not exists
 
 
@@ -297,6 +300,7 @@ async def list_views(conn: aiosqlite.Connection) -> list[dict[str, str]]:
 async def delete_view(conn: aiosqlite.Connection, view_id: str) -> bool:
     """Delete a saved view. Returns True if something was deleted."""
     cursor = await conn.execute("DELETE FROM saved_views WHERE view_id = ?", (view_id,))
+    await conn.commit()
     return cursor.rowcount > 0
 
 
@@ -324,6 +328,7 @@ async def save_recall_pack(
         "VALUES (?, ?, ?, ?, ?)",
         (pack_id, label, conversation_ids_json, payload_json, created_at),
     )
+    await conn.commit()
     return not exists
 
 
@@ -367,6 +372,7 @@ async def list_recall_packs(conn: aiosqlite.Connection) -> list[dict[str, str]]:
 async def delete_recall_pack(conn: aiosqlite.Connection, pack_id: str) -> bool:
     """Delete a recall pack. Returns True if something was deleted."""
     cursor = await conn.execute("DELETE FROM recall_packs WHERE pack_id = ?", (pack_id,))
+    await conn.commit()
     return cursor.rowcount > 0
 
 
