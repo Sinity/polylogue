@@ -29,6 +29,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from http.server import HTTPServer
 from pathlib import Path
+from typing import cast
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
@@ -76,13 +77,22 @@ def _running_server(
 def _seed_empty_schema(workspace: dict[str, Path]) -> None:
     import sqlite3
 
-    from polylogue.storage.sqlite.schema_ddl_archive import ARCHIVE_STORAGE_DDL, MESSAGE_FTS_DDL
+    from polylogue.storage.sqlite.schema_ddl_archive import (
+        ARCHIVE_STORAGE_DDL,
+        MESSAGE_FTS_DDL,
+        RECALL_PACKS_DDL,
+        SAVED_VIEWS_DDL,
+        USER_MARKS_DDL,
+    )
 
     db = _archive_db_path(workspace)
     db.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(db))
     conn.executescript(ARCHIVE_STORAGE_DDL)
     conn.executescript(MESSAGE_FTS_DDL)
+    conn.executescript(USER_MARKS_DDL)
+    conn.executescript(SAVED_VIEWS_DDL)
+    conn.executescript(RECALL_PACKS_DDL)
     conn.commit()
     conn.close()
 
@@ -91,13 +101,22 @@ def _seed_test_db(workspace: dict[str, Path]) -> None:
     """Seed a synthetic archive with three single-message conversations."""
     import sqlite3
 
-    from polylogue.storage.sqlite.schema_ddl_archive import ARCHIVE_STORAGE_DDL, MESSAGE_FTS_DDL
+    from polylogue.storage.sqlite.schema_ddl_archive import (
+        ARCHIVE_STORAGE_DDL,
+        MESSAGE_FTS_DDL,
+        RECALL_PACKS_DDL,
+        SAVED_VIEWS_DDL,
+        USER_MARKS_DDL,
+    )
 
     db = _archive_db_path(workspace)
     db.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(db))
     conn.executescript(ARCHIVE_STORAGE_DDL)
     conn.executescript(MESSAGE_FTS_DDL)
+    conn.executescript(USER_MARKS_DDL)
+    conn.executescript(SAVED_VIEWS_DDL)
+    conn.executescript(RECALL_PACKS_DDL)
     for cid, prov, title in [
         ("c1", "claude-code", "Claude Code session about authentication"),
         ("c2", "chatgpt", "ChatGPT debugging conversation"),
@@ -134,6 +153,26 @@ def _get_text(base_url: str, path: str, *, headers: dict[str, str] | None = None
     except HTTPError as exc:
         body = exc.read().decode() if exc.fp else ""
         return exc.code, exc.headers.get("Content-Type", ""), body
+
+
+def _request_json(
+    base_url: str,
+    method: str,
+    path: str,
+    *,
+    payload: dict[str, object] | None = None,
+    headers: dict[str, str] | None = None,
+) -> tuple[int, object]:
+    body = json.dumps(payload or {}).encode("utf-8") if payload is not None else None
+    request_headers = {"Content-Type": "application/json"}
+    request_headers.update(headers or {})
+    req = Request(f"{base_url}{path}", data=body, headers=request_headers, method=method)
+    try:
+        with urlopen(req, timeout=10) as resp:
+            return resp.status, json.loads(resp.read())
+    except HTTPError as exc:
+        raw = exc.read().decode() if exc.fp else "{}"
+        return exc.code, json.loads(raw)
 
 
 # ---------------------------------------------------------------------------
@@ -267,6 +306,118 @@ class TestReaderConversationState:
         with _running_server(workspace_env) as (_, base_url):
             status, _, _ = _get_text(base_url, "/api/conversations/does-not-exist")
         assert status == 404
+
+
+# ---------------------------------------------------------------------------
+# polylogue.local_reader.user_state — durable marks/views/recall contracts
+# ---------------------------------------------------------------------------
+
+
+class TestReaderUserState:
+    """``polylogue.local_reader.user_state``: durable conversation user state."""
+
+    def test_conversation_marks_are_idempotent_and_deletable(self, workspace_env: dict[str, Path]) -> None:
+        with _running_server(workspace_env) as (_, base_url):
+            status, created = _request_json(
+                base_url,
+                "POST",
+                "/api/user/marks",
+                payload={"conversation_id": "c1", "mark_type": "star"},
+            )
+            status2, duplicate = _request_json(
+                base_url,
+                "POST",
+                "/api/user/marks",
+                payload={"conversation_id": "c1", "mark_type": "star"},
+            )
+            marks = _get_json(base_url, "/api/user/marks?conversation_id=c1")
+            delete_status, deleted = _request_json(
+                base_url,
+                "DELETE",
+                "/api/user/marks?conversation_id=c1&mark_type=star",
+            )
+            empty = _get_json(base_url, "/api/user/marks?conversation_id=c1")
+
+        marks_payload = cast(dict[str, object], marks)
+        assert status == 201
+        assert created == {"conversation_id": "c1", "mark_type": "star", "created": True}
+        assert status2 == 200
+        assert duplicate == {"conversation_id": "c1", "mark_type": "star", "created": False}
+        mark_items = cast(list[dict[str, object]], marks_payload["items"])
+        assert mark_items[0]["mark_type"] == "star"
+        assert delete_status == 200
+        assert deleted == {"conversation_id": "c1", "mark_type": "star", "deleted": True}
+        assert empty == {"items": [], "total": 0}
+
+    def test_saved_views_roundtrip_query_specs(self, workspace_env: dict[str, Path]) -> None:
+        with _running_server(workspace_env) as (_, base_url):
+            status, saved = _request_json(
+                base_url,
+                "POST",
+                "/api/user/saved-views",
+                payload={
+                    "view_id": "view-auth",
+                    "name": "Auth sessions",
+                    "query": {"query": "auth", "provider": "claude-code", "limit": 5},
+                },
+            )
+            listed = _get_json(base_url, "/api/user/saved-views")
+            fetched = _get_json(base_url, "/api/user/saved-views/view-auth")
+            delete_status, deleted = _request_json(base_url, "DELETE", "/api/user/saved-views/view-auth")
+
+        saved_payload = cast(dict[str, object], saved)
+        listed_payload = cast(dict[str, object], listed)
+        fetched_payload = cast(dict[str, object], fetched)
+        assert status == 201
+        assert saved_payload["created"] is True
+        assert saved_payload["query"] == {"limit": 5, "provider": "claude-code", "query": "auth"}
+        assert listed_payload["total"] == 1
+        assert fetched_payload["view_id"] == "view-auth"
+        assert fetched_payload["query_json"] == '{"limit":5,"provider":"claude-code","query":"auth"}'
+        assert delete_status == 200
+        assert deleted == {"view_id": "view-auth", "deleted": True}
+
+    def test_saved_view_rejects_unknown_query_params(self, workspace_env: dict[str, Path]) -> None:
+        with _running_server(workspace_env) as (_, base_url):
+            status, payload = _request_json(
+                base_url,
+                "POST",
+                "/api/user/saved-views",
+                payload={"name": "Broken", "query": {"providr": "claude-code"}},
+            )
+
+        error_payload = cast(dict[str, object], payload)
+        assert status == 400
+        assert error_payload["error"] == "QuerySpecError"
+        assert error_payload["field"] == "providr"
+
+    def test_recall_packs_roundtrip_cited_conversations(self, workspace_env: dict[str, Path]) -> None:
+        with _running_server(workspace_env) as (_, base_url):
+            status, saved = _request_json(
+                base_url,
+                "POST",
+                "/api/user/recall-packs",
+                payload={
+                    "pack_id": "pack-auth",
+                    "label": "Auth pack",
+                    "conversation_ids": ["c1", "c2"],
+                    "payload": {"reason": "handoff"},
+                },
+            )
+            listed = _get_json(base_url, "/api/user/recall-packs")
+            fetched = _get_json(base_url, "/api/user/recall-packs/pack-auth")
+            delete_status, deleted = _request_json(base_url, "DELETE", "/api/user/recall-packs/pack-auth")
+
+        saved_payload = cast(dict[str, object], saved)
+        listed_payload = cast(dict[str, object], listed)
+        fetched_payload = cast(dict[str, object], fetched)
+        assert status == 201
+        assert saved_payload["created"] is True
+        assert listed_payload["total"] == 1
+        assert fetched_payload["conversation_ids"] == ["c1", "c2"]
+        assert fetched_payload["payload"] == {"reason": "handoff"}
+        assert delete_status == 200
+        assert deleted == {"pack_id": "pack-auth", "deleted": True}
 
 
 # ---------------------------------------------------------------------------

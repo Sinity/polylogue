@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlparse
 
 from polylogue.core.loopback import is_loopback_host, is_loopback_origin
+from polylogue.daemon import user_state_http
 from polylogue.daemon.events import emit_daemon_event
 from polylogue.daemon.status import daemon_status_payload
 from polylogue.errors import PolylogueError
@@ -311,10 +312,6 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
     def _sync_run(self, handler: Callable) -> object:  # type: ignore[type-arg]
         return asyncio.run(self._run_archive_query(handler))
 
-    # ------------------------------------------------------------------
-    # OPTIONS (no CORS by default — localhost-only service)
-    # ------------------------------------------------------------------
-
     def do_OPTIONS(self) -> None:  # noqa: N802
         self._send_error(HTTPStatus.METHOD_NOT_ALLOWED, "method_not_allowed")
 
@@ -342,6 +339,16 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             self._handle_list_conversations(params)
         elif path == ["api", "facets"]:
             self._handle_facets(params)
+        elif path == ["api", "user", "marks"]:
+            self._handle_user_state(user_state_http.handle_list_marks, params)
+        elif path == ["api", "user", "saved-views"]:
+            self._handle_user_state(user_state_http.handle_list_saved_views)
+        elif len(path) == 4 and path[:3] == ["api", "user", "saved-views"] and path[3]:
+            self._handle_user_state(user_state_http.handle_get_saved_view, path[3])
+        elif path == ["api", "user", "recall-packs"]:
+            self._handle_user_state(user_state_http.handle_list_recall_packs)
+        elif len(path) == 4 and path[:3] == ["api", "user", "recall-packs"] and path[3]:
+            self._handle_user_state(user_state_http.handle_get_recall_pack, path[3])
         elif path == ["api", "sources"]:
             self._handle_sources()
         elif len(path) == 3 and path[:2] == ["api", "conversations"] and path[2]:
@@ -358,10 +365,6 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         path, params = self._parse_path()
         self._dispatch_get(path, params)
-
-    # ------------------------------------------------------------------
-    # POST
-    # ------------------------------------------------------------------
 
     def _check_cross_origin(self) -> bool:
         """Reject browser cross-origin POSTs to mutating endpoints.
@@ -396,6 +399,34 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             return
         if path == ["api", "maintenance", "run"]:
             self._handle_maintenance_run()
+            return
+        if path == ["api", "user", "marks"]:
+            self._handle_user_state(user_state_http.handle_create_mark)
+            return
+        if path == ["api", "user", "saved-views"]:
+            self._handle_user_state(user_state_http.handle_save_view)
+            return
+        if path == ["api", "user", "recall-packs"]:
+            self._handle_user_state(user_state_http.handle_save_recall_pack)
+            return
+        self._send_error(HTTPStatus.NOT_FOUND, "not_found")
+
+    def do_DELETE(self) -> None:  # noqa: N802
+        path, params = self._parse_path()
+
+        if not self._check_auth():
+            return
+        if not self._check_cross_origin():
+            return
+
+        if path == ["api", "user", "marks"]:
+            self._handle_user_state(user_state_http.handle_delete_mark, params)
+            return
+        if len(path) == 4 and path[:3] == ["api", "user", "saved-views"] and path[3]:
+            self._handle_user_state(user_state_http.handle_delete_saved_view, path[3])
+            return
+        if len(path) == 4 and path[:3] == ["api", "user", "recall-packs"] and path[3]:
+            self._handle_user_state(user_state_http.handle_delete_recall_pack, path[3])
             return
         self._send_error(HTTPStatus.NOT_FOUND, "not_found")
 
@@ -872,6 +903,10 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             "total_conversations": stats.conversation_count,
             "total_messages": stats.message_count,
         }
+
+    @daemon_safe_handler
+    def _handle_user_state(self, handler: Callable[..., None], *args: object) -> None:
+        handler(self, *args)
 
     # ------------------------------------------------------------------
     # Handlers: sources

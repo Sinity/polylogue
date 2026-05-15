@@ -967,7 +967,7 @@ files:
     target: polylogue/daemon/health.py
     owner: stable
   - path: polylogue/daemon/http.py
-    loc: 1043
+    loc: 1096
     target: polylogue/daemon/http.py
     owner: stable
   - path: polylogue/daemon/live_ingest_attempt_models.py
@@ -986,6 +986,10 @@ files:
   - path: polylogue/daemon/status.py
     loc: 1139
     target: polylogue/daemon/status.py
+    owner: stable
+  - path: polylogue/daemon/user_state_http.py
+    loc: 216
+    target: polylogue/daemon/user_state_http.py
     owner: stable
   - path: polylogue/daemon/web_shell.py
     loc: 644
@@ -2834,7 +2838,7 @@ files:
     target: polylogue/storage/sqlite/queries/conversations.py
     owner: stable
   - path: polylogue/storage/sqlite/queries/conversations_identity.py
-    loc: 395
+    loc: 401
     target: polylogue/storage/sqlite/queries/conversations_identity.py
     owner: stable
   - path: polylogue/storage/sqlite/queries/conversations_reads.py
@@ -3036,7 +3040,7 @@ files:
     target: polylogue/surfaces/__init__.py
     owner: stable
   - path: polylogue/surfaces/payloads.py
-    loc: 701
+    loc: 715
     target: polylogue/surfaces/payloads.py
     owner: stable
   - path: polylogue/types.py
