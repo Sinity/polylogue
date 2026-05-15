@@ -24,12 +24,12 @@ def test_proof_pack_reports_diff_shaped_fields() -> None:
     assert report["gate_groups"]["optional_confidence"]
     assert "oracle_mix" in report
     assert "cost_tier" in report
-    assert "agent_judgment_cells" in report
+    assert "manual_review_requirements" in report
     assert "known_gaps" in report
     assert "additional_known_gaps" in report
-    assert "stable_affected_obligations" in report
+    assert "stable_routed_checks" in report
     assert "catalog_quality_checks" in report
-    assert "taxonomy" in report
+    assert "artifact_source_groups" in report
     assert "clean_tree" in report
     assert "_context" in report
 
@@ -48,8 +48,8 @@ def test_proof_pack_markdown_is_pr_comment_ready() -> None:
     assert "### Required Gates (run now)" in rendered
     assert "### Always-On PR Gates" in rendered
     assert "### Confidence Gates (optional)" in rendered
-    assert "### Affected Evidence by Taxonomy" in rendered
-    assert "stable affected obligations" in rendered
+    assert "### Affected Checks by Artifact Source" in rendered
+    assert "stable routed checks" in rendered
 
 
 def test_proof_pack_surfaces_manifest_known_gaps_for_affected_domains() -> None:
@@ -66,7 +66,7 @@ def test_proof_pack_surfaces_manifest_known_gaps_for_affected_domains() -> None:
     assert "docs_media" in gap_domains | additional_gap_domains
 
 
-def test_proof_pack_markdown_has_taxonomy_section() -> None:
+def test_proof_pack_markdown_has_artifact_source_section() -> None:
     report = build_proof_pack(
         Path.cwd(),
         base_ref="origin/master",
@@ -76,13 +76,13 @@ def test_proof_pack_markdown_has_taxonomy_section() -> None:
 
     rendered = render_markdown(report)
 
-    assert "### Affected Evidence by Taxonomy" in rendered
-    assert "executable_behavior" in rendered
-    assert "architectural_static" in rendered
-    assert "metadata_spec" in rendered
+    assert "### Affected Checks by Artifact Source" in rendered
+    assert "pytest_or_command" in rendered
+    assert "static_check" in rendered
+    assert "metadata_or_docs" in rendered
 
 
-def test_proof_pack_markdown_lists_agent_judgment_cells() -> None:
+def test_proof_pack_markdown_lists_manual_review_requirements() -> None:
     report = build_proof_pack(
         Path.cwd(),
         base_ref="origin/master",
@@ -92,7 +92,7 @@ def test_proof_pack_markdown_lists_agent_judgment_cells() -> None:
 
     rendered = render_markdown(report)
 
-    assert "### Agent Judgment Cells" in rendered
+    assert "### Manual Review Requirements" in rendered
     assert "operation.effect.privacy_safe_evidence" in rendered
     assert "artifact `missing`" in rendered
 
@@ -128,7 +128,7 @@ def test_proof_pack_check_policy_blocks_serious_judgment_cells() -> None:
         head_ref="HEAD",
         changed_paths=["docs/plans/layering.yaml"],
     )
-    report["agent_judgment_cells"] = [
+    report["manual_review_requirements"] = [
         {
             "claim_id": "claim.needs.review",
             "oracle": "manual_review",
@@ -156,7 +156,7 @@ def test_proof_pack_check_policy_allows_tracked_judgment_cells() -> None:
         head_ref="HEAD",
         changed_paths=["docs/plans/layering.yaml"],
     )
-    report["agent_judgment_cells"] = [
+    report["manual_review_requirements"] = [
         {
             "claim_id": "claim.tracked.review",
             "oracle": "manual_review",
@@ -183,7 +183,7 @@ def test_proof_pack_check_policy_allows_completed_judgment_artifact() -> None:
         head_ref="HEAD",
         changed_paths=["docs/plans/layering.yaml"],
     )
-    report["agent_judgment_cells"] = [
+    report["manual_review_requirements"] = [
         {
             "claim_id": "claim.reviewed",
             "oracle": "manual_review",
@@ -238,8 +238,8 @@ def test_clean_tree_report_distinguishes_baseline() -> None:
     assert "No changed paths" in str(report.get("_context", ""))
 
 
-def test_proof_pack_taxonomy_groups_are_present_in_report() -> None:
-    """The report should include taxonomy groups with correct structure."""
+def test_proof_pack_artifact_source_groups_are_present_in_report() -> None:
+    """The report should include artifact-source groups with correct structure."""
     report = build_proof_pack(
         Path.cwd(),
         base_ref="origin/master",
@@ -247,8 +247,8 @@ def test_proof_pack_taxonomy_groups_are_present_in_report() -> None:
         changed_paths=["docs/plans/layering.yaml"],
     )
 
-    taxonomy = report["taxonomy"]
-    assert isinstance(taxonomy, dict)
+    groups = report["artifact_source_groups"]
+    assert isinstance(groups, dict)
     for taxonomy_name in (
         "executable_behavior",
         "observability",
@@ -257,19 +257,21 @@ def test_proof_pack_taxonomy_groups_are_present_in_report() -> None:
         "manual_review",
         "advisory",
     ):
-        assert taxonomy_name in taxonomy
-        group = taxonomy[taxonomy_name]
+        assert taxonomy_name in groups
+        group = groups[taxonomy_name]
+        assert "artifact_source" in group
         assert "description" in group
         assert "actionable" in group
-        assert "obligation_count" in group
-        assert "obligations" in group
+        assert "check_count" in group
+        assert "checks" in group
 
-    assert taxonomy["architectural_static"]["obligation_count"] > 0
-    assert taxonomy["architectural_static"]["actionable"] is True
+    assert groups["architectural_static"]["artifact_source"] == "static_check"
+    assert groups["architectural_static"]["check_count"] > 0
+    assert groups["architectural_static"]["actionable"] is True
 
 
-def test_proof_pack_markdown_shows_taxonomy_labels() -> None:
-    """Markdown output should label actionable vs non-blocking taxonomies."""
+def test_proof_pack_markdown_shows_artifact_source_labels() -> None:
+    """Markdown output should label actionable vs non-blocking artifact sources."""
     report = build_proof_pack(
         Path.cwd(),
         base_ref="origin/master",
@@ -279,6 +281,6 @@ def test_proof_pack_markdown_shows_taxonomy_labels() -> None:
 
     rendered = render_markdown(report)
 
-    assert "architectural_static" in rendered
+    assert "static_check" in rendered
     assert "(actionable)" in rendered
     assert "### Known Gaps (tracking, not blocking)" in rendered

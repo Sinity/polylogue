@@ -175,7 +175,7 @@ def test_obligation_diff_buckets_new_dropped_stale_and_suppressed() -> None:
     assert diff.suppressed == ("test:tests/unit/example.py",)
 
 
-def test_human_report_explains_selected_obligations() -> None:
+def test_human_report_explains_selected_checks() -> None:
     catalog = build_verification_catalog()
     report = build_affected_obligation_report(
         ("polylogue/sources/parsers/codex.py",),
@@ -186,7 +186,7 @@ def test_human_report_explains_selected_obligations() -> None:
 
     rendered = render_affected_obligations(report)
 
-    assert "Affected Obligations" in rendered
+    assert "Affected Verification Checks" in rendered
     assert "provider parser semantics can change normalized archive facts" in rendered
     assert "provider.capability.codex" in rendered
     assert "Recommended Inner-Loop Checks" in rendered

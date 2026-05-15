@@ -1,11 +1,11 @@
-"""Diff-shaped proof-pack report for PR confidence.
+"""Diff-shaped verification impact report for PR confidence.
 
-Consumes the assurance-domain manifests, proof catalog, and affected-obligation
-routing to produce an operator-facing confidence answer.
+Consumes assurance-domain manifests, the catalog implementation, and
+changed-path routing to produce an operator-facing confidence answer.
 
-The report classifies every affected obligation by evidence taxonomy so agents
-can distinguish executable checks from static declarations, metadata
-completeness assertions, and advisory noise.
+The report classifies each routed check by artifact source so agents can
+distinguish executable tests from static declarations, metadata completeness
+assertions, manual review requirements, and advisory noise.
 """
 
 from __future__ import annotations
@@ -34,12 +34,21 @@ from polylogue.proof.models import EvidenceTaxonomy, RunnerBinding, SubjectRef
 
 # Taxonomy human-facing descriptions and actionability guidance.
 _TAXONOMY_DESCRIPTIONS: dict[EvidenceTaxonomy, str] = {
-    "executable_behavior": "Gates backed by executable checks (tests, probes, smoke runs).",
-    "observability": "Runtime trace or diagnostic observability evidence.",
-    "architectural_static": "Static boundary checks (topology, layering, file budgets).",
-    "metadata_spec": "Metadata and specification completeness -- does not block by itself.",
-    "manual_review": "Requires human agent judgment artifact.",
+    "executable_behavior": "Pytest nodes, probes, smoke runs, or benchmark commands.",
+    "observability": "Runtime trace or diagnostic artifact evidence.",
+    "architectural_static": "Static checks such as topology, layering, file budgets, and manifests.",
+    "metadata_spec": "Documentation or metadata completeness -- does not block by itself.",
+    "manual_review": "Explicit manual review artifact required.",
     "advisory": "Advisory / noise -- tracking only, not a gate.",
+}
+
+_TAXONOMY_ARTIFACT_SOURCE: dict[EvidenceTaxonomy, str] = {
+    "executable_behavior": "pytest_or_command",
+    "observability": "runtime_artifact",
+    "architectural_static": "static_check",
+    "metadata_spec": "metadata_or_docs",
+    "manual_review": "manual_review",
+    "advisory": "advisory",
 }
 
 _TAXONOMY_ACTIONABLE: frozenset[EvidenceTaxonomy] = frozenset(
@@ -118,19 +127,19 @@ def _taxonomy_for_obligation(
     return result
 
 
-def _build_taxonomy_groups(
+def _build_artifact_source_groups(
     affected_obligations: tuple[AffectedObligation, ...],
     *,
     catalog: VerificationCatalog,
     cache: dict[str, EvidenceTaxonomy],
 ) -> dict[str, Any]:
-    """Group affected obligations by evidence taxonomy."""
+    """Group routed checks by their real artifact source."""
     grouped: dict[EvidenceTaxonomy, list[dict[str, Any]]] = defaultdict(list)
     for item in affected_obligations:
         taxonomy = _taxonomy_for_obligation(item.obligation_id, catalog, cache=cache)
         grouped[taxonomy].append(
             {
-                "obligation_id": item.obligation_id,
+                "check_id": item.obligation_id,
                 "claim_id": item.claim_id,
                 "subject_id": item.subject_id,
                 "reasons": list(item.reasons),
@@ -141,10 +150,11 @@ def _build_taxonomy_groups(
     for taxonomy in _TAXONOMY_SORT_ORDER:
         items = grouped.get(taxonomy, [])
         payload[taxonomy] = {
+            "artifact_source": _TAXONOMY_ARTIFACT_SOURCE.get(taxonomy, "advisory"),
             "description": _TAXONOMY_DESCRIPTIONS.get(taxonomy, ""),
             "actionable": taxonomy in _TAXONOMY_ACTIONABLE,
-            "obligation_count": len(items),
-            "obligations": items,
+            "check_count": len(items),
+            "checks": items,
         }
     return payload
 
@@ -200,7 +210,7 @@ def build_proof_pack(
         visible_domains=visible_gap_domains,
     )
     taxonomy_cache: dict[str, EvidenceTaxonomy] = {}
-    taxonomy_groups = _build_taxonomy_groups(
+    artifact_source_groups = _build_artifact_source_groups(
         affected.affected_obligations,
         catalog=catalog,
         cache=taxonomy_cache,
@@ -223,9 +233,9 @@ def build_proof_pack(
         "domain_coverage": _domain_coverage(domains_data, catalog),
         "gate_groups": gate_groups,
         "required_gates": _checks_payload((*affected.inner_loop_checks, *affected.pr_gates)),
-        "agent_judgment_cells": _agent_judgment_cells(affected_claims),
-        "stable_affected_obligations": list(affected.obligation_diff.stable_affected),
-        "taxonomy": taxonomy_groups,
+        "manual_review_requirements": _manual_review_requirements(affected_claims),
+        "stable_routed_checks": list(affected.obligation_diff.stable_affected),
+        "artifact_source_groups": artifact_source_groups,
         "known_gaps": known_gaps,
         "additional_known_gaps": additional_known_gaps,
         "oracle_mix": dict(Counter(claim.oracle for claim in affected_claims)),
@@ -234,9 +244,9 @@ def build_proof_pack(
             "No changed paths -- zero obligations are change-specific. Catalog stats reflect the baseline, not a diff."
             if clean_tree
             else (
-                f"{len(paths)} changed path(s); {affected_count} affected obligations, "
-                f"{stable_count} stable affected. "
-                "Taxonomy distinguishes executable gates from static/metadata obligations."
+                f"{len(paths)} changed path(s); {affected_count} routed check(s), "
+                f"{stable_count} stable routed check(s). "
+                "Artifact-source groups distinguish tests, static checks, metadata, and review requirements."
             )
         ),
     }
@@ -258,15 +268,18 @@ def evaluate_check_policy(report: dict[str, Any]) -> dict[str, Any]:
         elif status == OutcomeStatus.WARNING.value:
             warnings.append(line)
 
-    serious_judgment_cells = [
-        cell
-        for cell in report.get("agent_judgment_cells", [])
-        if isinstance(cell, dict) and cell.get("severity") == "serious" and not _judgment_cell_satisfied(cell)
+    serious_review_requirements = [
+        requirement
+        for requirement in report.get("manual_review_requirements", [])
+        if isinstance(requirement, dict)
+        and requirement.get("severity") == "serious"
+        and not _manual_review_requirement_satisfied(requirement)
     ]
-    for cell in serious_judgment_cells:
+    for requirement in serious_review_requirements:
         errors.append(
-            "affected serious claim needs agent judgment artifact: "
-            f"{cell.get('claim_id')} ({cell.get('oracle')}, {cell.get('independence_level')})"
+            "affected serious claim needs manual review artifact: "
+            f"{requirement.get('claim_id')} ({requirement.get('oracle')}, "
+            f"{requirement.get('independence_level')})"
         )
 
     suppressed = _suppressed_change_subjects(report)
@@ -285,13 +298,15 @@ def evaluate_check_policy(report: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _judgment_cell_satisfied(cell: dict[str, Any]) -> bool:
-    if cell.get("tracked_exception"):
+def _manual_review_requirement_satisfied(requirement: dict[str, Any]) -> bool:
+    if requirement.get("tracked_exception"):
         return True
-    result = str(cell.get("result") or "").strip().lower()
+    result = str(requirement.get("result") or "").strip().lower()
     if result not in {"accepted", "passed", "pass", "ok"}:
         return False
-    return all(str(cell.get(field) or "").strip() for field in ("artifact", "reviewer", "produced_at", "freshness"))
+    return all(
+        str(requirement.get(field) or "").strip() for field in ("artifact", "reviewer", "produced_at", "freshness")
+    )
 
 
 def _suppressed_change_subjects(report: dict[str, Any]) -> list[str]:
@@ -353,11 +368,11 @@ def _checks_payload(checks: tuple[RecommendedCheck, ...]) -> list[dict[str, Any]
     return payload
 
 
-def _agent_judgment_cells(claims: list[Any]) -> list[dict[str, Any]]:
-    cells: list[dict[str, Any]] = []
+def _manual_review_requirements(claims: list[Any]) -> list[dict[str, Any]]:
+    requirements: list[dict[str, Any]] = []
     for claim in claims:
         if claim.oracle == "manual_review" or claim.independence_level in {"same_source", "self_attesting"}:
-            cells.append(
+            requirements.append(
                 {
                     "claim_id": claim.id,
                     "oracle": claim.oracle,
@@ -369,10 +384,10 @@ def _agent_judgment_cells(claims: list[Any]) -> list[dict[str, Any]]:
                     "produced_at": None,
                     "freshness": None,
                     "result": "tracked_exception" if claim.tracked_exception else "missing",
-                    "reason": "requires agent judgment artifact or independent evidence upgrade",
+                    "reason": "requires manual review artifact or independent evidence upgrade",
                 }
             )
-    return cells
+    return requirements
 
 
 def _known_gaps(
@@ -789,17 +804,17 @@ def render_markdown(report: dict[str, Any]) -> str:
     lines.extend(["", "### Confidence Gates (optional)"])
     _append_gate_lines(lines, gate_groups.get("optional_confidence", []), empty_text="- none")
 
-    # Evidence Taxonomy
-    lines.extend(["", "### Affected Evidence by Taxonomy"])
-    taxonomy = report.get("taxonomy", {})
-    _render_taxonomy_section_markdown(lines, taxonomy)
+    # Artifact-source groups
+    lines.extend(["", "### Affected Checks by Artifact Source"])
+    artifact_source_groups = report.get("artifact_source_groups", {})
+    _render_artifact_source_groups_markdown(lines, artifact_source_groups)
 
-    # Agent Judgment Cells
-    agent_judgment_cells = report.get("agent_judgment_cells", [])
-    if agent_judgment_cells:
-        lines.extend(["", "### Agent Judgment Cells (manual review)"])
-        lines.append(f"_{len(agent_judgment_cells)} cell(s) -- only actionable if severity is 'serious'_")
-        for cell in agent_judgment_cells:
+    # Manual review requirements
+    manual_review_requirements = report.get("manual_review_requirements", [])
+    if manual_review_requirements:
+        lines.extend(["", "### Manual Review Requirements"])
+        lines.append(f"_{len(manual_review_requirements)} requirement(s) -- only blocking when severity is 'serious'_")
+        for cell in manual_review_requirements:
             lines.append(
                 f"- `{cell['claim_id']}` -- result `{cell['result']}`; "
                 f"artifact `{cell['artifact'] or 'missing'}`; "
@@ -828,33 +843,34 @@ def render_markdown(report: dict[str, Any]) -> str:
     catalog_headline = report.get("catalog_headline", {})
     lines.append(
         f"- claims: {catalog_headline.get('claim_count', '?')}, "
-        f"obligations: {catalog_headline.get('obligation_count', '?')}"
+        f"routed checks: {catalog_headline.get('obligation_count', '?')}"
     )
     oracle_str = json.dumps(oracle_mix, sort_keys=True) if oracle_mix else "(none affected)"
     lines.append(f"- oracle mix: `{oracle_str}`")
     cost_str = json.dumps(cost_tier, sort_keys=True) if cost_tier else "(none)"
     lines.append(f"- cost tier: `{cost_str}`")
-    lines.append(f"- stable affected obligations: {len(report.get('stable_affected_obligations', []))}")
-    lines.append(f"- agent judgment cells: {len(agent_judgment_cells)}")
+    lines.append(f"- stable routed checks: {len(report.get('stable_routed_checks', []))}")
+    lines.append(f"- manual review requirements: {len(manual_review_requirements)}")
 
     return "\n".join(lines)
 
 
-def _render_taxonomy_section_markdown(lines: list[str], taxonomy: dict[str, Any]) -> None:
-    """Append taxonomy-grouped obligation tables to markdown lines."""
-    if not taxonomy:
-        lines.append("- no affected obligations")
+def _render_artifact_source_groups_markdown(lines: list[str], groups: dict[str, Any]) -> None:
+    """Append artifact-source grouped check counts to markdown lines."""
+    if not groups:
+        lines.append("- no affected checks")
         return
 
     for taxonomy_name in _TAXONOMY_SORT_ORDER:
-        group = taxonomy.get(taxonomy_name)
-        if not isinstance(group, dict) or group.get("obligation_count", 0) == 0:
+        group = groups.get(taxonomy_name)
+        if not isinstance(group, dict) or group.get("check_count", 0) == 0:
             continue
-        count = group["obligation_count"]
+        count = group["check_count"]
         description = str(group.get("description", ""))
+        artifact_source = str(group.get("artifact_source", taxonomy_name))
         actionable = bool(group.get("actionable", False))
         label = "actionable" if actionable else "does not block"
-        lines.append(f"- **{taxonomy_name}** ({label}): {count} obligation(s) -- {description}")
+        lines.append(f"- **{artifact_source}** ({label}): {count} check(s) -- {description}")
 
 
 def _checks_payload_merge(
@@ -886,8 +902,8 @@ def _print_human_report(report: dict[str, Any]) -> None:
     """Print a taxonomy-aware human-readable verification report."""
     headline = report["catalog_headline"]
     print(
-        f"Verification catalog: {headline['claim_count']} claims, "
-        f"{headline['obligation_count']} obligations, {headline['subject_count']} subjects"
+        f"Verification inventory: {headline['claim_count']} claims, "
+        f"{headline['obligation_count']} routed checks, {headline['subject_count']} subjects"
     )
     print(f"Refs: {report['refs']['base_ref']}..{report['refs']['head_ref']}")
     print(f"Changed paths: {len(report['changed_paths'])}")
@@ -908,27 +924,28 @@ def _print_human_report(report: dict[str, Any]) -> None:
         print("  none beyond always-on PR gates")
     print()
 
-    print("Evidence taxonomy:")
-    taxonomy = report.get("taxonomy", {})
-    if taxonomy:
+    print("Affected checks by artifact source:")
+    artifact_source_groups = report.get("artifact_source_groups", {})
+    if artifact_source_groups:
         for taxonomy_name in _TAXONOMY_SORT_ORDER:
-            group = taxonomy.get(taxonomy_name)
-            if not isinstance(group, dict) or group.get("obligation_count", 0) == 0:
+            group = artifact_source_groups.get(taxonomy_name)
+            if not isinstance(group, dict) or group.get("check_count", 0) == 0:
                 continue
-            count = group["obligation_count"]
+            count = group["check_count"]
+            artifact_source = str(group.get("artifact_source", taxonomy_name))
             actionable = "RUN" if group.get("actionable") else "INFO"
-            print(f"  {taxonomy_name:<25} {count:>4} obligations [{actionable}]")
+            print(f"  {artifact_source:<25} {count:>4} checks [{actionable}]")
             print(f"    {group.get('description', '')}")
     else:
-        print("  no affected obligations")
+        print("  no affected checks")
     print()
 
     print("Confidence gates (optional):")
     for gate in gate_groups.get("optional_confidence", []):
         print(f"  {' '.join(gate['command'])} -- {gate['reason']}")
     print()
-    print(f"Agent judgment cells: {len(report.get('agent_judgment_cells', []))}")
-    print(f"Stable affected obligations: {len(report.get('stable_affected_obligations', []))}")
+    print(f"Manual review requirements: {len(report.get('manual_review_requirements', []))}")
+    print(f"Stable routed checks: {len(report.get('stable_routed_checks', []))}")
     print(f"Known gaps: {len(report.get('known_gaps', []))}")
 
     check_result = report.get("check")
