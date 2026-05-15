@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 from collections.abc import Mapping, Sequence
 from datetime import datetime
@@ -116,12 +117,89 @@ def normalize_role(role: object) -> str:
     return str(role)
 
 
+_ANCHOR_SAFE_RE = re.compile(r"[^A-Za-z0-9_-]+")
+
+
+class TargetRefPayload(SurfacePayloadModel):
+    """Stable reader target reference for selectable archive objects."""
+
+    target_type: Literal["conversation", "message"]
+    target_id: str
+    conversation_id: str | None = None
+    message_id: str | None = None
+    block_index: int | None = None
+    identity_key: str | None = None
+
+    @classmethod
+    def conversation(cls, conversation_id: object) -> TargetRefPayload:
+        target_id = str(conversation_id)
+        return cls(
+            target_type="conversation",
+            target_id=target_id,
+            conversation_id=target_id,
+            identity_key=f"conversation:{target_id}",
+        )
+
+    @classmethod
+    def message(cls, *, conversation_id: object, message_id: object) -> TargetRefPayload:
+        conversation_target_id = str(conversation_id)
+        target_id = str(message_id)
+        return cls(
+            target_type="message",
+            target_id=target_id,
+            conversation_id=conversation_target_id,
+            message_id=target_id,
+            identity_key=f"message:{conversation_target_id}:{target_id}",
+        )
+
+
+class ReaderActionAvailabilityPayload(SurfacePayloadModel):
+    """Per-target reader action availability with explicit disabled reason."""
+
+    enabled: bool
+    disabled_reason: str | None = None
+
+
+def reader_anchor(target_type: Literal["conversation", "message"], target_id: object) -> str:
+    """Return a deterministic DOM-safe anchor for a reader target."""
+    prefix = "conversation" if target_type == "conversation" else "message"
+    safe_id = _ANCHOR_SAFE_RE.sub("-", str(target_id)).strip("-")
+    return f"{prefix}-{safe_id or 'target'}"
+
+
+def reader_conversation_actions() -> dict[str, ReaderActionAvailabilityPayload]:
+    """Default action contract for conversation-level reader targets."""
+    return {
+        "open": ReaderActionAvailabilityPayload(enabled=True),
+        "copy_link": ReaderActionAvailabilityPayload(enabled=True),
+        "annotate": ReaderActionAvailabilityPayload(
+            enabled=False,
+            disabled_reason="annotations_not_implemented",
+        ),
+    }
+
+
+def reader_message_actions() -> dict[str, ReaderActionAvailabilityPayload]:
+    """Default action contract for message-level reader targets."""
+    return {
+        "copy_text": ReaderActionAvailabilityPayload(enabled=True),
+        "copy_link": ReaderActionAvailabilityPayload(enabled=True),
+        "annotate": ReaderActionAvailabilityPayload(
+            enabled=False,
+            disabled_reason="annotations_not_implemented",
+        ),
+    }
+
+
 class ConversationMessagePayload(SurfacePayloadModel):
     """Machine-readable message payload shared across CLI and MCP surfaces."""
 
     id: str
     role: str
     text: str
+    target_ref: TargetRefPayload | None = None
+    anchor: str | None = None
+    actions: dict[str, ReaderActionAvailabilityPayload] = Field(default_factory=reader_message_actions)
     timestamp: datetime | None = None
     message_type: str = "message"
     content_blocks: list[dict[str, object]] = Field(default_factory=list)
@@ -129,7 +207,12 @@ class ConversationMessagePayload(SurfacePayloadModel):
     parent_id: str | None = None
 
     @classmethod
-    def from_message(cls, message: Message) -> ConversationMessagePayload:
+    def from_message(
+        cls,
+        message: Message,
+        *,
+        conversation_id: object | None = None,
+    ) -> ConversationMessagePayload:
         raw_message_type = getattr(message, "message_type", None)
         if raw_message_type is None:
             message_type = "message"
@@ -137,10 +220,17 @@ class ConversationMessagePayload(SurfacePayloadModel):
             message_type = str(raw_message_type.value)
         else:
             message_type = str(raw_message_type)
+        target_ref = (
+            TargetRefPayload.message(conversation_id=conversation_id, message_id=message.id)
+            if conversation_id is not None
+            else None
+        )
         return cls(
             id=str(message.id),
             role=normalize_role(message.role),
             text=message.text or "",
+            target_ref=target_ref,
+            anchor=reader_anchor("message", message.id),
             timestamp=message.timestamp,
             message_type=message_type,
             content_blocks=message.content_blocks,
@@ -156,16 +246,22 @@ class ConversationSummaryPayload(SurfacePayloadModel):
     provider: str
     title: str
     message_count: int
+    target_ref: TargetRefPayload | None = None
+    anchor: str | None = None
+    actions: dict[str, ReaderActionAvailabilityPayload] = Field(default_factory=reader_conversation_actions)
     created_at: datetime | None = None
     updated_at: datetime | None = None
 
     @classmethod
     def from_conversation(cls, conversation: Conversation) -> ConversationSummaryPayload:
+        conversation_id = str(conversation.id)
         return cls(
-            id=str(conversation.id),
+            id=conversation_id,
             provider=str(conversation.provider),
             title=conversation.display_title,
             message_count=len(conversation.messages),
+            target_ref=TargetRefPayload.conversation(conversation_id),
+            anchor=reader_anchor("conversation", conversation_id),
             created_at=conversation.created_at,
             updated_at=conversation.updated_at,
         )
@@ -177,11 +273,14 @@ class ConversationSummaryPayload(SurfacePayloadModel):
         *,
         message_count: int | None = None,
     ) -> ConversationSummaryPayload:
+        conversation_id = str(summary.id)
         return cls(
-            id=str(summary.id),
+            id=conversation_id,
             provider=str(summary.provider),
             title=summary.display_title,
             message_count=summary.message_count or 0 if message_count is None else message_count,
+            target_ref=TargetRefPayload.conversation(conversation_id),
+            anchor=reader_anchor("conversation", conversation_id),
             created_at=summary.created_at,
             updated_at=summary.updated_at,
         )
@@ -204,7 +303,10 @@ class ConversationDetailPayload(ConversationSummaryPayload):
         summary = ConversationSummaryPayload.from_conversation(conversation)
         return cls(
             **summary.model_dump(),
-            messages=tuple(ConversationMessagePayload.from_message(msg) for msg in conversation.messages),
+            messages=tuple(
+                ConversationMessagePayload.from_message(msg, conversation_id=conversation.id)
+                for msg in conversation.messages
+            ),
         )
 
 
@@ -225,6 +327,9 @@ class ConversationListRowPayload(SurfacePayloadModel):
     id: str
     provider: str
     title: str
+    target_ref: TargetRefPayload | None = None
+    anchor: str | None = None
+    actions: dict[str, ReaderActionAvailabilityPayload] = Field(default_factory=reader_conversation_actions)
     date: str | None = None
     messages: int
     tags: tuple[str, ...] = ()
@@ -236,10 +341,13 @@ class ConversationListRowPayload(SurfacePayloadModel):
 
     @classmethod
     def from_conversation(cls, conversation: Conversation) -> ConversationListRowPayload:
+        conversation_id = str(conversation.id)
         return cls(
-            id=str(conversation.id),
+            id=conversation_id,
             provider=str(conversation.provider),
             title=conversation.display_title,
+            target_ref=TargetRefPayload.conversation(conversation_id),
+            anchor=reader_anchor("conversation", conversation_id),
             date=conversation.display_date.isoformat() if conversation.display_date else None,
             messages=len(conversation.messages),
             tags=tuple(conversation.tags),
@@ -261,10 +369,13 @@ class ConversationListRowPayload(SurfacePayloadModel):
         repo: str | None = None,
         cwd_display: str | None = None,
     ) -> ConversationListRowPayload:
+        conversation_id = str(summary.id)
         return cls(
-            id=str(summary.id),
+            id=conversation_id,
             provider=str(summary.provider),
             title=summary.display_title,
+            target_ref=TargetRefPayload.conversation(conversation_id),
+            anchor=reader_anchor("conversation", conversation_id),
             date=summary.display_date.isoformat() if summary.display_date else None,
             messages=message_count,
             tags=tuple(summary.tags),
@@ -574,12 +685,17 @@ __all__ = [
     "QueryErrorPayload",
     "QueryMissDiagnosticsPayload",
     "QueryMissReasonPayload",
+    "ReaderActionAvailabilityPayload",
     "SurfacePayloadModel",
     "TagMutationOutcome",
     "TagMutationResult",
+    "TargetRefPayload",
     "JSONDocument",
     "JSONValue",
     "model_json_document",
     "normalize_role",
+    "reader_anchor",
+    "reader_conversation_actions",
+    "reader_message_actions",
     "serialize_surface_payload",
 ]

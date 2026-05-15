@@ -117,6 +117,7 @@ STORAGE_ROOT_KEEP = frozenset(
         "run_state.py",
         "conversation_replacement.py",
         "archive_views.py",
+        "source_conversations.py",
         "query_models.py",
     }
 )
