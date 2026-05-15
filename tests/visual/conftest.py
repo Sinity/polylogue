@@ -254,6 +254,25 @@ def seed_reader_archive(
                 "2026-05-15T00:02:00+00:00",
             ),
         )
+        conn.execute(
+            """
+            INSERT INTO user_annotations(
+                annotation_id, target_type, target_id, conversation_id, message_id,
+                note_text, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "reader-ann-c1",
+                "conversation",
+                "reader-c1",
+                "reader-c1",
+                None,
+                "This conversation anchors the MK3 reader evidence.",
+                "2026-05-15T00:03:00+00:00",
+                "2026-05-15T00:03:00+00:00",
+            ),
+        )
     conn.commit()
     conn.close()
 

@@ -156,6 +156,11 @@ html, body { height: 100%; background: var(--bg); color: var(--text);
 .saved-view-item { display: flex; justify-content: space-between; gap: 8px; align-items: center;
   border: 1px solid var(--border); border-radius: var(--radius); padding: 6px; background: var(--panel-subtle); }
 .saved-view-item button { flex-shrink: 0; }
+.annotation-list { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.annotation-item { border: 1px solid var(--border); border-radius: var(--radius); padding: 6px; background: var(--panel-subtle); }
+.annotation-item .meta { color: var(--text-dim); font-family: var(--font-mono); font-size: 10px; margin-bottom: 4px; }
+.annotation-item .note { color: var(--text); line-height: 1.45; white-space: pre-wrap; font-size: var(--small); }
+.annotation-actions { display: flex; gap: 4px; margin-top: 6px; }
 .raw-block { font-family: var(--font-mono); font-size: 10px; white-space: pre-wrap; word-break: break-all;
   background: var(--panel-subtle); border: 1px solid var(--border); padding: 8px; border-radius: var(--radius);
   max-height: 300px; overflow-y: auto; color: var(--text-muted); }
@@ -252,7 +257,7 @@ var state = {
   conversations: [], selected: null, selectedRaw: null,
   provider: '', query: '', offset: 0, limit: 100, total: 0,
   status: {}, facets: null, inspectorTab: 'info',
-  marks: {}, savedViews: [], userStateError: ''
+  marks: {}, annotations: {}, savedViews: [], userStateError: ''
 };
 
 function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
@@ -281,6 +286,9 @@ function setMarkLocal(conversationId, markType, enabled) {
   if (!state.marks[conversationId]) state.marks[conversationId] = {};
   if (enabled) state.marks[conversationId][markType] = true;
   else delete state.marks[conversationId][markType];
+}
+function annotationsFor(conversationId) {
+  return state.annotations[conversationId] || [];
 }
 
 function getConvIdFromURL() {
@@ -327,6 +335,12 @@ async function loadUserState() {
     state.marks = {};
     (marks.items || []).forEach(function(m) {
       setMarkLocal(m.conversation_id, m.mark_type, true);
+    });
+    var annotations = await fetchJSON('/api/user/annotations');
+    state.annotations = {};
+    (annotations.items || []).forEach(function(a) {
+      if (!state.annotations[a.conversation_id]) state.annotations[a.conversation_id] = [];
+      state.annotations[a.conversation_id].push(a);
     });
     var savedViews = await fetchJSON('/api/user/saved-views');
     state.savedViews = savedViews.items || [];
@@ -639,7 +653,25 @@ function renderInspectorNotes(el, c) {
     html += '<div class="inspector-empty">' + esc(state.userStateError) + '</div>';
   }
   html += '</div><div class="inspector-section"><h4>Annotations</h4>'
-    + '<div class="inspector-empty">Annotation storage remains tracked in #867.</div></div>';
+    + '<button class="user-action" onclick="saveAnnotation()">Add note</button>';
+  var annotations = annotationsFor(c.id);
+  if (annotations.length) {
+    html += '<div class="annotation-list">';
+    annotations.forEach(function(a) {
+      var target = a.target_type === 'message' ? ('message ' + (a.message_id || a.target_id)) : 'conversation';
+      html += '<div class="annotation-item">'
+        + '<div class="meta">' + esc(target) + '</div>'
+        + '<div class="note">' + esc(a.note_text || '') + '</div>'
+        + '<div class="annotation-actions">'
+        + '<button class="user-action" onclick="editAnnotation(\'' + escAttr(a.annotation_id) + '\')">Edit</button>'
+        + '<button class="user-action" onclick="deleteAnnotation(\'' + escAttr(a.annotation_id) + '\')">Delete</button>'
+        + '</div></div>';
+    });
+    html += '</div>';
+  } else {
+    html += '<div class="inspector-empty">No annotations on this conversation</div>';
+  }
+  html += '</div>';
   el.innerHTML = html;
 }
 
@@ -691,6 +723,46 @@ function applySavedView(viewId) {
   loadConversations();
   loadFacets();
   renderInspector();
+}
+
+function findAnnotation(annotationId) {
+  var cid = state.selected ? state.selected.id : '';
+  var annotations = annotationsFor(cid);
+  return annotations.find(function(a) { return a.annotation_id === annotationId; }) || null;
+}
+
+async function saveAnnotation(annotationId) {
+  if (!state.selected) return;
+  var existing = annotationId ? findAnnotation(annotationId) : null;
+  var note = window.prompt('Annotation note', existing ? existing.note_text : '');
+  if (!note) return;
+  var id = annotationId || ('annotation-' + Date.now().toString(36));
+  try {
+    await sendJSON('/api/user/annotations', 'POST', {
+      annotation_id: id,
+      conversation_id: state.selected.id,
+      note_text: note
+    });
+    await loadUserState();
+  } catch(e) {
+    state.userStateError = 'Failed to save annotation';
+    renderInspector();
+  }
+}
+
+function editAnnotation(annotationId) {
+  saveAnnotation(annotationId);
+}
+
+async function deleteAnnotation(annotationId) {
+  if (!annotationId) return;
+  try {
+    await sendJSON('/api/user/annotations/' + encodeURIComponent(annotationId), 'DELETE');
+    await loadUserState();
+  } catch(e) {
+    state.userStateError = 'Failed to delete annotation';
+    renderInspector();
+  }
 }
 
 async function loadRawData() {

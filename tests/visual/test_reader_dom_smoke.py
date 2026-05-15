@@ -54,7 +54,10 @@ def test_reader_search_shell_dom_evidence(reader_workspace: ReaderWorkspace, tmp
         "Focus search",
         "Local",
         "/api/user/marks",
+        "/api/user/annotations",
         "toggleMark",
+        "saveAnnotation",
+        "No annotations on this conversation",
         "Save current view",
         "Saved Views",
     ):
@@ -88,6 +91,7 @@ def test_reader_conversation_deeplink_and_detail_evidence(reader_workspace: Read
         messages = cast(dict[str, object], get_json(base_url, "/api/conversations/reader-c1/messages"))
         raw = cast(dict[str, object], get_json(base_url, "/api/conversations/reader-c1/raw"))
         marks = cast(dict[str, object], get_json(base_url, "/api/user/marks?conversation_id=reader-c1"))
+        annotations = cast(dict[str, object], get_json(base_url, "/api/user/annotations?conversation_id=reader-c1"))
         saved_views = cast(dict[str, object], get_json(base_url, "/api/user/saved-views"))
 
     assert status == 200
@@ -119,6 +123,9 @@ def test_reader_conversation_deeplink_and_detail_evidence(reader_workspace: Read
     assert "raw_artifacts" in raw
     mark_types = {str(item["mark_type"]) for item in cast(list[dict[str, object]], marks["items"])}
     assert mark_types == {"pin", "star"}
+    annotation_items = cast(list[dict[str, object]], annotations["items"])
+    assert annotation_items[0]["annotation_id"] == "reader-ann-c1"
+    assert annotation_items[0]["note_text"] == "This conversation anchors the MK3 reader evidence."
     view_items = cast(list[dict[str, object]], saved_views["items"])
     assert view_items[0]["name"] == "Claude Code reader fixtures"
     assert cast(dict[str, object], view_items[0]["query"])["provider"] == "claude-code"
@@ -132,6 +139,7 @@ def test_reader_conversation_deeplink_and_detail_evidence(reader_workspace: Read
         "tool_message_present": True,
         "raw_endpoint_present": True,
         "mark_types": sorted(mark_types),
+        "annotation_count": len(annotation_items),
         "saved_view_count": len(view_items),
         "private_path_safe": True,
     }
