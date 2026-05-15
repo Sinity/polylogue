@@ -5,6 +5,23 @@ coordination map, not a replacement for issue acceptance criteria. See
 `docs/architecture-spine.md` for the target shape and `docs/design/mk3/` for
 the current reader/workbench design source material.
 
+## How To Use This Plan
+
+This plan answers three operational questions:
+
+1. What should start next without creating avoidable rework?
+2. Which issue owns the durable acceptance criteria?
+3. What proof has to exist before a wave can claim completion?
+
+Issue bodies remain authoritative for scope. This document keeps the backlog
+coherent across issues by naming dependency order, handoff artifacts, and
+cross-issue exit gates. When an issue is split or closed, update this plan in
+the same PR or issue-maintenance pass.
+
+The coordination scratchpad for active execution is
+`docs/plans/mk3-execution-log.md`. Use it for subagent lane ownership, current
+status, test choices, resource constraints, and handoff notes.
+
 ## Landed
 
 | Subsystem | Status | Closed by |
@@ -13,7 +30,7 @@ the current reader/workbench design source material.
 | Content hash idempotency | Done | #838, #421 |
 | Session insights baseline (profiles, work events, phases, threads) | Landed; rigor hardening remains | Multiple PRs, #1019 |
 | Cost/subscription tracking and outlook slice | Landed; product forecasting remains | #938, #943, #995 |
-| Daemon convergence architecture | Landed; production proof and residual workload remain | #847, #854, #845, #1036 |
+| Daemon convergence architecture | Landed; production proof and residual workload remain under #845/#996/#999 | #847, #854 |
 | Browser extension + receiver | Done | #937, #940 |
 | Identity ledger (stable IDs across re-ingestion) | Done | #775, #963 |
 | MCP server (35+ tools, read/write/admin roles) | Done | Multiple PRs |
@@ -22,32 +39,106 @@ the current reader/workbench design source material.
 | Root artifact cleanup | Done | #954, #966 |
 | Verification baseline (format, lint, mypy, topology, manifests) | Done | #944 |
 | Type tightening (SubjectRef.kind enum) | Done | #421, #968 |
-| CLI mutation flags (--add-tag/--remove-tag) | Done | #862, #967 |
+| CLI mutation flags (--add-tag/--remove-tag) | Done; broader mutation contracts remain under #862 | #967 |
 | Manifest-only conversation prevention | Done | #945 |
 | MCP error sanitization and metadata validation | Done | #948 |
 | CLI format matrix coverage | Done | #949 |
 
-## In Flight
+## Active Lanes
 
-| Substream | Blocked by | Next artifact |
-|-----------|-----------|---------------|
-| Daemon convergence proof and residual workload (#845, #1036) | Deployment via Sinnix for latest merged daemon changes | Production-corpus convergence report and packaged rollout |
-| Source vocabulary and local-agent sources (#1022) | — | Public source-family contract and filter/completion parity |
-| Insight rigor and downstream contracts (#1019) | — | Product-by-product evidence/inference/readiness matrix |
-| MK3 archive workbench integration (#848, #865, #866, #867, #956, #957, #993) | Design pack now committed under `docs/design/mk3/`; active work dissolved into the issues below | Contract-first reader slice: TargetRef, message anchors, enriched reader payload, and visual smoke matrix |
-| Web reader realtime (#957) | — | SSE streaming channel from daemon to reader |
-| Reconciliation ledger (#944) | Open residual owners stay precise | Closeout matrix mapping stale closure claims to owner issues |
+| Lane | Live owners | Next artifact | Why now |
+|------|-------------|---------------|---------|
+| Runtime convergence and host proof | #845, #996, #999, #829 | Packaged daemon rollout plus production-corpus convergence report | The daemon must converge over the real archive; operational proof is the blocking confidence artifact for deployment. |
+| Source and semantic vocabulary | #1022, #839, #864, #1041, #1027 | Source-family contract, typed context/protocol fields, and provider/schema distribution evidence | MK3 reader contracts need typed source/provenance facts before UI can stop scraping provider metadata. |
+| Shared read contracts | #859, #873, #860, #848 | TargetRef/message-envelope/query/facet/status contracts shared by CLI, MCP, API, and daemon HTTP | This is the smallest useful MK3 start because later UI work consumes these envelopes. |
+| Reader evidence and product shell | #848, #865, #956, #993 | Single-conversation reader slice with executable DOM/browser evidence | MK3 must become a verified runtime reader, not only design screenshots. |
+| Topology and durable user state | #866, #867, #993 | Canonical topology read model and TargetRef-based marks/annotations/saved views | Multi-chat workspace, compare, recall packs, and topology panels need these substrates. |
+| Insight and cost rigor | #1019, #994, #995 | Readiness/confidence matrix for insight, cost, similarity, and derived panels | Advanced panels must show real availability, stale, inferred, and partial states. |
+| Verification and throughput | #1026, #997, #998, #594, #590, #1012 | Faster full baseline plus executable proof routing and inherited-failure cleanup | Broad changes are too expensive and too easy to misclaim without a faster, more precise gate. |
+| Distribution and user-facing polish | #869, #953, #952, #958 | Turnkey install/service/docs/CLI package path | Package and docs work should follow runtime/read-surface contracts so it does not document unstable behavior. |
 
-## Queued
+## Dependency Gates
 
-Dependency order (items in each tier are parallelizable):
+Use these gates to decide whether a PR is ready to start, not only whether it
+is ready to merge.
 
-1. **Storage hardening**: blob GC (#818), FTS bloat reduction (#817), daemon safety (#771)
-2. **Archive semantics**: context/protocol artifact storage (#839), provider_meta graduation (#864), source vocabulary (#1022)
-3. **Read surfaces**: MK3 contract slices (#848/#993), search explainability (#873), reader marks (#867), session lineage (#866), insight rigor (#1019)
-4. **Operational surfaces**: maintenance/replay planner (#996), daemon health notifications (#999), read-surface SLOs (#872)
-5. **Verification depth**: systematic test architecture (#997), verifiability dashboard/traceability (#998), evidence quality (#594/#590)
-6. **Product polish**: CLI polish (#958), docs revamp (#952), broad distribution (#953), webui advanced functionality (#993)
+| Gate | Required before | Owner issues | Handoff |
+|------|-----------------|--------------|---------|
+| G1: typed source/provenance vocabulary | Rich reader chips, provenance panels, paste/attachment states | #1022, #839, #864, #1041, #1027 | Shared source-family names and typed fields that replace provider-meta scraping. |
+| G2: shared read envelope | Reader shell, visual smoke, advanced panels | #859, #873, #860 | Versioned list/detail/message/facet/status envelopes and query serialization. |
+| G3: executable reader evidence | Closing #848/#993 rows that claim runtime UI behavior | #865 | Synthetic-data DOM/browser lane with nonblank, private-safe, stateful assertions. |
+| G4: topology read model | Stack, compare, lineage rail, topology explorer | #866 | Ancestor/descendant/sibling/root APIs with unresolved/late-repair/cycle evidence. |
+| G5: TargetRef user state | Marks, annotations, saved views, recall packs, durable workspaces | #867 | Idempotent CRUD and content-hash exclusion for conversation/message targets first. |
+| G6: runtime deployment proof | Distribution docs and system service guidance | #845, #996, #999, #829, #869, #953 | Packaged daemon installed through Sinnix, real archive convergence report, health/status evidence. |
+| G7: faster verification | Large MK3/daemon waves | #1026, #997, #998, #594, #590, #1012 | Focused affected gates, proof routing, and inherited failure cleanup so broad verification is credible. |
+
+## Near-Term PR Candidates
+
+These are deliberately shaped as coherent PR-sized slices. They can run in
+parallel when their write surfaces do not overlap.
+
+| Candidate | Owner issues | Primary files | Acceptance proof |
+|-----------|--------------|---------------|------------------|
+| Define `TargetRef` and message-anchor contract | #859, #848, #867 | `polylogue/surfaces/`, `polylogue/daemon/http.py`, `polylogue/archive/query/`, daemon tests | Conversation/message targets serialize deterministically; reader endpoints expose anchors; unsupported targets return explicit disabled reasons. |
+| Replace reader/provider metadata scraping with typed source fields | #1022, #839, #864 | source parsers, archive models, payloads, schema docs | Header/search chips read typed fields; provider-meta fallback is either removed or marked transitional with tests. |
+| Make reader visual smoke MK3-ready | #865, #848, #956 | `tests/unit/daemon/test_web_reader.py`, possible `tests/visual/`, `devtools/lab_scenario.py` | Synthetic reader evidence covers list/search, conversation detail, empty/no-results, privacy, degraded state, and nonblank output. |
+| Implement paste-span projection MVP | #839, #864, #848, #993 | message/storage projections, payloads, reader API/tests | Explicit span fixture and whole-message fallback fixture render distinct states; typed-only/paste-only copy disables when boundaries are unknown. |
+| Materialize topology edge substrate | #866 | storage DDL, ingest enrichment, archive operations, parser fixtures | Child-before-parent unresolved edge, late repair, cycle quarantine, and sibling/ancestor read tests pass. |
+| Add TargetRef-based marks and annotations | #867, #862 | user-state DDL/repository/API, daemon endpoints, reader tests | Idempotent CRUD works for conversation/message targets; content hash unchanged; reimport preservation tested where identity evidence exists. |
+| Prove packaged daemon convergence | #845, #996, #999, #829, #869 | Sinnix input update, package/service config, daemon docs | Installed service is latest merged Polylogue, real archive converges, health/status and residual workload are recorded. |
+| Reduce verification wall time | #1026, #997, #998, #594/#590 | `devtools/verify.py`, test config, proof routing | `devtools verify --affected --skip-slow` handles small diffs; full non-slow baseline is measured and outliers have owners. |
+
+## Parallel Execution Rules
+
+Parallelize only where ownership is clean enough that agents can commit useful
+work independently. Each worker gets an issue owner, owned files, avoided files,
+first verification command, and expected handoff note in
+`docs/plans/mk3-execution-log.md`.
+
+Good parallel lanes:
+
+- contract worker: TargetRef, reader payloads, query/status envelopes;
+- source/provenance worker: typed source fields, parser/schema evidence;
+- visual evidence worker: synthetic reader DOM/browser lane;
+- topology worker: edge substrate and topology read model;
+- user-state worker: marks, annotations, saved views, recall packs;
+- verification worker: affected-test workflow and proof routing;
+- packaging/deployment worker: Sinnix input, package/service rollout evidence.
+
+Serialize work when lanes touch the same shared file family:
+
+- `polylogue/daemon/http.py` for contract, user-state, and reader evidence
+  changes;
+- storage DDL/schema bootstrap for topology, user-state, and source/provenance
+  changes;
+- `docs/execution-plan.md` and generated docs;
+- any branch that is already waiting on CI for merge readiness.
+
+## Verification Economy
+
+Use narrow evidence first, then broad gates at publication boundaries:
+
+1. Run the subsystem test for the files touched.
+2. Run static/generated checks once the slice is coherent.
+3. Run `devtools verify --quick` before push.
+4. Run full `devtools verify` before PR readiness when runtime semantics
+   changed. For docs-only changes, generated docs and quick verification are
+   sufficient unless the PR claims runtime behavior.
+
+Avoid wasting RAM and wallclock:
+
+- Do not repeatedly run full pytest while the host is under IO pressure, low
+  memory, or active daemon catch-up. Capture that condition in the execution log
+  and use focused tests until pressure clears.
+- Keep browser screenshot evidence out of the quick loop; pair it with a fast
+  DOM/contract smoke lane.
+- For schema/storage changes, run focused storage/parser tests before broad
+  gates.
+- For packaging/deployment, run code checks first, then Nix/service checks, so
+  failures are attributable.
+- When `devtools verify --affected --skip-slow` is available, use it for small
+  changes and reserve full non-slow pytest for merge readiness or high-risk
+  shared behavior.
 
 ## MK3 Integration Waves
 
@@ -57,7 +148,14 @@ detail; the work below closes through the named issue owners.
 
 ### Wave 1 - Reader Contract Spine
 
-Owner issues: #859, #873, #839, #864, #1022, with #848 consuming.
+Owner issues: #859, #873, #839, #864, #1022, #1041, #1027, with #848
+consuming.
+
+Start condition:
+
+- No broad frontend work is needed first. This wave can start immediately if it
+  keeps the first TargetRef scope to conversation/message and treats missing
+  substrate as disabled/partial states.
 
 Scope:
 
@@ -76,9 +174,18 @@ Exit proof:
 - privacy tests proving ordinary reader endpoints do not leak absolute local
   paths.
 
+Handoff to next wave:
+
+- #848 can render a message list without provider-specific frontend inference.
+
 ### Wave 2 - Single-Conversation Reader
 
 Owner issues: #848 and #865.
+
+Start condition:
+
+- Wave 1 exposes stable enough list/detail/message/status payloads for the
+  reader to avoid hand-rolled filters and metadata scraping.
 
 Scope:
 
@@ -97,9 +204,20 @@ Exit proof:
 - fast DOM/contract smoke remains separate from heavier browser screenshot
   evidence.
 
+Handoff to next wave:
+
+- Runtime reader has a stable single-conversation baseline that paste,
+  attachment, topology, and user-state panels can plug into without rewriting
+  the shell.
+
 ### Wave 3 - Paste, Attachments, And Provenance
 
 Owner issues: #839, #864, #848, #993.
+
+Start condition:
+
+- Wave 1 message envelopes exist; Wave 2 reader has fold/action/panel slots for
+  large content and provenance.
 
 Scope:
 
@@ -117,9 +235,19 @@ Exit proof:
 - typed-only/paste-only copy controls disable with specific reasons when spans
   are unavailable.
 
+Handoff to next wave:
+
+- Paste and attachment objects can become workspace/topology/provenance targets
+  without changing their identity vocabulary.
+
 ### Wave 4 - Topology And Multi-Chat Workspace
 
 Owner issues: #866, #993, #848, #865.
+
+Start condition:
+
+- Topology starts in substrate as soon as source/provenance identity is stable
+  enough; stack/compare UI waits for the reader baseline.
 
 Scope:
 
@@ -139,9 +267,19 @@ Exit proof:
 - visual evidence for resolved parent, unresolved parent, subagent cluster,
   fork compare, too-many-lanes, and missing topology states.
 
+Handoff to next wave:
+
+- Workspaces can persist references to topology nodes/edges through TargetRef
+  rather than URL-only conversation IDs.
+
 ### Wave 5 - Durable User State And Advanced Panels
 
 Owner issues: #867, #993, #1019, #995.
+
+Start condition:
+
+- Conversation/message TargetRef is stable. Saved-view work also needs shared
+  query serialization from Wave 1.
 
 Scope:
 
@@ -158,9 +296,19 @@ Exit proof:
 - visual smoke for marked, annotated, pending mutation, failed mutation, stale
   insight, partial cost, and unconfigured similarity states.
 
+Handoff to next wave:
+
+- Reader and realtime code can refer to persisted workspaces and saved views
+  rather than browser-local state.
+
 ### Wave 6 - Realtime And Operational Workbench
 
 Owner issues: #957, #999, #845, #996, #829.
+
+Start condition:
+
+- Runtime daemon health/status contracts are stable enough to report progress,
+  pressure, stale data, and maintenance without reducing daemon scope.
 
 Scope:
 
@@ -178,9 +326,19 @@ Exit proof:
   fallback, maintenance running/failed, and first-run setup;
 - production-corpus convergence report after deployment through Sinnix.
 
+Handoff to next wave:
+
+- Distribution docs can describe real service behavior and operational states,
+  not source-checkout-only development assumptions.
+
 ### Wave 7 - Assurance, Docs, And Distribution
 
 Owner issues: #865, #952, #953, #958, #997, #998, #594, #590.
+
+Start condition:
+
+- Enough runtime reader/workbench behavior exists that screenshots, packaging,
+  and proof reports document product reality rather than intended designs.
 
 Scope:
 
@@ -201,6 +359,18 @@ Exit proof:
 - package/build checks when #953 changes distribution surfaces;
 - issue/PR acceptance matrix marking each MK3 row implemented, deferred to a
   precise child issue, or rejected with rationale.
+
+## Backlog Hygiene Rules
+
+- Do not close a broad tracker because a shell exists. Close only when every
+  row is implemented, split to a named child issue, or explicitly rejected.
+- Do not add new MK3-only planning docs unless the same PR folds the actionable
+  sequence back into this file and the owning GitHub issues.
+- Do not leave TODO comments or skipped tests without an issue number.
+- When an issue is realized, close it and update the `Active Lanes` or
+  `Dependency Gates` row that referenced it.
+- When deployment or production validation changes the plan, record concrete
+  dates and observed evidence in the issue or PR, not only in chat.
 
 ## Frozen / Parked
 
