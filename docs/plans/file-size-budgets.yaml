@@ -74,8 +74,8 @@ exceptions:
     reason: "kitchen-sink live-ingest test file (cursor, watcher, batch, debounce, bootstrap); split candidate: per-subject suites under tests/unit/sources/live/"
 
   - path: polylogue/storage/sqlite/schema_bootstrap.py
-    ceiling: 1310
-    reason: "added v9→v10 provider-meta promotion migration (#864), v6 upgrade assertion relaxation, and live-convergence indexes"
+    ceiling: 1390
+    reason: "schema bootstrap owns reviewed version branches through v13 (#864, #867); split candidate: per-version upgrade modules"
 
   - path: polylogue/sources/live/batch.py
     ceiling: 1160

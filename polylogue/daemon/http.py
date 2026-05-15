@@ -339,20 +339,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             self._handle_list_conversations(params)
         elif path == ["api", "facets"]:
             self._handle_facets(params)
-        elif path == ["api", "user", "marks"]:
-            self._handle_user_state(user_state_http.handle_list_marks, params)
-        elif path == ["api", "user", "annotations"]:
-            self._handle_user_state(user_state_http.handle_list_annotations, params)
-        elif len(path) == 4 and path[:3] == ["api", "user", "annotations"] and path[3]:
-            self._handle_user_state(user_state_http.handle_get_annotation, path[3])
-        elif path == ["api", "user", "saved-views"]:
-            self._handle_user_state(user_state_http.handle_list_saved_views)
-        elif len(path) == 4 and path[:3] == ["api", "user", "saved-views"] and path[3]:
-            self._handle_user_state(user_state_http.handle_get_saved_view, path[3])
-        elif path == ["api", "user", "recall-packs"]:
-            self._handle_user_state(user_state_http.handle_list_recall_packs)
-        elif len(path) == 4 and path[:3] == ["api", "user", "recall-packs"] and path[3]:
-            self._handle_user_state(user_state_http.handle_get_recall_pack, path[3])
+        elif path[:2] == ["api", "user"] and user_state_http.dispatch_get(self, path[2:], params):
+            return
         elif path == ["api", "sources"]:
             self._handle_sources()
         elif len(path) == 3 and path[:2] == ["api", "conversations"] and path[2]:
@@ -404,17 +392,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         if path == ["api", "maintenance", "run"]:
             self._handle_maintenance_run()
             return
-        if path == ["api", "user", "marks"]:
-            self._handle_user_state(user_state_http.handle_create_mark)
-            return
-        if path == ["api", "user", "annotations"]:
-            self._handle_user_state(user_state_http.handle_save_annotation)
-            return
-        if path == ["api", "user", "saved-views"]:
-            self._handle_user_state(user_state_http.handle_save_view)
-            return
-        if path == ["api", "user", "recall-packs"]:
-            self._handle_user_state(user_state_http.handle_save_recall_pack)
+        if path[:2] == ["api", "user"] and user_state_http.dispatch_post(self, path[2:]):
             return
         self._send_error(HTTPStatus.NOT_FOUND, "not_found")
 
@@ -426,17 +404,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         if not self._check_cross_origin():
             return
 
-        if path == ["api", "user", "marks"]:
-            self._handle_user_state(user_state_http.handle_delete_mark, params)
-            return
-        if len(path) == 4 and path[:3] == ["api", "user", "annotations"] and path[3]:
-            self._handle_user_state(user_state_http.handle_delete_annotation, path[3])
-            return
-        if len(path) == 4 and path[:3] == ["api", "user", "saved-views"] and path[3]:
-            self._handle_user_state(user_state_http.handle_delete_saved_view, path[3])
-            return
-        if len(path) == 4 and path[:3] == ["api", "user", "recall-packs"] and path[3]:
-            self._handle_user_state(user_state_http.handle_delete_recall_pack, path[3])
+        if path[:2] == ["api", "user"] and user_state_http.dispatch_delete(self, path[2:], params):
             return
         self._send_error(HTTPStatus.NOT_FOUND, "not_found")
 

@@ -68,6 +68,61 @@ def _default_annotation_id(target_type: str, target_id: str, note_text: str) -> 
     return f"annotation-{digest}"
 
 
+def dispatch_get(handler: Any, path: list[str], params: dict[str, list[str]]) -> bool:
+    if path == ["marks"]:
+        handler._handle_user_state(handle_list_marks, params)
+        return True
+    if path == ["annotations"]:
+        handler._handle_user_state(handle_list_annotations, params)
+        return True
+    if len(path) == 2 and path[0] == "annotations" and path[1]:
+        handler._handle_user_state(handle_get_annotation, path[1])
+        return True
+    if path == ["saved-views"]:
+        handler._handle_user_state(handle_list_saved_views)
+        return True
+    if len(path) == 2 and path[0] == "saved-views" and path[1]:
+        handler._handle_user_state(handle_get_saved_view, path[1])
+        return True
+    if path == ["recall-packs"]:
+        handler._handle_user_state(handle_list_recall_packs)
+        return True
+    if len(path) == 2 and path[0] == "recall-packs" and path[1]:
+        handler._handle_user_state(handle_get_recall_pack, path[1])
+        return True
+    return False
+
+
+def dispatch_post(handler: Any, path: list[str]) -> bool:
+    routes: dict[tuple[str, ...], Any] = {
+        ("marks",): handle_create_mark,
+        ("annotations",): handle_save_annotation,
+        ("saved-views",): handle_save_view,
+        ("recall-packs",): handle_save_recall_pack,
+    }
+    route = routes.get(tuple(path))
+    if route is None:
+        return False
+    handler._handle_user_state(route)
+    return True
+
+
+def dispatch_delete(handler: Any, path: list[str], params: dict[str, list[str]]) -> bool:
+    if path == ["marks"]:
+        handler._handle_user_state(handle_delete_mark, params)
+        return True
+    if len(path) == 2 and path[0] == "annotations" and path[1]:
+        handler._handle_user_state(handle_delete_annotation, path[1])
+        return True
+    if len(path) == 2 and path[0] == "saved-views" and path[1]:
+        handler._handle_user_state(handle_delete_saved_view, path[1])
+        return True
+    if len(path) == 2 and path[0] == "recall-packs" and path[1]:
+        handler._handle_user_state(handle_delete_recall_pack, path[1])
+        return True
+    return False
+
+
 def handle_list_marks(handler: Any, params: dict[str, list[str]]) -> None:
     mark_type = handler._get_param(params, "mark_type")
     conversation_id = handler._get_param(params, "conversation_id")
