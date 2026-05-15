@@ -14,7 +14,7 @@ import click
 if TYPE_CHECKING:
     from polylogue.cli.root_request import RootModeRequest
 
-from polylogue.cli.click_option_groups import _LazyChoice  # noqa: F401
+from polylogue.cli.click_option_groups import _LazyChoice
 from polylogue.cli.shared.types import AppEnv
 from polylogue.cli.verb_names import VERB_NAMES
 

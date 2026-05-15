@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Protocol
 
 # Re-export canonical chunked from polylogue.core.common.
-from polylogue.core.common import chunked  # noqa: F401
+from polylogue.core.common import chunked
 
 FTS_MESSAGES_TABLE_SQL = """
     CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(

@@ -172,7 +172,7 @@ def _build_query_spec_params(
 
 def _check_auth_logic(
     auth_token: str | None,
-    client_host: str,  # noqa: ARG001
+    client_host: str,
     auth_header: str,
 ) -> _AuthResult:
     """Pure logic for auth checks — testable without HTTP handler setup."""
@@ -301,7 +301,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
     def _sync_run(self, handler: Callable) -> object:  # type: ignore[type-arg]
         return asyncio.run(self._run_archive_query(handler))
 
-    def do_OPTIONS(self) -> None:  # noqa: N802
+    def do_OPTIONS(self) -> None:
         self._send_error(HTTPStatus.METHOD_NOT_ALLOWED, "method_not_allowed")
 
     # ------------------------------------------------------------------
@@ -349,7 +349,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         else:
             self._send_error(HTTPStatus.NOT_FOUND, "not_found")
 
-    def do_GET(self) -> None:  # noqa: N802
+    def do_GET(self) -> None:
         path, params = self._parse_path()
         self._dispatch_get(path, params)
 
@@ -367,7 +367,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         self._send_error(HTTPStatus.FORBIDDEN, "cross_origin_denied")
         return False
 
-    def do_POST(self) -> None:  # noqa: N802
+    def do_POST(self) -> None:
         path, params = self._parse_path()
 
         if not self._check_auth():
@@ -391,7 +391,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             return
         self._send_error(HTTPStatus.NOT_FOUND, "not_found")
 
-    def do_DELETE(self) -> None:  # noqa: N802
+    def do_DELETE(self) -> None:
         path, params = self._parse_path()
 
         if not self._check_auth():

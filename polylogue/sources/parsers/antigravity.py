@@ -99,7 +99,7 @@ class AntigravityLanguageServerClient:
             f"-app_data_dir={self.root.name}",
             "-override_ide_name=antigravity",
         ]
-        self._process = subprocess.Popen(  # noqa: S603
+        self._process = subprocess.Popen(
             cmd,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
@@ -162,7 +162,7 @@ class AntigravityLanguageServerClient:
             method="POST",
         )
         try:
-            with urlopen(request, timeout=10.0) as response:  # noqa: S310
+            with urlopen(request, timeout=10.0) as response:
                 loaded = loads(response.read())
         except URLError as exc:
             raise AntigravityExportError(str(exc)) from exc

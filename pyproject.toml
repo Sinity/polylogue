@@ -196,6 +196,7 @@ select = [
     "B",   # flake8-bugbear
     "C4",  # flake8-comprehensions
     "SIM", # flake8-simplify
+    "RUF100", # unused noqa directives
 ]
 ignore = [
     "E501",  # line too long (handled by formatter)

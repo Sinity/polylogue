@@ -125,7 +125,7 @@ def embed_conversation_sync(
         if not messages:
             return EmbedConversationOutcome(status="no_messages", conversation_id=full_id, title=title)
         vec_provider.upsert(full_id, messages)
-    except Exception as exc:  # noqa: BLE001 — surfacing as outcome
+    except Exception as exc:
         return EmbedConversationOutcome(status="error", conversation_id=full_id, title=title, error=str(exc))
     return EmbedConversationOutcome(
         status="embedded",
