@@ -77,6 +77,9 @@ documentation polish do not require an entry.
   `/api/user/workspaces`, `polylogue user-state workspaces`, and MCP mutation
   tools, with resolved/degraded target evidence for tabs, stack, compare, and
   timeline modes.
+- The local reader daemon now serves `/w/stack` and `/w/compare` shell routes
+  plus `/api/stack` and `/api/compare` envelopes for multi-conversation reader
+  workflows with explicit missing-target evidence.
 
 ### Changed
 

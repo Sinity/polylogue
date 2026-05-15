@@ -307,6 +307,75 @@ class TestReaderConversationState:
 
 
 # ---------------------------------------------------------------------------
+# polylogue.local_reader.workspace — stack and compare route data
+# ---------------------------------------------------------------------------
+
+
+class TestReaderWorkspaceRoutes:
+    """``polylogue.local_reader.workspace``: stack/compare workspace routes."""
+
+    def test_stack_route_returns_resolved_and_missing_targets(self, workspace_env: dict[str, Path]) -> None:
+        with _running_server(workspace_env) as (_, base_url):
+            payload = _get_json(base_url, "/api/stack?ids=c1,missing-conv&focus=c1")
+
+        result = cast(dict[str, object], payload)
+        items = cast(list[dict[str, object]], result["items"])
+        assert result["mode"] == "stack"
+        assert result["focus"] == "c1"
+        assert result["resolved_count"] == 1
+        assert result["degraded_count"] == 1
+        assert items[0]["status"] == "resolved"
+        assert items[0]["identity_key"] == "conversation:c1"
+        conversation = cast(dict[str, object], items[0]["conversation"])
+        assert conversation["id"] == "c1"
+        assert items[1] == {
+            "target_type": "conversation",
+            "target_id": "missing-conv",
+            "conversation_id": "missing-conv",
+            "status": "missing",
+            "disabled_reason": "conversation_not_found",
+        }
+
+    def test_stack_route_rejects_empty_ids(self, workspace_env: dict[str, Path]) -> None:
+        with _running_server(workspace_env) as (_, base_url):
+            status, payload = _get_json_ex(base_url, "/api/stack")
+
+        assert status == 400
+        assert payload["error"] == "invalid_request"
+
+    def test_compare_route_returns_message_pairs_and_degraded_side(self, workspace_env: dict[str, Path]) -> None:
+        with _running_server(workspace_env) as (_, base_url):
+            payload = _get_json(base_url, "/api/compare?left=c1&right=missing-conv&align=prompt")
+
+        result = cast(dict[str, object], payload)
+        assert result["mode"] == "compare"
+        assert result["align"] == "prompt"
+        assert result["degraded_count"] == 1
+        left = cast(dict[str, object], result["left"])
+        right = cast(dict[str, object], result["right"])
+        pairs = cast(list[dict[str, object]], result["pairs"])
+        assert left["id"] == "c1"
+        assert right["status"] == "missing"
+        assert pairs[0]["left"] is not None
+        assert pairs[0]["right"] is None
+        assert pairs[0]["status"] == "unpaired"
+
+    def test_compare_route_rejects_invalid_align(self, workspace_env: dict[str, Path]) -> None:
+        with _running_server(workspace_env) as (_, base_url):
+            status, payload = _get_json_ex(base_url, "/api/compare?left=c1&right=c2&align=sideways")
+
+        assert status == 400
+        assert payload["error"] == "invalid_request"
+
+    def test_workspace_shell_routes_are_unauthenticated(self, workspace_env: dict[str, Path]) -> None:
+        with _running_server(workspace_env) as (_, base_url):
+            status, _, body = _get_text(base_url, "/w/stack?ids=c1,c2")
+
+        assert status == 200
+        assert "<title>Polylogue</title>" in body
+
+
+# ---------------------------------------------------------------------------
 # polylogue.local_reader.user_state — durable marks/views/recall contracts
 # ---------------------------------------------------------------------------
 
