@@ -8,7 +8,11 @@ from typing import TYPE_CHECKING, Any
 
 from polylogue.mcp.payloads import (
     MCPMetadataPayload,
+    MCPSavedViewListPayload,
+    MCPSavedViewPayload,
     MCPTagCountsPayload,
+    MCPUserMarkListPayload,
+    MCPUserMarkPayload,
     MutationResultPayload,
 )
 
@@ -24,6 +28,21 @@ async def _resolve_or_error(hooks: ServerCallbacks, conversation_id: str) -> tup
     if not resolved:
         return None, hooks.error_json("conversation not found", conversation_id=conversation_id)
     return resolved, None
+
+
+def _saved_view_payload(row: dict[str, str]) -> MCPSavedViewPayload:
+    try:
+        query = json.loads(row["query_json"])
+    except (json.JSONDecodeError, TypeError):
+        query = {}
+    if not isinstance(query, dict):
+        query = {}
+    return MCPSavedViewPayload(
+        view_id=row["view_id"],
+        name=row["name"],
+        query=query,
+        created_at=row["created_at"],
+    )
 
 
 def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
@@ -106,6 +125,131 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             return hooks.json_payload(MCPTagCountsPayload(root=tags))
 
         return await hooks.async_safe_call("list_tags", run)
+
+    @mcp.tool()
+    async def list_marks(mark_type: str | None = None, conversation_id: str | None = None) -> str:
+        async def run() -> str:
+            poly = hooks.get_polylogue()
+            rows = await poly.list_marks(mark_type=mark_type, conversation_id=conversation_id)
+            items = tuple(
+                MCPUserMarkPayload(
+                    conversation_id=row["conversation_id"],
+                    mark_type=row["mark_type"],
+                    created_at=row["created_at"],
+                )
+                for row in rows
+            )
+            return hooks.json_payload(MCPUserMarkListPayload(items=items, total=len(items)))
+
+        return await hooks.async_safe_call("list_marks", run)
+
+    @mcp.tool()
+    async def add_mark(conversation_id: str, mark_type: str) -> str:
+        async def run() -> str:
+            if mark_type not in {"star", "pin", "archive"}:
+                return hooks.error_json("mark_type must be one of: star, pin, archive", detail=mark_type)
+            resolved, err = await _resolve_or_error(hooks, conversation_id)
+            if err:
+                return err
+            assert resolved is not None
+            poly = hooks.get_polylogue()
+            created = await poly.add_mark(resolved, mark_type)
+            return hooks.json_payload(
+                MutationResultPayload(
+                    status="ok" if created else "unchanged",
+                    conversation_id=resolved,
+                    detail=None if created else "already_present",
+                    key=mark_type,
+                    outcome="added" if created else "no_op",
+                ),
+                exclude_none=True,
+            )
+
+        return await hooks.async_safe_call("add_mark", run)
+
+    @mcp.tool()
+    async def remove_mark(conversation_id: str, mark_type: str) -> str:
+        async def run() -> str:
+            resolved, err = await _resolve_or_error(hooks, conversation_id)
+            if err:
+                return err
+            assert resolved is not None
+            poly = hooks.get_polylogue()
+            deleted = await poly.remove_mark(resolved, mark_type)
+            return hooks.json_payload(
+                MutationResultPayload(
+                    status="ok" if deleted else "not_found",
+                    conversation_id=resolved,
+                    detail=None if deleted else "mark_not_present",
+                    key=mark_type,
+                    outcome="removed" if deleted else "not_present",
+                ),
+                exclude_none=True,
+            )
+
+        return await hooks.async_safe_call("remove_mark", run)
+
+    @mcp.tool()
+    async def list_saved_views() -> str:
+        async def run() -> str:
+            poly = hooks.get_polylogue()
+            rows = await poly.list_views()
+            items = tuple(_saved_view_payload(row) for row in rows)
+            return hooks.json_payload(MCPSavedViewListPayload(items=items, total=len(items)))
+
+        return await hooks.async_safe_call("list_saved_views", run)
+
+    @mcp.tool()
+    async def save_saved_view(name: str, query_json: str, view_id: str | None = None) -> str:
+        async def run() -> str:
+            if not name.strip():
+                return hooks.error_json("saved view name must not be empty")
+            try:
+                query = json.loads(query_json)
+            except json.JSONDecodeError:
+                return hooks.error_json("query_json must be valid JSON")
+            if not isinstance(query, dict):
+                return hooks.error_json("query_json must encode an object")
+
+            from polylogue.archive.query.spec import ConversationQuerySpec
+
+            try:
+                ConversationQuerySpec.from_params(query, strict=True)
+            except Exception as exc:
+                return hooks.error_json("query_json is not a valid ConversationQuerySpec", detail=type(exc).__name__)
+
+            canonical_query_json = json.dumps(query, sort_keys=True, separators=(",", ":"))
+            poly = hooks.get_polylogue()
+            saved_id = view_id or name.strip().lower().replace(" ", "-")
+            created = await poly.save_view(saved_id, name.strip(), canonical_query_json)
+            saved = await poly.get_view(saved_id)
+            return hooks.json_payload(
+                MutationResultPayload(
+                    status="ok" if created else "unchanged",
+                    detail=None if saved else "saved_view_not_found",
+                    key=saved_id,
+                    outcome="added" if created else "updated",
+                ),
+                exclude_none=True,
+            )
+
+        return await hooks.async_safe_call("save_saved_view", run)
+
+    @mcp.tool()
+    async def delete_saved_view(view_id: str) -> str:
+        async def run() -> str:
+            poly = hooks.get_polylogue()
+            deleted = await poly.delete_view(view_id)
+            return hooks.json_payload(
+                MutationResultPayload(
+                    status="deleted" if deleted else "not_found",
+                    detail=None if deleted else "saved_view_not_found",
+                    key=view_id,
+                ),
+                exclude_none=True,
+            )
+
+        return await hooks.async_safe_call("delete_saved_view", run)
 
     @mcp.tool()
     async def get_metadata(conversation_id: str) -> str:
