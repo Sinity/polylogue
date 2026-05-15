@@ -128,3 +128,60 @@ Next:
   non-overlapping workers.
 - Keep this log updated when a lane starts, blocks, hands off, or changes
   verification strategy.
+
+### 2026-05-15 - Wave 1 TargetRef reader contract launch
+
+Target:
+
+- Wave 1 / #859 contract spine, with #848/#865 reader consumers.
+- First implementation slice: stable `TargetRef` payloads, deterministic
+  conversation/message anchors, and explicit action availability metadata for
+  unsupported reader actions.
+
+Coordination:
+
+- Main branch: `feature/feat/targetref-reader-contract`.
+- Same-context read-only helpers: inspect daemon payload builders, existing
+  tests, and visual evidence docs.
+- No worktree workers for this slice; the editable surface is small and
+  overlaps in `polylogue/daemon/http.py`, so implementation remains serialized.
+
+Owned files:
+
+- `polylogue/surfaces/payloads.py`
+- `polylogue/daemon/http.py`
+- `tests/unit/daemon/test_web_reader.py`
+- `docs/visual-evidence.md`
+- `docs/plans/mk3-execution-log.md`
+
+Avoided files:
+
+- Storage schema and migrations.
+- Topology/user-state/provenance persistence.
+- Web-shell visual layout beyond consuming the enriched JSON contract.
+
+First gates:
+
+- `pytest -q tests/unit/daemon/test_web_reader.py -k "shared or conversation or privacy"`
+- `pytest -q tests/unit/daemon/test_web_reader.py`
+- `devtools verify --quick`
+
+Outcome:
+
+- Added the shared `TargetRef` and reader action availability contracts.
+- Exposed conversation/message target refs and deterministic anchors from the
+  daemon reader list, detail, search-hit, and messages endpoints.
+- Extended the reader smoke lane to pin enriched target/action payloads and
+  privacy checks across ordinary reader JSON endpoints.
+- Fixed stale topology projection ownership for
+  `polylogue/storage/source_conversations.py`, which surfaced during the
+  affected gate.
+
+Verification:
+
+- `pytest -q tests/unit/daemon/test_web_reader.py -k "shared or conversation or privacy"`
+- `pytest -q tests/unit/daemon/test_web_reader.py`
+- `pytest -q tests/unit/daemon/`
+- `pytest -q tests/unit/devtools/test_topology_projection_witness.py`
+- `devtools verify --quick`
+- `devtools verify --affected --skip-slow`

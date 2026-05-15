@@ -57,6 +57,12 @@ from polylogue.surfaces.payloads import (
     model_json_document,
     normalize_role,
 )
+from polylogue.surfaces.payloads import (
+    ReaderActionAvailabilityPayload as MCPReaderActionAvailabilityPayload,
+)
+from polylogue.surfaces.payloads import (
+    TargetRefPayload as MCPTargetRefPayload,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -525,6 +531,7 @@ __all__ = [
     "MCPMessagesListPayload",
     "MCPMetadataPayload",
     "MCPMutationStatusPayload",
+    "MCPReaderActionAvailabilityPayload",
     "MutationResultPayload",
     "MCPNeighborCandidatesPayload",
     "MCPPaginatedQueryResultPayload",
@@ -539,6 +546,7 @@ __all__ = [
     "MCPSessionTreePayload",
     "MCPStatsByPayload",
     "MCPTagCountsPayload",
+    "MCPTargetRefPayload",
     "conversation_neighbor_candidate_list_payload",
     "conversation_query_result_payload",
     "conversation_search_hit_list_payload",

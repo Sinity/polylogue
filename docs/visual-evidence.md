@@ -35,7 +35,7 @@ dependency: the lane uses Python's standard `http.server` and
 | List / search | `polylogue.local_reader.search` | `/`, `/api/conversations`, `/api/facets`, `/api/facets?provider=...` |
 | Detail / conversation | `polylogue.local_reader.conversation` | `/api/conversations/{id}`, `/api/conversations/{id}/messages` |
 | Empty archive | — | `/api/conversations`, `/api/facets` |
-| Privacy boundary | — | `/`, `/api/facets` (auditing for absolute local paths) |
+| Privacy boundary | — | `/`, `/api/facets`, `/api/conversations`, `/api/conversations/{id}`, `/api/conversations/{id}/messages` (auditing for absolute local paths) |
 | Auth boundary | — | `/api/conversations` with/without `Authorization: Bearer ...` |
 
 The artefact ids match the names referenced in the design packs and in #848 so
@@ -53,16 +53,20 @@ palette screenshots under `docs/design/mk3/screens/`.
 - **Envelope shapes.** Every reader-facing JSON envelope is asserted by
   shape: `items`/`messages`/`raw_artifacts` plus `total` for the
   paginated list/detail surfaces, and the search route's `hits`/`total`
-  envelope when `?query=` is supplied. Facets carry the
-  `scoped_to_query`/`providers` shape and honour the `?provider=`
+  envelope when `?query=` is supplied. Conversation rows, detail headers,
+  and messages carry stable `target_ref` objects, deterministic reader
+  anchors, and per-target action availability with explicit disabled
+  reasons for actions the current reader cannot perform yet. Facets carry
+  the `scoped_to_query`/`providers` shape and honour the `?provider=`
   filter contract.
 - **Empty / no-results state.** Distinguishes "archive is empty" from
   "query matched no rows", a discrimination the reader UI is required to
   expose.
-- **Privacy.** The web shell HTML and the facets JSON are checked for
-  absolute local-path prefixes (`/home/`, `/Users/`, `/realm/`,
+- **Privacy.** The web shell HTML and ordinary reader JSON payloads are checked
+  for absolute local-path prefixes (`/home/`, `/Users/`, `/realm/`,
   `/var/`, `/etc/`) so the loopback-only reader cannot quietly start
-  leaking operator filesystem layout. `/api/sources` and
+  leaking operator filesystem layout through enriched targets, anchors, or
+  disabled action reasons. `/api/sources` and
   `/api/raw_artifacts/:id` deliberately surface absolute paths under
   the operator-level token (see [`security.md`](security.md)) and are
   out of scope here.

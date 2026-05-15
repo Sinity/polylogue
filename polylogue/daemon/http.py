@@ -7,7 +7,7 @@ import contextlib
 import functools
 import json
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import TYPE_CHECKING, Any
@@ -23,9 +23,14 @@ from polylogue.surfaces.payloads import (
     MutationResultPayload,
     QueryErrorPayload,
     QueryMissDiagnosticsPayload,
+    ReaderActionAvailabilityPayload,
+    TargetRefPayload,
     _build_flags_from_conversation,
     _extract_cwd,
     _extract_repo,
+    reader_anchor,
+    reader_conversation_actions,
+    reader_message_actions,
 )
 
 if TYPE_CHECKING:
@@ -39,6 +44,14 @@ def _json_bytes(payload: object) -> bytes:
     import orjson
 
     return orjson.dumps(payload, option=orjson.OPT_APPEND_NEWLINE)
+
+
+def _dump_target_ref(target_ref: TargetRefPayload) -> dict[str, object]:
+    return target_ref.model_dump(mode="json", exclude_none=True)
+
+
+def _dump_actions(actions: Mapping[str, ReaderActionAvailabilityPayload]) -> dict[str, object]:
+    return {name: availability.model_dump(mode="json", exclude_none=True) for name, availability in actions.items()}
 
 
 def daemon_safe_handler(fn: Callable[..., Any]) -> Callable[..., Any]:
@@ -518,10 +531,15 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         items: list[dict[str, object]] = []
         for summary in summaries:
             flags = _build_flags_from_conversation(summary)
+            conversation_id = str(summary.id)
+            target_ref = TargetRefPayload.conversation(conversation_id)
             row: dict[str, object] = {
-                "id": str(summary.id),
+                "id": conversation_id,
                 "title": summary.display_title,
                 "provider": str(summary.provider) if summary.provider else None,
+                "target_ref": _dump_target_ref(target_ref),
+                "anchor": reader_anchor("conversation", conversation_id),
+                "actions": _dump_actions(reader_conversation_actions()),
                 "date": summary.display_date.isoformat() if summary.display_date else None,
                 "created_at": summary.created_at.isoformat() if summary.created_at else None,
                 "updated_at": summary.updated_at.isoformat() if summary.updated_at else None,
@@ -571,11 +589,16 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         hit_dicts: list[dict[str, object]] = []
         for hit in hits:
             flags = _build_flags_from_conversation(hit.summary)
+            conversation_id = str(hit.conversation_id)
+            target_ref = TargetRefPayload.conversation(conversation_id)
             hit_dicts.append(
                 {
-                    "id": hit.conversation_id,
+                    "id": conversation_id,
                     "title": hit.summary.display_title,
                     "provider": str(hit.summary.provider) if hit.summary.provider else None,
+                    "target_ref": _dump_target_ref(target_ref),
+                    "anchor": reader_anchor("conversation", conversation_id),
+                    "actions": _dump_actions(reader_conversation_actions()),
                     "date": hit.summary.display_date.isoformat() if hit.summary.display_date else None,
                     "created_at": hit.summary.created_at.isoformat() if hit.summary.created_at else None,
                     "updated_at": hit.summary.updated_at.isoformat() if hit.summary.updated_at else None,
@@ -629,11 +652,16 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         if conv is None:
             return None
         flags = _build_flags_from_conversation(conv)
+        conversation_id = str(conv.id)
+        target_ref = TargetRefPayload.conversation(conversation_id)
         return {
-            "id": str(conv.id),
+            "id": conversation_id,
             "title": conv.title,
             "display_title": conv.display_title,
             "provider": str(conv.provider) if conv.provider else None,
+            "target_ref": _dump_target_ref(target_ref),
+            "anchor": reader_anchor("conversation", conversation_id),
+            "actions": _dump_actions(reader_conversation_actions()),
             "created_at": conv.created_at.isoformat() if conv.created_at else None,
             "updated_at": conv.updated_at.isoformat() if conv.updated_at else None,
             "message_count": len(conv.messages),
@@ -643,6 +671,11 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                     "id": str(msg.id),
                     "role": str(msg.role),
                     "text": msg.text,
+                    "target_ref": _dump_target_ref(
+                        TargetRefPayload.message(conversation_id=conversation_id, message_id=msg.id)
+                    ),
+                    "anchor": reader_anchor("message", msg.id),
+                    "actions": _dump_actions(reader_message_actions()),
                     "timestamp": msg.timestamp.isoformat() if msg.timestamp else None,
                     "message_type": str(getattr(msg, "message_type", "")),
                     "word_count": msg.word_count,
@@ -720,12 +753,18 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
     async def _do_get_messages(self, poly: Polylogue, conv_id: str, limit: int, offset: int) -> object:
         messages, total = await poly.get_messages_paginated(conv_id, limit=limit, offset=offset)
+        conversation_id = str(conv_id)
         return {
             "messages": [
                 {
                     "id": str(msg.id),
                     "role": str(msg.role),
                     "text": msg.text,
+                    "target_ref": _dump_target_ref(
+                        TargetRefPayload.message(conversation_id=conversation_id, message_id=msg.id)
+                    ),
+                    "anchor": reader_anchor("message", msg.id),
+                    "actions": _dump_actions(reader_message_actions()),
                     "timestamp": msg.timestamp.isoformat() if msg.timestamp else None,
                     "message_type": str(getattr(msg, "message_type", "")),
                     "word_count": msg.word_count,

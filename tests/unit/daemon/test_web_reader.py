@@ -163,6 +163,19 @@ class TestReaderSearchState:
         assert isinstance(payload, dict)
         assert payload["total"] == 3
         assert len(payload["items"]) == 3
+        row = next(item for item in payload["items"] if item["id"] == "c1")
+        assert row["target_ref"] == {
+            "target_type": "conversation",
+            "target_id": "c1",
+            "conversation_id": "c1",
+            "identity_key": "conversation:c1",
+        }
+        assert row["anchor"] == "conversation-c1"
+        assert row["actions"]["open"]["enabled"] is True
+        assert row["actions"]["annotate"] == {
+            "enabled": False,
+            "disabled_reason": "annotations_not_implemented",
+        }
 
     def test_facets_envelope_includes_scoped_flag(self, workspace_env: dict[str, Path]) -> None:
         with _running_server(workspace_env) as (_, base_url):
@@ -206,13 +219,31 @@ class TestReaderConversationState:
         assert payload["id"] == "c1"
         assert payload["provider"] == "claude-code"
         assert payload["title"].startswith("Claude Code")
+        assert payload["target_ref"]["identity_key"] == "conversation:c1"
+        assert payload["anchor"] == "conversation-c1"
+        assert payload["messages"][0]["target_ref"]["identity_key"] == "message:c1:m-c1"
+        assert payload["messages"][0]["anchor"] == "message-m-c1"
 
     def test_conversation_messages_envelope_carries_messages_and_total(self, workspace_env: dict[str, Path]) -> None:
         with _running_server(workspace_env) as (_, base_url):
             payload = _get_json(base_url, "/api/conversations/c1/messages")
         assert isinstance(payload, dict)
         assert payload["total"] == 1
-        assert payload["messages"][0]["text"] == "Hello reader"
+        message = payload["messages"][0]
+        assert message["text"] == "Hello reader"
+        assert message["target_ref"] == {
+            "target_type": "message",
+            "target_id": "m-c1",
+            "conversation_id": "c1",
+            "message_id": "m-c1",
+            "identity_key": "message:c1:m-c1",
+        }
+        assert message["anchor"] == "message-m-c1"
+        assert message["actions"]["copy_text"]["enabled"] is True
+        assert message["actions"]["annotate"] == {
+            "enabled": False,
+            "disabled_reason": "annotations_not_implemented",
+        }
 
     def test_unknown_conversation_yields_404(self, workspace_env: dict[str, Path]) -> None:
         with _running_server(workspace_env) as (_, base_url):
@@ -277,6 +308,25 @@ class TestReaderPrivacy:
         text = json.dumps(payload)
         for prefix in POLYLOGUE_LOCAL_PATH_PREFIXES:
             assert prefix not in text, f"facets JSON leaked absolute local path with prefix {prefix!r}"
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/api/conversations",
+            "/api/conversations/c1",
+            "/api/conversations/c1/messages",
+        ],
+    )
+    def test_reader_json_contracts_do_not_leak_absolute_local_paths(
+        self,
+        workspace_env: dict[str, Path],
+        path: str,
+    ) -> None:
+        with _running_server(workspace_env) as (_, base_url):
+            payload = _get_json(base_url, path)
+        text = json.dumps(payload)
+        for prefix in POLYLOGUE_LOCAL_PATH_PREFIXES:
+            assert prefix not in text, f"{path} leaked absolute local path with prefix {prefix!r}"
 
 
 # ---------------------------------------------------------------------------
@@ -373,6 +423,54 @@ class TestSharedQueryPayloads:
         assert d["total"] == 0
         assert d["limit"] == 50
         assert d["offset"] == 0
+
+    def test_reader_target_ref_and_action_payloads_roundtrip(self) -> None:
+        from polylogue.surfaces.payloads import (
+            ConversationListRowPayload,
+            ConversationMessagePayload,
+            ReaderActionAvailabilityPayload,
+            TargetRefPayload,
+            reader_anchor,
+        )
+
+        message_ref = TargetRefPayload.message(conversation_id="c1", message_id="m-c1")
+        assert message_ref.model_dump(mode="json", exclude_none=True) == {
+            "target_type": "message",
+            "target_id": "m-c1",
+            "conversation_id": "c1",
+            "message_id": "m-c1",
+            "identity_key": "message:c1:m-c1",
+        }
+        assert reader_anchor("message", "m:c1/unsafe") == "message-m-c1-unsafe"
+
+        row = ConversationListRowPayload(
+            id="c1",
+            provider="claude-code",
+            title="Reader contract",
+            target_ref=TargetRefPayload.conversation("c1"),
+            anchor="conversation-c1",
+            messages=1,
+        )
+        message = ConversationMessagePayload(
+            id="m-c1",
+            role="user",
+            text="Hello reader",
+            target_ref=message_ref,
+            anchor="message-m-c1",
+            actions={
+                "annotate": ReaderActionAvailabilityPayload(
+                    enabled=False,
+                    disabled_reason="annotations_not_implemented",
+                )
+            },
+        )
+
+        row_dump = row.model_dump(mode="json", exclude_none=True)
+        message_dump = message.model_dump(mode="json", exclude_none=True)
+        assert row_dump["target_ref"]["identity_key"] == "conversation:c1"
+        assert row_dump["actions"]["copy_link"]["enabled"] is True
+        assert message_dump["target_ref"]["identity_key"] == "message:c1:m-c1"
+        assert message_dump["actions"]["annotate"]["disabled_reason"] == "annotations_not_implemented"
 
     def test_conversation_list_response_with_diagnostics(self) -> None:
         from polylogue.surfaces.payloads import (

@@ -943,7 +943,7 @@ files:
     target: polylogue/daemon/catchup_status.py
     owner: stable
   - path: polylogue/daemon/cli.py
-    loc: 915
+    loc: 910
     target: polylogue/daemon/cli.py
     owner: stable
   - path: polylogue/daemon/convergence.py
@@ -967,11 +967,11 @@ files:
     target: polylogue/daemon/health.py
     owner: stable
   - path: polylogue/daemon/http.py
-    loc: 1004
+    loc: 1043
     target: polylogue/daemon/http.py
     owner: stable
   - path: polylogue/daemon/live_ingest_attempt_models.py
-    loc: 51
+    loc: 52
     target: polylogue/daemon/live_ingest_attempt_models.py
     owner: stable
     cross_cut: { lifecycle: model }
@@ -984,7 +984,7 @@ files:
     target: polylogue/daemon/notifications.py
     owner: stable
   - path: polylogue/daemon/status.py
-    loc: 1136
+    loc: 1139
     target: polylogue/daemon/status.py
     owner: stable
   - path: polylogue/daemon/web_shell.py
@@ -1079,7 +1079,7 @@ files:
     target: polylogue/mcp/insight_tool_contracts.py
     owner: stable
   - path: polylogue/mcp/payloads.py
-    loc: 551
+    loc: 559
     target: polylogue/mcp/payloads.py
     owner: stable
   - path: polylogue/mcp/query_contracts.py
@@ -2152,15 +2152,15 @@ files:
     target: polylogue/sources/live/__init__.py
     owner: stable
   - path: polylogue/sources/live/batch.py
-    loc: 1153
+    loc: 1154
     target: polylogue/sources/live/batch.py
     owner: stable
   - path: polylogue/sources/live/batch_observability.py
-    loc: 124
+    loc: 126
     target: polylogue/sources/live/batch_observability.py
     owner: stable
   - path: polylogue/sources/live/batch_support.py
-    loc: 268
+    loc: 324
     target: polylogue/sources/live/batch_support.py
     owner: stable
   - path: polylogue/sources/live/convergence_debt.py
@@ -2172,7 +2172,7 @@ files:
     target: polylogue/sources/live/conversation_convergence.py
     owner: stable
   - path: polylogue/sources/live/cursor.py
-    loc: 1022
+    loc: 1057
     target: polylogue/sources/live/cursor.py
     owner: stable
   - path: polylogue/sources/live/dedup.py
@@ -2180,11 +2180,11 @@ files:
     target: polylogue/sources/live/dedup.py
     owner: stable
   - path: polylogue/sources/live/metrics.py
-    loc: 82
+    loc: 84
     target: polylogue/sources/live/metrics.py
     owner: stable
   - path: polylogue/sources/live/watcher.py
-    loc: 391
+    loc: 412
     target: polylogue/sources/live/watcher.py
     owner: stable
   - path: polylogue/sources/parsers/antigravity.py
@@ -2775,7 +2775,8 @@ files:
   - path: polylogue/storage/source_conversations.py
     loc: 46
     target: polylogue/storage/source_conversations.py
-    owner: storage-domain
+    owner: storage-root
+    reason: storage-root cross-cutting helper
   - path: polylogue/storage/sqlite/__init__.py
     loc: 29
     target: polylogue/storage/sqlite/__init__.py
@@ -3035,7 +3036,7 @@ files:
     target: polylogue/surfaces/__init__.py
     owner: stable
   - path: polylogue/surfaces/payloads.py
-    loc: 585
+    loc: 701
     target: polylogue/surfaces/payloads.py
     owner: stable
   - path: polylogue/types.py
