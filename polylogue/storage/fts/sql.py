@@ -127,9 +127,9 @@ def insert_missing_action_rows_sql(chunk_size: int) -> str:
             ae.normalized_tool_name,
             ae.search_text
         FROM action_events ae
-        LEFT JOIN action_events_fts f ON f.rowid = ae.rowid
+        LEFT JOIN action_events_fts_docsize d ON d.id = ae.rowid
         WHERE ae.conversation_id IN ({placeholders})
-          AND f.rowid IS NULL
+          AND d.id IS NULL
     """
 
 

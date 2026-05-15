@@ -69,6 +69,7 @@ from polylogue.sources.live.convergence_debt import (
     convergence_debt_from_states,
     debt_by_path,
 )
+from polylogue.sources.live.conversation_convergence import converge_known_conversations
 from polylogue.sources.live.cursor import CursorRecord, CursorStore
 from polylogue.sources.live.dedup import handle_schema_incompatible, handle_structural_database_error
 from polylogue.sources.live.metrics import LiveBatchMetrics
@@ -616,6 +617,12 @@ class LiveBatchProcessor:
 
         started = time.perf_counter()
         try:
+            conversation_result = converge_known_conversations(
+                cursor=self._cursor, converger=self._converger, paths=unique_paths, started=started
+            )
+            if conversation_result is not None:
+                return conversation_result
+
             converge_batch = getattr(self._converger, "converge_batch", None)
             if callable(converge_batch):
                 states, timings = converge_batch(unique_paths)

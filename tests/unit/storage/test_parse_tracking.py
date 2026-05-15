@@ -592,12 +592,14 @@ class TestFreshSchema:
 
         # raw_conversations indices
         assert "idx_raw_conv_source_mtime" in indices
+        assert "idx_raw_conv_source_path_raw_id" in indices
         assert "idx_raw_conv_parse_ready" in indices
         assert "idx_raw_conv_payload_provider" in indices
 
         # conversations indices
         assert "idx_conversations_content_hash" in indices
         assert "idx_conversations_sortkey" in indices
+        assert "idx_conversations_raw_id" in indices
 
         # messages indices
         assert "idx_messages_conversation_sortkey" in indices

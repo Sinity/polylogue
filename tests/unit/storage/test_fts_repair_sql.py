@@ -25,7 +25,9 @@ def test_incremental_fts_repair_deletes_via_base_rowid(test_conn: sqlite3.Connec
     assert "DELETE FROM action_events_fts WHERE rowid IN" in action_delete_sql
     assert "DELETE FROM action_events_fts WHERE conversation_id" not in action_delete_sql
     assert "INSERT INTO action_events_fts (rowid," in " ".join(insert_action_rows_sql(1).split())
-    assert "LEFT JOIN action_events_fts" in " ".join(insert_missing_action_rows_sql(1).split())
+    missing_action_sql = " ".join(insert_missing_action_rows_sql(1).split())
+    assert "LEFT JOIN action_events_fts_docsize" in missing_action_sql
+    assert "LEFT JOIN action_events_fts f" not in missing_action_sql
     assert "INSERT INTO action_events_fts (rowid," in " ".join(ACTION_FTS_REBUILD_SQL.split())
 
     plan = "\n".join(

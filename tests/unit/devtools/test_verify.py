@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sys
+
 from devtools.verify import build_verify_steps
 
 
@@ -42,5 +44,5 @@ def test_lab_verify_delegates_to_lab_scenario() -> None:
     lab_step = next(step for step in steps if step[0] == "lab scenario")
     assert lab_step == (
         "lab scenario",
-        ["devtools", "lab-scenario", "run", "archive-smoke", "--tier", "0"],
+        [sys.executable, "-m", "devtools", "lab-scenario", "run", "archive-smoke", "--tier", "0"],
     )

@@ -46,6 +46,11 @@ def _mypy_cmd() -> list[str]:
     return ["mypy"]
 
 
+def _devtools_cmd(*args: str) -> list[str]:
+    """Run repository devtools from the current checkout, not a stale PATH wrapper."""
+    return [sys.executable, "-m", "devtools", *args]
+
+
 # ── resource preflight ─────────────────────────────────────────────
 
 
@@ -250,21 +255,21 @@ def build_verify_steps(
     if not commit:
         steps.extend(
             [
-                ("render-all", ["devtools", "render-all", "--check"]),
-                ("verify-topology", ["devtools", "verify-topology"]),
-                ("verify-layering", ["devtools", "verify-layering"]),
-                ("verify-file-budgets", ["devtools", "verify-file-budgets"]),
-                ("verify-test-ownership", ["devtools", "verify-test-ownership"]),
-                ("verify-schema-roundtrip", ["devtools", "verify-schema-roundtrip", "--all"]),
-                ("verify-cross-cuts", ["devtools", "verify-cross-cuts"]),
-                ("verify-suppressions", ["devtools", "verify-suppressions"]),
-                ("verify-manifests", ["devtools", "verify-manifests"]),
-                ("verify-witness-lifecycle", ["devtools", "verify-witness-lifecycle"]),
-                ("verify-lane-assertions", ["devtools", "verify-lane-assertions"]),
+                ("render-all", _devtools_cmd("render-all", "--check")),
+                ("verify-topology", _devtools_cmd("verify-topology")),
+                ("verify-layering", _devtools_cmd("verify-layering")),
+                ("verify-file-budgets", _devtools_cmd("verify-file-budgets")),
+                ("verify-test-ownership", _devtools_cmd("verify-test-ownership")),
+                ("verify-schema-roundtrip", _devtools_cmd("verify-schema-roundtrip", "--all")),
+                ("verify-cross-cuts", _devtools_cmd("verify-cross-cuts")),
+                ("verify-suppressions", _devtools_cmd("verify-suppressions")),
+                ("verify-manifests", _devtools_cmd("verify-manifests")),
+                ("verify-witness-lifecycle", _devtools_cmd("verify-witness-lifecycle")),
+                ("verify-lane-assertions", _devtools_cmd("verify-lane-assertions")),
             ]
         )
 
-    steps.append(("proof-pack check", ["devtools", "proof-pack", "--check"]))
+    steps.append(("proof-pack check", _devtools_cmd("proof-pack", "--check")))
 
     if not quick and not commit:
         pytest_cmd = ["pytest", "-q", "--tb=short", "--ignore=tests/integration"]
@@ -278,8 +283,8 @@ def build_verify_steps(
             steps.append(("pytest", pytest_cmd))
 
     if lab:
-        steps.append(("lab scenario", ["devtools", "lab-scenario", "run", "archive-smoke", "--tier", "0"]))
-        steps.append(("verify-slos", ["devtools", "verify-slos"]))
+        steps.append(("lab scenario", _devtools_cmd("lab-scenario", "run", "archive-smoke", "--tier", "0")))
+        steps.append(("verify-slos", _devtools_cmd("verify-slos")))
     return steps
 
 

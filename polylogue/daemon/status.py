@@ -17,6 +17,12 @@ from polylogue.core.json import JSONDocument, json_document
 from polylogue.daemon.catchup_status import CatchupStatus, catchup_status_info, format_catchup_status_lines
 from polylogue.daemon.convergence_debt_status import ConvergenceDebtSummary, convergence_debt_summary_info
 from polylogue.daemon.health import DaemonHealth, check_health
+from polylogue.daemon.live_ingest_attempt_models import LiveIngestAttemptState, LiveIngestAttemptSummary
+from polylogue.daemon.live_ingest_attempt_workload import (
+    LiveIngestStageEventInfo,
+    latest_stage_events,
+    workload_fields,
+)
 from polylogue.paths import db_path
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.watcher import default_sources
@@ -86,45 +92,6 @@ class LiveCursorSummary(BaseModel):
     sampled_file_count: int = 0
     omitted_file_count: int = 0
     failing_files: list[LiveCursorFileState] = Field(default_factory=list)
-
-
-class LiveIngestAttemptState(BaseModel):
-    attempt_id: str
-    started_at: str
-    updated_at: str
-    status: str
-    phase: str
-    queued_file_count: int = 0
-    needed_file_count: int = 0
-    succeeded_file_count: int = 0
-    failed_file_count: int = 0
-    input_bytes: int = 0
-    source_payload_read_bytes: int = 0
-    cursor_fingerprint_read_bytes: int = 0
-    parse_time_s: float = 0.0
-    convergence_time_s: float = 0.0
-    current_source: str | None = None
-    current_path: str | None = None
-    error: str | None = None
-    rss_current_mb: float | None = None
-    rss_peak_self_mb: float | None = None
-    rss_peak_children_mb: float | None = None
-    cgroup_path: str | None = None
-    cgroup_memory_current_mb: float | None = None
-    cgroup_memory_peak_mb: float | None = None
-    cgroup_memory_swap_current_mb: float | None = None
-    worker_in_flight_count: int | None = None
-    worker_completed_count: int | None = None
-    worker_total_count: int | None = None
-    updated_age_s: float | None = None
-    stale: bool = False
-    completed_at: str | None = None
-
-
-class LiveIngestAttemptSummary(BaseModel):
-    running_count: int = 0
-    stale_running_count: int = 0
-    recent: list[LiveIngestAttemptState] = Field(default_factory=list)
 
 
 class RawFailureSample(BaseModel):
@@ -637,6 +604,10 @@ def _live_ingest_attempt_summary_info() -> LiveIngestAttemptSummary:
                 LIMIT 5
                 """
             ).fetchall()
+            stage_events = latest_stage_events(
+                conn,
+                [_required_str(row[0]) for row in rows],
+            )
             running_rows = conn.execute(
                 "SELECT updated_at FROM live_ingest_attempt WHERE status = 'running'"
             ).fetchall()
@@ -646,7 +617,10 @@ def _live_ingest_attempt_summary_info() -> LiveIngestAttemptSummary:
         return LiveIngestAttemptSummary()
 
     now = datetime.now(UTC)
-    recent_attempts = [_live_ingest_attempt_state_from_row(row, now=now) for row in rows]
+    recent_attempts = [
+        _live_ingest_attempt_state_from_row(row, now=now, stage_event=stage_events.get(_required_str(row[0])))
+        for row in rows
+    ]
     stale_running_count = sum(
         1
         for row in running_rows
@@ -661,7 +635,10 @@ def _live_ingest_attempt_summary_info() -> LiveIngestAttemptSummary:
 
 
 def _live_ingest_attempt_state_from_row(
-    row: sqlite3.Row | tuple[object, ...], *, now: datetime
+    row: sqlite3.Row | tuple[object, ...],
+    *,
+    now: datetime,
+    stage_event: LiveIngestStageEventInfo | None = None,
 ) -> LiveIngestAttemptState:
     updated_at = _required_str(row[2])
     updated_age_s = _attempt_updated_age_s(updated_at, now=now)
@@ -670,6 +647,7 @@ def _live_ingest_attempt_state_from_row(
         and updated_age_s is not None
         and updated_age_s >= _LIVE_INGEST_ATTEMPT_STALE_AFTER_S
     )
+    workload = workload_fields(row, stage_event=stage_event)
     return LiveIngestAttemptState(
         attempt_id=_required_str(row[0]),
         started_at=_required_str(row[1]),
@@ -684,8 +662,15 @@ def _live_ingest_attempt_state_from_row(
         input_bytes=_row_int(row[10]),
         source_payload_read_bytes=_row_int(row[11]),
         cursor_fingerprint_read_bytes=_row_int(row[12]),
+        total_read_bytes=_safe_int(workload["total_read_bytes"]),
+        read_amplification=_safe_float(workload["read_amplification"]),
+        files_per_second=_safe_float(workload["files_per_second"]),
+        source_mb_per_second=_safe_float(workload["source_mb_per_second"]),
+        archive_write_bytes_delta=_safe_int(workload["archive_write_bytes_delta"]),
         parse_time_s=_row_float(row[13]) or 0.0,
         convergence_time_s=_row_float(row[14]) or 0.0,
+        total_time_s=_safe_float(workload["total_time_s"]),
+        stage_timings_s=workload["stage_timings_s"] if isinstance(workload["stage_timings_s"], dict) else {},
         current_source=_optional_str(row[15]),
         current_path=_optional_str(row[16]),
         error=_optional_str(row[17]),
@@ -1071,6 +1056,12 @@ def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
                     "  latest: "
                     f"{latest.get('status')}{stale_marker} {latest.get('phase')} "
                     f"{latest.get('succeeded_file_count', 0)}/{latest.get('needed_file_count', 0)} files"
+                )
+                read_amp = _safe_float(latest.get("read_amplification"))
+                source_rate = _safe_float(latest.get("source_mb_per_second"))
+                file_rate = _safe_float(latest.get("files_per_second"))
+                lines.append(
+                    f"  workload: read amp {read_amp:.2f}x, {source_rate:.2f} MiB/s source, {file_rate:.2f} files/s"
                 )
                 cgroup_current = latest.get("cgroup_memory_current_mb")
                 if cgroup_current is not None:

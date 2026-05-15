@@ -20,6 +20,10 @@ from pathlib import Path
 from polylogue.config import load_polylogue_config
 from polylogue.daemon.convergence import ConvergenceStage
 from polylogue.logging import get_logger
+from polylogue.storage.source_conversations import (
+    conversation_ids_for_source_path,
+    conversation_ids_for_source_paths,
+)
 
 logger = get_logger(__name__)
 
@@ -515,34 +519,14 @@ def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
 
 
 def _conversation_ids_for_source_path(conn: sqlite3.Connection, path: Path) -> list[str]:
-    return _conversation_ids_for_source_paths(conn, [path]).get(path, [])
+    return conversation_ids_for_source_path(conn, path)
 
 
 def _conversation_ids_for_source_paths(
     conn: sqlite3.Connection,
     paths: Sequence[Path],
 ) -> dict[Path, list[str]]:
-    normalized_paths = tuple(dict.fromkeys(Path(path) for path in paths))
-    if not normalized_paths or not _table_exists(conn, "raw_conversations") or not _table_exists(conn, "conversations"):
-        return {}
-    result: dict[Path, list[str]] = {path: [] for path in normalized_paths}
-    paths_by_text = {str(path): path for path in normalized_paths}
-    placeholders = ", ".join("?" for _ in normalized_paths)
-    rows = conn.execute(
-        f"""
-        SELECT DISTINCT r.source_path, c.conversation_id
-        FROM conversations AS c
-        JOIN raw_conversations AS r ON r.raw_id = c.raw_id
-        WHERE r.source_path IN ({placeholders})
-        ORDER BY r.source_path, c.conversation_id
-        """,
-        tuple(paths_by_text),
-    ).fetchall()
-    for row in rows:
-        path = paths_by_text.get(str(row[0]))
-        if path is not None:
-            result[path].append(str(row[1]))
-    return result
+    return conversation_ids_for_source_paths(conn, paths)
 
 
 def _fts_repair_needs_for_conversations(
@@ -551,6 +535,8 @@ def _fts_repair_needs_for_conversations(
 ) -> _FtsRepairNeeds:
     if not conversation_ids:
         return _FtsRepairNeeds()
+    if not _table_exists(conn, "messages_fts_docsize"):
+        return _FtsRepairNeeds(messages=True)
     placeholders = ", ".join("?" for _ in conversation_ids)
     params = tuple(conversation_ids)
     missing_messages = int(
@@ -558,10 +544,10 @@ def _fts_repair_needs_for_conversations(
             f"""
             SELECT COUNT(*)
             FROM messages AS m
-            LEFT JOIN messages_fts AS f ON f.rowid = m.rowid
+            LEFT JOIN messages_fts_docsize AS d ON d.id = m.rowid
             WHERE m.text IS NOT NULL
               AND m.conversation_id IN ({placeholders})
-              AND f.rowid IS NULL
+              AND d.id IS NULL
             """,
             params,
         ).fetchone()[0]
@@ -569,14 +555,16 @@ def _fts_repair_needs_for_conversations(
     messages_missing = missing_messages > 0
     if not _table_exists(conn, "action_events") or not _table_exists(conn, "action_events_fts"):
         return _FtsRepairNeeds(messages=messages_missing)
+    if not _table_exists(conn, "action_events_fts_docsize"):
+        return _FtsRepairNeeds(messages=messages_missing, actions=True)
     missing_actions = int(
         conn.execute(
             f"""
             SELECT COUNT(*)
             FROM action_events AS ae
-            LEFT JOIN action_events_fts AS f ON f.rowid = ae.rowid
+            LEFT JOIN action_events_fts_docsize AS d ON d.id = ae.rowid
             WHERE ae.conversation_id IN ({placeholders})
-              AND f.rowid IS NULL
+              AND d.id IS NULL
             """,
             params,
         ).fetchone()[0]

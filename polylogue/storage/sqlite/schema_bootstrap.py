@@ -31,6 +31,12 @@ _RAW_SOURCE_MTIME_INDEX_SQL = (
     "ON raw_conversations(source_path, file_mtime) "
     "WHERE file_mtime IS NOT NULL"
 )
+_RAW_SOURCE_PATH_RAW_ID_INDEX_SQL = (
+    "CREATE INDEX IF NOT EXISTS idx_raw_conv_source_path_raw_id ON raw_conversations(source_path, raw_id)"
+)
+_CONVERSATIONS_RAW_ID_INDEX_SQL = (
+    "CREATE INDEX IF NOT EXISTS idx_conversations_raw_id ON conversations(raw_id) WHERE raw_id IS NOT NULL"
+)
 _MESSAGE_TYPE_INDEX_SQL = (
     "CREATE INDEX IF NOT EXISTS idx_messages_conversation_message_type ON messages(conversation_id, message_type)"
 )
@@ -253,9 +259,9 @@ _ACTION_FTS_TRIGGER_REPLACEMENT_STATEMENTS: tuple[str, ...] = (
 _SCHEMA_EXTENSION_DESCRIPTORS: tuple[SchemaExtensionDescriptor, ...] = (
     *_MESSAGE_TYPE_EXTENSION_DESCRIPTORS,
     SchemaColumnExtensionDescriptor(
-        table_name="raw_conversations",
-        column_name="blob_size",
-        ddl="ALTER TABLE raw_conversations ADD COLUMN blob_size INTEGER NOT NULL DEFAULT 0",
+        "raw_conversations",
+        "blob_size",
+        "ALTER TABLE raw_conversations ADD COLUMN blob_size INTEGER NOT NULL DEFAULT 0",
     ),
     SchemaIndexExtensionDescriptor(
         table_name="raw_conversations",
@@ -263,9 +269,11 @@ _SCHEMA_EXTENSION_DESCRIPTORS: tuple[SchemaExtensionDescriptor, ...] = (
         ddl=_RAW_SOURCE_MTIME_INDEX_SQL,
         replace_on_drift=True,
     ),
-    # Expression index covering EFFECTIVE_RAW_PROVIDER_SQL. Without it, every
-    # raw provider-filter query becomes a full table scan because COALESCE
-    # cannot use idx_raw_conv_provider or idx_raw_conv_payload_provider.
+    SchemaIndexExtensionDescriptor(
+        "raw_conversations", "idx_raw_conv_source_path_raw_id", _RAW_SOURCE_PATH_RAW_ID_INDEX_SQL
+    ),
+    SchemaIndexExtensionDescriptor("conversations", "idx_conversations_raw_id", _CONVERSATIONS_RAW_ID_INDEX_SQL),
+    # Cover EFFECTIVE_RAW_PROVIDER_SQL; COALESCE cannot use the plain indexes.
     SchemaIndexExtensionDescriptor(
         table_name="raw_conversations",
         index_name="idx_raw_conv_effective_provider",

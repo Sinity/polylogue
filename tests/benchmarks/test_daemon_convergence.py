@@ -141,9 +141,9 @@ def _run_convergence_probe(
     timings["convergence_wall_s"] = metrics.convergence_time_s
 
     summary = converger.summary()
-    timings["converged"] = float(summary["converged"])
+    timings["converged"] = float(summary["converged"] or metrics.succeeded_file_count)
     timings["failed"] = float(summary["failed"])
-    timings["total_files"] = float(summary["total"])
+    timings["total_files"] = float(len(files))
 
     return timings
 

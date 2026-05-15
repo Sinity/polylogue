@@ -133,9 +133,12 @@ def test_daemon_status_reports_live_ingest_attempts(tmp_path: Path) -> None:
         input_bytes=source.stat().st_size,
         source_payload_read_bytes=0,
         cursor_fingerprint_read_bytes=0,
+        archive_write_bytes_delta=4096,
         parse_time_s=0.0,
+        total_time_s=2.0,
         current_source="codex",
         current_path=source,
+        stage_timings_json='{"full_parse": 1.25, "convergence": 0.75}',
     )
 
     with (
@@ -160,6 +163,12 @@ def test_daemon_status_reports_live_ingest_attempts(tmp_path: Path) -> None:
     assert latest["cgroup_path"] == "/user.slice/test.scope"
     assert latest["cgroup_memory_current_mb"] == 2048.0
     assert latest["cgroup_memory_peak_mb"] == 4096.0
+    assert latest["total_read_bytes"] == 0
+    assert latest["read_amplification"] == 0.0
+    assert latest["files_per_second"] == 0.0
+    assert latest["archive_write_bytes_delta"] == 4096
+    assert latest["total_time_s"] == 2.0
+    assert latest["stage_timings_s"] == {"full_parse": 1.25, "convergence": 0.75}
     catchup = payload["catchup"]
     assert isinstance(catchup, dict)
     assert catchup["mode"] == "catching_up"
@@ -174,6 +183,7 @@ def test_daemon_status_reports_live_ingest_attempts(tmp_path: Path) -> None:
     lines = format_daemon_status_lines(payload)
     assert "Live ingest attempts: 1 running" in lines
     assert "  latest: running full_parse 0/1 files" in lines
+    assert "  workload: read amp 0.00x, 0.00 MiB/s source, 0.00 files/s" in lines
     assert "  memory: cgroup 2048.0 MiB peak 4096.0 MiB" in lines
     assert "Catch-up: catching_up 0/1 files, read amp 0.0x" in lines
 
