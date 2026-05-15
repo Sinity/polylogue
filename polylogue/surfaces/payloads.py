@@ -399,6 +399,9 @@ class ConversationSearchMatchPayload(SurfacePayloadModel):
     rank: int
     retrieval_lane: str
     match_surface: str
+    target_ref: TargetRefPayload | None = None
+    anchor: str | None = None
+    actions: dict[str, ReaderActionAvailabilityPayload] = Field(default_factory=dict)
     message_id: str | None = None
     snippet: str | None = None
     score: float | None = None
@@ -419,6 +422,14 @@ class ConversationSearchHitPayload(SurfacePayloadModel):
         *,
         message_count: int | None = None,
     ) -> ConversationSearchHitPayload:
+        if hit.message_id is not None:
+            target_ref = TargetRefPayload.message(conversation_id=hit.conversation_id, message_id=hit.message_id)
+            anchor = reader_anchor("message", hit.message_id)
+            actions = reader_message_actions()
+        else:
+            target_ref = TargetRefPayload.conversation(hit.conversation_id)
+            anchor = reader_anchor("conversation", hit.conversation_id)
+            actions = reader_conversation_actions()
         return cls(
             conversation=ConversationSummaryPayload.from_summary(
                 hit.summary,
@@ -428,6 +439,9 @@ class ConversationSearchHitPayload(SurfacePayloadModel):
                 rank=hit.rank,
                 retrieval_lane=hit.retrieval_lane,
                 match_surface=hit.match_surface,
+                target_ref=target_ref,
+                anchor=anchor,
+                actions=actions,
                 message_id=hit.message_id,
                 snippet=hit.snippet,
                 score=hit.score,

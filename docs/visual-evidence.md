@@ -32,7 +32,7 @@ dependency: the lane uses Python's standard `http.server` and
 
 | Reader state | Artefact id | Routes exercised |
 |---|---|---|
-| List / search | `polylogue.local_reader.search` | `/`, `/api/conversations`, `/api/facets`, `/api/facets?provider=...` |
+| List / search | `polylogue.local_reader.search` | `/`, `/api/conversations`, `/api/conversations?query=...`, `/api/facets`, `/api/facets?provider=...`, `/api/facets?query=...` |
 | Detail / conversation | `polylogue.local_reader.conversation` | `/api/conversations/{id}`, `/api/conversations/{id}/messages` |
 | Empty archive | — | `/api/conversations`, `/api/facets` |
 | Privacy boundary | — | `/`, `/api/facets`, `/api/conversations`, `/api/conversations/{id}`, `/api/conversations/{id}/messages` (auditing for absolute local paths) |
@@ -56,9 +56,10 @@ palette screenshots under `docs/design/mk3/screens/`.
   envelope when `?query=` is supplied. Conversation rows, detail headers,
   and messages carry stable `target_ref` objects, deterministic reader
   anchors, and per-target action availability with explicit disabled
-  reasons for actions the current reader cannot perform yet. Facets carry
-  the `scoped_to_query`/`providers` shape and honour the `?provider=`
-  filter contract.
+  reasons for actions the current reader cannot perform yet. Query search
+  hits also carry both conversation-level targets and match-level message
+  targets. Facets carry the `scoped_to_query`/`providers` shape and honour
+  the `?provider=` and `?query=` filter contracts.
 - **Empty / no-results state.** Distinguishes "archive is empty" from
   "query matched no rows", a discrimination the reader UI is required to
   expose.
@@ -93,8 +94,7 @@ palette screenshots under `docs/design/mk3/screens/`.
 
 ## Follow-ups
 
-Two FTS-dependent assertions in the harness are currently `@skip`ped
-with explicit references to a #865 follow-up: query-based facets and
-"no results for query" both require the FTS index to be primed on the
-synthetic archive. Adding the priming is straightforward but out of
-scope for the harness scaffolding.
+The fast lane is still DOM/contract-only. The MK3 follow-up in #865 should add
+a separate browser-backed screenshot lane for the richer reader, stack,
+topology, attachment, and degraded-state matrix rather than replacing this
+unit-speed smoke.

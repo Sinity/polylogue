@@ -76,12 +76,13 @@ def _running_server(
 def _seed_empty_schema(workspace: dict[str, Path]) -> None:
     import sqlite3
 
-    from polylogue.storage.sqlite.schema_ddl_archive import ARCHIVE_STORAGE_DDL
+    from polylogue.storage.sqlite.schema_ddl_archive import ARCHIVE_STORAGE_DDL, MESSAGE_FTS_DDL
 
     db = _archive_db_path(workspace)
     db.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(db))
     conn.executescript(ARCHIVE_STORAGE_DDL)
+    conn.executescript(MESSAGE_FTS_DDL)
     conn.commit()
     conn.close()
 
@@ -90,12 +91,13 @@ def _seed_test_db(workspace: dict[str, Path]) -> None:
     """Seed a synthetic archive with three single-message conversations."""
     import sqlite3
 
-    from polylogue.storage.sqlite.schema_ddl_archive import ARCHIVE_STORAGE_DDL
+    from polylogue.storage.sqlite.schema_ddl_archive import ARCHIVE_STORAGE_DDL, MESSAGE_FTS_DDL
 
     db = _archive_db_path(workspace)
     db.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(db))
     conn.executescript(ARCHIVE_STORAGE_DDL)
+    conn.executescript(MESSAGE_FTS_DDL)
     for cid, prov, title in [
         ("c1", "claude-code", "Claude Code session about authentication"),
         ("c2", "chatgpt", "ChatGPT debugging conversation"),
@@ -193,15 +195,31 @@ class TestReaderSearchState:
         assert payload["providers"] == {"chatgpt": 1}
         assert "claude-code" not in payload["providers"]
 
-    @pytest.mark.skip(
-        reason="query-based facets need FTS index priming; tracked separately for full reader smoke (#865 follow-up)"
-    )
     def test_facets_query_filter_scopes_counts(self, workspace_env: dict[str, Path]) -> None:
         with _running_server(workspace_env) as (_, base_url):
             payload = _get_json(base_url, "/api/facets?query=Hello")
         assert isinstance(payload, dict)
         assert payload["scoped_to_query"] is True
         assert payload["total_conversations"] == 3
+
+    def test_query_search_envelope_carries_hit_target_refs(self, workspace_env: dict[str, Path]) -> None:
+        with _running_server(workspace_env) as (_, base_url):
+            payload = _get_json(base_url, "/api/conversations?query=Hello")
+        assert isinstance(payload, dict)
+        assert payload["total"] == 3
+        assert len(payload["hits"]) == 3
+        hit = next(item for item in payload["hits"] if item["id"] == "c1")
+        assert hit["target_ref"]["identity_key"] == "conversation:c1"
+        assert hit["anchor"] == "conversation-c1"
+        assert hit["match"]["target_ref"] == {
+            "target_type": "message",
+            "target_id": "m-c1",
+            "conversation_id": "c1",
+            "message_id": "m-c1",
+            "identity_key": "message:c1:m-c1",
+        }
+        assert hit["match"]["anchor"] == "message-m-c1"
+        assert hit["match"]["actions"]["copy_text"]["enabled"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -271,7 +289,6 @@ class TestReaderDegradedStates:
         assert payload["total_conversations"] == 0
         assert payload["providers"] == {}
 
-    @pytest.mark.skip(reason="query route needs FTS index priming on the synthetic archive; tracked as #865 follow-up")
     def test_no_results_query_is_distinguishable_from_empty_archive(self, workspace_env: dict[str, Path]) -> None:
         with _running_server(workspace_env) as (_, base_url):
             payload = _get_json(base_url, "/api/conversations?query=nonexistent_term_xyz")
