@@ -1,6 +1,6 @@
 # Verification Lab Command Surface
 
-Status: accepted for the current proof-kernel generation. Revisit when proof and
+Status: accepted for the current verification-catalog generation. Revisit when
 evidence runners need a stable end-user distribution surface outside the repo
 control plane.
 
@@ -14,22 +14,22 @@ Selected vertical slices:
 
 | Slice | Command | Role |
 | --- | --- | --- |
-| Catalog | `devtools render-verification-catalog` | Render and check the proof-obligation catalog generated from subjects, claims, runners, and compiled obligations. |
-| Routing | `devtools affected-obligations` | Map changed paths or refs to affected proof obligations and focused verification commands. |
-| Evidence | `devtools semantic-axis-evidence` | Produce comparative proof-envelope performance evidence across semantic scale tiers. |
+| Catalog | `devtools render-verification-catalog` | Render and check the verification catalog generated from subjects, claims, runners, and routed checks. |
+| Routing | `devtools affected-obligations` | Map changed paths or refs to affected verification checks and focused commands. |
+| Evidence | `devtools semantic-axis-evidence` | Produce comparative performance evidence across semantic scale tiers. |
 | Corpus | `devtools lab-corpus` | Generate raw synthetic corpus fixtures or seed complete demo archive workspaces for lab runs. |
 | Scenarios | `devtools lab-scenario` | Run showcase exercise scenario sets and committed showcase baseline checks outside the archive CLI. |
 
-This surface is intentionally a repo operator surface. It works over proof
+This surface is intentionally a repo operator surface. It works over catalog
 subjects, generated docs, changed files, evidence envelopes, and local
 verification artifacts. Archive-facing checks remain in the archive CLI
-where they already belong, such as `polylogue doctor --proof` and schema proof
-rendering. Schema package auditing moved to `devtools schema-audit` so
+where they already belong, such as schema query and audit commands.
+Schema package auditing moved to `devtools schema-audit` so
 repository QA does not pollute first-contact archive help.
 
 ## Catalog Grounding
 
-The decision depends on the proof-obligation catalog from issue #192, not on a
+The decision depends on the verification catalog from issue #192, not on a
 hypothetical future taxonomy. The catalog at
 [`docs/verification-catalog.md`](verification-catalog.md) already records:
 
@@ -37,7 +37,7 @@ hypothetical future taxonomy. The catalog at
 - claims for CLI, schema, provider capability, operation-spec, workflow, and
   semantic archive behavior;
 - runner bindings and trust metadata;
-- compiled obligations that affected-change routing can target.
+- routed checks that changed-path routing can target.
 
 That means the first lab surface can be explicit without moving command
 implementations. `devtools render-verification-catalog` is the catalog slice,
@@ -49,30 +49,29 @@ showcase exercise work that used to overload `polylogue audit`.
 ## Alternatives Rejected
 
 `polylogue-lab` is premature. A separate executable implies a stable public
-distribution and packaging boundary before the proof/evidence runner UX is
-settled.
+distribution and packaging boundary before the evidence runner UX is settled.
 
 `polylogue lab` would put repo verification and source-control operations into
 the archive CLI. That blurs the boundary between archive workflows and
-repository proof obligations.
+repository verification checks.
 
 `polylogue audit` overloaded archive help with repository QA. Keeping the lab
 surface in `devtools` avoids turning archive usage into source-tree ceremony.
 
 Exposing only `devtools render-verification-catalog` is now too narrow. The
-catalog slice exists, but affected-obligation routing and semantic-axis evidence
+catalog slice exists, but changed-path routing and semantic-axis evidence
 also exist and need discoverable operator entry points.
 
 ## Surface Rules
 
-New verification-lab commands should implement a real proof, evidence, routing,
+New verification-lab commands should implement real evidence, routing,
 or catalog operation. They should not be aliases over older overloaded commands.
 
 Generated docs and `devtools --list-commands --json` must keep naming the
 selected surface, so agents and scripts can discover it without scraping prose.
 
-If a future command must operate on user archives rather than repo proof
-obligations, it belongs in the archive CLI or API first, not in the
+If a future command must operate on user archives rather than repo verification
+checks, it belongs in the archive CLI or API first, not in the
 verification-lab surface.
 
 ## Migration Notes

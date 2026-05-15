@@ -73,7 +73,7 @@ GENERATED_SURFACES: tuple[GeneratedSurface, ...] = (
     GeneratedSurface(
         name="verification-catalog",
         label="Verification catalog",
-        description="Render docs/verification-catalog.md from proof-obligation registries.",
+        description="Render docs/verification-catalog.md from verification check registries.",
         command=control_plane_argv("render-verification-catalog"),
         main=render_verification_catalog.main,
         inputs=("proof/",),

@@ -211,7 +211,7 @@ attachments, exports):
 - `daemon/` — daemon convergence, HTTP API, and web reader
 
 ### Verification (repo health)
-- `proof/` — proof obligations, subject discovery, claim catalog, witnesses
+- `proof/` — verification catalog internals, subject discovery, claim catalog, witnesses
 - `devtools/` — operator tooling, lints, campaigns, rendering
 - `showcase/` — QA exercises, deterministic acceptance tests
 - `tests/` — pytest suite, property tests, integration tests

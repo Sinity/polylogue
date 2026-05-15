@@ -67,12 +67,12 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
     DocsEntry(
         "Verification Catalog",
         "docs/verification-catalog.md",
-        "Generated proof-obligation subjects, claims, runners, and catalog self-checks.",
+        "Generated verification subjects, claims, runners, and catalog self-checks.",
     ),
     DocsEntry(
         "Verification Lab",
         "docs/verification-lab.md",
-        "Accepted command-surface decision for proof catalog, routing, and evidence operators.",
+        "Accepted command-surface decision for verification catalog, routing, and evidence operators.",
     ),
 )
 

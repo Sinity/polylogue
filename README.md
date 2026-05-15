@@ -169,8 +169,8 @@ devtools affected-obligations --path polylogue/cli/query.py
 devtools lab-corpus representative-generate -p chatgpt -n 3
 ```
 
-The verification lab records proof-obligation subjects, claim runners, and
-evidence routing so agents can choose focused checks before escalating to the
+The verification lab records catalog subjects, claim runners, and evidence
+routing so agents can choose focused checks before escalating to the
 full repository baseline.
 
 <!-- BEGIN GENERATED: docs-surface -->
@@ -190,8 +190,8 @@ Start with the generated command and architecture references; use [docs/README.m
 | [MCP Integration](docs/mcp-integration.md) | Model Context Protocol server setup and usage. |
 | [Configuration](docs/configuration.md) | XDG paths, environment variables, and runtime configuration. |
 | [Developer Tools](docs/devtools.md) | `devtools` guide for generated surfaces, validation, and repo hygiene. |
-| [Verification Catalog](docs/verification-catalog.md) | Generated proof-obligation subjects, claims, runners, and catalog self-checks. |
-| [Verification Lab](docs/verification-lab.md) | Accepted command-surface decision for proof catalog, routing, and evidence operators. |
+| [Verification Catalog](docs/verification-catalog.md) | Generated verification subjects, claims, runners, and catalog self-checks. |
+| [Verification Lab](docs/verification-lab.md) | Accepted command-surface decision for verification catalog, routing, and evidence operators. |
 | [Providers](docs/providers/README.md) | Provider-specific parsing and export-format notes. |
 
 <!-- END GENERATED: docs-surface -->

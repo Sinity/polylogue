@@ -40,13 +40,13 @@ devtools status --json
 
 ## Verification Lab Surface
 
-The proof-lab operator surface intentionally lives in `devtools` for now. These commands operate on
-repo proof obligations and evidence records, not end-user archive workflows.
+The verification-lab operator surface intentionally lives in `devtools` for now. These commands operate on
+repo verification checks and evidence records, not end-user archive workflows.
 
 | Command | Role |
 | --- | --- |
-| `devtools render-verification-catalog` | Refresh or verify the proof-obligation catalog that anchors the verification-lab surface after changing proof subjects, claims, runners, or catalog rendering. |
-| `devtools affected-obligations` | Find the proof obligations and inner-loop checks affected by local changes before escalating to full PR gates. |
+| `devtools render-verification-catalog` | Refresh or verify the catalog that anchors changed-path verification reports after changing subjects, claims, runners, or catalog rendering. |
+| `devtools affected-obligations` | Find the checks and inner-loop commands affected by local changes before escalating to full PR gates. |
 | `devtools semantic-axis-evidence` | Produce comparative performance evidence that describes growth shape over semantic axes instead of machine-specific absolute budgets. |
 | `devtools lab-corpus` | Seed synthetic corpus files or complete demo workspaces for lab exercises. |
 | `devtools lab-scenario` | Run showcase exercise smoke scenarios and committed baseline checks outside the archive CLI. |
@@ -91,19 +91,19 @@ These are the commands worth remembering during normal repo work:
 | `devtools render-quality-reference` | Render docs/test-quality-workflows.md from live validation, mutation, and benchmark registries. |
 | `devtools render-readme-media` | Generate README media assets (architecture diagrams, flowcharts) under docs/media/. |
 | `devtools render-topology-status` | Render docs/topology-status.md from the topology projection and realized tree. |
-| `devtools render-verification-catalog` | Render the verification-lab proof catalog from obligation registries. |
+| `devtools render-verification-catalog` | Render the verification-lab catalog from check registries. |
 
 ### Verification
 
 | Command | Description |
 | --- | --- |
-| `devtools affected-obligations` | Route changed paths or refs to affected verification-lab proof obligations and focused checks. |
+| `devtools affected-obligations` | Route changed paths or refs to affected verification checks and focused commands. |
 | `devtools artifact-graph` | Render the runtime artifact, operation, and scenario-coverage map. |
 | `devtools coverage-gate` | Run pytest with the repository coverage floor from pyproject.toml. |
 | `devtools daemon-workload-probe` | Inspect daemon ingest workload, convergence debt, and hot query plans. |
 | `devtools lab-corpus` | Generate verification-lab synthetic corpus fixtures and demo archives. |
 | `devtools lab-scenario` | Run verification-lab showcase scenario sets and baseline checks. |
-| `devtools obligation-diff` | Diff proof obligations between two git refs to surface affected assurance domains. |
+| `devtools obligation-diff` | Diff catalog-backed verification checks between two git refs. |
 | `devtools pipeline-probe` | Run typed pipeline probes against synthetic, staged, or archive-subset inputs. |
 | `devtools proof-pack` | Domain-grouped verification impact report for changed paths. |
 | `devtools query-memory-budget` | Measure query-memory envelopes on generated fixtures. |
