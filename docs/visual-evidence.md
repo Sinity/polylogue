@@ -1,13 +1,18 @@
 # Reader Visual Smoke Lane
 
-Polylogue's daemon-served local web reader is exercised by an automated
-DOM/contract smoke lane committed in
-[`tests/unit/daemon/test_web_reader.py`](../tests/unit/daemon/test_web_reader.py).
-The lane boots the production `DaemonAPIHTTPServer` against a synthetic
-on-disk archive and drives the live HTTP surface — it never reads the
-operator's real archive, never serves committed sample content, and
-never makes pixel-diff assertions that would freeze aesthetic
-iteration.
+Polylogue's daemon-served local web reader is exercised by two automated
+smoke lanes:
+
+- [`tests/unit/daemon/test_web_reader.py`](../tests/unit/daemon/test_web_reader.py)
+  owns fast endpoint and envelope contracts.
+- [`tests/visual/test_reader_dom_smoke.py`](../tests/visual/test_reader_dom_smoke.py)
+  owns browserless DOM/evidence assertions for the daemon-served shell and
+  reader states.
+
+Both lanes boot the production `DaemonAPIHTTPServer` against a synthetic
+on-disk archive and drive the live HTTP surface — neither reads the operator's
+real archive, serves committed private sample content, or makes pixel-diff
+assertions that would freeze aesthetic iteration.
 
 This page documents the harness so #848, #859, #865, and the design packs
 have a stable reference for what the lane covers and how to run it. MK3 is the
@@ -21,21 +26,23 @@ From the devshell:
 
 ```bash
 nix develop -c pytest tests/unit/daemon/test_web_reader.py
+nix develop -c pytest tests/visual
 ```
 
-The suite is part of the standard unit run — `devtools verify` exercises
-it end to end. There is no separate browser binary or Playwright
-dependency: the lane uses Python's standard `http.server` and
-`urllib.request` against the real `DaemonAPIHTTPServer`.
+Both suites are part of the standard non-integration test run. There is no
+browser binary or Playwright dependency in these fast lanes: they use Python's
+standard `http.server`, `urllib.request`, and `html.parser` against the real
+`DaemonAPIHTTPServer`.
 
 ## Coverage
 
 | Reader state | Artefact id | Routes exercised |
 |---|---|---|
 | List / search | `polylogue.local_reader.search` | `/`, `/api/conversations`, `/api/conversations?query=...`, `/api/facets`, `/api/facets?provider=...`, `/api/facets?query=...` |
-| Detail / conversation | `polylogue.local_reader.conversation` | `/api/conversations/{id}`, `/api/conversations/{id}/messages` |
+| Detail / conversation | `polylogue.local_reader.conversation` | `/c/{id}`, `/api/conversations/{id}`, `/api/conversations/{id}/messages`, `/api/conversations/{id}/raw` |
 | Empty archive | — | `/api/conversations`, `/api/facets` |
-| Privacy boundary | — | `/`, `/api/facets`, `/api/conversations`, `/api/conversations/{id}`, `/api/conversations/{id}/messages` (auditing for absolute local paths) |
+| Degraded FTS | `polylogue.local_reader.degraded` | `/api/conversations?query=...` with message FTS absent |
+| Privacy boundary | — | `/`, `/c/{id}`, `/api/facets`, `/api/conversations`, `/api/conversations/{id}`, `/api/conversations/{id}/messages` (auditing for absolute local paths) |
 | Auth boundary | — | `/api/conversations` with/without `Authorization: Bearer ...` |
 
 The artefact ids match the names referenced in the design packs and in #848 so
@@ -45,11 +52,15 @@ palette screenshots under `docs/design/mk3/screens/`.
 
 ## What the lane checks
 
-- **Page structure.** The HTML payload at `/` contains the five region
+- **Page structure.** The HTML payloads at `/` and `/c/{id}` contain the five region
   hooks (`renderSidebarState`, `renderConversations`, `renderFacets`,
   `renderMain`, `renderInspector`) the JS bundle hydrates. A regression
   that drops a region fails here loudly without depending on pixel
   differences.
+- **Evidence envelopes.** The visual DOM lane writes and reads JSON evidence
+  manifests under pytest temp directories. Each manifest records artifact id,
+  route, fixture id, command, evidence kind, checked structure, private-path
+  status, and the explicit follow-up for the heavier browser screenshot gate.
 - **Envelope shapes.** Every reader-facing JSON envelope is asserted by
   shape: `items`/`messages`/`raw_artifacts` plus `total` for the
   paginated list/detail surfaces, and the search route's `hits`/`total`
@@ -87,8 +98,8 @@ palette screenshots under `docs/design/mk3/screens/`.
   fixtures — the synthetic seeder produces three single-message
   conversations with stable ids so the envelope assertions stay
   reproducible.
-- No browser-binary requirement. The MK3 follow-up in #865 should add a
-  separate browser-backed screenshot lane for the richer reader, stack,
+- No browser-binary requirement in the fast lanes. A later #865 slice should
+  add a separate browser-backed screenshot lane for the richer reader, stack,
   topology, attachment, and degraded-state matrix rather than replacing this
   fast DOM/contract smoke.
 

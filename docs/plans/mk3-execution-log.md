@@ -221,3 +221,60 @@ Verification:
 - `pytest -q tests/unit/daemon/test_web_reader.py`
 - `devtools verify --quick`
 - `pytest -q tests/unit/daemon/`
+
+### 2026-05-15 - Wave 2 reader visual DOM evidence launch
+
+Target:
+
+- #865 visual/DOM evidence lane for the MK3 reader, consumed by #848.
+- First executable visual-evidence slice: browserless DOM and API evidence
+  envelopes against the daemon-served reader with synthetic archive data.
+
+Coordination:
+
+- Main branch: `feature/test/reader-visual-dom-evidence`.
+- Serialized implementation. The new `tests/visual/` package, route support,
+  and docs touch a compact shared surface; no worktree worker is useful here.
+
+Owned files:
+
+- `polylogue/daemon/http.py`
+- `tests/visual/`
+- `docs/visual-evidence.md`
+- `docs/plans/mk3-execution-log.md`
+
+Avoided files:
+
+- Browser binary packaging.
+- Full web-shell product redesign.
+- Real archive fixtures or screenshots containing operator data.
+- Storage schema beyond synthetic test seeding.
+
+First gates:
+
+- `pytest -q tests/visual`
+- `pytest -q tests/unit/daemon/test_web_reader.py`
+- `devtools verify --quick`
+
+Outcome:
+
+- Added `tests/visual/` as a dedicated browserless visual/DOM evidence lane.
+- The lane boots the production daemon HTTP server against synthetic archives
+  and writes JSON evidence envelopes for search/list, conversation/detail,
+  query/no-results/facets, empty archive, degraded FTS, and privacy safety.
+- Added `/c/{id}` web-shell serving so conversation deep links can be verified
+  directly without a browser rewrite.
+- Normalized daemon message `message_type` serialization to stable enum values
+  in reader detail and paginated message endpoints.
+- Documented the fast lane split and the remaining browser screenshot gate in
+  `docs/visual-evidence.md`.
+
+Verification:
+
+- `pytest -q tests/visual`
+- `pytest -q tests/unit/daemon/test_web_reader.py`
+- `ruff format --check polylogue/daemon/http.py tests/visual`
+- `ruff check polylogue/daemon/http.py tests/visual`
+- `mypy tests/visual polylogue/daemon/http.py`
+- `devtools verify --quick`
+- `devtools verify --affected --skip-slow`
