@@ -171,6 +171,34 @@ Resource rules:
 
 ## Execution Entries
 
+### 2026-05-15 - Backup restore/read evidence
+
+Target:
+
+- #999 backup verification acceptance criterion: backup must be readable, not
+  merely created.
+
+Outcome:
+
+- Added a daemon backup contract test that seeds a real archive database, runs
+  `backup_archive`, opens the produced backup through the read-only SQLite path,
+  runs `PRAGMA integrity_check`, and verifies restored conversation/message
+  rows can be queried.
+- The test records bounded `daemon.backup_restore.read` evidence with backup
+  filename, DB size, warning count, integrity status, row counts, and
+  `restore_query_ok`.
+
+Artifact example:
+
+- `.cache/verification/evidence/daemon.backup_restore.read-*.json`
+
+Verification:
+
+- `pytest -q tests/unit/daemon/test_backup.py`
+- `ruff check tests/unit/daemon/test_backup.py`
+- `mypy --strict tests/unit/daemon/test_backup.py`
+- `ruff format --check tests/unit/daemon/test_backup.py`
+
 ### 2026-05-15 - Daemon status and convergence evidence artifacts
 
 Target:
