@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -140,7 +142,7 @@ def test_fts_stage_repairs_only_missing_action_index_when_messages_current(
         lambda _conn, paths: {Path(paths[0]): ["conv-a"], Path(paths[1]): ["conv-b"]},
     )
     monkeypatch.setattr(stages, "_fts_repair_needs_for_conversations", fake_repair_needs)
-    monkeypatch.setattr(stages, "_action_fts_has_rows_for_conversations", lambda _conn, _ids: False)
+    monkeypatch.setattr(stages, "_action_events_exist_for_conversations", lambda _conn, _ids: False)
 
     stage = make_fts_stage(db_path)
     assert stage.execute_many is not None
@@ -150,6 +152,33 @@ def test_fts_stage_repairs_only_missing_action_index_when_messages_current(
     assert needs_calls == [["conv-a", "conv-b"], ["conv-a", "conv-b"]]
     assert committed is True
     assert rebuilt is False
+
+
+def test_action_event_probe_uses_indexed_base_table() -> None:
+    queries: list[tuple[str, tuple[str, ...]]] = []
+
+    class FakeConnection:
+        def execute(self, sql: str, params: tuple[str, ...] = ()) -> object:
+            queries.append((sql, params))
+            if "sqlite_master" in sql:
+                return _FakeCursor([("action_events",)])
+            if "action_events" in sql:
+                return _FakeCursor([(1,)])
+            raise AssertionError(f"unexpected SQL: {sql}")
+
+    class _FakeCursor:
+        def __init__(self, rows: list[tuple[object, ...]]) -> None:
+            self._rows = rows
+
+        def fetchone(self) -> tuple[object, ...] | None:
+            return self._rows[0] if self._rows else None
+
+    conn = cast(sqlite3.Connection, FakeConnection())
+    assert stages._action_events_exist_for_conversations(conn, ["conv-a", "conv-b"]) is True
+    probe_sql = queries[-1][0]
+    assert "FROM action_events\n" in probe_sql
+    assert "action_events_fts" not in probe_sql
+    assert queries[-1][1] == ("conv-a", "conv-b")
 
 
 def test_embed_stage_scopes_changed_conversations_without_asyncio_run(
