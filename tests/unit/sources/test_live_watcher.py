@@ -515,43 +515,6 @@ def test_reingest_when_file_grows(tmp_path: Path) -> None:
     assert parse_sources.await_count == 3
 
 
-def test_same_size_rewrite_is_not_auto_detected(tmp_path: Path) -> None:
-    """Document the watcher's same-size-rewrite limitation (#1003 follow-on).
-
-    The previous behaviour rehashed the entire file on every mtime drift
-    to detect same-size in-place rewrites. That fingerprint cost was the
-    read-amplification storm. The watcher now trusts the
-    (dev, ino, size, content_fingerprint) tuple and ignores mtime drift.
-
-    Cost: same-size in-place content rewrites (rare; vim-edits with
-    ``backupcopy=yes``, manual ``echo > file``, restore from same-sized
-    backup) are not auto-detected. Tail-hash restoration is tracked in
-    #1009.
-
-    Operators can force re-ingest via ``polylogue reset`` / explicit
-    ``polylogue ingest``.
-    """
-    root = tmp_path / "src"
-    root.mkdir()
-    f = root / "session.jsonl"
-    f.write_text('{"a":1}\n')
-    watcher, parse_sources = _make_watcher(tmp_path, root)
-
-    asyncio.run(_ingest_one(watcher, f))
-    assert parse_sources.await_count == 1
-
-    f.write_text('{"b":2}\n')
-    assert f.stat().st_size == len('{"a":1}\n')
-    asyncio.run(_ingest_one(watcher, f))
-
-    # New contract: same-size rewrite is NOT auto-detected. The cost of
-    # detecting it (full-file rehash on every mtime drift) was the storm.
-    assert parse_sources.await_count == 1, (
-        "Same-size rewrite must not trigger re-ingest at watcher stage. "
-        "See #1003 for the storm context, #1009 for the tail-hash restoration."
-    )
-
-
 def test_legacy_size_only_cursor_reingests_to_populate_fingerprint(tmp_path: Path) -> None:
     root = tmp_path / "src"
     root.mkdir()

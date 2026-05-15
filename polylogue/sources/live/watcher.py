@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING
 
 from polylogue.logging import get_logger
 from polylogue.sources.live.batch import LiveBatchEventEmitter, LiveBatchProcessor, fingerprint_file
+from polylogue.sources.live.batch_support import tail_hash_from_path
 from polylogue.sources.live.cursor import CursorRecord, CursorStore
 
 if TYPE_CHECKING:
@@ -96,6 +97,7 @@ class LiveWatcher:
         self._converger = converger
         self._pending_paths: set[Path] = set()
         self._pending_scheduled = False
+        self._drain_task: asyncio.Task[None] | None = None
         self._last_batch_at: float = 0.0
         self._batch_lock = asyncio.Lock()
         self._stop = asyncio.Event()
@@ -133,7 +135,11 @@ class LiveWatcher:
         self._stop.set()
 
     def cancel_pending(self) -> None:
-        pass  # No orphaned tasks with the batched model
+        task = self._drain_task
+        if task is not None and not task.done():
+            task.cancel()
+        self._drain_task = None
+        self._pending_scheduled = False
 
     # ------------------------------------------------------------------
     # Catch-up: batch all changed files
@@ -216,33 +222,41 @@ class LiveWatcher:
     def _enqueue(self, path: Path) -> None:
         """Enqueue a path for batched ingestion after debounce."""
         self._pending_paths.add(path)
-        if not self._pending_scheduled:
+        if self._drain_task is None or self._drain_task.done():
             self._pending_scheduled = True
-            asyncio.create_task(self._debounced_batch())
+            self._drain_task = asyncio.create_task(self._debounced_batch())
 
     async def _debounced_batch(self) -> None:
-        """Wait for the debounce window, then flush all pending paths."""
-        await asyncio.sleep(self._debounce_s)
+        """Wait for the debounce window, then drain pending paths serially."""
+        try:
+            await asyncio.sleep(self._debounce_s)
 
-        # Re-check: collect any new arrivals during the sleep.
-        while True:
-            before = len(self._pending_paths)
-            await asyncio.sleep(0.5)
-            after = len(self._pending_paths)
-            if after == before:
-                break
+            while not self._stop.is_set():
+                # Re-check: collect any new arrivals during the quiet window.
+                while True:
+                    before = len(self._pending_paths)
+                    await asyncio.sleep(0.5)
+                    after = len(self._pending_paths)
+                    if after == before:
+                        break
 
-        await self._flush_pending()
+                flushed = await self._flush_pending()
+                if not flushed:
+                    break
+        finally:
+            if self._pending_paths and not self._stop.is_set():
+                self._drain_task = asyncio.create_task(self._debounced_batch())
+            else:
+                self._pending_scheduled = False
+                self._drain_task = None
 
-    async def _flush_pending(self) -> None:
-        """Flush all pending paths in a single batch."""
+    async def _flush_pending(self) -> bool:
+        """Flush one pending path snapshot and report whether work ran."""
         async with self._batch_lock:
             if not self._pending_paths:
-                self._pending_scheduled = False
-                return
+                return False
             paths = list(self._pending_paths)
             self._pending_paths.clear()
-            self._pending_scheduled = False
 
         # Filter to files that actually need work.
         cursor_records = self._cursor.get_records(paths)
@@ -255,7 +269,7 @@ class LiveWatcher:
             if self._needs_work_from_state(path, stat=stat, cursor=cursor_records.get(path)):
                 needed.append(path)
         if not needed:
-            return
+            return bool(paths)
 
         logger.info("live.watcher: batching %d changed file(s)", len(needed))
         await self._ingest_files(
@@ -263,6 +277,7 @@ class LiveWatcher:
             queued_file_count=len(paths),
             skipped_file_count=len(paths) - len(needed),
         )
+        return True
 
     # ------------------------------------------------------------------
     # Shared helpers
@@ -295,7 +310,13 @@ class LiveWatcher:
             # catch-up skip path. Device/inode churn across bind mounts,
             # restored homes, or filesystem rebuilds must not force a full
             # content rehash of every historical session file.
-            return False
+            if cursor.tail_hash is None:
+                return False
+            try:
+                current_tail_hash, _bytes_read = tail_hash_from_path(path, size)
+            except FileNotFoundError:
+                return False
+            return current_tail_hash != cursor.tail_hash
         if cursor.content_fingerprint is None:
             return True
         try:

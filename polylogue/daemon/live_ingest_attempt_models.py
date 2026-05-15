@@ -40,6 +40,7 @@ class LiveIngestAttemptState(BaseModel):
     worker_in_flight_count: int | None = None
     worker_completed_count: int | None = None
     worker_total_count: int | None = None
+    stale_cursor_write_count: int = 0
     updated_age_s: float | None = None
     stale: bool = False
     completed_at: str | None = None

@@ -5,13 +5,12 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from hashlib import sha256
 from json import dumps as json_dumps
 from json import loads as json_loads
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any
 
 from polylogue.core.degraded import is_degraded
 from polylogue.core.metrics import (
@@ -55,13 +54,16 @@ from polylogue.sources.live.batch_support import (
     _full_ingest_worker_count,
     _full_parse_progress_groups,
     _FullIngestHeartbeat,
+    _FullIngestResult,
     _jsonl_provider_and_conversation_artifact,
     _parse_path_as_conversation_artifact,
     _parse_payload_as_conversation_artifact,
     _path_size,
     _throttled_phase_heartbeat,
+    cursor_state_after_full_ingest,
     fingerprint_file,
     last_complete_newline_from_tail,
+    tail_hash_from_path,
 )
 from polylogue.sources.live.convergence_debt import (
     ConvergenceDebt,
@@ -85,30 +87,13 @@ logger = get_logger(__name__)
 LiveBatchEventEmitter = Callable[[str, dict[str, object]], None]
 
 
-class LiveSourceRoot(Protocol):
-    @property
-    def name(self) -> str: ...
-
-    @property
-    def root(self) -> Path: ...
-
-
-@dataclass(frozen=True, slots=True)
-class _FullIngestResult:
-    succeeded: list[Path]
-    failed: list[Path]
-    source_payload_read_bytes: int
-    raw_fingerprints: dict[Path, str] = field(default_factory=dict)
-    worker_count: int = 0
-
-
 class LiveBatchProcessor:
     """Run the daemon live ingest batch path without filesystem watching."""
 
     def __init__(
         self,
         polylogue: Polylogue,
-        sources: Iterable[LiveSourceRoot],
+        sources: Iterable[Any],
         *,
         cursor: CursorStore,
         parser_fingerprint: str | Callable[[], str],
@@ -123,6 +108,7 @@ class LiveBatchProcessor:
         self._converger = converger
         self._stop_requested = stop_requested or (lambda: False)
         self._event_emitter = event_emitter
+        self._last_cursor_write_stale = False
 
     async def ingest_files(
         self,
@@ -164,6 +150,7 @@ class LiveBatchProcessor:
         )
         source_payload_read_bytes = 0
         cursor_fingerprint_read_bytes = 0
+        stale_cursor_write_count = 0
         parse_time_s = 0.0
         convergence_time_s = 0.0
         stage_timings: dict[str, float] = {}
@@ -235,7 +222,8 @@ class LiveBatchProcessor:
             debt_by_source_path = debt_by_path(convergence_debt)
             for plan in append_result.succeeded:
                 succeeded_paths.add(plan.path)
-                self._record_append_cursor(plan)
+                if not self._record_append_cursor(plan):
+                    stale_cursor_write_count += 1
                 self._record_convergence_outcome(plan.path, debt_by_source_path.get(plan.path, ()))
             for plan in append_result.failed:
                 failed_paths.append(str(plan.path))
@@ -372,7 +360,10 @@ class LiveBatchProcessor:
                     cursor_fingerprint_read_bytes += self._record_full_cursor(
                         path,
                         raw_fingerprint=full_result.raw_fingerprints.get(path),
+                        raw_byte_size=full_result.raw_byte_sizes.get(path),
                     )
+                    if self._last_cursor_write_stale:
+                        stale_cursor_write_count += 1
                     self._record_convergence_outcome(path, debt_by_source_path.get(path, ()))
                 for path in full_result.failed:
                     failed_paths.append(str(path))
@@ -394,6 +385,7 @@ class LiveBatchProcessor:
             cursor_fingerprint_read_bytes=cursor_fingerprint_read_bytes,
             parse_time_s=parse_time_s,
             convergence_time_s=convergence_time_s,
+            stale_cursor_write_count=stale_cursor_write_count,
         )
 
         db_bytes_after = _path_size(self._cursor._db_path) + _path_size(self._cursor._db_path.with_suffix(".db-wal"))
@@ -423,6 +415,7 @@ class LiveBatchProcessor:
             cgroup_memory_current_mb=read_cgroup_memory_current_mb(),
             cgroup_memory_peak_mb=read_cgroup_memory_peak_mb(),
             cgroup_memory_swap_current_mb=read_cgroup_memory_swap_current_mb(),
+            stale_cursor_write_count=stale_cursor_write_count,
             stage_timings_s={name: round(elapsed, 6) for name, elapsed in stage_timings.items()},
             failed_paths=failed_paths,
         )
@@ -445,6 +438,7 @@ class LiveBatchProcessor:
             convergence_time_s=convergence_time_s,
             total_time_s=metrics.total_time_s,
             stage_timings_s=metrics.stage_timings_s,
+            stale_cursor_write_count=stale_cursor_write_count,
         )
         self._cursor.finish_ingest_attempt(
             attempt_id,
@@ -487,6 +481,7 @@ class LiveBatchProcessor:
             cgroup_memory_current_mb=read_cgroup_memory_current_mb(),
             cgroup_memory_peak_mb=read_cgroup_memory_peak_mb(),
             cgroup_memory_swap_current_mb=read_cgroup_memory_swap_current_mb(),
+            stale_cursor_write_count=0,
             stage_timings_s={},
             failed_paths=[],
         )
@@ -534,6 +529,7 @@ class LiveBatchProcessor:
         try:
             stat = path.stat()
             fp, last_nl = fingerprint_file(path)
+            tail_hash, _tail_bytes = tail_hash_from_path(path, stat.st_size)
         except FileNotFoundError:
             self._cursor.mark_failed(path)
             return 0
@@ -545,6 +541,7 @@ class LiveBatchProcessor:
             last_complete_newline=last_nl,
             parser_fingerprint=self._current_parser_fingerprint(),
             content_fingerprint=fp,
+            tail_hash=tail_hash,
             source_name=self._source_name_for(path),
             st_dev=stat.st_dev,
             st_ino=stat.st_ino,
@@ -556,28 +553,40 @@ class LiveBatchProcessor:
         self._cursor.mark_failed(path)
         return stat.st_size
 
-    def _record_full_cursor(self, path: Path, *, raw_fingerprint: str | None = None) -> int:
+    def _record_full_cursor(
+        self,
+        path: Path,
+        *,
+        raw_fingerprint: str | None = None,
+        raw_byte_size: int | None = None,
+    ) -> int:
+        self._last_cursor_write_stale = False
         try:
             stat = path.stat()
         except FileNotFoundError:
             return 0
-        fp, last_nl, bytes_read = self._cursor_state_after_full_ingest(
+        byte_size = stat.st_size if raw_byte_size is None else raw_byte_size
+        raw_fingerprint = raw_fingerprint or self._latest_raw_fingerprint(path)
+        fp, last_nl, tail_hash, bytes_read = cursor_state_after_full_ingest(
             path,
-            stat.st_size,
+            byte_size,
             raw_fingerprint=raw_fingerprint,
         )
-        self._cursor.set(
+        updated = self._cursor.set(
             path,
-            stat.st_size,
+            byte_size,
             byte_offset=last_nl,
             last_complete_newline=last_nl,
             parser_fingerprint=self._current_parser_fingerprint(),
             content_fingerprint=fp,
+            tail_hash=tail_hash,
             source_name=self._source_name_for(path),
             st_dev=stat.st_dev,
             st_ino=stat.st_ino,
             mtime_ns=stat.st_mtime_ns,
+            allow_backward=stat.st_size <= byte_size,
         )
+        self._last_cursor_write_stale = not updated
         self._cursor.reset_failures(path)
         return bytes_read
 
@@ -661,20 +670,6 @@ class LiveBatchProcessor:
                 [ConvergenceDebt(path=path, stage="convergence", error=str(exc)) for path in unique_paths],
             )
 
-    def _cursor_state_after_full_ingest(
-        self,
-        path: Path,
-        byte_size: int,
-        *,
-        raw_fingerprint: str | None = None,
-    ) -> tuple[str, int, int]:
-        raw_fingerprint = raw_fingerprint or self._latest_raw_fingerprint(path)
-        if raw_fingerprint is None:
-            fp, last_nl = fingerprint_file(path)
-            return fp, last_nl, byte_size
-        last_nl, bytes_read = last_complete_newline_from_tail(path, byte_size)
-        return raw_fingerprint, last_nl, bytes_read
-
     def _latest_raw_fingerprint(self, path: Path) -> str | None:
         try:
             with self._cursor._connect() as conn:
@@ -706,7 +701,7 @@ class LiveBatchProcessor:
         for source in self._sources:
             try:
                 if resolved.is_relative_to(source.root.resolve()):
-                    return source.name
+                    return str(source.name)
             except OSError:
                 continue
         return path.parent.name
@@ -742,6 +737,7 @@ class LiveBatchProcessor:
         blob_store = BlobStore(blob_root)
         raw_records: list[RawConversationRecord] = []
         raw_by_id: dict[str, Path] = {}
+        raw_byte_sizes: dict[Path, int] = {}
         failed: list[Path] = []
         ingested: list[Path] = []
         source_payload_read_bytes = 0
@@ -859,6 +855,7 @@ class LiveBatchProcessor:
                         source_payload_read_bytes=source_payload_read_bytes,
                     )
             ingested.append(path)
+            raw_byte_sizes[path] = stat.st_size
             raw_records.append(
                 RawConversationRecord(
                     raw_id=raw_id,
@@ -920,6 +917,7 @@ class LiveBatchProcessor:
             failed=failed,
             source_payload_read_bytes=source_payload_read_bytes,
             raw_fingerprints={path: raw_id for raw_id, path in raw_by_id.items()},
+            raw_byte_sizes=raw_byte_sizes,
             worker_count=int(getattr(summary, "worker_count", 0)) if raw_records else 0,
         )
 
@@ -1131,23 +1129,26 @@ class LiveBatchProcessor:
             )
             conn.commit()
 
-    def _record_append_cursor(self, plan: _AppendPlan) -> None:
+    def _record_append_cursor(self, plan: _AppendPlan) -> bool:
         content_fingerprint = sha256(f"{plan.cursor_fingerprint or ''}\0{plan.payload_hash}".encode()).hexdigest()
-        self._cursor.set(
+        tail_hash, _tail_bytes = tail_hash_from_path(plan.path, plan.stat_size)
+        updated = self._cursor.set(
             plan.path,
             plan.stat_size,
             byte_offset=plan.last_complete_newline,
             last_complete_newline=plan.last_complete_newline,
             parser_fingerprint=self._current_parser_fingerprint(),
             content_fingerprint=content_fingerprint,
+            tail_hash=tail_hash,
             source_name=plan.source_name,
             st_dev=plan.st_dev,
             st_ino=plan.st_ino,
             mtime_ns=plan.mtime_ns,
         )
         self._cursor.reset_failures(plan.path)
+        return updated
 
 
 # fmt: off
-__all__ = ["LiveBatchMetrics", "LiveBatchProcessor", "_LARGE_FULL_PARSE_PROGRESS_BYTES", "_SMALL_FULL_PARSE_PROGRESS_MAX_BYTES", "_SMALL_FULL_PARSE_PROGRESS_MAX_FILES", "_STREAMING_FULL_INGEST_BYTES", "_full_ingest_worker_count", "_full_parse_progress_groups", "fingerprint_file", "last_complete_newline_from_tail"]
+__all__ = ["LiveBatchMetrics", "LiveBatchProcessor", "_FullIngestResult", "_LARGE_FULL_PARSE_PROGRESS_BYTES", "_SMALL_FULL_PARSE_PROGRESS_MAX_BYTES", "_SMALL_FULL_PARSE_PROGRESS_MAX_FILES", "_STREAMING_FULL_INGEST_BYTES", "_full_ingest_worker_count", "_full_parse_progress_groups", "fingerprint_file", "last_complete_newline_from_tail"]
 # fmt: on

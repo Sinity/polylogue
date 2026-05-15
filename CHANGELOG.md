@@ -76,6 +76,9 @@ documentation polish do not require an entry.
 
 ### Changed
 
+- Live daemon convergence now drains watcher batches single-flight, records
+  stale cursor-write counters, uses bounded tail hashes for same-size rewrite
+  detection, and exposes recent source-path churn in the daemon workload probe.
 - Session work-event and phase evidence payloads now expose timing/date
   provenance, and work-event insight reads order by event time instead of
   conversation recency.

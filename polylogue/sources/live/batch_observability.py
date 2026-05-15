@@ -39,6 +39,7 @@ def record_attempt_progress(
     current_path: Path | None = None,
     error: str | None = None,
     stage_timings_s: dict[str, float] | None = None,
+    stale_cursor_write_count: int | None = None,
 ) -> None:
     rss_current_mb = read_current_rss_mb()
     rss_peak_self_mb = read_peak_rss_self_mb()
@@ -67,6 +68,7 @@ def record_attempt_progress(
         cgroup_memory_current_mb=cgroup_current_mb,
         cgroup_memory_peak_mb=cgroup_peak_mb,
         cgroup_memory_swap_current_mb=cgroup_swap_mb,
+        stale_cursor_write_count=stale_cursor_write_count,
     )
     record_event = getattr(cursor, "record_ingest_stage_event", None)
     if not callable(record_event):

@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import time
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
 from typing import Protocol, cast
@@ -69,11 +69,67 @@ class _AppendResult:
     worker_count: int = 0
 
 
+@dataclass(frozen=True, slots=True)
+class _FullIngestResult:
+    succeeded: list[Path]
+    failed: list[Path]
+    source_payload_read_bytes: int
+    raw_fingerprints: dict[Path, str] = field(default_factory=dict)
+    raw_byte_sizes: dict[Path, int] = field(default_factory=dict)
+    worker_count: int = 0
+
+
 def fingerprint_file(path: Path) -> tuple[str, int]:
     content = path.read_bytes()
     newline_at = content.rfind(b"\n")
     last_complete_newline = 0 if newline_at < 0 else newline_at + 1
     return hashlib.sha256(content).hexdigest(), last_complete_newline
+
+
+def tail_hash_from_path(path: Path, byte_size: int, *, chunk_size: int = 64 * 1024) -> tuple[str, int]:
+    """Return a bounded hash of the recorded file tail."""
+    if byte_size <= 0:
+        return hashlib.sha256(b"").hexdigest(), 0
+    start = max(0, byte_size - chunk_size)
+    with path.open("rb") as handle:
+        handle.seek(start)
+        chunk = handle.read(byte_size - start)
+    return hashlib.sha256(chunk).hexdigest(), len(chunk)
+
+
+def tail_hash_and_last_complete_newline_from_path(
+    path: Path, byte_size: int, *, chunk_size: int = 64 * 1024
+) -> tuple[str, int, int]:
+    """Return tail hash, last complete newline, and bytes read in one pass."""
+    if byte_size <= 0:
+        return hashlib.sha256(b"").hexdigest(), 0, 0
+    bytes_read = 0
+    end = byte_size
+    tail_hash: str | None = None
+    with path.open("rb") as handle:
+        while end > 0:
+            start = max(0, end - chunk_size)
+            handle.seek(start)
+            chunk = handle.read(end - start)
+            bytes_read += len(chunk)
+            if tail_hash is None:
+                tail_hash = hashlib.sha256(chunk).hexdigest()
+            newline_at = chunk.rfind(b"\n")
+            if newline_at >= 0:
+                return tail_hash, start + newline_at + 1, bytes_read
+            end = start
+    return tail_hash or hashlib.sha256(b"").hexdigest(), 0, bytes_read
+
+
+def cursor_state_after_full_ingest(
+    path: Path, byte_size: int, *, raw_fingerprint: str | None
+) -> tuple[str, int, str, int]:
+    if raw_fingerprint is None:
+        fp, last_nl = fingerprint_file(path)
+        tail_hash, _tail_bytes = tail_hash_from_path(path, byte_size)
+        return fp, last_nl, tail_hash, byte_size
+    tail_hash, last_nl, bytes_read = tail_hash_and_last_complete_newline_from_path(path, byte_size)
+    return raw_fingerprint, last_nl, tail_hash, bytes_read
 
 
 def last_complete_newline_from_tail(path: Path, byte_size: int, *, chunk_size: int = 64 * 1024) -> tuple[int, int]:
