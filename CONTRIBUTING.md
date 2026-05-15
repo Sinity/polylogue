@@ -39,7 +39,9 @@ targeting `master`.
 2. Create a branch from `origin/master`.
 3. Work on the branch. Git hooks enforce format and lint on commit, and
    run `devtools verify --quick` on push.
-4. Run `devtools verify` (full, with pytest) before creating the PR.
+4. Run `devtools verify` before creating the PR. The default pytest step uses
+   pytest-testmon affected-test selection; run `devtools verify --seed-testmon`
+   first if the dependency database is not seeded.
 5. Open a pull request. The template has required sections — fill them
    all in. The PR title becomes the squash-merge subject on `master`.
 6. CI must pass. Fix failures on the branch, do not merge with red CI.
@@ -180,19 +182,23 @@ The devshell installs git hooks automatically (`core.hooksPath .githooks`):
 - **pre-commit**: `ruff format --check` + `ruff check` on staged files.
 - **pre-push**: `devtools verify --quick` (format + lint + render-all --check).
 
-Before creating a PR, run the full baseline:
+Before creating a PR, run the default baseline:
 
 ```bash
-devtools verify            # format + lint + render-all --check + pytest
+devtools verify            # static/generated gates + pytest-testmon affected tests
 ```
 
-Or manually:
+Seed or refresh the pytest-testmon dependency database explicitly after a fresh
+checkout, dependency change, or broad test-harness change:
 
 ```bash
-ruff format --check polylogue/ tests/ devtools/
-ruff check polylogue/ tests/ devtools/
-devtools render-all --check
-pytest -q --ignore=tests/integration
+devtools verify --seed-testmon --skip-slow
+```
+
+For an explicit full non-integration pytest diagnostic:
+
+```bash
+devtools verify --all
 ```
 
 Add `devtools build-package` or `nix flake check` when touching packaging or
@@ -217,16 +223,21 @@ runs as part of `devtools verify` and in CI.
 
 ## Verification Baseline
 
-Before creating a PR, run the full local baseline. CI runs the same checks.
+Before creating a PR, run the local baseline. CI runs the same checks, while
+local pytest selection is accelerated by pytest-testmon.
 
 ```bash
-devtools verify            # format + lint + mypy + render-all --check + pytest
+devtools verify            # static/generated gates + pytest-testmon affected tests
+devtools verify --seed-testmon --skip-slow  # seed/update affected-test DB
+devtools verify --all      # explicit full non-integration pytest diagnostic
 devtools verify --quick    # format + lint + mypy + render-all --check (skip tests)
 devtools verify --lab      # explicit lab checks beyond the quick/default loop
 ```
 
 The quick gate runs on `git push` via `.githooks/pre-push`. It's a fast check,
-not a substitute for the full baseline.
+not a substitute for the default baseline. The default command fails fast when
+`.testmondata` and `.cache/testmon/seed.json` are missing; do not rely on
+silent full-suite fallback.
 
 Proof Pack: every PR gets a `Polylogue Proof Pack` comment. It's a verification
 impact report showing affected domains, required gates, and known gaps. Use it

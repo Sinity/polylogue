@@ -2,9 +2,19 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from pathlib import Path
 from unittest.mock import patch
 
-from devtools.verify import _format_completion_notification, _parse_pytest_test_count, _run, build_verify_steps
+import pytest
+
+from devtools.verify import (
+    _format_completion_notification,
+    _parse_pytest_test_count,
+    _run,
+    _testmon_preflight,
+    build_verify_steps,
+    main,
+)
 
 
 def test_quick_verify_omits_pytest() -> None:
@@ -30,11 +40,57 @@ def test_quick_verify_omits_pytest() -> None:
     ]
 
 
-def test_full_verify_includes_pytest() -> None:
+def test_default_verify_uses_pytest_testmon() -> None:
     steps = build_verify_steps(quick=False, lab=False, skip_slow=False)
 
-    labels = [label for label, _command in steps]
-    assert labels[-1] == "pytest"
+    label, command = steps[-1]
+    assert label == "pytest testmon"
+    assert "--testmon" in command
+    assert "--testmon-noselect" not in command
+    assert "-n" in command
+    assert "0" in command
+
+
+def test_seed_testmon_runs_full_collection_without_selection(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("POLYLOGUE_PYTEST_WORKERS", raising=False)
+    steps = build_verify_steps(quick=False, lab=False, skip_slow=False, seed_testmon=True)
+
+    label, command = steps[-1]
+    assert label == "pytest seed-testmon"
+    assert "--testmon" in command
+    assert "--testmon-noselect" in command
+    assert "-n" in command
+    assert "8" in command
+
+
+def test_full_verify_includes_full_pytest_without_testmon(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("POLYLOGUE_PYTEST_WORKERS", raising=False)
+    steps = build_verify_steps(quick=False, lab=False, skip_slow=False, full_pytest=True)
+
+    label, command = steps[-1]
+    assert label == "pytest full"
+    assert "--testmon" not in command
+    assert "-n" in command
+    assert "8" in command
+
+
+def test_seed_testmon_worker_count_can_be_overridden(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("POLYLOGUE_PYTEST_WORKERS", "4")
+
+    steps = build_verify_steps(quick=False, lab=False, skip_slow=False, seed_testmon=True)
+
+    label, command = steps[-1]
+    assert label == "pytest seed-testmon"
+    assert command[command.index("-n") + 1] == "4"
+
+
+def test_skip_slow_keeps_testmon_selection_forced() -> None:
+    steps = build_verify_steps(quick=False, lab=False, skip_slow=True)
+
+    label, command = steps[-1]
+    assert label == "pytest testmon"
+    assert command[command.index("-m") + 1] == "not slow"
+    assert "--testmon-forceselect" in command
 
 
 def test_lab_verify_delegates_to_lab_scenario() -> None:
@@ -48,6 +104,44 @@ def test_lab_verify_delegates_to_lab_scenario() -> None:
         "lab scenario",
         [sys.executable, "-m", "devtools", "lab-scenario", "run", "archive-smoke", "--tier", "0"],
     )
+
+
+def test_testmon_preflight_requires_seed_when_database_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    message = _testmon_preflight(seed_testmon=False, full_pytest=False, quick=False, commit=False)
+
+    assert message is not None
+    assert "devtools verify --seed-testmon" in message
+
+
+def test_testmon_preflight_requires_seed_stamp(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".testmondata").write_text("partial")
+
+    message = _testmon_preflight(seed_testmon=False, full_pytest=False, quick=False, commit=False)
+
+    assert message is not None
+    assert ".cache/testmon/seed.json" in message
+
+
+def test_testmon_preflight_accepts_seeded_database(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".testmondata").write_text("seeded")
+    seed_stamp = tmp_path / ".cache" / "testmon" / "seed.json"
+    seed_stamp.parent.mkdir(parents=True)
+    seed_stamp.write_text("{}")
+
+    assert _testmon_preflight(seed_testmon=False, full_pytest=False, quick=False, commit=False) is None
+
+
+def test_testmon_preflight_allows_seed_and_full_without_database(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    assert _testmon_preflight(seed_testmon=True, full_pytest=False, quick=False, commit=False) is None
+    assert _testmon_preflight(seed_testmon=False, full_pytest=True, quick=False, commit=False) is None
 
 
 def test_parse_pytest_test_count_from_summary() -> None:
@@ -73,6 +167,28 @@ def test_run_records_pytest_count_metadata() -> None:
 
     assert rc == 0
     assert metadata == {"count": 4}
+
+
+def test_verify_stops_after_first_failed_step(capsys: pytest.CaptureFixture[str]) -> None:
+    calls: list[str] = []
+
+    def fake_run(label: str, command: list[str]) -> tuple[int, float, dict[str, object]]:
+        calls.append(label)
+        return 1, 0.01, {}
+
+    with (
+        patch("devtools.verify._run", side_effect=fake_run),
+        patch("devtools.verify._git_head", return_value="head"),
+        patch("devtools.verify._save_history"),
+        patch("devtools.verify._stamp_head"),
+        patch("devtools.verify._notify"),
+    ):
+        rc = main(["--quick", "--json"])
+
+    assert rc == 1
+    assert calls == ["ruff format"]
+    payload = capsys.readouterr().out
+    assert '"exit_code": 1' in payload
 
 
 def test_completion_notification_uses_pytest_count() -> None:

@@ -130,7 +130,9 @@ targeting `master`.
 2. Create a branch from `origin/master`.
 3. Work on the branch. Git hooks enforce format and lint on commit, and
    run `devtools verify --quick` on push.
-4. Run `devtools verify` (full, with pytest) before creating the PR.
+4. Run `devtools verify` before creating the PR. The default pytest step uses
+   pytest-testmon affected-test selection; run `devtools verify --seed-testmon`
+   first if the dependency database is not seeded.
 5. Open a pull request. The template has required sections — fill them
    all in. The PR title becomes the squash-merge subject on `master`.
 6. CI must pass. Fix failures on the branch, do not merge with red CI.
@@ -271,19 +273,23 @@ The devshell installs git hooks automatically (`core.hooksPath .githooks`):
 - **pre-commit**: `ruff format --check` + `ruff check` on staged files.
 - **pre-push**: `devtools verify --quick` (format + lint + render-all --check).
 
-Before creating a PR, run the full baseline:
+Before creating a PR, run the default baseline:
 
 ```bash
-devtools verify            # format + lint + render-all --check + pytest
+devtools verify            # static/generated gates + pytest-testmon affected tests
 ```
 
-Or manually:
+Seed or refresh the pytest-testmon dependency database explicitly after a fresh
+checkout, dependency change, or broad test-harness change:
 
 ```bash
-ruff format --check polylogue/ tests/ devtools/
-ruff check polylogue/ tests/ devtools/
-devtools render-all --check
-pytest -q --ignore=tests/integration
+devtools verify --seed-testmon --skip-slow
+```
+
+For an explicit full non-integration pytest diagnostic:
+
+```bash
+devtools verify --all
 ```
 
 Add `devtools build-package` or `nix flake check` when touching packaging or
@@ -308,16 +314,21 @@ runs as part of `devtools verify` and in CI.
 
 ## Verification Baseline
 
-Before creating a PR, run the full local baseline. CI runs the same checks.
+Before creating a PR, run the local baseline. CI runs the same checks, while
+local pytest selection is accelerated by pytest-testmon.
 
 ```bash
-devtools verify            # format + lint + mypy + render-all --check + pytest
+devtools verify            # static/generated gates + pytest-testmon affected tests
+devtools verify --seed-testmon --skip-slow  # seed/update affected-test DB
+devtools verify --all      # explicit full non-integration pytest diagnostic
 devtools verify --quick    # format + lint + mypy + render-all --check (skip tests)
 devtools verify --lab      # explicit lab checks beyond the quick/default loop
 ```
 
 The quick gate runs on `git push` via `.githooks/pre-push`. It's a fast check,
-not a substitute for the full baseline.
+not a substitute for the default baseline. The default command fails fast when
+`.testmondata` and `.cache/testmon/seed.json` are missing; do not rely on
+silent full-suite fallback.
 
 Proof Pack: every PR gets a `Polylogue Proof Pack` comment. It's a verification
 impact report showing affected domains, required gates, and known gaps. Use it
@@ -348,8 +359,11 @@ All commands below assume you are inside the project devshell. See
 ## Running Tests
 
 ```bash
-# Fast unit run (primary workflow)
-pytest -q --ignore=tests/integration
+# Normal repository verification
+devtools verify
+
+# First run after checkout or dependency/test harness changes
+devtools verify --seed-testmon --skip-slow
 
 # Stop on first failure
 pytest -x --ignore=tests/integration
@@ -358,9 +372,18 @@ pytest -x --ignore=tests/integration
 pytest tests/unit/storage/test_hybrid_laws.py
 pytest -k "test_name"
 
-# Full CI parity
+# Explicit full non-integration pytest diagnostic
+devtools verify --all
+
+# Full Nix/CI parity
 nix flake check
 ```
+
+`devtools verify` uses pytest-testmon for per-test affected selection. The
+seed command records `.testmondata` plus `.cache/testmon/seed.json`; those
+files are local generated state and are not committed. If the seed is missing,
+the default command fails with setup guidance instead of silently running the
+whole suite.
 
 For the generated validation-lane, mutation-campaign, and benchmark inventory,
 see [docs/test-quality-workflows.md](docs/test-quality-workflows.md).
@@ -448,7 +471,6 @@ Never delete:
 - **`tests/integration/`**: End-to-end pipeline tests against real archive
   shapes.
 - **`tests/unit/security/`**: Security boundary tests.
-
 <!-- end include: TESTING.md -->
 <!-- begin include: docs/architecture.md -->
 # Polylogue Architecture

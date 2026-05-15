@@ -18,7 +18,7 @@ Updated: 2026-05-15
 | Paste/attachment/provenance | #839, #864, #848, #993 | Blocked on message envelope/provenance vocabulary | Implement paste-span projection MVP after contract spine | focused storage/payload tests, daemon API tests, visual state tests |
 | Topology/workspace | #866, #993, #848, #865 | Substrate can start once source identity is stable | Materialize topology edges before graph UI | topology storage tests, parser fixtures, visual graph states |
 | User state/advanced panels | #867, #993, #1019, #995 | Active MCP parity slice | Expose marks and saved views through write-role MCP tools; keep annotations/message targets and CLI parity open | MCP mutation tests, saved-view roundtrip tests |
-| Verification throughput | #1026, #997, #998, #594, #590, #1012 | Ready to start independently | Add affected-test workflow and reduce outlier runtime | `devtools verify --affected --skip-slow`, durations capture, focused regression tests |
+| Verification throughput | #1026, #997, #998, #594, #590, #1012 | Active testmon default slice | Keep pytest-testmon seeded, reduce outlier runtime, and remove remaining full-suite reflexes | `devtools verify`, `devtools verify --seed-testmon --skip-slow`, focused regression tests |
 
 ## Active Slice Notes
 
@@ -151,16 +151,17 @@ Default inner loop:
 1. Run the narrow test for the touched subsystem.
 2. Run static/generated checks once the slice is coherent.
 3. Run `devtools verify --quick` before push.
-4. Run full `devtools verify` before PR readiness when the PR changes runtime
-   semantics, unless the PR explicitly records why a focused gate is sufficient.
+4. Run `devtools verify` before PR readiness; it uses pytest-testmon affected
+   selection after a successful seed.
 
 Resource rules:
 
 - Do not run full pytest repeatedly while the host is under IO pressure or low
   memory. Use focused tests and `devtools verify --quick` until the branch is
   near merge.
-- Prefer `devtools verify --affected --skip-slow` for small changes once the
-  affected-test workflow is implemented.
+- Run `devtools verify --seed-testmon --skip-slow` after checkout,
+  dependency/test-harness changes, or when default verify reports a missing
+  seed. Do not use a hand-maintained affected-test router.
 - For browser/visual lanes, keep fast DOM/contract smoke separate from the
   heavier browser screenshot lane.
 - For schema/storage changes, run focused storage/parser tests before broad
@@ -170,6 +171,47 @@ Resource rules:
   failures are easier to attribute.
 
 ## Execution Entries
+
+### 2026-05-15 - Pytest-testmon default affected verification
+
+Target:
+
+- #1059 affected-test default path, replacing the homegrown file/import router
+  with pytest-testmon.
+
+Outcome:
+
+- `devtools verify` now runs the static/generated gates plus
+  `pytest --testmon -n 0` for affected per-test selection.
+- `devtools verify --seed-testmon --skip-slow` is the explicit full
+  non-integration seed/update path. It writes `.testmondata` and
+  `.cache/testmon/seed.json`; default verify refuses ad hoc or missing seed
+  state instead of falling back to the full suite.
+- `devtools verify --all` / `--full` is the explicit full non-integration
+  diagnostic. `--affected` and `_affected_test_files()` were removed.
+- The verify runner now stops after the first failed step, preventing format or
+  lint failures from cascading into expensive pytest runs.
+- Full/seed pytest worker count defaults to 8 and can be adjusted with
+  `POLYLOGUE_PYTEST_WORKERS`; affected testmon runs use `-n 0` to avoid xdist
+  overhead for small selections.
+
+Measured locally:
+
+- Missing seed: `devtools verify --json` exits 2 with seed guidance.
+- Seed: `POLYLOGUE_PYTEST_WORKERS=4 devtools verify --seed-testmon --skip-slow
+  --json` ran 6424 tests, pytest 209.05s, total 231.42s.
+- Default after seed: `devtools verify --json` ran 5 testmon-selected tests,
+  pytest 3.60s, total 24.04s.
+- Default after editing the verify tests: `devtools verify --json` ran 17
+  testmon-selected tests, pytest 7.54s, total 32.57s.
+
+Verification:
+
+- `pytest -q tests/unit/devtools/test_verify.py`
+- `ruff check devtools/verify.py tests/unit/devtools/test_verify.py pyproject.toml`
+- `mypy --strict devtools/verify.py tests/unit/devtools/test_verify.py`
+- `POLYLOGUE_PYTEST_WORKERS=4 devtools verify --seed-testmon --skip-slow --json`
+- `devtools verify --json`
 
 ### 2026-05-15 - Health aggregation evidence
 

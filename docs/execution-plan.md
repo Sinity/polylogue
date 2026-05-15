@@ -156,9 +156,10 @@ Avoid wasting RAM and wallclock:
   gates.
 - For packaging/deployment, run code checks first, then Nix/service checks, so
   failures are attributable.
-- When `devtools verify --affected --skip-slow` is available, use it for small
-  changes and reserve full non-slow pytest for merge readiness or high-risk
-  shared behavior.
+- Keep pytest-testmon seeded with `devtools verify --seed-testmon --skip-slow`.
+  The normal `devtools verify` path runs affected tests; use `devtools verify
+  --all` only as an explicit full non-integration diagnostic or release/CI
+  parity check.
 
 ## MK3 Integration Waves
 

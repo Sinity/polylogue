@@ -6,7 +6,11 @@ the branch is ready to push; non-zero means fix before pushing.
 Tiers:
   --commit   Pre-commit tier: ruff format + check + mypy + proof-pack (~3s warm).
   --quick    Pre-push tier: all non-pytest gates (~15s warm).
-  (default)  Full baseline: all gates + pytest (~3 min).
+  (default)  Baseline with pytest-testmon affected tests.
+  --seed-testmon
+             Full non-integration pytest run that seeds/updates .testmondata.
+  --all/--full
+             Explicit full non-integration pytest diagnostic.
   --lab      Full baseline + verification-lab scenario checks.
 
 Output formats:
@@ -18,7 +22,9 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -119,6 +125,8 @@ def _format_completion_notification(
 
 
 HISTORY_PATH = Path(".cache/verify-history.jsonl")
+TESTMON_DATA = Path(".testmondata")
+TESTMON_SEED_STAMP = Path(".cache/testmon/seed.json")
 
 
 def _load_history() -> list[dict[str, Any]]:
@@ -202,88 +210,14 @@ def _run(label: str, cmd: list[str], *, cwd: str | None = None) -> tuple[int, fl
 # ── step builder ────────────────────────────────────────────────────
 
 
-def _changed_files_against_base() -> list[str] | None:
-    """Return files changed against origin/master plus untracked files."""
-    result = subprocess.run(
-        ["git", "diff", "--name-only", "origin/master...HEAD"],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        result = subprocess.run(
-            ["git", "diff", "--name-only", "HEAD"],
-            capture_output=True,
-            text=True,
-        )
-    if result.returncode != 0:
-        return None
-    changed = [line for line in result.stdout.splitlines() if line.strip()]
-    untracked = subprocess.run(
-        ["git", "ls-files", "--others", "--exclude-standard"],
-        capture_output=True,
-        text=True,
-    )
-    if untracked.returncode == 0:
-        changed.extend(line for line in untracked.stdout.splitlines() if line.strip())
-    return sorted(set(changed))
-
-
-def _affected_test_files() -> list[str] | None:
-    """Return affected test files, [] for no pytest needed, or None for full pytest."""
-    changed = _changed_files_against_base()
-    if changed is None or not changed:
-        return None
-
-    broad_prefixes = (
-        "tests/conftest.py",
-        "tests/infra/",
-        "pyproject.toml",
-        "uv.lock",
-        "nix/",
-        "flake.",
-    )
-    if any(path == prefix or path.startswith(prefix) for path in changed for prefix in broad_prefixes):
-        return None
-
-    direct_tests = {path for path in changed if path.startswith("tests/") and path.endswith(".py")}
-
-    production_changes = [
-        path
-        for path in changed
-        if path.endswith(".py") and (path.startswith("polylogue/") or path.startswith("devtools/"))
-    ]
-    if not production_changes:
-        return sorted(direct_tests)
-
-    from devtools import verify_test_ownership
-
-    name_to_path = verify_test_ownership.production_module_names()
-    path_to_name = {path: name for name, path in name_to_path.items()}
-    changed_names = {path_to_name[path] for path in production_changes if path in path_to_name}
-    if not changed_names:
-        return None
-
-    affected = set(direct_tests)
-    for test_path in verify_test_ownership.test_files():
-        imports = verify_test_ownership.imports_in(test_path)
-        for imported in imports:
-            if any(
-                imported == name or imported.startswith(name + ".") or name.startswith(imported + ".")
-                for name in changed_names
-            ):
-                affected.add(test_path.relative_to(Path.cwd()).as_posix())
-                break
-
-    return sorted(affected) if affected else None
-
-
 def build_verify_steps(
     *,
     quick: bool,
     lab: bool,
     skip_slow: bool,
     commit: bool = False,
-    affected_tests: list[str] | None = None,
+    seed_testmon: bool = False,
+    full_pytest: bool = False,
 ) -> list[tuple[str, list[str]]]:
     steps: list[tuple[str, list[str]]] = [
         ("ruff format", ["ruff", "format", "--check", "polylogue/", "tests/", "devtools/"]),
@@ -314,12 +248,17 @@ def build_verify_steps(
         pytest_cmd = ["pytest", "-q", "--tb=short", "--ignore=tests/integration"]
         if skip_slow:
             pytest_cmd.extend(["-m", "not slow"])
-        if affected_tests is not None:
-            if affected_tests:
-                pytest_cmd.extend(affected_tests)
-                steps.append(("pytest affected", pytest_cmd))
+        if seed_testmon:
+            pytest_cmd.extend(["--testmon", "--testmon-noselect", *_pytest_worker_args(default="8")])
+            steps.append(("pytest seed-testmon", pytest_cmd))
+        elif full_pytest:
+            pytest_cmd.extend(_pytest_worker_args(default="8"))
+            steps.append(("pytest full", pytest_cmd))
         else:
-            steps.append(("pytest", pytest_cmd))
+            pytest_cmd.extend(["--testmon", "-n", "0"])
+            if skip_slow:
+                pytest_cmd.append("--testmon-forceselect")
+            steps.append(("pytest testmon", pytest_cmd))
 
     if lab:
         steps.append(("lab scenario", _devtools_cmd("lab-scenario", "run", "archive-smoke", "--tier", "0")))
@@ -387,7 +326,7 @@ def _stamp_head() -> None:
 RESULT_CACHE = Path(".cache/last-verify-result.json")
 
 
-def _worktree_fingerprint() -> str:
+def _worktree_fingerprint(*, mode_key: str = "") -> str:
     """Return a hash of HEAD + dirty content so unchanged worktrees skip verify."""
     head = _git_head() or ""
     diff = subprocess.run(
@@ -411,14 +350,53 @@ def _worktree_fingerprint() -> str:
                 with contextlib.suppress(OSError, UnicodeDecodeError):
                     chunks.append(path.read_text(encoding="utf-8"))
         untracked_payload = "\n".join(chunks)
-    payload = f"{head}\n{diff_payload}\n{untracked_payload}"
+    testmon_state = _file_fingerprint(TESTMON_DATA)
+    payload = f"{mode_key}\n{head}\n{diff_payload}\n{untracked_payload}\n.testmondata={testmon_state}"
     return _hash_text(payload)
 
 
 def _hash_text(text: str) -> str:
-    import hashlib
-
     return hashlib.sha256(text.encode()).hexdigest()
+
+
+def _file_fingerprint(path: Path) -> str:
+    if not path.exists() or not path.is_file():
+        return "missing"
+    h = hashlib.sha256()
+    try:
+        with path.open("rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                h.update(chunk)
+    except OSError:
+        return "unreadable"
+    return h.hexdigest()
+
+
+def _pytest_worker_args(*, default: str) -> list[str]:
+    workers = os.environ.get("POLYLOGUE_PYTEST_WORKERS", default).strip() or default
+    return ["-n", workers]
+
+
+def _testmon_preflight(*, seed_testmon: bool, full_pytest: bool, quick: bool, commit: bool) -> str | None:
+    if quick or commit or seed_testmon or full_pytest:
+        return None
+    if TESTMON_DATA.exists() and TESTMON_SEED_STAMP.exists():
+        return None
+    return (
+        "verify: pytest-testmon is not seeded; run `devtools verify --seed-testmon` "
+        "to create .testmondata and .cache/testmon/seed.json before using the default affected-test path.\n"
+    )
+
+
+def _write_testmon_seed_stamp(result: dict[str, Any]) -> None:
+    TESTMON_SEED_STAMP.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "git_head": result.get("git_head"),
+        "testmon_data": _file_fingerprint(TESTMON_DATA),
+        "steps": result.get("steps", []),
+    }
+    TESTMON_SEED_STAMP.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n")
 
 
 def _read_cached_result(fp: str) -> dict[str, Any] | None:
@@ -450,9 +428,16 @@ def _write_cached_result(fp: str, result: dict[str, Any]) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run the local verification baseline.")
     parser.add_argument("--quick", action="store_true", help="Skip pytest and run only fast local gates.")
-    parser.add_argument("--affected", action="store_true", help="Run only tests affected by changed files when known.")
     parser.add_argument(
-        "--all", action="store_true", help="Force the full pytest baseline even with --affected defaults."
+        "--seed-testmon",
+        action="store_true",
+        help="Run full non-integration pytest with --testmon-noselect to seed/update .testmondata.",
+    )
+    parser.add_argument(
+        "--all", action="store_true", help="Force the full non-integration pytest diagnostic instead of testmon."
+    )
+    parser.add_argument(
+        "--full", action="store_true", help="Alias for --all: run full non-integration pytest diagnostic."
     )
     parser.add_argument(
         "--commit", action="store_true", help="Pre-commit tier: format + lint + mypy + proof-pack only."
@@ -480,15 +465,43 @@ def main(argv: list[str] | None = None) -> int:
         tier = "commit"
     elif args.quick:
         tier = "quick"
-    elif args.affected:
-        tier = "affected"
+    elif args.seed_testmon:
+        tier = "seed-testmon"
+    elif args.all or args.full:
+        tier = "full"
     elif args.lab:
         tier = "lab"
+    else:
+        tier = "testmon"
+
+    full_pytest = bool(args.all or args.full)
+    mode_key = json.dumps(
+        {
+            "tier": tier,
+            "skip_slow": bool(args.skip_slow),
+            "quick": bool(args.quick),
+            "commit": bool(args.commit),
+            "lab": bool(args.lab),
+            "seed_testmon": bool(args.seed_testmon),
+            "full_pytest": full_pytest,
+        },
+        sort_keys=True,
+    )
+
+    preflight_error = _testmon_preflight(
+        seed_testmon=bool(args.seed_testmon),
+        full_pytest=full_pytest,
+        quick=bool(args.quick),
+        commit=bool(args.commit),
+    )
+    if preflight_error is not None:
+        sys.stderr.write(preflight_error)
+        return 2
 
     # Worktree-fingerprint cache: if nothing changed since last verify,
     # replay the cached result instantly instead of re-running tests.
     if not args.commit and not args.quick and not args.lab and not args.force:
-        fp = _worktree_fingerprint()
+        fp = _worktree_fingerprint(mode_key=mode_key)
         cached = _read_cached_result(fp)
         if cached is not None:
             ec: int = cached.get("exit_code", 0)
@@ -512,17 +525,14 @@ def main(argv: list[str] | None = None) -> int:
     if not args.quick and not args.commit:
         _warn_low_memory()
 
-    affected_tests = None
-    if args.affected and not args.all and not args.quick and not args.commit:
-        affected_tests = _affected_test_files()
-
     exit_code = 0
     steps = build_verify_steps(
         quick=bool(args.quick),
         commit=bool(args.commit),
         lab=bool(args.lab),
         skip_slow=bool(args.skip_slow),
-        affected_tests=affected_tests,
+        seed_testmon=bool(args.seed_testmon),
+        full_pytest=full_pytest,
     )
 
     step_results: list[dict[str, Any]] = []
@@ -536,6 +546,7 @@ def main(argv: list[str] | None = None) -> int:
         step_results.append(step_result)
         if rc != 0:
             exit_code = rc
+            break
 
     total_duration = round(time.monotonic() - t0, 2)
 
@@ -570,10 +581,12 @@ def main(argv: list[str] | None = None) -> int:
     _save_history(history_entry)
     if exit_code == 0:
         _stamp_head()
+        if args.seed_testmon:
+            _write_testmon_seed_stamp(history_entry)
     # Cache the result keyed by worktree fingerprint — next invocation
     # at the same tree state replays this instantly.
     if not args.commit and not args.quick and not args.lab:
-        fp = _worktree_fingerprint()
+        fp = _worktree_fingerprint(mode_key=mode_key)
         _write_cached_result(fp, history_entry)
 
     # Notify on long-running verify.
