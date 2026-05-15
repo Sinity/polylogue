@@ -45,6 +45,11 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "docs/execution-plan.md",
         "Living sequencing plan — landed, in flight, queued, and frozen subsystems.",
     ),
+    DocsEntry(
+        "Design Direction",
+        "docs/design/README.md",
+        "Canonical MK3 archive-workbench design pack and historical design handoffs.",
+    ),
     DocsEntry("Internals", "docs/internals.md", "Working implementation reference and debugging landmarks."),
     DocsEntry("MCP Integration", "docs/mcp-integration.md", "Model Context Protocol server setup and usage."),
     DocsEntry(
@@ -81,6 +86,7 @@ README_DOC_TITLES: tuple[str, ...] = (
     "Architecture",
     "Architecture Spine",
     "Execution Plan",
+    "Design Direction",
     "CLI Reference",
     "Browser Capture",
     "Library API",

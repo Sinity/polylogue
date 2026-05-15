@@ -183,6 +183,7 @@ Start with the generated command and architecture references; use [docs/README.m
 | [Architecture](docs/architecture.md) | System rings, ownership boundaries, and data flow. |
 | [Architecture Spine](docs/architecture-spine.md) | Target shape, guardrails, and major decisions with rejected alternatives. |
 | [Execution Plan](docs/execution-plan.md) | Living sequencing plan — landed, in flight, queued, and frozen subsystems. |
+| [Design Direction](docs/design/README.md) | Canonical MK3 archive-workbench design pack and historical design handoffs. |
 | [CLI Reference](docs/cli-reference.md) | Generated command reference from live help output. |
 | [Browser Capture](docs/browser-capture.md) | Local browser extension capture for ChatGPT and Claude.ai sessions. |
 | [Library API](docs/library-api.md) | Async archive API, filters, and query patterns. |
