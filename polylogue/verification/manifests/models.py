@@ -46,22 +46,8 @@ class AssuranceDomainEntry(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     description: str
-    maturity: str
-    oracle_present: bool = False
-    oracle: str | None = None
     notes: str | None = None
     coverage_gaps: list[str] = Field(default_factory=list)
-
-    VALID_MATURITIES: ClassVar[frozenset[str]] = frozenset(
-        {"seed", "nascent", "growing", "established", "complete", "mature"}
-    )
-
-    @field_validator("maturity")
-    @classmethod
-    def _check_maturity(cls, v: str) -> str:
-        if v not in cls.VALID_MATURITIES:
-            raise ValueError(f"maturity must be one of {sorted(cls.VALID_MATURITIES)}, got {v!r}")
-        return v
 
 
 class AssuranceDomainsManifest(BaseModel):

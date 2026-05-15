@@ -313,7 +313,6 @@ def _domain_payload(domain: str, info: object, claims: list[Any]) -> dict[str, A
     return {
         "domain": domain,
         "description": info_dict.get("description", ""),
-        "maturity": info_dict.get("maturity", "seed"),
         "claim_count": len({claim.id for claim in domain_claims}),
         "oracle_counts": dict(Counter(claim.oracle for claim in domain_claims)),
     }
@@ -334,7 +333,6 @@ def _domain_coverage(domains_data: dict[str, dict[str, Any]], catalog: Any) -> l
             {
                 "domain": domain,
                 "description": info_dict.get("description", ""),
-                "maturity": info_dict.get("maturity", "seed"),
                 "claim_count": len(claims),
                 "obligation_count": obligations_by_domain[domain],
                 "oracle_counts": dict(Counter(claim.oracle for claim in claims)),

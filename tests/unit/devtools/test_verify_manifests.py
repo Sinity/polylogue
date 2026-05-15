@@ -333,3 +333,19 @@ benchmark_campaigns:
         f"{plans / 'campaign-coverage.yaml'}: benchmark_campaigns missing catalog campaign 'storage'",
         f"{plans / 'campaign-coverage.yaml'}: benchmark_campaigns declares unknown campaign 'storage-scale'",
     ]
+
+
+def test_assurance_domains_accept_documentation_inventory(tmp_path: Path) -> None:
+    plans = tmp_path
+    (plans / "assurance-domains.yaml").write_text(
+        """description: Documentation inventory
+domains:
+  parser_correctness:
+    description: Provider parser crashlessness and fidelity
+    notes: >
+      Executable evidence lives in parser property tests and schema fixtures.
+""",
+        encoding="utf-8",
+    )
+
+    assert verify_manifests.check_assurance_domains(plans) == []
