@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-WEB_SHELL_HTML = r"""<!DOCTYPE html>
+from polylogue.daemon.web_shell_workspace import WORKSPACE_CSS, WORKSPACE_HTML, WORKSPACE_JS
+
+WEB_SHELL_HTML = (
+    r"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -97,6 +100,7 @@ html, body { height: 100%; background: var(--bg); color: var(--text);
   background: var(--panel-subtle); border: 1px solid var(--border); white-space: nowrap; }
 #conv-header .conv-stats .chip.accent { border-color: var(--accent-soft); color: var(--accent); background: var(--accent-bg); }
 #conv-header .conv-stats .chip.repo { font-family: var(--font-mono); font-size: 11px; }
+__WORKSPACE_CSS__
 #msg-list { flex: 1; overflow-y: auto; }
 .msg-block { padding: 7px 16px; border-bottom: 1px solid var(--border); }
 .msg-block:hover { background: var(--bg-raised); }
@@ -208,6 +212,7 @@ html, body { height: 100%; background: var(--bg); color: var(--text);
   </div>
   <div id="main">
     <div id="conv-header"><h2>Polylogue</h2><div class="conv-stats"></div></div>
+__WORKSPACE_HTML__
     <div id="msg-list">
       <div class="main-empty">
         <h3>Select a conversation</h3>
@@ -257,7 +262,8 @@ var state = {
   conversations: [], selected: null, selectedRaw: null,
   provider: '', query: '', offset: 0, limit: 100, total: 0,
   status: {}, facets: null, inspectorTab: 'info',
-  marks: {}, annotations: {}, savedViews: [], userStateError: ''
+  marks: {}, annotations: {}, savedViews: [], workspaces: [], userStateError: '',
+  mode: 'single', stackPayload: null, comparePayload: null
 };
 
 function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
@@ -295,18 +301,13 @@ function getConvIdFromURL() {
   var m = window.location.pathname.match(/^\/c\/(.+)$/);
   return m ? decodeURIComponent(m[1]) : null;
 }
-function pushURL(convId) {
-  if (convId) {
-    var url = '/c/' + encodeURIComponent(convId);
-    if (window.location.pathname !== url) history.pushState({}, '', url);
-  } else {
-    if (window.location.pathname !== '/') history.pushState({}, '', '/');
-  }
-}
+__WORKSPACE_JS__
 window.addEventListener('popstate', function() {
+  var route = getWorkspaceRouteFromURL();
+  if (route) { loadWorkspaceRoute(route, false); return; }
   var cid = getConvIdFromURL();
   if (cid) selectConversation(cid, false);
-  else { state.selected = null; state.selectedRaw = null; renderMain(); renderInspector(); renderConversations(); }
+  else { state.mode = 'single'; state.selected = null; state.selectedRaw = null; renderMain(); renderInspector(); renderConversations(); }
 });
 
 async function loadConversations() {
@@ -344,6 +345,8 @@ async function loadUserState() {
     });
     var savedViews = await fetchJSON('/api/user/saved-views');
     state.savedViews = savedViews.items || [];
+    var workspaces = await fetchJSON('/api/user/workspaces');
+    state.workspaces = workspaces.items || [];
     state.userStateError = '';
   } catch(e) {
     state.userStateError = 'User state unavailable';
@@ -354,7 +357,10 @@ async function loadUserState() {
 }
 
 async function loadConversation(id, updateURL) {
-  if (updateURL !== false) pushURL(id);
+  state.mode = 'single';
+  state.stackPayload = null;
+  state.comparePayload = null;
+  if (updateURL !== false) pushSingleURL(id);
   try {
     var data = await fetchJSON('/api/conversations/' + id);
     state.selected = data;
@@ -489,6 +495,9 @@ function renderFacets() {
 }
 
 function renderMain() {
+  renderWorkspaceToolbar();
+  if (state.mode === 'stack') { renderStackWorkspace(); return; }
+  if (state.mode === 'compare') { renderCompareWorkspace(); return; }
   var headerEl = document.getElementById('conv-header');
   var msgEl = document.getElementById('msg-list');
   if (!state.selected) {
@@ -530,7 +539,11 @@ function renderMain() {
     msgEl.innerHTML = '<div class="main-empty"><h3>No messages</h3><p>This conversation has no message content.</p></div>';
     return;
   }
-  msgEl.innerHTML = c.messages.map(function(m, idx) {
+  msgEl.innerHTML = messageBlocksHtml(c.messages);
+}
+
+function messageBlocksHtml(messages) {
+  return (messages || []).map(function(m, idx) {
     var role = (m.role || '').toLowerCase();
     var text = m.text || '';
     var isTool = role === 'tool' || m.message_type === 'tool_use' || m.message_type === 'tool_result' || m.has_tool_use;
@@ -861,6 +874,8 @@ document.getElementById('inspector-tabs').addEventListener('click', function(e) 
 });
 
 loadConversations().then(function() {
+  var route = getWorkspaceRouteFromURL();
+  if (route) { loadWorkspaceRoute(route, false); return; }
   var cid = getConvIdFromURL();
   if (cid) selectConversation(cid, false);
 });
@@ -870,4 +885,7 @@ loadStatus();
 setInterval(loadStatus, 30000);
 </script>
 </body>
-</html>"""
+</html>""".replace("__WORKSPACE_CSS__", WORKSPACE_CSS)
+    .replace("__WORKSPACE_HTML__", WORKSPACE_HTML)
+    .replace("__WORKSPACE_JS__", WORKSPACE_JS)
+)

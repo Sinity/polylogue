@@ -365,7 +365,6 @@ def list_recall_packs_command(env: AppEnv, output_format: str | None) -> None:
 @recall_packs_group.command("save")
 @click.argument("pack_id")
 @click.argument("label")
-@click.option("--conversation-id", "conversation_ids", multiple=True)
 @click.option("--item-json", "item_jsons", multiple=True, help="Recall-pack item JSON object.")
 @click.option("--payload-json", default="{}", help="Additional recall-pack payload JSON object.")
 @click.option("--format", "-f", "output_format", type=click.Choice(["json"]), default=None)
@@ -374,7 +373,6 @@ def save_recall_pack_command(
     env: AppEnv,
     pack_id: str,
     label: str,
-    conversation_ids: tuple[str, ...],
     item_jsons: tuple[str, ...],
     payload_json: str,
     output_format: str | None,
@@ -386,14 +384,14 @@ def save_recall_pack_command(
         raise click.ClickException("payload-json items must be objects")
     items = list(payload_items)
     items.extend(_canonical_json_object(raw, label="item-json") for raw in item_jsons)
-    if items:
-        payload["items"] = items
+    if not items:
+        raise click.ClickException("at least one --item-json or payload-json item is required")
+    payload["items"] = items
     created = bool(
         _run(
             env.polylogue.create_recall_pack(
                 pack_id,
                 label,
-                json.dumps(list(conversation_ids), sort_keys=True),
                 json.dumps(payload, sort_keys=True, separators=(",", ":")),
             )
         )

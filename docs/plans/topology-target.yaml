@@ -17,7 +17,7 @@ files:
     owner: stable
     cross_cut: { api: async }
   - path: polylogue/api/archive.py
-    loc: 1092
+    loc: 1087
     target: polylogue/api/archive.py
     owner: stable
     cross_cut: { api: async }
@@ -679,7 +679,7 @@ files:
     target: polylogue/cli/commands/tags.py
     owner: stable
   - path: polylogue/cli/commands/user_state.py
-    loc: 501
+    loc: 499
     target: polylogue/cli/commands/user_state.py
     owner: stable
   - path: polylogue/cli/machine_main.py
@@ -971,7 +971,7 @@ files:
     target: polylogue/daemon/health.py
     owner: stable
   - path: polylogue/daemon/http.py
-    loc: 1080
+    loc: 1069
     target: polylogue/daemon/http.py
     owner: stable
   - path: polylogue/daemon/live_ingest_attempt_models.py
@@ -992,12 +992,16 @@ files:
     target: polylogue/daemon/status.py
     owner: stable
   - path: polylogue/daemon/user_state_http.py
-    loc: 500
+    loc: 502
     target: polylogue/daemon/user_state_http.py
     owner: stable
   - path: polylogue/daemon/web_shell.py
-    loc: 873
+    loc: 891
     target: polylogue/daemon/web_shell.py
+    owner: stable
+  - path: polylogue/daemon/web_shell_workspace.py
+    loc: 314
+    target: polylogue/daemon/web_shell_workspace.py
     owner: stable
   - path: polylogue/daemon/workspace_routes.py
     loc: 160
@@ -1115,7 +1119,7 @@ files:
     target: polylogue/mcp/server_maintenance_tools.py
     owner: stable
   - path: polylogue/mcp/server_mutation_tools.py
-    loc: 707
+    loc: 702
     target: polylogue/mcp/server_mutation_tools.py
     owner: stable
   - path: polylogue/mcp/server_prompts.py

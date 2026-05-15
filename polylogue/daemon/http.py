@@ -13,7 +13,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlparse
 
-from polylogue.core.loopback import is_loopback_host, is_loopback_origin
+from polylogue.core.loopback import is_loopback_origin
 from polylogue.daemon import user_state_http, workspace_routes
 from polylogue.daemon.events import emit_daemon_event
 from polylogue.daemon.status import daemon_status_payload
@@ -102,17 +102,6 @@ def _get_or_create_polylogue() -> Polylogue:
     from polylogue.api import Polylogue as _Polylogue
 
     return _Polylogue()
-
-
-def _is_localhost(host: str) -> bool:
-    """Return True if host is a loopback bind address or name.
-
-    Thin alias preserved for the daemon test surface; defers to the shared
-    :func:`polylogue.core.loopback.is_loopback_host` so the daemon API and
-    browser-capture receiver agree on RFC 5735 (the full ``127.0.0.0/8``
-    block plus ``::1`` and the ``localhost`` name).
-    """
-    return is_loopback_host(host)
 
 
 def _build_query_spec_params(

@@ -128,9 +128,10 @@ async def test_recall_pack_items_resolve_and_degrade_explicitly(workspace_env: d
         created = await poly.create_recall_pack(
             "pack-user-state",
             "User state pack",
-            '["conv-user-state","missing-conv"]',
             (
                 '{"items":['
+                '{"target_type":"conversation","conversation_id":"conv-user-state"},'
+                '{"target_type":"conversation","conversation_id":"missing-conv"},'
                 '{"target_type":"message","conversation_id":"conv-user-state","message_id":"msg-user-state"},'
                 '{"target_type":"message","conversation_id":"conv-user-state","message_id":"missing-msg"},'
                 '{"target_type":"mark","mark_target_type":"message","mark_target_id":"msg-user-state","mark_type":"pin","conversation_id":"conv-user-state"},'

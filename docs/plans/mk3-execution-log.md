@@ -20,6 +20,72 @@ Updated: 2026-05-15
 | User state/advanced panels | #867, #993, #1019, #995 | Active MCP parity slice | Expose marks and saved views through write-role MCP tools; keep annotations/message targets and CLI parity open | MCP mutation tests, saved-view roundtrip tests |
 | Verification throughput | #1026, #997, #998, #594, #590, #1012 | Ready to start independently | Add affected-test workflow and reduce outlier runtime | `devtools verify --affected --skip-slow`, durations capture, focused regression tests |
 
+## Active Slice Notes
+
+### 2026-05-15 - Reader workspace shell and recall-pack contract cleanup
+
+Target:
+
+- Turn the `/w/stack` and `/w/compare` shell routes into real reader workspace
+  modes, not only daemon routes that serve the generic shell.
+- Treat `/` and `/c/{id}` as canonical reader routes after auditing the daemon
+  and visual-evidence surfaces.
+- Remove the pre-release recall-pack `conversation_ids` write shim; recall
+  packs now accept typed target `items` as the single mutation contract.
+
+Coordination:
+
+- Branch: `feature/feat/reader-workspace-ui`.
+- Read-only sidecars audited route compatibility and visual test coverage.
+- Focused verification target: daemon reader contracts, CLI/MCP user-state
+  contracts, storage user-state contract, visual DOM lane, quick gate.
+
+Owned files:
+
+- `polylogue/daemon/web_shell.py`
+- `polylogue/api/archive.py`
+- `polylogue/daemon/user_state_http.py`
+- `polylogue/cli/commands/user_state.py`
+- `polylogue/mcp/server_mutation_tools.py`
+- reader user-state and visual tests
+
+Outcome:
+
+- `/` remains the canonical reader/search route and `/c/{id}` remains the
+  canonical single-conversation deep link; neither is a compatibility alias.
+- `/w/stack` and `/w/compare` now hydrate stack/compare workspace views from
+  `/api/stack` and `/api/compare` instead of only serving the generic shell.
+- Workspace save/restore and recall-pack creation controls are present in the
+  shell and write canonical typed target items.
+- Recall-pack mutations no longer accept the legacy `conversation_ids` input
+  path through daemon, CLI, MCP, or the facade; the stored
+  `conversation_ids_json` remains only as a derived resolved-conversation
+  index.
+- Removed the daemon HTTP `_is_localhost` test-surface alias; tests now pin the
+  shared `is_loopback_host` helper directly.
+
+Verification:
+
+- `pytest -q tests/unit/storage/test_user_state_contracts.py::test_recall_pack_items_resolve_and_degrade_explicitly tests/unit/daemon/test_web_reader.py::TestReaderUserState::test_recall_packs_roundtrip_cited_conversations tests/unit/daemon/test_web_reader.py::TestReaderUserState::test_recall_pack_rejects_conversation_ids_compat_input tests/unit/cli/test_user_state_command.py::test_user_state_recall_pack_save_passes_typed_items tests/unit/mcp/test_user_state_tools.py::test_recall_pack_tools_roundtrip_typed_payloads tests/unit/daemon/test_daemon_http_security.py::TestIsLocalhost`
+- `pytest -q tests/unit/daemon/test_web_reader.py::TestReaderSearchState::test_root_returns_html_with_required_regions tests/unit/daemon/test_web_reader.py::TestReaderWorkspaceRoutes::test_workspace_shell_routes_are_unauthenticated tests/visual/test_reader_dom_smoke.py::test_reader_search_shell_dom_evidence tests/visual/test_reader_dom_smoke.py::test_reader_stack_workspace_dom_evidence tests/visual/test_reader_dom_smoke.py::test_reader_compare_workspace_dom_evidence`
+- `pytest -q tests/visual/test_reader_dom_smoke.py`
+- `pytest -q tests/unit/cli/test_user_state_command.py tests/unit/mcp/test_user_state_tools.py tests/unit/storage/test_user_state_contracts.py`
+- `pytest -q tests/unit/daemon/test_daemon_http_security.py`
+- `pytest -q -n0 tests/unit/daemon/test_web_reader.py`
+- `pytest -q tests/unit/mcp/test_tool_schema_witness.py tests/unit/mcp/test_user_state_tools.py::test_recall_pack_tools_roundtrip_typed_payloads`
+- `pytest -q --tb=short --ignore=tests/integration -n 4`
+- `ruff format --check <changed python files>`
+- `ruff check <changed python files>`
+- `python -m mypy <changed python files>`
+- `devtools render-all --check`
+- `devtools verify --quick`
+
+Resource note:
+
+- One `devtools verify` attempt reached pytest and was killed by earlyoom while
+  a concurrent NixOS rebuild was also running; the reduced-worker pytest
+  command above completed the same non-integration pytest set with 6422 passed.
+
 ## Subagent Parallelization Model
 
 Use subagents when the work can be split by owned files and verified without

@@ -401,16 +401,18 @@ def handle_save_recall_pack(handler: Any) -> None:
         return
     pack_id = str(body.get("pack_id") or "").strip()
     label = str(body.get("label") or "").strip()
-    conversation_ids = body.get("conversation_ids")
     payload = body.get("payload", {})
-    if not pack_id or not label or not isinstance(conversation_ids, list) or not isinstance(payload, dict):
+    if not pack_id or not label or not isinstance(payload, dict):
         handler._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
         return
-    conversation_ids_json = json.dumps([str(item) for item in conversation_ids], sort_keys=True)
+    items = payload.get("items")
+    if not isinstance(items, list) or not all(isinstance(item, dict) for item in items):
+        handler._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
+        return
     payload_json = json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
     async def _save(poly: Any) -> dict[str, object]:
-        created = await poly.create_recall_pack(pack_id, label, conversation_ids_json, payload_json)
+        created = await poly.create_recall_pack(pack_id, label, payload_json)
         saved = await poly.get_recall_pack(pack_id)
         if saved is None:
             return {"pack_id": pack_id, "created": created}

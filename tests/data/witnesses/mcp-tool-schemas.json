@@ -1811,11 +1811,6 @@
     "name": "save_recall_pack",
     "parameters": {
       "properties": {
-        "conversation_ids_json": {
-          "default": "[]",
-          "title": "Conversation Ids Json",
-          "type": "string"
-        },
         "label": {
           "title": "Label",
           "type": "string"

@@ -41,6 +41,11 @@ def test_reader_search_shell_dom_evidence(reader_workspace: ReaderWorkspace, tmp
         "msg-list",
         "inspector",
         "inspector-tabs",
+        "workspace-toolbar",
+        "workspace-mode-switcher",
+        "workspace-save-btn",
+        "workspace-restore-select",
+        "workspace-create-recall-pack-btn",
         "footer",
         "help-overlay",
     }
@@ -60,6 +65,13 @@ def test_reader_search_shell_dom_evidence(reader_workspace: ReaderWorkspace, tmp
         "No annotations on this conversation",
         "Save current view",
         "Saved Views",
+        "Save workspace",
+        "Restore workspace",
+        "Recall pack",
+        "/api/user/workspaces",
+        "/api/user/recall-packs",
+        "/api/stack",
+        "/api/compare",
     ):
         assert phrase in body
 
@@ -82,6 +94,95 @@ def test_reader_search_shell_dom_evidence(reader_workspace: ReaderWorkspace, tmp
         checks=checks,
     )
     assert manifest["evidence_kind"] == "browserless-dom"
+
+
+def test_reader_stack_workspace_dom_evidence(reader_workspace: ReaderWorkspace, tmp_path: Path) -> None:
+    with running_reader_server(reader_workspace) as (_, base_url):
+        status, content_type, shell = get_text(
+            base_url, "/w/stack?ids=reader-c1,reader-c2,missing-conv&focus=reader-c1"
+        )
+        stack = cast(
+            dict[str, object],
+            get_json(base_url, "/api/stack?ids=reader-c1,reader-c2,missing-conv&focus=reader-c1"),
+        )
+
+    assert status == 200
+    assert "text/html" in content_type
+    assert_no_private_paths(shell, context="reader stack workspace shell")
+    for phrase in (
+        "getWorkspaceRouteFromURL",
+        "renderStackWorkspace",
+        "stack-view",
+        "stack-items",
+        "stack-focus",
+        "workspace-degraded-count",
+        "workspace-save-btn",
+        "workspace-create-recall-pack-btn",
+    ):
+        assert phrase in shell
+    assert stack["mode"] == "stack"
+    assert stack["resolved_count"] == 2
+    assert stack["degraded_count"] == 1
+    items = cast(list[dict[str, object]], stack["items"])
+    assert items[2]["disabled_reason"] == "conversation_not_found"
+
+    write_evidence_manifest(
+        tmp_path / "reader-stack-workspace-dom-evidence.json",
+        artifact_id="polylogue.local_reader.workspace.stack",
+        route="/w/stack?ids=reader-c1,reader-c2,missing-conv&focus=reader-c1",
+        fixture_id="reader-visual-synthetic-workspace-v1",
+        checks={
+            "status": status,
+            "content_type": content_type,
+            "resolved_count": stack["resolved_count"],
+            "degraded_count": stack["degraded_count"],
+            "workspace_controls_present": True,
+            "private_path_safe": True,
+        },
+    )
+
+
+def test_reader_compare_workspace_dom_evidence(reader_workspace: ReaderWorkspace, tmp_path: Path) -> None:
+    with running_reader_server(reader_workspace) as (_, base_url):
+        status, content_type, shell = get_text(base_url, "/w/compare?left=reader-c1&right=reader-c2&align=prompt")
+        compare = cast(
+            dict[str, object],
+            get_json(base_url, "/api/compare?left=reader-c1&right=reader-c2&align=prompt"),
+        )
+
+    assert status == 200
+    assert "text/html" in content_type
+    assert_no_private_paths(shell, context="reader compare workspace shell")
+    for phrase in (
+        "renderCompareWorkspace",
+        "compare-view",
+        "compare-left-pane",
+        "compare-right-pane",
+        "compare-pairs",
+        "compare-align-select",
+        "compare-degraded-banner",
+    ):
+        assert phrase in shell
+    assert compare["mode"] == "compare"
+    assert compare["align"] == "prompt"
+    assert cast(dict[str, object], compare["left"])["id"] == "reader-c1"
+    assert cast(dict[str, object], compare["right"])["id"] == "reader-c2"
+    assert cast(list[dict[str, object]], compare["pairs"])
+
+    write_evidence_manifest(
+        tmp_path / "reader-compare-workspace-dom-evidence.json",
+        artifact_id="polylogue.local_reader.workspace.compare",
+        route="/w/compare?left=reader-c1&right=reader-c2&align=prompt",
+        fixture_id="reader-visual-synthetic-workspace-v1",
+        checks={
+            "status": status,
+            "content_type": content_type,
+            "align": compare["align"],
+            "pair_count": len(cast(list[dict[str, object]], compare["pairs"])),
+            "workspace_controls_present": True,
+            "private_path_safe": True,
+        },
+    )
 
 
 def test_reader_conversation_deeplink_and_detail_evidence(reader_workspace: ReaderWorkspace, tmp_path: Path) -> None:

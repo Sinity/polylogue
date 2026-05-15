@@ -339,8 +339,12 @@ def test_recall_pack_tools_roundtrip_typed_payloads(mcp_server: MCPServerUnderTe
             mcp_server._tool_manager._tools["save_recall_pack"].fn,
             pack_id="pack-1",
             label="Handoff",
-            conversation_ids_json='["conv-1"]',
-            payload_json='{"items":[{"target_type":"annotation","annotation_id":"ann-1"}]}',
+            payload_json=(
+                '{"items":['
+                '{"target_type":"conversation","conversation_id":"conv-1"},'
+                '{"target_type":"annotation","annotation_id":"ann-1"}'
+                "]}"
+            ),
         )
         listed = invoke_surface(mcp_server._tool_manager._tools["list_recall_packs"].fn)
 
@@ -353,8 +357,7 @@ def test_recall_pack_tools_roundtrip_typed_payloads(mcp_server: MCPServerUnderTe
     mock_poly.create_recall_pack.assert_awaited_once_with(
         "pack-1",
         "Handoff",
-        '["conv-1"]',
-        '{"items":[{"annotation_id":"ann-1","target_type":"annotation"}]}',
+        '{"items":[{"conversation_id":"conv-1","target_type":"conversation"},{"annotation_id":"ann-1","target_type":"annotation"}]}',
     )
 
 

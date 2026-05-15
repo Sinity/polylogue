@@ -470,7 +470,6 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     async def save_recall_pack(
         pack_id: str,
         label: str,
-        conversation_ids_json: str = "[]",
         payload_json: str = "{}",
     ) -> str:
         async def run() -> str:
@@ -479,22 +478,18 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             if not label.strip():
                 return hooks.error_json("label must not be empty")
             try:
-                conversation_ids = json.loads(conversation_ids_json)
-            except json.JSONDecodeError:
-                return hooks.error_json("conversation_ids_json must be valid JSON")
-            if not isinstance(conversation_ids, list):
-                return hooks.error_json("conversation_ids_json must encode a list")
-            try:
                 payload = json.loads(payload_json)
             except json.JSONDecodeError:
                 return hooks.error_json("payload_json must be valid JSON")
             if not isinstance(payload, dict):
                 return hooks.error_json("payload_json must encode an object")
+            items = payload.get("items")
+            if not isinstance(items, list) or not all(isinstance(item, dict) for item in items):
+                return hooks.error_json("payload_json must include an items list of objects")
             poly = hooks.get_polylogue()
             created = await poly.create_recall_pack(
                 pack_id.strip(),
                 label.strip(),
-                json.dumps([str(item) for item in conversation_ids], sort_keys=True),
                 json.dumps(payload, sort_keys=True, separators=(",", ":")),
             )
             return hooks.json_payload(
