@@ -12,6 +12,8 @@ from polylogue.mcp.payloads import (
     MCPSavedViewListPayload,
     MCPSavedViewPayload,
     MCPTagCountsPayload,
+    MCPUserAnnotationListPayload,
+    MCPUserAnnotationPayload,
     MCPUserMarkListPayload,
     MCPUserMarkPayload,
     MutationResultPayload,
@@ -54,6 +56,23 @@ def _saved_view_payload(row: dict[str, str]) -> MCPSavedViewPayload:
         name=row["name"],
         query=query,
         created_at=row["created_at"],
+    )
+
+
+def _none_if_empty(value: str | None) -> str | None:
+    return value if value else None
+
+
+def _annotation_payload(row: dict[str, str]) -> MCPUserAnnotationPayload:
+    return MCPUserAnnotationPayload(
+        annotation_id=row["annotation_id"],
+        target_type=row["target_type"],
+        target_id=row["target_id"],
+        conversation_id=row["conversation_id"],
+        message_id=_none_if_empty(row.get("message_id")),
+        note_text=row["note_text"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
     )
 
 
@@ -139,13 +158,28 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         return await hooks.async_safe_call("list_tags", run)
 
     @mcp.tool()
-    async def list_marks(mark_type: str | None = None, conversation_id: str | None = None) -> str:
+    async def list_marks(
+        mark_type: str | None = None,
+        conversation_id: str | None = None,
+        target_type: str | None = None,
+        target_id: str | None = None,
+        message_id: str | None = None,
+    ) -> str:
         async def run() -> str:
             poly = hooks.get_polylogue()
-            rows = await poly.list_marks(mark_type=mark_type, conversation_id=conversation_id)
+            rows = await poly.list_marks(
+                mark_type=mark_type,
+                conversation_id=conversation_id,
+                target_type=target_type,
+                target_id=target_id,
+                message_id=message_id,
+            )
             items = tuple(
                 MCPUserMarkPayload(
+                    target_type=row["target_type"],
+                    target_id=row["target_id"],
                     conversation_id=row["conversation_id"],
+                    message_id=_none_if_empty(row.get("message_id")),
                     mark_type=row["mark_type"],
                     created_at=row["created_at"],
                 )
@@ -156,7 +190,13 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         return await hooks.async_safe_call("list_marks", run)
 
     @mcp.tool()
-    async def add_mark(conversation_id: str, mark_type: str) -> str:
+    async def add_mark(
+        conversation_id: str,
+        mark_type: str,
+        target_type: str = "conversation",
+        target_id: str | None = None,
+        message_id: str | None = None,
+    ) -> str:
         async def run() -> str:
             mark_error = _mark_type_error(hooks, mark_type)
             if mark_error:
@@ -166,7 +206,13 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 return err
             assert resolved is not None
             poly = hooks.get_polylogue()
-            created = await poly.add_mark(resolved, mark_type)
+            created = await poly.add_mark(
+                resolved,
+                mark_type,
+                target_type=target_type,
+                target_id=target_id,
+                message_id=message_id,
+            )
             return hooks.json_payload(
                 MutationResultPayload(
                     status="ok" if created else "unchanged",
@@ -181,7 +227,13 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         return await hooks.async_safe_call("add_mark", run)
 
     @mcp.tool()
-    async def remove_mark(conversation_id: str, mark_type: str) -> str:
+    async def remove_mark(
+        conversation_id: str,
+        mark_type: str,
+        target_type: str = "conversation",
+        target_id: str | None = None,
+        message_id: str | None = None,
+    ) -> str:
         async def run() -> str:
             mark_error = _mark_type_error(hooks, mark_type)
             if mark_error:
@@ -191,7 +243,13 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 return err
             assert resolved is not None
             poly = hooks.get_polylogue()
-            deleted = await poly.remove_mark(resolved, mark_type)
+            deleted = await poly.remove_mark(
+                resolved,
+                mark_type,
+                target_type=target_type,
+                target_id=target_id,
+                message_id=message_id,
+            )
             return hooks.json_payload(
                 MutationResultPayload(
                     status="ok" if deleted else "not_found",
@@ -204,6 +262,81 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             )
 
         return await hooks.async_safe_call("remove_mark", run)
+
+    @mcp.tool()
+    async def list_annotations(
+        conversation_id: str | None = None,
+        target_type: str | None = None,
+        target_id: str | None = None,
+        message_id: str | None = None,
+    ) -> str:
+        async def run() -> str:
+            poly = hooks.get_polylogue()
+            rows = await poly.list_annotations(
+                conversation_id=conversation_id,
+                target_type=target_type,
+                target_id=target_id,
+                message_id=message_id,
+            )
+            items = tuple(_annotation_payload(row) for row in rows)
+            return hooks.json_payload(MCPUserAnnotationListPayload(items=items, total=len(items)))
+
+        return await hooks.async_safe_call("list_annotations", run)
+
+    @mcp.tool()
+    async def save_annotation(
+        annotation_id: str,
+        conversation_id: str,
+        note_text: str,
+        target_type: str = "conversation",
+        target_id: str | None = None,
+        message_id: str | None = None,
+    ) -> str:
+        async def run() -> str:
+            if not annotation_id.strip():
+                return hooks.error_json("annotation_id must not be empty")
+            if not note_text.strip():
+                return hooks.error_json("note_text must not be empty")
+            resolved, err = await _resolve_or_error(hooks, conversation_id)
+            if err:
+                return err
+            assert resolved is not None
+            poly = hooks.get_polylogue()
+            created = await poly.save_annotation(
+                annotation_id,
+                resolved,
+                note_text,
+                target_type=target_type,
+                target_id=target_id,
+                message_id=message_id,
+            )
+            return hooks.json_payload(
+                MutationResultPayload(
+                    status="ok",
+                    conversation_id=resolved,
+                    key=annotation_id,
+                    outcome="added" if created else "updated",
+                ),
+                exclude_none=True,
+            )
+
+        return await hooks.async_safe_call("save_annotation", run)
+
+    @mcp.tool()
+    async def delete_annotation(annotation_id: str) -> str:
+        async def run() -> str:
+            poly = hooks.get_polylogue()
+            deleted = await poly.delete_annotation(annotation_id)
+            return hooks.json_payload(
+                MutationResultPayload(
+                    status="deleted" if deleted else "not_found",
+                    detail=None if deleted else "annotation_not_found",
+                    key=annotation_id,
+                ),
+                exclude_none=True,
+            )
+
+        return await hooks.async_safe_call("delete_annotation", run)
 
     @mcp.tool()
     async def list_saved_views() -> str:

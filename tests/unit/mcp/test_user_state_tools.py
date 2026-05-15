@@ -14,7 +14,10 @@ def test_list_marks_returns_typed_items(mcp_server: MCPServerUnderTest) -> None:
         mock_poly.list_marks = AsyncMock(
             return_value=[
                 {
+                    "target_type": "conversation",
+                    "target_id": "test:conv-123",
                     "conversation_id": "test:conv-123",
+                    "message_id": "",
                     "mark_type": "star",
                     "created_at": "2026-05-15T00:00:00+00:00",
                 }
@@ -30,8 +33,16 @@ def test_list_marks_returns_typed_items(mcp_server: MCPServerUnderTest) -> None:
 
     parsed = json.loads(result)
     assert parsed["total"] == 1
+    assert parsed["items"][0]["target_type"] == "conversation"
+    assert parsed["items"][0]["target_id"] == "test:conv-123"
     assert parsed["items"][0]["mark_type"] == "star"
-    mock_poly.list_marks.assert_awaited_once_with(mark_type="star", conversation_id="test:conv-123")
+    mock_poly.list_marks.assert_awaited_once_with(
+        mark_type="star",
+        conversation_id="test:conv-123",
+        target_type=None,
+        target_id=None,
+        message_id=None,
+    )
 
 
 def test_add_mark_resolves_conversation_and_reports_idempotency(mcp_server: MCPServerUnderTest) -> None:
@@ -55,7 +66,13 @@ def test_add_mark_resolves_conversation_and_reports_idempotency(mcp_server: MCPS
     assert parsed["conversation_id"] == "test:conv-123"
     assert parsed["key"] == "pin"
     assert parsed["detail"] == "already_present"
-    mock_poly.add_mark.assert_awaited_once_with("test:conv-123", "pin")
+    mock_poly.add_mark.assert_awaited_once_with(
+        "test:conv-123",
+        "pin",
+        target_type="conversation",
+        target_id=None,
+        message_id=None,
+    )
 
 
 def test_add_mark_rejects_unknown_type(mcp_server: MCPServerUnderTest) -> None:
@@ -89,7 +106,13 @@ def test_remove_mark_reports_missing_mark(mcp_server: MCPServerUnderTest) -> Non
     parsed = json.loads(result)
     assert parsed["status"] == "not_found"
     assert parsed["detail"] == "mark_not_present"
-    mock_poly.remove_mark.assert_awaited_once_with("test:conv-123", "star")
+    mock_poly.remove_mark.assert_awaited_once_with(
+        "test:conv-123",
+        "star",
+        target_type="conversation",
+        target_id=None,
+        message_id=None,
+    )
 
 
 def test_remove_mark_rejects_unknown_type(mcp_server: MCPServerUnderTest) -> None:
@@ -102,6 +125,103 @@ def test_remove_mark_rejects_unknown_type(mcp_server: MCPServerUnderTest) -> Non
     parsed = json.loads(result)
     assert parsed["is_error"] is True
     assert "star, pin, archive" in parsed["error"]
+
+
+def test_add_mark_accepts_message_target(mcp_server: MCPServerUnderTest) -> None:
+    with (
+        patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue,
+        patch("polylogue.mcp.server._get_query_store") as mock_get_query_store,
+    ):
+        mock_poly = make_polylogue_mock()
+        mock_poly.add_mark = AsyncMock(return_value=True)
+        mock_get_polylogue.return_value = mock_poly
+        mock_get_query_store.return_value = make_query_store_mock(resolved_id="test:conv-123")
+
+        result = invoke_surface(
+            mcp_server._tool_manager._tools["add_mark"].fn,
+            conversation_id="conv-123",
+            mark_type="pin",
+            target_type="message",
+            message_id="msg-1",
+        )
+
+    parsed = json.loads(result)
+    assert parsed["status"] == "ok"
+    mock_poly.add_mark.assert_awaited_once_with(
+        "test:conv-123",
+        "pin",
+        target_type="message",
+        target_id=None,
+        message_id="msg-1",
+    )
+
+
+def test_annotations_roundtrip_through_typed_mcp_payloads(mcp_server: MCPServerUnderTest) -> None:
+    with (
+        patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue,
+        patch("polylogue.mcp.server._get_query_store") as mock_get_query_store,
+    ):
+        mock_poly = make_polylogue_mock()
+        mock_poly.save_annotation = AsyncMock(return_value=True)
+        mock_poly.list_annotations = AsyncMock(
+            return_value=[
+                {
+                    "annotation_id": "ann-1",
+                    "target_type": "message",
+                    "target_id": "msg-1",
+                    "conversation_id": "test:conv-123",
+                    "message_id": "msg-1",
+                    "note_text": "Important",
+                    "created_at": "2026-05-15T00:00:00+00:00",
+                    "updated_at": "2026-05-15T00:00:01+00:00",
+                }
+            ]
+        )
+        mock_get_polylogue.return_value = mock_poly
+        mock_get_query_store.return_value = make_query_store_mock(resolved_id="test:conv-123")
+
+        saved = invoke_surface(
+            mcp_server._tool_manager._tools["save_annotation"].fn,
+            annotation_id="ann-1",
+            conversation_id="conv-123",
+            note_text="Important",
+            target_type="message",
+            message_id="msg-1",
+        )
+        listed = invoke_surface(
+            mcp_server._tool_manager._tools["list_annotations"].fn,
+            conversation_id="test:conv-123",
+        )
+
+    saved_payload = json.loads(saved)
+    listed_payload = json.loads(listed)
+    assert saved_payload["status"] == "ok"
+    assert saved_payload["outcome"] == "added"
+    assert listed_payload["total"] == 1
+    assert listed_payload["items"][0]["target_type"] == "message"
+    assert listed_payload["items"][0]["message_id"] == "msg-1"
+    mock_poly.save_annotation.assert_awaited_once_with(
+        "ann-1",
+        "test:conv-123",
+        "Important",
+        target_type="message",
+        target_id=None,
+        message_id="msg-1",
+    )
+
+
+def test_delete_annotation_reports_status(mcp_server: MCPServerUnderTest) -> None:
+    with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+        mock_poly = make_polylogue_mock()
+        mock_poly.delete_annotation = AsyncMock(return_value=False)
+        mock_get_polylogue.return_value = mock_poly
+
+        result = invoke_surface(mcp_server._tool_manager._tools["delete_annotation"].fn, annotation_id="ann-1")
+
+    parsed = json.loads(result)
+    assert parsed["status"] == "not_found"
+    assert parsed["detail"] == "annotation_not_found"
+    mock_poly.delete_annotation.assert_awaited_once_with("ann-1")
 
 
 def test_list_saved_views_decodes_query_json(mcp_server: MCPServerUnderTest) -> None:

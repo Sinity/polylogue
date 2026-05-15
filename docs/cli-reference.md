@@ -160,6 +160,7 @@ Commands:
   stats         Show statistics for matched conversations.
   status        Show daemon and archive status.
   tags          Manage conversation tags.
+  user-state    Manage durable reader user state.
 ```
 
 ## List Verb
@@ -341,6 +342,22 @@ Options:
   --add-tag TEXT       Add a tag to the given conversation
   --remove-tag TEXT    Remove a tag from the given conversation
   --help               Show this message and exit.
+```
+
+## User State
+
+```text
+Usage: polylogue user-state [OPTIONS] COMMAND [ARGS]...
+
+  Manage durable reader marks, annotations, and saved views.
+
+Options:
+  --help  Show this message and exit.
+
+Commands:
+  annotations  Manage conversation and message annotations.
+  marks        Manage conversation and message marks.
+  saved-views  Manage saved query views.
 ```
 
 ## Auth

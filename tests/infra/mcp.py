@@ -23,6 +23,15 @@ EXPECTED_TOOL_NAMES = {
     "remove_tag",
     "bulk_tag_conversations",
     "list_tags",
+    "list_marks",
+    "add_mark",
+    "remove_mark",
+    "list_annotations",
+    "save_annotation",
+    "delete_annotation",
+    "list_saved_views",
+    "save_saved_view",
+    "delete_saved_view",
     "get_metadata",
     "set_metadata",
     "delete_metadata",
@@ -182,6 +191,15 @@ def make_polylogue_mock() -> MagicMock:
     poly.get_metadata = AsyncMock(return_value={})
     poly.update_metadata = AsyncMock()
     poly.delete_conversation = AsyncMock(return_value=False)
+    poly.list_marks = AsyncMock(return_value=[])
+    poly.add_mark = AsyncMock(return_value=False)
+    poly.remove_mark = AsyncMock(return_value=False)
+    poly.list_annotations = AsyncMock(return_value=[])
+    poly.save_annotation = AsyncMock(return_value=False)
+    poly.delete_annotation = AsyncMock(return_value=False)
+    poly.list_views = AsyncMock(return_value=[])
+    poly.save_view = AsyncMock(return_value=False)
+    poly.delete_view = AsyncMock(return_value=False)
     poly.get_conversation_summary = AsyncMock(return_value=None)
     poly.get_conversation_stats = AsyncMock(return_value={})
     poly.get_session_tree = AsyncMock(return_value=[])

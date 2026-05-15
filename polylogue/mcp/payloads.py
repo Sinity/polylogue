@@ -393,13 +393,32 @@ class MCPMetadataPayload(SurfacePayloadModel):
 
 
 class MCPUserMarkPayload(SurfacePayloadModel):
+    target_type: str = "conversation"
+    target_id: str
     conversation_id: str
+    message_id: str | None = None
     mark_type: str
     created_at: str
 
 
 class MCPUserMarkListPayload(SurfacePayloadModel):
     items: tuple[MCPUserMarkPayload, ...]
+    total: int
+
+
+class MCPUserAnnotationPayload(SurfacePayloadModel):
+    annotation_id: str
+    target_type: str
+    target_id: str
+    conversation_id: str
+    message_id: str | None = None
+    note_text: str
+    created_at: str
+    updated_at: str
+
+
+class MCPUserAnnotationListPayload(SurfacePayloadModel):
+    items: tuple[MCPUserAnnotationPayload, ...]
     total: int
 
 
@@ -573,6 +592,8 @@ __all__ = [
     "MCPSavedViewPayload",
     "MCPUserMarkListPayload",
     "MCPUserMarkPayload",
+    "MCPUserAnnotationListPayload",
+    "MCPUserAnnotationPayload",
     "MCPTargetRefPayload",
     "conversation_neighbor_candidate_list_payload",
     "conversation_query_result_payload",

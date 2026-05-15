@@ -415,3 +415,116 @@ Verification:
 - `mypy tests/visual polylogue/daemon/http.py`
 - `devtools verify --quick`
 - `devtools verify --affected --skip-slow`
+
+### 2026-05-15 - #867 target-aware annotations substrate launch
+
+Target:
+
+- #867 durable reader user-state substrate beyond conversation-only marks.
+- First complete target-aware slice: conversation/message marks plus
+  conversation/message annotations through storage, facade, daemon HTTP, and MCP.
+
+Coordination:
+
+- Main branch: `feature/feat/user-state-annotations-targets`.
+- Parallelized read-only reconnaissance into storage/API and CLI/surface lanes;
+  implementation stayed serialized because schema, facade, daemon, and MCP
+  payloads form one contract surface.
+
+Owned files:
+
+- `polylogue/storage/sqlite/schema_ddl*.py`
+- `polylogue/storage/sqlite/schema_bootstrap.py`
+- `polylogue/storage/sqlite/queries/conversations_identity.py`
+- `polylogue/storage/repository/archive/repository_writes.py`
+- `polylogue/api/archive.py`
+- `polylogue/daemon/user_state_http.py`
+- `polylogue/mcp/server_mutation_tools.py`
+- `polylogue/mcp/payloads.py`
+- focused storage/daemon/MCP/visual tests and MCP tool-schema witness
+
+Avoided files:
+
+- CLI parity; keep for the next low-conflict `user-state` command slice.
+- Recall-pack export redesign; keep for a separate typed export/degraded-target
+  slice after annotations exist.
+- Non-conversation/message targets; those still depend on broader target
+  identity work.
+- Full reader layout changes; this slice only flips annotate action
+  availability now that the endpoint contract exists.
+
+First gates:
+
+- `pytest -q tests/unit/storage/test_user_state_contracts.py ... tests/unit/mcp/test_user_state_tools.py`
+- `ruff format --check <changed files>`
+- `ruff check <changed files>`
+- `python -m mypy <changed files>`
+
+### 2026-05-15 - #867 CLI user-state parity launch
+
+Target:
+
+- #867 operator parity for the durable marks, annotations, and saved-view
+  substrate.
+- Add a low-conflict CLI surface without mixing user-state CRUD into query
+  modifier execution.
+
+Coordination:
+
+- Same branch: `feature/feat/user-state-annotations-targets`.
+- Informed by the read-only CLI reconnaissance lane. Implementation stayed in
+  one new command module plus registration/docs/tests.
+
+Owned files:
+
+- `polylogue/cli/commands/user_state.py`
+- `polylogue/cli/click_command_registration.py`
+- `devtools/render_cli_reference.py`
+- `docs/cli-reference.md`
+- focused CLI tests
+
+Avoided files:
+
+- Query-mode mutation plumbing; this slice uses an explicit `user-state` root
+  group.
+- Recall-pack CLI create/export; that remains tied to the next recall-pack
+  redesign slice.
+
+Outcome:
+
+- Added lazy `polylogue user-state`.
+- Added `marks list/add/remove` with conversation/message target options.
+- Added `annotations list/save/delete`.
+- Added `saved-views list/save/delete`, including query-spec validation and
+  canonical query JSON.
+- Regenerated CLI reference docs for the new command.
+
+Verification:
+
+- `pytest -q tests/unit/cli/test_user_state_command.py tests/unit/cli/test_click_app.py::TestCliMetadata::test_all_subcommands_registered`
+- `ruff format --check polylogue/cli/commands/user_state.py polylogue/cli/click_command_registration.py devtools/render_cli_reference.py tests/unit/cli/test_user_state_command.py tests/unit/cli/test_click_app.py`
+- `ruff check polylogue/cli/commands/user_state.py polylogue/cli/click_command_registration.py devtools/render_cli_reference.py tests/unit/cli/test_user_state_command.py tests/unit/cli/test_click_app.py`
+- `python -m mypy polylogue/cli/commands/user_state.py polylogue/cli/click_command_registration.py devtools/render_cli_reference.py tests/unit/cli/test_user_state_command.py tests/unit/cli/test_click_app.py`
+
+Outcome:
+
+- Bumped archive schema to v13.
+- Migrated legacy conversation-only `user_marks` into target-aware
+  `(target_type, target_id, mark_type)` rows while preserving old data.
+- Added durable `user_annotations` table for conversation/message targets.
+- Added target-aware mark and annotation operations through SQL helpers,
+  repository writes, and `Polylogue`.
+- Added daemon `/api/user/annotations` list/get/save/delete routes and widened
+  `/api/user/marks` to conversation/message targets.
+- Added MCP `list_annotations`, `save_annotation`, and `delete_annotation`,
+  and widened mark tools to accept target arguments.
+- Regenerated the MCP tool-schema witness.
+- Added storage tests for migration, target validation, and content-hash
+  exclusion.
+
+Verification:
+
+- `pytest -q tests/unit/storage/test_user_state_contracts.py tests/unit/storage/test_schema_upgrades.py::test_ensure_schema_upgrades_v12_marks_to_target_aware_user_state tests/unit/storage/test_schema_upgrades.py::test_v12_to_v13_upgrade_plan_migrates_legacy_mark_table tests/unit/daemon/test_web_reader.py tests/unit/mcp/test_user_state_tools.py tests/unit/mcp/test_envelope_contracts.py tests/unit/mcp/test_tool_schema_witness.py tests/visual/test_reader_dom_smoke.py`
+- `ruff format --check <changed files>`
+- `ruff check <changed files>`
+- `python -m mypy <changed files>`

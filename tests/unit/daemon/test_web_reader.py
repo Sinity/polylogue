@@ -82,6 +82,7 @@ def _seed_empty_schema(workspace: dict[str, Path]) -> None:
         MESSAGE_FTS_DDL,
         RECALL_PACKS_DDL,
         SAVED_VIEWS_DDL,
+        USER_ANNOTATIONS_DDL,
         USER_MARKS_DDL,
     )
 
@@ -91,6 +92,7 @@ def _seed_empty_schema(workspace: dict[str, Path]) -> None:
     conn.executescript(ARCHIVE_STORAGE_DDL)
     conn.executescript(MESSAGE_FTS_DDL)
     conn.executescript(USER_MARKS_DDL)
+    conn.executescript(USER_ANNOTATIONS_DDL)
     conn.executescript(SAVED_VIEWS_DDL)
     conn.executescript(RECALL_PACKS_DDL)
     conn.commit()
@@ -106,6 +108,7 @@ def _seed_test_db(workspace: dict[str, Path]) -> None:
         MESSAGE_FTS_DDL,
         RECALL_PACKS_DDL,
         SAVED_VIEWS_DDL,
+        USER_ANNOTATIONS_DDL,
         USER_MARKS_DDL,
     )
 
@@ -115,6 +118,7 @@ def _seed_test_db(workspace: dict[str, Path]) -> None:
     conn.executescript(ARCHIVE_STORAGE_DDL)
     conn.executescript(MESSAGE_FTS_DDL)
     conn.executescript(USER_MARKS_DDL)
+    conn.executescript(USER_ANNOTATIONS_DDL)
     conn.executescript(SAVED_VIEWS_DDL)
     conn.executescript(RECALL_PACKS_DDL)
     for cid, prov, title in [
@@ -213,10 +217,7 @@ class TestReaderSearchState:
         }
         assert row["anchor"] == "conversation-c1"
         assert row["actions"]["open"]["enabled"] is True
-        assert row["actions"]["annotate"] == {
-            "enabled": False,
-            "disabled_reason": "annotations_not_implemented",
-        }
+        assert row["actions"]["annotate"] == {"enabled": True}
 
     def test_facets_envelope_includes_scoped_flag(self, workspace_env: dict[str, Path]) -> None:
         with _running_server(workspace_env) as (_, base_url):
@@ -297,10 +298,7 @@ class TestReaderConversationState:
         }
         assert message["anchor"] == "message-m-c1"
         assert message["actions"]["copy_text"]["enabled"] is True
-        assert message["actions"]["annotate"] == {
-            "enabled": False,
-            "disabled_reason": "annotations_not_implemented",
-        }
+        assert message["actions"]["annotate"] == {"enabled": True}
 
     def test_unknown_conversation_yields_404(self, workspace_env: dict[str, Path]) -> None:
         with _running_server(workspace_env) as (_, base_url):
@@ -340,14 +338,110 @@ class TestReaderUserState:
 
         marks_payload = cast(dict[str, object], marks)
         assert status == 201
-        assert created == {"conversation_id": "c1", "mark_type": "star", "created": True}
+        assert created == {
+            "target_type": "conversation",
+            "target_id": "c1",
+            "conversation_id": "c1",
+            "message_id": None,
+            "mark_type": "star",
+            "created": True,
+        }
         assert status2 == 200
-        assert duplicate == {"conversation_id": "c1", "mark_type": "star", "created": False}
+        assert duplicate == {
+            "target_type": "conversation",
+            "target_id": "c1",
+            "conversation_id": "c1",
+            "message_id": None,
+            "mark_type": "star",
+            "created": False,
+        }
         mark_items = cast(list[dict[str, object]], marks_payload["items"])
         assert mark_items[0]["mark_type"] == "star"
+        assert mark_items[0]["target_type"] == "conversation"
+        assert mark_items[0]["target_id"] == "c1"
         assert delete_status == 200
-        assert deleted == {"conversation_id": "c1", "mark_type": "star", "deleted": True}
+        assert deleted == {
+            "target_type": "conversation",
+            "target_id": "c1",
+            "conversation_id": "c1",
+            "message_id": None,
+            "mark_type": "star",
+            "deleted": True,
+        }
         assert empty == {"items": [], "total": 0}
+
+    def test_message_marks_are_target_aware(self, workspace_env: dict[str, Path]) -> None:
+        with _running_server(workspace_env) as (_, base_url):
+            status, created = _request_json(
+                base_url,
+                "POST",
+                "/api/user/marks",
+                payload={
+                    "conversation_id": "c1",
+                    "target_type": "message",
+                    "message_id": "m-c1",
+                    "mark_type": "pin",
+                },
+            )
+            marks = _get_json(base_url, "/api/user/marks?target_type=message&message_id=m-c1")
+
+        marks_payload = cast(dict[str, object], marks)
+        created_payload = cast(dict[str, object], created)
+        assert status == 201
+        assert created_payload["target_type"] == "message"
+        assert created_payload["target_id"] == "m-c1"
+        assert created_payload["message_id"] == "m-c1"
+        mark_items = cast(list[dict[str, object]], marks_payload["items"])
+        assert mark_items == [
+            {
+                "target_type": "message",
+                "target_id": "m-c1",
+                "conversation_id": "c1",
+                "message_id": "m-c1",
+                "mark_type": "pin",
+                "created_at": mark_items[0]["created_at"],
+            }
+        ]
+
+    def test_annotations_roundtrip_conversation_and_message_targets(self, workspace_env: dict[str, Path]) -> None:
+        with _running_server(workspace_env) as (_, base_url):
+            conv_status, conv_note = _request_json(
+                base_url,
+                "POST",
+                "/api/user/annotations",
+                payload={"annotation_id": "ann-c1", "conversation_id": "c1", "note_text": "Follow up"},
+            )
+            msg_status, msg_note = _request_json(
+                base_url,
+                "POST",
+                "/api/user/annotations",
+                payload={
+                    "annotation_id": "ann-m1",
+                    "conversation_id": "c1",
+                    "target_type": "message",
+                    "message_id": "m-c1",
+                    "note_text": "Important request",
+                },
+            )
+            listed = _get_json(base_url, "/api/user/annotations?conversation_id=c1")
+            fetched = _get_json(base_url, "/api/user/annotations/ann-m1")
+            delete_status, deleted = _request_json(base_url, "DELETE", "/api/user/annotations/ann-c1")
+
+        listed_payload = cast(dict[str, object], listed)
+        conv_note_payload = cast(dict[str, object], conv_note)
+        msg_note_payload = cast(dict[str, object], msg_note)
+        fetched_payload = cast(dict[str, object], fetched)
+        items = cast(list[dict[str, object]], listed_payload["items"])
+        assert conv_status == 201
+        assert conv_note_payload["target_type"] == "conversation"
+        assert conv_note_payload["target_id"] == "c1"
+        assert msg_status == 201
+        assert msg_note_payload["target_type"] == "message"
+        assert msg_note_payload["target_id"] == "m-c1"
+        assert fetched_payload["note_text"] == "Important request"
+        assert {item["annotation_id"] for item in items} == {"ann-c1", "ann-m1"}
+        assert delete_status == 200
+        assert deleted == {"annotation_id": "ann-c1", "deleted": True}
 
     def test_saved_views_roundtrip_query_specs(self, workspace_env: dict[str, Path]) -> None:
         with _running_server(workspace_env) as (_, base_url):
@@ -625,12 +719,7 @@ class TestSharedQueryPayloads:
             text="Hello reader",
             target_ref=message_ref,
             anchor="message-m-c1",
-            actions={
-                "annotate": ReaderActionAvailabilityPayload(
-                    enabled=False,
-                    disabled_reason="annotations_not_implemented",
-                )
-            },
+            actions={"annotate": ReaderActionAvailabilityPayload(enabled=True)},
         )
 
         row_dump = row.model_dump(mode="json", exclude_none=True)
@@ -638,7 +727,7 @@ class TestSharedQueryPayloads:
         assert row_dump["target_ref"]["identity_key"] == "conversation:c1"
         assert row_dump["actions"]["copy_link"]["enabled"] is True
         assert message_dump["target_ref"]["identity_key"] == "message:c1:m-c1"
-        assert message_dump["actions"]["annotate"]["disabled_reason"] == "annotations_not_implemented"
+        assert message_dump["actions"]["annotate"]["enabled"] is True
 
     def test_conversation_list_response_with_diagnostics(self) -> None:
         from polylogue.surfaces.payloads import (

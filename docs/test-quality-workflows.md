@@ -14,10 +14,10 @@ Current registry snapshot:
 - mutation campaigns: `19`
 - benchmark campaigns: `3`
 - synthetic benchmark campaigns: `7`
-- scenario projections: `244`
+- scenario projections: `245`
 - inferred corpus scenarios: `8`
   - benchmark-campaign: `3`
-  - exercise: `139`
+  - exercise: `140`
   - inferred-corpus-scenario: `8`
   - mutation-campaign: `19`
   - synthetic-benchmark: `7`
@@ -369,6 +369,7 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `exercise` | `help-stats` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | stats help |
 | `exercise` | `help-status` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | status help |
 | `exercise` | `help-tags` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | tags help |
+| `exercise` | `help-user-state` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | user-state help |
 | `exercise` | `json-doctor` | `message-fts-readiness-loop`<br>`retrieval-band-readiness-loop` | `message_fts`<br>`action_event_readiness`<br>`session_insight_readiness`<br>`retrieval_band_readiness`<br>`archive_readiness` | `cli.json-contract`<br>`project-archive-readiness` | — | `generated`<br>`json-contract`<br>`maintenance`<br>`readiness` | doctor JSON contract |
 | `exercise` | `json-doctor-action-event-preview` | `action-event-repair-loop` | `action_event_rows`<br>`action_event_fts`<br>`action_event_readiness` | `cli.json-contract`<br>`project-action-event-readiness` | — | `generated`<br>`json-contract`<br>`maintenance`<br>`action-events` | doctor JSON contract |
 | `exercise` | `json-doctor-session-insights-preview` | `session-insight-repair-loop` | `session_insight_rows`<br>`session_insight_fts`<br>`session_insight_readiness` | `cli.json-contract`<br>`project-session-insight-readiness` | — | `generated`<br>`json-contract`<br>`maintenance`<br>`session-insights` | doctor JSON contract |

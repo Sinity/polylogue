@@ -239,28 +239,112 @@ class RepositoryWriteMixin:
     # Marks
     # ------------------------------------------------------------------
 
-    async def add_mark(self, conversation_id: str, mark_type: str) -> bool:
-        """Add a mark to a conversation. Returns True if newly inserted."""
+    async def add_mark(
+        self,
+        conversation_id: str,
+        mark_type: str,
+        *,
+        target_type: str = "conversation",
+        target_id: str | None = None,
+        message_id: str | None = None,
+    ) -> bool:
+        """Add a mark to a conversation or message target. Returns True if newly inserted."""
         import datetime as _dt
 
         if mark_type not in ("star", "pin", "archive"):
             raise ValueError(f"invalid mark_type: {mark_type!r}")
+        resolved_target_id = target_id or (message_id if target_type == "message" else conversation_id)
+        if resolved_target_id is None:
+            raise ValueError("target_id is required for non-conversation marks")
         async with self._backend.connection() as conn:
             return await conversations_q.add_mark(
-                conn, conversation_id, mark_type, _dt.datetime.now(tz=_dt.timezone.utc).isoformat()
+                conn,
+                target_type=target_type,
+                target_id=resolved_target_id,
+                conversation_id=conversation_id,
+                message_id=message_id,
+                mark_type=mark_type,
+                created_at=_dt.datetime.now(tz=_dt.timezone.utc).isoformat(),
             )
 
-    async def remove_mark(self, conversation_id: str, mark_type: str) -> bool:
-        """Remove a mark from a conversation. Returns True if deleted."""
+    async def remove_mark(self, target_type: str, target_id: str, mark_type: str) -> bool:
+        """Remove a mark from a conversation or message target. Returns True if deleted."""
         async with self._backend.connection() as conn:
-            return await conversations_q.remove_mark(conn, conversation_id, mark_type)
+            return await conversations_q.remove_mark(conn, target_type, target_id, mark_type)
 
     async def list_marks(
-        self, *, mark_type: str | None = None, conversation_id: str | None = None
+        self,
+        *,
+        mark_type: str | None = None,
+        conversation_id: str | None = None,
+        target_type: str | None = None,
+        target_id: str | None = None,
+        message_id: str | None = None,
     ) -> list[dict[str, str]]:
-        """List marks, optionally filtered by type or conversation."""
+        """List marks, optionally filtered by type, target, conversation, or message."""
         async with self._backend.connection() as conn:
-            return await conversations_q.list_marks(conn, mark_type=mark_type, conversation_id=conversation_id)
+            return await conversations_q.list_marks(
+                conn,
+                mark_type=mark_type,
+                conversation_id=conversation_id,
+                target_type=target_type,
+                target_id=target_id,
+                message_id=message_id,
+            )
+
+    async def save_annotation(
+        self,
+        *,
+        annotation_id: str,
+        target_type: str,
+        target_id: str,
+        conversation_id: str,
+        note_text: str,
+        message_id: str | None = None,
+    ) -> bool:
+        """Insert or update an annotation. Returns True if newly inserted."""
+        import datetime as _dt
+
+        now = _dt.datetime.now(tz=_dt.timezone.utc).isoformat()
+        async with self._backend.connection() as conn:
+            return await conversations_q.save_annotation(
+                conn,
+                annotation_id=annotation_id,
+                target_type=target_type,
+                target_id=target_id,
+                conversation_id=conversation_id,
+                message_id=message_id,
+                note_text=note_text,
+                now=now,
+            )
+
+    async def get_annotation(self, annotation_id: str) -> dict[str, str] | None:
+        """Get an annotation by ID."""
+        async with self._backend.connection() as conn:
+            return await conversations_q.get_annotation(conn, annotation_id)
+
+    async def list_annotations(
+        self,
+        *,
+        conversation_id: str | None = None,
+        target_type: str | None = None,
+        target_id: str | None = None,
+        message_id: str | None = None,
+    ) -> list[dict[str, str]]:
+        """List annotations, optionally filtered by target, conversation, or message."""
+        async with self._backend.connection() as conn:
+            return await conversations_q.list_annotations(
+                conn,
+                conversation_id=conversation_id,
+                target_type=target_type,
+                target_id=target_id,
+                message_id=message_id,
+            )
+
+    async def delete_annotation(self, annotation_id: str) -> bool:
+        """Delete an annotation. Returns True if deleted."""
+        async with self._backend.connection() as conn:
+            return await conversations_q.delete_annotation(conn, annotation_id)
 
     # ------------------------------------------------------------------
     # Saved views

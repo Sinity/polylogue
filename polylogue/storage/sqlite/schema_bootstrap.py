@@ -94,6 +94,7 @@ class SchemaBootstrapDecision:
         "upgrade_v9_to_v10",
         "upgrade_v10_to_v11",
         "upgrade_v11_to_v12",
+        "upgrade_v12_to_v13",
         "version_mismatch",
     ]
     extension_plan: SchemaExtensionPlan | None = None
@@ -745,6 +746,8 @@ def schema_extension_snapshot_tables() -> tuple[str, ...]:
             table_names.setdefault(table_name, None)
     table_names.setdefault("action_events_fts", None)
     table_names.setdefault("conversations", None)
+    table_names.setdefault("user_marks", None)
+    table_names.setdefault("user_annotations", None)
     return tuple(table_names)
 
 
@@ -966,6 +969,7 @@ def build_v9_to_v10_upgrade_plan(snapshot: SchemaSnapshot) -> SchemaExtensionPla
         statements.extend(s for s in _split_ddl_into_statements(_PROVIDER_META_PROMOTION_ATTACHMENT_DDL) if s)
     if snapshot.has_table("attachment_refs"):
         statements.extend(s for s in _split_ddl_into_statements(_PROVIDER_META_PROMOTION_ATTACHMENT_REF_DDL) if s)
+    if snapshot.has_table("attachments") and snapshot.has_table("attachment_refs"):
         statements.extend(s for s in _split_ddl_into_statements(_PROVIDER_META_PROMOTION_ATTACHMENT_INDEXES_DDL) if s)
     return SchemaExtensionPlan(statements=tuple(statements), scripts=())
 
@@ -988,25 +992,75 @@ def build_v10_to_v11_upgrade_plan(snapshot: SchemaSnapshot) -> SchemaExtensionPl
 def build_v11_to_v12_upgrade_plan(snapshot: SchemaSnapshot) -> SchemaExtensionPlan:
     """Add cost/token attribution columns to messages and session_profiles."""
 
-    stmts: list[str] = [
-        "ALTER TABLE messages ADD COLUMN input_tokens INTEGER NOT NULL DEFAULT 0",
-        "ALTER TABLE messages ADD COLUMN output_tokens INTEGER NOT NULL DEFAULT 0",
-        "ALTER TABLE messages ADD COLUMN cache_read_tokens INTEGER NOT NULL DEFAULT 0",
-        "ALTER TABLE messages ADD COLUMN cache_write_tokens INTEGER NOT NULL DEFAULT 0",
-        "ALTER TABLE messages ADD COLUMN model_name TEXT",
-        "ALTER TABLE session_profiles ADD COLUMN total_input_tokens INTEGER NOT NULL DEFAULT 0",
-        "ALTER TABLE session_profiles ADD COLUMN total_output_tokens INTEGER NOT NULL DEFAULT 0",
-        "ALTER TABLE session_profiles ADD COLUMN total_cache_read_tokens INTEGER NOT NULL DEFAULT 0",
-        "ALTER TABLE session_profiles ADD COLUMN total_cache_write_tokens INTEGER NOT NULL DEFAULT 0",
-        "ALTER TABLE session_profiles ADD COLUMN total_credit_cost REAL NOT NULL DEFAULT 0.0",
-        "ALTER TABLE session_profiles ADD COLUMN cost_provenance TEXT NOT NULL DEFAULT 'unknown'",
-        "ALTER TABLE session_profiles ADD COLUMN per_model_cost_json TEXT NOT NULL DEFAULT '{}'",
-    ]
+    stmts: list[str] = []
+    if snapshot.has_table("messages"):
+        stmts.extend(
+            [
+                "ALTER TABLE messages ADD COLUMN input_tokens INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE messages ADD COLUMN output_tokens INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE messages ADD COLUMN cache_read_tokens INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE messages ADD COLUMN cache_write_tokens INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE messages ADD COLUMN model_name TEXT",
+            ]
+        )
+    if snapshot.has_table("session_profiles"):
+        stmts.extend(
+            [
+                "ALTER TABLE session_profiles ADD COLUMN total_input_tokens INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE session_profiles ADD COLUMN total_output_tokens INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE session_profiles ADD COLUMN total_cache_read_tokens INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE session_profiles ADD COLUMN total_cache_write_tokens INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE session_profiles ADD COLUMN total_credit_cost REAL NOT NULL DEFAULT 0.0",
+                "ALTER TABLE session_profiles ADD COLUMN cost_provenance TEXT NOT NULL DEFAULT 'unknown'",
+                "ALTER TABLE session_profiles ADD COLUMN per_model_cost_json TEXT NOT NULL DEFAULT '{}'",
+            ]
+        )
 
     return SchemaExtensionPlan(
         statements=tuple(stmts),
         scripts=(),
     )
+
+
+def build_v12_to_v13_upgrade_plan(snapshot: SchemaSnapshot) -> SchemaExtensionPlan:
+    """Promote user marks to target-aware rows and add annotations."""
+
+    from polylogue.storage.sqlite.schema_ddl_archive import USER_ANNOTATIONS_DDL, USER_MARKS_DDL
+
+    statements: list[str] = []
+    if snapshot.has_table("user_marks") and "target_type" not in snapshot.table_columns.get("user_marks", frozenset()):
+        statements.extend(
+            [
+                "ALTER TABLE user_marks RENAME TO user_marks_legacy",
+                *_split_ddl_into_statements(USER_MARKS_DDL),
+                """
+                INSERT OR IGNORE INTO user_marks (
+                    target_type,
+                    target_id,
+                    conversation_id,
+                    message_id,
+                    mark_type,
+                    created_at
+                )
+                SELECT
+                    'conversation',
+                    conversation_id,
+                    conversation_id,
+                    NULL,
+                    mark_type,
+                    created_at
+                FROM user_marks_legacy
+                """,
+                "DROP TABLE user_marks_legacy",
+            ]
+        )
+    elif not snapshot.has_table("user_marks"):
+        statements.extend(_split_ddl_into_statements(USER_MARKS_DDL))
+
+    if not snapshot.has_table("user_annotations"):
+        statements.extend(_split_ddl_into_statements(USER_ANNOTATIONS_DDL))
+
+    return SchemaExtensionPlan(statements=tuple(statements), scripts=())
 
 
 _DETECTION_WARNINGS_COLUMN_DDL = "ALTER TABLE raw_conversations ADD COLUMN detection_warnings TEXT"
@@ -1033,13 +1087,17 @@ def _upgrade_tail_statements(snapshot: SchemaSnapshot, *, from_version: int) -> 
         statements = (*statements, *build_v9_to_v10_upgrade_plan(snapshot).statements)
     if from_version < 11 <= SCHEMA_VERSION:
         statements = (*statements, *build_v10_to_v11_upgrade_plan(snapshot).statements)
+    if from_version < 12 <= SCHEMA_VERSION:
+        statements = (*statements, *build_v11_to_v12_upgrade_plan(snapshot).statements)
+    if from_version < 13 <= SCHEMA_VERSION:
+        statements = (*statements, *build_v12_to_v13_upgrade_plan(snapshot).statements)
     return statements
 
 
 def _has_version_upgrade_path(snapshot: SchemaSnapshot) -> bool:
     """Return True when a version-specific upgrade path exists for this snapshot."""
     v = snapshot.current_version
-    return (v == 2 and snapshot.has_table("messages")) or v in (3, 4, 5, 6, 7, 8, 9, 10, 11)
+    return (v == 2 and snapshot.has_table("messages")) or v in (3, 4, 5, 6, 7, 8, 9, 10, 11, 12)
 
 
 def decide_schema_bootstrap(snapshot: SchemaSnapshot) -> SchemaBootstrapDecision:
@@ -1117,30 +1175,53 @@ def decide_schema_bootstrap(snapshot: SchemaSnapshot) -> SchemaBootstrapDecision
         )
 
     if snapshot.current_version == 8 and SCHEMA_VERSION >= 9:
+        plan = build_v8_to_v9_upgrade_plan(snapshot)
+        extra_stmts = _upgrade_tail_statements(snapshot, from_version=9)
+        if extra_stmts:
+            plan = SchemaExtensionPlan(statements=(*plan.statements, *extra_stmts), scripts=())
         return SchemaBootstrapDecision(
             action="upgrade_v8_to_v9",
-            extension_plan=build_v8_to_v9_upgrade_plan(snapshot),
+            extension_plan=plan,
             current_version=snapshot.current_version,
         )
 
     if snapshot.current_version == 9 and SCHEMA_VERSION >= 10:
+        plan = build_v9_to_v10_upgrade_plan(snapshot)
+        extra_stmts = _upgrade_tail_statements(snapshot, from_version=10)
+        if extra_stmts:
+            plan = SchemaExtensionPlan(statements=(*plan.statements, *extra_stmts), scripts=())
         return SchemaBootstrapDecision(
             action="upgrade_v9_to_v10",
-            extension_plan=build_v9_to_v10_upgrade_plan(snapshot),
+            extension_plan=plan,
             current_version=snapshot.current_version,
         )
 
     if snapshot.current_version == 10 and SCHEMA_VERSION >= 11:
+        plan = build_v10_to_v11_upgrade_plan(snapshot)
+        extra_stmts = _upgrade_tail_statements(snapshot, from_version=11)
+        if extra_stmts:
+            plan = SchemaExtensionPlan(statements=(*plan.statements, *extra_stmts), scripts=())
         return SchemaBootstrapDecision(
             action="upgrade_v10_to_v11",
-            extension_plan=build_v10_to_v11_upgrade_plan(snapshot),
+            extension_plan=plan,
             current_version=snapshot.current_version,
         )
 
     if snapshot.current_version == 11 and SCHEMA_VERSION >= 12:
+        plan = build_v11_to_v12_upgrade_plan(snapshot)
+        extra_stmts = _upgrade_tail_statements(snapshot, from_version=12)
+        if extra_stmts:
+            plan = SchemaExtensionPlan(statements=(*plan.statements, *extra_stmts), scripts=())
         return SchemaBootstrapDecision(
             action="upgrade_v11_to_v12",
-            extension_plan=build_v11_to_v12_upgrade_plan(snapshot),
+            extension_plan=plan,
+            current_version=snapshot.current_version,
+        )
+
+    if snapshot.current_version == 12 and SCHEMA_VERSION >= 13:
+        return SchemaBootstrapDecision(
+            action="upgrade_v12_to_v13",
+            extension_plan=build_v12_to_v13_upgrade_plan(snapshot),
             current_version=snapshot.current_version,
         )
 
@@ -1295,6 +1376,7 @@ __all__ = [
     "build_v9_to_v10_upgrade_plan",
     "build_v10_to_v11_upgrade_plan",
     "build_v11_to_v12_upgrade_plan",
+    "build_v12_to_v13_upgrade_plan",
     "capture_schema_snapshot",
     "capture_schema_snapshot_async",
     "decide_schema_bootstrap",

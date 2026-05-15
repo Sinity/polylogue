@@ -63,12 +63,84 @@ def _default_saved_view_id(name: str, query_json: str) -> str:
     return f"view-{digest}"
 
 
+def _default_annotation_id(target_type: str, target_id: str, note_text: str) -> str:
+    digest = hashlib.sha256(f"{target_type}\0{target_id}\0{note_text}".encode()).hexdigest()[:16]
+    return f"annotation-{digest}"
+
+
+def dispatch_get(handler: Any, path: list[str], params: dict[str, list[str]]) -> bool:
+    if path == ["marks"]:
+        handler._handle_user_state(handle_list_marks, params)
+        return True
+    if path == ["annotations"]:
+        handler._handle_user_state(handle_list_annotations, params)
+        return True
+    if len(path) == 2 and path[0] == "annotations" and path[1]:
+        handler._handle_user_state(handle_get_annotation, path[1])
+        return True
+    if path == ["saved-views"]:
+        handler._handle_user_state(handle_list_saved_views)
+        return True
+    if len(path) == 2 and path[0] == "saved-views" and path[1]:
+        handler._handle_user_state(handle_get_saved_view, path[1])
+        return True
+    if path == ["recall-packs"]:
+        handler._handle_user_state(handle_list_recall_packs)
+        return True
+    if len(path) == 2 and path[0] == "recall-packs" and path[1]:
+        handler._handle_user_state(handle_get_recall_pack, path[1])
+        return True
+    return False
+
+
+def dispatch_post(handler: Any, path: list[str]) -> bool:
+    routes: dict[tuple[str, ...], Any] = {
+        ("marks",): handle_create_mark,
+        ("annotations",): handle_save_annotation,
+        ("saved-views",): handle_save_view,
+        ("recall-packs",): handle_save_recall_pack,
+    }
+    route = routes.get(tuple(path))
+    if route is None:
+        return False
+    handler._handle_user_state(route)
+    return True
+
+
+def dispatch_delete(handler: Any, path: list[str], params: dict[str, list[str]]) -> bool:
+    if path == ["marks"]:
+        handler._handle_user_state(handle_delete_mark, params)
+        return True
+    if len(path) == 2 and path[0] == "annotations" and path[1]:
+        handler._handle_user_state(handle_delete_annotation, path[1])
+        return True
+    if len(path) == 2 and path[0] == "saved-views" and path[1]:
+        handler._handle_user_state(handle_delete_saved_view, path[1])
+        return True
+    if len(path) == 2 and path[0] == "recall-packs" and path[1]:
+        handler._handle_user_state(handle_delete_recall_pack, path[1])
+        return True
+    return False
+
+
 def handle_list_marks(handler: Any, params: dict[str, list[str]]) -> None:
     mark_type = handler._get_param(params, "mark_type")
     conversation_id = handler._get_param(params, "conversation_id")
+    target_type = handler._get_param(params, "target_type")
+    target_id = handler._get_param(params, "target_id")
+    message_id = handler._get_param(params, "message_id")
 
     async def _list(poly: Any) -> list[dict[str, str]]:
-        return cast(list[dict[str, str]], await poly.list_marks(mark_type=mark_type, conversation_id=conversation_id))
+        return cast(
+            list[dict[str, str]],
+            await poly.list_marks(
+                mark_type=mark_type,
+                conversation_id=conversation_id,
+                target_type=target_type,
+                target_id=target_id,
+                message_id=message_id,
+            ),
+        )
 
     marks = cast(list[dict[str, str]], handler._sync_run(_list))
     handler._send_json(HTTPStatus.OK, {"items": marks, "total": len(marks)})
@@ -80,13 +152,29 @@ def handle_create_mark(handler: Any) -> None:
         return
     conversation_id = str(body.get("conversation_id") or "")
     mark_type = str(body.get("mark_type") or "")
+    target_type = str(body.get("target_type") or "conversation")
+    target_id = str(body.get("target_id") or "") or None
+    message_id = str(body.get("message_id") or "") or None
     if not conversation_id or mark_type not in {"star", "pin", "archive"}:
         handler._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
         return
 
     async def _create(poly: Any) -> dict[str, object]:
-        created = await poly.add_mark(conversation_id, mark_type)
-        return {"conversation_id": conversation_id, "mark_type": mark_type, "created": created}
+        created = await poly.add_mark(
+            conversation_id,
+            mark_type,
+            target_type=target_type,
+            target_id=target_id,
+            message_id=message_id,
+        )
+        return {
+            "target_type": target_type,
+            "target_id": target_id or message_id or conversation_id,
+            "conversation_id": conversation_id,
+            "message_id": message_id,
+            "mark_type": mark_type,
+            "created": created,
+        }
 
     result = cast(dict[str, object], handler._sync_run(_create))
     handler._send_json(HTTPStatus.CREATED if result["created"] else HTTPStatus.OK, result)
@@ -95,13 +183,104 @@ def handle_create_mark(handler: Any) -> None:
 def handle_delete_mark(handler: Any, params: dict[str, list[str]]) -> None:
     conversation_id = handler._get_param(params, "conversation_id")
     mark_type = handler._get_param(params, "mark_type")
+    target_type = handler._get_param(params, "target_type", "conversation")
+    target_id = handler._get_param(params, "target_id")
+    message_id = handler._get_param(params, "message_id")
     if not conversation_id or not mark_type:
         handler._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
         return
 
     async def _delete(poly: Any) -> dict[str, object]:
-        deleted = await poly.remove_mark(conversation_id, mark_type)
-        return {"conversation_id": conversation_id, "mark_type": mark_type, "deleted": deleted}
+        deleted = await poly.remove_mark(
+            conversation_id,
+            mark_type,
+            target_type=target_type or "conversation",
+            target_id=target_id,
+            message_id=message_id,
+        )
+        return {
+            "target_type": target_type or "conversation",
+            "target_id": target_id or message_id or conversation_id,
+            "conversation_id": conversation_id,
+            "message_id": message_id,
+            "mark_type": mark_type,
+            "deleted": deleted,
+        }
+
+    handler._send_json(HTTPStatus.OK, handler._sync_run(_delete))
+
+
+def handle_list_annotations(handler: Any, params: dict[str, list[str]]) -> None:
+    conversation_id = handler._get_param(params, "conversation_id")
+    target_type = handler._get_param(params, "target_type")
+    target_id = handler._get_param(params, "target_id")
+    message_id = handler._get_param(params, "message_id")
+
+    async def _list(poly: Any) -> list[dict[str, str]]:
+        return cast(
+            list[dict[str, str]],
+            await poly.list_annotations(
+                conversation_id=conversation_id,
+                target_type=target_type,
+                target_id=target_id,
+                message_id=message_id,
+            ),
+        )
+
+    annotations = cast(list[dict[str, str]], handler._sync_run(_list))
+    handler._send_json(HTTPStatus.OK, {"items": annotations, "total": len(annotations)})
+
+
+def handle_get_annotation(handler: Any, annotation_id: str) -> None:
+    async def _get(poly: Any) -> dict[str, str] | None:
+        return cast(dict[str, str] | None, await poly.get_annotation(annotation_id))
+
+    row = cast(dict[str, str] | None, handler._sync_run(_get))
+    if row is None:
+        handler._send_error(HTTPStatus.NOT_FOUND, "not_found")
+        return
+    handler._send_json(HTTPStatus.OK, row)
+
+
+def handle_save_annotation(handler: Any) -> None:
+    body = _read_json_body(handler)
+    if body is None:
+        return
+    conversation_id = str(body.get("conversation_id") or "")
+    target_type = str(body.get("target_type") or "conversation")
+    target_id = str(body.get("target_id") or "") or None
+    message_id = str(body.get("message_id") or "") or None
+    note_text = str(body.get("note_text") or "")
+    if not conversation_id or not note_text.strip():
+        handler._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
+        return
+    resolved_target_id = target_id or message_id or conversation_id
+    annotation_id = str(body.get("annotation_id") or _default_annotation_id(target_type, resolved_target_id, note_text))
+
+    async def _save(poly: Any) -> dict[str, object]:
+        created = await poly.save_annotation(
+            annotation_id,
+            conversation_id,
+            note_text,
+            target_type=target_type,
+            target_id=target_id,
+            message_id=message_id,
+        )
+        saved = await poly.get_annotation(annotation_id)
+        if saved is None:
+            return {"annotation_id": annotation_id, "created": created}
+        result: dict[str, object] = dict(saved)
+        result["created"] = created
+        return result
+
+    result = cast(dict[str, object], handler._sync_run(_save))
+    handler._send_json(HTTPStatus.CREATED if result["created"] else HTTPStatus.OK, result)
+
+
+def handle_delete_annotation(handler: Any, annotation_id: str) -> None:
+    async def _delete(poly: Any) -> dict[str, object]:
+        deleted = await poly.delete_annotation(annotation_id)
+        return {"annotation_id": annotation_id, "deleted": deleted}
 
     handler._send_json(HTTPStatus.OK, handler._sync_run(_delete))
 

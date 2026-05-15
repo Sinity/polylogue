@@ -214,6 +214,7 @@
     stats         Show statistics for matched conversations.
     status        Show daemon and archive status.
     tags          Manage conversation tags.
+    user-state    Manage durable reader user state.
   '''
 # ---
 # name: TestTerminalDimensions.test_help_at_narrow_width
@@ -424,6 +425,7 @@
     stats         Show statistics for matched conversations.
     status        Show daemon and archive status.
     tags          Manage conversation tags.
+    user-state    Manage durable reader user state.
   '''
 # ---
 # name: TestTerminalDimensions.test_help_at_wide_width
@@ -571,5 +573,6 @@
     stats         Show statistics for matched conversations.
     status        Show daemon and archive status.
     tags          Manage conversation tags.
+    user-state    Manage durable reader user state.
   '''
 # ---

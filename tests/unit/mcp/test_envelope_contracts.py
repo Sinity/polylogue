@@ -55,6 +55,7 @@ TOOL_CONTRACT: dict[str, ToolKind] = {
     # ------- mutation list -------
     "list_tags": "stats_map",  # RootModel[dict[tag, count]]; small, by design
     "list_marks": ("envelope", frozenset({"items", "total"})),
+    "list_annotations": ("envelope", frozenset({"items", "total"})),
     "list_saved_views": ("envelope", frozenset({"items", "total"})),
     # ------- single record -------
     "get_conversation": "single_object",
@@ -72,6 +73,8 @@ TOOL_CONTRACT: dict[str, ToolKind] = {
     "add_mark": "operation_result",
     "remove_tag": "operation_result",
     "remove_mark": "operation_result",
+    "save_annotation": "operation_result",
+    "delete_annotation": "operation_result",
     "bulk_tag_conversations": "operation_result",
     "save_saved_view": "operation_result",
     "delete_saved_view": "operation_result",

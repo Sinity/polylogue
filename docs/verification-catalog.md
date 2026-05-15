@@ -8,10 +8,10 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 
 ## Snapshot
 
-- subjects: `549`
+- subjects: `550`
 - claims: `41`
 - runner bindings: `41`
-- proof obligations: `605`
+- proof obligations: `608`
 
 ## Quality Checks
 
@@ -40,7 +40,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `assurance.coverage_gap` | 22 |
 | `assurance.coverage_item` | 104 |
 | `assurance.coverage_manifest` | 9 |
-| `cli.command` | 52 |
+| `cli.command` | 53 |
 | `cli.json_command` | 5 |
 | `diagnostic.observable` | 1 |
 | `error.surface` | 2 |
@@ -111,6 +111,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `polylogue stats` | `polylogue/cli/click_app.py` `polylogue stats` |
 | `polylogue status` | `polylogue/cli/click_app.py` `polylogue status` |
 | `polylogue tags` | `polylogue/cli/click_app.py` `polylogue tags` |
+| `polylogue user-state` | `polylogue/cli/click_app.py` `polylogue user-state` |
 
 ## Schema Annotation Subjects
 
@@ -286,10 +287,10 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `assurance.coverage.gap_has_closure_path` | 22 |
 | `assurance.coverage.item_declared` | 104 |
 | `assurance.coverage.manifest_structured` | 9 |
-| `cli.command.help` | 52 |
+| `cli.command.help` | 53 |
 | `cli.command.json_envelope` | 5 |
-| `cli.command.no_traceback` | 52 |
-| `cli.command.plain_mode` | 52 |
+| `cli.command.no_traceback` | 53 |
+| `cli.command.plain_mode` | 53 |
 | `diagnostic.observable_trace_mapping` | 1 |
 | `error.machine_user_context` | 2 |
 | `generated.scenario.family_registered` | 9 |

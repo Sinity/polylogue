@@ -539,6 +539,7 @@ class TestCliMetadata:
             "insights",
             "schema",
             "tags",
+            "user-state",
             "diagnostics",
             "maintenance",
             # Query verbs
