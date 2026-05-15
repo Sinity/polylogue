@@ -753,20 +753,20 @@ def _repair_changed_conversation_fts(
     if needs.messages:
         repair_message_fts_index_sync(conn, conversation_ids)
     if needs.actions:
-        if _action_fts_has_rows_for_conversations(conn, conversation_ids):
+        if _action_events_exist_for_conversations(conn, conversation_ids):
             repair_action_fts_index_sync(conn, conversation_ids)
         else:
             insert_missing_action_fts_index_sync(conn, conversation_ids)
 
 
-def _action_fts_has_rows_for_conversations(conn: sqlite3.Connection, conversation_ids: Sequence[str]) -> bool:
-    if not conversation_ids or not _table_exists(conn, "action_events_fts"):
+def _action_events_exist_for_conversations(conn: sqlite3.Connection, conversation_ids: Sequence[str]) -> bool:
+    if not conversation_ids or not _table_exists(conn, "action_events"):
         return False
     placeholders = ", ".join("?" for _ in conversation_ids)
     row = conn.execute(
         f"""
         SELECT 1
-        FROM action_events_fts
+        FROM action_events
         WHERE conversation_id IN ({placeholders})
         LIMIT 1
         """,
