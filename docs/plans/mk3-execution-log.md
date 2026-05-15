@@ -171,6 +171,32 @@ Resource rules:
 
 ## Execution Entries
 
+### 2026-05-15 - Health aggregation evidence
+
+Target:
+
+- #999 daemon health tier contract and aggregation evidence.
+
+Outcome:
+
+- Added a deterministic health aggregation contract test that patches the fast,
+  medium, and expensive tier runners, requests fast+medium, and asserts the
+  expensive tier is excluded while worst-severity aggregation and tier summary
+  counts are correct.
+- The test records `daemon.health.aggregate` evidence with requested tiers,
+  overall status, alert count, tier summary, severities, and
+  `expensive_tier_excluded`.
+
+Artifact example:
+
+- `.cache/verification/evidence/daemon.health.aggregate-*.json`
+
+Verification:
+
+- `pytest -q tests/unit/daemon/test_health_contracts.py`
+- `ruff check tests/unit/daemon/test_health_contracts.py`
+- `mypy --strict tests/unit/daemon/test_health_contracts.py`
+
 ### 2026-05-15 - Notification dispatch evidence
 
 Target:
