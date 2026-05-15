@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import difflib
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 from devtools import repo_root as _get_root
@@ -16,7 +18,7 @@ from polylogue.showcase.qa_runner_workflow import run_qa_session
 from polylogue.showcase.qa_session_payload import generate_qa_session
 from polylogue.showcase.showcase_runner_support import run_exercise
 
-_SCENARIO_NAMES = ("archive-smoke",)
+_SCENARIO_NAMES = ("archive-smoke", "reader-visual-smoke")
 BASELINE_DIR = _get_root() / "tests" / "baselines" / "showcase"
 TIER_0_GROUPS = frozenset({"structural"})
 _ENV_DEPENDENT: frozenset[str] = frozenset({"version"})
@@ -149,27 +151,68 @@ def _build_parser() -> argparse.ArgumentParser:
 def list_scenarios(*, as_json: bool) -> int:
     """List available showcase scenarios with their tier-0 exercise inventory."""
     tier_0 = get_tier_0_exercises()
-    payload = {
-        "scenarios": [
-            {
-                "name": name,
-                "tier_0_exercise_count": len(tier_0),
-                "baseline_dir": str(BASELINE_DIR.relative_to(BASELINE_DIR.parent.parent.parent))
-                if BASELINE_DIR.exists()
-                else None,
-                "baselines_committed": len(list(BASELINE_DIR.glob("*.txt"))) if BASELINE_DIR.exists() else 0,
-            }
-            for name in _SCENARIO_NAMES
-        ]
-    }
+    scenarios: list[dict[str, object]] = [
+        {
+            "name": "archive-smoke",
+            "kind": "showcase",
+            "tier_0_exercise_count": len(tier_0),
+            "baseline_dir": str(BASELINE_DIR.relative_to(BASELINE_DIR.parent.parent.parent))
+            if BASELINE_DIR.exists()
+            else None,
+            "baselines_committed": len(list(BASELINE_DIR.glob("*.txt"))) if BASELINE_DIR.exists() else 0,
+        },
+        {
+            "name": "reader-visual-smoke",
+            "kind": "reader-visual",
+            "command": f"{sys.executable} -m pytest -q tests/visual",
+            "baseline_dir": None,
+            "baselines_committed": 0,
+        },
+    ]
+    payload = {"scenarios": scenarios}
     if as_json:
         print(json.dumps(payload, indent=2))
         return 0
-    for entry in payload["scenarios"]:
-        print(f"{entry['name']:<20s}  tier-0 exercises: {entry['tier_0_exercise_count']}")
+    for entry in scenarios:
+        name = str(entry["name"])
+        if name == "reader-visual-smoke":
+            print(f"{name:<20s}  command: {entry['command']}")
+            continue
+        print(f"{name:<20s}  tier-0 exercises: {entry['tier_0_exercise_count']}")
         if entry["baselines_committed"]:
             print(f"  baselines: {entry['baselines_committed']} ({entry['baseline_dir']})")
     return 0
+
+
+def run_reader_visual_smoke(*, report_dir: Path | None, as_json: bool) -> int:
+    """Run the daemon reader visual/DOM smoke lane."""
+    command = [sys.executable, "-m", "pytest", "-q", "tests/visual"]
+    result = subprocess.run(
+        command,
+        cwd=_get_root(),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    payload: dict[str, object] = {
+        "scenario": "reader-visual-smoke",
+        "command": command,
+        "exit_code": result.returncode,
+        "stdout": result.stdout,
+        "stderr": result.stderr,
+    }
+    if report_dir is not None:
+        report_dir.mkdir(parents=True, exist_ok=True)
+        (report_dir / "reader-visual-smoke.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    if as_json:
+        print(json.dumps(payload, indent=2))
+    else:
+        print("Running reader visual DOM smoke...")
+        if result.stdout:
+            print(result.stdout, end="" if result.stdout.endswith("\n") else "\n")
+        if result.stderr:
+            print(result.stderr, end="" if result.stderr.endswith("\n") else "\n")
+    return result.returncode
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -181,6 +224,8 @@ def main(argv: list[str] | None = None) -> int:
         return list_scenarios(as_json=bool(args.json))
     if args.action != "run":
         parser.error(f"unknown action: {args.action}")
+    if args.scenario == "reader-visual-smoke":
+        return run_reader_visual_smoke(report_dir=args.report_dir, as_json=bool(args.json))
     request = build_qa_session_request(
         synthetic=not bool(args.live),
         source_names=None,

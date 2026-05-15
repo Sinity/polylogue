@@ -17,6 +17,7 @@ def test_lab_scenario_list_human(capsys: pytest.CaptureFixture[str]) -> None:
     captured = capsys.readouterr()
     assert rc == 0
     assert "archive-smoke" in captured.out
+    assert "reader-visual-smoke" in captured.out
 
 
 def test_lab_scenario_list_json(capsys: pytest.CaptureFixture[str]) -> None:
@@ -27,6 +28,7 @@ def test_lab_scenario_list_json(capsys: pytest.CaptureFixture[str]) -> None:
     assert isinstance(payload, dict)
     assert "scenarios" in payload
     assert any(entry["name"] == "archive-smoke" for entry in payload["scenarios"])
+    assert any(entry["name"] == "reader-visual-smoke" for entry in payload["scenarios"])
 
 
 def test_lab_corpus_list_human(capsys: pytest.CaptureFixture[str]) -> None:
