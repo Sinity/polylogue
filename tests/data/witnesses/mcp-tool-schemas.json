@@ -10,6 +10,35 @@
         "mark_type": {
           "title": "Mark Type",
           "type": "string"
+        },
+        "message_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Message Id"
+        },
+        "target_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Target Id"
+        },
+        "target_type": {
+          "default": "conversation",
+          "title": "Target Type",
+          "type": "string"
         }
       },
       "required": [
@@ -338,6 +367,22 @@
         }
       },
       "title": "day_session_summariesArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "delete_annotation",
+    "parameters": {
+      "properties": {
+        "annotation_id": {
+          "title": "Annotation Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "annotation_id"
+      ],
+      "title": "delete_annotationArguments",
       "type": "object"
     }
   },
@@ -859,6 +904,63 @@
     }
   },
   {
+    "name": "list_annotations",
+    "parameters": {
+      "properties": {
+        "conversation_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Conversation Id"
+        },
+        "message_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Message Id"
+        },
+        "target_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Target Id"
+        },
+        "target_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Target Type"
+        }
+      },
+      "title": "list_annotationsArguments",
+      "type": "object"
+    }
+  },
+  {
     "name": "list_conversations",
     "parameters": {
       "properties": {
@@ -1303,6 +1405,42 @@
           ],
           "default": null,
           "title": "Mark Type"
+        },
+        "message_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Message Id"
+        },
+        "target_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Target Id"
+        },
+        "target_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Target Type"
         }
       },
       "title": "list_marksArguments",
@@ -1506,6 +1644,35 @@
         "mark_type": {
           "title": "Mark Type",
           "type": "string"
+        },
+        "message_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Message Id"
+        },
+        "target_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Target Id"
+        },
+        "target_type": {
+          "default": "conversation",
+          "title": "Target Type",
+          "type": "string"
         }
       },
       "required": [
@@ -1534,6 +1701,61 @@
         "tag"
       ],
       "title": "remove_tagArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "save_annotation",
+    "parameters": {
+      "properties": {
+        "annotation_id": {
+          "title": "Annotation Id",
+          "type": "string"
+        },
+        "conversation_id": {
+          "title": "Conversation Id",
+          "type": "string"
+        },
+        "message_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Message Id"
+        },
+        "note_text": {
+          "title": "Note Text",
+          "type": "string"
+        },
+        "target_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Target Id"
+        },
+        "target_type": {
+          "default": "conversation",
+          "title": "Target Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "annotation_id",
+        "conversation_id",
+        "note_text"
+      ],
+      "title": "save_annotationArguments",
       "type": "object"
     }
   },

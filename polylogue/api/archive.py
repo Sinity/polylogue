@@ -577,35 +577,178 @@ class PolylogueArchiveMixin:
     # Marks
     # ------------------------------------------------------------------
 
-    async def add_mark(self, conversation_id: str, mark_type: str) -> bool:
-        """Add a mark (star/pin/archive) to a conversation.
+    async def _resolve_user_state_target(
+        self,
+        conversation_id: str,
+        *,
+        target_type: str = "conversation",
+        target_id: str | None = None,
+        message_id: str | None = None,
+    ) -> dict[str, str | None]:
+        resolved = await self.repository.resolve_id(conversation_id, strict=True)
+        if resolved is None:
+            raise ConversationNotFoundError(conversation_id)
+        resolved_conversation_id = str(resolved)
+        if target_type == "conversation":
+            return {
+                "target_type": "conversation",
+                "target_id": resolved_conversation_id,
+                "conversation_id": resolved_conversation_id,
+                "message_id": None,
+            }
+        if target_type != "message":
+            raise ValueError("target_type must be one of: conversation, message")
+        resolved_message_id = message_id or target_id
+        if not resolved_message_id:
+            raise ValueError("message target requires message_id or target_id")
+        messages = await self.repository.get_messages(resolved_conversation_id)
+        if not any(str(message.message_id) == resolved_message_id for message in messages):
+            raise ValueError(f"message {resolved_message_id!r} is not in conversation {resolved_conversation_id!r}")
+        return {
+            "target_type": "message",
+            "target_id": resolved_message_id,
+            "conversation_id": resolved_conversation_id,
+            "message_id": resolved_message_id,
+        }
+
+    async def add_mark(
+        self,
+        conversation_id: str,
+        mark_type: str,
+        *,
+        target_type: str = "conversation",
+        target_id: str | None = None,
+        message_id: str | None = None,
+    ) -> bool:
+        """Add a mark (star/pin/archive) to a conversation or message.
 
         Returns ``True`` if the mark was newly added, ``False`` if it already
         existed.
         """
-        resolved = await self.repository.resolve_id(conversation_id, strict=True)
-        if resolved is None:
-            raise ConversationNotFoundError(conversation_id)
+        target = await self._resolve_user_state_target(
+            conversation_id,
+            target_type=target_type,
+            target_id=target_id,
+            message_id=message_id,
+        )
         from polylogue.storage.repository.archive.repository_writes import RepositoryWriteMixin
 
         store: RepositoryWriteMixin = self.repository
-        return await store.add_mark(str(resolved), mark_type)
+        return await store.add_mark(
+            str(target["conversation_id"]),
+            mark_type,
+            target_type=str(target["target_type"]),
+            target_id=str(target["target_id"]),
+            message_id=target["message_id"],
+        )
 
-    async def remove_mark(self, conversation_id: str, mark_type: str) -> bool:
-        """Remove a mark from a conversation. Returns ``True`` if removed."""
+    async def remove_mark(
+        self,
+        conversation_id: str,
+        mark_type: str,
+        *,
+        target_type: str = "conversation",
+        target_id: str | None = None,
+        message_id: str | None = None,
+    ) -> bool:
+        """Remove a mark from a conversation or message. Returns ``True`` if removed."""
+        target = await self._resolve_user_state_target(
+            conversation_id,
+            target_type=target_type,
+            target_id=target_id,
+            message_id=message_id,
+        )
         from polylogue.storage.repository.archive.repository_writes import RepositoryWriteMixin
 
         store: RepositoryWriteMixin = self.repository
-        return await store.remove_mark(conversation_id, mark_type)
+        return await store.remove_mark(str(target["target_type"]), str(target["target_id"]), mark_type)
 
     async def list_marks(
-        self, *, mark_type: str | None = None, conversation_id: str | None = None
+        self,
+        *,
+        mark_type: str | None = None,
+        conversation_id: str | None = None,
+        target_type: str | None = None,
+        target_id: str | None = None,
+        message_id: str | None = None,
     ) -> list[dict[str, str]]:
-        """List marks, optionally filtered by type or conversation."""
+        """List marks, optionally filtered by type, target, conversation, or message."""
         from polylogue.storage.repository.archive.repository_writes import RepositoryWriteMixin
 
         store: RepositoryWriteMixin = self.repository
-        return await store.list_marks(mark_type=mark_type, conversation_id=conversation_id)
+        return await store.list_marks(
+            mark_type=mark_type,
+            conversation_id=conversation_id,
+            target_type=target_type,
+            target_id=target_id,
+            message_id=message_id,
+        )
+
+    async def save_annotation(
+        self,
+        annotation_id: str,
+        conversation_id: str,
+        note_text: str,
+        *,
+        target_type: str = "conversation",
+        target_id: str | None = None,
+        message_id: str | None = None,
+    ) -> bool:
+        """Create or update an annotation. Returns ``True`` if newly created."""
+        if not annotation_id.strip():
+            raise ValueError("annotation_id must not be empty")
+        if not note_text.strip():
+            raise ValueError("note_text must not be empty")
+        target = await self._resolve_user_state_target(
+            conversation_id,
+            target_type=target_type,
+            target_id=target_id,
+            message_id=message_id,
+        )
+        from polylogue.storage.repository.archive.repository_writes import RepositoryWriteMixin
+
+        store: RepositoryWriteMixin = self.repository
+        return await store.save_annotation(
+            annotation_id=annotation_id,
+            target_type=str(target["target_type"]),
+            target_id=str(target["target_id"]),
+            conversation_id=str(target["conversation_id"]),
+            message_id=target["message_id"],
+            note_text=note_text,
+        )
+
+    async def get_annotation(self, annotation_id: str) -> dict[str, str] | None:
+        """Get an annotation by ID."""
+        from polylogue.storage.repository.archive.repository_writes import RepositoryWriteMixin
+
+        store: RepositoryWriteMixin = self.repository
+        return await store.get_annotation(annotation_id)
+
+    async def list_annotations(
+        self,
+        *,
+        conversation_id: str | None = None,
+        target_type: str | None = None,
+        target_id: str | None = None,
+        message_id: str | None = None,
+    ) -> list[dict[str, str]]:
+        """List annotations, optionally filtered by target, conversation, or message."""
+        from polylogue.storage.repository.archive.repository_writes import RepositoryWriteMixin
+
+        store: RepositoryWriteMixin = self.repository
+        return await store.list_annotations(
+            conversation_id=conversation_id,
+            target_type=target_type,
+            target_id=target_id,
+            message_id=message_id,
+        )
+
+    async def delete_annotation(self, annotation_id: str) -> bool:
+        """Delete an annotation. Returns ``True`` if deleted."""
+        from polylogue.storage.repository.archive.repository_writes import RepositoryWriteMixin
+
+        store: RepositoryWriteMixin = self.repository
+        return await store.delete_annotation(annotation_id)
 
     # ------------------------------------------------------------------
     # Saved views

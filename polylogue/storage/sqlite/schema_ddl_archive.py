@@ -330,19 +330,60 @@ BLOB_LEASE_DDL = """
 """
 
 # ---------------------------------------------------------------------------
-# User marks — per-conversation mark types (star, pin, archive)
+# User state — target-aware marks and annotations
 # ---------------------------------------------------------------------------
 
 USER_MARKS_DDL = """
         CREATE TABLE IF NOT EXISTS user_marks (
+            target_type     TEXT NOT NULL CHECK (target_type IN ('conversation', 'message')),
+            target_id       TEXT NOT NULL,
             conversation_id TEXT NOT NULL REFERENCES conversations(conversation_id) ON DELETE CASCADE,
+            message_id      TEXT REFERENCES messages(message_id) ON DELETE CASCADE,
             mark_type       TEXT NOT NULL CHECK (mark_type IN ('star', 'pin', 'archive')),
             created_at      TEXT NOT NULL,
-            PRIMARY KEY (conversation_id, mark_type)
+            PRIMARY KEY (target_type, target_id, mark_type),
+            CHECK (
+                (target_type = 'conversation' AND target_id = conversation_id AND message_id IS NULL)
+                OR
+                (target_type = 'message' AND message_id IS NOT NULL AND target_id = message_id)
+            )
         );
 
         CREATE INDEX IF NOT EXISTS idx_user_marks_type
             ON user_marks(mark_type);
+
+        CREATE INDEX IF NOT EXISTS idx_user_marks_conversation
+            ON user_marks(conversation_id);
+
+        CREATE INDEX IF NOT EXISTS idx_user_marks_message
+            ON user_marks(message_id);
+"""
+
+USER_ANNOTATIONS_DDL = """
+        CREATE TABLE IF NOT EXISTS user_annotations (
+            annotation_id   TEXT PRIMARY KEY,
+            target_type     TEXT NOT NULL CHECK (target_type IN ('conversation', 'message')),
+            target_id       TEXT NOT NULL,
+            conversation_id TEXT NOT NULL REFERENCES conversations(conversation_id) ON DELETE CASCADE,
+            message_id      TEXT REFERENCES messages(message_id) ON DELETE CASCADE,
+            note_text       TEXT NOT NULL,
+            created_at      TEXT NOT NULL,
+            updated_at      TEXT NOT NULL,
+            CHECK (
+                (target_type = 'conversation' AND target_id = conversation_id AND message_id IS NULL)
+                OR
+                (target_type = 'message' AND message_id IS NOT NULL AND target_id = message_id)
+            )
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_user_annotations_target
+            ON user_annotations(target_type, target_id);
+
+        CREATE INDEX IF NOT EXISTS idx_user_annotations_conversation
+            ON user_annotations(conversation_id);
+
+        CREATE INDEX IF NOT EXISTS idx_user_annotations_message
+            ON user_annotations(message_id);
 """
 
 # ---------------------------------------------------------------------------
@@ -381,5 +422,6 @@ __all__ = [
     "RECALL_PACKS_DDL",
     "SAVED_VIEWS_DDL",
     "TAGS_M2M_DDL",
+    "USER_ANNOTATIONS_DDL",
     "USER_MARKS_DDL",
 ]

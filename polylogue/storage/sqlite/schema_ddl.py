@@ -30,6 +30,9 @@ from polylogue.storage.sqlite.schema_ddl_archive import (
     TAGS_M2M_DDL as _TAGS_M2M_DDL,
 )
 from polylogue.storage.sqlite.schema_ddl_archive import (
+    USER_ANNOTATIONS_DDL as _USER_ANNOTATIONS_DDL,
+)
+from polylogue.storage.sqlite.schema_ddl_archive import (
     USER_MARKS_DDL as _USER_MARKS_DDL,
 )
 from polylogue.storage.sqlite.schema_ddl_aux import (
@@ -57,7 +60,7 @@ from polylogue.storage.sqlite.schema_ddl_provider_events import (
     PROVIDER_EVENT_DDL as _PROVIDER_EVENT_DDL,
 )
 
-SCHEMA_VERSION = 12  # 2026-05-08: messages + session_profiles cost/token columns (#944)
+SCHEMA_VERSION = 13  # 2026-05-15: target-aware user marks and annotations (#867)
 
 
 # Complete target schema applied to fresh databases.
@@ -73,6 +76,7 @@ SCHEMA_DDL += "\n\n" + _PROVIDER_EVENT_DDL
 SCHEMA_DDL += "\n\n" + _ACTION_EVENT_DDL
 SCHEMA_DDL += _ACTION_FTS_DDL
 SCHEMA_DDL += "\n\n" + _USER_MARKS_DDL
+SCHEMA_DDL += "\n\n" + _USER_ANNOTATIONS_DDL
 SCHEMA_DDL += "\n\n" + _SAVED_VIEWS_DDL
 SCHEMA_DDL += "\n\n" + _RECALL_PACKS_DDL
 
@@ -97,6 +101,7 @@ __all__ = [
     "_RECALL_PACKS_DDL",
     "_SAVED_VIEWS_DDL",
     "_TAGS_M2M_DDL",
+    "_USER_ANNOTATIONS_DDL",
     "_USER_MARKS_DDL",
     "_VEC0_DDL",
 ]

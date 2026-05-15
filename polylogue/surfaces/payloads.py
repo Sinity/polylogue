@@ -172,10 +172,7 @@ def reader_conversation_actions() -> dict[str, ReaderActionAvailabilityPayload]:
     return {
         "open": ReaderActionAvailabilityPayload(enabled=True),
         "copy_link": ReaderActionAvailabilityPayload(enabled=True),
-        "annotate": ReaderActionAvailabilityPayload(
-            enabled=False,
-            disabled_reason="annotations_not_implemented",
-        ),
+        "annotate": ReaderActionAvailabilityPayload(enabled=True),
     }
 
 
@@ -184,10 +181,7 @@ def reader_message_actions() -> dict[str, ReaderActionAvailabilityPayload]:
     return {
         "copy_text": ReaderActionAvailabilityPayload(enabled=True),
         "copy_link": ReaderActionAvailabilityPayload(enabled=True),
-        "annotate": ReaderActionAvailabilityPayload(
-            enabled=False,
-            disabled_reason="annotations_not_implemented",
-        ),
+        "annotate": ReaderActionAvailabilityPayload(enabled=True),
     }
 
 

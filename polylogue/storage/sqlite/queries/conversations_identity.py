@@ -179,21 +179,40 @@ async def list_tags(conn: aiosqlite.Connection, *, provider: str | None = None) 
 # ---------------------------------------------------------------------------
 
 
-async def add_mark(conn: aiosqlite.Connection, conversation_id: str, mark_type: str, created_at: str) -> bool:
-    """Add a mark to a conversation. Returns True if newly inserted."""
+async def add_mark(
+    conn: aiosqlite.Connection,
+    *,
+    target_type: str,
+    target_id: str,
+    conversation_id: str,
+    mark_type: str,
+    created_at: str,
+    message_id: str | None = None,
+) -> bool:
+    """Add a mark to a target. Returns True if newly inserted."""
     cursor = await conn.execute(
-        "INSERT OR IGNORE INTO user_marks (conversation_id, mark_type, created_at) VALUES (?, ?, ?)",
-        (conversation_id, mark_type, created_at),
+        """
+        INSERT OR IGNORE INTO user_marks (
+            target_type,
+            target_id,
+            conversation_id,
+            message_id,
+            mark_type,
+            created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (target_type, target_id, conversation_id, message_id, mark_type, created_at),
     )
     await conn.commit()
     return cursor.rowcount > 0
 
 
-async def remove_mark(conn: aiosqlite.Connection, conversation_id: str, mark_type: str) -> bool:
-    """Remove a mark from a conversation. Returns True if something was deleted."""
+async def remove_mark(conn: aiosqlite.Connection, target_type: str, target_id: str, mark_type: str) -> bool:
+    """Remove a mark from a target. Returns True if something was deleted."""
     cursor = await conn.execute(
-        "DELETE FROM user_marks WHERE conversation_id = ? AND mark_type = ?",
-        (conversation_id, mark_type),
+        "DELETE FROM user_marks WHERE target_type = ? AND target_id = ? AND mark_type = ?",
+        (target_type, target_id, mark_type),
     )
     await conn.commit()
     return cursor.rowcount > 0
@@ -204,8 +223,11 @@ async def list_marks(
     *,
     mark_type: str | None = None,
     conversation_id: str | None = None,
+    target_type: str | None = None,
+    target_id: str | None = None,
+    message_id: str | None = None,
 ) -> list[dict[str, str]]:
-    """List marks, optionally filtered by type and/or conversation."""
+    """List marks, optionally filtered by type, target, conversation, or message."""
     where: list[str] = []
     params: list[str] = []
     if mark_type:
@@ -214,16 +236,147 @@ async def list_marks(
     if conversation_id:
         where.append("conversation_id = ?")
         params.append(conversation_id)
-    sql = "SELECT conversation_id, mark_type, created_at FROM user_marks"
+    if target_type:
+        where.append("target_type = ?")
+        params.append(target_type)
+    if target_id:
+        where.append("target_id = ?")
+        params.append(target_id)
+    if message_id:
+        where.append("message_id = ?")
+        params.append(message_id)
+    sql = "SELECT target_type, target_id, conversation_id, message_id, mark_type, created_at FROM user_marks"
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY created_at DESC"
     cursor = await conn.execute(sql, tuple(params))
     rows = await cursor.fetchall()
     return [
-        {"conversation_id": r["conversation_id"], "mark_type": r["mark_type"], "created_at": r["created_at"]}
+        {
+            "target_type": r["target_type"],
+            "target_id": r["target_id"],
+            "conversation_id": r["conversation_id"],
+            "message_id": r["message_id"] or "",
+            "mark_type": r["mark_type"],
+            "created_at": r["created_at"],
+        }
         for r in rows
     ]
+
+
+# ---------------------------------------------------------------------------
+# User annotations
+# ---------------------------------------------------------------------------
+
+
+async def save_annotation(
+    conn: aiosqlite.Connection,
+    *,
+    annotation_id: str,
+    target_type: str,
+    target_id: str,
+    conversation_id: str,
+    note_text: str,
+    now: str,
+    message_id: str | None = None,
+) -> bool:
+    """Insert or update an annotation. Returns True if inserted."""
+    cursor = await conn.execute("SELECT 1 FROM user_annotations WHERE annotation_id = ?", (annotation_id,))
+    exists = await cursor.fetchone() is not None
+    await conn.execute(
+        """
+        INSERT INTO user_annotations (
+            annotation_id,
+            target_type,
+            target_id,
+            conversation_id,
+            message_id,
+            note_text,
+            created_at,
+            updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(annotation_id) DO UPDATE SET
+            target_type = excluded.target_type,
+            target_id = excluded.target_id,
+            conversation_id = excluded.conversation_id,
+            message_id = excluded.message_id,
+            note_text = excluded.note_text,
+            updated_at = excluded.updated_at
+        """,
+        (annotation_id, target_type, target_id, conversation_id, message_id, note_text, now, now),
+    )
+    await conn.commit()
+    return not exists
+
+
+async def get_annotation(conn: aiosqlite.Connection, annotation_id: str) -> dict[str, str] | None:
+    """Get an annotation by ID."""
+    cursor = await conn.execute(
+        """
+        SELECT annotation_id, target_type, target_id, conversation_id, message_id, note_text, created_at, updated_at
+        FROM user_annotations
+        WHERE annotation_id = ?
+        """,
+        (annotation_id,),
+    )
+    row = await cursor.fetchone()
+    return _annotation_row(row) if row is not None else None
+
+
+async def list_annotations(
+    conn: aiosqlite.Connection,
+    *,
+    conversation_id: str | None = None,
+    target_type: str | None = None,
+    target_id: str | None = None,
+    message_id: str | None = None,
+) -> list[dict[str, str]]:
+    """List annotations, optionally filtered by target, conversation, or message."""
+    where: list[str] = []
+    params: list[str] = []
+    if conversation_id:
+        where.append("conversation_id = ?")
+        params.append(conversation_id)
+    if target_type:
+        where.append("target_type = ?")
+        params.append(target_type)
+    if target_id:
+        where.append("target_id = ?")
+        params.append(target_id)
+    if message_id:
+        where.append("message_id = ?")
+        params.append(message_id)
+    sql = (
+        "SELECT annotation_id, target_type, target_id, conversation_id, message_id, note_text, created_at, updated_at "
+        "FROM user_annotations"
+    )
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY updated_at DESC"
+    cursor = await conn.execute(sql, tuple(params))
+    rows = await cursor.fetchall()
+    return [_annotation_row(row) for row in rows]
+
+
+async def delete_annotation(conn: aiosqlite.Connection, annotation_id: str) -> bool:
+    """Delete an annotation. Returns True if something was deleted."""
+    cursor = await conn.execute("DELETE FROM user_annotations WHERE annotation_id = ?", (annotation_id,))
+    await conn.commit()
+    return cursor.rowcount > 0
+
+
+def _annotation_row(row: aiosqlite.Row) -> dict[str, str]:
+    return {
+        "annotation_id": row["annotation_id"],
+        "target_type": row["target_type"],
+        "target_id": row["target_id"],
+        "conversation_id": row["conversation_id"],
+        "message_id": row["message_id"] or "",
+        "note_text": row["note_text"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -380,8 +533,10 @@ __all__ = [
     "add_mark",
     "conversation_id_query",
     "count_conversation_ids",
+    "delete_annotation",
     "delete_recall_pack",
     "delete_view",
+    "get_annotation",
     "get_last_sync_timestamp",
     "get_metadata",
     "get_recall_pack",
@@ -389,10 +544,12 @@ __all__ = [
     "get_view_by_name",
     "iter_conversation_ids",
     "list_marks",
+    "list_annotations",
     "list_recall_packs",
     "list_tags",
     "list_views",
     "remove_mark",
+    "save_annotation",
     "resolve_id",
     "save_recall_pack",
     "save_view",

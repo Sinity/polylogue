@@ -341,6 +341,10 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             self._handle_facets(params)
         elif path == ["api", "user", "marks"]:
             self._handle_user_state(user_state_http.handle_list_marks, params)
+        elif path == ["api", "user", "annotations"]:
+            self._handle_user_state(user_state_http.handle_list_annotations, params)
+        elif len(path) == 4 and path[:3] == ["api", "user", "annotations"] and path[3]:
+            self._handle_user_state(user_state_http.handle_get_annotation, path[3])
         elif path == ["api", "user", "saved-views"]:
             self._handle_user_state(user_state_http.handle_list_saved_views)
         elif len(path) == 4 and path[:3] == ["api", "user", "saved-views"] and path[3]:
@@ -403,6 +407,9 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         if path == ["api", "user", "marks"]:
             self._handle_user_state(user_state_http.handle_create_mark)
             return
+        if path == ["api", "user", "annotations"]:
+            self._handle_user_state(user_state_http.handle_save_annotation)
+            return
         if path == ["api", "user", "saved-views"]:
             self._handle_user_state(user_state_http.handle_save_view)
             return
@@ -421,6 +428,9 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
         if path == ["api", "user", "marks"]:
             self._handle_user_state(user_state_http.handle_delete_mark, params)
+            return
+        if len(path) == 4 and path[:3] == ["api", "user", "annotations"] and path[3]:
+            self._handle_user_state(user_state_http.handle_delete_annotation, path[3])
             return
         if len(path) == 4 and path[:3] == ["api", "user", "saved-views"] and path[3]:
             self._handle_user_state(user_state_http.handle_delete_saved_view, path[3])

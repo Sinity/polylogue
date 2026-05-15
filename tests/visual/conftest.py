@@ -135,6 +135,7 @@ def seed_reader_archive(
         ARCHIVE_STORAGE_DDL,
         MESSAGE_FTS_DDL,
         SAVED_VIEWS_DDL,
+        USER_ANNOTATIONS_DDL,
         USER_MARKS_DDL,
     )
 
@@ -145,6 +146,7 @@ def seed_reader_archive(
     conn = sqlite3.connect(str(db))
     conn.executescript(ARCHIVE_STORAGE_DDL)
     conn.executescript(USER_MARKS_DDL)
+    conn.executescript(USER_ANNOTATIONS_DDL)
     conn.executescript(SAVED_VIEWS_DDL)
     if message_fts:
         conn.executescript(MESSAGE_FTS_DDL)
@@ -230,12 +232,18 @@ def seed_reader_archive(
                     ),
                 )
         conn.execute(
-            "INSERT INTO user_marks(conversation_id, mark_type, created_at) VALUES (?, ?, ?)",
-            ("reader-c1", "star", "2026-05-15T00:00:00+00:00"),
+            """
+            INSERT INTO user_marks(target_type, target_id, conversation_id, message_id, mark_type, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            ("conversation", "reader-c1", "reader-c1", None, "star", "2026-05-15T00:00:00+00:00"),
         )
         conn.execute(
-            "INSERT INTO user_marks(conversation_id, mark_type, created_at) VALUES (?, ?, ?)",
-            ("reader-c1", "pin", "2026-05-15T00:01:00+00:00"),
+            """
+            INSERT INTO user_marks(target_type, target_id, conversation_id, message_id, mark_type, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            ("conversation", "reader-c1", "reader-c1", None, "pin", "2026-05-15T00:01:00+00:00"),
         )
         conn.execute(
             "INSERT INTO saved_views(view_id, name, query_json, created_at) VALUES (?, ?, ?, ?)",
