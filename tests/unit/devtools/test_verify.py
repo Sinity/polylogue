@@ -9,6 +9,7 @@ import pytest
 
 from devtools.verify import (
     _format_completion_notification,
+    _is_testmon_global_invalidator,
     _parse_pytest_test_count,
     _run,
     _testmon_preflight,
@@ -84,6 +85,18 @@ def test_seed_testmon_worker_count_can_be_overridden(monkeypatch: pytest.MonkeyP
     assert command[command.index("-n") + 1] == "4"
 
 
+def test_global_testmon_invalidator_runs_full_collection(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("POLYLOGUE_PYTEST_WORKERS", raising=False)
+
+    steps = build_verify_steps(quick=False, lab=False, skip_slow=False, testmon_global=True)
+
+    label, command = steps[-1]
+    assert label == "pytest testmon-global"
+    assert "--testmon" in command
+    assert "--testmon-noselect" in command
+    assert command[command.index("-n") + 1] == "8"
+
+
 def test_skip_slow_keeps_testmon_selection_forced() -> None:
     steps = build_verify_steps(quick=False, lab=False, skip_slow=True)
 
@@ -91,6 +104,16 @@ def test_skip_slow_keeps_testmon_selection_forced() -> None:
     assert label == "pytest testmon"
     assert command[command.index("-m") + 1] == "not slow"
     assert "--testmon-forceselect" in command
+
+
+def test_global_testmon_invalidators_cover_harness_and_config() -> None:
+    assert _is_testmon_global_invalidator("pyproject.toml")
+    assert _is_testmon_global_invalidator("uv.lock")
+    assert _is_testmon_global_invalidator("tests/conftest.py")
+    assert _is_testmon_global_invalidator("tests/infra/storage_records.py")
+    assert _is_testmon_global_invalidator("tests/unit/pytest.ini")
+    assert not _is_testmon_global_invalidator("polylogue/cli/click_app.py")
+    assert not _is_testmon_global_invalidator("docs/execution-plan.md")
 
 
 def test_lab_verify_delegates_to_lab_scenario() -> None:

@@ -194,6 +194,10 @@ Outcome:
 - Full/seed pytest worker count defaults to 8 and can be adjusted with
   `POLYLOGUE_PYTEST_WORKERS`; affected testmon runs use `-n 0` to avoid xdist
   overhead for small selections.
+- The extra `devtools` worktree-result replay cache was removed. Every
+  invocation now reaches pytest-testmon, which owns package/Python/source
+  invalidation; harness/config/dependency-lock changes automatically widen to
+  `--testmon-noselect` instead of relying on a manual full-suite bypass.
 
 Measured locally:
 

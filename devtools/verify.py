@@ -127,6 +127,18 @@ def _format_completion_notification(
 HISTORY_PATH = Path(".cache/verify-history.jsonl")
 TESTMON_DATA = Path(".testmondata")
 TESTMON_SEED_STAMP = Path(".cache/testmon/seed.json")
+TESTMON_GLOBAL_INVALIDATORS = (
+    ".python-version",
+    "conftest.py",
+    "noxfile.py",
+    "pyproject.toml",
+    "pytest.ini",
+    "setup.cfg",
+    "tox.ini",
+    "uv.lock",
+    "tests/conftest.py",
+    "tests/infra/",
+)
 
 
 def _load_history() -> list[dict[str, Any]]:
@@ -218,6 +230,7 @@ def build_verify_steps(
     commit: bool = False,
     seed_testmon: bool = False,
     full_pytest: bool = False,
+    testmon_global: bool = False,
 ) -> list[tuple[str, list[str]]]:
     steps: list[tuple[str, list[str]]] = [
         ("ruff format", ["ruff", "format", "--check", "polylogue/", "tests/", "devtools/"]),
@@ -254,6 +267,9 @@ def build_verify_steps(
         elif full_pytest:
             pytest_cmd.extend(_pytest_worker_args(default="8"))
             steps.append(("pytest full", pytest_cmd))
+        elif testmon_global:
+            pytest_cmd.extend(["--testmon", "--testmon-noselect", *_pytest_worker_args(default="8")])
+            steps.append(("pytest testmon-global", pytest_cmd))
         else:
             pytest_cmd.extend(["--testmon", "-n", "0"])
             if skip_slow:
@@ -321,44 +337,6 @@ def _stamp_head() -> None:
     (stamp_dir / "last-verify-head").write_text(head + "\n")
 
 
-# ── worktree-fingerprint result cache ──────────────────────────────
-
-RESULT_CACHE = Path(".cache/last-verify-result.json")
-
-
-def _worktree_fingerprint(*, mode_key: str = "") -> str:
-    """Return a hash of HEAD + dirty content so unchanged worktrees skip verify."""
-    head = _git_head() or ""
-    diff = subprocess.run(
-        ["git", "diff", "--binary", "HEAD"],
-        capture_output=True,
-        text=True,
-    )
-    diff_payload = diff.stdout
-    unstaged = subprocess.run(
-        ["git", "ls-files", "--others", "--exclude-standard"],
-        capture_output=True,
-        text=True,
-    )
-    untracked_payload = ""
-    if unstaged.returncode == 0:
-        chunks: list[str] = []
-        for raw_path in sorted(line for line in unstaged.stdout.splitlines() if line.strip()):
-            path = Path(raw_path)
-            chunks.append(raw_path)
-            if path.is_file():
-                with contextlib.suppress(OSError, UnicodeDecodeError):
-                    chunks.append(path.read_text(encoding="utf-8"))
-        untracked_payload = "\n".join(chunks)
-    testmon_state = _file_fingerprint(TESTMON_DATA)
-    payload = f"{mode_key}\n{head}\n{diff_payload}\n{untracked_payload}\n.testmondata={testmon_state}"
-    return _hash_text(payload)
-
-
-def _hash_text(text: str) -> str:
-    return hashlib.sha256(text.encode()).hexdigest()
-
-
 def _file_fingerprint(path: Path) -> str:
     if not path.exists() or not path.is_file():
         return "missing"
@@ -375,6 +353,49 @@ def _file_fingerprint(path: Path) -> str:
 def _pytest_worker_args(*, default: str) -> list[str]:
     workers = os.environ.get("POLYLOGUE_PYTEST_WORKERS", default).strip() or default
     return ["-n", workers]
+
+
+def _read_testmon_seed_stamp() -> dict[str, Any] | None:
+    try:
+        raw: object = json.loads(TESTMON_SEED_STAMP.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    return raw if isinstance(raw, dict) else None
+
+
+def _git_changed_paths(base: str | None) -> set[str] | None:
+    changed: set[str] = set()
+    commands: list[list[str]] = []
+    if base:
+        commands.append(["git", "diff", "--name-only", f"{base}..HEAD"])
+    commands.append(["git", "diff", "--name-only", "HEAD"])
+    commands.append(["git", "ls-files", "--others", "--exclude-standard"])
+
+    for command in commands:
+        result = subprocess.run(command, capture_output=True, text=True)
+        if result.returncode != 0:
+            return None
+        changed.update(line for line in result.stdout.splitlines() if line.strip())
+    return changed
+
+
+def _is_testmon_global_invalidator(path: str) -> bool:
+    if not path:
+        return False
+    if path.endswith((".toml", ".ini", ".cfg")) and (
+        path.startswith("tests/") or path in {"pyproject.toml", "setup.cfg", "tox.ini", "pytest.ini"}
+    ):
+        return True
+    return any(path == invalidator or path.startswith(invalidator) for invalidator in TESTMON_GLOBAL_INVALIDATORS)
+
+
+def _testmon_requires_global_collection() -> bool:
+    seed = _read_testmon_seed_stamp()
+    base = seed.get("git_head") if seed else None
+    changed = _git_changed_paths(base if isinstance(base, str) else None)
+    if changed is None:
+        return True
+    return any(_is_testmon_global_invalidator(path) for path in changed)
 
 
 def _testmon_preflight(*, seed_testmon: bool, full_pytest: bool, quick: bool, commit: bool) -> str | None:
@@ -397,29 +418,6 @@ def _write_testmon_seed_stamp(result: dict[str, Any]) -> None:
         "steps": result.get("steps", []),
     }
     TESTMON_SEED_STAMP.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n")
-
-
-def _read_cached_result(fp: str) -> dict[str, Any] | None:
-    """Return the cached result if the worktree fingerprint matches, else None."""
-    if not RESULT_CACHE.exists():
-        return None
-    try:
-        raw: object = json.loads(RESULT_CACHE.read_text())
-    except (json.JSONDecodeError, OSError):
-        return None
-    if not isinstance(raw, dict):
-        return None
-    cached: dict[str, Any] = raw
-    if cached.get("fingerprint") == fp:
-        result: object = cached.get("result")
-        if isinstance(result, dict):
-            return result
-    return None
-
-
-def _write_cached_result(fp: str, result: dict[str, Any]) -> None:
-    RESULT_CACHE.parent.mkdir(parents=True, exist_ok=True)
-    RESULT_CACHE.write_text(json.dumps({"fingerprint": fp, "result": result}, ensure_ascii=False) + "\n")
 
 
 # ── main ────────────────────────────────────────────────────────────
@@ -450,7 +448,6 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--history", action="store_true", help="Print last 10 verify runs and exit.")
     parser.add_argument("--json", action="store_true", default=None, help="Write structured JSON to stdout.")
-    parser.add_argument("--force", action="store_true", help="Bypass worktree-fingerprint cache and re-verify.")
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
 
     if args.history:
@@ -475,19 +472,6 @@ def main(argv: list[str] | None = None) -> int:
         tier = "testmon"
 
     full_pytest = bool(args.all or args.full)
-    mode_key = json.dumps(
-        {
-            "tier": tier,
-            "skip_slow": bool(args.skip_slow),
-            "quick": bool(args.quick),
-            "commit": bool(args.commit),
-            "lab": bool(args.lab),
-            "seed_testmon": bool(args.seed_testmon),
-            "full_pytest": full_pytest,
-        },
-        sort_keys=True,
-    )
-
     preflight_error = _testmon_preflight(
         seed_testmon=bool(args.seed_testmon),
         full_pytest=full_pytest,
@@ -498,22 +482,9 @@ def main(argv: list[str] | None = None) -> int:
         sys.stderr.write(preflight_error)
         return 2
 
-    # Worktree-fingerprint cache: if nothing changed since last verify,
-    # replay the cached result instantly instead of re-running tests.
-    if not args.commit and not args.quick and not args.lab and not args.force:
-        fp = _worktree_fingerprint(mode_key=mode_key)
-        cached = _read_cached_result(fp)
-        if cached is not None:
-            ec: int = cached.get("exit_code", 0)
-            dur: object = cached.get("total_duration_s", 0)
-            if use_json:
-                _print_json(cached)
-            elif ec == 0:
-                sys.stderr.write(f"verify: HEAD already verified ({dur:.0f}s cached); nothing to do.\n")
-            else:
-                failed = [s["name"] for s in cached.get("steps", []) if s["exit"] != 0]
-                sys.stderr.write(f"verify: HEAD unchanged — cached failures: {', '.join(failed)}\n")
-            return ec
+    testmon_global = (
+        not (args.quick or args.commit or args.seed_testmon or full_pytest) and _testmon_requires_global_collection()
+    )
 
     head = _git_head()
     t0 = time.monotonic()
@@ -533,6 +504,7 @@ def main(argv: list[str] | None = None) -> int:
         skip_slow=bool(args.skip_slow),
         seed_testmon=bool(args.seed_testmon),
         full_pytest=full_pytest,
+        testmon_global=testmon_global,
     )
 
     step_results: list[dict[str, Any]] = []
@@ -577,17 +549,12 @@ def main(argv: list[str] | None = None) -> int:
         else:
             sys.stderr.write(f"\nverify: FAILED ({total_duration:.1f}s) — fix before pushing\n")
 
-    # Persist history, stamp, and worktree-fingerprint cache.
+    # Persist history and stamp.
     _save_history(history_entry)
     if exit_code == 0:
         _stamp_head()
-        if args.seed_testmon:
+        if args.seed_testmon or testmon_global:
             _write_testmon_seed_stamp(history_entry)
-    # Cache the result keyed by worktree fingerprint — next invocation
-    # at the same tree state replays this instantly.
-    if not args.commit and not args.quick and not args.lab:
-        fp = _worktree_fingerprint(mode_key=mode_key)
-        _write_cached_result(fp, history_entry)
 
     # Notify on long-running verify.
     if total_duration > 30:

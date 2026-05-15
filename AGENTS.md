@@ -330,6 +330,13 @@ not a substitute for the default baseline. The default command fails fast when
 `.testmondata` and `.cache/testmon/seed.json` are missing; do not rely on
 silent full-suite fallback.
 
+`devtools verify` does not replay a prior verify result. It always runs the
+static gates and lets pytest-testmon decide affected tests from the current
+source, dependency, and Python-version state. If pytest configuration,
+dependency locks, or shared test infrastructure changed since the seed, the
+default command automatically widens the pytest step to `--testmon-noselect`
+and refreshes dependency data.
+
 Proof Pack: every PR gets a `Polylogue Proof Pack` comment. It's a verification
 impact report showing affected domains, required gates, and known gaps. Use it
 to choose focused verification — run the gates that match touched files, state
@@ -384,6 +391,13 @@ seed command records `.testmondata` plus `.cache/testmon/seed.json`; those
 files are local generated state and are not committed. If the seed is missing,
 the default command fails with setup guidance instead of silently running the
 whole suite.
+
+The default path does not replay cached verify results. Every invocation runs
+the static gates and lets pytest-testmon evaluate current source, package, and
+Python-version state. Changes to pytest configuration, dependency locks, or
+shared test infrastructure automatically widen the pytest step to
+`--testmon-noselect` so the dependency database is refreshed without requiring
+a manual full-suite bypass.
 
 For the generated validation-lane, mutation-campaign, and benchmark inventory,
 see [docs/test-quality-workflows.md](docs/test-quality-workflows.md).
