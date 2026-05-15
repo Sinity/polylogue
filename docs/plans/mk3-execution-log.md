@@ -171,6 +171,34 @@ Resource rules:
 
 ## Execution Entries
 
+### 2026-05-15 - Notification dispatch evidence
+
+Target:
+
+- #999 notification dispatch verifiability without adding a speculative
+  non-log production backend.
+
+Outcome:
+
+- Added tests for the actual notification dispatch contract: alert batches are
+  delivered to the selected backend with config, unknown configured backend
+  names fail loudly, and backend exceptions propagate to the daemon periodic
+  health loop's existing catch boundary.
+- The dispatch route records `daemon.notifications.dispatch` evidence with
+  alert count, severities, backend name, call count, and config-forwarding fact.
+- Rate-limit/dedup and any non-log transport remain open product work; this
+  slice pins the current dispatch boundary first.
+
+Artifact example:
+
+- `.cache/verification/evidence/daemon.notifications.dispatch-*.json`
+
+Verification:
+
+- `pytest -q tests/unit/daemon/test_notifications.py`
+- `ruff check tests/unit/daemon/test_notifications.py`
+- `mypy --strict tests/unit/daemon/test_notifications.py`
+
 ### 2026-05-15 - Backup restore/read evidence
 
 Target:
