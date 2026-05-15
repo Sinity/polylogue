@@ -40,11 +40,6 @@ logger = get_logger(__name__)
 _pidfile_path: Path | None = None
 
 
-def _fts_status_count(status: dict[str, object]) -> int:
-    value = status.get("count", 0)
-    return value if isinstance(value, int) else 0
-
-
 def _cleanup_pidfile() -> None:
     """Remove the daemon pidfile on exit."""
     global _pidfile_path
@@ -78,11 +73,11 @@ def _verify_pidfile(pidfile: Path) -> bool:
 
 
 async def _ensure_fts_startup_readiness() -> None:
-    """Check FTS coverage on daemon startup, rebuild if incomplete.
+    """Ensure FTS exists on startup without scanning the full archive.
 
-    A gap can only exist from pre-daemon historical data. Once caught up,
-    the write path maintains FTS atomically via commit_archive_write_effects.
-    This check runs once at startup and never again.
+    A complete gap can exist when historical rows predate FTS creation. Partial
+    gaps are repaired by conversation-scoped convergence; startup must not count
+    all messages on every daemon restart.
     """
     from polylogue.paths import archive_root, db_path
     from polylogue.storage.sqlite.connection_profile import open_connection
@@ -94,31 +89,31 @@ async def _ensure_fts_startup_readiness() -> None:
     conn = None
     try:
         conn = open_connection(db, timeout=10.0)
-        total = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
-        if total == 0:
-            conn.close()
-            return
-        from polylogue.storage.fts.fts_lifecycle import fts_index_status_sync
-
-        fts_status = fts_index_status_sync(conn)
-        fts_count = _fts_status_count(fts_status)
-        gap = total - fts_count
-        if gap <= 0:
-            conn.close()
-            return
-
-        logger.warning(
-            "daemon: FTS index incomplete (%d/%d messages, %.1f%% gap). Rebuilding once.",
-            fts_count,
-            total,
-            100 * gap / total,
+        row = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'").fetchone()
+        has_fts_table = row is not None
+        has_indexable_messages = (
+            conn.execute("SELECT 1 FROM messages WHERE text IS NOT NULL LIMIT 1").fetchone() is not None
         )
-        from polylogue.storage.fts.fts_lifecycle import rebuild_fts_index_sync
 
-        rebuild_fts_index_sync(conn)
+        from polylogue.storage.fts.fts_lifecycle import ensure_fts_index_sync, rebuild_fts_index_sync
+
+        if not has_fts_table:
+            logger.warning("daemon: message FTS table missing. Rebuilding once.")
+            rebuild_fts_index_sync(conn)
+            conn.commit()
+            logger.info("daemon: FTS rebuild complete.")
+            return
+
+        ensure_fts_index_sync(conn)
+        has_indexed_messages = conn.execute("SELECT 1 FROM messages_fts_docsize LIMIT 1").fetchone() is not None
+        if has_indexable_messages and not has_indexed_messages:
+            logger.warning("daemon: message FTS is empty while archive has messages. Rebuilding once.")
+            rebuild_fts_index_sync(conn)
+            conn.commit()
+            logger.info("daemon: FTS rebuild complete.")
+            return
+
         conn.commit()
-        new_count = _fts_status_count(fts_index_status_sync(conn))
-        logger.info("daemon: FTS rebuild complete — %d messages indexed.", new_count)
     except Exception:
         logger.warning("daemon: FTS startup check failed", exc_info=True)
     finally:

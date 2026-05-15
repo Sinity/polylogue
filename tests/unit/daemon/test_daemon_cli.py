@@ -245,7 +245,7 @@ def test_run_live_watcher_stops_on_keyboard_interrupt() -> None:
     assert stopped == [True]
 
 
-def test_ensure_fts_startup_readiness_uses_bounded_docsize_count(
+def test_ensure_fts_startup_readiness_uses_bounded_probes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -264,21 +264,80 @@ def test_ensure_fts_startup_readiness_uses_bounded_docsize_count(
     class FakeConnection:
         def __init__(self) -> None:
             self.queries: list[str] = []
-            self.doc_counts = [1, 3]
             self.committed = False
             self.closed = False
 
         def execute(self, sql: str, _params: object = ()) -> FakeCursor:
             query = " ".join(sql.split())
             self.queries.append(query)
-            if query == "SELECT COUNT(*) FROM messages":
-                return FakeCursor((3,))
             if query == "SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'":
                 return FakeCursor(("messages_fts",))
-            if query == "SELECT COUNT(*) FROM messages_fts_docsize":
-                count = self.doc_counts.pop(0) if self.doc_counts else 3
-                return FakeCursor((count,))
-            if query == "SELECT name FROM sqlite_master WHERE type='table' AND name='action_events_fts'":
+            if query == "SELECT 1 FROM messages WHERE text IS NOT NULL LIMIT 1":
+                return FakeCursor((1,))
+            if query == "SELECT 1 FROM messages_fts_docsize LIMIT 1":
+                return FakeCursor((1,))
+            raise AssertionError(f"unexpected query: {query}")
+
+        def commit(self) -> None:
+            self.committed = True
+
+        def close(self) -> None:
+            self.closed = True
+
+    conn = FakeConnection()
+    rebuilds: list[FakeConnection] = []
+    ensured: list[FakeConnection] = []
+
+    def rebuild(fake_conn: FakeConnection) -> None:
+        rebuilds.append(fake_conn)
+
+    def ensure(fake_conn: FakeConnection) -> None:
+        ensured.append(fake_conn)
+
+    monkeypatch.setattr("polylogue.paths.db_path", lambda: db)
+    monkeypatch.setattr("polylogue.storage.sqlite.connection_profile.open_connection", lambda _db, timeout: conn)
+    monkeypatch.setattr("polylogue.storage.fts.fts_lifecycle.ensure_fts_index_sync", ensure)
+    monkeypatch.setattr("polylogue.storage.fts.fts_lifecycle.rebuild_fts_index_sync", rebuild)
+
+    asyncio.run(daemon_cli._ensure_fts_startup_readiness())
+
+    assert ensured == [conn]
+    assert rebuilds == []
+    assert conn.committed is True
+    assert conn.closed is True
+    assert all(not query.startswith("SELECT COUNT(*)") for query in conn.queries)
+
+
+def test_ensure_fts_startup_readiness_rebuilds_empty_fts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.daemon import cli as daemon_cli
+
+    db = tmp_path / "polylogue.db"
+    db.write_bytes(b"sqlite placeholder")
+
+    class FakeCursor:
+        def __init__(self, row: tuple[object, ...] | None) -> None:
+            self._row = row
+
+        def fetchone(self) -> tuple[object, ...] | None:
+            return self._row
+
+    class FakeConnection:
+        def __init__(self) -> None:
+            self.queries: list[str] = []
+            self.committed = False
+            self.closed = False
+
+        def execute(self, sql: str, _params: object = ()) -> FakeCursor:
+            query = " ".join(sql.split())
+            self.queries.append(query)
+            if query == "SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'":
+                return FakeCursor(("messages_fts",))
+            if query == "SELECT 1 FROM messages WHERE text IS NOT NULL LIMIT 1":
+                return FakeCursor((1,))
+            if query == "SELECT 1 FROM messages_fts_docsize LIMIT 1":
                 return FakeCursor(None)
             raise AssertionError(f"unexpected query: {query}")
 
@@ -296,6 +355,7 @@ def test_ensure_fts_startup_readiness_uses_bounded_docsize_count(
 
     monkeypatch.setattr("polylogue.paths.db_path", lambda: db)
     monkeypatch.setattr("polylogue.storage.sqlite.connection_profile.open_connection", lambda _db, timeout: conn)
+    monkeypatch.setattr("polylogue.storage.fts.fts_lifecycle.ensure_fts_index_sync", lambda _conn: None)
     monkeypatch.setattr("polylogue.storage.fts.fts_lifecycle.rebuild_fts_index_sync", rebuild)
 
     asyncio.run(daemon_cli._ensure_fts_startup_readiness())
@@ -303,8 +363,7 @@ def test_ensure_fts_startup_readiness_uses_bounded_docsize_count(
     assert rebuilds == [conn]
     assert conn.committed is True
     assert conn.closed is True
-    assert "SELECT COUNT(*) FROM messages_fts" not in conn.queries
-    assert conn.queries.count("SELECT COUNT(*) FROM messages_fts_docsize") == 2
+    assert all(not query.startswith("SELECT COUNT(*)") for query in conn.queries)
 
 
 def test_run_daemon_services_stops_live_watcher_on_failure() -> None:
