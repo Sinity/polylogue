@@ -1,5 +1,26 @@
 [
   {
+    "name": "add_mark",
+    "parameters": {
+      "properties": {
+        "conversation_id": {
+          "title": "Conversation Id",
+          "type": "string"
+        },
+        "mark_type": {
+          "title": "Mark Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "conversation_id",
+        "mark_type"
+      ],
+      "title": "add_markArguments",
+      "type": "object"
+    }
+  },
+  {
     "name": "add_tag",
     "parameters": {
       "properties": {
@@ -359,6 +380,22 @@
         "key"
       ],
       "title": "delete_metadataArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "delete_saved_view",
+    "parameters": {
+      "properties": {
+        "view_id": {
+          "title": "View Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "view_id"
+      ],
+      "title": "delete_saved_viewArguments",
       "type": "object"
     }
   },
@@ -1240,6 +1277,47 @@
     }
   },
   {
+    "name": "list_marks",
+    "parameters": {
+      "properties": {
+        "conversation_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Conversation Id"
+        },
+        "mark_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Mark Type"
+        }
+      },
+      "title": "list_marksArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "list_saved_views",
+    "parameters": {
+      "properties": {},
+      "title": "list_saved_viewsArguments",
+      "type": "object"
+    }
+  },
+  {
     "name": "list_tags",
     "parameters": {
       "properties": {
@@ -1418,6 +1496,27 @@
     }
   },
   {
+    "name": "remove_mark",
+    "parameters": {
+      "properties": {
+        "conversation_id": {
+          "title": "Conversation Id",
+          "type": "string"
+        },
+        "mark_type": {
+          "title": "Mark Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "conversation_id",
+        "mark_type"
+      ],
+      "title": "remove_markArguments",
+      "type": "object"
+    }
+  },
+  {
     "name": "remove_tag",
     "parameters": {
       "properties": {
@@ -1435,6 +1534,39 @@
         "tag"
       ],
       "title": "remove_tagArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "save_saved_view",
+    "parameters": {
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "query_json": {
+          "title": "Query Json",
+          "type": "string"
+        },
+        "view_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "View Id"
+        }
+      },
+      "required": [
+        "name",
+        "query_json"
+      ],
+      "title": "save_saved_viewArguments",
       "type": "object"
     }
   },

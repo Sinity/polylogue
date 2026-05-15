@@ -17,7 +17,7 @@ Updated: 2026-05-15
 | Reader evidence shell | #848, #865, #956, #993 | Blocked on enough contract stability for full UI, but evidence harness can advance | Expand synthetic reader DOM/browser smoke toward MK3 states | `pytest tests/unit/daemon/test_web_reader.py`, future browser lane, `devtools verify --quick` |
 | Paste/attachment/provenance | #839, #864, #848, #993 | Blocked on message envelope/provenance vocabulary | Implement paste-span projection MVP after contract spine | focused storage/payload tests, daemon API tests, visual state tests |
 | Topology/workspace | #866, #993, #848, #865 | Substrate can start once source identity is stable | Materialize topology edges before graph UI | topology storage tests, parser fixtures, visual graph states |
-| User state/advanced panels | #867, #993, #1019, #995 | Active reader-control slice | Consume durable user-state APIs from the reader shell; keep annotations/message targets and CLI/MCP parity open | visual DOM evidence, daemon user-state API tests, saved-view roundtrip tests |
+| User state/advanced panels | #867, #993, #1019, #995 | Active MCP parity slice | Expose marks and saved views through write-role MCP tools; keep annotations/message targets and CLI parity open | MCP mutation tests, saved-view roundtrip tests |
 | Verification throughput | #1026, #997, #998, #594, #590, #1012 | Ready to start independently | Add affected-test workflow and reduce outlier runtime | `devtools verify --affected --skip-slow`, durations capture, focused regression tests |
 
 ## Subagent Parallelization Model
@@ -285,6 +285,43 @@ Verification:
 - `ruff check polylogue/daemon/web_shell.py tests/visual/conftest.py tests/visual/test_reader_dom_smoke.py`
 - `mypy polylogue/daemon/web_shell.py tests/visual/conftest.py tests/visual/test_reader_dom_smoke.py`
 - `pytest -q tests/visual tests/unit/daemon/test_web_reader.py -k "reader or UserState or saved_views or marks"`
+
+### 2026-05-15 - MCP user-state parity launch
+
+Target:
+
+- #867 write-role MCP parity for durable conversation marks and saved views.
+
+Coordination:
+
+- Main branch: `feature/feat/mcp-user-state-tools`.
+- Serialized implementation. The slice touches one MCP registration module,
+  typed MCP payloads, and focused MCP contract tests.
+
+Owned files:
+
+- `polylogue/mcp/server_mutation_tools.py`
+- `polylogue/mcp/payloads.py`
+- `tests/unit/mcp/test_tool_contracts.py`
+- `docs/plans/mk3-execution-log.md`
+
+Outcome:
+
+- Added MCP list/add/remove tools for conversation marks.
+- Added MCP list/save/delete tools for saved views.
+- Saved-view MCP writes validate query JSON through strict
+  `ConversationQuerySpec` construction before storing canonical JSON.
+- Mark mutations resolve conversation IDs through the existing query store
+  before calling the shared Polylogue facade.
+- Kept annotations, message/range targets, recall-pack MCP shape, and CLI
+  parity open under #867.
+
+Verification:
+
+- `pytest -q tests/unit/mcp/test_tool_contracts.py -k "mark or saved_view"`
+- `pytest -q tests/unit/mcp/test_user_state_tools.py tests/unit/mcp/test_envelope_contracts.py tests/unit/mcp/test_tool_schema_witness.py`
+- `pytest -q tests/unit/mcp`
+- `devtools verify --quick`
 
 ### 2026-05-15 - Wave 1 reader query smoke closure
 

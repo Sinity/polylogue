@@ -392,6 +392,29 @@ class MCPMetadataPayload(SurfacePayloadModel):
         return json.dumps(self.root, indent=2)
 
 
+class MCPUserMarkPayload(SurfacePayloadModel):
+    conversation_id: str
+    mark_type: str
+    created_at: str
+
+
+class MCPUserMarkListPayload(SurfacePayloadModel):
+    items: tuple[MCPUserMarkPayload, ...]
+    total: int
+
+
+class MCPSavedViewPayload(SurfacePayloadModel):
+    view_id: str
+    name: str
+    query: dict[str, object]
+    created_at: str
+
+
+class MCPSavedViewListPayload(SurfacePayloadModel):
+    items: tuple[MCPSavedViewPayload, ...]
+    total: int
+
+
 class MCPStatsByPayload(MCPRootPayload[dict[str, int]]):
     root: dict[str, int]
 
@@ -546,6 +569,10 @@ __all__ = [
     "MCPSessionTreePayload",
     "MCPStatsByPayload",
     "MCPTagCountsPayload",
+    "MCPSavedViewListPayload",
+    "MCPSavedViewPayload",
+    "MCPUserMarkListPayload",
+    "MCPUserMarkPayload",
     "MCPTargetRefPayload",
     "conversation_neighbor_candidate_list_payload",
     "conversation_query_result_payload",
