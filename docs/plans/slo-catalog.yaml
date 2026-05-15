@@ -16,10 +16,10 @@
 #       p95_ms:         <int milliseconds, p95 budget — estimated mean+1.645*stddev>
 #       gate:           "required" | "informational"
 #
-# verify_slos exits non-zero when any surface exceeds its declared budget.
-# Surfaces without a `benchmark_test` (or whose test produced no result) are
-# reported as uncovered, not as failures — those are deferred read paths
-# whose benchmark fixtures or product paths do not yet exist.
+# verify_slos exits non-zero when any required surface exceeds its declared
+# budget or fails to produce a benchmark result. Informational rows are visible
+# but non-blocking placeholders for deferred read paths whose benchmark fixtures
+# or product paths do not yet exist.
 
 surfaces:
 

@@ -1,0 +1,68 @@
+{
+  "benchmarks": [
+    {
+      "extra_info": {},
+      "fullname": "tests/benchmarks/test_reader_api.py::test_bench_reader_status",
+      "group": null,
+      "name": "test_bench_reader_status",
+      "options": {
+        "disable_gc": false,
+        "max_time": 1.0,
+        "min_rounds": 5,
+        "min_time": 0.000005,
+        "timer": "time.perf_counter"
+      },
+      "param": null,
+      "params": null,
+      "stats": {
+        "data": [
+          0.001,
+          0.0012,
+          0.0011
+        ],
+        "hd15iqr": 0.0012,
+        "iqr": 0.0001,
+        "iqr_outliers": 0,
+        "iterations": 1,
+        "ld15iqr": 0.001,
+        "max": 0.0012,
+        "mean": 0.0011,
+        "median": 0.0011,
+        "min": 0.001,
+        "ops": 909.0909090909,
+        "outliers": "0;0",
+        "q1": 0.00105,
+        "q3": 0.00115,
+        "rounds": 3,
+        "stddev": 0.0001,
+        "stddev_outliers": 0,
+        "total": 0.0033
+      }
+    }
+  ],
+  "commit_info": {
+    "dirty": true,
+    "id": "0000000000000000000000000000000000000000",
+    "project": "polylogue"
+  },
+  "datetime": "2026-05-15T20:00:00+00:00",
+  "machine_info": {
+    "cpu": {
+      "brand_raw": "Intel(R) Core(TM) i7-13700K"
+    },
+    "machine": "x86_64",
+    "node": "sinnix-prime",
+    "processor": "",
+    "python_build": [
+      "main",
+      "May 1 2026 00:00:00"
+    ],
+    "python_compiler": "GCC",
+    "python_implementation": "CPython",
+    "python_implementation_version": "3.13.12",
+    "python_version": "3.13.12",
+    "release": "6.x",
+    "system": "Linux"
+  },
+  "version": "5.2.3"
+}

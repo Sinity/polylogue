@@ -113,7 +113,7 @@ def check_suppressions(plans_dir: Path) -> list[str]:
 
 
 def check_assurance_domains(plans_dir: Path) -> list[str]:
-    """Validate assurance-domains.yaml references existing issues/claims."""
+    """Validate assurance-domains.yaml stays a documentation inventory."""
     errors: list[str] = []
     path = plans_dir / "assurance-domains.yaml"
     if not path.exists():
@@ -135,10 +135,6 @@ def check_assurance_domains(plans_dir: Path) -> list[str]:
             continue
         if "description" not in domain:
             errors.append(f"{path}: domain {name!r} missing description")
-        maturity = domain.get("maturity")
-        valid_maturity = {"seed", "nascent", "growing", "established", "complete"}
-        if maturity not in valid_maturity:
-            errors.append(f"{path}: domain {name!r} invalid maturity {maturity!r}")
 
     return errors
 

@@ -19,9 +19,11 @@ of adding a new endpoint includes adding it to ``ENDPOINTS_GET`` /
 
 from __future__ import annotations
 
+import json
 from email.message import Message
 from http import HTTPStatus
 from io import BytesIO
+from pathlib import Path
 from typing import TYPE_CHECKING, cast
 from unittest.mock import MagicMock, patch
 
@@ -334,6 +336,65 @@ class TestPostEndpointAuthAndOriginGate:
         send_error, _ = _capture_responses(handler)
         handler.do_POST()
         send_error.assert_called_once_with(HTTPStatus.FORBIDDEN, "cross_origin_denied")
+
+
+# ---------------------------------------------------------------------------
+# Ingest endpoint — arbitrary local paths are staged by clients, not copied
+# by the daemon from HTTP request data.
+# ---------------------------------------------------------------------------
+
+
+class TestIngestEndpointInboxBoundary:
+    """``POST /api/ingest`` schedules already-staged inbox artifacts only."""
+
+    def test_accepts_absolute_reference_only_by_matching_inbox_entry(
+        self,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        inbox = workspace_env["archive_root"] / "inbox"
+        inbox.mkdir(parents=True)
+        staged = inbox / "session.jsonl"
+        staged.write_text('{"type":"session"}\n')
+
+        body = json.dumps({"path": "/outside/tree/session.jsonl"}).encode("utf-8")
+        handler = _make_handler("POST", "/api/ingest", auth_header="Bearer secret", body=body)
+        send_error, send_json = _capture_responses(handler)
+
+        with (
+            patch("polylogue.paths.archive_root", return_value=workspace_env["archive_root"]),
+            patch("polylogue.daemon.http.emit_daemon_event") as emit_event,
+        ):
+            handler.do_POST()
+
+        send_error.assert_not_called()
+        send_json.assert_called_once()
+        assert send_json.call_args.args[0] == HTTPStatus.ACCEPTED
+        payload = send_json.call_args.args[1]
+        assert payload["path"] == str(staged.resolve())
+        emit_event.assert_called_once()
+        assert emit_event.call_args.kwargs["payload"]["path"] == str(staged.resolve())
+
+    def test_rejects_unstaged_absolute_local_path(
+        self,
+        workspace_env: dict[str, Path],
+        tmp_path: Path,
+    ) -> None:
+        outside = tmp_path / "session.jsonl"
+        outside.write_text('{"type":"session"}\n')
+
+        body = json.dumps({"path": str(outside)}).encode("utf-8")
+        handler = _make_handler("POST", "/api/ingest", auth_header="Bearer secret", body=body)
+        send_error, send_json = _capture_responses(handler)
+
+        with (
+            patch("polylogue.paths.archive_root", return_value=workspace_env["archive_root"]),
+            patch("polylogue.daemon.http.emit_daemon_event") as emit_event,
+        ):
+            handler.do_POST()
+
+        send_error.assert_called_once_with(HTTPStatus.BAD_REQUEST, "path_not_found")
+        send_json.assert_not_called()
+        emit_event.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

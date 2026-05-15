@@ -32,8 +32,8 @@ Use this map when you need the complete repository documentation surface. The to
 | Document | Description |
 |----------|-------------|
 | [Developer Tools](devtools.md) | `devtools` guide for generated surfaces, validation, and repo hygiene. |
-| [Verification Lab](verification-lab.md) | Accepted command-surface decision for proof catalog, routing, and evidence operators. |
-| [Verification Catalog](verification-catalog.md) | Generated proof-obligation subjects, claims, runners, and catalog self-checks. |
+| [Verification Lab](verification-lab.md) | Accepted command-surface decision for verification catalog, routing, and evidence operators. |
+| [Verification Catalog](verification-catalog.md) | Generated verification subjects, claims, runners, and catalog self-checks. |
 | [Test Quality Workflows](test-quality-workflows.md) | Generated validation lanes, mutation campaigns, and benchmark campaigns. |
 
 ## Contributor Workflow

@@ -224,7 +224,7 @@ def handle_query_mode(
 # Re-exported from the lightweight query_group module so that
 # click_app can import the base class without pulling in the full
 # archive/storage/operations import chain.
-from polylogue.cli.query_group import QueryFirstGroupBase  # noqa: F401, E402, F811
+from polylogue.cli.query_group import QueryFirstGroupBase  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Query execution (original query.py)

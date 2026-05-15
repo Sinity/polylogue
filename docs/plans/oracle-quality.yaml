@@ -1,19 +1,15 @@
 # Oracle-quality taxonomy.
 #
-# Evidence-quality taxonomy mapping each oracle classification to its
-# quality attributes. Adapted from the assurance-ontology reset in
-# project_assurance_ontology_2026_04_27.md.
-#
-# Six oracles: proof, drift_check, construction_sanity, smoke,
-# manual_review, ceremonial.
+# Transitional proof-era taxonomy. #1065/#594 should replace user-facing
+# report language with standard artifact sources: pytest, coverage,
+# benchmark, CI, static checks, fuzz/property campaigns, and runtime evidence.
+# This file is not a source of verification authority.
 #
 # Updated 2026-04-29 from realized codebase state.
 
 description: >
-  Evidence-quality taxonomy for the six oracle classifications used
-  across polylogue assurance domains. Each oracle entry documents
-  what the oracle counts as, its independence level, an example,
-  and its typical use in the verification pipeline.
+  Transitional taxonomy for old oracle classifications. Retained only
+  while #1065/#594 migrate reports to standard artifact language.
 
 oracles:
   proof:

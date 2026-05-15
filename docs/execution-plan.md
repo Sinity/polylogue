@@ -11,7 +11,7 @@ This plan answers three operational questions:
 
 1. What should start next without creating avoidable rework?
 2. Which issue owns the durable acceptance criteria?
-3. What proof has to exist before a wave can claim completion?
+3. What executable evidence has to exist before a wave can claim completion?
 
 Issue bodies remain authoritative for scope. This document keeps the backlog
 coherent across issues by naming dependency order, handoff artifacts, and
@@ -48,13 +48,13 @@ status, test choices, resource constraints, and handoff notes.
 
 | Lane | Live owners | Next artifact | Why now |
 |------|-------------|---------------|---------|
-| Runtime convergence and host proof | #845, #996, #999, #829 | Packaged daemon rollout plus production-corpus convergence report | The daemon must converge over the real archive; operational proof is the blocking confidence artifact for deployment. |
+| Runtime convergence and host evidence | #845, #996, #999, #829 | Packaged daemon rollout plus production-corpus convergence report | The daemon must converge over the real archive; bounded status/health evidence is the blocking deployment artifact. |
 | Source and semantic vocabulary | #1022, #839, #864, #1041, #1027 | Source-family contract, typed context/protocol fields, and provider/schema distribution evidence | MK3 reader contracts need typed source/provenance facts before UI can stop scraping provider metadata. |
 | Shared read contracts | #859, #873, #860, #848 | TargetRef/message-envelope/query/facet/status contracts shared by CLI, MCP, API, and daemon HTTP | This is the smallest useful MK3 start because later UI work consumes these envelopes. |
 | Reader evidence and product shell | #848, #865, #956, #993 | Single-conversation reader slice with executable DOM/browser evidence | MK3 must become a verified runtime reader, not only design screenshots. |
 | Topology and durable user state | #866, #867, #993 | Canonical topology read model and TargetRef-based marks/annotations/saved views | Multi-chat workspace, compare, recall packs, and topology panels need these substrates. |
 | Insight and cost rigor | #1019, #994, #995 | Readiness/confidence matrix for insight, cost, similarity, and derived panels | Advanced panels must show real availability, stale, inferred, and partial states. |
-| Verification and throughput | #1026, #997, #998, #594, #590, #1012 | Faster full baseline plus executable proof routing and inherited-failure cleanup | Broad changes are too expensive and too easy to misclaim without a faster, more precise gate. |
+| Verification and throughput | #1026, #997, #998, #594, #590, #1012 | Affected-test default, pytest evidence artifacts, benchmark/coverage reports, and inherited-failure cleanup | Broad changes are too expensive and too easy to misclaim without a faster, more precise gate. |
 | Distribution and user-facing polish | #869, #953, #952, #958 | Turnkey install/service/docs/CLI package path | Package and docs work should follow runtime/read-surface contracts so it does not document unstable behavior. |
 
 ## Dependency Gates
@@ -69,15 +69,15 @@ is ready to merge.
 | G3: executable reader evidence | Closing #848/#993 rows that claim runtime UI behavior | #865 | Synthetic-data DOM/browser lane with nonblank, private-safe, stateful assertions. |
 | G4: topology read model | Stack, compare, lineage rail, topology explorer | #866 | Ancestor/descendant/sibling/root APIs with unresolved/late-repair/cycle evidence. |
 | G5: TargetRef user state | Marks, annotations, saved views, recall packs, durable workspaces | #867 | Idempotent CRUD and content-hash exclusion for conversation/message targets first. |
-| G6: runtime deployment proof | Distribution docs and system service guidance | #845, #996, #999, #829, #869, #953 | Packaged daemon installed through Sinnix, real archive convergence report, health/status evidence. |
-| G7: faster verification | Large MK3/daemon waves | #1026, #997, #998, #594, #590, #1012 | Focused affected gates, proof routing, and inherited failure cleanup so broad verification is credible. |
+| G6: runtime deployment evidence | Distribution docs and system service guidance | #845, #996, #999, #829, #869, #953 | Packaged daemon installed through Sinnix, real archive convergence report, health/status evidence. |
+| G7: faster verification | Large MK3/daemon waves | #1026, #997, #998, #594, #590, #1012 | Affected-test default, contract evidence artifacts, and inherited failure cleanup so broad verification is credible. |
 
 ## Near-Term PR Candidates
 
 These are deliberately shaped as coherent PR-sized slices. They can run in
 parallel when their write surfaces do not overlap.
 
-| Candidate | Owner issues | Primary files | Acceptance proof |
+| Candidate | Owner issues | Primary files | Acceptance evidence |
 |-----------|--------------|---------------|------------------|
 | Define `TargetRef` and message-anchor contract | #859, #848, #867 | `polylogue/surfaces/`, `polylogue/daemon/http.py`, `polylogue/archive/query/`, daemon tests | Conversation/message targets serialize deterministically; reader endpoints expose anchors; unsupported targets return explicit disabled reasons. |
 | Replace reader/provider metadata scraping with typed source fields | #1022, #839, #864 | source parsers, archive models, payloads, schema docs | Header/search chips read typed fields; provider-meta fallback is either removed or marked transitional with tests. |
@@ -86,7 +86,7 @@ parallel when their write surfaces do not overlap.
 | Materialize topology edge substrate | #866 | storage DDL, ingest enrichment, archive operations, parser fixtures | Child-before-parent unresolved edge, late repair, cycle quarantine, and sibling/ancestor read tests pass. |
 | Add TargetRef-based marks and annotations | #867, #862 | user-state DDL/repository/API, daemon endpoints, reader tests | Idempotent CRUD works for conversation/message targets; content hash unchanged; reimport preservation tested where identity evidence exists. |
 | Prove packaged daemon convergence | #845, #996, #999, #829, #869 | Sinnix input update, package/service config, daemon docs | Installed service is latest merged Polylogue, real archive converges, health/status and residual workload are recorded. |
-| Reduce verification wall time | #1026, #997, #998, #594/#590 | `devtools/verify.py`, test config, proof routing | `devtools verify --affected --skip-slow` handles small diffs; full non-slow baseline is measured and outliers have owners. |
+| Reduce verification wall time | #1026, #997, #998, #594/#590 | `devtools/verify.py`, test config, pytest artifacts | default `devtools verify` runs affected tests; full non-slow baseline is measured explicitly and outliers have owners. |
 
 ## Parallel Execution Rules
 
@@ -114,7 +114,7 @@ Good parallel lanes:
 - visual evidence worker: synthetic reader DOM/browser lane;
 - topology worker: edge substrate and topology read model;
 - user-state worker: marks, annotations, saved views, recall packs;
-- verification worker: affected-test workflow and proof routing;
+- verification worker: affected-test workflow, pytest evidence artifacts, and report cleanup;
 - packaging/deployment worker: Sinnix input, package/service rollout evidence.
 
 Serialize work when lanes touch the same shared file family:
@@ -156,9 +156,10 @@ Avoid wasting RAM and wallclock:
   gates.
 - For packaging/deployment, run code checks first, then Nix/service checks, so
   failures are attributable.
-- When `devtools verify --affected --skip-slow` is available, use it for small
-  changes and reserve full non-slow pytest for merge readiness or high-risk
-  shared behavior.
+- Keep pytest-testmon seeded with `devtools verify --seed-testmon --skip-slow`.
+  The normal `devtools verify` path runs affected tests; use `devtools verify
+  --all` only as an explicit full non-integration diagnostic or release/CI
+  parity check.
 
 ## MK3 Integration Waves
 
@@ -187,7 +188,7 @@ Scope:
 - Surface message anchors, content-block summaries, paste/attachment counts,
   provenance status, search diagnostics, and source-centered vocabulary.
 
-Exit proof:
+Exit evidence:
 
 - daemon HTTP contract tests for list/search/detail/messages/facets/status;
 - CLI/MCP/API parity checks where the same query spec is used;
@@ -217,7 +218,7 @@ Scope:
 - Keep derived/provenance/user-state panels statusful when substrate is missing
   instead of inventing frontend-only data.
 
-Exit proof:
+Exit evidence:
 
 - #865 browser/DOM lane covers list/search, conversation detail, degraded
   states, nonblank rendering, and private-path safety;
@@ -248,7 +249,7 @@ Scope:
 - Drill into raw artifacts, source runs, hook events, parser evidence, and
   blob/attachment links through sanitized provenance APIs.
 
-Exit proof:
+Exit evidence:
 
 - fixtures for explicit paste spans, heuristic paste fallback, missing
   attachment, quarantined/unsupported attachment, and provenance redaction;
@@ -280,7 +281,7 @@ Scope:
 - Start workspace persistence in URLs and graduate to durable user-state
   storage when #867 is ready.
 
-Exit proof:
+Exit evidence:
 
 - storage tests for unresolved parent, late repair, ambiguous parent, cycle
   quarantine, subagent/sidechain cluster, and sibling/ancestor reads;
@@ -309,7 +310,7 @@ Scope:
 - Surface insights, cost, similarity, and provenance panels with readiness,
   freshness, confidence, missing-data, and disabled/unconfigured states.
 
-Exit proof:
+Exit evidence:
 
 - idempotent CRUD and content-hash exclusion tests for user metadata;
 - saved-view query roundtrip tests;
@@ -339,7 +340,7 @@ Scope:
 - Keep packaging/systemd responsible for service placement, restart, and
   operator control; application code reports health and progress.
 
-Exit proof:
+Exit evidence:
 
 - event contract tests for append/update/snapshot/stale/disconnected states;
 - reader/list DOM smoke for appended messages, stale state, disconnected
@@ -358,7 +359,7 @@ Owner issues: #865, #952, #953, #958, #997, #998, #594, #590.
 Start condition:
 
 - Enough runtime reader/workbench behavior exists that screenshots, packaging,
-  and proof reports document product reality rather than intended designs.
+  and verification reports document product reality rather than intended designs.
 
 Scope:
 
@@ -369,10 +370,10 @@ Scope:
 - Polish CLI output/completions/color as the companion control plane.
 - Package the daemon/web reader/service setup for Nix/PyPI/container/homebrew
   surfaces without source-checkout assumptions.
-- Route proof/verification reports to executable checks instead of
-  metadata-only artifacts.
+- Route verification reports to pytest, coverage, benchmark, CI, and runtime
+  evidence artifacts instead of metadata-only rows.
 
-Exit proof:
+Exit evidence:
 
 - `devtools verify --quick`;
 - full `devtools verify` before PR readiness;

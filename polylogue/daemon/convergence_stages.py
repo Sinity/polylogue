@@ -46,7 +46,7 @@ class _FtsRepairNeeds:
 def make_fts_stage(db_path: Path) -> ConvergenceStage:
     """Verify FTS coverage and repair gaps."""
 
-    def check(path: Path) -> bool:  # noqa: ARG001
+    def check(path: Path) -> bool:
         if not db_path.exists():
             return False
         from polylogue.storage.sqlite.connection_profile import open_connection
@@ -336,7 +336,7 @@ def make_embed_stage(db_path: Path) -> ConvergenceStage:
 def make_insights_stage(db_path: Path) -> ConvergenceStage:
     """Refresh session insights for conversations missing them."""
 
-    def check(path: Path) -> bool:  # noqa: ARG001
+    def check(path: Path) -> bool:
         if not db_path.exists():
             return False
         from polylogue.storage.sqlite.connection_profile import open_connection
@@ -358,7 +358,7 @@ def make_insights_stage(db_path: Path) -> ConvergenceStage:
         except Exception:
             return False
 
-    def execute(path: Path) -> bool:  # noqa: ARG001
+    def execute(path: Path) -> bool:
         from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
         from polylogue.storage.sqlite.connection import open_connection
 

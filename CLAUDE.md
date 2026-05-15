@@ -23,9 +23,11 @@ acceptance criteria. Reference it from the PR with `Ref #NNN` or
 
 ### Verification before push
 
-Run `devtools verify` (full, with pytest) before creating any PR. The
-git hooks enforce format and lint on commit and `devtools verify --quick`
-on push, but the full baseline must pass before the PR is opened.
+Run `devtools verify` before creating any PR. The default baseline runs the
+static/generated gates plus pytest-testmon affected tests. Seed the testmon
+database explicitly on a fresh checkout or after harness/dependency changes.
+The git hooks enforce format and lint on commit and `devtools verify --quick`
+on push, but the default baseline must pass before the PR is opened.
 
 Do not treat CI as the first verification pass. Anticipate failures
 locally.
@@ -46,8 +48,9 @@ Use it this way:
 - Treat `Known Gaps` as actionable only when they are in a changed or directly
   affected domain. Broad repo-wide gap dumps should not block unrelated PRs, but
   recurring noise should be folded back into #594.
-- Read `stable affected obligations` as unchanged obligations touched by the
-  current diff, not as real freshness/SLA evidence.
+- Treat any remaining proof-pack obligation language as transitional report
+  terminology; real verification closure comes from pytest, coverage,
+  benchmark, CI, static-check, and runtime evidence artifacts.
 - If the Proof Pack is noisy, misleading, or misses a relevant gate, comment on
   the PR or #594 with the concrete mismatch. Do not silently ignore it.
 

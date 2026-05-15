@@ -131,11 +131,11 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     CommandSpec(
         "render-verification-catalog",
         "generated surfaces",
-        "Render the verification-lab proof catalog from obligation registries.",
+        "Render the verification-lab catalog from check registries.",
         "devtools.render_verification_catalog",
         use_when=(
-            "Refresh or verify the proof-obligation catalog that anchors the verification-lab surface after "
-            "changing proof subjects, claims, runners, or catalog rendering."
+            "Refresh or verify the catalog that anchors changed-path verification reports after "
+            "changing subjects, claims, runners, or catalog rendering."
         ),
         examples=(
             "devtools render-verification-catalog",
@@ -167,9 +167,9 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     CommandSpec(
         "affected-obligations",
         "verification",
-        "Route changed paths or refs to affected verification-lab proof obligations and focused checks.",
+        "Route changed paths or refs to affected verification checks and focused commands.",
         "devtools.affected_obligations",
-        use_when="Find the proof obligations and inner-loop checks affected by local changes before escalating to full PR gates.",
+        use_when="Find the checks and inner-loop commands affected by local changes before escalating to full PR gates.",
         examples=(
             "devtools affected-obligations --base-ref master --head-ref HEAD",
             "devtools affected-obligations --path polylogue/sources/parsers/codex.py",
@@ -358,12 +358,10 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     CommandSpec(
         "proof-pack",
         "verification",
-        "Domain-grouped affected coverage report for vibecode confidence.",
+        "Domain-grouped verification impact report for changed paths.",
         "devtools.proof_pack",
         use_when=(
-            "Get a domain-aware confidence answer about what a change affects, "
-            "instead of an undifferentiated obligation count. Maps changed paths "
-            "to impacted assurance domains with oracle-classified claim counts."
+            "Review what a change affects by domain and choose focused gates without reading raw catalog routing."
         ),
         examples=(
             "devtools proof-pack --base-ref origin/master --head-ref HEAD",
@@ -519,7 +517,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     CommandSpec(
         "obligation-diff",
         "verification",
-        "Diff proof obligations between two git refs to surface affected assurance domains.",
+        "Diff catalog-backed verification checks between two git refs.",
         "devtools.obligation_diff",
         use_when=(
             "Before opening a PR, check which assurance domains are affected by "

@@ -15,11 +15,9 @@ from __future__ import annotations
 import pytest
 
 syrupy = pytest.importorskip("syrupy")
+pytest.importorskip("pyte", reason="pyte not installed")
 
-from tests.infra.pty_cli import HAS_PYTE, grid_to_text, run_in_pty, sanitize_grid
-
-# Mark all tests as requiring pyte
-pytestmark = pytest.mark.skipif(not HAS_PYTE, reason="pyte not installed")
+from tests.infra.pty_cli import grid_to_text, run_in_pty, sanitize_grid
 
 
 class TestHelpOutput:

@@ -262,7 +262,7 @@ class _StubCursor:
     def __init__(self, db_path: Path) -> None:
         self._db_path = db_path
 
-    def begin_ingest_attempt(self, **kwargs: object) -> str:  # noqa: ANN401
+    def begin_ingest_attempt(self, **kwargs: object) -> str:
         return "attempt-stub"
 
     def update_ingest_attempt(self, *args: object, **kwargs: object) -> None:

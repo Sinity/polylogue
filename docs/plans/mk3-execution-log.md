@@ -18,7 +18,7 @@ Updated: 2026-05-15
 | Paste/attachment/provenance | #839, #864, #848, #993 | Blocked on message envelope/provenance vocabulary | Implement paste-span projection MVP after contract spine | focused storage/payload tests, daemon API tests, visual state tests |
 | Topology/workspace | #866, #993, #848, #865 | Substrate can start once source identity is stable | Materialize topology edges before graph UI | topology storage tests, parser fixtures, visual graph states |
 | User state/advanced panels | #867, #993, #1019, #995 | Active MCP parity slice | Expose marks and saved views through write-role MCP tools; keep annotations/message targets and CLI parity open | MCP mutation tests, saved-view roundtrip tests |
-| Verification throughput | #1026, #997, #998, #594, #590, #1012 | Ready to start independently | Add affected-test workflow and reduce outlier runtime | `devtools verify --affected --skip-slow`, durations capture, focused regression tests |
+| Verification throughput | #1026, #997, #998, #594, #590, #1012 | Active testmon default slice | Keep pytest-testmon seeded, reduce outlier runtime, and remove remaining full-suite reflexes | `devtools verify`, `devtools verify --seed-testmon --skip-slow`, focused regression tests |
 
 ## Active Slice Notes
 
@@ -113,7 +113,7 @@ clarity:
 | Visual evidence worker | Synthetic reader fixture, DOM/browser smoke, evidence manifests | `tests/unit/daemon/test_web_reader.py`, possible `tests/visual/`, `devtools/lab_scenario.py`, visual docs | Storage schema and archive semantics | targeted reader smoke lane |
 | Topology worker | topology edge DDL, ingest repair, topology operations | storage DDL, ingest enrichment, archive operations, topology tests | Reader graph UI until read model exists | `pytest tests/unit/storage/test_session_topology.py -q` or new equivalent |
 | User-state worker | marks, annotations, saved views, recall packs | user-state DDL/repository/API, daemon endpoints, user-state tests | topology schema and reader layout | targeted user-state storage/API tests |
-| Verification worker | affected tests, proof routing, slow-test reduction | `devtools/verify.py`, test config, proof manifests | feature semantics | `devtools verify --quick`, targeted pytest duration captures |
+| Verification worker | affected tests, pytest evidence artifacts, slow-test reduction | `devtools/verify.py`, test config, verification manifests | feature semantics | `devtools verify --quick`, targeted pytest duration captures |
 | Packaging/deployment worker | Sinnix input, Nix package/service, deployment docs | Sinnix flake/module files, packaging docs, daemon service evidence | Polylogue runtime changes unless needed for packaging | `nix flake check`/targeted Nix build plus service smoke |
 
 Serialise work when two lanes must edit the same shared files:
@@ -151,16 +151,17 @@ Default inner loop:
 1. Run the narrow test for the touched subsystem.
 2. Run static/generated checks once the slice is coherent.
 3. Run `devtools verify --quick` before push.
-4. Run full `devtools verify` before PR readiness when the PR changes runtime
-   semantics, unless the PR explicitly records why a focused gate is sufficient.
+4. Run `devtools verify` before PR readiness; it uses pytest-testmon affected
+   selection after a successful seed.
 
 Resource rules:
 
 - Do not run full pytest repeatedly while the host is under IO pressure or low
   memory. Use focused tests and `devtools verify --quick` until the branch is
   near merge.
-- Prefer `devtools verify --affected --skip-slow` for small changes once the
-  affected-test workflow is implemented.
+- Run `devtools verify --seed-testmon --skip-slow` after checkout,
+  dependency/test-harness changes, or when default verify reports a missing
+  seed. Do not use a hand-maintained affected-test router.
 - For browser/visual lanes, keep fast DOM/contract smoke separate from the
   heavier browser screenshot lane.
 - For schema/storage changes, run focused storage/parser tests before broad
@@ -170,6 +171,203 @@ Resource rules:
   failures are easier to attribute.
 
 ## Execution Entries
+
+### 2026-05-15 - Pytest-testmon default affected verification
+
+Target:
+
+- #1059 affected-test default path, replacing the homegrown file/import router
+  with pytest-testmon.
+
+Outcome:
+
+- `devtools verify` now runs the static/generated gates plus
+  `pytest --testmon -n 0` for affected per-test selection.
+- `devtools verify --seed-testmon --skip-slow` is the explicit full
+  non-integration seed/update path. It writes `.testmondata` and
+  `.cache/testmon/seed.json`; default verify refuses ad hoc or missing seed
+  state instead of falling back to the full suite.
+- `devtools verify --all` / `--full` is the explicit full non-integration
+  diagnostic. `--affected` and `_affected_test_files()` were removed.
+- The verify runner now stops after the first failed step, preventing format or
+  lint failures from cascading into expensive pytest runs.
+- Full/seed pytest worker count defaults to 8 and can be adjusted with
+  `POLYLOGUE_PYTEST_WORKERS`; affected testmon runs use `-n 0` to avoid xdist
+  overhead for small selections.
+- The extra `devtools` worktree-result replay cache was removed. Every
+  invocation now reaches pytest-testmon, which owns package/Python/source
+  invalidation; harness/config/dependency-lock changes automatically widen to
+  `--testmon-noselect` instead of relying on a manual full-suite bypass.
+
+Measured locally:
+
+- Missing seed: `devtools verify --json` exits 2 with seed guidance.
+- Seed: `POLYLOGUE_PYTEST_WORKERS=4 devtools verify --seed-testmon --skip-slow
+  --json` ran 6424 tests, pytest 209.05s, total 231.42s.
+- Default after seed: `devtools verify --json` ran 5 testmon-selected tests,
+  pytest 3.60s, total 24.04s.
+- Default after editing the verify tests: `devtools verify --json` ran 17
+  testmon-selected tests, pytest 7.54s, total 32.57s.
+
+Verification:
+
+- `pytest -q tests/unit/devtools/test_verify.py`
+- `ruff check devtools/verify.py tests/unit/devtools/test_verify.py pyproject.toml`
+- `mypy --strict devtools/verify.py tests/unit/devtools/test_verify.py`
+- `POLYLOGUE_PYTEST_WORKERS=4 devtools verify --seed-testmon --skip-slow --json`
+- `devtools verify --json`
+
+### 2026-05-15 - Health aggregation evidence
+
+Target:
+
+- #999 daemon health tier contract and aggregation evidence.
+
+Outcome:
+
+- Added a deterministic health aggregation contract test that patches the fast,
+  medium, and expensive tier runners, requests fast+medium, and asserts the
+  expensive tier is excluded while worst-severity aggregation and tier summary
+  counts are correct.
+- The test records `daemon.health.aggregate` evidence with requested tiers,
+  overall status, alert count, tier summary, severities, and
+  `expensive_tier_excluded`.
+
+Artifact example:
+
+- `.cache/verification/evidence/daemon.health.aggregate-*.json`
+
+Verification:
+
+- `pytest -q tests/unit/daemon/test_health_contracts.py`
+- `ruff check tests/unit/daemon/test_health_contracts.py`
+- `mypy --strict tests/unit/daemon/test_health_contracts.py`
+
+### 2026-05-15 - Notification dispatch evidence
+
+Target:
+
+- #999 notification dispatch verifiability without adding a speculative
+  non-log production backend.
+
+Outcome:
+
+- Added tests for the actual notification dispatch contract: alert batches are
+  delivered to the selected backend with config, unknown configured backend
+  names fail loudly, and backend exceptions propagate to the daemon periodic
+  health loop's existing catch boundary.
+- The dispatch route records `daemon.notifications.dispatch` evidence with
+  alert count, severities, backend name, call count, and config-forwarding fact.
+- Rate-limit/dedup and any non-log transport remain open product work; this
+  slice pins the current dispatch boundary first.
+
+Artifact example:
+
+- `.cache/verification/evidence/daemon.notifications.dispatch-*.json`
+
+Verification:
+
+- `pytest -q tests/unit/daemon/test_notifications.py`
+- `ruff check tests/unit/daemon/test_notifications.py`
+- `mypy --strict tests/unit/daemon/test_notifications.py`
+
+### 2026-05-15 - Backup restore/read evidence
+
+Target:
+
+- #999 backup verification acceptance criterion: backup must be readable, not
+  merely created.
+
+Outcome:
+
+- Added a daemon backup contract test that seeds a real archive database, runs
+  `backup_archive`, opens the produced backup through the read-only SQLite path,
+  runs `PRAGMA integrity_check`, and verifies restored conversation/message
+  rows can be queried.
+- The test records bounded `daemon.backup_restore.read` evidence with backup
+  filename, DB size, warning count, integrity status, row counts, and
+  `restore_query_ok`.
+
+Artifact example:
+
+- `.cache/verification/evidence/daemon.backup_restore.read-*.json`
+
+Verification:
+
+- `pytest -q tests/unit/daemon/test_backup.py`
+- `ruff check tests/unit/daemon/test_backup.py`
+- `mypy --strict tests/unit/daemon/test_backup.py`
+- `ruff format --check tests/unit/daemon/test_backup.py`
+
+### 2026-05-15 - Daemon status and convergence evidence artifacts
+
+Target:
+
+- #999 runtime observability evidence through ordinary pytest contract tests.
+
+Coordination:
+
+- Main-agent implementation; the slice only marks existing daemon status and
+  convergence-debt tests with bounded evidence recording.
+
+Outcome:
+
+- `polylogued status --format json` now records a contract evidence artifact
+  containing daemon component status, live source availability counts, browser
+  capture status, stdout sample, and exit code.
+- Convergence-debt retry tests now record source-path and conversation-subject
+  retry evidence: debt before/after, retry count, and source cursor cleanup.
+- Artifacts are written through `tests/infra/contract_evidence.py`, so the
+  mechanism remains pytest-native and does not create a parallel proof layer.
+
+Artifact examples:
+
+- `.cache/verification/evidence/daemon.status.json-*.json`
+- `.cache/verification/evidence/daemon.convergence_debt.source_retry-*.json`
+- `.cache/verification/evidence/daemon.convergence_debt.conversation_retry-*.json`
+
+Verification:
+
+- `pytest -q tests/unit/daemon/test_daemon_cli.py::test_polylogued_status_json_reports_daemon_components tests/unit/daemon/test_daemon_cli.py::test_drain_convergence_debt_retries_due_items_without_source_failure tests/unit/daemon/test_daemon_cli.py::test_drain_convergence_debt_retries_conversation_subjects_without_source_lookup`
+- `ruff check tests/unit/daemon/test_daemon_cli.py`
+- `mypy --strict tests/unit/daemon/test_daemon_cli.py`
+
+### 2026-05-15 - Verification suppressions reality scan
+
+Target:
+
+- #1062 suppression/exception discipline as a concrete source scan, not only
+  an empty registry expiry lint.
+
+Coordination:
+
+- Main-agent implementation; no subagent needed because the write set is
+  limited to `devtools verify-suppressions` and its unit tests.
+
+Outcome:
+
+- `devtools verify-suppressions` now discovers real source-level exception
+  mechanisms across `polylogue/`, `tests/`, and `devtools/`: `pytest.skip`,
+  `pytest.xfail`, `pytest.mark.skip/skipif/xfail`, `# noqa`,
+  `# type: ignore[...]`, and coverage ignores.
+- Discovery uses Python AST/tokenization rather than text grep so fixture
+  strings do not inflate the report.
+- `--enforce-discovered` blocks unregistered discovered exceptions; default
+  mode reports the current backlog so existing repo debt is visible without
+  hiding behind an empty `docs/plans/suppressions.yaml`.
+
+Observed baseline:
+
+- `devtools verify-suppressions --json`: 175 discovered source exceptions,
+  all currently unregistered; `blocking=False` without
+  `--enforce-discovered`.
+
+Verification:
+
+- `pytest -q tests/unit/devtools/test_verify_suppressions.py`
+- `ruff check devtools/verify_suppressions.py tests/unit/devtools/test_verify_suppressions.py`
+- `mypy --strict devtools/verify_suppressions.py tests/unit/devtools/test_verify_suppressions.py`
+- `devtools verify-suppressions --json`
 
 ### 2026-05-15 - MK3 design pack dissolved into tracker
 
@@ -645,4 +843,46 @@ Verification:
 - `ruff check polylogue/api/archive.py polylogue/cli/commands/user_state.py polylogue/mcp/payloads.py polylogue/mcp/server_mutation_tools.py tests/unit/storage/test_user_state_contracts.py tests/unit/daemon/test_web_reader.py tests/unit/cli/test_user_state_command.py tests/unit/mcp/test_user_state_tools.py`
 - `python -m mypy polylogue/api/archive.py polylogue/cli/commands/user_state.py polylogue/mcp/payloads.py polylogue/mcp/server_mutation_tools.py`
 - `pytest -q -n0 tests/unit/mcp/test_tool_schema_witness.py tests/unit/mcp/test_envelope_contracts.py tests/unit/cli/test_click_app.py::TestCliMetadata::test_all_subcommands_registered tests/unit/mcp/test_user_state_tools.py tests/unit/cli/test_user_state_command.py`
+- `devtools render-all --check`
+
+### 2026-05-15 - verification artifact migration start
+
+Target:
+
+- Stop treating proof/catalog rows as the verification authority.
+- Realize the first reusable pytest artifact mechanism for contract tests.
+- Reframe planning docs and issues around pytest/coverage/benchmark/CI/runtime
+  artifacts.
+
+Owned files:
+
+- `tests/infra/contract_evidence.py`
+- `tests/infra/test_contract_evidence.py`
+- `tests/unit/cli/test_json_envelope_contract.py`
+- `pyproject.toml`
+- `tests/conftest.py`
+- verification planning docs under `docs/` and `docs/plans/`
+
+Outcome:
+
+- Added `record_contract_evidence`, an explicit opt-in pytest fixture that
+  writes bounded JSON artifacts and exposes artifact paths through pytest
+  `record_property`.
+- Added redaction/truncation for repo/home paths and obvious secret assignment
+  strings before evidence reaches disk.
+- Registered the `contract` pytest marker.
+- Wired the CLI JSON envelope matrix to emit `cli.json_envelope` evidence.
+- Wired MCP surface-registration contract tests to emit evidence for tools,
+  resources, resource templates, and prompts.
+- Marked proof-era manifests as transitional inventories, not verification
+  closure.
+- Updated #1058/#1059/#1060/#1062/#1063/#1064/#594/#997/#999 issue bodies so
+  each points at standard mechanisms and concrete owner surfaces.
+
+Verification:
+
+- `pytest -q tests/infra/test_contract_evidence.py tests/unit/cli/test_json_envelope_contract.py tests/unit/mcp/test_server_surfaces.py::TestServerSurfaceRegistration::test_server_surface_contract`
+- `ruff check tests/infra/contract_evidence.py tests/infra/test_contract_evidence.py tests/conftest.py tests/unit/cli/test_json_envelope_contract.py tests/unit/mcp/test_server_surfaces.py`
+- `mypy --strict tests/infra/contract_evidence.py tests/infra/test_contract_evidence.py tests/conftest.py tests/unit/cli/test_json_envelope_contract.py tests/unit/mcp/test_server_surfaces.py`
+- `devtools verify-manifests`
 - `devtools render-all --check`

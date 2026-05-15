@@ -1,11 +1,11 @@
-"""Diff-shaped proof-pack report for PR confidence.
+"""Diff-shaped verification impact report for PR confidence.
 
-Consumes the assurance-domain manifests, proof catalog, and affected-obligation
-routing to produce an operator-facing confidence answer.
+Consumes assurance-domain manifests, the catalog implementation, and
+changed-path routing to produce an operator-facing confidence answer.
 
-The report classifies every affected obligation by evidence taxonomy so agents
-can distinguish executable checks from static declarations, metadata
-completeness assertions, and advisory noise.
+The report classifies each routed check by artifact source so agents can
+distinguish executable tests from static declarations, metadata completeness
+assertions, manual review requirements, and advisory noise.
 """
 
 from __future__ import annotations
@@ -32,14 +32,25 @@ from polylogue.proof.diffing import (
 )
 from polylogue.proof.models import EvidenceTaxonomy, RunnerBinding, SubjectRef
 
+_CONTRACT_EVIDENCE_DIR = Path(".cache/verification/evidence")
+
 # Taxonomy human-facing descriptions and actionability guidance.
 _TAXONOMY_DESCRIPTIONS: dict[EvidenceTaxonomy, str] = {
-    "executable_behavior": "Gates backed by executable checks (tests, probes, smoke runs).",
-    "observability": "Runtime trace or diagnostic observability evidence.",
-    "architectural_static": "Static boundary checks (topology, layering, file budgets).",
-    "metadata_spec": "Metadata and specification completeness -- does not block by itself.",
-    "manual_review": "Requires human agent judgment artifact.",
+    "executable_behavior": "Pytest nodes, probes, smoke runs, or benchmark commands.",
+    "observability": "Runtime trace or diagnostic artifact evidence.",
+    "architectural_static": "Static checks such as topology, layering, file budgets, and manifests.",
+    "metadata_spec": "Documentation or metadata completeness -- does not block by itself.",
+    "manual_review": "Explicit manual review artifact required.",
     "advisory": "Advisory / noise -- tracking only, not a gate.",
+}
+
+_TAXONOMY_ARTIFACT_SOURCE: dict[EvidenceTaxonomy, str] = {
+    "executable_behavior": "pytest_or_command",
+    "observability": "runtime_artifact",
+    "architectural_static": "static_check",
+    "metadata_spec": "metadata_or_docs",
+    "manual_review": "manual_review",
+    "advisory": "advisory",
 }
 
 _TAXONOMY_ACTIONABLE: frozenset[EvidenceTaxonomy] = frozenset(
@@ -118,19 +129,19 @@ def _taxonomy_for_obligation(
     return result
 
 
-def _build_taxonomy_groups(
+def _build_artifact_source_groups(
     affected_obligations: tuple[AffectedObligation, ...],
     *,
     catalog: VerificationCatalog,
     cache: dict[str, EvidenceTaxonomy],
 ) -> dict[str, Any]:
-    """Group affected obligations by evidence taxonomy."""
+    """Group routed checks by their real artifact source."""
     grouped: dict[EvidenceTaxonomy, list[dict[str, Any]]] = defaultdict(list)
     for item in affected_obligations:
         taxonomy = _taxonomy_for_obligation(item.obligation_id, catalog, cache=cache)
         grouped[taxonomy].append(
             {
-                "obligation_id": item.obligation_id,
+                "check_id": item.obligation_id,
                 "claim_id": item.claim_id,
                 "subject_id": item.subject_id,
                 "reasons": list(item.reasons),
@@ -141,10 +152,11 @@ def _build_taxonomy_groups(
     for taxonomy in _TAXONOMY_SORT_ORDER:
         items = grouped.get(taxonomy, [])
         payload[taxonomy] = {
+            "artifact_source": _TAXONOMY_ARTIFACT_SOURCE.get(taxonomy, "advisory"),
             "description": _TAXONOMY_DESCRIPTIONS.get(taxonomy, ""),
             "actionable": taxonomy in _TAXONOMY_ACTIONABLE,
-            "obligation_count": len(items),
-            "obligations": items,
+            "check_count": len(items),
+            "checks": items,
         }
     return payload
 
@@ -200,7 +212,7 @@ def build_proof_pack(
         visible_domains=visible_gap_domains,
     )
     taxonomy_cache: dict[str, EvidenceTaxonomy] = {}
-    taxonomy_groups = _build_taxonomy_groups(
+    artifact_source_groups = _build_artifact_source_groups(
         affected.affected_obligations,
         catalog=catalog,
         cache=taxonomy_cache,
@@ -223,9 +235,10 @@ def build_proof_pack(
         "domain_coverage": _domain_coverage(domains_data, catalog),
         "gate_groups": gate_groups,
         "required_gates": _checks_payload((*affected.inner_loop_checks, *affected.pr_gates)),
-        "agent_judgment_cells": _agent_judgment_cells(affected_claims),
-        "stable_affected_obligations": list(affected.obligation_diff.stable_affected),
-        "taxonomy": taxonomy_groups,
+        "manual_review_requirements": _manual_review_requirements(affected_claims),
+        "stable_routed_checks": list(affected.obligation_diff.stable_affected),
+        "artifact_source_groups": artifact_source_groups,
+        "contract_evidence_artifacts": _contract_evidence_summary(root),
         "known_gaps": known_gaps,
         "additional_known_gaps": additional_known_gaps,
         "oracle_mix": dict(Counter(claim.oracle for claim in affected_claims)),
@@ -234,9 +247,9 @@ def build_proof_pack(
             "No changed paths -- zero obligations are change-specific. Catalog stats reflect the baseline, not a diff."
             if clean_tree
             else (
-                f"{len(paths)} changed path(s); {affected_count} affected obligations, "
-                f"{stable_count} stable affected. "
-                "Taxonomy distinguishes executable gates from static/metadata obligations."
+                f"{len(paths)} changed path(s); {affected_count} routed check(s), "
+                f"{stable_count} stable routed check(s). "
+                "Artifact-source groups distinguish tests, static checks, metadata, and review requirements."
             )
         ),
     }
@@ -258,15 +271,18 @@ def evaluate_check_policy(report: dict[str, Any]) -> dict[str, Any]:
         elif status == OutcomeStatus.WARNING.value:
             warnings.append(line)
 
-    serious_judgment_cells = [
-        cell
-        for cell in report.get("agent_judgment_cells", [])
-        if isinstance(cell, dict) and cell.get("severity") == "serious" and not _judgment_cell_satisfied(cell)
+    serious_review_requirements = [
+        requirement
+        for requirement in report.get("manual_review_requirements", [])
+        if isinstance(requirement, dict)
+        and requirement.get("severity") == "serious"
+        and not _manual_review_requirement_satisfied(requirement)
     ]
-    for cell in serious_judgment_cells:
+    for requirement in serious_review_requirements:
         errors.append(
-            "affected serious claim needs agent judgment artifact: "
-            f"{cell.get('claim_id')} ({cell.get('oracle')}, {cell.get('independence_level')})"
+            "affected serious claim needs manual review artifact: "
+            f"{requirement.get('claim_id')} ({requirement.get('oracle')}, "
+            f"{requirement.get('independence_level')})"
         )
 
     suppressed = _suppressed_change_subjects(report)
@@ -285,13 +301,15 @@ def evaluate_check_policy(report: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _judgment_cell_satisfied(cell: dict[str, Any]) -> bool:
-    if cell.get("tracked_exception"):
+def _manual_review_requirement_satisfied(requirement: dict[str, Any]) -> bool:
+    if requirement.get("tracked_exception"):
         return True
-    result = str(cell.get("result") or "").strip().lower()
+    result = str(requirement.get("result") or "").strip().lower()
     if result not in {"accepted", "passed", "pass", "ok"}:
         return False
-    return all(str(cell.get(field) or "").strip() for field in ("artifact", "reviewer", "produced_at", "freshness"))
+    return all(
+        str(requirement.get(field) or "").strip() for field in ("artifact", "reviewer", "produced_at", "freshness")
+    )
 
 
 def _suppressed_change_subjects(report: dict[str, Any]) -> list[str]:
@@ -313,7 +331,6 @@ def _domain_payload(domain: str, info: object, claims: list[Any]) -> dict[str, A
     return {
         "domain": domain,
         "description": info_dict.get("description", ""),
-        "maturity": info_dict.get("maturity", "seed"),
         "claim_count": len({claim.id for claim in domain_claims}),
         "oracle_counts": dict(Counter(claim.oracle for claim in domain_claims)),
     }
@@ -334,7 +351,6 @@ def _domain_coverage(domains_data: dict[str, dict[str, Any]], catalog: Any) -> l
             {
                 "domain": domain,
                 "description": info_dict.get("description", ""),
-                "maturity": info_dict.get("maturity", "seed"),
                 "claim_count": len(claims),
                 "obligation_count": obligations_by_domain[domain],
                 "oracle_counts": dict(Counter(claim.oracle for claim in claims)),
@@ -355,11 +371,11 @@ def _checks_payload(checks: tuple[RecommendedCheck, ...]) -> list[dict[str, Any]
     return payload
 
 
-def _agent_judgment_cells(claims: list[Any]) -> list[dict[str, Any]]:
-    cells: list[dict[str, Any]] = []
+def _manual_review_requirements(claims: list[Any]) -> list[dict[str, Any]]:
+    requirements: list[dict[str, Any]] = []
     for claim in claims:
         if claim.oracle == "manual_review" or claim.independence_level in {"same_source", "self_attesting"}:
-            cells.append(
+            requirements.append(
                 {
                     "claim_id": claim.id,
                     "oracle": claim.oracle,
@@ -371,10 +387,51 @@ def _agent_judgment_cells(claims: list[Any]) -> list[dict[str, Any]]:
                     "produced_at": None,
                     "freshness": None,
                     "result": "tracked_exception" if claim.tracked_exception else "missing",
-                    "reason": "requires agent judgment artifact or independent evidence upgrade",
+                    "reason": "requires manual review artifact or independent evidence upgrade",
                 }
             )
-    return cells
+    return requirements
+
+
+def _contract_evidence_summary(root: Path) -> dict[str, Any]:
+    evidence_dir = root / _CONTRACT_EVIDENCE_DIR
+    if not evidence_dir.exists():
+        return {
+            "artifact_dir": _CONTRACT_EVIDENCE_DIR.as_posix(),
+            "artifact_count": 0,
+            "by_surface": {},
+            "artifacts": [],
+        }
+
+    artifacts: list[dict[str, Any]] = []
+    by_surface: Counter[str] = Counter()
+    for path in sorted(evidence_dir.glob("*.json")):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        surface = str(payload.get("surface") or "unknown")
+        by_surface[surface] += 1
+        artifacts.append(
+            {
+                "path": path.relative_to(root).as_posix(),
+                "contract": str(payload.get("contract") or ""),
+                "surface": surface,
+                "test_nodeid": str(payload.get("test_nodeid") or ""),
+                "git_sha": str(payload.get("git_sha") or ""),
+                "dirty": bool(payload.get("dirty", False)),
+                "timestamp": str(payload.get("timestamp") or ""),
+            }
+        )
+
+    return {
+        "artifact_dir": _CONTRACT_EVIDENCE_DIR.as_posix(),
+        "artifact_count": len(artifacts),
+        "by_surface": dict(sorted(by_surface.items())),
+        "artifacts": artifacts[-20:],
+    }
 
 
 def _known_gaps(
@@ -425,10 +482,10 @@ def _subject_assurance_domain(subject: Any) -> str | None:
     return domain if isinstance(domain, str) and domain.strip() else None
 
 
-def build_slop_dashboard(catalog: VerificationCatalog) -> dict[str, Any]:
-    """Analyze the catalog for anti-vacuity violations — "slop" claims.
+def build_anti_vacuity_report(catalog: VerificationCatalog) -> dict[str, Any]:
+    """Analyze the catalog for anti-vacuity violations.
 
-    A claim is slop if ANY of:
+    A claim is flagged if any of:
     - No breaker defined and no tracked exception
     - No runner binding (no executable check)
     - Zero subjects matched (no compiled obligations)
@@ -486,8 +543,8 @@ def build_slop_dashboard(catalog: VerificationCatalog) -> dict[str, Any]:
             "self_referential": self_referential,
             "stale_evidence": bool(stale_evidence),
         }
-        is_slop = any(reasons.values())
-        if is_slop:
+        is_flagged = any(reasons.values())
+        if is_flagged:
             rows.append(
                 {
                     "claim_id": claim.id,
@@ -507,7 +564,7 @@ def build_slop_dashboard(catalog: VerificationCatalog) -> dict[str, Any]:
 
     return {
         "total_claims": len(catalog.claims),
-        "slop_count": len(rows),
+        "flagged_count": len(rows),
         "rows": sorted(rows, key=lambda r: r["claim_id"]),
         "by_reason": {
             "missing_breaker": sum(1 for r in rows if r["missing_breaker"]),
@@ -519,12 +576,12 @@ def build_slop_dashboard(catalog: VerificationCatalog) -> dict[str, Any]:
     }
 
 
-def render_slop_markdown(dashboard: dict[str, Any]) -> str:
-    """Render the slop dashboard as markdown."""
+def render_anti_vacuity_markdown(dashboard: dict[str, Any]) -> str:
+    """Render the anti-vacuity report as markdown."""
     lines = [
-        "## Anti-Vacuity Slop Dashboard",
+        "## Anti-Vacuity Report",
         "",
-        f"**Claims analyzed:** {dashboard['total_claims']}  **Slop claims:** {dashboard['slop_count']}",
+        f"**Claims analyzed:** {dashboard['total_claims']}  **Flagged claims:** {dashboard['flagged_count']}",
         "",
         "### By Reason",
         "",
@@ -537,7 +594,7 @@ def render_slop_markdown(dashboard: dict[str, Any]) -> str:
 
     rows = dashboard["rows"]
     if not rows:
-        lines.append("_No slop claims found._")
+        lines.append("_No flagged claims found._")
         return "\n".join(lines)
 
     lines.extend(
@@ -559,7 +616,7 @@ def render_slop_markdown(dashboard: dict[str, Any]) -> str:
         )
 
     lines.append("")
-    lines.append("### X = slop condition detected. Empty = OK.")
+    lines.append("### X = anti-vacuity condition detected. Empty = OK.")
     return "\n".join(lines)
 
 
@@ -632,12 +689,12 @@ def _click_has_json_flag(cmd: Any) -> bool:
     return False
 
 
-def _print_slop_dashboard(dashboard: dict[str, Any]) -> None:
-    """Print a human-readable slop dashboard to stdout."""
-    print("Anti-Vacuity Slop Dashboard")
+def _print_anti_vacuity_report(dashboard: dict[str, Any]) -> None:
+    """Print a human-readable anti-vacuity report to stdout."""
+    print("Anti-Vacuity Report")
     print(f"{'=' * 40}")
     print(f"Claims analyzed: {dashboard['total_claims']}")
-    print(f"Slop claims:     {dashboard['slop_count']}")
+    print(f"Flagged claims:     {dashboard['flagged_count']}")
     print()
     print("By reason:")
     by_reason = dashboard["by_reason"]
@@ -648,7 +705,7 @@ def _print_slop_dashboard(dashboard: dict[str, Any]) -> None:
 
     rows = dashboard["rows"]
     if not rows:
-        print("No slop claims found.")
+        print("No flagged claims found.")
         return
 
     print(f"{'Claim ID':<55} {'Domain':<25} {'Brk':>3} {'Run':>3} {'Sub':>3} {'Slf':>3} {'Stl':>3}")
@@ -677,17 +734,17 @@ def _cost_tier_counts(report: Any, catalog: VerificationCatalog) -> dict[str, in
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Diff-shaped proof-pack report for PR confidence.")
+    parser = argparse.ArgumentParser(description="Diff-shaped verification impact report for PR review.")
     parser.add_argument("--base-ref", default="origin/master", help="Base git ref for changed-path discovery.")
     parser.add_argument("--head-ref", default="HEAD", help="Head git ref for changed-path discovery.")
     parser.add_argument("--path", action="append", dest="paths", default=None, help="Changed file path (repeatable).")
     parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON.")
     parser.add_argument("--markdown", action="store_true", help="Emit PR-comment-ready Markdown.")
-    parser.add_argument("--check", action="store_true", help="Exit non-zero when proof-pack blocking policy fails.")
+    parser.add_argument("--check", action="store_true", help="Exit non-zero when report blocking policy fails.")
     parser.add_argument(
-        "--slop",
+        "--anti-vacuity",
         action="store_true",
-        help="Emit anti-vacuity slop dashboard (claims lacking breakers, runners, subjects, or with stale evidence).",
+        help="Emit anti-vacuity report (claims lacking breakers, runners, subjects, or with stale evidence).",
     )
     parser.add_argument(
         "--discover-subjects",
@@ -698,18 +755,18 @@ def main(argv: list[str] | None = None) -> int:
 
     root = _get_root()
 
-    if args.slop:
+    if args.anti_vacuity:
         catalog = build_verification_catalog()
-        dashboard = build_slop_dashboard(catalog)
+        dashboard = build_anti_vacuity_report(catalog)
         if args.json:
             json.dump(dashboard, sys.stdout, indent=2, sort_keys=True)
             sys.stdout.write("\n")
         elif args.markdown:
-            sys.stdout.write(render_slop_markdown(dashboard))
+            sys.stdout.write(render_anti_vacuity_markdown(dashboard))
             sys.stdout.write("\n")
         else:
-            _print_slop_dashboard(dashboard)
-        return 1 if dashboard["slop_count"] > 0 and args.check else 0
+            _print_anti_vacuity_report(dashboard)
+        return 1 if dashboard["flagged_count"] > 0 and args.check else 0
 
     if args.discover_subjects:
         subjects = discover_click_json_subjects()
@@ -747,12 +804,12 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def render_markdown(report: dict[str, Any]) -> str:
-    """Render a taxonomy-aware Proof Pack as PR-comment-ready markdown."""
+    """Render a taxonomy-aware report as PR-comment-ready markdown."""
     refs = report["refs"]
     context = str(report.get("_context", ""))
     changed_paths_count = len(report.get("changed_paths", []))
     lines = [
-        "## Polylogue Proof Pack",
+        "## Polylogue Verification Impact",
         "",
         f"**Refs:** `{refs['base_ref']}..{refs['head_ref']}`",
         f"**Changed paths:** {changed_paths_count}",
@@ -791,17 +848,21 @@ def render_markdown(report: dict[str, Any]) -> str:
     lines.extend(["", "### Confidence Gates (optional)"])
     _append_gate_lines(lines, gate_groups.get("optional_confidence", []), empty_text="- none")
 
-    # Evidence Taxonomy
-    lines.extend(["", "### Affected Evidence by Taxonomy"])
-    taxonomy = report.get("taxonomy", {})
-    _render_taxonomy_section_markdown(lines, taxonomy)
+    # Artifact-source groups
+    lines.extend(["", "### Affected Checks by Artifact Source"])
+    artifact_source_groups = report.get("artifact_source_groups", {})
+    _render_artifact_source_groups_markdown(lines, artifact_source_groups)
 
-    # Agent Judgment Cells
-    agent_judgment_cells = report.get("agent_judgment_cells", [])
-    if agent_judgment_cells:
-        lines.extend(["", "### Agent Judgment Cells (manual review)"])
-        lines.append(f"_{len(agent_judgment_cells)} cell(s) -- only actionable if severity is 'serious'_")
-        for cell in agent_judgment_cells:
+    # Real pytest evidence artifacts
+    lines.extend(["", "### Contract Evidence Artifacts"])
+    _render_contract_evidence_markdown(lines, report.get("contract_evidence_artifacts", {}))
+
+    # Manual review requirements
+    manual_review_requirements = report.get("manual_review_requirements", [])
+    if manual_review_requirements:
+        lines.extend(["", "### Manual Review Requirements"])
+        lines.append(f"_{len(manual_review_requirements)} requirement(s) -- only blocking when severity is 'serious'_")
+        for cell in manual_review_requirements:
             lines.append(
                 f"- `{cell['claim_id']}` -- result `{cell['result']}`; "
                 f"artifact `{cell['artifact'] or 'missing'}`; "
@@ -824,39 +885,69 @@ def render_markdown(report: dict[str, Any]) -> str:
         lines.extend(["", "</details>"])
 
     # Catalog quality summary
-    lines.extend(["", "### Catalog Quality"])
+    lines.extend(["", "### Catalog Checks"])
     oracle_mix = report.get("oracle_mix", {})
     cost_tier = report.get("cost_tier", {})
     catalog_headline = report.get("catalog_headline", {})
     lines.append(
         f"- claims: {catalog_headline.get('claim_count', '?')}, "
-        f"obligations: {catalog_headline.get('obligation_count', '?')}"
+        f"routed checks: {catalog_headline.get('obligation_count', '?')}"
     )
     oracle_str = json.dumps(oracle_mix, sort_keys=True) if oracle_mix else "(none affected)"
     lines.append(f"- oracle mix: `{oracle_str}`")
     cost_str = json.dumps(cost_tier, sort_keys=True) if cost_tier else "(none)"
     lines.append(f"- cost tier: `{cost_str}`")
-    lines.append(f"- stable affected obligations: {len(report.get('stable_affected_obligations', []))}")
-    lines.append(f"- agent judgment cells: {len(agent_judgment_cells)}")
+    lines.append(f"- stable routed checks: {len(report.get('stable_routed_checks', []))}")
+    lines.append(f"- manual review requirements: {len(manual_review_requirements)}")
 
     return "\n".join(lines)
 
 
-def _render_taxonomy_section_markdown(lines: list[str], taxonomy: dict[str, Any]) -> None:
-    """Append taxonomy-grouped obligation tables to markdown lines."""
-    if not taxonomy:
-        lines.append("- no affected obligations")
+def _render_artifact_source_groups_markdown(lines: list[str], groups: dict[str, Any]) -> None:
+    """Append artifact-source grouped check counts to markdown lines."""
+    if not groups:
+        lines.append("- no affected checks")
         return
 
+    rendered_any = False
     for taxonomy_name in _TAXONOMY_SORT_ORDER:
-        group = taxonomy.get(taxonomy_name)
-        if not isinstance(group, dict) or group.get("obligation_count", 0) == 0:
+        group = groups.get(taxonomy_name)
+        if not isinstance(group, dict) or group.get("check_count", 0) == 0:
             continue
-        count = group["obligation_count"]
+        rendered_any = True
+        count = group["check_count"]
         description = str(group.get("description", ""))
+        artifact_source = str(group.get("artifact_source", taxonomy_name))
         actionable = bool(group.get("actionable", False))
         label = "actionable" if actionable else "does not block"
-        lines.append(f"- **{taxonomy_name}** ({label}): {count} obligation(s) -- {description}")
+        lines.append(f"- **{artifact_source}** ({label}): {count} check(s) -- {description}")
+    if not rendered_any:
+        lines.append("- no affected checks")
+
+
+def _render_contract_evidence_markdown(lines: list[str], summary: object) -> None:
+    if not isinstance(summary, dict):
+        lines.append("- none found")
+        return
+    artifact_count = int(summary.get("artifact_count") or 0)
+    artifact_dir = str(summary.get("artifact_dir") or _CONTRACT_EVIDENCE_DIR.as_posix())
+    if artifact_count == 0:
+        lines.append(f"- none found in `{artifact_dir}`")
+        return
+    lines.append(f"- {artifact_count} artifact(s) in `{artifact_dir}`")
+    by_surface = summary.get("by_surface")
+    if isinstance(by_surface, dict) and by_surface:
+        rendered = ", ".join(f"{surface}: {count}" for surface, count in sorted(by_surface.items()))
+        lines.append(f"- by surface: {rendered}")
+    artifacts = summary.get("artifacts")
+    if isinstance(artifacts, list) and artifacts:
+        for artifact in artifacts[:5]:
+            if not isinstance(artifact, dict):
+                continue
+            contract = str(artifact.get("contract") or "unknown")
+            nodeid = str(artifact.get("test_nodeid") or "unknown")
+            path = str(artifact.get("path") or "")
+            lines.append(f"- `{contract}` from `{nodeid}` -> `{path}`")
 
 
 def _checks_payload_merge(
@@ -885,11 +976,11 @@ def _append_gate_lines(lines: list[str], gates: list[dict[str, Any]], *, empty_t
 
 
 def _print_human_report(report: dict[str, Any]) -> None:
-    """Print a taxonomy-aware human-readable proof-pack report."""
+    """Print a taxonomy-aware human-readable verification report."""
     headline = report["catalog_headline"]
     print(
-        f"Proof catalog: {headline['claim_count']} claims, "
-        f"{headline['obligation_count']} obligations, {headline['subject_count']} subjects"
+        f"Verification inventory: {headline['claim_count']} claims, "
+        f"{headline['obligation_count']} routed checks, {headline['subject_count']} subjects"
     )
     print(f"Refs: {report['refs']['base_ref']}..{report['refs']['head_ref']}")
     print(f"Changed paths: {len(report['changed_paths'])}")
@@ -910,27 +1001,31 @@ def _print_human_report(report: dict[str, Any]) -> None:
         print("  none beyond always-on PR gates")
     print()
 
-    print("Evidence taxonomy:")
-    taxonomy = report.get("taxonomy", {})
-    if taxonomy:
+    print("Affected checks by artifact source:")
+    artifact_source_groups = report.get("artifact_source_groups", {})
+    if artifact_source_groups:
         for taxonomy_name in _TAXONOMY_SORT_ORDER:
-            group = taxonomy.get(taxonomy_name)
-            if not isinstance(group, dict) or group.get("obligation_count", 0) == 0:
+            group = artifact_source_groups.get(taxonomy_name)
+            if not isinstance(group, dict) or group.get("check_count", 0) == 0:
                 continue
-            count = group["obligation_count"]
+            count = group["check_count"]
+            artifact_source = str(group.get("artifact_source", taxonomy_name))
             actionable = "RUN" if group.get("actionable") else "INFO"
-            print(f"  {taxonomy_name:<25} {count:>4} obligations [{actionable}]")
+            print(f"  {artifact_source:<25} {count:>4} checks [{actionable}]")
             print(f"    {group.get('description', '')}")
     else:
-        print("  no affected obligations")
+        print("  no affected checks")
     print()
 
     print("Confidence gates (optional):")
     for gate in gate_groups.get("optional_confidence", []):
         print(f"  {' '.join(gate['command'])} -- {gate['reason']}")
     print()
-    print(f"Agent judgment cells: {len(report.get('agent_judgment_cells', []))}")
-    print(f"Stable affected obligations: {len(report.get('stable_affected_obligations', []))}")
+    print(f"Manual review requirements: {len(report.get('manual_review_requirements', []))}")
+    print(f"Stable routed checks: {len(report.get('stable_routed_checks', []))}")
+    evidence = report.get("contract_evidence_artifacts", {})
+    if isinstance(evidence, dict):
+        print(f"Contract evidence artifacts: {evidence.get('artifact_count', 0)}")
     print(f"Known gaps: {len(report.get('known_gaps', []))}")
 
     check_result = report.get("check")

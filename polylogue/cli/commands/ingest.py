@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 from urllib.request import Request, urlopen
 
@@ -11,12 +12,37 @@ import click
 from polylogue.cli.shared.helpers import fail
 from polylogue.cli.shared.types import AppEnv
 from polylogue.operations.import_contracts import ImportOperation
+from polylogue.paths import archive_root
 
 _DEFAULT_DAEMON_URL = "http://127.0.0.1:8766"
 
 
 def _daemon_url(env: AppEnv) -> str:
     return getattr(env, "daemon_url", None) or _DEFAULT_DAEMON_URL
+
+
+def _stage_for_daemon(path: Path) -> Path:
+    """Copy a local ingest target into the archive inbox for daemon pickup."""
+    resolved = path.expanduser().resolve()
+    if not resolved.exists():
+        fail("ingest", f"Path does not exist: {resolved}")
+
+    inbox = archive_root() / "inbox"
+    inbox.mkdir(parents=True, exist_ok=True)
+    dest = inbox / resolved.name
+
+    if dest.exists() and resolved == dest.resolve():
+        return dest
+
+    try:
+        if resolved.is_dir():
+            shutil.copytree(resolved, dest, dirs_exist_ok=True)
+        else:
+            shutil.copy2(resolved, dest)
+    except OSError as exc:
+        fail("ingest", f"Could not stage {resolved} in daemon inbox: {exc}")
+
+    return dest
 
 
 @click.command("ingest")
@@ -36,14 +62,13 @@ def ingest_command(
     """Schedule a file or directory for ingestion by the daemon.
 
     Contacts the running polylogued daemon and requests ingestion of
-    PATH. The daemon copies the file into its inbox and begins processing
+    PATH. The command stages the file into the archive inbox and the daemon
+    begins processing
     asynchronously. Use 'polylogue status' to monitor progress.
     """
-    resolved = path.expanduser().resolve()
-    if not resolved.exists():
-        fail("ingest", f"Path does not exist: {resolved}")
+    staged = _stage_for_daemon(path)
 
-    body = json.dumps({"path": str(resolved)}).encode("utf-8")
+    body = json.dumps({"path": str(staged)}).encode("utf-8")
     req = Request(
         f"{daemon_url}/api/ingest",
         data=body,

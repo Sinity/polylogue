@@ -52,8 +52,8 @@ def _render_verification_lab_surface(commands: tuple[CommandSpec, ...]) -> list[
     lines = [
         "## Verification Lab Surface",
         "",
-        "The proof-lab operator surface intentionally lives in `devtools` for now. These commands operate on",
-        "repo proof obligations and evidence records, not end-user archive workflows.",
+        "The verification-lab operator surface intentionally lives in `devtools` for now. These commands operate on",
+        "repo verification checks and evidence records, not end-user archive workflows.",
         "",
         "| Command | Role |",
         "| --- | --- |",

@@ -6,8 +6,11 @@ All commands below assume you are inside the project devshell. See
 ## Running Tests
 
 ```bash
-# Fast unit run (primary workflow)
-pytest -q --ignore=tests/integration
+# Normal repository verification
+devtools verify
+
+# First run after checkout or dependency/test harness changes
+devtools verify --seed-testmon --skip-slow
 
 # Stop on first failure
 pytest -x --ignore=tests/integration
@@ -16,9 +19,25 @@ pytest -x --ignore=tests/integration
 pytest tests/unit/storage/test_hybrid_laws.py
 pytest -k "test_name"
 
-# Full CI parity
+# Explicit full non-integration pytest diagnostic
+devtools verify --all
+
+# Full Nix/CI parity
 nix flake check
 ```
+
+`devtools verify` uses pytest-testmon for per-test affected selection. The
+seed command records `.testmondata` plus `.cache/testmon/seed.json`; those
+files are local generated state and are not committed. If the seed is missing,
+the default command fails with setup guidance instead of silently running the
+whole suite.
+
+The default path does not replay cached verify results. Every invocation runs
+the static gates and lets pytest-testmon evaluate current source, package, and
+Python-version state. Changes to pytest configuration, dependency locks, or
+shared test infrastructure automatically widen the pytest step to
+`--testmon-noselect` so the dependency database is refreshed without requiring
+a manual full-suite bypass.
 
 For the generated validation-lane, mutation-campaign, and benchmark inventory,
 see [docs/test-quality-workflows.md](docs/test-quality-workflows.md).
@@ -106,4 +125,3 @@ Never delete:
 - **`tests/integration/`**: End-to-end pipeline tests against real archive
   shapes.
 - **`tests/unit/security/`**: Security boundary tests.
-

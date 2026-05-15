@@ -14,7 +14,7 @@ from polylogue.archive.conversation.models import Conversation
 from polylogue.archive.session.session_profile import SessionProfile, build_session_analysis, build_session_profile
 
 # Re-export canonical chunked from polylogue.core.common.
-from polylogue.core.common import chunked  # noqa: F401
+from polylogue.core.common import chunked
 from polylogue.protocols import ProgressCallback
 from polylogue.storage.action_events.rows import attach_blocks_to_messages
 from polylogue.storage.hydrators import conversation_from_records

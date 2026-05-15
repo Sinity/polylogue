@@ -25,9 +25,11 @@ acceptance criteria. Reference it from the PR with `Ref #NNN` or
 
 ### Verification before push
 
-Run `devtools verify` (full, with pytest) before creating any PR. The
-git hooks enforce format and lint on commit and `devtools verify --quick`
-on push, but the full baseline must pass before the PR is opened.
+Run `devtools verify` before creating any PR. The default baseline runs the
+static/generated gates plus pytest-testmon affected tests. Seed the testmon
+database explicitly on a fresh checkout or after harness/dependency changes.
+The git hooks enforce format and lint on commit and `devtools verify --quick`
+on push, but the default baseline must pass before the PR is opened.
 
 Do not treat CI as the first verification pass. Anticipate failures
 locally.
@@ -48,8 +50,9 @@ Use it this way:
 - Treat `Known Gaps` as actionable only when they are in a changed or directly
   affected domain. Broad repo-wide gap dumps should not block unrelated PRs, but
   recurring noise should be folded back into #594.
-- Read `stable affected obligations` as unchanged obligations touched by the
-  current diff, not as real freshness/SLA evidence.
+- Treat any remaining proof-pack obligation language as transitional report
+  terminology; real verification closure comes from pytest, coverage,
+  benchmark, CI, static-check, and runtime evidence artifacts.
 - If the Proof Pack is noisy, misleading, or misses a relevant gate, comment on
   the PR or #594 with the concrete mismatch. Do not silently ignore it.
 
@@ -129,7 +132,9 @@ targeting `master`.
 2. Create a branch from `origin/master`.
 3. Work on the branch. Git hooks enforce format and lint on commit, and
    run `devtools verify --quick` on push.
-4. Run `devtools verify` (full, with pytest) before creating the PR.
+4. Run `devtools verify` before creating the PR. The default pytest step uses
+   pytest-testmon affected-test selection; run `devtools verify --seed-testmon`
+   first if the dependency database is not seeded.
 5. Open a pull request. The template has required sections — fill them
    all in. The PR title becomes the squash-merge subject on `master`.
 6. CI must pass. Fix failures on the branch, do not merge with red CI.
@@ -263,33 +268,16 @@ The repository should stay aligned with the workflow above:
 - allow Update branch for stale PRs
 - do not require an issue for every pull request
 
-## Verification Baseline
+## Git Hooks
 
 The devshell installs git hooks automatically (`core.hooksPath .githooks`):
 
 - **pre-commit**: `ruff format --check` + `ruff check` on staged files.
-- **pre-push**: `devtools verify --quick` (format + lint + render-all --check).
+- **pre-push**: `devtools verify --quick` (format, lint, mypy, generated
+  surfaces, and fast manifest checks).
 
-Before creating a PR, run the full baseline:
-
-```bash
-devtools verify            # format + lint + render-all --check + pytest
-```
-
-Or manually:
-
-```bash
-ruff format --check polylogue/ tests/ devtools/
-ruff check polylogue/ tests/ devtools/
-devtools render-all --check
-pytest -q --ignore=tests/integration
-```
-
-Add `devtools build-package` or `nix flake check` when touching packaging or
-Nix expressions.
-
-See [TESTING.md](TESTING.md) and [docs/devtools.md](docs/devtools.md) for
-details.
+The pre-push hook is an early failure gate. The PR baseline is the
+`devtools verify` workflow below.
 
 ## Type Checking
 
@@ -307,16 +295,32 @@ runs as part of `devtools verify` and in CI.
 
 ## Verification Baseline
 
-Before creating a PR, run the full local baseline. CI runs the same checks.
+Before creating a PR, run the local baseline. CI runs the same checks, while
+local pytest selection is accelerated by pytest-testmon.
 
 ```bash
-devtools verify            # format + lint + mypy + render-all --check + pytest
+devtools verify            # static/generated gates + pytest-testmon affected tests
+devtools verify --seed-testmon --skip-slow  # seed/update affected-test DB
+devtools verify --all      # explicit full non-integration pytest diagnostic
 devtools verify --quick    # format + lint + mypy + render-all --check (skip tests)
-devtools verify --lab      # verification-lab checks (obligations, proof pack)
+devtools verify --lab      # explicit lab checks beyond the quick/default loop
 ```
 
 The quick gate runs on `git push` via `.githooks/pre-push`. It's a fast check,
-not a substitute for the full baseline.
+not a substitute for the default baseline. The default command fails fast when
+`.testmondata` and `.cache/testmon/seed.json` are missing; do not rely on
+silent full-suite fallback.
+
+`devtools verify` does not replay a prior verify result. It always runs the
+static gates and lets pytest-testmon decide affected tests from the current
+source, dependency, and Python-version state. If pytest configuration,
+dependency locks, or shared test infrastructure changed since the seed, the
+default command automatically widens the pytest step to `--testmon-noselect`
+and refreshes dependency data.
+
+Add `devtools build-package` or `nix flake check` when touching packaging or
+Nix expressions. See [TESTING.md](TESTING.md) and [docs/devtools.md](docs/devtools.md)
+for details.
 
 Proof Pack: every PR gets a `Polylogue Proof Pack` comment. It's a verification
 impact report showing affected domains, required gates, and known gaps. Use it
@@ -347,8 +351,11 @@ All commands below assume you are inside the project devshell. See
 ## Running Tests
 
 ```bash
-# Fast unit run (primary workflow)
-pytest -q --ignore=tests/integration
+# Normal repository verification
+devtools verify
+
+# First run after checkout or dependency/test harness changes
+devtools verify --seed-testmon --skip-slow
 
 # Stop on first failure
 pytest -x --ignore=tests/integration
@@ -357,9 +364,25 @@ pytest -x --ignore=tests/integration
 pytest tests/unit/storage/test_hybrid_laws.py
 pytest -k "test_name"
 
-# Full CI parity
+# Explicit full non-integration pytest diagnostic
+devtools verify --all
+
+# Full Nix/CI parity
 nix flake check
 ```
+
+`devtools verify` uses pytest-testmon for per-test affected selection. The
+seed command records `.testmondata` plus `.cache/testmon/seed.json`; those
+files are local generated state and are not committed. If the seed is missing,
+the default command fails with setup guidance instead of silently running the
+whole suite.
+
+The default path does not replay cached verify results. Every invocation runs
+the static gates and lets pytest-testmon evaluate current source, package, and
+Python-version state. Changes to pytest configuration, dependency locks, or
+shared test infrastructure automatically widen the pytest step to
+`--testmon-noselect` so the dependency database is refreshed without requiring
+a manual full-suite bypass.
 
 For the generated validation-lane, mutation-campaign, and benchmark inventory,
 see [docs/test-quality-workflows.md](docs/test-quality-workflows.md).
@@ -447,7 +470,6 @@ Never delete:
 - **`tests/integration/`**: End-to-end pipeline tests against real archive
   shapes.
 - **`tests/unit/security/`**: Security boundary tests.
-
 <!-- end include: TESTING.md -->
 <!-- begin include: docs/architecture.md -->
 # Polylogue Architecture
@@ -663,7 +685,7 @@ attachments, exports):
 - `daemon/` — daemon convergence, HTTP API, and web reader
 
 ### Verification (repo health)
-- `proof/` — proof obligations, subject discovery, claim catalog, witnesses
+- `proof/` — verification catalog internals, subject discovery, claim catalog, witnesses
 - `devtools/` — operator tooling, lints, campaigns, rendering
 - `showcase/` — QA exercises, deterministic acceptance tests
 - `tests/` — pytest suite, property tests, integration tests
@@ -929,13 +951,13 @@ devtools status --json
 
 ## Verification Lab Surface
 
-The proof-lab operator surface intentionally lives in `devtools` for now. These commands operate on
-repo proof obligations and evidence records, not end-user archive workflows.
+The verification-lab operator surface intentionally lives in `devtools` for now. These commands operate on
+repo verification checks and evidence records, not end-user archive workflows.
 
 | Command | Role |
 | --- | --- |
-| `devtools render-verification-catalog` | Refresh or verify the proof-obligation catalog that anchors the verification-lab surface after changing proof subjects, claims, runners, or catalog rendering. |
-| `devtools affected-obligations` | Find the proof obligations and inner-loop checks affected by local changes before escalating to full PR gates. |
+| `devtools render-verification-catalog` | Refresh or verify the catalog that anchors changed-path verification reports after changing subjects, claims, runners, or catalog rendering. |
+| `devtools affected-obligations` | Find the checks and inner-loop commands affected by local changes before escalating to full PR gates. |
 | `devtools semantic-axis-evidence` | Produce comparative performance evidence that describes growth shape over semantic axes instead of machine-specific absolute budgets. |
 | `devtools lab-corpus` | Seed synthetic corpus files or complete demo workspaces for lab exercises. |
 | `devtools lab-scenario` | Run showcase exercise smoke scenarios and committed baseline checks outside the archive CLI. |
@@ -980,21 +1002,21 @@ These are the commands worth remembering during normal repo work:
 | `devtools render-quality-reference` | Render docs/test-quality-workflows.md from live validation, mutation, and benchmark registries. |
 | `devtools render-readme-media` | Generate README media assets (architecture diagrams, flowcharts) under docs/media/. |
 | `devtools render-topology-status` | Render docs/topology-status.md from the topology projection and realized tree. |
-| `devtools render-verification-catalog` | Render the verification-lab proof catalog from obligation registries. |
+| `devtools render-verification-catalog` | Render the verification-lab catalog from check registries. |
 
 ### Verification
 
 | Command | Description |
 | --- | --- |
-| `devtools affected-obligations` | Route changed paths or refs to affected verification-lab proof obligations and focused checks. |
+| `devtools affected-obligations` | Route changed paths or refs to affected verification checks and focused commands. |
 | `devtools artifact-graph` | Render the runtime artifact, operation, and scenario-coverage map. |
 | `devtools coverage-gate` | Run pytest with the repository coverage floor from pyproject.toml. |
 | `devtools daemon-workload-probe` | Inspect daemon ingest workload, convergence debt, and hot query plans. |
 | `devtools lab-corpus` | Generate verification-lab synthetic corpus fixtures and demo archives. |
 | `devtools lab-scenario` | Run verification-lab showcase scenario sets and baseline checks. |
-| `devtools obligation-diff` | Diff proof obligations between two git refs to surface affected assurance domains. |
+| `devtools obligation-diff` | Diff catalog-backed verification checks between two git refs. |
 | `devtools pipeline-probe` | Run typed pipeline probes against synthetic, staged, or archive-subset inputs. |
-| `devtools proof-pack` | Domain-grouped affected coverage report for vibecode confidence. |
+| `devtools proof-pack` | Domain-grouped verification impact report for changed paths. |
 | `devtools query-memory-budget` | Measure query-memory envelopes on generated fixtures. |
 | `devtools regression-capture` | Capture pipeline-probe summaries as durable local regression cases. |
 | `devtools run-validation-lanes` | Run named validation lanes. |

@@ -1,4 +1,4 @@
-"""Changed-path routing for proof obligations."""
+"""Changed-path routing for verification checks."""
 
 from __future__ import annotations
 
@@ -88,7 +88,7 @@ _DIFF_STATUSES: tuple[DiffStatus, ...] = (
 
 @dataclass(frozen=True, slots=True)
 class RecommendedCheck:
-    """A command recommended by affected-obligation routing."""
+    """A command recommended by changed-path routing."""
 
     command: tuple[str, ...]
     scope: CheckScope
@@ -134,7 +134,7 @@ class ChangeSubject:
 
 @dataclass(frozen=True, slots=True)
 class AffectedObligation:
-    """A proof obligation selected by one or more changed subjects."""
+    """A catalog-backed check selected by one or more changed subjects."""
 
     obligation_id: str
     claim_id: str
@@ -156,7 +156,7 @@ class AffectedObligation:
 
 @dataclass(frozen=True, slots=True)
 class ObligationDiff:
-    """Diff buckets for proof-obligation routing across refs."""
+    """Diff buckets for catalog-backed check routing across refs."""
 
     new: tuple[str, ...] = ()
     dropped: tuple[str, ...] = ()
@@ -191,7 +191,7 @@ class ObligationDiff:
 
 @dataclass(frozen=True, slots=True)
 class AffectedObligationReport:
-    """Complete affected-obligation routing report."""
+    """Complete changed-path verification routing report."""
 
     base_ref: str
     head_ref: str
@@ -238,7 +238,7 @@ def build_affected_obligation_report(
     base_obligation_ids: Iterable[str] | None = None,
     head_obligation_ids: Iterable[str] | None = None,
 ) -> AffectedObligationReport:
-    """Classify changed paths and map them to affected proof obligations."""
+    """Classify changed paths and map them to affected catalog-backed checks."""
     head_catalog = catalog or build_verification_catalog()
     paths = tuple(sorted(dict.fromkeys(_normalize_path(path) for path in changed_paths if path.strip())))
     change_subjects = classify_changed_paths(paths, catalog=head_catalog)
@@ -316,7 +316,7 @@ def route_affected_obligations(
     *,
     catalog: VerificationCatalog | None = None,
 ) -> tuple[AffectedObligation, ...]:
-    """Route change subjects to proof obligations."""
+    """Route change subjects to catalog-backed checks."""
     proof_catalog = catalog or build_verification_catalog()
     obligations_by_subject: dict[str, list[ProofObligation]] = defaultdict(list)
     for obligation in proof_catalog.obligations:
@@ -357,7 +357,7 @@ def diff_obligation_ids(
     affected_ids: Iterable[str],
     suppressed: Iterable[str] = (),
 ) -> ObligationDiff:
-    """Bucket obligation IDs into semantic diff categories."""
+    """Bucket catalog-backed check IDs into semantic diff categories."""
     base = set(base_ids)
     head = set(head_ids)
     affected = set(affected_ids)
@@ -417,9 +417,9 @@ def obligation_ids_for_ref(ref: str) -> tuple[str, ...]:
 
 
 def render_affected_obligations(report: AffectedObligationReport) -> str:
-    """Render a human-readable affected-obligation report."""
+    """Render a human-readable changed-path verification report."""
     lines = [
-        "Affected Obligations",
+        "Affected Verification Checks",
         f"Refs: {report.base_ref}..{report.head_ref}",
         "",
         "Changed Paths:",
@@ -430,13 +430,13 @@ def render_affected_obligations(report: AffectedObligationReport) -> str:
         operations = f"; operations={', '.join(subject.operation_names)}" if subject.operation_names else ""
         surfaces = f"; surfaces={', '.join(subject.surface_names)}" if subject.surface_names else ""
         lines.append(f"- {subject.id}: {subject.reason}{operations}{surfaces}")
-    lines.extend(["", "Obligation Diff:"])
+    lines.extend(["", "Routed Check Diff:"])
     for status in _DIFF_STATUSES:
         values = report.obligation_diff.bucket(status)
         rendered = ", ".join(values[:8]) if values else "—"
         suffix = f" (+{len(values) - 8} more)" if len(values) > 8 else ""
         lines.append(f"- {status}: {rendered}{suffix}")
-    lines.extend(["", "Affected Obligations:"])
+    lines.extend(["", "Affected Checks:"])
     if not report.affected_obligations:
         lines.append("- none")
     for obligation in report.affected_obligations[:30]:
@@ -453,20 +453,20 @@ def render_affected_obligations(report: AffectedObligationReport) -> str:
 
 
 def render_affected_obligations_markdown(report: AffectedObligationReport) -> str:
-    """Render a PR-comment-friendly affected-obligation report."""
+    """Render a PR-comment-friendly changed-path verification report."""
     lines = [
-        "## Proof Obligations",
+        "## Affected Verification Checks",
         "",
         f"**Refs:** `{report.base_ref}..{report.head_ref}`",
         "",
         "### Changed Paths",
     ]
     lines.extend(f"- `{path}`" for path in report.changed_paths) if report.changed_paths else lines.append("- none")
-    lines.extend(["", "### Obligation Diff"])
+    lines.extend(["", "### Routed Check Diff"])
     for status in _DIFF_STATUSES:
         values = report.obligation_diff.bucket(status)
         lines.append(f"- `{status}`: {len(values)}")
-    lines.extend(["", "### Affected Obligations"])
+    lines.extend(["", "### Affected Checks"])
     if not report.affected_obligations:
         lines.append("- none")
     for obligation in report.affected_obligations[:20]:
@@ -651,7 +651,7 @@ def _checks_for_change(kind: ChangeKind, *, path: str) -> tuple[RecommendedCheck
                 ("devtools", "pipeline-probe", "--provider", _provider_for_parser_path(path) or "unknown"),
                 "parser pipeline probe",
             ),
-            _check(("devtools", "affected-obligations", "--path", path), "refresh focused obligation routing"),
+            _check(("devtools", "affected-obligations", "--path", path), "refresh focused changed-path routing"),
         )
     if kind == "schema.annotation":
         return (
@@ -659,15 +659,17 @@ def _checks_for_change(kind: ChangeKind, *, path: str) -> tuple[RecommendedCheck
                 ("pytest", "tests/unit/core/test_schema_annotation_contracts.py"), "schema annotation contract changed"
             ),
             _check(
-                ("pytest", "tests/unit/proof/test_schema_provider_obligations.py"), "schema proof obligations changed"
+                ("pytest", "tests/unit/proof/test_schema_provider_obligations.py"),
+                "schema/provider contract checks changed",
             ),
-            _check(("devtools", "render-verification-catalog", "--check"), "schema subjects feed generated catalog"),
+            _check(("devtools", "render-verification-catalog", "--check"), "schema contract inventory changed"),
         )
     if kind == "command":
         return (
             _check(("pytest", "tests/unit/cli"), "CLI command surface changed"),
             _check(
-                ("pytest", "tests/unit/proof/test_evidence_runners.py"), "CLI proof runners exercise command output"
+                ("pytest", "tests/unit/proof/test_evidence_runners.py"),
+                "CLI contract evidence exercises command output",
             ),
             _check(("devtools", "render-cli-reference", "--check"), "CLI reference is generated from command help"),
         )
@@ -676,7 +678,7 @@ def _checks_for_change(kind: ChangeKind, *, path: str) -> tuple[RecommendedCheck
     if kind == "architecture":
         checks = [
             _check(("devtools", "verify-manifests"), "structural manifest changed"),
-            _check(("devtools", "affected-obligations", "--path", path), "refresh structural obligation routing"),
+            _check(("devtools", "affected-obligations", "--path", path), "refresh structural changed-path routing"),
         ]
         for subject_id in _ARCHITECTURE_PATH_SUBJECTS.get(path, ()):
             if subject_id == "architecture.topology.projection":
@@ -691,8 +693,8 @@ def _checks_for_change(kind: ChangeKind, *, path: str) -> tuple[RecommendedCheck
     if kind == "coverage_manifest":
         return (
             _check(("devtools", "verify-manifests"), "assurance coverage manifest changed"),
-            _check(("devtools", "render-verification-catalog", "--check"), "coverage manifests feed proof subjects"),
-            _check(("devtools", "proof-pack", "--path", path, "--markdown"), "coverage changes feed proof-pack gaps"),
+            _check(("devtools", "render-verification-catalog", "--check"), "coverage manifests feed check inventory"),
+            _check(("devtools", "proof-pack", "--path", path, "--markdown"), "coverage changes feed known-gap report"),
         )
     if kind == "schema_roundtrip":
         return (
@@ -701,10 +703,10 @@ def _checks_for_change(kind: ChangeKind, *, path: str) -> tuple[RecommendedCheck
         )
     if kind == "proof_catalog":
         return (
-            _check(("pytest", "tests/unit/proof"), "proof kernel or catalog changed"),
-            _check(("pytest", "tests/unit/devtools/test_proof_pack.py"), "proof-pack policy or CLI changed"),
+            _check(("pytest", "tests/unit/proof"), "verification catalog implementation changed"),
+            _check(("pytest", "tests/unit/devtools/test_proof_pack.py"), "verification impact report changed"),
             _check(("pytest", "tests/unit/devtools/test_render_verification_catalog.py"), "catalog renderer changed"),
-            _check(("devtools", "proof-pack", "--check"), "proof-pack policy gate changed"),
+            _check(("devtools", "proof-pack", "--check"), "verification report policy gate changed"),
             _check(("devtools", "render-verification-catalog", "--check"), "verification catalog must stay current"),
         )
     if kind == "operation.spec":

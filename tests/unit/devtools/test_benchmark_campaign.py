@@ -8,8 +8,6 @@ from typing import Literal
 from pytest import MonkeyPatch
 
 from devtools.benchmark_campaign import (
-    BenchmarkStat,
-    BenchmarkStatRecord,
     CampaignResult,
     Regression,
     _compare_results,
@@ -18,6 +16,7 @@ from devtools.benchmark_campaign import (
     run_campaign,
 )
 from devtools.benchmark_catalog import BenchmarkCampaignEntry
+from devtools.benchmark_results import BenchmarkStat, BenchmarkStatRecord, parse_pytest_benchmark_stats
 from devtools.benchmark_scenario_catalog import (
     BENCHMARK_SCENARIO_INDEX,
     BENCHMARK_SCENARIOS,
@@ -31,6 +30,9 @@ from polylogue.scenarios import (
     ScenarioProjectionSourceKind,
     pytest_execution,
 )
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+PYTEST_BENCHMARK_FIXTURE = REPO_ROOT / "tests" / "data" / "pytest-benchmark" / "reader-status.json"
 
 
 def _benchmark_record(fullname: str, mean: float) -> BenchmarkStatRecord:
@@ -62,6 +64,27 @@ def test_compare_results_orders_regressions_by_worst_delta() -> None:
 
     assert [item.fullname for item in regressions] == ["bench.a", "bench.b"]
     assert regressions[0] == Regression("bench.a", 1.0, 2.0, 100.0)
+
+
+def test_parse_pytest_benchmark_fixture_matches_real_schema() -> None:
+    payload = json.loads(PYTEST_BENCHMARK_FIXTURE.read_text(encoding="utf-8"))
+
+    stats = parse_pytest_benchmark_stats(payload)
+
+    assert stats == [
+        BenchmarkStat(
+            name="test_bench_reader_status",
+            fullname="tests/benchmarks/test_reader_api.py::test_bench_reader_status",
+            group="benchmark",
+            mean=0.0011,
+            median=0.0011,
+            minimum=0.001,
+            maximum=0.0012,
+            stddev=0.0001,
+            rounds=3,
+            ops=1.0 / 0.0011,
+        )
+    ]
 
 
 def test_compare_artifacts_fails_when_threshold_is_exceeded(tmp_path: Path) -> None:

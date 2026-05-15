@@ -59,6 +59,7 @@ dev = [
   "pytest-asyncio>=0.23.0",  # Async test support
   "pytest-xdist>=3.5.0",  # Parallel test execution
   "pytest-randomly>=3.0",  # Detect order-dependent tests; adds --randomly-seed
+  "pytest-testmon>=2.1.3",  # Per-test affected selection via dependency database
   "pytest-benchmark>=5.0",  # Microbenchmark suite (run with --benchmark-enable -p no:xdist)
   "coverage[toml]>=7.6",
   "hypothesis>=6.152.4",
@@ -119,11 +120,13 @@ path = "hatch_build.py"
 addopts = "-ra -n auto --benchmark-disable --benchmark-storage=file://./.cache/pytest-benchmark"
 testpaths = ["tests"]
 asyncio_mode = "auto"
+xfail_strict = true
 cache_dir = ".cache/pytest"
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "integration: marks integration tests (pipeline, CLI end-to-end)",
     "benchmark: marks benchmark tests (run with --benchmark-enable -p no:xdist -p no:randomly)",
+    "contract: marks public contract tests that may emit bounded evidence artifacts",
     "scale(level): parametric scale marker (small/medium/large/stretch)",
     "machine_contract: marks root CLI JSON success/failure contract tests",
     "query_routing: marks query-first CLI routing and read-surface tests",
@@ -194,6 +197,7 @@ select = [
     "B",   # flake8-bugbear
     "C4",  # flake8-comprehensions
     "SIM", # flake8-simplify
+    "RUF100", # unused noqa directives
 ]
 ignore = [
     "E501",  # line too long (handled by formatter)
