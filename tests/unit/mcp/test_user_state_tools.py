@@ -92,6 +92,18 @@ def test_remove_mark_reports_missing_mark(mcp_server: MCPServerUnderTest) -> Non
     mock_poly.remove_mark.assert_awaited_once_with("test:conv-123", "star")
 
 
+def test_remove_mark_rejects_unknown_type(mcp_server: MCPServerUnderTest) -> None:
+    result = invoke_surface(
+        mcp_server._tool_manager._tools["remove_mark"].fn,
+        conversation_id="conv-123",
+        mark_type="later",
+    )
+
+    parsed = json.loads(result)
+    assert parsed["is_error"] is True
+    assert "star, pin, archive" in parsed["error"]
+
+
 def test_list_saved_views_decodes_query_json(mcp_server: MCPServerUnderTest) -> None:
     with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
         mock_poly = make_polylogue_mock()
@@ -119,14 +131,6 @@ def test_save_saved_view_validates_query_spec(mcp_server: MCPServerUnderTest) ->
     with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
         mock_poly = make_polylogue_mock()
         mock_poly.save_view = AsyncMock(return_value=True)
-        mock_poly.get_view = AsyncMock(
-            return_value={
-                "view_id": "view-1",
-                "name": "Claude Code",
-                "query_json": '{"provider":"claude-code"}',
-                "created_at": "2026-05-15T00:00:00+00:00",
-            }
-        )
         mock_get_polylogue.return_value = mock_poly
 
         result = invoke_surface(
@@ -142,6 +146,27 @@ def test_save_saved_view_validates_query_spec(mcp_server: MCPServerUnderTest) ->
     mock_poly.save_view.assert_awaited_once_with("view-1", "Claude Code", '{"provider":"claude-code"}')
 
 
+def test_save_saved_view_default_id_is_content_addressed(mcp_server: MCPServerUnderTest) -> None:
+    with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+        mock_poly = make_polylogue_mock()
+        mock_poly.save_view = AsyncMock(return_value=False)
+        mock_get_polylogue.return_value = mock_poly
+
+        result = invoke_surface(
+            mcp_server._tool_manager._tools["save_saved_view"].fn,
+            name="Claude Code",
+            query_json='{"provider":"claude-code"}',
+        )
+
+    parsed = json.loads(result)
+    assert parsed["status"] == "ok"
+    assert parsed["outcome"] == "updated"
+    assert str(parsed["key"]).startswith("saved-view-")
+    saved_id = mock_poly.save_view.await_args.args[0]
+    assert saved_id == parsed["key"]
+    assert saved_id != "claude-code"
+
+
 def test_save_saved_view_rejects_unknown_query_param(mcp_server: MCPServerUnderTest) -> None:
     result = invoke_surface(
         mcp_server._tool_manager._tools["save_saved_view"].fn,
@@ -153,6 +178,7 @@ def test_save_saved_view_rejects_unknown_query_param(mcp_server: MCPServerUnderT
     parsed = json.loads(result)
     assert parsed["is_error"] is True
     assert "ConversationQuerySpec" in parsed["error"]
+    assert "not_a_filter" in parsed["detail"]
 
 
 def test_delete_saved_view_reports_status(mcp_server: MCPServerUnderTest) -> None:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from contextlib import suppress
+from hashlib import sha256
 from typing import TYPE_CHECKING, Any
 
 from polylogue.mcp.payloads import (
@@ -28,6 +29,17 @@ async def _resolve_or_error(hooks: ServerCallbacks, conversation_id: str) -> tup
     if not resolved:
         return None, hooks.error_json("conversation not found", conversation_id=conversation_id)
     return resolved, None
+
+
+def _mark_type_error(hooks: ServerCallbacks, mark_type: str) -> str | None:
+    if mark_type in {"star", "pin", "archive"}:
+        return None
+    return hooks.error_json("mark_type must be one of: star, pin, archive", detail=mark_type)
+
+
+def _default_saved_view_id(name: str, query_json: str) -> str:
+    digest = sha256(f"{name}\0{query_json}".encode()).hexdigest()
+    return f"saved-view-{digest[:16]}"
 
 
 def _saved_view_payload(row: dict[str, str]) -> MCPSavedViewPayload:
@@ -146,8 +158,9 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     @mcp.tool()
     async def add_mark(conversation_id: str, mark_type: str) -> str:
         async def run() -> str:
-            if mark_type not in {"star", "pin", "archive"}:
-                return hooks.error_json("mark_type must be one of: star, pin, archive", detail=mark_type)
+            mark_error = _mark_type_error(hooks, mark_type)
+            if mark_error:
+                return mark_error
             resolved, err = await _resolve_or_error(hooks, conversation_id)
             if err:
                 return err
@@ -170,6 +183,9 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     @mcp.tool()
     async def remove_mark(conversation_id: str, mark_type: str) -> str:
         async def run() -> str:
+            mark_error = _mark_type_error(hooks, mark_type)
+            if mark_error:
+                return mark_error
             resolved, err = await _resolve_or_error(hooks, conversation_id)
             if err:
                 return err
@@ -216,17 +232,16 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             try:
                 ConversationQuerySpec.from_params(query, strict=True)
             except Exception as exc:
-                return hooks.error_json("query_json is not a valid ConversationQuerySpec", detail=type(exc).__name__)
+                detail = f"{type(exc).__name__}: {exc}"
+                return hooks.error_json("query_json is not a valid ConversationQuerySpec", detail=detail)
 
             canonical_query_json = json.dumps(query, sort_keys=True, separators=(",", ":"))
             poly = hooks.get_polylogue()
-            saved_id = view_id or name.strip().lower().replace(" ", "-")
+            saved_id = view_id or _default_saved_view_id(name.strip(), canonical_query_json)
             created = await poly.save_view(saved_id, name.strip(), canonical_query_json)
-            saved = await poly.get_view(saved_id)
             return hooks.json_payload(
                 MutationResultPayload(
-                    status="ok" if created else "unchanged",
-                    detail=None if saved else "saved_view_not_found",
+                    status="ok",
                     key=saved_id,
                     outcome="added" if created else "updated",
                 ),
