@@ -4,10 +4,10 @@ Reads the SLO catalog from docs/plans/slo-catalog.yaml, runs the
 referenced benchmark tests with pytest-benchmark, then compares the
 measured p50 and p95 latencies against the declared targets.
 
-Exits 0 when all SLOs with benchmark results pass their targets.
-Exits 1 when any surface violates its declared SLO.
-Exits 0 (with warnings) when a surface has no benchmark coverage — these
-are deferred surfaces, not failures.
+Exits 0 when all required SLOs have benchmark results and pass their targets.
+Exits 1 when any required surface violates its declared SLO or has no
+benchmark result. Informational surfaces without benchmark results are reported
+without blocking.
 """
 
 from __future__ import annotations
@@ -23,6 +23,7 @@ from devtools import repo_root as _get_root
 
 ROOT = _get_root()
 SLO_CATALOG = ROOT / "docs" / "plans" / "slo-catalog.yaml"
+SLO_GATES = frozenset({"required", "informational"})
 
 
 # ---------------------------------------------------------------------------
@@ -84,6 +85,14 @@ def _collect_benchmark_tests(surfaces: dict[str, dict[str, object]]) -> set[str]
         if isinstance(test, str) and test.strip():
             tests.add(test.strip())
     return tests
+
+
+def _surface_gate(surface_name: str, config: dict[str, object]) -> tuple[str | None, str | None]:
+    """Return the surface gate, or a catalog error message when invalid."""
+    raw_gate = config.get("gate", "required")
+    if isinstance(raw_gate, str) and raw_gate in SLO_GATES:
+        return raw_gate, None
+    return None, f"{surface_name}: invalid gate {raw_gate!r}; expected one of {sorted(SLO_GATES)!r}"
 
 
 def _run_benchmarks(test_ids: set[str]) -> dict[str, dict[str, float]]:
@@ -188,11 +197,19 @@ def main(argv: list[str] | None = None) -> int:
     benchmark_stats = _run_benchmarks(test_ids) if not args.skip_benchmarks else {}
 
     # 4. Check each surface against its SLO
+    catalog_errors: list[str] = []
     violations: list[dict[str, object]] = []
+    missing_required: list[dict[str, object]] = []
     passed: list[dict[str, object]] = []
-    uncovered: list[dict[str, object]] = []
+    uncovered_informational: list[dict[str, object]] = []
 
     for surface_name, config in surfaces.items():
+        gate, gate_error = _surface_gate(surface_name, config)
+        if gate_error is not None:
+            catalog_errors.append(gate_error)
+            continue
+        assert gate is not None
+
         target_p50 = config.get("p50_ms")
         target_p95 = config.get("p95_ms")
         if not isinstance(target_p50, int) or not isinstance(target_p95, int):
@@ -204,13 +221,16 @@ def main(argv: list[str] | None = None) -> int:
 
         stats = benchmark_stats.get(benchmark_test)
         if stats is None:
-            uncovered.append(
-                {
-                    "surface": surface_name,
-                    "benchmark_test": benchmark_test,
-                    "reason": "no benchmark result for this test",
-                }
-            )
+            missing_result: dict[str, object] = {
+                "surface": surface_name,
+                "gate": gate,
+                "benchmark_test": benchmark_test,
+                "reason": "no benchmark result for this test",
+            }
+            if gate == "required":
+                missing_required.append(missing_result)
+            else:
+                uncovered_informational.append(missing_result)
             continue
 
         actual_p50_ms = stats["median"] * 1000  # pytest-benchmark reports in seconds
@@ -223,6 +243,7 @@ def main(argv: list[str] | None = None) -> int:
 
         result: dict[str, object] = {
             "surface": surface_name,
+            "gate": gate,
             "description": config.get("description", ""),
             "benchmark_test": benchmark_test,
             "target_p50_ms": target_p50,
@@ -241,19 +262,28 @@ def main(argv: list[str] | None = None) -> int:
             violations.append(result)
 
     # 5. Report
+    blocking = bool(catalog_errors or violations or missing_required)
     if args.json:
         json.dump(
             {
-                "blocking": len(violations) > 0,
+                "blocking": blocking,
+                "catalog_errors": catalog_errors,
                 "violations": violations,
+                "missing_required": missing_required,
                 "passed": passed,
-                "uncovered": uncovered,
+                "uncovered_informational": uncovered_informational,
             },
             sys.stdout,
             indent=2,
         )
         sys.stdout.write("\n")
     else:
+        if catalog_errors:
+            print(f"CATALOG ERROR ({len(catalog_errors)} entries):")
+            for error in catalog_errors:
+                print(f"  - {error}")
+            print()
+
         if passed:
             print(f"PASS ({len(passed)} surfaces):")
             for p in passed:
@@ -262,6 +292,12 @@ def main(argv: list[str] | None = None) -> int:
                     f"p50={p['actual_p50_ms']:.1f}ms (target ≤{p['target_p50_ms']}ms), "
                     f"p95={p['actual_p95_ms']:.1f}ms (target ≤{p['target_p95_ms']}ms)"
                 )
+            print()
+
+        if missing_required:
+            print(f"MISSING REQUIRED ({len(missing_required)} surfaces):")
+            for m in missing_required:
+                print(f"  {m['surface']}: {m['benchmark_test']} ({m['reason']})")
             print()
 
         if violations:
@@ -275,15 +311,15 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"  {v['surface']}: {', '.join(parts)}")
             print()
 
-        if uncovered:
-            print(f"Uncovered ({len(uncovered)} surfaces):")
-            for u in uncovered:
+        if uncovered_informational:
+            print(f"Uncovered informational ({len(uncovered_informational)} surfaces):")
+            for u in uncovered_informational:
                 print(f"  {u['surface']}: {u['reason']}")
             print()
 
-        print(f"blocking={len(violations) > 0}")
+        print(f"blocking={blocking}")
 
-    return 1 if violations else 0
+    return 1 if blocking else 0
 
 
 if __name__ == "__main__":

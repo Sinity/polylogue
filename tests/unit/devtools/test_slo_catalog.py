@@ -1,7 +1,7 @@
 """Tests for the read-surface SLO catalog and ``devtools verify-slos``.
 
 The catalog at ``docs/plans/slo-catalog.yaml`` lists the SLOs that
-``devtools/verify_slos.py`` consumes. These tests pin three contracts:
+``devtools/verify_slos.py`` consumes. These tests pin four contracts:
 
 1. The catalog is committed and parses cleanly with entries for at least the
    query/reader/facets/context/cost surfaces.
@@ -9,6 +9,8 @@ The catalog at ``docs/plans/slo-catalog.yaml`` lists the SLOs that
    sit comfortably under budget.
 3. ``verify-slos`` reports a violation and exits non-zero when a measured
    surface exceeds its declared budget.
+4. ``verify-slos`` treats missing benchmark results as blocking for required
+   rows and non-blocking for informational rows.
 
 The benchmark subprocess is not executed here — the tests stub
 ``_run_benchmarks`` so the SLO scoring path runs deterministically.
@@ -74,6 +76,12 @@ def _stub_benchmark_stats(
     return stats
 
 
+def _write_slo_catalog(tmp_path: Path, body: str) -> Path:
+    catalog = tmp_path / "slo-catalog.yaml"
+    catalog.write_text(body)
+    return catalog
+
+
 def test_verify_slos_passes_when_under_budget(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -130,3 +138,108 @@ def test_verify_slos_json_reports_violation(
     surfaces_with_violations = {entry["surface"] for entry in payload["violations"]}
     # All catalog surfaces must trip when fed 10s measurements.
     assert set(REQUIRED_SURFACES).issubset(surfaces_with_violations)
+
+
+def test_required_missing_benchmark_result_blocks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Required SLO rows must not pass when their benchmark artifact is absent."""
+    catalog = _write_slo_catalog(
+        tmp_path,
+        """
+surfaces:
+  reader:
+    description: "Reader endpoint"
+    benchmark_test: "tests/benchmarks/test_reader_api.py::test_missing_required"
+    p50_ms: 100
+    p95_ms: 200
+    gate: "required"
+""",
+    )
+    monkeypatch.setattr(verify_slos, "_run_benchmarks", lambda _ids: {})
+
+    buffer = io.StringIO()
+    with redirect_stdout(buffer):
+        rc = verify_slos.main(["--yaml", str(catalog), "--json"])
+
+    payload = json.loads(buffer.getvalue())
+    assert rc != 0
+    assert payload["blocking"] is True
+    assert payload["missing_required"] == [
+        {
+            "surface": "reader",
+            "gate": "required",
+            "benchmark_test": "tests/benchmarks/test_reader_api.py::test_missing_required",
+            "reason": "no benchmark result for this test",
+        }
+    ]
+    assert payload["uncovered_informational"] == []
+
+
+def test_informational_missing_benchmark_result_is_visible_but_nonblocking(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Informational rows can document future SLOs without blocking the gate."""
+    catalog = _write_slo_catalog(
+        tmp_path,
+        """
+surfaces:
+  cost:
+    description: "Cost rollup placeholder"
+    benchmark_test: "tests/benchmarks/test_reader_api.py::test_missing_informational"
+    p50_ms: 100
+    p95_ms: 200
+    gate: "informational"
+""",
+    )
+    monkeypatch.setattr(verify_slos, "_run_benchmarks", lambda _ids: {})
+
+    buffer = io.StringIO()
+    with redirect_stdout(buffer):
+        rc = verify_slos.main(["--yaml", str(catalog), "--json"])
+
+    payload = json.loads(buffer.getvalue())
+    assert rc == 0
+    assert payload["blocking"] is False
+    assert payload["missing_required"] == []
+    assert payload["uncovered_informational"] == [
+        {
+            "surface": "cost",
+            "gate": "informational",
+            "benchmark_test": "tests/benchmarks/test_reader_api.py::test_missing_informational",
+            "reason": "no benchmark result for this test",
+        }
+    ]
+
+
+def test_invalid_slo_gate_is_catalog_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unknown gate values fail the catalog instead of being guessed."""
+    catalog = _write_slo_catalog(
+        tmp_path,
+        """
+surfaces:
+  query:
+    description: "Search endpoint"
+    benchmark_test: "tests/benchmarks/test_search_filters.py::test_bench_query"
+    p50_ms: 100
+    p95_ms: 200
+    gate: "aspirational"
+""",
+    )
+    monkeypatch.setattr(verify_slos, "_run_benchmarks", lambda _ids: {})
+
+    buffer = io.StringIO()
+    with redirect_stdout(buffer):
+        rc = verify_slos.main(["--yaml", str(catalog), "--json"])
+
+    payload = json.loads(buffer.getvalue())
+    assert rc != 0
+    assert payload["blocking"] is True
+    assert payload["catalog_errors"] == [
+        "query: invalid gate 'aspirational'; expected one of ['informational', 'required']"
+    ]
