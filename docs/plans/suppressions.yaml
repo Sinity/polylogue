@@ -6,6 +6,7 @@
 #   reason:     Why the suppression exists.
 #   expires_at: ISO-8601 date (YYYY-MM-DD). After this date the lint fails.
 #   paths:      File globs or paths the suppression applies to.
-#   claims:     Proof-obligation claim IDs the suppression applies to.
+#   claims:     Legacy proof-obligation claim IDs. Prefer ordinary issue links
+#               and native pytest/Ruff/mypy/coverage enforcement under #1062.
 #
 suppressions: []

@@ -23,6 +23,7 @@ from polylogue.cli.shared.machine_errors import (
     success,
 )
 from polylogue.core.json import JSONDocument
+from tests.infra.contract_evidence import ContractEvidenceRecorder
 from tests.infra.json_contracts import envelope_result, extract_json_object, json_object_field, parse_json_object
 
 pytestmark = pytest.mark.machine_contract
@@ -118,16 +119,25 @@ class TestQueryShapedJsonMatrix:
             (["schema", "list", "--format", "json"], "providers"),
         ],
     )
+    @pytest.mark.contract
     def test_format_json_uses_success_envelope(
         self,
         args: list[str],
         result_key: str,
         monkeypatch: pytest.MonkeyPatch,
+        record_contract_evidence: ContractEvidenceRecorder,
     ) -> None:
         parsed = _invoke_json_command(args, monkeypatch)
         assert parsed is not None
         assert parsed["status"] == "ok"
         assert result_key in envelope_result(parsed, context="format json envelope")
+        record_contract_evidence.record(
+            "cli.json_envelope",
+            surface="cli",
+            command=("polylogue", *args),
+            result=parsed,
+            facts={"result_key": result_key, "status": "ok"},
+        )
 
     @pytest.mark.parametrize(
         "args",

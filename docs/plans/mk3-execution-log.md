@@ -113,7 +113,7 @@ clarity:
 | Visual evidence worker | Synthetic reader fixture, DOM/browser smoke, evidence manifests | `tests/unit/daemon/test_web_reader.py`, possible `tests/visual/`, `devtools/lab_scenario.py`, visual docs | Storage schema and archive semantics | targeted reader smoke lane |
 | Topology worker | topology edge DDL, ingest repair, topology operations | storage DDL, ingest enrichment, archive operations, topology tests | Reader graph UI until read model exists | `pytest tests/unit/storage/test_session_topology.py -q` or new equivalent |
 | User-state worker | marks, annotations, saved views, recall packs | user-state DDL/repository/API, daemon endpoints, user-state tests | topology schema and reader layout | targeted user-state storage/API tests |
-| Verification worker | affected tests, proof routing, slow-test reduction | `devtools/verify.py`, test config, proof manifests | feature semantics | `devtools verify --quick`, targeted pytest duration captures |
+| Verification worker | affected tests, pytest evidence artifacts, slow-test reduction | `devtools/verify.py`, test config, verification manifests | feature semantics | `devtools verify --quick`, targeted pytest duration captures |
 | Packaging/deployment worker | Sinnix input, Nix package/service, deployment docs | Sinnix flake/module files, packaging docs, daemon service evidence | Polylogue runtime changes unless needed for packaging | `nix flake check`/targeted Nix build plus service smoke |
 
 Serialise work when two lanes must edit the same shared files:
@@ -645,4 +645,46 @@ Verification:
 - `ruff check polylogue/api/archive.py polylogue/cli/commands/user_state.py polylogue/mcp/payloads.py polylogue/mcp/server_mutation_tools.py tests/unit/storage/test_user_state_contracts.py tests/unit/daemon/test_web_reader.py tests/unit/cli/test_user_state_command.py tests/unit/mcp/test_user_state_tools.py`
 - `python -m mypy polylogue/api/archive.py polylogue/cli/commands/user_state.py polylogue/mcp/payloads.py polylogue/mcp/server_mutation_tools.py`
 - `pytest -q -n0 tests/unit/mcp/test_tool_schema_witness.py tests/unit/mcp/test_envelope_contracts.py tests/unit/cli/test_click_app.py::TestCliMetadata::test_all_subcommands_registered tests/unit/mcp/test_user_state_tools.py tests/unit/cli/test_user_state_command.py`
+- `devtools render-all --check`
+
+### 2026-05-15 - verification artifact migration start
+
+Target:
+
+- Stop treating proof/catalog rows as the verification authority.
+- Realize the first reusable pytest artifact mechanism for contract tests.
+- Reframe planning docs and issues around pytest/coverage/benchmark/CI/runtime
+  artifacts.
+
+Owned files:
+
+- `tests/infra/contract_evidence.py`
+- `tests/infra/test_contract_evidence.py`
+- `tests/unit/cli/test_json_envelope_contract.py`
+- `pyproject.toml`
+- `tests/conftest.py`
+- verification planning docs under `docs/` and `docs/plans/`
+
+Outcome:
+
+- Added `record_contract_evidence`, an explicit opt-in pytest fixture that
+  writes bounded JSON artifacts and exposes artifact paths through pytest
+  `record_property`.
+- Added redaction/truncation for repo/home paths and obvious secret assignment
+  strings before evidence reaches disk.
+- Registered the `contract` pytest marker.
+- Wired the CLI JSON envelope matrix to emit `cli.json_envelope` evidence.
+- Wired MCP surface-registration contract tests to emit evidence for tools,
+  resources, resource templates, and prompts.
+- Marked proof-era manifests as transitional inventories, not verification
+  closure.
+- Updated #1058/#1059/#1060/#1062/#1063/#1064/#594/#997/#999 issue bodies so
+  each points at standard mechanisms and concrete owner surfaces.
+
+Verification:
+
+- `pytest -q tests/infra/test_contract_evidence.py tests/unit/cli/test_json_envelope_contract.py tests/unit/mcp/test_server_surfaces.py::TestServerSurfaceRegistration::test_server_surface_contract`
+- `ruff check tests/infra/contract_evidence.py tests/infra/test_contract_evidence.py tests/conftest.py tests/unit/cli/test_json_envelope_contract.py tests/unit/mcp/test_server_surfaces.py`
+- `mypy --strict tests/infra/contract_evidence.py tests/infra/test_contract_evidence.py tests/conftest.py tests/unit/cli/test_json_envelope_contract.py tests/unit/mcp/test_server_surfaces.py`
+- `devtools verify-manifests`
 - `devtools render-all --check`

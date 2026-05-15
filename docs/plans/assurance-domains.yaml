@@ -1,17 +1,17 @@
 # Assurance-domains coverage matrix.
 #
-# Declares all 25 assurance domains and their current maturity as seed
-# manifests. Each domain documents its verification maturity, whether an
-# oracle is present (`oracle_present`), and the primary evidence type
-# (`oracle`). Maturity levels: seed, nascent, growing, established,
-# mature.
+# Transitional inventory only. This file currently carries proof-era fields
+# such as `oracle_present` and `oracle`; those fields are not evidence and must
+# be replaced by derived pytest/coverage/benchmark/CI state under #1064/#590.
+# Until then, do not treat a maturity or oracle row as verification closure.
 #
 # Updated 2026-04-29 from realized codebase state.
 
 description: >
-  Complete coverage matrix for the 25 polylogue assurance domains.
-  Seed maturity reflects the absence of automated verification gates;
-  nascent maturity indicates partial coverage with gaps.
+  Transitional coverage matrix for the polylogue assurance domains.
+  Rows document known areas and rough historical state; verification
+  closure comes from executable tests, coverage reports, benchmark
+  artifacts, CI checks, and concrete owner issues, not from this file.
 
 domains:
   operational_resilience:
@@ -163,9 +163,9 @@ domains:
     oracle_present: false
     oracle: null
     notes: >
-      Proof catalog exists (polylogue/proof/) with subjects, claims,
-      runners, witnesses, traces. No completeness oracle for what
-      subjects are unclaimed.
+      Transitional proof catalog exists (polylogue/proof/) with subjects,
+      claims, runners, witnesses, traces. #594/#1065 own replacing this
+      with standard artifact reports where the ambition is still useful.
 
   spec_accuracy:
     description: Specifications match observed behavior
@@ -174,8 +174,8 @@ domains:
     oracle: null
     notes: >
       Scenario specs exist (scenarios/) for CLI, insight,
-      operational, and corpus surfaces. No oracle
-      verifying spec-to-behavior correspondence.
+      operational, and corpus surfaces. #997/#1063 own executable
+      pytest/scenario checks for spec-to-behavior correspondence.
 
   migration_safety:
     description: Schema rebuild and transition safety
@@ -217,7 +217,7 @@ domains:
     oracle: drift_check
     notes: >
       query-memory-budget devtools command. Semantic-axis evidence
-      generation. No benchmark baselines committed. Blob store
+      generation. #1063 owns pytest-benchmark artifacts and baselines. Blob store
       archived 2M messages in 53 min.
 
   dependency_closure:
@@ -238,8 +238,8 @@ domains:
     notes: >
       Scenario surface families: CLI, insight, operational, corpus.
       ScenarioSpec base class with assertions, projections,
-      metadata. No systematic coverage audit of which subjects
-      have scenarios.
+      metadata. #1063 owns comparing scenario rows to executed pytest or
+      lab-scenario artifacts.
 
   mutation_coverage:
     description: Mutation testing scope and kill rate
@@ -258,8 +258,8 @@ domains:
     oracle: drift_check
     notes: >
       benchmark-campaign devtools commands exist. pytest-benchmark
-      suite in tests/benchmarks/. No committed baselines or
-      regression gates.
+      suite in tests/benchmarks/. #1063 owns committed/generated baselines
+      and regression gates.
 
   architecture_discipline:
     description: Topology, layering, file-budget, and structural manifest enforcement
@@ -269,7 +269,8 @@ domains:
     notes: >
       verify-topology, verify-layering, verify-file-budgets,
       verify-manifests, schema-roundtrip, and witness lifecycle gates
-      are routed through proof obligations and devtools verify --quick.
+      should report directly as static checks or pytest artifacts rather
+      than routing through proof obligations.
 
   unclassified:
     description: Uncategorized or cross-cutting concerns

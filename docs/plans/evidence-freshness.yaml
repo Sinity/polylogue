@@ -1,10 +1,11 @@
 # Evidence-freshness manifest.
 #
-# Each claim declares its expected evidence refresh cadence.
-# Freshness applies to oracles: proof, smoke, manual_review.
-# Construction_sanity checks are excluded (they validate structure not behavior).
+# Transitional proof-era freshness manifest. Freshness should be derived from
+# pytest/JUnit/json-report, coverage, benchmark, CI, and runtime evidence
+# artifact timestamps/git SHAs under #594/#1065, not from hand-maintained claim
+# rows in this file.
 
-description: Evidence freshness SLA — how often each claim's evidence must be refreshed.
+description: Transitional freshness inventory pending artifact-derived freshness.
 
 freshness_policies:
   per_push:

@@ -222,7 +222,7 @@ Before creating a PR, run the full local baseline. CI runs the same checks.
 ```bash
 devtools verify            # format + lint + mypy + render-all --check + pytest
 devtools verify --quick    # format + lint + mypy + render-all --check (skip tests)
-devtools verify --lab      # verification-lab checks (obligations, proof pack)
+devtools verify --lab      # explicit lab checks beyond the quick/default loop
 ```
 
 The quick gate runs on `git push` via `.githooks/pre-push`. It's a fast check,

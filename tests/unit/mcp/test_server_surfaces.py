@@ -15,6 +15,7 @@ from polylogue.archive.models import Conversation, ConversationSummary
 from polylogue.archive.semantic.content_projection import ContentProjectionSpec
 from polylogue.types import ConversationId, Provider
 from tests.infra.builders import make_conv, make_msg
+from tests.infra.contract_evidence import ContractEvidenceRecorder
 from tests.infra.mcp import (
     EXPECTED_PROMPT_NAMES,
     EXPECTED_RESOURCE_TEMPLATE_URIS,
@@ -138,16 +139,27 @@ class TestServerSurfaceRegistration:
             ("prompts", lambda server: set(server._prompt_manager._prompts.keys()), EXPECTED_PROMPT_NAMES),
         ],
     )
+    @pytest.mark.contract
     def test_server_surface_contract(
         self: object,
         surface_attr: str,
         actual_getter: Callable[[MCPServerUnderTest], set[str]],
         expected: set[str],
         mcp_server: MCPServerUnderTest,
+        record_contract_evidence: ContractEvidenceRecorder,
     ) -> None:
         actual = actual_getter(mcp_server)
         missing = expected - actual
         assert not missing, f"Missing {surface_attr}: {sorted(missing)}"
+        record_contract_evidence.record(
+            f"mcp.{surface_attr}.registration",
+            surface="mcp",
+            facts={
+                "surface_attr": surface_attr,
+                "actual_count": len(actual),
+                "expected_count": len(expected),
+            },
+        )
 
     def test_read_role_omits_mutation_and_maintenance_tools(self: object) -> None:
         from polylogue.mcp.server import build_server

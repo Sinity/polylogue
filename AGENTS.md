@@ -48,8 +48,9 @@ Use it this way:
 - Treat `Known Gaps` as actionable only when they are in a changed or directly
   affected domain. Broad repo-wide gap dumps should not block unrelated PRs, but
   recurring noise should be folded back into #594.
-- Read `stable affected obligations` as unchanged obligations touched by the
-  current diff, not as real freshness/SLA evidence.
+- Treat any remaining proof-pack obligation language as transitional report
+  terminology; real verification closure comes from pytest, coverage,
+  benchmark, CI, static-check, and runtime evidence artifacts.
 - If the Proof Pack is noisy, misleading, or misses a relevant gate, comment on
   the PR or #594 with the concrete mismatch. Do not silently ignore it.
 
@@ -312,7 +313,7 @@ Before creating a PR, run the full local baseline. CI runs the same checks.
 ```bash
 devtools verify            # format + lint + mypy + render-all --check + pytest
 devtools verify --quick    # format + lint + mypy + render-all --check (skip tests)
-devtools verify --lab      # verification-lab checks (obligations, proof pack)
+devtools verify --lab      # explicit lab checks beyond the quick/default loop
 ```
 
 The quick gate runs on `git push` via `.githooks/pre-push`. It's a fast check,
