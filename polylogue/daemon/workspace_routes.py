@@ -15,7 +15,7 @@ ConversationPayloadLoader = Callable[["Polylogue", str], Awaitable[object]]
 
 
 WORKSPACE_SHELL_MODES = {"tabs", "stack", "compare", "timeline"}
-COMPARE_ALIGN_MODES = {"prompt", "time", "fork_point", "search"}
+COMPARE_ALIGN_MODES = {"prompt"}
 
 
 def parse_id_list(params: dict[str, list[str]]) -> list[str]:

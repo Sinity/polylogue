@@ -367,6 +367,13 @@ class TestReaderWorkspaceRoutes:
         assert status == 400
         assert payload["error"] == "invalid_request"
 
+    def test_compare_route_rejects_unimplemented_align_modes(self, workspace_env: dict[str, Path]) -> None:
+        with _running_server(workspace_env) as (_, base_url):
+            status, payload = _get_json_ex(base_url, "/api/compare?left=c1&right=c2&align=time")
+
+        assert status == 400
+        assert payload["error"] == "invalid_request"
+
     def test_workspace_shell_routes_are_unauthenticated(self, workspace_env: dict[str, Path]) -> None:
         with _running_server(workspace_env) as (_, base_url):
             status, _, body = _get_text(base_url, "/w/stack?ids=c1,c2")
