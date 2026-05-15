@@ -370,3 +370,65 @@ def test_delete_recall_pack_reports_status(mcp_server: MCPServerUnderTest) -> No
     assert parsed["status"] == "not_found"
     assert parsed["detail"] == "recall_pack_not_found"
     mock_poly.delete_recall_pack.assert_awaited_once_with("pack-1")
+
+
+def test_workspace_tools_roundtrip_typed_payloads(mcp_server: MCPServerUnderTest) -> None:
+    with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+        mock_poly = make_polylogue_mock()
+        mock_poly.save_workspace = AsyncMock(return_value=True)
+        mock_poly.list_workspaces = AsyncMock(
+            return_value=[
+                {
+                    "workspace_id": "workspace-1",
+                    "name": "Investigation",
+                    "mode": "compare",
+                    "open_targets_json": ('[{"target_type":"conversation","target_id":"conv-1","status":"resolved"}]'),
+                    "layout_json": '{"panes":[{"width":0.5},{"width":0.5}]}',
+                    "active_target_json": '{"target_type":"conversation","target_id":"conv-1","status":"resolved"}',
+                    "created_at": "2026-05-15T00:00:00+00:00",
+                    "updated_at": "2026-05-15T00:00:01+00:00",
+                }
+            ]
+        )
+        mock_get_polylogue.return_value = mock_poly
+
+        saved = invoke_surface(
+            mcp_server._tool_manager._tools["save_workspace"].fn,
+            workspace_id="workspace-1",
+            name="Investigation",
+            mode="compare",
+            open_targets_json='[{"target_type":"conversation","conversation_id":"conv-1"}]',
+            layout_json='{"panes":[{"width":0.5},{"width":0.5}]}',
+            active_target_json='{"target_type":"conversation","conversation_id":"conv-1"}',
+        )
+        listed = invoke_surface(mcp_server._tool_manager._tools["list_workspaces"].fn)
+
+    saved_payload = json.loads(saved)
+    listed_payload = json.loads(listed)
+    assert saved_payload["status"] == "ok"
+    assert saved_payload["outcome"] == "added"
+    assert listed_payload["total"] == 1
+    assert listed_payload["items"][0]["mode"] == "compare"
+    assert listed_payload["items"][0]["layout"] == {"panes": [{"width": 0.5}, {"width": 0.5}]}
+    mock_poly.save_workspace.assert_awaited_once_with(
+        "workspace-1",
+        "Investigation",
+        "compare",
+        '[{"conversation_id":"conv-1","target_type":"conversation"}]',
+        '{"panes":[{"width":0.5},{"width":0.5}]}',
+        '{"conversation_id":"conv-1","target_type":"conversation"}',
+    )
+
+
+def test_delete_workspace_reports_status(mcp_server: MCPServerUnderTest) -> None:
+    with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+        mock_poly = make_polylogue_mock()
+        mock_poly.delete_workspace = AsyncMock(return_value=False)
+        mock_get_polylogue.return_value = mock_poly
+
+        result = invoke_surface(mcp_server._tool_manager._tools["delete_workspace"].fn, workspace_id="workspace-1")
+
+    parsed = json.loads(result)
+    assert parsed["status"] == "not_found"
+    assert parsed["detail"] == "workspace_not_found"
+    mock_poly.delete_workspace.assert_awaited_once_with("workspace-1")

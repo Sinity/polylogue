@@ -21,6 +21,9 @@ from polylogue.storage.sqlite.schema_ddl_archive import (
     RAW_ARCHIVE_DDL as _RAW_ARCHIVE_DDL,
 )
 from polylogue.storage.sqlite.schema_ddl_archive import (
+    READER_WORKSPACES_DDL as _READER_WORKSPACES_DDL,
+)
+from polylogue.storage.sqlite.schema_ddl_archive import (
     RECALL_PACKS_DDL as _RECALL_PACKS_DDL,
 )
 from polylogue.storage.sqlite.schema_ddl_archive import (
@@ -60,7 +63,7 @@ from polylogue.storage.sqlite.schema_ddl_provider_events import (
     PROVIDER_EVENT_DDL as _PROVIDER_EVENT_DDL,
 )
 
-SCHEMA_VERSION = 13  # 2026-05-15: target-aware user marks and annotations (#867)
+SCHEMA_VERSION = 14  # 2026-05-15: durable reader workspaces (#867)
 
 
 # Complete target schema applied to fresh databases.
@@ -79,6 +82,7 @@ SCHEMA_DDL += "\n\n" + _USER_MARKS_DDL
 SCHEMA_DDL += "\n\n" + _USER_ANNOTATIONS_DDL
 SCHEMA_DDL += "\n\n" + _SAVED_VIEWS_DDL
 SCHEMA_DDL += "\n\n" + _RECALL_PACKS_DDL
+SCHEMA_DDL += "\n\n" + _READER_WORKSPACES_DDL
 
 _SESSION_INSIGHT_DDL = _SESSION_INSIGHT_PROFILE_DDL + _SESSION_INSIGHT_TIMELINE_DDL + _SESSION_INSIGHT_AGGREGATE_DDL
 
@@ -96,6 +100,7 @@ __all__ = [
     "_MESSAGE_FTS_DDL",
     "_PROVIDER_EVENT_DDL",
     "_RAW_ARCHIVE_DDL",
+    "_READER_WORKSPACES_DDL",
     "_SESSION_INSIGHT_DDL",
     "_SOURCE_FILE_CURSOR_DDL",
     "_RECALL_PACKS_DDL",

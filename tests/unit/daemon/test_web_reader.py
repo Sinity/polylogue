@@ -531,6 +531,50 @@ class TestReaderUserState:
         assert delete_status == 200
         assert deleted == {"pack_id": "pack-auth", "deleted": True}
 
+    def test_workspaces_roundtrip_resolved_and_degraded_targets(self, workspace_env: dict[str, Path]) -> None:
+        with _running_server(workspace_env) as (_, base_url):
+            status, saved = _request_json(
+                base_url,
+                "POST",
+                "/api/user/workspaces",
+                payload={
+                    "workspace_id": "workspace-auth",
+                    "name": "Auth workspace",
+                    "mode": "compare",
+                    "open_targets": [
+                        {"target_type": "conversation", "conversation_id": "c1"},
+                        {"target_type": "message", "conversation_id": "c1", "message_id": "m-c1"},
+                        {"target_type": "message", "conversation_id": "c1", "message_id": "missing-msg"},
+                        {"target_type": "topology_edge", "target_id": "edge-1"},
+                    ],
+                    "layout": {"panes": [{"width": 0.5}, {"width": 0.5}]},
+                    "active_target": {"target_type": "message", "conversation_id": "c1", "message_id": "m-c1"},
+                },
+            )
+            listed = _get_json(base_url, "/api/user/workspaces")
+            fetched = _get_json(base_url, "/api/user/workspaces/workspace-auth")
+            delete_status, deleted = _request_json(base_url, "DELETE", "/api/user/workspaces/workspace-auth")
+
+        saved_payload = cast(dict[str, object], saved)
+        listed_payload = cast(dict[str, object], listed)
+        fetched_payload = cast(dict[str, object], fetched)
+        assert status == 201
+        assert saved_payload["created"] is True
+        assert listed_payload["total"] == 1
+        assert fetched_payload["mode"] == "compare"
+        assert fetched_payload["layout"] == {"panes": [{"width": 0.5}, {"width": 0.5}]}
+        open_targets = cast(list[dict[str, object]], fetched_payload["open_targets"])
+        assert [(item["target_type"], item["status"]) for item in open_targets] == [
+            ("conversation", "resolved"),
+            ("message", "resolved"),
+            ("message", "missing"),
+            ("topology_edge", "unsupported"),
+        ]
+        active_target = cast(dict[str, object], fetched_payload["active_target"])
+        assert active_target["identity_key"] == "message:c1:m-c1"
+        assert delete_status == 200
+        assert deleted == {"workspace_id": "workspace-auth", "deleted": True}
+
 
 # ---------------------------------------------------------------------------
 # Empty / degraded / privacy states

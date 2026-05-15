@@ -1001,3 +1001,92 @@ class PolylogueArchiveMixin:
 
         store: RepositoryWriteMixin = self.repository
         return await store.delete_recall_pack(pack_id)
+
+    # ------------------------------------------------------------------
+    # Reader workspaces
+    # ------------------------------------------------------------------
+
+    async def _build_workspace_targets(
+        self, open_targets: Sequence[dict[str, object]]
+    ) -> tuple[list[dict[str, object]], str]:
+        import json
+
+        items = [await self._resolve_recall_pack_item(item) for item in open_targets]
+        return items, json.dumps(items, sort_keys=True, separators=(",", ":"))
+
+    async def _build_workspace_active_target(self, active_target: dict[str, object]) -> str:
+        import json
+
+        if not active_target:
+            return "{}"
+        return json.dumps(await self._resolve_recall_pack_item(active_target), sort_keys=True, separators=(",", ":"))
+
+    async def save_workspace(
+        self,
+        workspace_id: str,
+        name: str,
+        mode: str,
+        open_targets_json: str,
+        layout_json: str,
+        active_target_json: str = "{}",
+    ) -> bool:
+        """Create or update a durable reader workspace."""
+        import json
+
+        workspace_id = workspace_id.strip()
+        name = name.strip()
+        mode = mode.strip()
+        if not workspace_id:
+            raise ValueError("workspace_id must not be empty")
+        if not name:
+            raise ValueError("name must not be empty")
+        if mode not in {"tabs", "stack", "compare", "timeline"}:
+            raise ValueError("mode must be one of: tabs, stack, compare, timeline")
+
+        open_targets = json.loads(open_targets_json)
+        if not isinstance(open_targets, list) or not all(isinstance(item, dict) for item in open_targets):
+            raise ValueError("open_targets_json must encode a list of objects")
+        _, normalized_targets_json = await self._build_workspace_targets(open_targets)
+
+        layout = json.loads(layout_json)
+        if not isinstance(layout, dict):
+            raise ValueError("layout_json must encode an object")
+        normalized_layout_json = json.dumps(layout, sort_keys=True, separators=(",", ":"))
+
+        active_target = json.loads(active_target_json)
+        if not isinstance(active_target, dict):
+            raise ValueError("active_target_json must encode an object")
+        normalized_active_json = await self._build_workspace_active_target(active_target)
+
+        from polylogue.storage.repository.archive.repository_writes import RepositoryWriteMixin
+
+        store: RepositoryWriteMixin = self.repository
+        return await store.save_workspace(
+            workspace_id=workspace_id,
+            name=name,
+            mode=mode,
+            open_targets_json=normalized_targets_json,
+            layout_json=normalized_layout_json,
+            active_target_json=normalized_active_json,
+        )
+
+    async def get_workspace(self, workspace_id: str) -> dict[str, str] | None:
+        """Get a durable reader workspace by ID."""
+        from polylogue.storage.repository.archive.repository_writes import RepositoryWriteMixin
+
+        store: RepositoryWriteMixin = self.repository
+        return await store.get_workspace(workspace_id)
+
+    async def list_workspaces(self) -> list[dict[str, str]]:
+        """List durable reader workspaces."""
+        from polylogue.storage.repository.archive.repository_writes import RepositoryWriteMixin
+
+        store: RepositoryWriteMixin = self.repository
+        return await store.list_workspaces()
+
+    async def delete_workspace(self, workspace_id: str) -> bool:
+        """Delete a durable reader workspace. Returns ``True`` if deleted."""
+        from polylogue.storage.repository.archive.repository_writes import RepositoryWriteMixin
+
+        store: RepositoryWriteMixin = self.repository
+        return await store.delete_workspace(workspace_id)

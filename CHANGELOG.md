@@ -73,6 +73,10 @@ documentation polish do not require an entry.
   `daemon-live-convergence` synthetic campaign that reports live-ingest file
   counts, read/write byte shape, append-tail byte shape, stage timings, and
   archive row counts, plus process and cgroup memory peaks.
+- Durable reader workspaces are now persisted across the archive API, daemon
+  `/api/user/workspaces`, `polylogue user-state workspaces`, and MCP mutation
+  tools, with resolved/degraded target evidence for tabs, stack, compare, and
+  timeline modes.
 
 ### Changed
 

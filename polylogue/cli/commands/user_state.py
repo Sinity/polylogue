@@ -12,6 +12,7 @@ from polylogue.cli.shared.machine_errors import emit_success
 from polylogue.cli.shared.types import AppEnv
 
 _MARK_TYPES = ("star", "pin", "archive")
+_WORKSPACE_MODES = ("tabs", "stack", "compare", "timeline")
 
 
 def _run(coro: Any) -> Any:
@@ -52,6 +53,16 @@ def _canonical_json_object(raw_json: str, *, label: str) -> dict[str, object]:
         raise click.ClickException(f"{label} must be valid JSON") from exc
     if not isinstance(payload, dict):
         raise click.ClickException(f"{label} must encode an object")
+    return payload
+
+
+def _canonical_json_list(raw_json: str, *, label: str) -> list[object]:
+    try:
+        payload = json.loads(raw_json)
+    except json.JSONDecodeError as exc:
+        raise click.ClickException(f"{label} must be valid JSON") from exc
+    if not isinstance(payload, list):
+        raise click.ClickException(f"{label} must encode a list")
     return payload
 
 
@@ -405,6 +416,85 @@ def delete_recall_pack_command(env: AppEnv, pack_id: str, output_format: str | N
         output_format,
         {"status": "deleted" if deleted else "not_found", "pack_id": pack_id},
         f"Recall pack {pack_id}: {'deleted' if deleted else 'not found'}",
+    )
+
+
+@user_state_command.group("workspaces")
+def workspaces_group() -> None:
+    """Manage durable reader workspaces."""
+
+
+@workspaces_group.command("list")
+@click.option("--format", "-f", "output_format", type=click.Choice(["json"]), default=None)
+@click.pass_obj
+def list_workspaces_command(env: AppEnv, output_format: str | None) -> None:
+    """List reader workspaces."""
+    rows = _run(env.polylogue.list_workspaces())
+    if output_format == "json":
+        emit_success({"items": rows, "total": len(rows)})
+        return
+    if not rows:
+        click.echo("No reader workspaces found.")
+        return
+    for row in rows:
+        click.echo(f"{row['workspace_id']:<24} {row['mode']:<8} {row['name']}")
+
+
+@workspaces_group.command("save")
+@click.argument("workspace_id")
+@click.argument("name")
+@click.option("--mode", type=click.Choice(_WORKSPACE_MODES), default="tabs")
+@click.option("--open-targets-json", default="[]", help="Workspace open target JSON list.")
+@click.option("--layout-json", default="{}", help="Workspace layout JSON object.")
+@click.option("--active-target-json", default="{}", help="Workspace active target JSON object.")
+@click.option("--format", "-f", "output_format", type=click.Choice(["json"]), default=None)
+@click.pass_obj
+def save_workspace_command(
+    env: AppEnv,
+    workspace_id: str,
+    name: str,
+    mode: str,
+    open_targets_json: str,
+    layout_json: str,
+    active_target_json: str,
+    output_format: str | None,
+) -> None:
+    """Create or update a reader workspace."""
+    open_targets = _canonical_json_list(open_targets_json, label="open-targets-json")
+    if not all(isinstance(item, dict) for item in open_targets):
+        raise click.ClickException("open-targets-json items must be objects")
+    layout = _canonical_json_object(layout_json, label="layout-json")
+    active_target = _canonical_json_object(active_target_json, label="active-target-json")
+    created = bool(
+        _run(
+            env.polylogue.save_workspace(
+                workspace_id,
+                name,
+                mode,
+                json.dumps(open_targets, sort_keys=True, separators=(",", ":")),
+                json.dumps(layout, sort_keys=True, separators=(",", ":")),
+                json.dumps(active_target, sort_keys=True, separators=(",", ":")),
+            )
+        )
+    )
+    _json_or_plain(
+        output_format,
+        {"status": "ok", "workspace_id": workspace_id, "outcome": "added" if created else "updated"},
+        f"Workspace {workspace_id}: {'added' if created else 'updated'}",
+    )
+
+
+@workspaces_group.command("delete")
+@click.argument("workspace_id")
+@click.option("--format", "-f", "output_format", type=click.Choice(["json"]), default=None)
+@click.pass_obj
+def delete_workspace_command(env: AppEnv, workspace_id: str, output_format: str | None) -> None:
+    """Delete a reader workspace."""
+    deleted = bool(_run(env.polylogue.delete_workspace(workspace_id)))
+    _json_or_plain(
+        output_format,
+        {"status": "deleted" if deleted else "not_found", "workspace_id": workspace_id},
+        f"Workspace {workspace_id}: {'deleted' if deleted else 'not found'}",
     )
 
 

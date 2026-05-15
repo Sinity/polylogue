@@ -359,6 +359,7 @@ Commands:
   marks         Manage conversation and message marks.
   recall-packs  Manage recall packs with explicit target evidence.
   saved-views   Manage saved query views.
+  workspaces    Manage durable reader workspaces.
 ```
 
 ## Auth

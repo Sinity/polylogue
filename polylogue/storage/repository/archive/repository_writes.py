@@ -411,3 +411,47 @@ class RepositoryWriteMixin:
         """Delete a recall pack. Returns True if deleted."""
         async with self._backend.connection() as conn:
             return await conversations_q.delete_recall_pack(conn, pack_id)
+
+    # ------------------------------------------------------------------
+    # Reader workspaces
+    # ------------------------------------------------------------------
+
+    async def save_workspace(
+        self,
+        *,
+        workspace_id: str,
+        name: str,
+        mode: str,
+        open_targets_json: str,
+        layout_json: str,
+        active_target_json: str,
+    ) -> bool:
+        """Save a durable reader workspace. Returns True if newly created."""
+        import datetime as _dt
+
+        async with self._backend.connection() as conn:
+            return await conversations_q.save_workspace(
+                conn,
+                workspace_id=workspace_id,
+                name=name,
+                mode=mode,
+                open_targets_json=open_targets_json,
+                layout_json=layout_json,
+                active_target_json=active_target_json,
+                now=_dt.datetime.now(tz=_dt.timezone.utc).isoformat(),
+            )
+
+    async def get_workspace(self, workspace_id: str) -> dict[str, str] | None:
+        """Get a reader workspace by ID."""
+        async with self._backend.connection() as conn:
+            return await conversations_q.get_workspace(conn, workspace_id)
+
+    async def list_workspaces(self) -> list[dict[str, str]]:
+        """List durable reader workspaces."""
+        async with self._backend.connection() as conn:
+            return await conversations_q.list_workspaces(conn)
+
+    async def delete_workspace(self, workspace_id: str) -> bool:
+        """Delete a reader workspace. Returns True if deleted."""
+        async with self._backend.connection() as conn:
+            return await conversations_q.delete_workspace(conn, workspace_id)
