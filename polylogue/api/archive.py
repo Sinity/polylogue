@@ -926,15 +926,12 @@ class PolylogueArchiveMixin:
         self,
         *,
         label: str,
-        conversation_ids: Sequence[str],
         payload: dict[str, object],
     ) -> tuple[list[str], str]:
-        raw_items: list[dict[str, object]] = [
-            {"target_type": "conversation", "conversation_id": conversation_id} for conversation_id in conversation_ids
-        ]
         explicit_items = payload.get("items")
-        if isinstance(explicit_items, list):
-            raw_items.extend(item for item in explicit_items if isinstance(item, dict))
+        if not isinstance(explicit_items, list) or not all(isinstance(item, dict) for item in explicit_items):
+            raise ValueError("recall pack payload must include an items list of objects")
+        raw_items = list(explicit_items)
 
         items = [await self._resolve_recall_pack_item(item) for item in raw_items]
         resolved_conversation_ids: list[str] = []
@@ -962,17 +959,15 @@ class PolylogueArchiveMixin:
 
         return resolved_conversation_ids, json.dumps(normalized_payload, sort_keys=True, separators=(",", ":"))
 
-    async def create_recall_pack(self, pack_id: str, label: str, conversation_id: str, payload_json: str) -> bool:
+    async def create_recall_pack(self, pack_id: str, label: str, payload_json: str) -> bool:
         """Save a recall pack. Returns ``True`` if newly created."""
         import json
 
-        conversation_ids = json.loads(conversation_id) if conversation_id.startswith("[") else [conversation_id]
         payload = json.loads(payload_json)
         if not isinstance(payload, dict):
             raise ValueError("recall pack payload must be a JSON object")
         resolved_conversation_ids, normalized_payload_json = await self._build_recall_pack_payload(
             label=label,
-            conversation_ids=[str(item) for item in conversation_ids],
             payload=payload,
         )
         conversation_ids_json = json.dumps(resolved_conversation_ids, sort_keys=True)

@@ -27,7 +27,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from polylogue.daemon.http import _check_auth_logic, _is_localhost
+from polylogue.core.loopback import is_loopback_host
+from polylogue.daemon.http import _check_auth_logic
 
 if TYPE_CHECKING:
     from polylogue.daemon.http import DaemonAPIHandler, DaemonAPIHTTPServer
@@ -116,7 +117,7 @@ def _origin_allowed(origin: str) -> bool:
     """Reproduces the localhost-allowlist used by ``_check_cross_origin``.
 
     Includes the IPv6 loopback (``[::1]``) since the daemon admits ``::1``
-    as a loopback bind address (see ``_is_localhost``); a web shell
+    as a loopback bind address (see ``is_loopback_host``); a web shell
     served from that bind would send ``Origin: http://[::1]:port``.
     """
     if not origin:
@@ -357,12 +358,12 @@ class TestOptionsReturnsMethodNotAllowed:
 
 
 # ---------------------------------------------------------------------------
-# Loopback helper — guards _is_localhost contract
+# Loopback helper — guards shared loopback contract
 # ---------------------------------------------------------------------------
 
 
 class TestIsLocalhost:
-    """``_is_localhost`` is consumed by remote-bind enforcement in
+    """``is_loopback_host`` is consumed by remote-bind enforcement in
     ``daemon/cli.py``. Pin its contract.
     """
 
@@ -371,14 +372,14 @@ class TestIsLocalhost:
         ["127.0.0.1", "127.0.0.2", "127.1.2.3", "127.255.255.254", "::1", "localhost"],
     )
     def test_loopback_addresses(self, host: str) -> None:
-        assert _is_localhost(host) is True
+        assert is_loopback_host(host) is True
 
     @pytest.mark.parametrize(
         "host",
         ["0.0.0.0", "192.168.1.1", "10.0.0.1", "8.8.8.8", "128.0.0.1", "::", ""],
     )
     def test_non_loopback_addresses(self, host: str) -> None:
-        assert _is_localhost(host) is False
+        assert is_loopback_host(host) is False
 
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,314 @@
+"""Workspace-mode assets for the daemon-served reader shell."""
+
+from __future__ import annotations
+
+WORKSPACE_CSS = r"""
+#workspace-toolbar { display: flex; align-items: center; gap: 8px; padding: 7px 16px;
+  border-bottom: 1px solid var(--border); background: var(--panel-subtle); flex-wrap: wrap; }
+#workspace-toolbar .workspace-mode { display: flex; gap: 3px; }
+#workspace-toolbar .mode-btn { background: var(--panel-elevated); border: 1px solid var(--border);
+  color: var(--text-muted); padding: 3px 8px; border-radius: 3px; cursor: pointer; font-size: var(--small); }
+#workspace-toolbar .mode-btn.active { color: var(--accent); border-color: var(--accent-soft); background: var(--accent-bg); }
+#workspace-toolbar .workspace-spacer { flex: 1; min-width: 12px; }
+#workspace-toolbar select { background: var(--panel-elevated); color: var(--text); border: 1px solid var(--border);
+  border-radius: 3px; padding: 3px 6px; font-size: var(--small); max-width: 180px; }
+#workspace-toolbar .workspace-action { background: var(--panel-elevated); border: 1px solid var(--border);
+  color: var(--accent); padding: 3px 8px; border-radius: 3px; cursor: pointer; font-size: var(--small); }
+#workspace-toolbar .workspace-action:hover { border-color: var(--accent-soft); background: var(--accent-bg); }
+#workspace-toolbar .workspace-stat { color: var(--text-muted); font-size: var(--small); }
+#workspace-toolbar .workspace-stat.warn { color: var(--warn); }
+#stack-view { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(280px, 1fr);
+  height: 100%; overflow-x: auto; overflow-y: hidden; }
+.stack-lane { border-right: 1px solid var(--border); min-width: 280px; overflow-y: auto; background: var(--bg); }
+.stack-lane.missing { display: flex; align-items: center; justify-content: center; color: var(--text-dim); padding: 20px; }
+.stack-lane-header { position: sticky; top: 0; z-index: 2; background: var(--bg-raised);
+  border-bottom: 1px solid var(--border); padding: 8px 10px; }
+.stack-lane-title { font-size: var(--base); color: var(--text); line-height: 1.3; margin-bottom: 3px; }
+.stack-lane-meta { display: flex; gap: 6px; flex-wrap: wrap; color: var(--text-muted); font-size: var(--small); }
+#compare-view { height: 100%; overflow-y: auto; }
+.compare-header { display: grid; grid-template-columns: 1fr 1fr; position: sticky; top: 0; z-index: 2;
+  background: var(--bg-raised); border-bottom: 1px solid var(--border); }
+.compare-pane-title { padding: 8px 12px; border-right: 1px solid var(--border); color: var(--text); }
+.compare-pair { display: grid; grid-template-columns: 1fr 1fr; border-bottom: 1px solid var(--border); }
+.compare-cell { min-width: 0; border-right: 1px solid var(--border); background: var(--bg); }
+.compare-cell.empty { display: flex; align-items: center; justify-content: center; color: var(--text-dim); min-height: 68px; }
+.workspace-degraded { padding: 10px 16px; color: var(--warn); background: var(--warn-bg);
+  border-bottom: 1px solid var(--border); font-size: var(--small); }
+"""
+
+WORKSPACE_HTML = r"""
+    <div id="workspace-toolbar">
+      <div class="workspace-mode" id="workspace-mode-switcher">
+        <button class="mode-btn" data-mode="single" onclick="setSingleMode()">Single</button>
+        <button class="mode-btn" data-mode="stack" onclick="openStackFromSelection()">Stack</button>
+        <button class="mode-btn" data-mode="compare" onclick="openCompareFromSelection()">Compare</button>
+      </div>
+      <span class="workspace-stat" id="workspace-route-status">single</span>
+      <span class="workspace-stat warn" id="workspace-degraded-count"></span>
+      <span class="workspace-spacer"></span>
+      <select id="workspace-restore-select" title="Restore workspace" onchange="restoreWorkspace(this.value)">
+        <option value="">Restore workspace</option>
+      </select>
+      <button class="workspace-action" id="workspace-save-btn" onclick="saveWorkspace()">Save workspace</button>
+      <button class="workspace-action" id="workspace-create-recall-pack-btn" onclick="createRecallPack()">Recall pack</button>
+    </div>
+"""
+
+WORKSPACE_JS = r"""
+function getWorkspaceRouteFromURL() {
+  var path = window.location.pathname;
+  var params = new URLSearchParams(window.location.search);
+  if (path === '/w/stack') {
+    var ids = (params.get('ids') || '').split(',').map(function(id) { return id.trim(); }).filter(Boolean);
+    return {mode: 'stack', ids: ids, focus: params.get('focus') || ''};
+  }
+  if (path === '/w/compare') {
+    return {mode: 'compare', left: params.get('left') || '', right: params.get('right') || '', align: params.get('align') || 'prompt'};
+  }
+  return null;
+}
+
+function pushSingleURL(convId) {
+  if (convId) {
+    var url = '/c/' + encodeURIComponent(convId);
+    if (window.location.pathname + window.location.search !== url) history.pushState({}, '', url);
+  } else {
+    if (window.location.pathname + window.location.search !== '/') history.pushState({}, '', '/');
+  }
+}
+
+function pushWorkspaceURL(route) {
+  var url = '/';
+  if (route.mode === 'stack') {
+    var stackParams = new URLSearchParams();
+    stackParams.set('ids', route.ids.join(','));
+    if (route.focus) stackParams.set('focus', route.focus);
+    url = '/w/stack?' + stackParams.toString();
+  } else if (route.mode === 'compare') {
+    var compareParams = new URLSearchParams();
+    compareParams.set('left', route.left);
+    compareParams.set('right', route.right);
+    compareParams.set('align', route.align || 'prompt');
+    url = '/w/compare?' + compareParams.toString();
+  }
+  if (window.location.pathname + window.location.search !== url) history.pushState({}, '', url);
+}
+
+async function loadWorkspaceRoute(route, updateURL) {
+  if (!route) return;
+  state.mode = route.mode;
+  state.selected = null;
+  state.selectedRaw = null;
+  if (route.mode === 'stack') {
+    if (!route.ids.length) { renderMain(); return; }
+    if (updateURL !== false) pushWorkspaceURL(route);
+    var params = new URLSearchParams();
+    params.set('ids', route.ids.join(','));
+    if (route.focus) params.set('focus', route.focus);
+    state.stackPayload = await fetchJSON('/api/stack?' + params.toString());
+    state.comparePayload = null;
+  } else if (route.mode === 'compare') {
+    if (!route.left || !route.right) { renderMain(); return; }
+    if (updateURL !== false) pushWorkspaceURL(route);
+    var cparams = new URLSearchParams();
+    cparams.set('left', route.left);
+    cparams.set('right', route.right);
+    cparams.set('align', route.align || 'prompt');
+    state.comparePayload = await fetchJSON('/api/compare?' + cparams.toString());
+    state.stackPayload = null;
+  }
+  renderMain();
+  renderInspector();
+  renderConversations();
+}
+
+function renderWorkspaceToolbar() {
+  document.querySelectorAll('#workspace-mode-switcher .mode-btn').forEach(function(btn) {
+    var mode = btn.dataset.mode || 'single';
+    btn.classList.toggle('active', mode === state.mode || (mode === 'single' && state.mode === 'single'));
+  });
+  var status = document.getElementById('workspace-route-status');
+  var degraded = document.getElementById('workspace-degraded-count');
+  var select = document.getElementById('workspace-restore-select');
+  var count = 0;
+  if (state.mode === 'stack' && state.stackPayload) count = state.stackPayload.degraded_count || 0;
+  if (state.mode === 'compare' && state.comparePayload) count = state.comparePayload.degraded_count || 0;
+  status.textContent = state.mode;
+  degraded.textContent = count ? (count + ' degraded') : '';
+  var current = select.value;
+  select.innerHTML = '<option value="">Restore workspace</option>' + (state.workspaces || []).map(function(w) {
+    return '<option value="' + escAttr(w.workspace_id) + '">' + esc(w.name || w.workspace_id) + '</option>';
+  }).join('');
+  select.value = current;
+}
+
+function conversationHeaderHtml(c) {
+  var title = esc(c.display_title || c.title || c.id || 'Untitled');
+  var html = '<div class="stack-lane-header"><div class="stack-lane-title">' + title + '</div><div class="stack-lane-meta">';
+  if (c.provider) html += '<span>' + esc(c.provider) + '</span>';
+  if (c.message_count !== undefined) html += '<span>' + c.message_count + ' messages</span>';
+  if (c.repo) html += '<span class="chip">' + esc(c.repo.split('/').pop() || c.repo) + '</span>';
+  html += '</div></div>';
+  return html;
+}
+
+function renderStackWorkspace() {
+  var headerEl = document.getElementById('conv-header');
+  var msgEl = document.getElementById('msg-list');
+  var payload = state.stackPayload;
+  headerEl.innerHTML = '<h2>Stack workspace</h2><div class="conv-stats"><span id="stack-focus">focus: ' + esc(payload && payload.focus || 'none') + '</span></div>';
+  if (!payload) {
+    msgEl.innerHTML = '<div class="main-empty"><h3>Stack unavailable</h3></div>';
+    return;
+  }
+  msgEl.innerHTML = '<div id="stack-view"><div id="stack-items" style="display:contents">'
+    + (payload.items || []).map(function(item) {
+      if (item.status !== 'resolved' || !item.conversation) {
+        return '<div class="stack-lane missing"><div><div>Missing conversation</div><div class="workspace-stat warn">' + esc(item.conversation_id || item.target_id || '') + '</div></div></div>';
+      }
+      var c = item.conversation;
+      return '<section class="stack-lane" data-conversation-id="' + escAttr(c.id) + '">'
+        + conversationHeaderHtml(c)
+        + messageBlocksHtml(c.messages || [])
+        + '</section>';
+    }).join('')
+    + '</div></div>';
+}
+
+function renderCompareWorkspace() {
+  var headerEl = document.getElementById('conv-header');
+  var msgEl = document.getElementById('msg-list');
+  var payload = state.comparePayload;
+  headerEl.innerHTML = '<h2>Compare workspace</h2><div class="conv-stats"><span>align: '
+    + '<select id="compare-align-select" onchange="changeCompareAlign(this.value)"><option value="prompt">prompt</option></select></span></div>';
+  if (!payload) {
+    msgEl.innerHTML = '<div class="main-empty"><h3>Compare unavailable</h3></div>';
+    return;
+  }
+  var leftTitle = payload.left && payload.left.title ? payload.left.title : (payload.left && payload.left.conversation_id || 'left');
+  var rightTitle = payload.right && payload.right.title ? payload.right.title : (payload.right && payload.right.conversation_id || 'right');
+  var banner = payload.degraded_count ? '<div class="workspace-degraded" id="compare-degraded-banner">' + payload.degraded_count + ' degraded side(s)</div>' : '<div id="compare-degraded-banner" style="display:none"></div>';
+  msgEl.innerHTML = '<div id="compare-view">' + banner
+    + '<div class="compare-header"><div class="compare-pane-title" id="compare-left-pane">' + esc(leftTitle) + '</div>'
+    + '<div class="compare-pane-title" id="compare-right-pane">' + esc(rightTitle) + '</div></div>'
+    + '<div id="compare-pairs">'
+    + (payload.pairs || []).map(function(pair) {
+      return '<div class="compare-pair">'
+        + '<div class="compare-cell' + (pair.left ? '' : ' empty') + '">' + (pair.left ? messageBlocksHtml([pair.left]) : 'No message') + '</div>'
+        + '<div class="compare-cell' + (pair.right ? '' : ' empty') + '">' + (pair.right ? messageBlocksHtml([pair.right]) : 'No message') + '</div>'
+        + '</div>';
+    }).join('')
+    + '</div></div>';
+}
+
+function setSingleMode() {
+  state.mode = 'single';
+  state.stackPayload = null;
+  state.comparePayload = null;
+  pushSingleURL(state.selected ? state.selected.id : null);
+  renderMain();
+  renderInspector();
+  renderConversations();
+}
+
+function selectedConversationIds() {
+  if (state.mode === 'stack' && state.stackPayload) return (state.stackPayload.ids || []).slice();
+  if (state.mode === 'compare' && state.comparePayload) {
+    return [state.comparePayload.left && (state.comparePayload.left.id || state.comparePayload.left.conversation_id),
+      state.comparePayload.right && (state.comparePayload.right.id || state.comparePayload.right.conversation_id)].filter(Boolean);
+  }
+  if (state.selected) return [state.selected.id];
+  return state.conversations.slice(0, 2).map(function(c) { return c.id; });
+}
+
+function targetItemsForCurrentContext() {
+  return selectedConversationIds().map(function(id) {
+    return {target_type: 'conversation', conversation_id: id};
+  });
+}
+
+async function openStackFromSelection() {
+  var ids = selectedConversationIds();
+  if (!ids.length && state.conversations.length) ids = state.conversations.slice(0, 3).map(function(c) { return c.id; });
+  if (!ids.length) return;
+  await loadWorkspaceRoute({mode: 'stack', ids: ids, focus: ids[0]}, true);
+}
+
+async function openCompareFromSelection() {
+  var ids = selectedConversationIds();
+  if (ids.length < 2) ids = state.conversations.slice(0, 2).map(function(c) { return c.id; });
+  if (ids.length < 2) return;
+  await loadWorkspaceRoute({mode: 'compare', left: ids[0], right: ids[1], align: 'prompt'}, true);
+}
+
+async function changeCompareAlign(align) {
+  if (!state.comparePayload) return;
+  var left = state.comparePayload.left && (state.comparePayload.left.id || state.comparePayload.left.conversation_id);
+  var right = state.comparePayload.right && (state.comparePayload.right.id || state.comparePayload.right.conversation_id);
+  if (!left || !right) return;
+  await loadWorkspaceRoute({mode: 'compare', left: left, right: right, align: align || 'prompt'}, true);
+}
+
+async function saveWorkspace() {
+  var items = targetItemsForCurrentContext();
+  if (!items.length) return;
+  var name = window.prompt('Workspace name', state.mode === 'single' ? 'Reader workspace' : (state.mode + ' workspace'));
+  if (!name) return;
+  var id = 'workspace-' + Date.now().toString(36);
+  var active = items[0];
+  if (state.selected) active = {target_type: 'conversation', conversation_id: state.selected.id};
+  try {
+    await sendJSON('/api/user/workspaces', 'POST', {
+      workspace_id: id,
+      name: name,
+      mode: state.mode,
+      open_targets: items,
+      layout: {mode: state.mode},
+      active_target: active
+    });
+    await loadUserState();
+  } catch(e) {
+    state.userStateError = 'Failed to save workspace';
+    renderInspector();
+  }
+}
+
+async function restoreWorkspace(workspaceId) {
+  if (!workspaceId) return;
+  try {
+    var workspace = await fetchJSON('/api/user/workspaces/' + encodeURIComponent(workspaceId));
+    var ids = (workspace.open_targets || []).filter(function(t) {
+      return t.target_type === 'conversation' && (t.conversation_id || t.target_id);
+    }).map(function(t) { return t.conversation_id || t.target_id; });
+    if (workspace.mode === 'compare' && ids.length >= 2) {
+      await loadWorkspaceRoute({mode: 'compare', left: ids[0], right: ids[1], align: 'prompt'}, true);
+    } else if (ids.length) {
+      await loadWorkspaceRoute({mode: 'stack', ids: ids, focus: ids[0]}, true);
+    }
+  } catch(e) {
+    state.userStateError = 'Failed to restore workspace';
+    renderInspector();
+  }
+}
+
+async function createRecallPack() {
+  var items = targetItemsForCurrentContext();
+  if (!items.length) return;
+  var label = window.prompt('Recall pack label', state.mode === 'single' ? 'Reader recall pack' : (state.mode + ' recall pack'));
+  if (!label) return;
+  var packId = 'pack-' + Date.now().toString(36);
+  try {
+    await sendJSON('/api/user/recall-packs', 'POST', {
+      pack_id: packId,
+      label: label,
+      payload: {summary: label, items: items}
+    });
+    await loadUserState();
+  } catch(e) {
+    state.userStateError = 'Failed to create recall pack';
+    renderInspector();
+  }
+}
+"""
+
+__all__ = ["WORKSPACE_CSS", "WORKSPACE_HTML", "WORKSPACE_JS"]

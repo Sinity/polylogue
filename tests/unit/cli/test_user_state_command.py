@@ -163,8 +163,8 @@ def test_user_state_recall_pack_save_passes_typed_items(cli_runner: CliRunner) -
             "save",
             "pack-1",
             "Handoff",
-            "--conversation-id",
-            "conv-1",
+            "--item-json",
+            '{"target_type":"conversation","conversation_id":"conv-1"}',
             "--item-json",
             '{"target_type":"annotation","annotation_id":"ann-1"}',
             "--payload-json",
@@ -182,8 +182,7 @@ def test_user_state_recall_pack_save_passes_typed_items(cli_runner: CliRunner) -
     env.polylogue.create_recall_pack.assert_awaited_once_with(
         "pack-1",
         "Handoff",
-        '["conv-1"]',
-        '{"items":[{"annotation_id":"ann-1","target_type":"annotation"}],"summary":"handoff"}',
+        '{"items":[{"conversation_id":"conv-1","target_type":"conversation"},{"annotation_id":"ann-1","target_type":"annotation"}],"summary":"handoff"}',
     )
 
 

@@ -42,6 +42,8 @@ operator-facing wrapper for the visual/DOM lane.
 |---|---|---|
 | List / search | `polylogue.local_reader.search` | `/`, `/api/conversations`, `/api/conversations?query=...`, `/api/facets`, `/api/facets?provider=...`, `/api/facets?query=...` |
 | Detail / conversation | `polylogue.local_reader.conversation` | `/c/{id}`, `/api/conversations/{id}`, `/api/conversations/{id}/messages`, `/api/conversations/{id}/raw` |
+| Stack workspace | `polylogue.local_reader.workspace.stack` | `/w/stack?ids=...`, `/api/stack?ids=...` |
+| Compare workspace | `polylogue.local_reader.workspace.compare` | `/w/compare?left=...&right=...&align=prompt`, `/api/compare?left=...&right=...&align=prompt` |
 | Empty archive | — | `/api/conversations`, `/api/facets` |
 | Degraded FTS | `polylogue.local_reader.degraded` | `/api/conversations?query=...` with message FTS absent |
 | Privacy boundary | — | `/`, `/c/{id}`, `/api/facets`, `/api/conversations`, `/api/conversations/{id}`, `/api/conversations/{id}/messages` (auditing for absolute local paths) |
@@ -54,9 +56,10 @@ palette screenshots under `docs/design/mk3/screens/`.
 
 ## What the lane checks
 
-- **Page structure.** The HTML payloads at `/` and `/c/{id}` contain the five region
+- **Page structure.** The HTML payloads at `/`, `/c/{id}`, and `/w/{mode}` contain the region
   hooks (`renderSidebarState`, `renderConversations`, `renderFacets`,
-  `renderMain`, `renderInspector`) the JS bundle hydrates. A regression
+  `renderMain`, `renderWorkspaceToolbar`, `renderStackWorkspace`,
+  `renderCompareWorkspace`, `renderInspector`) the JS bundle hydrates. A regression
   that drops a region fails here loudly without depending on pixel
   differences.
 - **Evidence envelopes.** The visual DOM lane writes and reads JSON evidence

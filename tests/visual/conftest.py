@@ -134,6 +134,8 @@ def seed_reader_archive(
     from polylogue.storage.sqlite.schema_ddl_archive import (
         ARCHIVE_STORAGE_DDL,
         MESSAGE_FTS_DDL,
+        READER_WORKSPACES_DDL,
+        RECALL_PACKS_DDL,
         SAVED_VIEWS_DDL,
         USER_ANNOTATIONS_DDL,
         USER_MARKS_DDL,
@@ -148,6 +150,8 @@ def seed_reader_archive(
     conn.executescript(USER_MARKS_DDL)
     conn.executescript(USER_ANNOTATIONS_DDL)
     conn.executescript(SAVED_VIEWS_DDL)
+    conn.executescript(RECALL_PACKS_DDL)
+    conn.executescript(READER_WORKSPACES_DDL)
     if message_fts:
         conn.executescript(MESSAGE_FTS_DDL)
     if conversations:
@@ -271,6 +275,65 @@ def seed_reader_archive(
                 "This conversation anchors the MK3 reader evidence.",
                 "2026-05-15T00:03:00+00:00",
                 "2026-05-15T00:03:00+00:00",
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO recall_packs(pack_id, label, conversation_ids_json, payload_json, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                "reader-pack-stack",
+                "Reader stack recall",
+                json.dumps(["reader-c1", "reader-c2"], sort_keys=True),
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "summary": "Reader workspace handoff",
+                        "items": [
+                            {
+                                "target_type": "conversation",
+                                "target_id": "reader-c1",
+                                "conversation_id": "reader-c1",
+                                "status": "resolved",
+                            },
+                            {
+                                "target_type": "conversation",
+                                "target_id": "reader-c2",
+                                "conversation_id": "reader-c2",
+                                "status": "resolved",
+                            },
+                        ],
+                        "resolved_count": 2,
+                        "degraded_count": 0,
+                    },
+                    sort_keys=True,
+                ),
+                "2026-05-15T00:04:00+00:00",
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO reader_workspaces(
+                workspace_id, name, mode, open_targets_json, layout_json, active_target_json, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "reader-workspace-stack",
+                "Reader stack workspace",
+                "stack",
+                json.dumps(
+                    [
+                        {"target_type": "conversation", "conversation_id": "reader-c1", "status": "resolved"},
+                        {"target_type": "conversation", "conversation_id": "reader-c2", "status": "resolved"},
+                    ],
+                    sort_keys=True,
+                ),
+                json.dumps({"mode": "stack"}, sort_keys=True),
+                json.dumps({"target_type": "conversation", "conversation_id": "reader-c1"}, sort_keys=True),
+                "2026-05-15T00:05:00+00:00",
+                "2026-05-15T00:05:00+00:00",
             ),
         )
     conn.commit()

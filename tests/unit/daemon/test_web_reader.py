@@ -199,7 +199,16 @@ class TestReaderSearchState:
         assert status == 200
         assert "text/html" in content_type
         assert "<!DOCTYPE html>" in body
-        for region in ("renderSidebarState", "renderConversations", "renderFacets", "renderMain", "renderInspector"):
+        for region in (
+            "renderSidebarState",
+            "renderConversations",
+            "renderFacets",
+            "renderMain",
+            "renderWorkspaceToolbar",
+            "renderStackWorkspace",
+            "renderCompareWorkspace",
+            "renderInspector",
+        ):
             assert region in body, f"web shell missing region hook {region!r}"
 
     def test_search_envelope_matches_documented_shape(self, workspace_env: dict[str, Path]) -> None:
@@ -377,9 +386,14 @@ class TestReaderWorkspaceRoutes:
     def test_workspace_shell_routes_are_unauthenticated(self, workspace_env: dict[str, Path]) -> None:
         with _running_server(workspace_env) as (_, base_url):
             status, _, body = _get_text(base_url, "/w/stack?ids=c1,c2")
+            compare_status, _, compare_body = _get_text(base_url, "/w/compare?left=c1&right=c2&align=prompt")
 
         assert status == 200
         assert "<title>Polylogue</title>" in body
+        assert "getWorkspaceRouteFromURL" in body
+        assert "workspace-mode-switcher" in body
+        assert compare_status == 200
+        assert "renderCompareWorkspace" in compare_body
 
 
 # ---------------------------------------------------------------------------
@@ -570,15 +584,16 @@ class TestReaderUserState:
                 payload={
                     "pack_id": "pack-auth",
                     "label": "Auth pack",
-                    "conversation_ids": ["c1", "missing-conv"],
                     "payload": {
                         "summary": "handoff",
                         "items": [
+                            {"target_type": "conversation", "conversation_id": "c1"},
+                            {"target_type": "conversation", "conversation_id": "missing-conv"},
                             {
                                 "target_type": "message",
                                 "conversation_id": "c1",
                                 "message_id": "missing-msg",
-                            }
+                            },
                         ],
                     },
                 },
@@ -606,6 +621,24 @@ class TestReaderUserState:
         ]
         assert delete_status == 200
         assert deleted == {"pack_id": "pack-auth", "deleted": True}
+
+    def test_recall_pack_rejects_conversation_ids_compat_input(self, workspace_env: dict[str, Path]) -> None:
+        with _running_server(workspace_env) as (_, base_url):
+            status, payload = _request_json(
+                base_url,
+                "POST",
+                "/api/user/recall-packs",
+                payload={
+                    "pack_id": "pack-compat",
+                    "label": "Compat pack",
+                    "conversation_ids": ["c1"],
+                    "payload": {"summary": "old shape"},
+                },
+            )
+
+        error_payload = cast(dict[str, object], payload)
+        assert status == 400
+        assert error_payload["error"] == "invalid_request"
 
     def test_workspaces_roundtrip_resolved_and_degraded_targets(self, workspace_env: dict[str, Path]) -> None:
         with _running_server(workspace_env) as (_, base_url):

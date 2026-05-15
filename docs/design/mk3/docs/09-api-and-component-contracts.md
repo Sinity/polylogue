@@ -68,19 +68,18 @@ Server event envelope:
 ## User-state endpoints
 
 ```text
-GET    /api/user/marks?target_type=&target_id=&mark_kind=
-PUT    /api/user/marks/{target_type}/{target_id}/{mark_kind}
-DELETE /api/user/marks/{target_type}/{target_id}/{mark_kind}
+GET    /api/user/marks?target_type=&target_id=&mark_type=&conversation_id=&message_id=
+POST   /api/user/marks
+DELETE /api/user/marks?target_type=&target_id=&mark_type=&conversation_id=&message_id=
 
 GET    /api/user/annotations?target_type=&target_id=
 POST   /api/user/annotations
-PATCH  /api/user/annotations/{annotation_id}
+GET    /api/user/annotations/{annotation_id}
 DELETE /api/user/annotations/{annotation_id}
 
 GET    /api/user/saved-views
 POST   /api/user/saved-views
 GET    /api/user/saved-views/{view_id}
-PATCH  /api/user/saved-views/{view_id}
 DELETE /api/user/saved-views/{view_id}
 
 GET    /api/user/recall-packs
@@ -91,7 +90,6 @@ DELETE /api/user/recall-packs/{pack_id}
 GET    /api/user/workspaces
 POST   /api/user/workspaces
 GET    /api/user/workspaces/{workspace_id}
-PATCH  /api/user/workspaces/{workspace_id}
 DELETE /api/user/workspaces/{workspace_id}
 ```
 
