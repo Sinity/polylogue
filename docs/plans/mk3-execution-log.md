@@ -528,3 +528,55 @@ Verification:
 - `ruff format --check <changed files>`
 - `ruff check <changed files>`
 - `python -m mypy <changed files>`
+
+### 2026-05-15 - #867 recall-pack target evidence launch
+
+Target:
+
+- Complete the next recall-pack slice without another schema migration by
+  making the stored payload typed and self-describing.
+- Preserve daemon compatibility for legacy `conversation_ids` while allowing
+  explicit conversation/message/mark/annotation items.
+- Add CLI and MCP parity so recall packs are not daemon-only user state.
+
+Coordination:
+
+- Branch: `feature/feat/recall-pack-target-evidence`.
+- Read-only sidecar confirmed existing recall packs only surfaced through the
+  async facade, storage helpers, and daemon `/api/user/recall-packs`; CLI and
+  MCP parity were absent.
+- Implementation kept storage table shape stable and centralized target
+  resolution in the `Polylogue` facade.
+
+Owned files:
+
+- `polylogue/api/archive.py`
+- `polylogue/daemon/user_state_http.py`
+- `polylogue/cli/commands/user_state.py`
+- `polylogue/mcp/payloads.py`
+- `polylogue/mcp/server_mutation_tools.py`
+- user-state storage, daemon, CLI, and MCP tests
+
+Outcome:
+
+- Recall-pack saves now normalize legacy `conversation_ids` and explicit
+  `items` into a payload with `schema_version`, `items`, `resolved_count`, and
+  `degraded_count`.
+- Conversation, message, mark, and annotation items resolve to stable target
+  evidence where possible.
+- Missing conversations/messages/marks/annotations degrade explicitly with
+  `status` and `disabled_reason`.
+- Unsupported future target types are preserved as unsupported degraded items
+  instead of being silently dropped.
+- Added `polylogue user-state recall-packs list/save/delete`.
+- Added MCP `list_recall_packs`, `save_recall_pack`, and
+  `delete_recall_pack`, with envelope classification and regenerated schema
+  witness.
+
+Verification:
+
+- `pytest -q -n0 tests/unit/storage/test_user_state_contracts.py tests/unit/daemon/test_web_reader.py::TestReaderUserState::test_recall_packs_roundtrip_cited_conversations tests/unit/cli/test_user_state_command.py tests/unit/mcp/test_user_state_tools.py`
+- `ruff check polylogue/api/archive.py polylogue/cli/commands/user_state.py polylogue/mcp/payloads.py polylogue/mcp/server_mutation_tools.py tests/unit/storage/test_user_state_contracts.py tests/unit/daemon/test_web_reader.py tests/unit/cli/test_user_state_command.py tests/unit/mcp/test_user_state_tools.py`
+- `python -m mypy polylogue/api/archive.py polylogue/cli/commands/user_state.py polylogue/mcp/payloads.py polylogue/mcp/server_mutation_tools.py`
+- `pytest -q -n0 tests/unit/mcp/test_tool_schema_witness.py tests/unit/mcp/test_envelope_contracts.py tests/unit/cli/test_click_app.py::TestCliMetadata::test_all_subcommands_registered tests/unit/mcp/test_user_state_tools.py tests/unit/cli/test_user_state_command.py`
+- `devtools render-all --check`

@@ -434,6 +434,19 @@ class MCPSavedViewListPayload(SurfacePayloadModel):
     total: int
 
 
+class MCPRecallPackPayload(SurfacePayloadModel):
+    pack_id: str
+    label: str
+    conversation_ids: tuple[str, ...]
+    payload: dict[str, object]
+    created_at: str
+
+
+class MCPRecallPackListPayload(SurfacePayloadModel):
+    items: tuple[MCPRecallPackPayload, ...]
+    total: int
+
+
 class MCPStatsByPayload(MCPRootPayload[dict[str, int]]):
     root: dict[str, int]
 
@@ -590,6 +603,8 @@ __all__ = [
     "MCPTagCountsPayload",
     "MCPSavedViewListPayload",
     "MCPSavedViewPayload",
+    "MCPRecallPackListPayload",
+    "MCPRecallPackPayload",
     "MCPUserMarkListPayload",
     "MCPUserMarkPayload",
     "MCPUserAnnotationListPayload",

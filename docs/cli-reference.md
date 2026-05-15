@@ -355,9 +355,10 @@ Options:
   --help  Show this message and exit.
 
 Commands:
-  annotations  Manage conversation and message annotations.
-  marks        Manage conversation and message marks.
-  saved-views  Manage saved query views.
+  annotations   Manage conversation and message annotations.
+  marks         Manage conversation and message marks.
+  recall-packs  Manage recall packs with explicit target evidence.
+  saved-views   Manage saved query views.
 ```
 
 ## Auth

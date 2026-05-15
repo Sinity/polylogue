@@ -45,6 +45,16 @@ def _canonical_query_json(query_json: str) -> str:
     return json.dumps(query, sort_keys=True, separators=(",", ":"))
 
 
+def _canonical_json_object(raw_json: str, *, label: str) -> dict[str, object]:
+    try:
+        payload = json.loads(raw_json)
+    except json.JSONDecodeError as exc:
+        raise click.ClickException(f"{label} must be valid JSON") from exc
+    if not isinstance(payload, dict):
+        raise click.ClickException(f"{label} must encode an object")
+    return payload
+
+
 def _default_saved_view_id(name: str, query_json: str) -> str:
     digest = sha256(f"{name}\0{query_json}".encode()).hexdigest()
     return f"saved-view-{digest[:16]}"
@@ -317,6 +327,84 @@ def delete_saved_view_command(env: AppEnv, view_id: str, output_format: str | No
         output_format,
         {"status": "deleted" if deleted else "not_found", "view_id": view_id},
         f"Saved view {view_id}: {'deleted' if deleted else 'not found'}",
+    )
+
+
+@user_state_command.group("recall-packs")
+def recall_packs_group() -> None:
+    """Manage recall packs with explicit target evidence."""
+
+
+@recall_packs_group.command("list")
+@click.option("--format", "-f", "output_format", type=click.Choice(["json"]), default=None)
+@click.pass_obj
+def list_recall_packs_command(env: AppEnv, output_format: str | None) -> None:
+    """List recall packs."""
+    rows = _run(env.polylogue.list_recall_packs())
+    if output_format == "json":
+        emit_success({"items": rows, "total": len(rows)})
+        return
+    if not rows:
+        click.echo("No recall packs found.")
+        return
+    for row in rows:
+        click.echo(f"{row['pack_id']:<24} {row['label']}")
+
+
+@recall_packs_group.command("save")
+@click.argument("pack_id")
+@click.argument("label")
+@click.option("--conversation-id", "conversation_ids", multiple=True)
+@click.option("--item-json", "item_jsons", multiple=True, help="Recall-pack item JSON object.")
+@click.option("--payload-json", default="{}", help="Additional recall-pack payload JSON object.")
+@click.option("--format", "-f", "output_format", type=click.Choice(["json"]), default=None)
+@click.pass_obj
+def save_recall_pack_command(
+    env: AppEnv,
+    pack_id: str,
+    label: str,
+    conversation_ids: tuple[str, ...],
+    item_jsons: tuple[str, ...],
+    payload_json: str,
+    output_format: str | None,
+) -> None:
+    """Create or update a recall pack."""
+    payload = _canonical_json_object(payload_json, label="payload-json")
+    payload_items = payload.get("items", [])
+    if not isinstance(payload_items, list) or not all(isinstance(item, dict) for item in payload_items):
+        raise click.ClickException("payload-json items must be objects")
+    items = list(payload_items)
+    items.extend(_canonical_json_object(raw, label="item-json") for raw in item_jsons)
+    if items:
+        payload["items"] = items
+    created = bool(
+        _run(
+            env.polylogue.create_recall_pack(
+                pack_id,
+                label,
+                json.dumps(list(conversation_ids), sort_keys=True),
+                json.dumps(payload, sort_keys=True, separators=(",", ":")),
+            )
+        )
+    )
+    _json_or_plain(
+        output_format,
+        {"status": "ok", "pack_id": pack_id, "outcome": "added" if created else "updated"},
+        f"Recall pack {pack_id}: {'added' if created else 'updated'}",
+    )
+
+
+@recall_packs_group.command("delete")
+@click.argument("pack_id")
+@click.option("--format", "-f", "output_format", type=click.Choice(["json"]), default=None)
+@click.pass_obj
+def delete_recall_pack_command(env: AppEnv, pack_id: str, output_format: str | None) -> None:
+    """Delete a recall pack."""
+    deleted = bool(_run(env.polylogue.delete_recall_pack(pack_id)))
+    _json_or_plain(
+        output_format,
+        {"status": "deleted" if deleted else "not_found", "pack_id": pack_id},
+        f"Recall pack {pack_id}: {'deleted' if deleted else 'not found'}",
     )
 
 

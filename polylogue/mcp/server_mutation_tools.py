@@ -9,6 +9,8 @@ from typing import TYPE_CHECKING, Any
 
 from polylogue.mcp.payloads import (
     MCPMetadataPayload,
+    MCPRecallPackListPayload,
+    MCPRecallPackPayload,
     MCPSavedViewListPayload,
     MCPSavedViewPayload,
     MCPTagCountsPayload,
@@ -55,6 +57,28 @@ def _saved_view_payload(row: dict[str, str]) -> MCPSavedViewPayload:
         view_id=row["view_id"],
         name=row["name"],
         query=query,
+        created_at=row["created_at"],
+    )
+
+
+def _recall_pack_payload(row: dict[str, str]) -> MCPRecallPackPayload:
+    try:
+        conversation_ids = json.loads(row["conversation_ids_json"])
+    except (json.JSONDecodeError, TypeError):
+        conversation_ids = []
+    if not isinstance(conversation_ids, list):
+        conversation_ids = []
+    try:
+        payload = json.loads(row["payload_json"])
+    except (json.JSONDecodeError, TypeError):
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    return MCPRecallPackPayload(
+        pack_id=row["pack_id"],
+        label=row["label"],
+        conversation_ids=tuple(str(item) for item in conversation_ids),
+        payload=payload,
         created_at=row["created_at"],
     )
 
@@ -398,6 +422,74 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             )
 
         return await hooks.async_safe_call("delete_saved_view", run)
+
+    @mcp.tool()
+    async def list_recall_packs() -> str:
+        async def run() -> str:
+            poly = hooks.get_polylogue()
+            rows = await poly.list_recall_packs()
+            items = tuple(_recall_pack_payload(row) for row in rows)
+            return hooks.json_payload(MCPRecallPackListPayload(items=items, total=len(items)))
+
+        return await hooks.async_safe_call("list_recall_packs", run)
+
+    @mcp.tool()
+    async def save_recall_pack(
+        pack_id: str,
+        label: str,
+        conversation_ids_json: str = "[]",
+        payload_json: str = "{}",
+    ) -> str:
+        async def run() -> str:
+            if not pack_id.strip():
+                return hooks.error_json("pack_id must not be empty")
+            if not label.strip():
+                return hooks.error_json("label must not be empty")
+            try:
+                conversation_ids = json.loads(conversation_ids_json)
+            except json.JSONDecodeError:
+                return hooks.error_json("conversation_ids_json must be valid JSON")
+            if not isinstance(conversation_ids, list):
+                return hooks.error_json("conversation_ids_json must encode a list")
+            try:
+                payload = json.loads(payload_json)
+            except json.JSONDecodeError:
+                return hooks.error_json("payload_json must be valid JSON")
+            if not isinstance(payload, dict):
+                return hooks.error_json("payload_json must encode an object")
+            poly = hooks.get_polylogue()
+            created = await poly.create_recall_pack(
+                pack_id.strip(),
+                label.strip(),
+                json.dumps([str(item) for item in conversation_ids], sort_keys=True),
+                json.dumps(payload, sort_keys=True, separators=(",", ":")),
+            )
+            return hooks.json_payload(
+                MutationResultPayload(
+                    status="ok",
+                    key=pack_id.strip(),
+                    outcome="added" if created else "updated",
+                ),
+                exclude_none=True,
+            )
+
+        return await hooks.async_safe_call("save_recall_pack", run)
+
+    @mcp.tool()
+    async def delete_recall_pack(pack_id: str) -> str:
+        async def run() -> str:
+            poly = hooks.get_polylogue()
+            deleted = await poly.delete_recall_pack(pack_id)
+            return hooks.json_payload(
+                MutationResultPayload(
+                    status="deleted" if deleted else "not_found",
+                    detail=None if deleted else "recall_pack_not_found",
+                    key=pack_id,
+                ),
+                exclude_none=True,
+            )
+
+        return await hooks.async_safe_call("delete_recall_pack", run)
 
     @mcp.tool()
     async def get_metadata(conversation_id: str) -> str:

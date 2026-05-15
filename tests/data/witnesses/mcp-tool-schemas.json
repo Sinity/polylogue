@@ -429,6 +429,22 @@
     }
   },
   {
+    "name": "delete_recall_pack",
+    "parameters": {
+      "properties": {
+        "pack_id": {
+          "title": "Pack Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "pack_id"
+      ],
+      "title": "delete_recall_packArguments",
+      "type": "object"
+    }
+  },
+  {
     "name": "delete_saved_view",
     "parameters": {
       "properties": {
@@ -1448,6 +1464,14 @@
     }
   },
   {
+    "name": "list_recall_packs",
+    "parameters": {
+      "properties": {},
+      "title": "list_recall_packsArguments",
+      "type": "object"
+    }
+  },
+  {
     "name": "list_saved_views",
     "parameters": {
       "properties": {},
@@ -1756,6 +1780,37 @@
         "note_text"
       ],
       "title": "save_annotationArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "save_recall_pack",
+    "parameters": {
+      "properties": {
+        "conversation_ids_json": {
+          "default": "[]",
+          "title": "Conversation Ids Json",
+          "type": "string"
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "pack_id": {
+          "title": "Pack Id",
+          "type": "string"
+        },
+        "payload_json": {
+          "default": "{}",
+          "title": "Payload Json",
+          "type": "string"
+        }
+      },
+      "required": [
+        "pack_id",
+        "label"
+      ],
+      "title": "save_recall_packArguments",
       "type": "object"
     }
   },

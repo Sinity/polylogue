@@ -313,3 +313,60 @@ def test_delete_saved_view_reports_status(mcp_server: MCPServerUnderTest) -> Non
     assert parsed["status"] == "deleted"
     assert parsed["key"] == "view-1"
     mock_poly.delete_view.assert_awaited_once_with("view-1")
+
+
+def test_recall_pack_tools_roundtrip_typed_payloads(mcp_server: MCPServerUnderTest) -> None:
+    with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+        mock_poly = make_polylogue_mock()
+        mock_poly.create_recall_pack = AsyncMock(return_value=True)
+        mock_poly.list_recall_packs = AsyncMock(
+            return_value=[
+                {
+                    "pack_id": "pack-1",
+                    "label": "Handoff",
+                    "conversation_ids_json": '["conv-1"]',
+                    "payload_json": (
+                        '{"items":[{"target_type":"conversation","target_id":"conv-1","status":"resolved"}],'
+                        '"resolved_count":1,"degraded_count":0}'
+                    ),
+                    "created_at": "2026-05-15T00:00:00+00:00",
+                }
+            ]
+        )
+        mock_get_polylogue.return_value = mock_poly
+
+        saved = invoke_surface(
+            mcp_server._tool_manager._tools["save_recall_pack"].fn,
+            pack_id="pack-1",
+            label="Handoff",
+            conversation_ids_json='["conv-1"]',
+            payload_json='{"items":[{"target_type":"annotation","annotation_id":"ann-1"}]}',
+        )
+        listed = invoke_surface(mcp_server._tool_manager._tools["list_recall_packs"].fn)
+
+    saved_payload = json.loads(saved)
+    listed_payload = json.loads(listed)
+    assert saved_payload["status"] == "ok"
+    assert saved_payload["outcome"] == "added"
+    assert listed_payload["total"] == 1
+    assert listed_payload["items"][0]["payload"]["resolved_count"] == 1
+    mock_poly.create_recall_pack.assert_awaited_once_with(
+        "pack-1",
+        "Handoff",
+        '["conv-1"]',
+        '{"items":[{"annotation_id":"ann-1","target_type":"annotation"}]}',
+    )
+
+
+def test_delete_recall_pack_reports_status(mcp_server: MCPServerUnderTest) -> None:
+    with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+        mock_poly = make_polylogue_mock()
+        mock_poly.delete_recall_pack = AsyncMock(return_value=False)
+        mock_get_polylogue.return_value = mock_poly
+
+        result = invoke_surface(mcp_server._tool_manager._tools["delete_recall_pack"].fn, pack_id="pack-1")
+
+    parsed = json.loads(result)
+    assert parsed["status"] == "not_found"
+    assert parsed["detail"] == "recall_pack_not_found"
+    mock_poly.delete_recall_pack.assert_awaited_once_with("pack-1")

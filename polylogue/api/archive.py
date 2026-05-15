@@ -793,16 +793,193 @@ class PolylogueArchiveMixin:
     # Recall packs
     # ------------------------------------------------------------------
 
+    async def _resolve_recall_pack_item(self, item: dict[str, object]) -> dict[str, object]:
+        item_type = str(item.get("target_type") or item.get("type") or "conversation")
+        if item_type == "conversation":
+            conversation_id = str(item.get("conversation_id") or item.get("target_id") or item.get("id") or "")
+            resolved = await self.repository.resolve_id(conversation_id, strict=True) if conversation_id else None
+            if resolved is None:
+                return {
+                    "target_type": "conversation",
+                    "target_id": conversation_id,
+                    "conversation_id": conversation_id or None,
+                    "status": "missing",
+                    "disabled_reason": "conversation_not_found",
+                }
+            resolved_id = str(resolved)
+            return {
+                "target_type": "conversation",
+                "target_id": resolved_id,
+                "conversation_id": resolved_id,
+                "status": "resolved",
+                "identity_key": f"conversation:{resolved_id}",
+            }
+
+        if item_type == "message":
+            conversation_id = str(item.get("conversation_id") or "")
+            message_id = str(item.get("message_id") or item.get("target_id") or item.get("id") or "")
+            try:
+                target = await self._resolve_user_state_target(
+                    conversation_id,
+                    target_type="message",
+                    message_id=message_id,
+                )
+            except (ConversationNotFoundError, ValueError) as exc:
+                return {
+                    "target_type": "message",
+                    "target_id": message_id,
+                    "conversation_id": conversation_id or None,
+                    "message_id": message_id or None,
+                    "status": "missing",
+                    "disabled_reason": str(exc) or "message_not_found",
+                }
+            conversation_target_id = str(target["conversation_id"])
+            resolved_message_id = str(target["message_id"])
+            return {
+                "target_type": "message",
+                "target_id": resolved_message_id,
+                "conversation_id": conversation_target_id,
+                "message_id": resolved_message_id,
+                "status": "resolved",
+                "identity_key": f"message:{conversation_target_id}:{resolved_message_id}",
+            }
+
+        if item_type == "annotation":
+            annotation_id = str(item.get("annotation_id") or item.get("target_id") or item.get("id") or "")
+            row = await self.get_annotation(annotation_id) if annotation_id else None
+            if row is None:
+                return {
+                    "target_type": "annotation",
+                    "target_id": annotation_id,
+                    "annotation_id": annotation_id or None,
+                    "status": "missing",
+                    "disabled_reason": "annotation_not_found",
+                }
+            return {
+                "target_type": "annotation",
+                "target_id": row["annotation_id"],
+                "annotation_id": row["annotation_id"],
+                "conversation_id": row["conversation_id"],
+                "message_id": row["message_id"] or None,
+                "annotated_target_type": row["target_type"],
+                "annotated_target_id": row["target_id"],
+                "note_text": row["note_text"],
+                "status": "resolved",
+                "identity_key": f"annotation:{row['annotation_id']}",
+            }
+
+        if item_type == "mark":
+            mark_type = str(item.get("mark_type") or "")
+            mark_target_type = str(item.get("mark_target_type") or item.get("target_ref_type") or "conversation")
+            mark_target_id = str(item.get("mark_target_id") or item.get("target_id") or item.get("id") or "")
+            conversation_id = str(item.get("conversation_id") or "")
+            mark_message_id: str | None = str(item.get("message_id") or "") or None
+            if not mark_type:
+                return {
+                    "target_type": "mark",
+                    "target_id": mark_target_id,
+                    "conversation_id": conversation_id or None,
+                    "message_id": mark_message_id,
+                    "status": "missing",
+                    "disabled_reason": "mark_type_missing",
+                }
+            rows = await self.list_marks(
+                mark_type=mark_type,
+                conversation_id=conversation_id or None,
+                target_type=mark_target_type,
+                target_id=mark_target_id or None,
+                message_id=mark_message_id,
+            )
+            if not rows:
+                return {
+                    "target_type": "mark",
+                    "target_id": f"{mark_target_type}:{mark_target_id}:{mark_type}",
+                    "conversation_id": conversation_id or None,
+                    "message_id": mark_message_id,
+                    "mark_type": mark_type,
+                    "mark_target_type": mark_target_type,
+                    "mark_target_id": mark_target_id,
+                    "status": "missing",
+                    "disabled_reason": "mark_not_found",
+                }
+            row = rows[0]
+            return {
+                "target_type": "mark",
+                "target_id": f"{row['target_type']}:{row['target_id']}:{row['mark_type']}",
+                "conversation_id": row["conversation_id"],
+                "message_id": row["message_id"] or None,
+                "mark_type": row["mark_type"],
+                "mark_target_type": row["target_type"],
+                "mark_target_id": row["target_id"],
+                "status": "resolved",
+                "identity_key": f"mark:{row['target_type']}:{row['target_id']}:{row['mark_type']}",
+            }
+
+        return {
+            "target_type": item_type,
+            "target_id": str(item.get("target_id") or item.get("id") or ""),
+            "status": "unsupported",
+            "disabled_reason": "unsupported_target_type",
+        }
+
+    async def _build_recall_pack_payload(
+        self,
+        *,
+        label: str,
+        conversation_ids: Sequence[str],
+        payload: dict[str, object],
+    ) -> tuple[list[str], str]:
+        raw_items: list[dict[str, object]] = [
+            {"target_type": "conversation", "conversation_id": conversation_id} for conversation_id in conversation_ids
+        ]
+        explicit_items = payload.get("items")
+        if isinstance(explicit_items, list):
+            raw_items.extend(item for item in explicit_items if isinstance(item, dict))
+
+        items = [await self._resolve_recall_pack_item(item) for item in raw_items]
+        resolved_conversation_ids: list[str] = []
+        for item in items:
+            conversation_id = item.get("conversation_id")
+            if (
+                item.get("status") == "resolved"
+                and isinstance(conversation_id, str)
+                and conversation_id not in resolved_conversation_ids
+            ):
+                resolved_conversation_ids.append(conversation_id)
+
+        normalized_payload = {
+            "schema_version": 1,
+            "label": label,
+            "summary": payload.get("summary") or payload.get("reason") or "",
+            "items": items,
+            "resolved_count": sum(1 for item in items if item.get("status") == "resolved"),
+            "degraded_count": sum(1 for item in items if item.get("status") != "resolved"),
+        }
+        for key, value in payload.items():
+            if key not in {"items", "summary", "reason"}:
+                normalized_payload[key] = value
+        import json
+
+        return resolved_conversation_ids, json.dumps(normalized_payload, sort_keys=True, separators=(",", ":"))
+
     async def create_recall_pack(self, pack_id: str, label: str, conversation_id: str, payload_json: str) -> bool:
         """Save a recall pack. Returns ``True`` if newly created."""
         import json
 
         conversation_ids = json.loads(conversation_id) if conversation_id.startswith("[") else [conversation_id]
-        conversation_ids_json = json.dumps(conversation_ids)
+        payload = json.loads(payload_json)
+        if not isinstance(payload, dict):
+            raise ValueError("recall pack payload must be a JSON object")
+        resolved_conversation_ids, normalized_payload_json = await self._build_recall_pack_payload(
+            label=label,
+            conversation_ids=[str(item) for item in conversation_ids],
+            payload=payload,
+        )
+        conversation_ids_json = json.dumps(resolved_conversation_ids, sort_keys=True)
         from polylogue.storage.repository.archive.repository_writes import RepositoryWriteMixin
 
         store: RepositoryWriteMixin = self.repository
-        return await store.save_recall_pack(pack_id, label, conversation_ids_json, payload_json)
+        return await store.save_recall_pack(pack_id, label, conversation_ids_json, normalized_payload_json)
 
     async def get_recall_pack(self, pack_id: str) -> dict[str, str] | None:
         """Get a recall pack by ID."""
