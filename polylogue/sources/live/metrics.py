@@ -34,6 +34,7 @@ class LiveBatchMetrics:
     cgroup_memory_current_mb: float | None = None
     cgroup_memory_peak_mb: float | None = None
     cgroup_memory_swap_current_mb: float | None = None
+    stale_cursor_write_count: int = 0
     stage_timings_s: dict[str, float] = field(default_factory=dict)
     failed_paths: list[str] = field(default_factory=list)
 
@@ -74,6 +75,7 @@ class LiveBatchMetrics:
             "cgroup_memory_current_mb": self.cgroup_memory_current_mb,
             "cgroup_memory_peak_mb": self.cgroup_memory_peak_mb,
             "cgroup_memory_swap_current_mb": self.cgroup_memory_swap_current_mb,
+            "stale_cursor_write_count": self.stale_cursor_write_count,
             "stage_timings_s": self.stage_timings_s,
             "failed_paths": self.failed_paths,
         }

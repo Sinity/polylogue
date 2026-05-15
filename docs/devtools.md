@@ -100,7 +100,6 @@ These are the commands worth remembering during normal repo work:
 | `devtools affected-obligations` | Route changed paths or refs to affected verification-lab proof obligations and focused checks. |
 | `devtools artifact-graph` | Render the runtime artifact, operation, and scenario-coverage map. |
 | `devtools coverage-gate` | Run pytest with the repository coverage floor from pyproject.toml. |
-| `devtools daemon-workload-probe` | Inspect daemon ingest workload, convergence debt, and hot query plans. |
 | `devtools lab-corpus` | Generate verification-lab synthetic corpus fixtures and demo archives. |
 | `devtools lab-scenario` | Run verification-lab showcase scenario sets and baseline checks. |
 | `devtools obligation-diff` | Diff proof obligations between two git refs to surface affected assurance domains. |

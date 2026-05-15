@@ -8,10 +8,10 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 
 ## Snapshot
 
-- subjects: `549`
+- subjects: `530`
 - claims: `41`
 - runner bindings: `41`
-- proof obligations: `605`
+- proof obligations: `552`
 
 ## Quality Checks
 
@@ -40,8 +40,8 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `assurance.coverage_gap` | 22 |
 | `assurance.coverage_item` | 104 |
 | `assurance.coverage_manifest` | 9 |
-| `cli.command` | 52 |
-| `cli.json_command` | 5 |
+| `cli.command` | 35 |
+| `cli.json_command` | 3 |
 | `diagnostic.observable` | 1 |
 | `error.surface` | 2 |
 | `generated.scenario_family` | 9 |
@@ -78,20 +78,6 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `polylogue export` | `polylogue/cli/click_app.py` `polylogue export` |
 | `polylogue ingest` | `polylogue/cli/click_app.py` `polylogue ingest` |
 | `polylogue insights` | `polylogue/cli/click_app.py` `polylogue insights` |
-| `polylogue insights analytics` | `polylogue/cli/commands/insights.py:100` `polylogue.cli.commands.insights._make_callback.<locals>.callback` |
-| `polylogue insights cost-rollups` | `polylogue/cli/commands/insights.py:100` `polylogue.cli.commands.insights._make_callback.<locals>.callback` |
-| `polylogue insights costs` | `polylogue/cli/commands/insights.py:100` `polylogue.cli.commands.insights._make_callback.<locals>.callback` |
-| `polylogue insights day-summaries` | `polylogue/cli/commands/insights.py:100` `polylogue.cli.commands.insights._make_callback.<locals>.callback` |
-| `polylogue insights debt` | `polylogue/cli/commands/insights.py:100` `polylogue.cli.commands.insights._make_callback.<locals>.callback` |
-| `polylogue insights enrichments` | `polylogue/cli/commands/insights.py:100` `polylogue.cli.commands.insights._make_callback.<locals>.callback` |
-| `polylogue insights export` | `polylogue/cli/commands/insights.py:234` `polylogue.cli.commands.insights.insights_export_command` |
-| `polylogue insights phases` | `polylogue/cli/commands/insights.py:100` `polylogue.cli.commands.insights._make_callback.<locals>.callback` |
-| `polylogue insights profiles` | `polylogue/cli/commands/insights.py:100` `polylogue.cli.commands.insights._make_callback.<locals>.callback` |
-| `polylogue insights status` | `polylogue/cli/commands/insights.py:189` `polylogue.cli.commands.insights.insights_status_command` |
-| `polylogue insights tags` | `polylogue/cli/commands/insights.py:100` `polylogue.cli.commands.insights._make_callback.<locals>.callback` |
-| `polylogue insights threads` | `polylogue/cli/commands/insights.py:100` `polylogue.cli.commands.insights._make_callback.<locals>.callback` |
-| `polylogue insights week-summaries` | `polylogue/cli/commands/insights.py:100` `polylogue.cli.commands.insights._make_callback.<locals>.callback` |
-| `polylogue insights work-events` | `polylogue/cli/commands/insights.py:100` `polylogue.cli.commands.insights._make_callback.<locals>.callback` |
 | `polylogue list` | `polylogue/cli/click_app.py` `polylogue list` |
 | `polylogue maintenance` | `polylogue/cli/click_app.py` `polylogue maintenance` |
 | `polylogue maintenance plan` | `polylogue/cli/commands/maintenance.py:22` `polylogue.cli.commands.maintenance.plan_command` |
@@ -103,9 +89,6 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `polylogue reset` | `polylogue/cli/click_app.py` `polylogue reset` |
 | `polylogue resume` | `polylogue/cli/click_app.py` `polylogue resume` |
 | `polylogue schema` | `polylogue/cli/click_app.py` `polylogue schema` |
-| `polylogue schema compare` | `polylogue/cli/commands/schema.py:56` `polylogue.cli.commands.schema.schema_compare` |
-| `polylogue schema explain` | `polylogue/cli/commands/schema.py:94` `polylogue.cli.commands.schema.schema_explain` |
-| `polylogue schema list` | `polylogue/cli/commands/schema.py:45` `polylogue.cli.commands.schema.schema_list` |
 | `polylogue select` | `polylogue/cli/click_app.py` `polylogue select` |
 | `polylogue show` | `polylogue/cli/click_app.py` `polylogue show` |
 | `polylogue stats` | `polylogue/cli/click_app.py` `polylogue stats` |
@@ -286,10 +269,10 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `assurance.coverage.gap_has_closure_path` | 22 |
 | `assurance.coverage.item_declared` | 104 |
 | `assurance.coverage.manifest_structured` | 9 |
-| `cli.command.help` | 52 |
-| `cli.command.json_envelope` | 5 |
-| `cli.command.no_traceback` | 52 |
-| `cli.command.plain_mode` | 52 |
+| `cli.command.help` | 35 |
+| `cli.command.json_envelope` | 3 |
+| `cli.command.no_traceback` | 35 |
+| `cli.command.plain_mode` | 35 |
 | `diagnostic.observable_trace_mapping` | 1 |
 | `error.machine_user_context` | 2 |
 | `generated.scenario.family_registered` | 9 |

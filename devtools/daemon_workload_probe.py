@@ -20,6 +20,15 @@ def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
     return row is not None
 
 
+def _columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    if not _table_exists(conn, table):
+        return set()
+    try:
+        return {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})")}
+    except sqlite3.Error:
+        return set()
+
+
 def _scalar_int(conn: sqlite3.Connection, sql: str, params: tuple[object, ...] = ()) -> int:
     try:
         row = conn.execute(sql, params).fetchone()
@@ -31,8 +40,11 @@ def _scalar_int(conn: sqlite3.Connection, sql: str, params: tuple[object, ...] =
 def _recent_attempts(conn: sqlite3.Connection, *, limit: int) -> list[dict[str, Any]]:
     if not _table_exists(conn, "live_ingest_attempt"):
         return []
+    columns = _columns(conn, "live_ingest_attempt")
+    stale_expr = "stale_cursor_write_count" if "stale_cursor_write_count" in columns else "0"
+    source_paths_expr = "source_paths_json" if "source_paths_json" in columns else "'[]'"
     rows = conn.execute(
-        """
+        f"""
         SELECT
             attempt_id,
             started_at,
@@ -48,7 +60,9 @@ def _recent_attempts(conn: sqlite3.Connection, *, limit: int) -> list[dict[str, 
             source_payload_read_bytes,
             cursor_fingerprint_read_bytes,
             parse_time_s,
-            convergence_time_s
+            convergence_time_s,
+            {stale_expr},
+            {source_paths_expr}
         FROM live_ingest_attempt
         ORDER BY updated_at DESC, started_at DESC
         LIMIT ?
@@ -78,9 +92,93 @@ def _recent_attempts(conn: sqlite3.Connection, *, limit: int) -> list[dict[str, 
                 "read_amplification": round(read_bytes / input_bytes, 3) if input_bytes > 0 else 0.0,
                 "parse_time_s": float(row[13] or 0.0),
                 "convergence_time_s": float(row[14] or 0.0),
+                "stale_cursor_write_count": int(row[15] or 0),
+                "source_paths": _json_list(row[16]),
             }
         )
     return attempts
+
+
+def _attempt_counts(conn: sqlite3.Connection) -> dict[str, Any]:
+    if not _table_exists(conn, "live_ingest_attempt"):
+        return {"total": 0, "running": 0, "failed": 0, "overlapping_source_paths": []}
+    running_rows = conn.execute(
+        """
+        SELECT source_paths_json
+        FROM live_ingest_attempt
+        WHERE status = 'running'
+        """
+    ).fetchall()
+    path_counts: dict[str, int] = {}
+    for row in running_rows:
+        for path in _json_list(row[0]):
+            path_counts[path] = path_counts.get(path, 0) + 1
+    overlapping = [
+        {"source_path": path, "running_attempt_count": count}
+        for path, count in sorted(path_counts.items())
+        if count > 1
+    ]
+    return {
+        "total": _scalar_int(conn, "SELECT COUNT(*) FROM live_ingest_attempt"),
+        "running": _scalar_int(conn, "SELECT COUNT(*) FROM live_ingest_attempt WHERE status = 'running'"),
+        "failed": _scalar_int(conn, "SELECT COUNT(*) FROM live_ingest_attempt WHERE status = 'failed'"),
+        "stale_cursor_writes": _scalar_int(
+            conn,
+            "SELECT COALESCE(SUM(stale_cursor_write_count), 0) FROM live_ingest_attempt"
+            if "stale_cursor_write_count" in _columns(conn, "live_ingest_attempt")
+            else "SELECT 0",
+        ),
+        "overlapping_source_paths": overlapping[:20],
+    }
+
+
+def _source_path_churn(conn: sqlite3.Connection, *, attempts: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
+    if not _table_exists(conn, "raw_conversations"):
+        return []
+    source_paths = sorted({path for attempt in attempts for path in attempt.get("source_paths", []) if path})
+    if not source_paths:
+        return []
+    has_conversations = _table_exists(conn, "conversations")
+    join = "LEFT JOIN conversations AS c ON c.raw_id = r.raw_id" if has_conversations else ""
+    conversation_count = "COUNT(DISTINCT c.conversation_id)" if has_conversations else "0"
+    placeholders = ",".join("?" for _ in source_paths)
+    rows = conn.execute(
+        f"""
+        SELECT
+            r.source_path,
+            COUNT(*) AS raw_count,
+            SUM(CASE WHEN COALESCE(r.source_index, 0) >= 0 THEN 1 ELSE 0 END) AS full_raw_count,
+            SUM(CASE WHEN r.source_index = -1 THEN 1 ELSE 0 END) AS append_raw_count,
+            {conversation_count} AS conversation_count,
+            SUM(COALESCE(r.blob_size, 0)) AS total_blob_bytes,
+            MAX(r.acquired_at) AS latest_acquired_at
+        FROM raw_conversations AS r
+        {join}
+        WHERE r.source_path IN ({placeholders})
+        GROUP BY r.source_path
+        HAVING raw_count > 1
+        ORDER BY raw_count DESC, total_blob_bytes DESC, r.source_path
+        LIMIT ?
+        """,
+        (*source_paths, limit),
+    ).fetchall()
+    items: list[dict[str, Any]] = []
+    for row in rows:
+        raw_count = int(row[1] or 0)
+        conversation_count_value = int(row[4] or 0)
+        items.append(
+            {
+                "source_path": row[0],
+                "raw_count": raw_count,
+                "full_raw_count": int(row[2] or 0),
+                "append_raw_count": int(row[3] or 0),
+                "conversation_count": conversation_count_value,
+                "orphan_raw_count": max(0, raw_count - conversation_count_value),
+                "total_blob_bytes": int(row[5] or 0),
+                "latest_acquired_at": row[6],
+            }
+        )
+    return items
 
 
 def _convergence_debt(conn: sqlite3.Connection) -> dict[str, Any]:
@@ -175,21 +273,13 @@ def probe(db: Path, *, limit: int = 5) -> dict[str, Any]:
         return {"ok": False, "db_path": str(db), "error": "database does not exist"}
     conn = open_readonly_connection(db)
     try:
+        recent_attempts = _recent_attempts(conn, limit=limit)
         return {
             "ok": True,
             "db_path": str(db),
-            "attempt_counts": {
-                "total": _scalar_int(conn, "SELECT COUNT(*) FROM live_ingest_attempt")
-                if _table_exists(conn, "live_ingest_attempt")
-                else 0,
-                "running": _scalar_int(conn, "SELECT COUNT(*) FROM live_ingest_attempt WHERE status = 'running'")
-                if _table_exists(conn, "live_ingest_attempt")
-                else 0,
-                "failed": _scalar_int(conn, "SELECT COUNT(*) FROM live_ingest_attempt WHERE status = 'failed'")
-                if _table_exists(conn, "live_ingest_attempt")
-                else 0,
-            },
-            "recent_attempts": _recent_attempts(conn, limit=limit),
+            "attempt_counts": _attempt_counts(conn),
+            "recent_attempts": recent_attempts,
+            "source_path_churn": _source_path_churn(conn, attempts=recent_attempts, limit=limit),
             "convergence_debt": _convergence_debt(conn),
             "query_plans": _query_plans(conn),
         }
@@ -218,6 +308,9 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     counts = payload["attempt_counts"]
     print(f"  attempts: {counts['total']} total, {counts['running']} running, {counts['failed']} failed")
+    print(f"  stale cursor writes: {counts.get('stale_cursor_writes', 0)}")
+    overlaps = counts.get("overlapping_source_paths") or []
+    print(f"  overlapping source paths: {len(overlaps)}")
     recent = payload["recent_attempts"]
     if recent:
         latest = recent[0]
@@ -229,6 +322,14 @@ def main(argv: list[str] | None = None) -> int:
         )
     debt = payload["convergence_debt"]
     print(f"  convergence debt: {debt['failed_count']} unresolved")
+    churn = payload.get("source_path_churn") or []
+    if churn:
+        worst = churn[0]
+        print(
+            "  hottest source path: "
+            f"{worst['raw_count']} raw rows, {worst['full_raw_count']} full, "
+            f"{worst['append_raw_count']} append, {worst['orphan_raw_count']} orphan"
+        )
     plan_hazards = [
         f"{name}: {hazard}" for name, info in payload["query_plans"].items() for hazard in info.get("hazards", [])
     ]
@@ -236,6 +337,18 @@ def main(argv: list[str] | None = None) -> int:
     for hazard in plan_hazards:
         print(f"    {hazard}")
     return 0
+
+
+def _json_list(value: object) -> list[str]:
+    if not isinstance(value, str) or not value:
+        return []
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    return [str(item) for item in parsed if isinstance(item, str)]
 
 
 if __name__ == "__main__":

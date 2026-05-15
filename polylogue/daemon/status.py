@@ -568,6 +568,7 @@ def _live_ingest_attempt_summary_info() -> LiveIngestAttemptSummary:
             worker_in_flight_expr = "worker_in_flight_count" if "worker_in_flight_count" in columns else "NULL"
             worker_completed_expr = "worker_completed_count" if "worker_completed_count" in columns else "NULL"
             worker_total_expr = "worker_total_count" if "worker_total_count" in columns else "NULL"
+            stale_cursor_write_expr = "stale_cursor_write_count" if "stale_cursor_write_count" in columns else "0"
             rows = conn.execute(
                 f"""
                 SELECT
@@ -598,7 +599,8 @@ def _live_ingest_attempt_summary_info() -> LiveIngestAttemptSummary:
                     {cgroup_swap_expr},
                     {worker_in_flight_expr},
                     {worker_completed_expr},
-                    {worker_total_expr}
+                    {worker_total_expr},
+                    {stale_cursor_write_expr}
                 FROM live_ingest_attempt
                 ORDER BY updated_at DESC, started_at DESC
                 LIMIT 5
@@ -684,6 +686,7 @@ def _live_ingest_attempt_state_from_row(
         worker_in_flight_count=_row_int(row[25]) if len(row) > 25 else None,
         worker_completed_count=_row_int(row[26]) if len(row) > 26 else None,
         worker_total_count=_row_int(row[27]) if len(row) > 27 else None,
+        stale_cursor_write_count=_row_int(row[28]) if len(row) > 28 else 0,
         updated_age_s=updated_age_s,
         stale=stale,
     )

@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS live_cursor (
     last_record_ts TEXT,
     parser_fingerprint TEXT,
     content_fingerprint TEXT,
+    tail_hash TEXT,
     source_name TEXT,
     -- Stat metadata for fast-path skip (Phase 2 K: #620)
     st_dev INTEGER,
@@ -71,6 +72,7 @@ CREATE TABLE IF NOT EXISTS live_ingest_attempt (
     worker_in_flight_count INTEGER,
     worker_completed_count INTEGER,
     worker_total_count INTEGER,
+    stale_cursor_write_count INTEGER NOT NULL DEFAULT 0,
     source_paths_json TEXT NOT NULL DEFAULT '[]'
 )
 """
@@ -143,6 +145,7 @@ class CursorRecord:
     last_record_ts: str | None = None
     parser_fingerprint: str | None = None
     content_fingerprint: str | None = None
+    tail_hash: str | None = None
     source_name: str | None = None
     st_dev: int | None = None
     st_ino: int | None = None
@@ -185,6 +188,7 @@ class LiveIngestAttempt:
     worker_in_flight_count: int | None = None
     worker_completed_count: int | None = None
     worker_total_count: int | None = None
+    stale_cursor_write_count: int = 0
     source_paths_json: str = "[]"
 
 
@@ -233,14 +237,15 @@ def _cursor_record_from_row(row: sqlite3.Row | tuple[object, ...]) -> CursorReco
         last_record_ts=_optional_str(row[6]),
         parser_fingerprint=_optional_str(row[7]),
         content_fingerprint=_optional_str(row[8]),
-        source_name=_optional_str(row[9]),
-        st_dev=_optional_int(row[10]),
-        st_ino=_optional_int(row[11]),
-        mtime_ns=_optional_int(row[12]),
-        source_generation=_required_int(row[13]) if row[13] is not None else 0,
-        failure_count=_required_int(row[14]) if row[14] is not None else 0,
-        next_retry_at=_optional_str(row[15]),
-        excluded=bool(row[16]) if row[16] is not None else False,
+        tail_hash=_optional_str(row[9]),
+        source_name=_optional_str(row[10]),
+        st_dev=_optional_int(row[11]),
+        st_ino=_optional_int(row[12]),
+        mtime_ns=_optional_int(row[13]),
+        source_generation=_required_int(row[14]) if row[14] is not None else 0,
+        failure_count=_required_int(row[15]) if row[15] is not None else 0,
+        next_retry_at=_optional_str(row[16]),
+        excluded=bool(row[17]) if row[17] is not None else False,
     )
 
 
@@ -270,6 +275,7 @@ class CursorStore:
             "last_record_ts": "TEXT",
             "parser_fingerprint": "TEXT",
             "content_fingerprint": "TEXT",
+            "tail_hash": "TEXT",
             "source_name": "TEXT",
             "st_dev": "INTEGER",
             "st_ino": "INTEGER",
@@ -292,6 +298,7 @@ class CursorStore:
             "worker_in_flight_count": "INTEGER",
             "worker_completed_count": "INTEGER",
             "worker_total_count": "INTEGER",
+            "stale_cursor_write_count": "INTEGER NOT NULL DEFAULT 0",
         }
         for name, definition in attempt_columns.items():
             if name not in existing_attempt:
@@ -408,6 +415,7 @@ class CursorStore:
         worker_in_flight_count: int | None = None,
         worker_completed_count: int | None = None,
         worker_total_count: int | None = None,
+        stale_cursor_write_count: int | None = None,
     ) -> None:
         """Update an in-flight attempt without waiting for batch completion."""
         now = datetime.now(UTC).isoformat()
@@ -433,6 +441,7 @@ class CursorStore:
             "worker_in_flight_count": worker_in_flight_count,
             "worker_completed_count": worker_completed_count,
             "worker_total_count": worker_total_count,
+            "stale_cursor_write_count": stale_cursor_write_count,
         }
         for field, value in optional_fields.items():
             if value is None:
@@ -619,6 +628,7 @@ class CursorStore:
                     worker_in_flight_count,
                     worker_completed_count,
                     worker_total_count,
+                    stale_cursor_write_count,
                     source_paths_json
                 FROM live_ingest_attempt
                 ORDER BY updated_at DESC, started_at DESC
@@ -656,7 +666,8 @@ class CursorStore:
                 worker_in_flight_count=int(row[25]) if row[25] is not None else None,
                 worker_completed_count=int(row[26]) if row[26] is not None else None,
                 worker_total_count=int(row[27]) if row[27] is not None else None,
-                source_paths_json=str(row[28] or "[]"),
+                stale_cursor_write_count=int(row[28] or 0),
+                source_paths_json=str(row[29] or "[]"),
             )
             for row in rows
         ]
@@ -679,6 +690,7 @@ class CursorStore:
                     last_record_ts,
                     parser_fingerprint,
                     content_fingerprint,
+                    tail_hash,
                     source_name,
                     st_dev,
                     st_ino,
@@ -718,6 +730,7 @@ class CursorStore:
                         last_record_ts,
                         parser_fingerprint,
                         content_fingerprint,
+                        tail_hash,
                         source_name,
                         st_dev,
                         st_ino,
@@ -747,6 +760,7 @@ class CursorStore:
         last_record_ts: str | None = None,
         parser_fingerprint: str | None = None,
         content_fingerprint: str | None = None,
+        tail_hash: str | None = None,
         source_name: str | None = None,
         st_dev: int | None = None,
         st_ino: int | None = None,
@@ -755,12 +769,29 @@ class CursorStore:
         failure_count: int | None = None,
         next_retry_at: str | None = None,
         excluded: bool | None = None,
-    ) -> None:
+        allow_backward: bool = False,
+    ) -> bool:
         now = datetime.now(UTC).isoformat()
         offset = byte_size if byte_offset is None else byte_offset
         newline_offset = offset if last_complete_newline is None else last_complete_newline
         excluded_int = 1 if excluded else 0
         with self._connect() as conn:
+            if not allow_backward:
+                existing = conn.execute(
+                    """
+                    SELECT byte_size, byte_offset, parser_fingerprint
+                    FROM live_cursor
+                    WHERE source_path = ?
+                    """,
+                    (str(path),),
+                ).fetchone()
+                if (
+                    existing is not None
+                    and existing[2] == parser_fingerprint
+                    and int(existing[0] or 0) > byte_size
+                    and int(existing[1] or 0) > offset
+                ):
+                    return False
             conn.execute(
                 """
                 INSERT INTO live_cursor (
@@ -772,6 +803,7 @@ class CursorStore:
                     last_record_ts,
                     parser_fingerprint,
                     content_fingerprint,
+                    tail_hash,
                     source_name,
                     st_dev,
                     st_ino,
@@ -782,7 +814,7 @@ class CursorStore:
                     excluded,
                     updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT (source_path) DO UPDATE SET
                     byte_size = excluded.byte_size,
                     byte_offset = excluded.byte_offset,
@@ -791,6 +823,7 @@ class CursorStore:
                     last_record_ts = excluded.last_record_ts,
                     parser_fingerprint = excluded.parser_fingerprint,
                     content_fingerprint = excluded.content_fingerprint,
+                    tail_hash = excluded.tail_hash,
                     source_name = excluded.source_name,
                     st_dev = excluded.st_dev,
                     st_ino = excluded.st_ino,
@@ -810,6 +843,7 @@ class CursorStore:
                     last_record_ts,
                     parser_fingerprint,
                     content_fingerprint,
+                    tail_hash,
                     source_name,
                     st_dev,
                     st_ino,
@@ -822,6 +856,7 @@ class CursorStore:
                 ),
             )
             conn.commit()
+        return True
 
     def mark_failed(self, path: Path) -> None:
         """Increment failure count and set exponential backoff."""
