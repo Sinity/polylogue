@@ -591,6 +591,14 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             flags = _build_flags_from_conversation(hit.summary)
             conversation_id = str(hit.conversation_id)
             target_ref = TargetRefPayload.conversation(conversation_id)
+            if hit.message_id is not None:
+                match_target_ref = TargetRefPayload.message(conversation_id=conversation_id, message_id=hit.message_id)
+                match_anchor = reader_anchor("message", hit.message_id)
+                match_actions = reader_message_actions()
+            else:
+                match_target_ref = target_ref
+                match_anchor = reader_anchor("conversation", conversation_id)
+                match_actions = reader_conversation_actions()
             hit_dicts.append(
                 {
                     "id": conversation_id,
@@ -613,6 +621,9 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                         "rank": hit.rank,
                         "retrieval_lane": hit.retrieval_lane,
                         "match_surface": hit.match_surface,
+                        "target_ref": _dump_target_ref(match_target_ref),
+                        "anchor": match_anchor,
+                        "actions": _dump_actions(match_actions),
                         "message_id": hit.message_id,
                         "snippet": hit.snippet,
                         "score": hit.score,

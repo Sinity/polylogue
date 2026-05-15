@@ -185,3 +185,39 @@ Verification:
 - `pytest -q tests/unit/devtools/test_topology_projection_witness.py`
 - `devtools verify --quick`
 - `devtools verify --affected --skip-slow`
+
+### 2026-05-15 - Wave 1 reader query smoke closure
+
+Target:
+
+- #865 reader smoke follow-up adjacent to #859 TargetRef contracts.
+- Replace skipped query/FTS assertions with executable search and no-results
+  reader checks.
+
+Coordination:
+
+- Main branch: `feature/test/reader-query-smoke`.
+- Serialized same-branch implementation; no helper needed because the editable
+  surface is confined to reader smoke, shared search-match payloads, and the
+  daemon search-hit envelope.
+
+Outcome:
+
+- Seed the synthetic reader archive with the message FTS virtual table/triggers
+  so query endpoints exercise the same readiness path as runtime archives.
+- Unskipped query facets and no-result query smoke tests.
+- Added positive `/api/conversations?query=...` assertions for conversation
+  target refs and match-level message target refs/anchors/actions.
+- Documented the now-realized query smoke coverage in `docs/visual-evidence.md`.
+
+First gates:
+
+- `pytest -q tests/unit/daemon/test_web_reader.py -k "query or search"`
+- `pytest -q tests/unit/daemon/test_web_reader.py`
+
+Verification:
+
+- `pytest -q tests/unit/daemon/test_web_reader.py -k "query or search"`
+- `pytest -q tests/unit/daemon/test_web_reader.py`
+- `devtools verify --quick`
+- `pytest -q tests/unit/daemon/`
