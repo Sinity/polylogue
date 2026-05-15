@@ -171,6 +171,39 @@ Resource rules:
 
 ## Execution Entries
 
+### 2026-05-15 - Daemon status and convergence evidence artifacts
+
+Target:
+
+- #999 runtime observability evidence through ordinary pytest contract tests.
+
+Coordination:
+
+- Main-agent implementation; the slice only marks existing daemon status and
+  convergence-debt tests with bounded evidence recording.
+
+Outcome:
+
+- `polylogued status --format json` now records a contract evidence artifact
+  containing daemon component status, live source availability counts, browser
+  capture status, stdout sample, and exit code.
+- Convergence-debt retry tests now record source-path and conversation-subject
+  retry evidence: debt before/after, retry count, and source cursor cleanup.
+- Artifacts are written through `tests/infra/contract_evidence.py`, so the
+  mechanism remains pytest-native and does not create a parallel proof layer.
+
+Artifact examples:
+
+- `.cache/verification/evidence/daemon.status.json-*.json`
+- `.cache/verification/evidence/daemon.convergence_debt.source_retry-*.json`
+- `.cache/verification/evidence/daemon.convergence_debt.conversation_retry-*.json`
+
+Verification:
+
+- `pytest -q tests/unit/daemon/test_daemon_cli.py::test_polylogued_status_json_reports_daemon_components tests/unit/daemon/test_daemon_cli.py::test_drain_convergence_debt_retries_due_items_without_source_failure tests/unit/daemon/test_daemon_cli.py::test_drain_convergence_debt_retries_conversation_subjects_without_source_lookup`
+- `ruff check tests/unit/daemon/test_daemon_cli.py`
+- `mypy --strict tests/unit/daemon/test_daemon_cli.py`
+
 ### 2026-05-15 - Verification suppressions reality scan
 
 Target:
