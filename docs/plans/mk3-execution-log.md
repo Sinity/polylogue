@@ -17,7 +17,7 @@ Updated: 2026-05-15
 | Reader evidence shell | #848, #865, #956, #993 | Blocked on enough contract stability for full UI, but evidence harness can advance | Expand synthetic reader DOM/browser smoke toward MK3 states | `pytest tests/unit/daemon/test_web_reader.py`, future browser lane, `devtools verify --quick` |
 | Paste/attachment/provenance | #839, #864, #848, #993 | Blocked on message envelope/provenance vocabulary | Implement paste-span projection MVP after contract spine | focused storage/payload tests, daemon API tests, visual state tests |
 | Topology/workspace | #866, #993, #848, #865 | Substrate can start once source identity is stable | Materialize topology edges before graph UI | topology storage tests, parser fixtures, visual graph states |
-| User state/advanced panels | #867, #993, #1019, #995 | Active initial API slice | Expose existing conversation marks, saved views, and recall packs through daemon reader APIs; keep annotations/message targets open | daemon user-state API tests, saved-view roundtrip tests, visual state tests |
+| User state/advanced panels | #867, #993, #1019, #995 | Active reader-control slice | Consume durable user-state APIs from the reader shell; keep annotations/message targets and CLI/MCP parity open | visual DOM evidence, daemon user-state API tests, saved-view roundtrip tests |
 | Verification throughput | #1026, #997, #998, #594, #590, #1012 | Ready to start independently | Add affected-test workflow and reduce outlier runtime | `devtools verify --affected --skip-slow`, durations capture, focused regression tests |
 
 ## Subagent Parallelization Model
@@ -242,6 +242,49 @@ Verification:
 - `pytest -q tests/unit/daemon/test_web_reader.py -k "UserState or marks or saved_views or recall_packs"`
 - `pytest -q tests/unit/daemon/test_web_reader.py`
 - `pytest -q tests/visual`
+
+### 2026-05-15 - Reader user-state controls launch
+
+Target:
+
+- #867 follow-on reader UI controls for the durable user-state APIs merged in
+  #1050.
+
+Coordination:
+
+- Main branch: `feature/feat/reader-user-state-controls`.
+- Serialized implementation. The write surface is the single-file static reader
+  shell plus synthetic visual fixtures, so subagent parallelism would add merge
+  friction without useful throughput.
+
+Owned files:
+
+- `polylogue/daemon/web_shell.py`
+- `tests/visual/conftest.py`
+- `tests/visual/test_reader_dom_smoke.py`
+- `docs/plans/mk3-execution-log.md`
+
+Outcome:
+
+- Reader shell loads `/api/user/marks` and `/api/user/saved-views` alongside
+  conversations.
+- Conversation list and detail header display star/pin/archive state from the
+  durable archive tables.
+- Detail header and Notes panel can toggle conversation marks through the
+  daemon API.
+- Notes panel can save the current search/provider view and open saved views
+  using canonical saved-view query JSON.
+- Visual fixtures now seed durable marks and saved views so DOM/API evidence
+  proves the surface is wired to archive state, not local browser state.
+- Kept annotations, message/range targets, CLI parity, and MCP parity open
+  under #867.
+
+Verification:
+
+- `ruff format --check polylogue/daemon/web_shell.py tests/visual/conftest.py tests/visual/test_reader_dom_smoke.py`
+- `ruff check polylogue/daemon/web_shell.py tests/visual/conftest.py tests/visual/test_reader_dom_smoke.py`
+- `mypy polylogue/daemon/web_shell.py tests/visual/conftest.py tests/visual/test_reader_dom_smoke.py`
+- `pytest -q tests/visual tests/unit/daemon/test_web_reader.py -k "reader or UserState or saved_views or marks"`
 
 ### 2026-05-15 - Wave 1 reader query smoke closure
 

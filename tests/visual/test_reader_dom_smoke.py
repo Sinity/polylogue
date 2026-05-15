@@ -48,7 +48,16 @@ def test_reader_search_shell_dom_evidence(reader_workspace: ReaderWorkspace, tmp
     assert dom.meta_viewport is True
     assert dom.scripts == 1
     assert dom.styles == 1
-    for phrase in ("Select a conversation", "Keyboard Shortcuts", "Focus search", "Local"):
+    for phrase in (
+        "Select a conversation",
+        "Keyboard Shortcuts",
+        "Focus search",
+        "Local",
+        "/api/user/marks",
+        "toggleMark",
+        "Save current view",
+        "Saved Views",
+    ):
         assert phrase in body
 
     checks = {
@@ -78,6 +87,8 @@ def test_reader_conversation_deeplink_and_detail_evidence(reader_workspace: Read
         detail = cast(dict[str, object], get_json(base_url, "/api/conversations/reader-c1"))
         messages = cast(dict[str, object], get_json(base_url, "/api/conversations/reader-c1/messages"))
         raw = cast(dict[str, object], get_json(base_url, "/api/conversations/reader-c1/raw"))
+        marks = cast(dict[str, object], get_json(base_url, "/api/user/marks?conversation_id=reader-c1"))
+        saved_views = cast(dict[str, object], get_json(base_url, "/api/user/saved-views"))
 
     assert status == 200
     assert "text/html" in content_type
@@ -106,6 +117,11 @@ def test_reader_conversation_deeplink_and_detail_evidence(reader_workspace: Read
 
     assert raw["id"] == "reader-c1"
     assert "raw_artifacts" in raw
+    mark_types = {str(item["mark_type"]) for item in cast(list[dict[str, object]], marks["items"])}
+    assert mark_types == {"pin", "star"}
+    view_items = cast(list[dict[str, object]], saved_views["items"])
+    assert view_items[0]["name"] == "Claude Code reader fixtures"
+    assert cast(dict[str, object], view_items[0]["query"])["provider"] == "claude-code"
 
     checks = {
         "status": status,
@@ -115,6 +131,8 @@ def test_reader_conversation_deeplink_and_detail_evidence(reader_workspace: Read
         "message_total": messages["total"],
         "tool_message_present": True,
         "raw_endpoint_present": True,
+        "mark_types": sorted(mark_types),
+        "saved_view_count": len(view_items),
         "private_path_safe": True,
     }
     write_evidence_manifest(

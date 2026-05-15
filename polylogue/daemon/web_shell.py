@@ -77,6 +77,7 @@ html, body { height: 100%; background: var(--bg); color: var(--text);
 .conv-item .conv-meta .flag { font-size: 10px; padding: 0 4px; border-radius: 2px; background: var(--panel-subtle); }
 .conv-item .conv-meta .flag.tool { color: var(--role-tool); }
 .conv-item .conv-meta .flag.think { color: var(--role-thinking); }
+.conv-item .conv-meta .flag.mark { color: var(--warn); border: 1px solid var(--border); }
 .provider-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 3px; flex-shrink: 0; }
 .sidebar-state { padding: 16px 12px; color: var(--text-dim); font-size: var(--small); text-align: center; line-height: 1.6; }
 .sidebar-state .state-icon { font-size: 24px; margin-bottom: 6px; opacity: 0.4; }
@@ -84,6 +85,13 @@ html, body { height: 100%; background: var(--bg); color: var(--text);
 #main { grid-column: 2; grid-row: 2; display: flex; flex-direction: column; overflow: hidden; background: var(--bg); }
 #conv-header { padding: 10px 16px; border-bottom: 1px solid var(--border); background: var(--bg-raised); }
 #conv-header h2 { font-size: 15px; font-weight: 500; line-height: 1.3; margin-bottom: 4px; }
+#conv-header .title-row { display: flex; align-items: flex-start; gap: 10px; justify-content: space-between; }
+#conv-header .title-row h2 { flex: 1; min-width: 0; }
+#conv-header .mark-actions { display: flex; gap: 4px; flex-shrink: 0; }
+#conv-header .mark-btn { width: 26px; height: 24px; border-radius: 3px; border: 1px solid var(--border);
+  background: var(--panel-subtle); color: var(--text-muted); cursor: pointer; font-size: var(--small); }
+#conv-header .mark-btn:hover { color: var(--text); border-color: var(--text-dim); }
+#conv-header .mark-btn.active { color: var(--warn); border-color: var(--warn); background: var(--warn-bg); }
 #conv-header .conv-stats { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; font-size: var(--small); color: var(--text-muted); }
 #conv-header .conv-stats .chip { padding: 1px 6px; border-radius: 3px; font-size: var(--small);
   background: var(--panel-subtle); border: 1px solid var(--border); white-space: nowrap; }
@@ -137,6 +145,17 @@ html, body { height: 100%; background: var(--bg); color: var(--text);
 .inspector-section { margin-top: 10px; }
 .inspector-section h4 { font-size: 11px; font-weight: 600; color: var(--text-dim); text-transform: uppercase;
   letter-spacing: 0.6px; margin-bottom: 6px; }
+.user-state-row { display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 5px 0; border-bottom: 1px solid var(--border); font-size: var(--small); }
+.user-state-row .label { color: var(--text-muted); }
+.user-state-row .value { color: var(--text); font-family: var(--font-mono); font-size: 11px; word-break: break-word; }
+.user-action { background: var(--panel-elevated); border: 1px solid var(--border); color: var(--accent);
+  padding: 4px 8px; border-radius: 3px; cursor: pointer; font-size: var(--small); font-family: var(--font-ui); }
+.user-action:hover { border-color: var(--accent-soft); background: var(--accent-bg); }
+.saved-view-list { display: flex; flex-direction: column; gap: 4px; }
+.saved-view-item { display: flex; justify-content: space-between; gap: 8px; align-items: center;
+  border: 1px solid var(--border); border-radius: var(--radius); padding: 6px; background: var(--panel-subtle); }
+.saved-view-item button { flex-shrink: 0; }
 .raw-block { font-family: var(--font-mono); font-size: 10px; white-space: pre-wrap; word-break: break-all;
   background: var(--panel-subtle); border: 1px solid var(--border); padding: 8px; border-radius: var(--radius);
   max-height: 300px; overflow-y: auto; color: var(--text-muted); }
@@ -232,7 +251,8 @@ var API = '';
 var state = {
   conversations: [], selected: null, selectedRaw: null,
   provider: '', query: '', offset: 0, limit: 100, total: 0,
-  status: {}, facets: null, inspectorTab: 'info'
+  status: {}, facets: null, inspectorTab: 'info',
+  marks: {}, savedViews: [], userStateError: ''
 };
 
 function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
@@ -242,6 +262,25 @@ async function fetchJSON(url) {
   var r = await fetch(API + url);
   if (!r.ok) throw new Error(r.status);
   return r.json();
+}
+async function sendJSON(url, method, body) {
+  var opts = {method: method, headers: {'Content-Type': 'application/json'}};
+  if (body !== undefined) opts.body = JSON.stringify(body);
+  var r = await fetch(API + url, opts);
+  if (!r.ok) throw new Error(r.status);
+  return r.json();
+}
+
+function markSetFor(conversationId) {
+  return state.marks[conversationId] || {};
+}
+function hasMark(conversationId, markType) {
+  return !!markSetFor(conversationId)[markType];
+}
+function setMarkLocal(conversationId, markType, enabled) {
+  if (!state.marks[conversationId]) state.marks[conversationId] = {};
+  if (enabled) state.marks[conversationId][markType] = true;
+  else delete state.marks[conversationId][markType];
 }
 
 function getConvIdFromURL() {
@@ -280,6 +319,24 @@ async function loadConversations() {
     renderSidebarState('error', 'Failed to load conversations');
   }
   renderConversations();
+}
+
+async function loadUserState() {
+  try {
+    var marks = await fetchJSON('/api/user/marks');
+    state.marks = {};
+    (marks.items || []).forEach(function(m) {
+      setMarkLocal(m.conversation_id, m.mark_type, true);
+    });
+    var savedViews = await fetchJSON('/api/user/saved-views');
+    state.savedViews = savedViews.items || [];
+    state.userStateError = '';
+  } catch(e) {
+    state.userStateError = 'User state unavailable';
+  }
+  renderConversations();
+  renderMain();
+  renderInspector();
 }
 
 async function loadConversation(id, updateURL) {
@@ -361,6 +418,9 @@ function renderConversations() {
       if (c.flags.has_thinking) flagsHtml += '<span class="flag think">R</span>';
       if (c.flags.has_paste) flagsHtml += '<span class="flag">P</span>';
     }
+    if (hasMark(c.id, 'star')) flagsHtml += '<span class="flag mark" title="Starred">*</span>';
+    if (hasMark(c.id, 'pin')) flagsHtml += '<span class="flag mark" title="Pinned">P</span>';
+    if (hasMark(c.id, 'archive')) flagsHtml += '<span class="flag mark" title="Archived">A</span>';
     var repoHtml = c.repo ? '<span class="chip" style="font-size:10px;padding:0 4px">' + esc(c.repo.split('/').pop()) + '</span>' : '';
     return '<div class="conv-item' + sel + '" data-id="' + escAttr(c.id) + '" onclick="selectConversation(\'' + escAttr(c.id) + '\')">'
       + '<div class="conv-title">' + title + '</div>'
@@ -425,7 +485,11 @@ function renderMain() {
   }
   var c = state.selected;
   var title = esc(c.display_title || c.title || 'Untitled');
-  var headerHtml = '<h2>' + title + '</h2><div class="conv-stats">';
+  var headerHtml = '<div class="title-row"><h2>' + title + '</h2><div class="mark-actions">'
+    + markButtonHtml(c.id, 'star', '*', 'Toggle star')
+    + markButtonHtml(c.id, 'pin', 'P', 'Toggle pin')
+    + markButtonHtml(c.id, 'archive', 'A', 'Toggle archive')
+    + '</div></div><div class="conv-stats">';
   if (c.provider) headerHtml += '<span>' + esc(c.provider) + '</span>';
   if (c.model) headerHtml += '<span class="chip">' + esc(String(c.model)) + '</span>';
   if (c.message_count !== undefined) headerHtml += '<span>' + c.message_count + ' messages</span>';
@@ -482,6 +546,11 @@ function renderMain() {
   }).join('');
 }
 
+function markButtonHtml(conversationId, markType, label, title) {
+  var active = hasMark(conversationId, markType) ? ' active' : '';
+  return '<button class="mark-btn' + active + '" title="' + escAttr(title) + '" onclick="toggleMark(\'' + escAttr(markType) + '\')">' + esc(label) + '</button>';
+}
+
 function renderInspector() {
   var el = document.getElementById('inspector-content');
   if (!state.selected) { el.innerHTML = '<div class="inspector-empty">Select a conversation to inspect</div>'; return; }
@@ -533,8 +602,95 @@ function renderInspectorRaw(el, c) {
 }
 
 function renderInspectorNotes(el, c) {
-  el.innerHTML = '<div class="inspector-section"><h4>Notes</h4>'
-    + '<div class="inspector-empty">Notes are not yet implemented. See <a href="https://github.com/Sinity/polylogue/issues/867" target="_blank" style="color:var(--accent)">#867</a>.</div></div>';
+  var marks = Object.keys(markSetFor(c.id));
+  var querySummary = [];
+  if (state.query) querySummary.push('query=' + state.query);
+  if (state.provider) querySummary.push('provider=' + state.provider);
+  var html = '<div class="inspector-section"><h4>Marks</h4>';
+  if (marks.length) {
+    html += '<div class="user-state-row"><span class="label">Active</span><span class="value">' + esc(marks.sort().join(', ')) + '</span></div>';
+  } else {
+    html += '<div class="inspector-empty">No marks on this conversation</div>';
+  }
+  html += '<div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:8px">'
+    + '<button class="user-action" onclick="toggleMark(\'star\')">Star</button>'
+    + '<button class="user-action" onclick="toggleMark(\'pin\')">Pin</button>'
+    + '<button class="user-action" onclick="toggleMark(\'archive\')">Archive</button>'
+    + '</div></div>';
+  html += '<div class="inspector-section"><h4>Saved Views</h4>'
+    + '<div class="user-state-row"><span class="label">Current</span><span class="value">' + esc(querySummary.join(' / ') || 'all conversations') + '</span></div>'
+    + '<button class="user-action" onclick="saveCurrentView()">Save current view</button>';
+  if (state.savedViews.length) {
+    html += '<div class="saved-view-list" style="margin-top:8px">';
+    state.savedViews.forEach(function(v) {
+      var q = v.query || {};
+      var bits = [];
+      if (q.query) bits.push('query=' + q.query);
+      if (q.provider) bits.push('provider=' + q.provider);
+      html += '<div class="saved-view-item"><div><div>' + esc(v.name || v.view_id) + '</div>'
+        + '<div class="value">' + esc(bits.join(' / ') || 'all conversations') + '</div></div>'
+        + '<button class="user-action" onclick="applySavedView(\'' + escAttr(v.view_id) + '\')">Open</button></div>';
+    });
+    html += '</div>';
+  } else {
+    html += '<div class="inspector-empty">No saved views</div>';
+  }
+  if (state.userStateError) {
+    html += '<div class="inspector-empty">' + esc(state.userStateError) + '</div>';
+  }
+  html += '</div><div class="inspector-section"><h4>Annotations</h4>'
+    + '<div class="inspector-empty">Annotation storage remains tracked in #867.</div></div>';
+  el.innerHTML = html;
+}
+
+async function toggleMark(markType) {
+  if (!state.selected) return;
+  var id = state.selected.id;
+  var enabled = hasMark(id, markType);
+  try {
+    if (enabled) {
+      await sendJSON('/api/user/marks?conversation_id=' + encodeURIComponent(id) + '&mark_type=' + encodeURIComponent(markType), 'DELETE');
+      setMarkLocal(id, markType, false);
+    } else {
+      await sendJSON('/api/user/marks', 'POST', {conversation_id: id, mark_type: markType});
+      setMarkLocal(id, markType, true);
+    }
+    state.userStateError = '';
+  } catch(e) {
+    state.userStateError = 'Failed to update mark';
+  }
+  renderConversations();
+  renderMain();
+  renderInspector();
+}
+
+async function saveCurrentView() {
+  var query = {limit: state.limit, offset: 0};
+  if (state.query) query.query = state.query;
+  if (state.provider) query.provider = state.provider;
+  var defaultName = state.query || state.provider || 'All conversations';
+  var name = window.prompt('Saved view name', defaultName);
+  if (!name) return;
+  try {
+    await sendJSON('/api/user/saved-views', 'POST', {name: name, query: query});
+    await loadUserState();
+  } catch(e) {
+    state.userStateError = 'Failed to save view';
+    renderInspector();
+  }
+}
+
+function applySavedView(viewId) {
+  var view = state.savedViews.find(function(v) { return v.view_id === viewId; });
+  if (!view) return;
+  var query = view.query || {};
+  state.query = query.query || '';
+  state.provider = query.provider || '';
+  state.offset = 0;
+  document.getElementById('search').value = state.query;
+  loadConversations();
+  loadFacets();
+  renderInspector();
 }
 
 async function loadRawData() {
@@ -637,6 +793,7 @@ loadConversations().then(function() {
   if (cid) selectConversation(cid, false);
 });
 loadFacets();
+loadUserState();
 loadStatus();
 setInterval(loadStatus, 30000);
 </script>
