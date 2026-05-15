@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -97,6 +98,23 @@ def _notify(summary: str) -> None:
         )
 
 
+def _format_completion_notification(
+    *,
+    exit_code: int,
+    total_duration: float,
+    step_results: list[dict[str, Any]],
+) -> str:
+    """Build the desktop notification summary for a completed verify run."""
+    if exit_code == 0:
+        msg = f"PASS ({total_duration:.0f}s)"
+        pytest_step = next((s for s in step_results if str(s["name"]).startswith("pytest")), None)
+        if pytest_step is not None and "count" in pytest_step:
+            msg += f", {pytest_step['count']} tests"
+        return msg
+    failed = [s["name"] for s in step_results if s["exit"] != 0]
+    return f"FAIL ({total_duration:.0f}s) — {', '.join(failed)}"
+
+
 # ── history (JSONL) ────────────────────────────────────────────────
 
 
@@ -143,12 +161,33 @@ def _print_history(file: Path | None = None) -> None:
 # ── step runner ─────────────────────────────────────────────────────
 
 
-def _run(label: str, cmd: list[str], *, cwd: str | None = None) -> tuple[int, float]:
+_PYTEST_COUNT_RE = re.compile(
+    r"\b(?P<count>\d+)\s+"
+    r"(?P<status>passed|failed|error|errors|skipped|xfailed|xpassed|rerun|reruns)\b"
+)
+
+
+def _parse_pytest_test_count(output: str) -> int | None:
+    """Return the total executed-test count from pytest's terminal summary."""
+    if "no tests ran" in output:
+        return 0
+    counts = [int(match.group("count")) for match in _PYTEST_COUNT_RE.finditer(output)]
+    if not counts:
+        return None
+    return sum(counts)
+
+
+def _run(label: str, cmd: list[str], *, cwd: str | None = None) -> tuple[int, float, dict[str, Any]]:
     t0 = time.monotonic()
     sys.stderr.write(f"  {label} ... ")
     sys.stderr.flush()
     result = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
     elapsed = time.monotonic() - t0
+    metadata: dict[str, Any] = {}
+    if label.startswith("pytest"):
+        test_count = _parse_pytest_test_count(result.stdout + "\n" + result.stderr)
+        if test_count is not None:
+            metadata["count"] = test_count
     if result.returncode == 0:
         sys.stderr.write(f"ok ({elapsed:.1f}s)\n")
     else:
@@ -157,7 +196,7 @@ def _run(label: str, cmd: list[str], *, cwd: str | None = None) -> tuple[int, fl
             sys.stderr.write(result.stdout + "\n")
         if result.stderr.strip():
             sys.stderr.write(result.stderr + "\n")
-    return result.returncode, elapsed
+    return result.returncode, elapsed, metadata
 
 
 # ── step builder ────────────────────────────────────────────────────
@@ -489,10 +528,12 @@ def main(argv: list[str] | None = None) -> int:
     step_results: list[dict[str, Any]] = []
 
     for label, cmd in steps:
-        if label == "pytest":
+        if label.startswith("pytest"):
             _warn_low_memory()  # check again right before the heavy step
-        rc, elapsed = _run(label, cmd)
-        step_results.append({"name": label, "duration_s": round(elapsed, 2), "exit": rc})
+        rc, elapsed, metadata = _run(label, cmd)
+        step_result: dict[str, Any] = {"name": label, "duration_s": round(elapsed, 2), "exit": rc}
+        step_result.update(metadata)
+        step_results.append(step_result)
         if rc != 0:
             exit_code = rc
 
@@ -537,14 +578,12 @@ def main(argv: list[str] | None = None) -> int:
 
     # Notify on long-running verify.
     if total_duration > 30:
-        if exit_code == 0:
-            test_count = next((s for s in step_results if s["name"] == "pytest"), None)
-            msg = f"PASS ({total_duration:.0f}s)"
-            if test_count:
-                msg += f", {test_count.get('count', '?')} tests"
-            _notify(msg)
-        else:
-            failed = [s["name"] for s in step_results if s["exit"] != 0]
-            _notify(f"FAIL ({total_duration:.0f}s) — {', '.join(failed)}")
+        _notify(
+            _format_completion_notification(
+                exit_code=exit_code,
+                total_duration=total_duration,
+                step_results=step_results,
+            )
+        )
 
     return exit_code
