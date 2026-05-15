@@ -10,6 +10,7 @@ import fcntl
 import os
 import sys
 from contextlib import redirect_stdout
+from datetime import UTC, datetime
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
@@ -219,6 +220,9 @@ async def _periodic_convergence_check(
         if not db.exists():
             continue
         try:
+            repaired = await asyncio.to_thread(_drain_convergence_debt_once, db)
+            if repaired:
+                logger.info("convergence: retried %d derived debt item(s)", repaired)
             conn = open_connection(db, timeout=5.0)
             try:
                 total_msgs = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
@@ -242,6 +246,88 @@ async def _periodic_convergence_check(
                 conn.close()
         except Exception:
             logger.warning("convergence: check failed", exc_info=True)
+
+
+def _drain_convergence_debt_once(db: Path, *, limit: int = 100) -> int:
+    """Retry due derived convergence debt without rereading source payloads."""
+    from polylogue.daemon.convergence import DaemonConverger
+    from polylogue.daemon.convergence_stages import make_default_convergence_stages
+    from polylogue.sources.live.cursor import CursorStore
+
+    cursor = CursorStore(db)
+    now = datetime.now(UTC)
+    due_debt = [
+        debt
+        for debt in cursor.list_convergence_debt(limit=limit)
+        if debt.subject_type in {"source_path", "conversation_id"} and _debt_retry_due(debt, now=now)
+    ]
+    if not due_debt:
+        return 0
+    conversation_ids = tuple(
+        dict.fromkeys(debt.subject_id for debt in due_debt if debt.subject_type == "conversation_id")
+    )
+    paths = tuple(dict.fromkeys([Path(debt.subject_id) for debt in due_debt if debt.subject_type == "source_path"]))
+    if not paths and not conversation_ids:
+        return 0
+    converger = DaemonConverger(stages=make_default_convergence_stages(db), max_workers=2)
+    path_states, _path_timings = converger.converge_batch(paths)
+    conversation_states, _conversation_timings = converger.converge_conversations(conversation_ids)
+    retried = 0
+    for debt in due_debt:
+        subject_states: list[object | None]
+        if debt.subject_type == "conversation_id":
+            subject_states = [conversation_states.get(debt.subject_id)]
+        else:
+            subject_states = [path_states.get(Path(debt.subject_id))]
+        converged = all(state is not None and bool(getattr(state, "converged", False)) for state in subject_states)
+        if converged:
+            cursor.clear_convergence_debt(subject_type=debt.subject_type, subject_id=debt.subject_id)
+            retried += 1
+            continue
+        failed_stages: tuple[str, ...] = ()
+        last_error: object = None
+        for state in subject_states:
+            stages = getattr(state, "stages", {}) if state is not None else {}
+            last_error = getattr(state, "last_error", None) if state is not None else None
+            failed_stages = _failed_convergence_stage_names(stages)
+            if failed_stages:
+                break
+        if not failed_stages:
+            failed_stages = ("convergence",)
+        cursor.clear_convergence_debt(subject_type=debt.subject_type, subject_id=debt.subject_id)
+        for stage in failed_stages:
+            cursor.record_convergence_debt(
+                stage=stage,
+                subject_type=debt.subject_type,
+                subject_id=debt.subject_id,
+                error=last_error if isinstance(last_error, str) and last_error else "retry did not converge",
+            )
+        retried += 1
+    return retried
+
+
+def _debt_retry_due(debt: object, *, now: datetime) -> bool:
+    next_retry_at = getattr(debt, "next_retry_at", None)
+    if not isinstance(next_retry_at, str) or not next_retry_at:
+        return True
+    try:
+        retry_at = datetime.fromisoformat(next_retry_at)
+    except ValueError:
+        return True
+    if retry_at.tzinfo is None:
+        retry_at = retry_at.replace(tzinfo=UTC)
+    return retry_at <= now
+
+
+def _failed_convergence_stage_names(stages: object) -> tuple[str, ...]:
+    if not isinstance(stages, dict):
+        return ()
+    failed: list[str] = []
+    for stage_name, stage_state in stages.items():
+        state_value = getattr(stage_state, "value", stage_state)
+        if state_value not in {"done", "skipped"}:
+            failed.append(str(stage_name))
+    return tuple(failed)
 
 
 async def _periodic_health_check() -> None:

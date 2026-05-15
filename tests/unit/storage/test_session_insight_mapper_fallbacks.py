@@ -127,6 +127,61 @@ def test_row_to_session_profile_record_falls_back_to_legacy_payloads(typed_paylo
     }
 
 
+def test_row_to_session_profile_record_normalizes_legacy_typed_inference_events() -> None:
+    inference_payload = {
+        "repo_names": [],
+        "work_event_count": 1,
+        "phase_count": 0,
+        "engaged_duration_ms": 0,
+        "engaged_minutes": 0.0,
+        "support_level": "weak",
+        "support_signals": ["work_events"],
+        "engaged_duration_source": "session_total_fallback",
+        "repo_inference_strength": "none",
+        "auto_tags": ["provider:codex"],
+        "work_events": [
+            {
+                "kind": "planning",
+                "start_index": 0,
+                "end_index": 2,
+                "start_time": None,
+                "end_time": None,
+                "canonical_session_date": "2026-05-07",
+                "duration_ms": 0,
+                "confidence": 0.2,
+                "evidence": ["fallback event"],
+                "file_paths": [],
+                "tools_used": [],
+                "summary": "fallback planning",
+            }
+        ],
+        "phases": [],
+    }
+    row = _make_row(
+        {
+            "conversation_id": "conv-profile-typed-legacy",
+            "materialized_at": "2026-05-07T09:06:00+00:00",
+            "provider_name": "codex",
+            "title": "Typed legacy profile",
+            "message_count": 3,
+            "repo_paths_json": "[]",
+            "repo_names_json": "[]",
+            "tags_json": "[]",
+            "auto_tags_json": json.dumps(["provider:codex"]),
+            "search_text": "typed legacy profile search text",
+            "payload_json": "{}",
+            "evidence_payload_json": "{}",
+            "inference_payload_json": json.dumps(inference_payload),
+            "enrichment_payload_json": "{}",
+        }
+    )
+
+    record = _row_to_session_profile_record(row)
+
+    assert record.inference_payload.work_events[0]["timing_provenance"] == "untimestamped"
+    assert record.inference_payload.work_events[0]["date_provenance"] == "date_only"
+
+
 @pytest.mark.parametrize("typed_payload_mode", ["missing", "empty"], ids=["missing-columns", "empty-columns"])
 def test_row_to_session_work_event_record_falls_back_to_legacy_payloads(typed_payload_mode: str) -> None:
     legacy_payload = {

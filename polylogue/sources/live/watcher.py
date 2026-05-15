@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import stat as stat_module
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -45,6 +46,26 @@ class WatchSource:
     def accepts(self, path: Path) -> bool:
         name = path.name.lower()
         return any(name.endswith(suffix) for suffix in self.suffixes)
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateSourceFile:
+    """One statted source file candidate from a catch-up scan."""
+
+    path: Path
+    source_name: str
+    suffix: str
+    stat: os.stat_result
+
+
+@dataclass(frozen=True, slots=True)
+class CatchUpPlan:
+    """Planned catch-up work after bulk cursor comparison."""
+
+    candidates: tuple[CandidateSourceFile, ...]
+    needed: tuple[Path, ...]
+    skipped_file_count: int
+    needed_bytes: int
 
 
 class LiveWatcher:
@@ -119,43 +140,74 @@ class LiveWatcher:
     # ------------------------------------------------------------------
 
     async def _catch_up(self, roots: list[Path]) -> None:
+        candidates = self._scan_catch_up_candidates(roots)
+        if not candidates:
+            return
+        logger.info("live.watcher: catch-up scan over %d file(s)", len(candidates))
+        plan = self._plan_catch_up(candidates)
+
+        if plan.needed:
+            logger.info(
+                "live.watcher: catch-up ingesting %d file(s) (%.1f MB), skipped=%d",
+                len(plan.needed),
+                plan.needed_bytes / 1e6,
+                plan.skipped_file_count,
+            )
+            await self._ingest_files(
+                list(plan.needed),
+                queued_file_count=len(plan.candidates),
+                skipped_file_count=plan.skipped_file_count,
+            )
+
+    def _scan_catch_up_candidates(self, roots: list[Path]) -> tuple[CandidateSourceFile, ...]:
         root_set = {root.resolve() for root in roots}
-        files: list[Path] = []
+        candidates: list[CandidateSourceFile] = []
         for source in self._sources:
             if not source.exists() or source.root.resolve() not in root_set:
                 continue
             for suffix in source.suffixes:
-                files.extend(p for p in source.root.rglob(f"*{suffix}") if p.is_file())
-        if not files:
-            return
-        files.sort()
-        logger.info("live.watcher: catch-up scan over %d file(s)", len(files))
-        cursor_records = self._cursor.get_records(files)
+                for path in source.root.rglob(f"*{suffix}"):
+                    try:
+                        stat = path.stat()
+                    except FileNotFoundError:
+                        continue
+                    if not stat_module.S_ISREG(stat.st_mode):
+                        continue
+                    candidates.append(
+                        CandidateSourceFile(
+                            path=path,
+                            source_name=source.name,
+                            suffix=suffix,
+                            stat=stat,
+                        )
+                    )
+        return tuple(sorted(candidates, key=lambda candidate: candidate.path))
+
+    def _plan_catch_up(self, candidates: tuple[CandidateSourceFile, ...]) -> CatchUpPlan:
+        if not candidates:
+            return CatchUpPlan(candidates=(), needed=(), skipped_file_count=0, needed_bytes=0)
+        cursor_records = self._cursor.get_records(candidate.path for candidate in candidates)
         needed: list[Path] = []
         skipped = 0
         needed_bytes = 0
-        for path in files:
+        for candidate in candidates:
             if self._stop.is_set():
-                return
-            try:
-                stat = path.stat()
-            except FileNotFoundError:
-                skipped += 1
-                continue
-            if self._needs_work_from_state(path, stat=stat, cursor=cursor_records.get(path)):
-                needed.append(path)
-                needed_bytes += stat.st_size
+                break
+            if self._needs_work_from_state(
+                candidate.path,
+                stat=candidate.stat,
+                cursor=cursor_records.get(candidate.path),
+            ):
+                needed.append(candidate.path)
+                needed_bytes += candidate.stat.st_size
             else:
                 skipped += 1
-
-        if needed:
-            logger.info(
-                "live.watcher: catch-up ingesting %d file(s) (%.1f MB), skipped=%d",
-                len(needed),
-                needed_bytes / 1e6,
-                skipped,
-            )
-            await self._ingest_files(needed, queued_file_count=len(files), skipped_file_count=skipped)
+        return CatchUpPlan(
+            candidates=candidates,
+            needed=tuple(needed),
+            skipped_file_count=skipped,
+            needed_bytes=needed_bytes,
+        )
 
     # ------------------------------------------------------------------
     # Live: debounced batch scheduling

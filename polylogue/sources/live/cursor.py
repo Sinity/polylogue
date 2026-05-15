@@ -75,6 +75,60 @@ CREATE TABLE IF NOT EXISTS live_ingest_attempt (
 )
 """
 
+_STAGE_EVENT_DDL = """
+CREATE TABLE IF NOT EXISTS live_ingest_stage_event (
+    event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    attempt_id TEXT NOT NULL,
+    sequence INTEGER NOT NULL,
+    observed_at TEXT NOT NULL,
+    phase TEXT NOT NULL,
+    status TEXT NOT NULL,
+    queued_file_count INTEGER,
+    needed_file_count INTEGER,
+    skipped_file_count INTEGER,
+    succeeded_file_count INTEGER,
+    failed_file_count INTEGER,
+    input_bytes INTEGER,
+    source_payload_read_bytes INTEGER,
+    cursor_fingerprint_read_bytes INTEGER,
+    archive_write_bytes_delta INTEGER,
+    parse_time_s REAL,
+    convergence_time_s REAL,
+    total_time_s REAL,
+    current_source TEXT,
+    current_path TEXT,
+    error TEXT,
+    rss_current_mb REAL,
+    rss_peak_self_mb REAL,
+    rss_peak_children_mb REAL,
+    cgroup_path TEXT,
+    cgroup_memory_current_mb REAL,
+    cgroup_memory_peak_mb REAL,
+    cgroup_memory_swap_current_mb REAL,
+    worker_in_flight_count INTEGER,
+    worker_completed_count INTEGER,
+    worker_total_count INTEGER,
+    stage_timings_json TEXT,
+    UNIQUE(attempt_id, sequence)
+)
+"""
+
+_CONVERGENCE_DEBT_DDL = """
+CREATE TABLE IF NOT EXISTS live_convergence_debt (
+    stage TEXT NOT NULL,
+    subject_type TEXT NOT NULL,
+    subject_id TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'failed',
+    failure_count INTEGER NOT NULL DEFAULT 0,
+    first_failed_at TEXT NOT NULL,
+    last_failed_at TEXT NOT NULL,
+    next_retry_at TEXT,
+    materializer_version TEXT,
+    last_error TEXT,
+    PRIMARY KEY (stage, subject_type, subject_id)
+)
+"""
+
 
 @dataclass(frozen=True, slots=True)
 class CursorRecord:
@@ -134,6 +188,22 @@ class LiveIngestAttempt:
     source_paths_json: str = "[]"
 
 
+@dataclass(frozen=True, slots=True)
+class LiveConvergenceDebt:
+    """Durable post-ingest convergence failure for one derived subject."""
+
+    stage: str
+    subject_type: str
+    subject_id: str
+    status: str
+    failure_count: int
+    first_failed_at: str
+    last_failed_at: str
+    next_retry_at: str | None = None
+    materializer_version: str | None = None
+    last_error: str | None = None
+
+
 def _required_int(value: object) -> int:
     if isinstance(value, int):
         return value
@@ -182,10 +252,13 @@ class CursorStore:
         with self._connect() as conn:
             conn.execute(_DDL)
             conn.execute(_ATTEMPT_DDL)
+            conn.execute(_STAGE_EVENT_DDL)
+            conn.execute(_CONVERGENCE_DEBT_DDL)
             self._ensure_columns(conn)
             self._mark_interrupted_attempts(conn)
 
     def _connect(self) -> sqlite3.Connection:
+        self._db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = open_connection(self._db_path, timeout=10.0)
         return conn
 
@@ -223,6 +296,32 @@ class CursorStore:
         for name, definition in attempt_columns.items():
             if name not in existing_attempt:
                 conn.execute(f"ALTER TABLE live_ingest_attempt ADD COLUMN {name} {definition}")
+        conn.execute(_STAGE_EVENT_DDL)
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_live_ingest_stage_event_attempt
+            ON live_ingest_stage_event(attempt_id, sequence)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_live_ingest_stage_event_observed
+            ON live_ingest_stage_event(observed_at DESC)
+            """
+        )
+        conn.execute(_CONVERGENCE_DEBT_DDL)
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_live_convergence_debt_status_retry
+            ON live_convergence_debt(status, next_retry_at)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_live_convergence_debt_subject
+            ON live_convergence_debt(subject_type, subject_id)
+            """
+        )
         conn.commit()
 
     def _mark_interrupted_attempts(self, conn: sqlite3.Connection) -> None:
@@ -345,6 +444,119 @@ class CursorStore:
             conn.execute(
                 f"UPDATE live_ingest_attempt SET {', '.join(assignments)} WHERE attempt_id = ?",
                 tuple(values),
+            )
+            conn.commit()
+
+    def record_ingest_stage_event(
+        self,
+        attempt_id: str,
+        *,
+        phase: str,
+        status: str = "running",
+        queued_file_count: int | None = None,
+        needed_file_count: int | None = None,
+        skipped_file_count: int | None = None,
+        succeeded_file_count: int | None = None,
+        failed_file_count: int | None = None,
+        input_bytes: int | None = None,
+        source_payload_read_bytes: int | None = None,
+        cursor_fingerprint_read_bytes: int | None = None,
+        archive_write_bytes_delta: int | None = None,
+        parse_time_s: float | None = None,
+        convergence_time_s: float | None = None,
+        total_time_s: float | None = None,
+        current_source: str | None = None,
+        current_path: Path | str | None = None,
+        error: str | None = None,
+        rss_current_mb: float | None = None,
+        rss_peak_self_mb: float | None = None,
+        rss_peak_children_mb: float | None = None,
+        cgroup_path: str | None = None,
+        cgroup_memory_current_mb: float | None = None,
+        cgroup_memory_peak_mb: float | None = None,
+        cgroup_memory_swap_current_mb: float | None = None,
+        worker_in_flight_count: int | None = None,
+        worker_completed_count: int | None = None,
+        worker_total_count: int | None = None,
+        stage_timings_json: str | None = None,
+    ) -> None:
+        """Append one durable progress event for a live-ingest attempt."""
+        now = datetime.now(UTC).isoformat()
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT COALESCE(MAX(sequence), 0) + 1 FROM live_ingest_stage_event WHERE attempt_id = ?",
+                (attempt_id,),
+            ).fetchone()
+            sequence = int(row[0] or 1)
+            conn.execute(
+                """
+                INSERT INTO live_ingest_stage_event (
+                    attempt_id,
+                    sequence,
+                    observed_at,
+                    phase,
+                    status,
+                    queued_file_count,
+                    needed_file_count,
+                    skipped_file_count,
+                    succeeded_file_count,
+                    failed_file_count,
+                    input_bytes,
+                    source_payload_read_bytes,
+                    cursor_fingerprint_read_bytes,
+                    archive_write_bytes_delta,
+                    parse_time_s,
+                    convergence_time_s,
+                    total_time_s,
+                    current_source,
+                    current_path,
+                    error,
+                    rss_current_mb,
+                    rss_peak_self_mb,
+                    rss_peak_children_mb,
+                    cgroup_path,
+                    cgroup_memory_current_mb,
+                    cgroup_memory_peak_mb,
+                    cgroup_memory_swap_current_mb,
+                    worker_in_flight_count,
+                    worker_completed_count,
+                    worker_total_count,
+                    stage_timings_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    attempt_id,
+                    sequence,
+                    now,
+                    phase,
+                    status,
+                    queued_file_count,
+                    needed_file_count,
+                    skipped_file_count,
+                    succeeded_file_count,
+                    failed_file_count,
+                    input_bytes,
+                    source_payload_read_bytes,
+                    cursor_fingerprint_read_bytes,
+                    archive_write_bytes_delta,
+                    parse_time_s,
+                    convergence_time_s,
+                    total_time_s,
+                    current_source,
+                    str(current_path) if current_path is not None else None,
+                    error,
+                    rss_current_mb,
+                    rss_peak_self_mb,
+                    rss_peak_children_mb,
+                    cgroup_path,
+                    cgroup_memory_current_mb,
+                    cgroup_memory_peak_mb,
+                    cgroup_memory_swap_current_mb,
+                    worker_in_flight_count,
+                    worker_completed_count,
+                    worker_total_count,
+                    stage_timings_json,
+                ),
             )
             conn.commit()
 
@@ -680,5 +892,131 @@ class CursorStore:
             ).fetchall()
         return [str(row[0]) for row in rows]
 
+    def record_convergence_debt(
+        self,
+        *,
+        stage: str,
+        subject_type: str,
+        subject_id: str,
+        error: str | None = None,
+        materializer_version: str | None = None,
+    ) -> None:
+        """Record derived convergence debt without marking source ingest failed."""
+        now = datetime.now(UTC).isoformat()
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT failure_count
+                FROM live_convergence_debt
+                WHERE stage = ? AND subject_type = ? AND subject_id = ?
+                """,
+                (stage, subject_type, subject_id),
+            ).fetchone()
+            failure_count = int(row[0]) + 1 if row is not None else 1
+            delay_s = min(60 * (2 ** (failure_count - 1)), 3600)
+            retry_at = datetime.fromtimestamp(datetime.now(UTC).timestamp() + delay_s, tz=UTC).isoformat()
+            conn.execute(
+                """
+                INSERT INTO live_convergence_debt (
+                    stage,
+                    subject_type,
+                    subject_id,
+                    status,
+                    failure_count,
+                    first_failed_at,
+                    last_failed_at,
+                    next_retry_at,
+                    materializer_version,
+                    last_error
+                ) VALUES (?, ?, ?, 'failed', ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(stage, subject_type, subject_id) DO UPDATE SET
+                    status = 'failed',
+                    failure_count = excluded.failure_count,
+                    last_failed_at = excluded.last_failed_at,
+                    next_retry_at = excluded.next_retry_at,
+                    materializer_version = excluded.materializer_version,
+                    last_error = excluded.last_error
+                """,
+                (
+                    stage,
+                    subject_type,
+                    subject_id,
+                    failure_count,
+                    now,
+                    now,
+                    retry_at,
+                    materializer_version,
+                    error,
+                ),
+            )
+            conn.commit()
 
-__all__ = ["CursorRecord", "CursorStore", "LiveIngestAttempt"]
+    def clear_convergence_debt(
+        self,
+        *,
+        subject_type: str,
+        subject_id: str,
+        stage: str | None = None,
+    ) -> None:
+        """Clear derived convergence debt after successful convergence."""
+        with self._connect() as conn:
+            if stage is None:
+                conn.execute(
+                    "DELETE FROM live_convergence_debt WHERE subject_type = ? AND subject_id = ?",
+                    (subject_type, subject_id),
+                )
+            else:
+                conn.execute(
+                    """
+                    DELETE FROM live_convergence_debt
+                    WHERE stage = ? AND subject_type = ? AND subject_id = ?
+                    """,
+                    (stage, subject_type, subject_id),
+                )
+            conn.commit()
+
+    def list_convergence_debt(self, *, limit: int = 20) -> list[LiveConvergenceDebt]:
+        """Return recent derived convergence debt records."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    stage,
+                    subject_type,
+                    subject_id,
+                    status,
+                    failure_count,
+                    first_failed_at,
+                    last_failed_at,
+                    next_retry_at,
+                    materializer_version,
+                    last_error
+                FROM live_convergence_debt
+                ORDER BY last_failed_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [
+            LiveConvergenceDebt(
+                stage=str(row[0]),
+                subject_type=str(row[1]),
+                subject_id=str(row[2]),
+                status=str(row[3]),
+                failure_count=int(row[4] or 0),
+                first_failed_at=str(row[5]),
+                last_failed_at=str(row[6]),
+                next_retry_at=_optional_str(row[7]),
+                materializer_version=_optional_str(row[8]),
+                last_error=_optional_str(row[9]),
+            )
+            for row in rows
+        ]
+
+
+__all__ = [
+    "CursorRecord",
+    "CursorStore",
+    "LiveConvergenceDebt",
+    "LiveIngestAttempt",
+]

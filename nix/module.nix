@@ -163,6 +163,29 @@ in
         };
       };
     };
+
+    service = {
+      nice = mkOption {
+        type = types.ints.between (-20) 19;
+        default = 10;
+        description = "systemd Nice value for the Polylogue daemon.";
+      };
+      ioWeight = mkOption {
+        type = types.ints.between 1 10000;
+        default = 100;
+        description = "systemd IOWeight for the Polylogue daemon.";
+      };
+      memoryHigh = mkOption {
+        type = types.nullOr types.str;
+        default = "1G";
+        description = "systemd MemoryHigh value for the Polylogue daemon.";
+      };
+      memoryMax = mkOption {
+        type = types.nullOr types.str;
+        default = "2G";
+        description = "systemd MemoryMax value for the Polylogue daemon.";
+      };
+    };
   };
 
   config = lib.mkIf cfg.enable {
@@ -183,6 +206,11 @@ in
         Environment = "POLYLOGUE_CONFIG=${cfg.configPath}";
         StateDirectory = "polylogue";
         CacheDirectory = "polylogue";
+        Nice = cfg.service.nice;
+        IOSchedulingClass = "idle";
+        IOWeight = cfg.service.ioWeight;
+        MemoryHigh = cfg.service.memoryHigh;
+        MemoryMax = cfg.service.memoryMax;
         # Practical hardening: the daemon needs read access to source directories
         # (e.g. ~/.claude, ~/.codex) and read/write to the archive root, so full
         # filesystem lockdowns are deferred to the operator. These settings are

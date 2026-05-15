@@ -72,3 +72,37 @@ def test_converger_batches_stage_execution(tmp_path: Path) -> None:
     assert set(states) == set(paths)
     assert set(stage_times) == {"insights"}
     assert all(state.converged for state in states.values())
+
+
+def test_converger_batches_conversation_execution() -> None:
+    checked: list[tuple[str, ...]] = []
+    executed: list[tuple[str, ...]] = []
+
+    def check_conversations(conversation_ids: Sequence[str]) -> set[str]:
+        checked.append(tuple(conversation_ids))
+        return set(conversation_ids)
+
+    def execute_conversations(conversation_ids: Sequence[str]) -> bool:
+        executed.append(tuple(conversation_ids))
+        return True
+
+    converger = DaemonConverger(
+        [
+            ConvergenceStage(
+                name="insights",
+                description="test conversation stage",
+                check=lambda _candidate: False,
+                execute=lambda _candidate: False,
+                check_conversations=check_conversations,
+                execute_conversations=execute_conversations,
+            )
+        ]
+    )
+
+    states, stage_times = converger.converge_conversations(["conv-a", "conv-b", "conv-a"])
+
+    assert checked == [("conv-a", "conv-b")]
+    assert [set(candidates) for candidates in executed] == [{"conv-a", "conv-b"}]
+    assert set(states) == {"conv-a", "conv-b"}
+    assert set(stage_times) == {"insights"}
+    assert all(state.converged for state in states.values())

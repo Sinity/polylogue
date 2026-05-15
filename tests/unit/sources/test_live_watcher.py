@@ -176,12 +176,39 @@ def test_cursor_records_live_ingest_attempt_progress(tmp_path: Path) -> None:
         current_path=source,
         rss_current_mb=123.0,
     )
+    store.record_ingest_stage_event(
+        attempt_id,
+        phase="full_parse",
+        status="running",
+        queued_file_count=1,
+        needed_file_count=1,
+        skipped_file_count=0,
+        succeeded_file_count=0,
+        failed_file_count=0,
+        input_bytes=source.stat().st_size,
+        source_payload_read_bytes=0,
+        cursor_fingerprint_read_bytes=0,
+        parse_time_s=0.25,
+        current_source="codex",
+        current_path=source,
+    )
     running = store.recent_ingest_attempts(limit=1)[0]
+    with sqlite3.connect(tmp_path / "live.sqlite") as conn:
+        events = conn.execute(
+            """
+            SELECT attempt_id, phase, input_bytes, current_path
+            FROM live_ingest_stage_event
+            ORDER BY observed_at DESC, event_id DESC
+            LIMIT 1
+            """
+        ).fetchall()
 
     assert running.status == "running"
     assert running.phase == "full_parse"
     assert running.current_path == str(source)
     assert running.rss_current_mb == 123.0
+    assert len(events) == 1
+    assert events[0] == (attempt_id, "full_parse", source.stat().st_size, str(source))
 
     store.finish_ingest_attempt(attempt_id, status="completed", phase="completed")
     completed = store.recent_ingest_attempts(limit=1)[0]
@@ -796,11 +823,17 @@ async def test_live_batch_processor_records_cursor_after_each_converged_group(
 
     first_cursor = cursor.get_record(first_path)
     second_cursor = cursor.get_record(second_path)
-    assert metrics.succeeded_file_count == 1
-    assert metrics.failed_file_count == 1
+    assert metrics.succeeded_file_count == 2
+    assert metrics.failed_file_count == 0
     assert first_cursor is not None
     assert first_cursor.parser_fingerprint == "test-parser"
-    assert second_cursor is None
+    assert second_cursor is not None
+    assert second_cursor.parser_fingerprint == "test-parser"
+    debt = cursor.list_convergence_debt()
+    assert len(debt) == 1
+    assert debt[0].stage == "convergence"
+    assert debt[0].subject_type == "conversation_id"
+    assert "second-session" in debt[0].subject_id
 
 
 def test_full_parse_progress_groups_bounds_small_files_by_count(
@@ -1278,6 +1311,9 @@ def test_ingest_files_emits_observable_batch_metrics(tmp_path: Path) -> None:
     assert payload["input_bytes"] == f.stat().st_size
     assert payload["source_payload_read_bytes"] == f.stat().st_size
     assert payload["cursor_fingerprint_read_bytes"] == f.stat().st_size
+    assert payload["read_amplification"] == 1.0
+    assert payload["files_per_second"] >= 0
+    assert payload["source_mb_per_second"] >= 0
     assert payload["append_file_count"] == 0
     assert payload["full_file_count"] == 1
     assert payload["archive_write_bytes_delta"] >= 0
@@ -1285,6 +1321,12 @@ def test_ingest_files_emits_observable_batch_metrics(tmp_path: Path) -> None:
     assert payload["total_time_s"] >= 0
     assert payload["stage_timings_s"] == {}
     assert payload["failed_paths"] == []
+    with sqlite3.connect(watcher._cursor._db_path) as conn:
+        events = conn.execute(
+            "SELECT phase FROM live_ingest_stage_event ORDER BY observed_at DESC, event_id DESC LIMIT 10"
+        ).fetchall()
+    assert events[0] == ("completed",)
+    assert ("planning",) in events
 
 
 def test_parse_failure_retries_after_backoff(tmp_path: Path) -> None:

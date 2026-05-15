@@ -221,7 +221,8 @@ def generate_command_help_exercises() -> list[Exercise]:
 
 def _has_json_output_format(cmd: click.Command) -> bool:
     """Check if a Click command exposes JSON via --format."""
-    return any(isinstance(param, click.Option) and "--format" in param.opts for param in cmd.params)
+    params = cmd.get_params(click.Context(cmd))
+    return any(isinstance(param, click.Option) and "--format" in param.opts for param in params)
 
 
 def _json_contract_scenario(

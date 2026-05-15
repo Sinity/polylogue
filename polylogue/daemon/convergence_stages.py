@@ -141,6 +141,44 @@ def make_fts_stage(db_path: Path) -> ConvergenceStage:
             logger.warning("fts: batch repair failed", exc_info=True)
             return False
 
+    def check_conversations(conversation_ids: Sequence[str]) -> set[str]:
+        if not conversation_ids or not db_path.exists():
+            return set()
+        from polylogue.storage.sqlite.connection_profile import open_connection
+
+        try:
+            conn = open_connection(db_path, timeout=5.0)
+            try:
+                return {
+                    conversation_id
+                    for conversation_id in dict.fromkeys(conversation_ids)
+                    if _fts_repair_needs_for_conversations(conn, [conversation_id]).any
+                }
+            finally:
+                conn.close()
+        except Exception:
+            return set()
+
+    def execute_conversations(conversation_ids: Sequence[str]) -> bool:
+        if not conversation_ids:
+            return True
+        from polylogue.storage.sqlite.connection_profile import open_connection
+
+        try:
+            conn = open_connection(db_path, timeout=30.0)
+            try:
+                ids = tuple(dict.fromkeys(conversation_ids))
+                needs = _fts_repair_needs_for_conversations(conn, ids)
+                _repair_changed_conversation_fts(conn, ids, needs=needs)
+                conn.commit()
+                logger.info("fts: repaired conversation debt conversations=%d", len(ids))
+                return not _fts_needs_repair_for_conversations(conn, ids)
+            finally:
+                conn.close()
+        except Exception:
+            logger.warning("fts: conversation repair failed", exc_info=True)
+            return False
+
     return ConvergenceStage(
         name="fts",
         description="Verify FTS coverage and repair gaps",
@@ -148,6 +186,8 @@ def make_fts_stage(db_path: Path) -> ConvergenceStage:
         execute=execute,
         check_many=check_many,
         execute_many=execute_many,
+        check_conversations=check_conversations,
+        execute_conversations=execute_conversations,
         cpu_bound=False,
     )
 
@@ -252,6 +292,27 @@ def make_embed_stage(db_path: Path) -> ConvergenceStage:
             logger.warning("embed: batch failed", exc_info=True)
             return False
 
+    def check_conversations(conversation_ids: Sequence[str]) -> set[str]:
+        if not conversation_ids or not _embedding_config_enabled() or not db_path.exists():
+            return set()
+        from polylogue.storage.sqlite.connection_profile import open_connection
+
+        try:
+            conn = open_connection(db_path, timeout=5.0)
+            try:
+                _reconcile_embedding_config_change(conn)
+                conn.commit()
+                return set(_pending_embedding_conversation_ids(conn, tuple(dict.fromkeys(conversation_ids))))
+            finally:
+                conn.close()
+        except Exception:
+            return set()
+
+    def execute_conversations(conversation_ids: Sequence[str]) -> bool:
+        if not conversation_ids or not _embedding_config_enabled():
+            return True
+        return _embed_conversations_sync(db_path, tuple(dict.fromkeys(conversation_ids)))
+
     return ConvergenceStage(
         name="embed",
         description="Generate vector embeddings for changed conversations",
@@ -259,6 +320,8 @@ def make_embed_stage(db_path: Path) -> ConvergenceStage:
         execute=execute,
         check_many=check_many,
         execute_many=execute_many,
+        check_conversations=check_conversations,
+        execute_conversations=execute_conversations,
         cpu_bound=False,
     )
 
@@ -373,6 +436,51 @@ def make_insights_stage(db_path: Path) -> ConvergenceStage:
             logger.warning("insights: batch rebuild failed", exc_info=True)
             return False
 
+    def check_conversations(conversation_ids: Sequence[str]) -> set[str]:
+        if not conversation_ids or not db_path.exists():
+            return set()
+        from polylogue.storage.sqlite.connection_profile import open_connection
+
+        try:
+            conn = open_connection(db_path, timeout=5.0)
+            try:
+                if not _table_exists(conn, "session_profiles"):
+                    return set()
+                existing_ids = _existing_conversation_ids(conn, tuple(dict.fromkeys(conversation_ids)))
+                return set(existing_ids)
+            finally:
+                conn.close()
+        except Exception:
+            return set()
+
+    def execute_conversations(conversation_ids: Sequence[str]) -> bool:
+        from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
+        from polylogue.storage.sqlite.connection import open_connection
+
+        try:
+            with open_connection(db_path) as conn:
+                ids = _existing_conversation_ids(conn, tuple(dict.fromkeys(conversation_ids)))
+                if not ids:
+                    return True
+                counts = rebuild_session_insights_sync(
+                    conn,
+                    conversation_ids=ids,
+                    page_size=_DAEMON_INSIGHT_REBUILD_PAGE_SIZE,
+                )
+                conn.commit()
+                logger.info(
+                    "insights: refreshed conversation debt conversations=%d profiles=%d work_events=%d phases=%d threads=%d",
+                    len(ids),
+                    counts.profiles,
+                    counts.work_events,
+                    counts.phases,
+                    counts.threads,
+                )
+            return True
+        except Exception:
+            logger.warning("insights: conversation rebuild failed", exc_info=True)
+            return False
+
     return ConvergenceStage(
         name="insights",
         description="Refresh session insights for new conversations",
@@ -380,6 +488,8 @@ def make_insights_stage(db_path: Path) -> ConvergenceStage:
         execute=execute,
         check_many=check_many,
         execute_many=execute_many,
+        check_conversations=check_conversations,
+        execute_conversations=execute_conversations,
         cpu_bound=False,
     )
 
@@ -674,6 +784,23 @@ def _conversation_ids_missing_profiles(conn: sqlite3.Connection) -> list[str]:
         WHERE sp.conversation_id IS NULL
         ORDER BY COALESCE(c.sort_key, 0) DESC, c.conversation_id
         """,
+    ).fetchall()
+    return [str(row[0]) for row in rows]
+
+
+def _existing_conversation_ids(conn: sqlite3.Connection, conversation_ids: Sequence[str]) -> list[str]:
+    unique_ids = tuple(dict.fromkeys(conversation_ids))
+    if not unique_ids or not _table_exists(conn, "conversations"):
+        return []
+    placeholders = ", ".join("?" for _ in unique_ids)
+    rows = conn.execute(
+        f"""
+        SELECT conversation_id
+        FROM conversations
+        WHERE conversation_id IN ({placeholders})
+        ORDER BY conversation_id
+        """,
+        unique_ids,
     ).fetchall()
     return [str(row[0]) for row in rows]
 

@@ -14,6 +14,8 @@ from pydantic import BaseModel, Field, field_validator
 
 from polylogue.browser_capture.receiver import BrowserCaptureReceiverConfig, receiver_status_payload
 from polylogue.core.json import JSONDocument, json_document
+from polylogue.daemon.catchup_status import CatchupStatus, catchup_status_info, format_catchup_status_lines
+from polylogue.daemon.convergence_debt_status import ConvergenceDebtSummary, convergence_debt_summary_info
 from polylogue.daemon.health import DaemonHealth, check_health
 from polylogue.paths import db_path
 from polylogue.sources.live import WatchSource
@@ -193,6 +195,8 @@ class DaemonStatus(BaseModel):
     ingestion_throughput: IngestionThroughput = Field(default_factory=IngestionThroughput)
     live_cursor: LiveCursorSummary = Field(default_factory=LiveCursorSummary)
     live_ingest_attempts: LiveIngestAttemptSummary = Field(default_factory=LiveIngestAttemptSummary)
+    catchup: CatchupStatus = Field(default_factory=CatchupStatus)
+    convergence: ConvergenceDebtSummary = Field(default_factory=ConvergenceDebtSummary)
     db_size_bytes: int = 0
     wal_size_bytes: int = 0
     blob_dir_size_bytes: int = 0
@@ -851,6 +855,12 @@ def build_daemon_status(
     freshness = _insight_freshness_info()
     live_cursor = _live_cursor_summary_info()
     live_ingest_attempts = _live_ingest_attempt_summary_info()
+    convergence = convergence_debt_summary_info(db_path())
+    catchup = catchup_status_info(
+        db_path(),
+        latest_attempt=live_ingest_attempts.recent[0] if live_ingest_attempts.recent else None,
+        convergence=convergence,
+    )
     raw_failures = _raw_failure_info()
     embedding_info = _embedding_readiness_info()
 
@@ -899,6 +909,8 @@ def build_daemon_status(
         failing_files=[item.source_path for item in live_cursor.failing_files],
         live_cursor=live_cursor,
         live_ingest_attempts=live_ingest_attempts,
+        catchup=catchup,
+        convergence=convergence,
         db_size_bytes=_safe_int(db_info.get("db_size_bytes", 0)),
         wal_size_bytes=_safe_int(db_info.get("wal_size_bytes", 0)),
         blob_dir_size_bytes=_blob_size_info(),
@@ -977,6 +989,8 @@ def daemon_status_payload(
             "failing_files": status.failing_files,
             "live_cursor": status.live_cursor.model_dump(),
             "live_ingest_attempts": status.live_ingest_attempts.model_dump(),
+            "catchup": status.catchup.model_dump(),
+            "convergence": status.convergence.model_dump(),
             "operations": status.current_operations,
             "last_ingestion_batch": last_ingestion,
             "fts_readiness": status.fts_readiness.model_dump(),
@@ -1074,6 +1088,21 @@ def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
                         peak_total = max(0.0, rss_peak_self) + max(0.0, rss_peak_children)
                         rss_text += f" peak {peak_total} MiB"
                     lines.append(rss_text)
+    lines.extend(format_catchup_status_lines(payload.get("catchup")))
+    convergence = payload.get("convergence")
+    if isinstance(convergence, dict):
+        failed_count = _safe_int(convergence.get("failed_count"))
+        retry_due_count = _safe_int(convergence.get("retry_due_count"))
+        lines.append(f"Convergence debt: {failed_count} failed, {retry_due_count} retry due")
+        stages = convergence.get("stage_summaries")
+        if isinstance(stages, list):
+            for stage in stages[:5]:
+                if isinstance(stage, dict):
+                    lines.append(
+                        "  "
+                        f"{stage.get('stage')}: {stage.get('failed_count', 0)} failed, "
+                        f"{stage.get('retry_due_count', 0)} retry due"
+                    )
     # Health summary
     health = payload.get("health")
     if isinstance(health, dict):
@@ -1114,15 +1143,3 @@ def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
         else:
             lines.append("Embeddings: disabled")
     return lines
-
-
-__all__ = [
-    "DaemonStatus",
-    "EmbeddingReadiness",
-    "RawFailureSample",
-    "build_daemon_status",
-    "browser_capture_status_payload",
-    "daemon_status_payload",
-    "format_daemon_status_lines",
-    "live_source_status_payload",
-]

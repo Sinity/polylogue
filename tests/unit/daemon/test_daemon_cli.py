@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import sqlite3
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
 from unittest.mock import patch
@@ -11,7 +13,9 @@ from click.testing import CliRunner
 
 from polylogue.core.json import JSONDocument, loads
 from polylogue.daemon.cli import main
+from polylogue.daemon.convergence import ConvergenceStage
 from polylogue.sources.live import WatchSource
+from polylogue.sources.live.cursor import CursorStore
 
 
 def test_polylogued_help_lists_watch_command() -> None:
@@ -65,6 +69,69 @@ def test_polylogued_status_plain_reports_daemon_components(tmp_path: Path) -> No
     assert "Live sources: 1/1 available" in result.output
     assert f"exists: {tmp_path} (available)" in result.output
     assert "Browser capture spool:" in result.output
+
+
+def test_drain_convergence_debt_retries_due_items_without_source_failure(tmp_path: Path) -> None:
+    from polylogue.daemon import cli as daemon_cli
+
+    db = tmp_path / "polylogue.db"
+    source = tmp_path / "session.jsonl"
+    source.write_text("{}\n", encoding="utf-8")
+    cursor = CursorStore(db)
+    cursor.record_convergence_debt(
+        stage="insights",
+        subject_type="source_path",
+        subject_id=str(source),
+        error="initial failure",
+    )
+    due_at = (datetime.now(UTC) - timedelta(minutes=1)).isoformat()
+    with sqlite3.connect(db) as conn:
+        conn.execute("UPDATE live_convergence_debt SET next_retry_at = ?", (due_at,))
+        conn.commit()
+
+    stage = ConvergenceStage(
+        name="insights",
+        description="retry test",
+        check=lambda candidate: candidate == source,
+        execute=lambda candidate: candidate == source,
+    )
+    with patch("polylogue.daemon.convergence_stages.make_default_convergence_stages", return_value=(stage,)):
+        retried = daemon_cli._drain_convergence_debt_once(db)
+
+    assert retried == 1
+    assert cursor.list_convergence_debt() == []
+    assert cursor.get_record(source) is None
+
+
+def test_drain_convergence_debt_retries_conversation_subjects_without_source_lookup(tmp_path: Path) -> None:
+    from polylogue.daemon import cli as daemon_cli
+
+    db = tmp_path / "polylogue.db"
+    cursor = CursorStore(db)
+    cursor.record_convergence_debt(
+        stage="insights",
+        subject_type="conversation_id",
+        subject_id="conv-1",
+        error="initial failure",
+    )
+    due_at = (datetime.now(UTC) - timedelta(minutes=1)).isoformat()
+    with sqlite3.connect(db) as conn:
+        conn.execute("UPDATE live_convergence_debt SET next_retry_at = ?", (due_at,))
+        conn.commit()
+
+    stage = ConvergenceStage(
+        name="insights",
+        description="retry test",
+        check=lambda _candidate: False,
+        execute=lambda _candidate: False,
+        check_conversations=lambda conversation_ids: {"conv-1"} if tuple(conversation_ids) == ("conv-1",) else set(),
+        execute_conversations=lambda conversation_ids: tuple(conversation_ids) == ("conv-1",),
+    )
+    with patch("polylogue.daemon.convergence_stages.make_default_convergence_stages", return_value=(stage,)):
+        retried = daemon_cli._drain_convergence_debt_once(db)
+
+    assert retried == 1
+    assert cursor.list_convergence_debt() == []
 
 
 def test_polylogued_browser_capture_help_lists_service_commands() -> None:

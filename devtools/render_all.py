@@ -53,7 +53,8 @@ def _stamp_path(name: str) -> Path:
 
 def _is_fresh(surface: GeneratedSurface) -> bool:
     """Return True if the surface's rendered output is current."""
-    if not surface.inputs:
+    inputs = getattr(surface, "inputs", ())
+    if not inputs:
         return False
     stamp = _stamp_path(surface.name)
     if not stamp.exists():
@@ -67,7 +68,7 @@ def _is_fresh(surface: GeneratedSurface) -> bool:
 
 def _stamp(surface: GeneratedSurface) -> None:
     """Record the current input hash after a successful render."""
-    if not surface.inputs:
+    if not getattr(surface, "inputs", ()):
         return
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     _stamp_path(surface.name).write_text(_surface_input_hash(surface) + "\n")

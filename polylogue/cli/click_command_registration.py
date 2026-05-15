@@ -49,6 +49,12 @@ class _LazyCommand(click.Command):
 class _LazyGroup(_LazyCommand, click.Group):
     """Lazy proxy for Click groups that need nested command dispatch."""
 
+    def invoke(self, ctx: click.Context) -> object:
+        return click.Group.invoke(self, ctx)
+
+    def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
+        return click.Group.parse_args(self, ctx, args)
+
     def get_command(self, ctx: click.Context, cmd_name: str) -> click.Command | None:
         resolved = self._resolve()
         if not isinstance(resolved, click.Group):
@@ -104,13 +110,20 @@ _COMMAND_NAMES: dict[str, str] = {
     "check": "doctor",
 }
 
+_GROUP_ATTRS: dict[str, str] = {
+    "diagnostics": "diagnostics_group",
+    "insights": "insights_command",
+    "maintenance": "maintenance_group",
+    "schema": "schema_command",
+}
+
 
 def _L(name: str) -> _LazyCommand:  # noqa: N802
     """Shorthand for constructing lazy commands in the ROOT_COMMANDS tuple."""
     module = f"polylogue.cli.commands.{name}"
-    attr = f"{name}_group" if name in ("diagnostics", "maintenance") else f"{name}_command"
+    attr = _GROUP_ATTRS.get(name, f"{name}_command")
     command_name = _COMMAND_NAMES.get(name, name.replace("_", "-"))
-    cls = _LazyGroup if attr.endswith("_group") else _LazyCommand
+    cls = _LazyGroup if name in _GROUP_ATTRS else _LazyCommand
     return cls(command_name, module, attr, short_help=_SHORT_HELP.get(name))
 
 
