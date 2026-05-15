@@ -20,6 +20,7 @@ import tempfile
 from pathlib import Path
 
 from devtools import repo_root as _get_root
+from devtools.benchmark_results import parse_pytest_benchmark_stats
 
 ROOT = _get_root()
 SLO_CATALOG = ROOT / "docs" / "plans" / "slo-catalog.yaml"
@@ -138,20 +139,15 @@ def _run_benchmarks(test_ids: set[str]) -> dict[str, dict[str, float]]:
 
         payload = json.loads(json_path.read_text())
 
-    benchmarks = payload.get("benchmarks", [])
     stats: dict[str, dict[str, float]] = {}
-    for entry in benchmarks:
-        fullname = entry.get("fullname") or entry.get("fullfunc") or entry.get("name", "")
-        entry_stats = entry.get("stats") or entry.get("Stats") or {}
-        if not fullname or not entry_stats:
-            continue
-        stats[str(fullname)] = {
-            "mean": float(entry_stats.get("mean", 0)),
-            "median": float(entry_stats.get("median", 0)),
-            "min": float(entry_stats.get("min", 0)),
-            "max": float(entry_stats.get("max", 0)),
-            "stddev": float(entry_stats.get("stddev", 0)) if "stddev" in entry_stats else 0.0,
-            "rounds": int(entry_stats.get("rounds", 0)),
+    for entry in parse_pytest_benchmark_stats(payload):
+        stats[entry.fullname] = {
+            "mean": entry.mean,
+            "median": entry.median,
+            "min": entry.minimum,
+            "max": entry.maximum,
+            "stddev": entry.stddev,
+            "rounds": entry.rounds,
         }
 
     return stats
