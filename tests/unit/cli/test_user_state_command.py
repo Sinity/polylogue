@@ -33,6 +33,9 @@ def _env() -> MagicMock:
     env.polylogue.list_recall_packs = AsyncMock(return_value=[])
     env.polylogue.create_recall_pack = AsyncMock(return_value=True)
     env.polylogue.delete_recall_pack = AsyncMock(return_value=False)
+    env.polylogue.list_workspaces = AsyncMock(return_value=[])
+    env.polylogue.save_workspace = AsyncMock(return_value=True)
+    env.polylogue.delete_workspace = AsyncMock(return_value=False)
     return env
 
 
@@ -181,4 +184,42 @@ def test_user_state_recall_pack_save_passes_typed_items(cli_runner: CliRunner) -
         "Handoff",
         '["conv-1"]',
         '{"items":[{"annotation_id":"ann-1","target_type":"annotation"}],"summary":"handoff"}',
+    )
+
+
+def test_user_state_workspace_save_passes_canonical_layout_and_targets(cli_runner: CliRunner) -> None:
+    env = _env()
+
+    result = cli_runner.invoke(
+        user_state_command,
+        [
+            "workspaces",
+            "save",
+            "workspace-1",
+            "Investigation",
+            "--mode",
+            "compare",
+            "--open-targets-json",
+            '[{"conversation_id":"conv-1","target_type":"conversation"}]',
+            "--layout-json",
+            '{"panes":[{"width":0.5},{"width":0.5}]}',
+            "--active-target-json",
+            '{"conversation_id":"conv-1","target_type":"conversation"}',
+            "--format",
+            "json",
+        ],
+        obj=env,
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    payload = _result(result.output)
+    assert payload["workspace_id"] == "workspace-1"
+    env.polylogue.save_workspace.assert_awaited_once_with(
+        "workspace-1",
+        "Investigation",
+        "compare",
+        '[{"conversation_id":"conv-1","target_type":"conversation"}]',
+        '{"panes":[{"width":0.5},{"width":0.5}]}',
+        '{"conversation_id":"conv-1","target_type":"conversation"}',
     )

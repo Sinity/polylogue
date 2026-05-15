@@ -413,12 +413,37 @@ RECALL_PACKS_DDL = """
         );
 """
 
+# ---------------------------------------------------------------------------
+# Reader workspaces — durable multi-target reader layouts
+# ---------------------------------------------------------------------------
+
+READER_WORKSPACES_DDL = """
+        CREATE TABLE IF NOT EXISTS reader_workspaces (
+            workspace_id       TEXT PRIMARY KEY,
+            name               TEXT NOT NULL,
+            mode               TEXT NOT NULL DEFAULT 'tabs'
+                CHECK (mode IN ('tabs', 'stack', 'compare', 'timeline')),
+            open_targets_json  TEXT NOT NULL DEFAULT '[]',
+            layout_json        TEXT NOT NULL DEFAULT '{}',
+            active_target_json TEXT NOT NULL DEFAULT '{}',
+            created_at         TEXT NOT NULL,
+            updated_at         TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_reader_workspaces_updated
+            ON reader_workspaces(updated_at DESC);
+
+        CREATE INDEX IF NOT EXISTS idx_reader_workspaces_mode
+            ON reader_workspaces(mode, updated_at DESC);
+"""
+
 
 __all__ = [
     "ARCHIVE_STORAGE_DDL",
     "BLOB_LEASE_DDL",
     "MESSAGE_FTS_DDL",
     "RAW_ARCHIVE_DDL",
+    "READER_WORKSPACES_DDL",
     "RECALL_PACKS_DDL",
     "SAVED_VIEWS_DDL",
     "TAGS_M2M_DDL",

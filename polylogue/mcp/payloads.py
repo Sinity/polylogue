@@ -447,6 +447,22 @@ class MCPRecallPackListPayload(SurfacePayloadModel):
     total: int
 
 
+class MCPReaderWorkspacePayload(SurfacePayloadModel):
+    workspace_id: str
+    name: str
+    mode: str
+    open_targets: tuple[dict[str, object], ...]
+    layout: dict[str, object]
+    active_target: dict[str, object]
+    created_at: str
+    updated_at: str
+
+
+class MCPReaderWorkspaceListPayload(SurfacePayloadModel):
+    items: tuple[MCPReaderWorkspacePayload, ...]
+    total: int
+
+
 class MCPStatsByPayload(MCPRootPayload[dict[str, int]]):
     root: dict[str, int]
 

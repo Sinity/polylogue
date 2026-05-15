@@ -161,3 +161,51 @@ async def test_recall_pack_items_resolve_and_degrade_explicitly(workspace_env: d
     assert item_statuses[("annotation", "ann-msg")] == "resolved"
     assert item_statuses[("annotation", "missing-ann")] == "missing"
     assert item_statuses[("topology_edge", "edge-1")] == "unsupported"
+
+
+@pytest.mark.asyncio
+async def test_reader_workspaces_preserve_resolved_and_degraded_targets(
+    workspace_env: dict[str, Path],
+) -> None:
+    import json
+
+    db_path = db_setup(workspace_env)
+    ConversationBuilder(db_path, "conv-user-state").provider("claude-code").add_message(
+        message_id="msg-user-state",
+        text="Important message",
+    ).save()
+
+    async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
+        before_hash = _conversation_content_hash(db_path, "conv-user-state")
+        created = await poly.save_workspace(
+            "workspace-user-state",
+            "Investigation",
+            "compare",
+            (
+                "["
+                '{"target_type":"conversation","conversation_id":"conv-user-state"},'
+                '{"target_type":"message","conversation_id":"conv-user-state","message_id":"msg-user-state"},'
+                '{"target_type":"message","conversation_id":"conv-user-state","message_id":"missing-msg"},'
+                '{"target_type":"topology_edge","target_id":"edge-1"}'
+                "]"
+            ),
+            '{"panes":[{"width":0.5},{"width":0.5}]}',
+            '{"target_type":"message","conversation_id":"conv-user-state","message_id":"msg-user-state"}',
+        )
+        saved = await poly.get_workspace("workspace-user-state")
+        listed = await poly.list_workspaces()
+        after_hash = _conversation_content_hash(db_path, "conv-user-state")
+
+    assert created is True
+    assert saved is not None
+    assert listed[0]["workspace_id"] == "workspace-user-state"
+    assert after_hash == before_hash
+    assert json.loads(saved["layout_json"]) == {"panes": [{"width": 0.5}, {"width": 0.5}]}
+    targets = json.loads(saved["open_targets_json"])
+    statuses = {(item["target_type"], item["target_id"]): item["status"] for item in targets}
+    assert statuses[("conversation", "conv-user-state")] == "resolved"
+    assert statuses[("message", "msg-user-state")] == "resolved"
+    assert statuses[("message", "missing-msg")] == "missing"
+    assert statuses[("topology_edge", "edge-1")] == "unsupported"
+    active = json.loads(saved["active_target_json"])
+    assert active["identity_key"] == "message:conv-user-state:msg-user-state"

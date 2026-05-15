@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlparse
 
 from polylogue.core.loopback import is_loopback_host, is_loopback_origin
-from polylogue.daemon import user_state_http
+from polylogue.daemon import user_state_http, workspace_routes
 from polylogue.daemon.events import emit_daemon_event
 from polylogue.daemon.status import daemon_status_payload
 from polylogue.errors import PolylogueError
@@ -322,7 +322,11 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
     def _dispatch_get(self, path: list[str], params: dict[str, list[str]]) -> None:
         """Dispatch GET requests via route table."""
         # Web shell is the only unauthenticated endpoint (localhost only).
-        if path == [""] or (len(path) == 2 and path[0] == "c" and bool(path[1])):
+        if (
+            path == [""]
+            or (len(path) == 2 and path[0] == "c" and bool(path[1]))
+            or (len(path) == 2 and path[0] == "w" and path[1] in workspace_routes.WORKSPACE_SHELL_MODES)
+        ):
             self._serve_web_shell()
             return
 
@@ -339,7 +343,9 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             self._handle_list_conversations(params)
         elif path == ["api", "facets"]:
             self._handle_facets(params)
-        elif path[:2] == ["api", "user"] and user_state_http.dispatch_get(self, path[2:], params):
+        elif workspace_routes.dispatch_get(self, path, params) or (
+            path[:2] == ["api", "user"] and user_state_http.dispatch_get(self, path[2:], params)
+        ):
             return
         elif path == ["api", "sources"]:
             self._handle_sources()

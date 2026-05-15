@@ -529,6 +529,96 @@ async def delete_recall_pack(conn: aiosqlite.Connection, pack_id: str) -> bool:
     return cursor.rowcount > 0
 
 
+# ---------------------------------------------------------------------------
+# Reader workspaces
+# ---------------------------------------------------------------------------
+
+
+async def save_workspace(
+    conn: aiosqlite.Connection,
+    *,
+    workspace_id: str,
+    name: str,
+    mode: str,
+    open_targets_json: str,
+    layout_json: str,
+    active_target_json: str,
+    now: str,
+) -> bool:
+    """Insert or update a reader workspace. Returns True if inserted."""
+    cursor = await conn.execute("SELECT 1 FROM reader_workspaces WHERE workspace_id = ?", (workspace_id,))
+    exists = await cursor.fetchone() is not None
+    await conn.execute(
+        """
+        INSERT INTO reader_workspaces (
+            workspace_id,
+            name,
+            mode,
+            open_targets_json,
+            layout_json,
+            active_target_json,
+            created_at,
+            updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(workspace_id) DO UPDATE SET
+            name = excluded.name,
+            mode = excluded.mode,
+            open_targets_json = excluded.open_targets_json,
+            layout_json = excluded.layout_json,
+            active_target_json = excluded.active_target_json,
+            updated_at = excluded.updated_at
+        """,
+        (workspace_id, name, mode, open_targets_json, layout_json, active_target_json, now, now),
+    )
+    await conn.commit()
+    return not exists
+
+
+async def get_workspace(conn: aiosqlite.Connection, workspace_id: str) -> dict[str, str] | None:
+    cursor = await conn.execute(
+        """
+        SELECT workspace_id, name, mode, open_targets_json, layout_json, active_target_json, created_at, updated_at
+        FROM reader_workspaces
+        WHERE workspace_id = ?
+        """,
+        (workspace_id,),
+    )
+    row = await cursor.fetchone()
+    return _workspace_row(row) if row is not None else None
+
+
+async def list_workspaces(conn: aiosqlite.Connection) -> list[dict[str, str]]:
+    cursor = await conn.execute(
+        """
+        SELECT workspace_id, name, mode, open_targets_json, layout_json, active_target_json, created_at, updated_at
+        FROM reader_workspaces
+        ORDER BY updated_at DESC, workspace_id ASC
+        """
+    )
+    rows = await cursor.fetchall()
+    return [_workspace_row(row) for row in rows]
+
+
+async def delete_workspace(conn: aiosqlite.Connection, workspace_id: str) -> bool:
+    cursor = await conn.execute("DELETE FROM reader_workspaces WHERE workspace_id = ?", (workspace_id,))
+    await conn.commit()
+    return cursor.rowcount > 0
+
+
+def _workspace_row(row: aiosqlite.Row) -> dict[str, str]:
+    return {
+        "workspace_id": row["workspace_id"],
+        "name": row["name"],
+        "mode": row["mode"],
+        "open_targets_json": row["open_targets_json"],
+        "layout_json": row["layout_json"],
+        "active_target_json": row["active_target_json"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
 __all__ = [
     "add_mark",
     "conversation_id_query",
@@ -536,23 +626,27 @@ __all__ = [
     "delete_annotation",
     "delete_recall_pack",
     "delete_view",
+    "delete_workspace",
     "get_annotation",
     "get_last_sync_timestamp",
     "get_metadata",
     "get_recall_pack",
     "get_view",
     "get_view_by_name",
+    "get_workspace",
     "iter_conversation_ids",
     "list_marks",
     "list_annotations",
     "list_recall_packs",
     "list_tags",
     "list_views",
+    "list_workspaces",
     "remove_mark",
     "save_annotation",
     "resolve_id",
     "save_recall_pack",
     "save_view",
+    "save_workspace",
     "set_metadata",
     "update_metadata_raw",
 ]

@@ -9,6 +9,8 @@ from typing import TYPE_CHECKING, Any
 
 from polylogue.mcp.payloads import (
     MCPMetadataPayload,
+    MCPReaderWorkspaceListPayload,
+    MCPReaderWorkspacePayload,
     MCPRecallPackListPayload,
     MCPRecallPackPayload,
     MCPSavedViewListPayload,
@@ -80,6 +82,37 @@ def _recall_pack_payload(row: dict[str, str]) -> MCPRecallPackPayload:
         conversation_ids=tuple(str(item) for item in conversation_ids),
         payload=payload,
         created_at=row["created_at"],
+    )
+
+
+def _workspace_payload(row: dict[str, str]) -> MCPReaderWorkspacePayload:
+    try:
+        open_targets = json.loads(row["open_targets_json"])
+    except (json.JSONDecodeError, TypeError):
+        open_targets = []
+    if not isinstance(open_targets, list):
+        open_targets = []
+    try:
+        layout = json.loads(row["layout_json"])
+    except (json.JSONDecodeError, TypeError):
+        layout = {}
+    if not isinstance(layout, dict):
+        layout = {}
+    try:
+        active_target = json.loads(row["active_target_json"])
+    except (json.JSONDecodeError, TypeError):
+        active_target = {}
+    if not isinstance(active_target, dict):
+        active_target = {}
+    return MCPReaderWorkspacePayload(
+        workspace_id=row["workspace_id"],
+        name=row["name"],
+        mode=row["mode"],
+        open_targets=tuple(item for item in open_targets if isinstance(item, dict)),
+        layout=layout,
+        active_target=active_target,
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
     )
 
 
@@ -490,6 +523,86 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             )
 
         return await hooks.async_safe_call("delete_recall_pack", run)
+
+    @mcp.tool()
+    async def list_workspaces() -> str:
+        async def run() -> str:
+            poly = hooks.get_polylogue()
+            rows = await poly.list_workspaces()
+            items = tuple(_workspace_payload(row) for row in rows)
+            return hooks.json_payload(MCPReaderWorkspaceListPayload(items=items, total=len(items)))
+
+        return await hooks.async_safe_call("list_workspaces", run)
+
+    @mcp.tool()
+    async def save_workspace(
+        workspace_id: str,
+        name: str,
+        mode: str = "tabs",
+        open_targets_json: str = "[]",
+        layout_json: str = "{}",
+        active_target_json: str = "{}",
+    ) -> str:
+        async def run() -> str:
+            if not workspace_id.strip():
+                return hooks.error_json("workspace_id must not be empty")
+            if not name.strip():
+                return hooks.error_json("name must not be empty")
+            if mode not in {"tabs", "stack", "compare", "timeline"}:
+                return hooks.error_json("mode must be one of: tabs, stack, compare, timeline")
+            try:
+                open_targets = json.loads(open_targets_json)
+            except json.JSONDecodeError:
+                return hooks.error_json("open_targets_json must be valid JSON")
+            if not isinstance(open_targets, list) or not all(isinstance(item, dict) for item in open_targets):
+                return hooks.error_json("open_targets_json must encode a list of objects")
+            try:
+                layout = json.loads(layout_json)
+            except json.JSONDecodeError:
+                return hooks.error_json("layout_json must be valid JSON")
+            if not isinstance(layout, dict):
+                return hooks.error_json("layout_json must encode an object")
+            try:
+                active_target = json.loads(active_target_json)
+            except json.JSONDecodeError:
+                return hooks.error_json("active_target_json must be valid JSON")
+            if not isinstance(active_target, dict):
+                return hooks.error_json("active_target_json must encode an object")
+            poly = hooks.get_polylogue()
+            created = await poly.save_workspace(
+                workspace_id.strip(),
+                name.strip(),
+                mode,
+                json.dumps(open_targets, sort_keys=True, separators=(",", ":")),
+                json.dumps(layout, sort_keys=True, separators=(",", ":")),
+                json.dumps(active_target, sort_keys=True, separators=(",", ":")),
+            )
+            return hooks.json_payload(
+                MutationResultPayload(
+                    status="ok",
+                    key=workspace_id.strip(),
+                    outcome="added" if created else "updated",
+                ),
+                exclude_none=True,
+            )
+
+        return await hooks.async_safe_call("save_workspace", run)
+
+    @mcp.tool()
+    async def delete_workspace(workspace_id: str) -> str:
+        async def run() -> str:
+            poly = hooks.get_polylogue()
+            deleted = await poly.delete_workspace(workspace_id)
+            return hooks.json_payload(
+                MutationResultPayload(
+                    status="deleted" if deleted else "not_found",
+                    detail=None if deleted else "workspace_not_found",
+                    key=workspace_id,
+                ),
+                exclude_none=True,
+            )
+
+        return await hooks.async_safe_call("delete_workspace", run)
 
     @mcp.tool()
     async def get_metadata(conversation_id: str) -> str:

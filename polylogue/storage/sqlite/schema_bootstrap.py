@@ -95,6 +95,7 @@ class SchemaBootstrapDecision:
         "upgrade_v10_to_v11",
         "upgrade_v11_to_v12",
         "upgrade_v12_to_v13",
+        "upgrade_v13_to_v14",
         "version_mismatch",
     ]
     extension_plan: SchemaExtensionPlan | None = None
@@ -1063,6 +1064,17 @@ def build_v12_to_v13_upgrade_plan(snapshot: SchemaSnapshot) -> SchemaExtensionPl
     return SchemaExtensionPlan(statements=tuple(statements), scripts=())
 
 
+def build_v13_to_v14_upgrade_plan(snapshot: SchemaSnapshot) -> SchemaExtensionPlan:
+    """Add durable reader workspaces."""
+
+    from polylogue.storage.sqlite.schema_ddl_archive import READER_WORKSPACES_DDL
+
+    statements: tuple[str, ...] = ()
+    if not snapshot.has_table("reader_workspaces"):
+        statements = _split_ddl_into_statements(READER_WORKSPACES_DDL)
+    return SchemaExtensionPlan(statements=statements, scripts=())
+
+
 _DETECTION_WARNINGS_COLUMN_DDL = "ALTER TABLE raw_conversations ADD COLUMN detection_warnings TEXT"
 
 
@@ -1091,13 +1103,15 @@ def _upgrade_tail_statements(snapshot: SchemaSnapshot, *, from_version: int) -> 
         statements = (*statements, *build_v11_to_v12_upgrade_plan(snapshot).statements)
     if from_version < 13 <= SCHEMA_VERSION:
         statements = (*statements, *build_v12_to_v13_upgrade_plan(snapshot).statements)
+    if from_version < 14 <= SCHEMA_VERSION:
+        statements = (*statements, *build_v13_to_v14_upgrade_plan(snapshot).statements)
     return statements
 
 
 def _has_version_upgrade_path(snapshot: SchemaSnapshot) -> bool:
     """Return True when a version-specific upgrade path exists for this snapshot."""
     v = snapshot.current_version
-    return (v == 2 and snapshot.has_table("messages")) or v in (3, 4, 5, 6, 7, 8, 9, 10, 11, 12)
+    return (v == 2 and snapshot.has_table("messages")) or v in (3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13)
 
 
 def decide_schema_bootstrap(snapshot: SchemaSnapshot) -> SchemaBootstrapDecision:
@@ -1219,9 +1233,20 @@ def decide_schema_bootstrap(snapshot: SchemaSnapshot) -> SchemaBootstrapDecision
         )
 
     if snapshot.current_version == 12 and SCHEMA_VERSION >= 13:
+        plan = build_v12_to_v13_upgrade_plan(snapshot)
+        extra_stmts = _upgrade_tail_statements(snapshot, from_version=13)
+        if extra_stmts:
+            plan = SchemaExtensionPlan(statements=(*plan.statements, *extra_stmts), scripts=())
         return SchemaBootstrapDecision(
             action="upgrade_v12_to_v13",
-            extension_plan=build_v12_to_v13_upgrade_plan(snapshot),
+            extension_plan=plan,
+            current_version=snapshot.current_version,
+        )
+
+    if snapshot.current_version == 13 and SCHEMA_VERSION >= 14:
+        return SchemaBootstrapDecision(
+            action="upgrade_v13_to_v14",
+            extension_plan=build_v13_to_v14_upgrade_plan(snapshot),
             current_version=snapshot.current_version,
         )
 
@@ -1377,6 +1402,7 @@ __all__ = [
     "build_v10_to_v11_upgrade_plan",
     "build_v11_to_v12_upgrade_plan",
     "build_v12_to_v13_upgrade_plan",
+    "build_v13_to_v14_upgrade_plan",
     "capture_schema_snapshot",
     "capture_schema_snapshot_async",
     "decide_schema_bootstrap",

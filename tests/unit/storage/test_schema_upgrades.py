@@ -8,6 +8,7 @@ from polylogue.storage.sqlite.schema_bootstrap import (
     SchemaSnapshot,
     build_v8_to_v9_upgrade_plan,
     build_v12_to_v13_upgrade_plan,
+    build_v13_to_v14_upgrade_plan,
 )
 
 
@@ -137,3 +138,47 @@ def test_v12_to_v13_upgrade_plan_migrates_legacy_mark_table() -> None:
     assert plan.scripts == ()
     assert any("ALTER TABLE user_marks RENAME TO user_marks_legacy" in statement for statement in plan.statements)
     assert any("CREATE TABLE IF NOT EXISTS user_annotations" in statement for statement in plan.statements)
+
+
+def test_ensure_schema_upgrades_v13_with_reader_workspaces(tmp_path: Path) -> None:
+    db_path = tmp_path / "v13-reader-workspaces.db"
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        """
+        CREATE TABLE conversations (
+            conversation_id TEXT PRIMARY KEY,
+            provider_name TEXT NOT NULL,
+            provider_conversation_id TEXT,
+            title TEXT,
+            content_hash TEXT NOT NULL,
+            version INTEGER NOT NULL DEFAULT 1
+        );
+        PRAGMA user_version = 13;
+        """
+    )
+    conn.commit()
+
+    _ensure_schema(conn)
+
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(reader_workspaces)").fetchall()}
+    assert {
+        "workspace_id",
+        "name",
+        "mode",
+        "open_targets_json",
+        "layout_json",
+        "active_target_json",
+        "created_at",
+        "updated_at",
+    } <= columns
+    conn.close()
+
+
+def test_v13_to_v14_upgrade_plan_adds_reader_workspaces() -> None:
+    snapshot = SchemaSnapshot(current_version=13, table_columns={"conversations": frozenset()}, index_sql={})
+
+    plan = build_v13_to_v14_upgrade_plan(snapshot)
+
+    assert plan.scripts == ()
+    assert any("CREATE TABLE IF NOT EXISTS reader_workspaces" in statement for statement in plan.statements)

@@ -58,6 +58,31 @@ def _recall_pack_payload(row: dict[str, str]) -> dict[str, object]:
     }
 
 
+def _workspace_payload(row: dict[str, str]) -> dict[str, object]:
+    try:
+        open_targets = json.loads(row["open_targets_json"])
+    except json.JSONDecodeError:
+        open_targets = []
+    try:
+        layout = json.loads(row["layout_json"])
+    except json.JSONDecodeError:
+        layout = {}
+    try:
+        active_target = json.loads(row["active_target_json"])
+    except json.JSONDecodeError:
+        active_target = {}
+    return {
+        "workspace_id": row["workspace_id"],
+        "name": row["name"],
+        "mode": row["mode"],
+        "open_targets": open_targets if isinstance(open_targets, list) else [],
+        "layout": layout if isinstance(layout, dict) else {},
+        "active_target": active_target if isinstance(active_target, dict) else {},
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
 def _default_saved_view_id(name: str, query_json: str) -> str:
     digest = hashlib.sha256(f"{name}\0{query_json}".encode()).hexdigest()[:16]
     return f"view-{digest}"
@@ -90,6 +115,12 @@ def dispatch_get(handler: Any, path: list[str], params: dict[str, list[str]]) ->
     if len(path) == 2 and path[0] == "recall-packs" and path[1]:
         handler._handle_user_state(handle_get_recall_pack, path[1])
         return True
+    if path == ["workspaces"]:
+        handler._handle_user_state(handle_list_workspaces)
+        return True
+    if len(path) == 2 and path[0] == "workspaces" and path[1]:
+        handler._handle_user_state(handle_get_workspace, path[1])
+        return True
     return False
 
 
@@ -99,6 +130,7 @@ def dispatch_post(handler: Any, path: list[str]) -> bool:
         ("annotations",): handle_save_annotation,
         ("saved-views",): handle_save_view,
         ("recall-packs",): handle_save_recall_pack,
+        ("workspaces",): handle_save_workspace,
     }
     route = routes.get(tuple(path))
     if route is None:
@@ -119,6 +151,9 @@ def dispatch_delete(handler: Any, path: list[str], params: dict[str, list[str]])
         return True
     if len(path) == 2 and path[0] == "recall-packs" and path[1]:
         handler._handle_user_state(handle_delete_recall_pack, path[1])
+        return True
+    if len(path) == 2 and path[0] == "workspaces" and path[1]:
+        handler._handle_user_state(handle_delete_workspace, path[1])
         return True
     return False
 
@@ -391,5 +426,75 @@ def handle_delete_recall_pack(handler: Any, pack_id: str) -> None:
     async def _delete(poly: Any) -> dict[str, object]:
         deleted = await poly.delete_recall_pack(pack_id)
         return {"pack_id": pack_id, "deleted": deleted}
+
+    handler._send_json(HTTPStatus.OK, handler._sync_run(_delete))
+
+
+def handle_list_workspaces(handler: Any) -> None:
+    async def _list(poly: Any) -> list[dict[str, str]]:
+        return cast(list[dict[str, str]], await poly.list_workspaces())
+
+    rows = cast(list[dict[str, str]], handler._sync_run(_list))
+    items = [_workspace_payload(row) for row in rows]
+    handler._send_json(HTTPStatus.OK, {"items": items, "total": len(items)})
+
+
+def handle_get_workspace(handler: Any, workspace_id: str) -> None:
+    async def _get(poly: Any) -> dict[str, str] | None:
+        return cast(dict[str, str] | None, await poly.get_workspace(workspace_id))
+
+    row = cast(dict[str, str] | None, handler._sync_run(_get))
+    if row is None:
+        handler._send_error(HTTPStatus.NOT_FOUND, "not_found")
+        return
+    handler._send_json(HTTPStatus.OK, _workspace_payload(row))
+
+
+def handle_save_workspace(handler: Any) -> None:
+    body = _read_json_body(handler)
+    if body is None:
+        return
+    workspace_id = str(body.get("workspace_id") or "").strip()
+    name = str(body.get("name") or "").strip()
+    mode = str(body.get("mode") or "tabs").strip()
+    open_targets = body.get("open_targets", [])
+    layout = body.get("layout", {})
+    active_target = body.get("active_target", {})
+    if (
+        not workspace_id
+        or not name
+        or mode not in {"tabs", "stack", "compare", "timeline"}
+        or not isinstance(open_targets, list)
+        or not all(isinstance(item, dict) for item in open_targets)
+        or not isinstance(layout, dict)
+        or not isinstance(active_target, dict)
+    ):
+        handler._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
+        return
+
+    async def _save(poly: Any) -> dict[str, object]:
+        created = await poly.save_workspace(
+            workspace_id,
+            name,
+            mode,
+            json.dumps(open_targets, sort_keys=True, separators=(",", ":")),
+            json.dumps(layout, sort_keys=True, separators=(",", ":")),
+            json.dumps(active_target, sort_keys=True, separators=(",", ":")),
+        )
+        saved = await poly.get_workspace(workspace_id)
+        if saved is None:
+            return {"workspace_id": workspace_id, "created": created}
+        result = _workspace_payload(saved)
+        result["created"] = created
+        return result
+
+    result = cast(dict[str, object], handler._sync_run(_save))
+    handler._send_json(HTTPStatus.CREATED if result["created"] else HTTPStatus.OK, result)
+
+
+def handle_delete_workspace(handler: Any, workspace_id: str) -> None:
+    async def _delete(poly: Any) -> dict[str, object]:
+        deleted = await poly.delete_workspace(workspace_id)
+        return {"workspace_id": workspace_id, "deleted": deleted}
 
     handler._send_json(HTTPStatus.OK, handler._sync_run(_delete))
