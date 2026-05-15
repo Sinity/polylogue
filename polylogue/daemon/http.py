@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlparse
 
 from polylogue.core.loopback import is_loopback_host, is_loopback_origin
-from polylogue.daemon import user_state_http
+from polylogue.daemon import user_state_http, workspace_routes
 from polylogue.daemon.events import emit_daemon_event
 from polylogue.daemon.status import daemon_status_payload
 from polylogue.errors import PolylogueError
@@ -60,21 +60,6 @@ def _message_type_value(message: object) -> str:
     if hasattr(message_type, "value"):
         return str(message_type.value)
     return str(message_type)
-
-
-def _target_ref_from_conversation_payload(payload: Mapping[str, object]) -> dict[str, object]:
-    target_ref = payload.get("target_ref")
-    if isinstance(target_ref, dict):
-        return dict(target_ref)
-    conv_id = str(payload.get("id") or "")
-    return _dump_target_ref(TargetRefPayload.conversation(conv_id))
-
-
-def _parse_id_list(params: dict[str, list[str]]) -> list[str]:
-    ids: list[str] = []
-    for raw in params.get("ids", []):
-        ids.extend(part.strip() for part in raw.split(",") if part.strip())
-    return ids
 
 
 def daemon_safe_handler(fn: Callable[..., Any]) -> Callable[..., Any]:
@@ -340,7 +325,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         if (
             path == [""]
             or (len(path) == 2 and path[0] == "c" and bool(path[1]))
-            or (len(path) == 2 and path[0] == "w" and path[1] in {"tabs", "stack", "compare", "timeline"})
+            or (len(path) == 2 and path[0] == "w" and path[1] in workspace_routes.WORKSPACE_SHELL_MODES)
         ):
             self._serve_web_shell()
             return
@@ -358,11 +343,9 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             self._handle_list_conversations(params)
         elif path == ["api", "facets"]:
             self._handle_facets(params)
-        elif path == ["api", "stack"]:
-            self._handle_stack(params)
-        elif path == ["api", "compare"]:
-            self._handle_compare(params)
-        elif path[:2] == ["api", "user"] and user_state_http.dispatch_get(self, path[2:], params):
+        elif workspace_routes.dispatch_get(self, path, params) or (
+            path[:2] == ["api", "user"] and user_state_http.dispatch_get(self, path[2:], params)
+        ):
             return
         elif path == ["api", "sources"]:
             self._handle_sources()
@@ -745,118 +728,6 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             "flags": flags.model_dump(mode="json") if flags else None,
             "summary": conv.summary,
             "total": len(conv.messages),
-        }
-
-    # ------------------------------------------------------------------
-    # Handlers: reader workspaces
-    # ------------------------------------------------------------------
-
-    @daemon_safe_handler
-    def _handle_stack(self, params: dict[str, list[str]]) -> None:
-        ids = _parse_id_list(params)
-        focus = self._get_param(params, "focus")
-        if not ids:
-            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
-            return
-
-        async def _get(poly: Polylogue) -> object:
-            return await self._do_stack(poly, ids, focus)
-
-        self._send_json(HTTPStatus.OK, self._sync_run(_get))
-
-    async def _do_stack(self, poly: Polylogue, ids: list[str], focus: str | None) -> object:
-        items: list[dict[str, object]] = []
-        for conv_id in ids:
-            payload = await self._do_get_conversation(poly, conv_id)
-            if not isinstance(payload, dict):
-                items.append(
-                    {
-                        "target_type": "conversation",
-                        "target_id": conv_id,
-                        "conversation_id": conv_id,
-                        "status": "missing",
-                        "disabled_reason": "conversation_not_found",
-                    }
-                )
-                continue
-            items.append(
-                {
-                    "target_type": "conversation",
-                    "target_id": str(payload["id"]),
-                    "conversation_id": str(payload["id"]),
-                    "status": "resolved",
-                    "identity_key": f"conversation:{payload['id']}",
-                    "target_ref": _target_ref_from_conversation_payload(payload),
-                    "conversation": payload,
-                }
-            )
-        return {
-            "mode": "stack",
-            "ids": ids,
-            "focus": focus,
-            "items": items,
-            "total": len(items),
-            "resolved_count": sum(1 for item in items if item["status"] == "resolved"),
-            "degraded_count": sum(1 for item in items if item["status"] != "resolved"),
-        }
-
-    @daemon_safe_handler
-    def _handle_compare(self, params: dict[str, list[str]]) -> None:
-        left = self._get_param(params, "left")
-        right = self._get_param(params, "right")
-        align = self._get_param(params, "align", "prompt")
-        if not left or not right or align not in {"prompt", "time", "fork_point", "search"}:
-            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
-            return
-
-        async def _get(poly: Polylogue) -> object:
-            return await self._do_compare(poly, left, right, align or "prompt")
-
-        self._send_json(HTTPStatus.OK, self._sync_run(_get))
-
-    async def _do_compare(self, poly: Polylogue, left: str, right: str, align: str) -> object:
-        left_payload = await self._do_get_conversation(poly, left)
-        right_payload = await self._do_get_conversation(poly, right)
-        left_messages = left_payload.get("messages", []) if isinstance(left_payload, dict) else []
-        right_messages = right_payload.get("messages", []) if isinstance(right_payload, dict) else []
-        if not isinstance(left_messages, list):
-            left_messages = []
-        if not isinstance(right_messages, list):
-            right_messages = []
-        max_len = max(len(left_messages), len(right_messages))
-        pairs = [
-            {
-                "index": idx,
-                "left": left_messages[idx] if idx < len(left_messages) else None,
-                "right": right_messages[idx] if idx < len(right_messages) else None,
-                "status": "paired" if idx < len(left_messages) and idx < len(right_messages) else "unpaired",
-            }
-            for idx in range(max_len)
-        ]
-        return {
-            "mode": "compare",
-            "align": align,
-            "left": left_payload
-            if isinstance(left_payload, dict)
-            else {
-                "target_type": "conversation",
-                "target_id": left,
-                "conversation_id": left,
-                "status": "missing",
-                "disabled_reason": "conversation_not_found",
-            },
-            "right": right_payload
-            if isinstance(right_payload, dict)
-            else {
-                "target_type": "conversation",
-                "target_id": right,
-                "conversation_id": right,
-                "status": "missing",
-                "disabled_reason": "conversation_not_found",
-            },
-            "pairs": pairs,
-            "total": len(pairs),
-            "degraded_count": int(not isinstance(left_payload, dict)) + int(not isinstance(right_payload, dict)),
         }
 
     # ------------------------------------------------------------------
