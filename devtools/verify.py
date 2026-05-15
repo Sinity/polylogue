@@ -11,7 +11,7 @@ Tiers:
              Full non-integration pytest run that seeds/updates .testmondata.
   --all/--full
              Explicit full non-integration pytest diagnostic.
-  --lab      Full baseline + verification-lab scenario checks.
+  --lab      Default testmon baseline plus verification-lab scenario and SLO checks.
 
 Output formats:
   --json     Machine-readable JSON to stdout (human progress to stderr).
@@ -217,6 +217,10 @@ def _run(label: str, cmd: list[str], *, cwd: str | None = None) -> tuple[int, fl
         if result.stderr.strip():
             sys.stderr.write(result.stderr + "\n")
     return result.returncode, elapsed, metadata
+
+
+def _stop_after_failed_step(label: str) -> bool:
+    return label.startswith("pytest") or label in {"lab scenario", "verify-slos"}
 
 
 # ── step builder ────────────────────────────────────────────────────
@@ -444,7 +448,12 @@ def main(argv: list[str] | None = None) -> int:
         "--skip-slow", action="store_true", help="Exclude @pytest.mark.slow tests from the pytest step."
     )
     parser.add_argument(
-        "--lab", action="store_true", help="Delegate additional domain proof checks through verification-lab."
+        "--lab",
+        action="store_true",
+        help=(
+            "Run the default pytest-testmon baseline plus verification-lab "
+            "scenario and verify-slos checks; does not imply --all."
+        ),
     )
     parser.add_argument("--history", action="store_true", help="Print last 10 verify runs and exit.")
     parser.add_argument("--json", action="store_true", default=None, help="Write structured JSON to stdout.")
@@ -518,7 +527,8 @@ def main(argv: list[str] | None = None) -> int:
         step_results.append(step_result)
         if rc != 0:
             exit_code = rc
-            break
+            if _stop_after_failed_step(label):
+                break
 
     total_duration = round(time.monotonic() - t0, 2)
 

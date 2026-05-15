@@ -44,7 +44,7 @@ def test_record_contract_evidence_writes_bounded_json(
     payload = _load_json(path)
     assert payload["contract"] == "cli.json_envelope"
     assert payload["surface"] == "cli"
-    assert payload["command"] == ["polylogue", "tags", "--format", "json"]
+    assert payload["command"] == "polylogue tags --format json"
     assert payload["exit_code"] == 0
     assert payload["stdout_sample"] == '{"status":"ok","result":{"tags":[]}}'
     assert payload["facts"] == {"parsed_json_status": "ok"}
@@ -78,6 +78,53 @@ def test_record_contract_evidence_redacts_paths_and_secrets(
     assert "token=<redacted>" in combined
     assert "secret:<redacted>" in combined
     assert "api_key=<redacted>" in combined
+
+
+@pytest.mark.contract
+def test_record_contract_evidence_redacts_command_flag_values(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    record_contract_evidence: ContractEvidenceRecorder,
+) -> None:
+    monkeypatch.setenv("POLYLOGUE_CONTRACT_EVIDENCE_DIR", str(tmp_path))
+
+    path = record_contract_evidence.record(
+        "cli.secret_flag",
+        surface="cli",
+        command=("polylogue", "sync", "--api-key", "abc123", "--token=def456"),
+    )
+
+    payload = _load_json(path)
+    command = _json_str(payload, "command")
+    assert "abc123" not in command
+    assert "def456" not in command
+    assert "--api-key <redacted>" in command
+    assert "--token <redacted>" in command
+
+
+@pytest.mark.contract
+def test_record_contract_evidence_bounds_large_json_payloads(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    record_contract_evidence: ContractEvidenceRecorder,
+) -> None:
+    monkeypatch.setenv("POLYLOGUE_CONTRACT_EVIDENCE_DIR", str(tmp_path))
+
+    path = record_contract_evidence.record(
+        "api.large_result",
+        surface="api",
+        result={"blob": "x" * 20_000},
+    )
+
+    payload = _load_json(path)
+    result = payload["result"]
+    assert isinstance(result, dict)
+    assert result["truncated"] is True
+    original_bytes = result["original_bytes"]
+    assert isinstance(original_bytes, int)
+    assert original_bytes > 8192
+    assert isinstance(result["sample_json"], str)
+    assert len(result["sample_json"]) < 3000
 
 
 @pytest.mark.contract

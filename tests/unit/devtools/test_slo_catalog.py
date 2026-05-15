@@ -243,3 +243,59 @@ surfaces:
     assert payload["catalog_errors"] == [
         "query: invalid gate 'aspirational'; expected one of ['informational', 'required']"
     ]
+
+
+def test_required_surface_with_malformed_budget_is_catalog_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    catalog = _write_slo_catalog(
+        tmp_path,
+        """
+surfaces:
+  reader:
+    description: "Reader endpoint"
+    benchmark_test: "tests/benchmarks/test_reader_api.py::test_reader"
+    p50_ms: "100"
+    gate: "required"
+""",
+    )
+    monkeypatch.setattr(verify_slos, "_run_benchmarks", lambda _ids: {})
+
+    buffer = io.StringIO()
+    with redirect_stdout(buffer):
+        rc = verify_slos.main(["--yaml", str(catalog), "--json"])
+
+    payload = json.loads(buffer.getvalue())
+    assert rc != 0
+    assert payload["blocking"] is True
+    assert payload["catalog_errors"] == ["reader: required surface must declare integer p50_ms and p95_ms"]
+
+
+def test_required_surface_with_malformed_benchmark_test_is_catalog_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    catalog = _write_slo_catalog(
+        tmp_path,
+        """
+surfaces:
+  reader:
+    description: "Reader endpoint"
+    benchmark_test:
+      - "tests/benchmarks/test_reader_api.py::test_reader"
+    p50_ms: 100
+    p95_ms: 200
+    gate: "required"
+""",
+    )
+    monkeypatch.setattr(verify_slos, "_run_benchmarks", lambda _ids: {})
+
+    buffer = io.StringIO()
+    with redirect_stdout(buffer):
+        rc = verify_slos.main(["--yaml", str(catalog), "--json"])
+
+    payload = json.loads(buffer.getvalue())
+    assert rc != 0
+    assert payload["blocking"] is True
+    assert payload["catalog_errors"] == ["reader: required surface must declare benchmark_test (string)"]

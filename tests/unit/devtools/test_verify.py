@@ -12,6 +12,7 @@ from devtools.verify import (
     _is_testmon_global_invalidator,
     _parse_pytest_test_count,
     _run,
+    _stop_after_failed_step,
     _testmon_preflight,
     build_verify_steps,
     main,
@@ -192,7 +193,7 @@ def test_run_records_pytest_count_metadata() -> None:
     assert metadata == {"count": 4}
 
 
-def test_verify_stops_after_first_failed_step(capsys: pytest.CaptureFixture[str]) -> None:
+def test_verify_continues_after_failed_cheap_step(capsys: pytest.CaptureFixture[str]) -> None:
     calls: list[str] = []
 
     def fake_run(label: str, command: list[str]) -> tuple[int, float, dict[str, object]]:
@@ -209,9 +210,40 @@ def test_verify_stops_after_first_failed_step(capsys: pytest.CaptureFixture[str]
         rc = main(["--quick", "--json"])
 
     assert rc == 1
-    assert calls == ["ruff format"]
+    assert calls == [label for label, _command in build_verify_steps(quick=True, lab=False, skip_slow=False)]
     payload = capsys.readouterr().out
     assert '"exit_code": 1' in payload
+
+
+def test_verify_stops_after_failed_heavy_step(capsys: pytest.CaptureFixture[str]) -> None:
+    calls: list[str] = []
+
+    def fake_run(label: str, command: list[str]) -> tuple[int, float, dict[str, object]]:
+        calls.append(label)
+        return (1 if label.startswith("pytest") else 0), 0.01, {}
+
+    with (
+        patch("devtools.verify._run", side_effect=fake_run),
+        patch("devtools.verify._git_head", return_value="head"),
+        patch("devtools.verify._save_history"),
+        patch("devtools.verify._stamp_head"),
+        patch("devtools.verify._notify"),
+        patch("devtools.verify._testmon_preflight", return_value=None),
+    ):
+        rc = main(["--json"])
+
+    assert rc == 1
+    assert calls[-1].startswith("pytest")
+    payload = capsys.readouterr().out
+    assert '"exit_code": 1' in payload
+
+
+def test_failed_step_stop_policy_distinguishes_cheap_and_heavy_steps() -> None:
+    assert _stop_after_failed_step("ruff check") is False
+    assert _stop_after_failed_step("verify-layering") is False
+    assert _stop_after_failed_step("pytest testmon") is True
+    assert _stop_after_failed_step("lab scenario") is True
+    assert _stop_after_failed_step("verify-slos") is True
 
 
 def test_completion_notification_uses_pytest_count() -> None:

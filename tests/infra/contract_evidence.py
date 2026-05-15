@@ -23,7 +23,9 @@ from polylogue.core.json import JSONDocument, JSONValue, require_json_document
 
 _DEFAULT_EVIDENCE_DIR = Path(".cache/verification/evidence")
 _MAX_SAMPLE_CHARS = 2000
+_MAX_JSON_DOCUMENT_BYTES = 8192
 _SECRET_ASSIGNMENT_RE = re.compile(r"(?i)(token|secret|api[_-]?key|password)(=|:)\S+")
+_SECRET_FLAG_RE = re.compile(r"(?i)(--?(?:token|secret|api[_-]?key|password))(?:=|\s+)\S+")
 _UNSAFE_FILENAME_RE = re.compile(r"[^a-zA-Z0-9._-]+")
 
 
@@ -93,7 +95,7 @@ class ContractEvidenceRecorder:
             "dirty": _git_dirty(self.repo_root),
         }
         if command is not None:
-            payload["command"] = [_redact_text(str(part), self.repo_root) for part in command]
+            payload["command"] = _bounded_text(" ".join(str(part) for part in command), self.repo_root)
         if exit_code is not None:
             payload["exit_code"] = exit_code
         if stdout is not None:
@@ -101,11 +103,23 @@ class ContractEvidenceRecorder:
         if stderr is not None:
             payload["stderr_sample"] = _bounded_text(stderr, self.repo_root)
         if request is not None:
-            payload["request"] = _json_document(request, context="contract evidence request")
+            payload["request"] = _bounded_json_document(
+                request,
+                context="contract evidence request",
+                repo_root=self.repo_root,
+            )
         if result is not None:
-            payload["result"] = _json_document(result, context="contract evidence result")
+            payload["result"] = _bounded_json_document(
+                result,
+                context="contract evidence result",
+                repo_root=self.repo_root,
+            )
         if facts is not None:
-            payload["facts"] = _json_document(facts, context="contract evidence facts")
+            payload["facts"] = _bounded_json_document(
+                facts,
+                context="contract evidence facts",
+                repo_root=self.repo_root,
+            )
         return payload
 
 
@@ -137,6 +151,40 @@ def _json_document(value: Mapping[str, JSONValue], *, context: str) -> JSONDocum
     return require_json_document(dict(value), context=context)
 
 
+def _bounded_json_document(
+    value: Mapping[str, JSONValue],
+    *,
+    context: str,
+    repo_root: Path,
+) -> JSONDocument:
+    document = _redacted_json_document(_json_document(value, context=context), repo_root)
+    encoded = json.dumps(document, sort_keys=True, ensure_ascii=False)
+    encoded_bytes = encoded.encode("utf-8")
+    if len(encoded_bytes) <= _MAX_JSON_DOCUMENT_BYTES:
+        return document
+    return {
+        "truncated": True,
+        "original_bytes": len(encoded_bytes),
+        "sample_json": _bounded_text(encoded, repo_root),
+    }
+
+
+def _redacted_json_document(document: JSONDocument, repo_root: Path) -> JSONDocument:
+    redacted = _redacted_json_value(document, repo_root)
+    assert isinstance(redacted, dict)
+    return redacted
+
+
+def _redacted_json_value(value: JSONValue, repo_root: Path) -> JSONValue:
+    if isinstance(value, str):
+        return _redact_text(value, repo_root)
+    if isinstance(value, list):
+        return [_redacted_json_value(item, repo_root) for item in value]
+    if isinstance(value, dict):
+        return {key: _redacted_json_value(item, repo_root) for key, item in value.items()}
+    return value
+
+
 def _bounded_text(text: str, repo_root: Path) -> str:
     redacted = _redact_text(text, repo_root)
     if len(redacted) <= _MAX_SAMPLE_CHARS:
@@ -153,7 +201,8 @@ def _redact_text(text: str, repo_root: Path) -> str:
     for needle, replacement in replacements.items():
         if needle and needle in redacted:
             redacted = redacted.replace(needle, replacement)
-    return _SECRET_ASSIGNMENT_RE.sub(lambda match: f"{match.group(1)}{match.group(2)}<redacted>", redacted)
+    redacted = _SECRET_ASSIGNMENT_RE.sub(lambda match: f"{match.group(1)}{match.group(2)}<redacted>", redacted)
+    return _SECRET_FLAG_RE.sub(lambda match: f"{match.group(1)} <redacted>", redacted)
 
 
 def _git_sha(repo_root: Path) -> str:

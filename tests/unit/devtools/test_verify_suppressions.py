@@ -148,3 +148,12 @@ def test_enforce_discovered_accepts_registered_path(tmp_path: Path, capsys: pyte
     captured = capsys.readouterr()
     assert "blocking=False" in captured.out
     assert "unregistered source suppressions" not in captured.out
+
+
+def test_pytest_suppression_scan_ignores_ast_parse_failures(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fail_parse(_text: str) -> object:
+        raise RecursionError("synthetic parser recursion")
+
+    monkeypatch.setattr("devtools.verify_suppressions.ast.parse", fail_parse)
+
+    assert verify_suppressions._pytest_suppression_lines("pytest.mark.xfail()") == []

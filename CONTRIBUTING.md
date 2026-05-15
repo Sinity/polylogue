@@ -175,37 +175,16 @@ The repository should stay aligned with the workflow above:
 - allow Update branch for stale PRs
 - do not require an issue for every pull request
 
-## Verification Baseline
+## Git Hooks
 
 The devshell installs git hooks automatically (`core.hooksPath .githooks`):
 
 - **pre-commit**: `ruff format --check` + `ruff check` on staged files.
-- **pre-push**: `devtools verify --quick` (format + lint + render-all --check).
+- **pre-push**: `devtools verify --quick` (format, lint, mypy, generated
+  surfaces, and fast manifest checks).
 
-Before creating a PR, run the default baseline:
-
-```bash
-devtools verify            # static/generated gates + pytest-testmon affected tests
-```
-
-Seed or refresh the pytest-testmon dependency database explicitly after a fresh
-checkout, dependency change, or broad test-harness change:
-
-```bash
-devtools verify --seed-testmon --skip-slow
-```
-
-For an explicit full non-integration pytest diagnostic:
-
-```bash
-devtools verify --all
-```
-
-Add `devtools build-package` or `nix flake check` when touching packaging or
-Nix expressions.
-
-See [TESTING.md](TESTING.md) and [docs/devtools.md](docs/devtools.md) for
-details.
+The pre-push hook is an early failure gate. The PR baseline is the
+`devtools verify` workflow below.
 
 ## Type Checking
 
@@ -245,6 +224,10 @@ source, dependency, and Python-version state. If pytest configuration,
 dependency locks, or shared test infrastructure changed since the seed, the
 default command automatically widens the pytest step to `--testmon-noselect`
 and refreshes dependency data.
+
+Add `devtools build-package` or `nix flake check` when touching packaging or
+Nix expressions. See [TESTING.md](TESTING.md) and [docs/devtools.md](docs/devtools.md)
+for details.
 
 Proof Pack: every PR gets a `Polylogue Proof Pack` comment. It's a verification
 impact report showing affected domains, required gates, and known gaps. Use it

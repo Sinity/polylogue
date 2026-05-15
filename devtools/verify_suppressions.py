@@ -144,7 +144,7 @@ def discover_source_suppressions(
 def _pytest_suppression_lines(text: str) -> list[tuple[str, int]]:
     try:
         tree = ast.parse(text)
-    except SyntaxError:
+    except (SyntaxError, RecursionError, ValueError, MemoryError):
         return []
     results: list[tuple[str, int]] = []
     for node in ast.walk(tree):

@@ -209,10 +209,14 @@ def main(argv: list[str] | None = None) -> int:
         target_p50 = config.get("p50_ms")
         target_p95 = config.get("p95_ms")
         if not isinstance(target_p50, int) or not isinstance(target_p95, int):
+            if gate == "required":
+                catalog_errors.append(f"{surface_name}: required surface must declare integer p50_ms and p95_ms")
             continue
 
         benchmark_test = config.get("benchmark_test")
         if not isinstance(benchmark_test, str):
+            if gate == "required":
+                catalog_errors.append(f"{surface_name}: required surface must declare benchmark_test (string)")
             continue
 
         stats = benchmark_stats.get(benchmark_test)

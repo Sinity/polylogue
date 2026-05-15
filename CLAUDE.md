@@ -23,9 +23,11 @@ acceptance criteria. Reference it from the PR with `Ref #NNN` or
 
 ### Verification before push
 
-Run `devtools verify` (full, with pytest) before creating any PR. The
-git hooks enforce format and lint on commit and `devtools verify --quick`
-on push, but the full baseline must pass before the PR is opened.
+Run `devtools verify` before creating any PR. The default baseline runs the
+static/generated gates plus pytest-testmon affected tests. Seed the testmon
+database explicitly on a fresh checkout or after harness/dependency changes.
+The git hooks enforce format and lint on commit and `devtools verify --quick`
+on push, but the default baseline must pass before the PR is opened.
 
 Do not treat CI as the first verification pass. Anticipate failures
 locally.

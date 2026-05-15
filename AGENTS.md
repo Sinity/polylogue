@@ -25,9 +25,11 @@ acceptance criteria. Reference it from the PR with `Ref #NNN` or
 
 ### Verification before push
 
-Run `devtools verify` (full, with pytest) before creating any PR. The
-git hooks enforce format and lint on commit and `devtools verify --quick`
-on push, but the full baseline must pass before the PR is opened.
+Run `devtools verify` before creating any PR. The default baseline runs the
+static/generated gates plus pytest-testmon affected tests. Seed the testmon
+database explicitly on a fresh checkout or after harness/dependency changes.
+The git hooks enforce format and lint on commit and `devtools verify --quick`
+on push, but the default baseline must pass before the PR is opened.
 
 Do not treat CI as the first verification pass. Anticipate failures
 locally.
@@ -266,37 +268,16 @@ The repository should stay aligned with the workflow above:
 - allow Update branch for stale PRs
 - do not require an issue for every pull request
 
-## Verification Baseline
+## Git Hooks
 
 The devshell installs git hooks automatically (`core.hooksPath .githooks`):
 
 - **pre-commit**: `ruff format --check` + `ruff check` on staged files.
-- **pre-push**: `devtools verify --quick` (format + lint + render-all --check).
+- **pre-push**: `devtools verify --quick` (format, lint, mypy, generated
+  surfaces, and fast manifest checks).
 
-Before creating a PR, run the default baseline:
-
-```bash
-devtools verify            # static/generated gates + pytest-testmon affected tests
-```
-
-Seed or refresh the pytest-testmon dependency database explicitly after a fresh
-checkout, dependency change, or broad test-harness change:
-
-```bash
-devtools verify --seed-testmon --skip-slow
-```
-
-For an explicit full non-integration pytest diagnostic:
-
-```bash
-devtools verify --all
-```
-
-Add `devtools build-package` or `nix flake check` when touching packaging or
-Nix expressions.
-
-See [TESTING.md](TESTING.md) and [docs/devtools.md](docs/devtools.md) for
-details.
+The pre-push hook is an early failure gate. The PR baseline is the
+`devtools verify` workflow below.
 
 ## Type Checking
 
@@ -336,6 +317,10 @@ source, dependency, and Python-version state. If pytest configuration,
 dependency locks, or shared test infrastructure changed since the seed, the
 default command automatically widens the pytest step to `--testmon-noselect`
 and refreshes dependency data.
+
+Add `devtools build-package` or `nix flake check` when touching packaging or
+Nix expressions. See [TESTING.md](TESTING.md) and [docs/devtools.md](docs/devtools.md)
+for details.
 
 Proof Pack: every PR gets a `Polylogue Proof Pack` comment. It's a verification
 impact report showing affected domains, required gates, and known gaps. Use it

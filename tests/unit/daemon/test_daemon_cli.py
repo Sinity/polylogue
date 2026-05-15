@@ -137,7 +137,7 @@ def test_drain_convergence_debt_retries_due_items_without_source_failure(
             "debt_before": len(debt_before),
             "retried": retried,
             "debt_after": len(debt_after),
-            "cursor_record_remaining": cursor.get_record(source) is not None,
+            "cursor_record_cleared": cursor.get_record(source) is None,
         },
     )
 
