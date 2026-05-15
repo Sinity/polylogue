@@ -10,6 +10,7 @@ import os
 from collections.abc import Callable, Mapping
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path, PurePath
 from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlparse
 
@@ -53,6 +54,41 @@ def _dump_target_ref(target_ref: TargetRefPayload) -> dict[str, object]:
 
 def _dump_actions(actions: Mapping[str, ReaderActionAvailabilityPayload]) -> dict[str, object]:
     return {name: availability.model_dump(mode="json", exclude_none=True) for name, availability in actions.items()}
+
+
+def _staged_inbox_source(raw_path: object, inbox: Path) -> tuple[Path | None, str | None]:
+    """Resolve an ingest request to an existing file already staged in inbox.
+
+    The HTTP API must not copy arbitrary local paths supplied by clients.
+    Clients with local filesystem access stage first; the daemon then
+    schedules the matching inbox entry for its normal watcher/convergence path.
+    """
+    if not isinstance(raw_path, str) or not raw_path.strip():
+        return None, "missing_path"
+
+    source_name = PurePath(raw_path).name
+    if not source_name or source_name in {".", ".."}:
+        return None, "invalid_path"
+
+    try:
+        inbox_root = inbox.resolve()
+        candidates = list(inbox.iterdir())
+    except FileNotFoundError:
+        return None, "path_not_found"
+    except OSError:
+        return None, "path_not_found"
+
+    for candidate in candidates:
+        if candidate.name != source_name:
+            continue
+        resolved = candidate.resolve()
+        try:
+            resolved.relative_to(inbox_root)
+        except ValueError:
+            return None, "invalid_path"
+        return resolved, None
+
+    return None, "path_not_found"
 
 
 def _message_type_value(message: object) -> str:
@@ -952,40 +988,21 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
             return
 
-        ingest_path = body.get("path")
-        if not ingest_path:
-            self._send_error(HTTPStatus.BAD_REQUEST, "missing_path")
-            return
-
-        from pathlib import Path as _Path
-
-        source = _Path(ingest_path).expanduser().resolve()
-        if not source.exists():
-            self._send_error(HTTPStatus.BAD_REQUEST, "path_not_found")
-            return
-
-        # Stage into the archive inbox — the daemon watcher picks it up.
         from polylogue.paths import archive_root
 
         inbox = archive_root() / "inbox"
         inbox.mkdir(parents=True, exist_ok=True)
 
-        import shutil
-
-        dest = inbox / source.name
-        try:
-            if source.is_dir():
-                shutil.copytree(source, dest, dirs_exist_ok=True)
-            else:
-                shutil.copy2(source, dest)
-        except OSError as exc:
-            self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "error": str(exc)})
+        source, error = _staged_inbox_source(body.get("path"), inbox)
+        if error is not None:
+            self._send_error(HTTPStatus.BAD_REQUEST, error)
             return
+        assert source is not None
 
         from polylogue.operations.import_contracts import ImportOperation
 
         op_id = f"ingest-{source.name}"
-        emit_daemon_event("ingest", operation_id=op_id, payload={"path": str(source), "inbox": str(dest)})
+        emit_daemon_event("ingest", operation_id=op_id, payload={"path": str(source), "inbox": str(inbox)})
 
         operation = ImportOperation.pending(
             operation_id=op_id,
