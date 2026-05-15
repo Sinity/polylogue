@@ -494,8 +494,17 @@ class TestReaderUserState:
                 payload={
                     "pack_id": "pack-auth",
                     "label": "Auth pack",
-                    "conversation_ids": ["c1", "c2"],
-                    "payload": {"reason": "handoff"},
+                    "conversation_ids": ["c1", "missing-conv"],
+                    "payload": {
+                        "summary": "handoff",
+                        "items": [
+                            {
+                                "target_type": "message",
+                                "conversation_id": "c1",
+                                "message_id": "missing-msg",
+                            }
+                        ],
+                    },
                 },
             )
             listed = _get_json(base_url, "/api/user/recall-packs")
@@ -508,8 +517,17 @@ class TestReaderUserState:
         assert status == 201
         assert saved_payload["created"] is True
         assert listed_payload["total"] == 1
-        assert fetched_payload["conversation_ids"] == ["c1", "c2"]
-        assert fetched_payload["payload"] == {"reason": "handoff"}
+        assert fetched_payload["conversation_ids"] == ["c1"]
+        payload = cast(dict[str, object], fetched_payload["payload"])
+        assert payload["summary"] == "handoff"
+        assert payload["resolved_count"] == 1
+        assert payload["degraded_count"] == 2
+        items = cast(list[dict[str, object]], payload["items"])
+        assert [(item["target_type"], item["status"]) for item in items] == [
+            ("conversation", "resolved"),
+            ("conversation", "missing"),
+            ("message", "missing"),
+        ]
         assert delete_status == 200
         assert deleted == {"pack_id": "pack-auth", "deleted": True}
 

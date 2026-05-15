@@ -57,6 +57,7 @@ TOOL_CONTRACT: dict[str, ToolKind] = {
     "list_marks": ("envelope", frozenset({"items", "total"})),
     "list_annotations": ("envelope", frozenset({"items", "total"})),
     "list_saved_views": ("envelope", frozenset({"items", "total"})),
+    "list_recall_packs": ("envelope", frozenset({"items", "total"})),
     # ------- single record -------
     "get_conversation": "single_object",
     "get_conversation_summary": "single_object",
@@ -78,6 +79,8 @@ TOOL_CONTRACT: dict[str, ToolKind] = {
     "bulk_tag_conversations": "operation_result",
     "save_saved_view": "operation_result",
     "delete_saved_view": "operation_result",
+    "save_recall_pack": "operation_result",
+    "delete_recall_pack": "operation_result",
     "set_metadata": "operation_result",
     "delete_metadata": "operation_result",
     "delete_conversation": "operation_result",

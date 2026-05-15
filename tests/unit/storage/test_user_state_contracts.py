@@ -110,3 +110,54 @@ async def test_message_target_user_state_rejects_unknown_messages(workspace_env:
                 target_type="message",
                 message_id="missing-message",
             )
+
+
+@pytest.mark.asyncio
+async def test_recall_pack_items_resolve_and_degrade_explicitly(workspace_env: dict[str, Path]) -> None:
+    db_path = db_setup(workspace_env)
+    ConversationBuilder(db_path, "conv-user-state").provider("claude-code").add_message(
+        message_id="msg-user-state",
+        text="Important message",
+    ).save()
+
+    async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
+        assert await poly.add_mark("conv-user-state", "pin", target_type="message", message_id="msg-user-state")
+        assert await poly.save_annotation(
+            "ann-msg", "conv-user-state", "Message note", target_type="message", message_id="msg-user-state"
+        )
+        created = await poly.create_recall_pack(
+            "pack-user-state",
+            "User state pack",
+            '["conv-user-state","missing-conv"]',
+            (
+                '{"items":['
+                '{"target_type":"message","conversation_id":"conv-user-state","message_id":"msg-user-state"},'
+                '{"target_type":"message","conversation_id":"conv-user-state","message_id":"missing-msg"},'
+                '{"target_type":"mark","mark_target_type":"message","mark_target_id":"msg-user-state","mark_type":"pin","conversation_id":"conv-user-state"},'
+                '{"target_type":"annotation","annotation_id":"ann-msg"},'
+                '{"target_type":"annotation","annotation_id":"missing-ann"},'
+                '{"target_type":"topology_edge","target_id":"edge-1"}'
+                '],"summary":"handoff"}'
+            ),
+        )
+        saved = await poly.get_recall_pack("pack-user-state")
+
+    assert created is True
+    assert saved is not None
+    import json
+
+    conversation_ids = json.loads(saved["conversation_ids_json"])
+    payload = json.loads(saved["payload_json"])
+    assert conversation_ids == ["conv-user-state"]
+    assert payload["schema_version"] == 1
+    assert payload["summary"] == "handoff"
+    assert payload["resolved_count"] == 4
+    assert payload["degraded_count"] == 4
+    item_statuses = {(item["target_type"], item["target_id"]): item["status"] for item in payload["items"]}
+    assert item_statuses[("conversation", "conv-user-state")] == "resolved"
+    assert item_statuses[("conversation", "missing-conv")] == "missing"
+    assert item_statuses[("message", "msg-user-state")] == "resolved"
+    assert item_statuses[("message", "missing-msg")] == "missing"
+    assert item_statuses[("annotation", "ann-msg")] == "resolved"
+    assert item_statuses[("annotation", "missing-ann")] == "missing"
+    assert item_statuses[("topology_edge", "edge-1")] == "unsupported"
