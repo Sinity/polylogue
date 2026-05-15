@@ -199,7 +199,7 @@ def cli_runner() -> CliRunner:
 
 @pytest.mark.xfail(
     reason="provider-aware empty hint and Rich table renderer in tags command not yet implemented (#1012)",
-    strict=False,
+    strict=True,
 )
 def test_tags_command_plain_paths_cover_empty_hint_and_tabular_counts(cli_runner: CliRunner) -> None:
     env = MagicMock()

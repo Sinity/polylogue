@@ -120,6 +120,7 @@ path = "hatch_build.py"
 addopts = "-ra -n auto --benchmark-disable --benchmark-storage=file://./.cache/pytest-benchmark"
 testpaths = ["tests"]
 asyncio_mode = "auto"
+xfail_strict = true
 cache_dir = ".cache/pytest"
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
