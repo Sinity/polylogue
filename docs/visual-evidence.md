@@ -9,9 +9,11 @@ operator's real archive, never serves committed sample content, and
 never makes pixel-diff assertions that would freeze aesthetic
 iteration.
 
-This page documents the harness so #848, #859, and the design pack
-(`docs/design/mk2/coding-agent-pack/07-verification-and-visual-evidence.md`)
-have a stable reference for what the lane covers and how to run it.
+This page documents the harness so #848, #859, #865, and the design packs
+have a stable reference for what the lane covers and how to run it. MK3 is the
+current target and lives at [`docs/design/mk3/`](design/mk3/); the earlier MK2
+visual-evidence handoff remains at
+[`docs/design/mk2/coding-agent-pack/07-verification-and-visual-evidence.md`](design/mk2/coding-agent-pack/07-verification-and-visual-evidence.md).
 
 ## Running the lane
 
@@ -36,8 +38,10 @@ dependency: the lane uses Python's standard `http.server` and
 | Privacy boundary | — | `/`, `/api/facets` (auditing for absolute local paths) |
 | Auth boundary | — | `/api/conversations` with/without `Authorization: Bearer ...` |
 
-The artefact ids match the names referenced in the MK2 design pack and
-in #848 so the visual-evidence companion can cross-reference them.
+The artefact ids match the names referenced in the design packs and in #848 so
+the visual-evidence companion can cross-reference them. MK3 expands the target
+matrix to include reader, stack, topology, attachments, degraded states, and
+palette screenshots under `docs/design/mk3/screens/`.
 
 ## What the lane checks
 
@@ -78,10 +82,10 @@ in #848 so the visual-evidence companion can cross-reference them.
   fixtures — the synthetic seeder produces three single-message
   conversations with stable ids so the envelope assertions stay
   reproducible.
-- No browser-binary requirement. If a future iteration adds Playwright
-  for full screenshot evidence (see #848), it should be a *separate*
-  lane gated on the heavier devshell, not a replacement for this DOM
-  smoke.
+- No browser-binary requirement. The MK3 follow-up in #865 should add a
+  separate browser-backed screenshot lane for the richer reader, stack,
+  topology, attachment, and degraded-state matrix rather than replacing this
+  fast DOM/contract smoke.
 
 ## Follow-ups
 
