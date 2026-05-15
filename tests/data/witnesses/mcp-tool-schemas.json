@@ -461,6 +461,22 @@
     }
   },
   {
+    "name": "delete_workspace",
+    "parameters": {
+      "properties": {
+        "workspace_id": {
+          "title": "Workspace Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "workspace_id"
+      ],
+      "title": "delete_workspaceArguments",
+      "type": "object"
+    }
+  },
+  {
     "name": "export_conversation",
     "parameters": {
       "properties": {
@@ -1501,6 +1517,14 @@
     }
   },
   {
+    "name": "list_workspaces",
+    "parameters": {
+      "properties": {},
+      "title": "list_workspacesArguments",
+      "type": "object"
+    }
+  },
+  {
     "name": "neighbor_candidates",
     "parameters": {
       "properties": {
@@ -1844,6 +1868,47 @@
         "query_json"
       ],
       "title": "save_saved_viewArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "save_workspace",
+    "parameters": {
+      "properties": {
+        "active_target_json": {
+          "default": "{}",
+          "title": "Active Target Json",
+          "type": "string"
+        },
+        "layout_json": {
+          "default": "{}",
+          "title": "Layout Json",
+          "type": "string"
+        },
+        "mode": {
+          "default": "tabs",
+          "title": "Mode",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "open_targets_json": {
+          "default": "[]",
+          "title": "Open Targets Json",
+          "type": "string"
+        },
+        "workspace_id": {
+          "title": "Workspace Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "workspace_id",
+        "name"
+      ],
+      "title": "save_workspaceArguments",
       "type": "object"
     }
   },
