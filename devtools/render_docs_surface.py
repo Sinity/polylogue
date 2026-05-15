@@ -74,7 +74,14 @@ def build_docs_readme(
             "",
             _render_named_table(
                 docs_by_title,
-                ("Architecture", "Data Model", "Internals", "Configuration"),
+                (
+                    "Architecture",
+                    "Architecture Spine",
+                    "Execution Plan",
+                    "Data Model",
+                    "Internals",
+                    "Configuration",
+                ),
                 from_dir="docs",
             ),
             "",

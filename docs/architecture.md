@@ -1,5 +1,9 @@
 # Polylogue Architecture
 
+For the target shape, guardrails, and architectural decision log, see
+[Architecture Spine](architecture-spine.md). For current sequencing and active
+workstreams, see [Execution Plan](execution-plan.md).
+
 Polylogue is a local archive for AI conversations. The system has four rings:
 
 1. archive substrate
