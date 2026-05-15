@@ -438,10 +438,10 @@ def _subject_assurance_domain(subject: Any) -> str | None:
     return domain if isinstance(domain, str) and domain.strip() else None
 
 
-def build_slop_dashboard(catalog: VerificationCatalog) -> dict[str, Any]:
-    """Analyze the catalog for anti-vacuity violations — "slop" claims.
+def build_anti_vacuity_report(catalog: VerificationCatalog) -> dict[str, Any]:
+    """Analyze the catalog for anti-vacuity violations.
 
-    A claim is slop if ANY of:
+    A claim is flagged if any of:
     - No breaker defined and no tracked exception
     - No runner binding (no executable check)
     - Zero subjects matched (no compiled obligations)
@@ -499,8 +499,8 @@ def build_slop_dashboard(catalog: VerificationCatalog) -> dict[str, Any]:
             "self_referential": self_referential,
             "stale_evidence": bool(stale_evidence),
         }
-        is_slop = any(reasons.values())
-        if is_slop:
+        is_flagged = any(reasons.values())
+        if is_flagged:
             rows.append(
                 {
                     "claim_id": claim.id,
@@ -520,7 +520,7 @@ def build_slop_dashboard(catalog: VerificationCatalog) -> dict[str, Any]:
 
     return {
         "total_claims": len(catalog.claims),
-        "slop_count": len(rows),
+        "flagged_count": len(rows),
         "rows": sorted(rows, key=lambda r: r["claim_id"]),
         "by_reason": {
             "missing_breaker": sum(1 for r in rows if r["missing_breaker"]),
@@ -532,12 +532,12 @@ def build_slop_dashboard(catalog: VerificationCatalog) -> dict[str, Any]:
     }
 
 
-def render_slop_markdown(dashboard: dict[str, Any]) -> str:
-    """Render the slop dashboard as markdown."""
+def render_anti_vacuity_markdown(dashboard: dict[str, Any]) -> str:
+    """Render the anti-vacuity report as markdown."""
     lines = [
-        "## Anti-Vacuity Slop Dashboard",
+        "## Anti-Vacuity Report",
         "",
-        f"**Claims analyzed:** {dashboard['total_claims']}  **Slop claims:** {dashboard['slop_count']}",
+        f"**Claims analyzed:** {dashboard['total_claims']}  **Flagged claims:** {dashboard['flagged_count']}",
         "",
         "### By Reason",
         "",
@@ -550,7 +550,7 @@ def render_slop_markdown(dashboard: dict[str, Any]) -> str:
 
     rows = dashboard["rows"]
     if not rows:
-        lines.append("_No slop claims found._")
+        lines.append("_No flagged claims found._")
         return "\n".join(lines)
 
     lines.extend(
@@ -572,7 +572,7 @@ def render_slop_markdown(dashboard: dict[str, Any]) -> str:
         )
 
     lines.append("")
-    lines.append("### X = slop condition detected. Empty = OK.")
+    lines.append("### X = anti-vacuity condition detected. Empty = OK.")
     return "\n".join(lines)
 
 
@@ -645,12 +645,12 @@ def _click_has_json_flag(cmd: Any) -> bool:
     return False
 
 
-def _print_slop_dashboard(dashboard: dict[str, Any]) -> None:
-    """Print a human-readable slop dashboard to stdout."""
-    print("Anti-Vacuity Slop Dashboard")
+def _print_anti_vacuity_report(dashboard: dict[str, Any]) -> None:
+    """Print a human-readable anti-vacuity report to stdout."""
+    print("Anti-Vacuity Report")
     print(f"{'=' * 40}")
     print(f"Claims analyzed: {dashboard['total_claims']}")
-    print(f"Slop claims:     {dashboard['slop_count']}")
+    print(f"Flagged claims:     {dashboard['flagged_count']}")
     print()
     print("By reason:")
     by_reason = dashboard["by_reason"]
@@ -661,7 +661,7 @@ def _print_slop_dashboard(dashboard: dict[str, Any]) -> None:
 
     rows = dashboard["rows"]
     if not rows:
-        print("No slop claims found.")
+        print("No flagged claims found.")
         return
 
     print(f"{'Claim ID':<55} {'Domain':<25} {'Brk':>3} {'Run':>3} {'Sub':>3} {'Slf':>3} {'Stl':>3}")
@@ -698,9 +698,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--markdown", action="store_true", help="Emit PR-comment-ready Markdown.")
     parser.add_argument("--check", action="store_true", help="Exit non-zero when report blocking policy fails.")
     parser.add_argument(
-        "--slop",
+        "--anti-vacuity",
         action="store_true",
-        help="Emit anti-vacuity slop dashboard (claims lacking breakers, runners, subjects, or with stale evidence).",
+        help="Emit anti-vacuity report (claims lacking breakers, runners, subjects, or with stale evidence).",
     )
     parser.add_argument(
         "--discover-subjects",
@@ -711,18 +711,18 @@ def main(argv: list[str] | None = None) -> int:
 
     root = _get_root()
 
-    if args.slop:
+    if args.anti_vacuity:
         catalog = build_verification_catalog()
-        dashboard = build_slop_dashboard(catalog)
+        dashboard = build_anti_vacuity_report(catalog)
         if args.json:
             json.dump(dashboard, sys.stdout, indent=2, sort_keys=True)
             sys.stdout.write("\n")
         elif args.markdown:
-            sys.stdout.write(render_slop_markdown(dashboard))
+            sys.stdout.write(render_anti_vacuity_markdown(dashboard))
             sys.stdout.write("\n")
         else:
-            _print_slop_dashboard(dashboard)
-        return 1 if dashboard["slop_count"] > 0 and args.check else 0
+            _print_anti_vacuity_report(dashboard)
+        return 1 if dashboard["flagged_count"] > 0 and args.check else 0
 
     if args.discover_subjects:
         subjects = discover_click_json_subjects()

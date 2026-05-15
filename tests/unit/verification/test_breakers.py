@@ -149,36 +149,36 @@ def _validate_yaml_and_catch(path: Path) -> list[str]:
 
 
 # ══════════════════════════════════════════════════════════════════════
-# D2 — Anti-vacuity slop detection (#594)
+# D2 — Anti-vacuity detection (#594)
 # ══════════════════════════════════════════════════════════════════════
 
 
-def test_slop_dashboard_detects_missing_breakers() -> None:
-    """The slop dashboard must flag claims without breakers."""
-    from devtools.proof_pack import build_slop_dashboard
+def test_anti_vacuity_report_detects_missing_breakers() -> None:
+    """The anti-vacuity report must flag claims without breakers."""
+    from devtools.proof_pack import build_anti_vacuity_report
 
     catalog = build_verification_catalog()
-    dashboard = build_slop_dashboard(catalog)
+    dashboard = build_anti_vacuity_report(catalog)
 
     assert "total_claims" in dashboard
-    assert "slop_count" in dashboard
+    assert "flagged_count" in dashboard
     assert "by_reason" in dashboard
     assert "rows" in dashboard
 
     # At least some missing_breaker claims should exist (new claims may lack them)
     missing_breaker_count = dashboard["by_reason"]["missing_breaker"]
     # We don't assert a specific number — the catalog evolves. But we assert
-    # the dashboard is structured and non-empty (it should have slop).
+    # the dashboard is structured and non-empty (it should have flagged rows).
     assert isinstance(missing_breaker_count, int)
-    assert isinstance(dashboard["slop_count"], int)
+    assert isinstance(dashboard["flagged_count"], int)
 
 
-def test_slop_dashboard_by_reason_breaks_down() -> None:
+def test_anti_vacuity_report_by_reason_breaks_down() -> None:
     """Each reason in by_reason must be a non-negative integer."""
-    from devtools.proof_pack import build_slop_dashboard
+    from devtools.proof_pack import build_anti_vacuity_report
 
     catalog = build_verification_catalog()
-    dashboard = build_slop_dashboard(catalog)
+    dashboard = build_anti_vacuity_report(catalog)
     by_reason = dashboard["by_reason"]
 
     for reason in ("missing_breaker", "missing_runner", "zero_subjects", "self_referential", "stale_evidence"):
@@ -187,22 +187,22 @@ def test_slop_dashboard_by_reason_breaks_down() -> None:
         assert count >= 0, f"{reason} count is negative: {count}"
 
 
-def test_slop_dashboard_json_serializable() -> None:
-    """Slop dashboard output must be JSON-serializable."""
-    from devtools.proof_pack import build_slop_dashboard
+def test_anti_vacuity_report_json_serializable() -> None:
+    """Anti-vacuity report output must be JSON-serializable."""
+    from devtools.proof_pack import build_anti_vacuity_report
 
     catalog = build_verification_catalog()
-    dashboard = build_slop_dashboard(catalog)
+    dashboard = build_anti_vacuity_report(catalog)
     # Should not raise
     json_mod.dumps(dashboard, indent=2, sort_keys=True)
 
 
-def test_slop_dashboard_rows_have_required_fields() -> None:
-    """Each slop row must carry claim_id, severity, and all reason flags."""
-    from devtools.proof_pack import build_slop_dashboard
+def test_anti_vacuity_report_rows_have_required_fields() -> None:
+    """Each anti-vacuity row must carry claim_id, severity, and all reason flags."""
+    from devtools.proof_pack import build_anti_vacuity_report
 
     catalog = build_verification_catalog()
-    dashboard = build_slop_dashboard(catalog)
+    dashboard = build_anti_vacuity_report(catalog)
     required = {
         "claim_id",
         "severity",
@@ -273,15 +273,15 @@ def test_manifests_integration_passes(tmp_path: Path) -> None:
     assert rc == 0, "verify_manifests should pass on committed manifests"
 
 
-def test_slop_dashboard_renders_without_error() -> None:
-    """The slop markdown renderer must handle any dashboard structure."""
-    from devtools.proof_pack import _print_slop_dashboard, build_slop_dashboard, render_slop_markdown
+def test_anti_vacuity_report_renders_without_error() -> None:
+    """The anti-vacuity markdown renderer must handle any dashboard structure."""
+    from devtools.proof_pack import _print_anti_vacuity_report, build_anti_vacuity_report, render_anti_vacuity_markdown
 
     catalog = build_verification_catalog()
-    dashboard = build_slop_dashboard(catalog)
+    dashboard = build_anti_vacuity_report(catalog)
 
     # Should not raise
-    markdown = render_slop_markdown(dashboard)
+    markdown = render_anti_vacuity_markdown(dashboard)
     assert isinstance(markdown, str)
     assert len(markdown) > 0
     assert "Anti-Vacuity" in markdown
@@ -294,9 +294,9 @@ def test_slop_dashboard_renders_without_error() -> None:
     old_stdout = sys_mod.stdout
     try:
         sys_mod.stdout = buf
-        _print_slop_dashboard(dashboard)
+        _print_anti_vacuity_report(dashboard)
     finally:
         sys_mod.stdout = old_stdout
     output = buf.getvalue()
     assert len(output) > 0
-    assert "Slop claims" in output
+    assert "Flagged claims" in output
