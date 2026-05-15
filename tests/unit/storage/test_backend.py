@@ -381,6 +381,8 @@ def test_schema_extension_catalog_declares_snapshot_scope() -> None:
     assert {
         "idx_messages_conversation_message_type",
         "idx_raw_conv_source_mtime",
+        "idx_raw_conv_source_path_raw_id",
+        "idx_conversations_raw_id",
         "idx_raw_conv_effective_provider",
         "idx_content_blocks_tool_use_conversation",
         "idx_attachments_provider_meta_file_id",
@@ -397,6 +399,7 @@ def test_schema_extension_plan_expands_catalog_descriptors() -> None:
         table_columns={
             "messages": frozenset({"message_id", "conversation_id"}),
             "raw_conversations": frozenset({"raw_id", "source_path", "file_mtime"}),
+            "conversations": frozenset({"conversation_id", "raw_id"}),
             "content_blocks": frozenset({"conversation_id", "type"}),
             "attachments": frozenset({"provider_meta"}),
             "session_profiles": frozenset({"conversation_id", "search_text"}),
@@ -411,6 +414,8 @@ def test_schema_extension_plan_expands_catalog_descriptors() -> None:
     assert "ALTER TABLE raw_conversations ADD COLUMN blob_size INTEGER NOT NULL DEFAULT 0" in plan.statements
     assert any("idx_content_blocks_tool_use_conversation" in statement for statement in plan.statements)
     assert any("idx_attachments_provider_meta_id" in statement for statement in plan.statements)
+    assert any("idx_raw_conv_source_path_raw_id" in statement for statement in plan.statements)
+    assert any("idx_conversations_raw_id" in statement for statement in plan.statements)
     assert any("idx_raw_conv_effective_provider" in statement for statement in plan.statements)
     assert any(
         "ALTER TABLE session_profiles ADD COLUMN evidence_search_text" in statement for statement in plan.statements
@@ -433,6 +438,53 @@ def test_schema_extension_plan_expands_catalog_descriptors() -> None:
         "Provider-event archive table DDL must be in extension scripts"
     )
     assert len(plan.scripts) == 6
+
+
+def test_convergence_source_path_lookup_uses_source_index(tmp_path: Path) -> None:
+    """Changed-path convergence lookup should not scan all conversations first."""
+    db_path = tmp_path / "archive.sqlite"
+    conn = sqlite3.connect(db_path)
+    _ensure_schema(conn)
+    for idx in range(30):
+        raw_id = f"raw-{idx}"
+        source_path = f"/tmp/source-{idx % 3}.jsonl"
+        conn.execute(
+            """
+            INSERT INTO raw_conversations (
+                raw_id, provider_name, source_path, blob_size, acquired_at
+            ) VALUES (?, 'claude-code', ?, 0, '2026-01-01T00:00:00Z')
+            """,
+            (raw_id, source_path),
+        )
+        conn.execute(
+            """
+            INSERT INTO conversations (
+                conversation_id, provider_name, provider_conversation_id,
+                source_name, content_hash, version, raw_id
+            ) VALUES (?, 'claude-code', ?, 'claude-code', ?, 1, ?)
+            """,
+            (f"conv-{idx}", f"provider-{idx}", f"hash-{idx}", raw_id),
+        )
+
+    plan = "\n".join(
+        row[3]
+        for row in conn.execute(
+            """
+            EXPLAIN QUERY PLAN
+            SELECT DISTINCT r.source_path, c.conversation_id
+            FROM raw_conversations AS r
+            JOIN conversations AS c ON c.raw_id = r.raw_id
+            WHERE r.source_path IN (?)
+            ORDER BY r.source_path, c.conversation_id
+            """,
+            ("/tmp/source-1.jsonl",),
+        )
+    )
+
+    assert "idx_raw_conv_source_path_raw_id" in plan
+    assert "idx_conversations_raw_id" in plan
+    assert "SCAN c" not in plan
+    conn.close()
 
 
 def test_ensure_schema_rejects_old_raw_table_version_without_mutating(tmp_path: Path) -> None:

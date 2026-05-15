@@ -587,7 +587,7 @@ files:
     target: polylogue/cli/click_app.py
     owner: stable
   - path: polylogue/cli/click_command_registration.py
-    loc: 148
+    loc: 161
     target: polylogue/cli/click_command_registration.py
     owner: stable
   - path: polylogue/cli/click_option_groups.py
@@ -801,7 +801,7 @@ files:
     target: polylogue/cli/shared/helper_support.py
     owner: stable
   - path: polylogue/cli/shared/helpers.py
-    loc: 51
+    loc: 94
     target: polylogue/cli/shared/helpers.py
     owner: stable
   - path: polylogue/cli/shared/insight_command_contracts.py
@@ -943,11 +943,11 @@ files:
     target: polylogue/daemon/catchup_status.py
     owner: stable
   - path: polylogue/daemon/cli.py
-    loc: 949
+    loc: 915
     target: polylogue/daemon/cli.py
     owner: stable
   - path: polylogue/daemon/convergence.py
-    loc: 320
+    loc: 408
     target: polylogue/daemon/convergence.py
     owner: stable
   - path: polylogue/daemon/convergence_debt_status.py
@@ -955,7 +955,7 @@ files:
     target: polylogue/daemon/convergence_debt_status.py
     owner: stable
   - path: polylogue/daemon/convergence_stages.py
-    loc: 686
+    loc: 801
     target: polylogue/daemon/convergence_stages.py
     owner: stable
   - path: polylogue/daemon/events.py
@@ -970,12 +970,21 @@ files:
     loc: 1004
     target: polylogue/daemon/http.py
     owner: stable
+  - path: polylogue/daemon/live_ingest_attempt_models.py
+    loc: 51
+    target: polylogue/daemon/live_ingest_attempt_models.py
+    owner: stable
+    cross_cut: { lifecycle: model }
+  - path: polylogue/daemon/live_ingest_attempt_workload.py
+    loc: 137
+    target: polylogue/daemon/live_ingest_attempt_workload.py
+    owner: stable
   - path: polylogue/daemon/notifications.py
     loc: 111
     target: polylogue/daemon/notifications.py
     owner: stable
   - path: polylogue/daemon/status.py
-    loc: 1145
+    loc: 1136
     target: polylogue/daemon/status.py
     owner: stable
   - path: polylogue/daemon/web_shell.py
@@ -1937,7 +1946,7 @@ files:
     owner: stable
     reason: verification-lab showcase substrate retained
   - path: polylogue/showcase/generators.py
-    loc: 546
+    loc: 547
     target: polylogue/showcase/generators.py
     owner: stable
     reason: verification-lab showcase substrate retained
@@ -2143,7 +2152,7 @@ files:
     target: polylogue/sources/live/__init__.py
     owner: stable
   - path: polylogue/sources/live/batch.py
-    loc: 1150
+    loc: 1153
     target: polylogue/sources/live/batch.py
     owner: stable
   - path: polylogue/sources/live/batch_observability.py
@@ -2158,6 +2167,10 @@ files:
     loc: 75
     target: polylogue/sources/live/convergence_debt.py
     owner: stable
+  - path: polylogue/sources/live/conversation_convergence.py
+    loc: 71
+    target: polylogue/sources/live/conversation_convergence.py
+    owner: stable
   - path: polylogue/sources/live/cursor.py
     loc: 1022
     target: polylogue/sources/live/cursor.py
@@ -2171,7 +2184,7 @@ files:
     target: polylogue/sources/live/metrics.py
     owner: stable
   - path: polylogue/sources/live/watcher.py
-    loc: 397
+    loc: 391
     target: polylogue/sources/live/watcher.py
     owner: stable
   - path: polylogue/sources/parsers/antigravity.py
@@ -2759,6 +2772,10 @@ files:
     loc: 41
     target: polylogue/storage/search_providers/sqlite_vec_support.py
     owner: stable
+  - path: polylogue/storage/source_conversations.py
+    loc: 46
+    target: polylogue/storage/source_conversations.py
+    owner: storage-domain
   - path: polylogue/storage/sqlite/__init__.py
     loc: 29
     target: polylogue/storage/sqlite/__init__.py
@@ -2966,7 +2983,7 @@ files:
     target: polylogue/storage/sqlite/schema.py
     owner: stable
   - path: polylogue/storage/sqlite/schema_bootstrap.py
-    loc: 1298
+    loc: 1306
     target: polylogue/storage/sqlite/schema_bootstrap.py
     owner: stable
   - path: polylogue/storage/sqlite/schema_ddl.py
@@ -2978,7 +2995,7 @@ files:
     target: polylogue/storage/sqlite/schema_ddl_actions.py
     owner: stable
   - path: polylogue/storage/sqlite/schema_ddl_archive.py
-    loc: 378
+    loc: 385
     target: polylogue/storage/sqlite/schema_ddl_archive.py
     owner: stable
   - path: polylogue/storage/sqlite/schema_ddl_aux.py

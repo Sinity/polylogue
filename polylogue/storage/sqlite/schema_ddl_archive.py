@@ -35,6 +35,9 @@ RAW_ARCHIVE_DDL = """
         ON raw_conversations(source_path, file_mtime)
         WHERE file_mtime IS NOT NULL;
 
+        CREATE INDEX IF NOT EXISTS idx_raw_conv_source_path_raw_id
+        ON raw_conversations(source_path, raw_id);
+
         CREATE INDEX IF NOT EXISTS idx_raw_conv_parse_ready
         ON raw_conversations(raw_id)
         WHERE parsed_at IS NULL
@@ -78,6 +81,10 @@ ARCHIVE_STORAGE_DDL = """
 
         CREATE INDEX IF NOT EXISTS idx_conversations_sortkey
         ON conversations(sort_key);
+
+        CREATE INDEX IF NOT EXISTS idx_conversations_raw_id
+        ON conversations(raw_id)
+        WHERE raw_id IS NOT NULL;
 
         CREATE TABLE IF NOT EXISTS messages (
             message_id TEXT PRIMARY KEY,

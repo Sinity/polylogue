@@ -30,7 +30,13 @@ def resolve_include(base_dir: Path, include_ref: str) -> Path:
     return base_dir / include_path
 
 
-def expand(path: Path, stack: list[Path]) -> str:
+def _include_marker(path: Path, *, marker_base: Path | None) -> str:
+    if marker_base is None:
+        return str(path)
+    return os.path.relpath(path, marker_base)
+
+
+def expand(path: Path, stack: list[Path], *, marker_base: Path | None = None) -> str:
     resolved_path = path.expanduser().resolve()
     if resolved_path in stack:
         cycle = " -> ".join(str(part) for part in [*stack, resolved_path])
@@ -60,19 +66,21 @@ def expand(path: Path, stack: list[Path]) -> str:
         include_ref = decode_include(match.group(1))
         include_path = resolve_include(path.parent, include_ref)
         include_real = include_path.expanduser().resolve()
-        out.append(f"<!-- begin include: {include_real} -->\n")
-        expanded = expand(include_path, stack)
+        marker = _include_marker(include_real, marker_base=marker_base)
+        out.append(f"<!-- begin include: {marker} -->\n")
+        expanded = expand(include_path, stack, marker_base=marker_base)
         out.append(expanded)
         if not expanded.endswith("\n"):
             out.append("\n")
-        out.append(f"<!-- end include: {include_real} -->\n")
+        out.append(f"<!-- end include: {marker} -->\n")
 
     stack.pop()
     return "".join(out)
 
 
 def render_document(*, input_path: Path, output_path: Path | None) -> str:
-    body = expand(input_path, [])
+    marker_base = output_path.parent.resolve() if output_path is not None else None
+    body = expand(input_path, [], marker_base=marker_base)
     if output_path is None:
         display_input = str(input_path)
     else:

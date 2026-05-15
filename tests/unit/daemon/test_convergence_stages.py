@@ -181,6 +181,39 @@ def test_action_event_probe_uses_indexed_base_table() -> None:
     assert queries[-1][1] == ("conv-a", "conv-b")
 
 
+def test_fts_repair_needs_probe_uses_docsize_shadow_tables() -> None:
+    queries: list[tuple[str, tuple[str, ...]]] = []
+    existing_tables = {"messages_fts_docsize", "action_events", "action_events_fts", "action_events_fts_docsize"}
+
+    class FakeConnection:
+        def execute(self, sql: str, params: tuple[str, ...] = ()) -> object:
+            queries.append((sql, params))
+            if "sqlite_master" in sql:
+                return _FakeCursor([(1,)] if params and params[0] in existing_tables else [])
+            if "messages AS m" in sql:
+                return _FakeCursor([(0,)])
+            if "action_events AS ae" in sql:
+                return _FakeCursor([(0,)])
+            raise AssertionError(f"unexpected SQL: {sql}")
+
+    class _FakeCursor:
+        def __init__(self, rows: list[tuple[object, ...]]) -> None:
+            self._rows = rows
+
+        def fetchone(self) -> tuple[object, ...] | None:
+            return self._rows[0] if self._rows else None
+
+    conn = cast(sqlite3.Connection, FakeConnection())
+
+    assert stages._fts_repair_needs_for_conversations(conn, ["conv-a"]) == stages._FtsRepairNeeds()
+
+    probe_sql = "\n".join(sql for sql, _params in queries)
+    assert "LEFT JOIN messages_fts_docsize" in probe_sql
+    assert "LEFT JOIN action_events_fts_docsize" in probe_sql
+    assert "LEFT JOIN messages_fts AS" not in probe_sql
+    assert "LEFT JOIN action_events_fts AS" not in probe_sql
+
+
 def test_embed_stage_scopes_changed_conversations_without_asyncio_run(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

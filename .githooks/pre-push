@@ -9,9 +9,9 @@
 
 set -euo pipefail
 
-# Pre-flight: ensure devtools is available before attempting verification.
-if ! devtools --help >/dev/null 2>&1; then
-    echo "pre-push: devtools is not importable; enter the project devshell (nix develop) first." >&2
+# Pre-flight: ensure checkout-local devtools is importable before attempting verification.
+if ! python -m devtools --help >/dev/null 2>&1; then
+    echo "pre-push: checkout-local devtools is not importable; enter the project devshell (nix develop) first." >&2
     exit 2
 fi
 
@@ -28,4 +28,4 @@ if [[ -f "$STAMP_FILE" ]]; then
 fi
 
 echo "pre-push: running quick verification baseline" >&2
-devtools verify --quick
+python -m devtools verify --quick

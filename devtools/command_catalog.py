@@ -190,6 +190,21 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "daemon-workload-probe",
+        "verification",
+        "Inspect daemon ingest workload, convergence debt, and hot query plans.",
+        "devtools.daemon_workload_probe",
+        use_when=(
+            "Diagnose live-ingest residual work, read amplification, convergence debt, and planner regressions "
+            "against a real archive without mutating daemon state."
+        ),
+        examples=(
+            "devtools daemon-workload-probe",
+            "devtools daemon-workload-probe --json",
+            "devtools daemon-workload-probe --db /path/to/polylogue.db --limit 10",
+        ),
+    ),
+    CommandSpec(
         "scenario-projections",
         "verification",
         "Render the authored scenario-bearing verification projections.",
