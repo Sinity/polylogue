@@ -9,6 +9,8 @@ Use this map when you need the complete repository documentation surface. The to
 | Document | Description |
 |----------|-------------|
 | [Architecture](architecture.md) | System rings, ownership boundaries, and data flow. |
+| [Architecture Spine](architecture-spine.md) | Target shape, guardrails, and major decisions with rejected alternatives. |
+| [Execution Plan](execution-plan.md) | Living sequencing plan — landed, in flight, queued, and frozen subsystems. |
 | [Data Model](data-model.md) | Archive entities, storage shape, and metadata rules. |
 | [Internals](internals.md) | Working implementation reference and debugging landmarks. |
 | [Configuration](configuration.md) | XDG paths, environment variables, and runtime configuration. |

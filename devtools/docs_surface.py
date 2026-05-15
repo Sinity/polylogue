@@ -79,6 +79,8 @@ REPO_GUIDE_ENTRIES: tuple[DocsEntry, ...] = (
 
 README_DOC_TITLES: tuple[str, ...] = (
     "Architecture",
+    "Architecture Spine",
+    "Execution Plan",
     "CLI Reference",
     "Browser Capture",
     "Library API",
