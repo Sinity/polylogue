@@ -460,6 +460,52 @@ First gates:
 - `ruff check <changed files>`
 - `python -m mypy <changed files>`
 
+### 2026-05-15 - #867 CLI user-state parity launch
+
+Target:
+
+- #867 operator parity for the durable marks, annotations, and saved-view
+  substrate.
+- Add a low-conflict CLI surface without mixing user-state CRUD into query
+  modifier execution.
+
+Coordination:
+
+- Same branch: `feature/feat/user-state-annotations-targets`.
+- Informed by the read-only CLI reconnaissance lane. Implementation stayed in
+  one new command module plus registration/docs/tests.
+
+Owned files:
+
+- `polylogue/cli/commands/user_state.py`
+- `polylogue/cli/click_command_registration.py`
+- `devtools/render_cli_reference.py`
+- `docs/cli-reference.md`
+- focused CLI tests
+
+Avoided files:
+
+- Query-mode mutation plumbing; this slice uses an explicit `user-state` root
+  group.
+- Recall-pack CLI create/export; that remains tied to the next recall-pack
+  redesign slice.
+
+Outcome:
+
+- Added lazy `polylogue user-state`.
+- Added `marks list/add/remove` with conversation/message target options.
+- Added `annotations list/save/delete`.
+- Added `saved-views list/save/delete`, including query-spec validation and
+  canonical query JSON.
+- Regenerated CLI reference docs for the new command.
+
+Verification:
+
+- `pytest -q tests/unit/cli/test_user_state_command.py tests/unit/cli/test_click_app.py::TestCliMetadata::test_all_subcommands_registered`
+- `ruff format --check polylogue/cli/commands/user_state.py polylogue/cli/click_command_registration.py devtools/render_cli_reference.py tests/unit/cli/test_user_state_command.py tests/unit/cli/test_click_app.py`
+- `ruff check polylogue/cli/commands/user_state.py polylogue/cli/click_command_registration.py devtools/render_cli_reference.py tests/unit/cli/test_user_state_command.py tests/unit/cli/test_click_app.py`
+- `python -m mypy polylogue/cli/commands/user_state.py polylogue/cli/click_command_registration.py devtools/render_cli_reference.py tests/unit/cli/test_user_state_command.py tests/unit/cli/test_click_app.py`
+
 Outcome:
 
 - Bumped archive schema to v13.

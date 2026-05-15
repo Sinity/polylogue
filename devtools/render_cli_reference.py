@@ -22,6 +22,7 @@ SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Insights", ("insights",)),
     ("Doctor", ("doctor",)),
     ("Tags", ("tags",)),
+    ("User State", ("user-state",)),
     ("Auth", ("auth",)),
     ("Reset", ("reset",)),
     ("Schema", ("schema",)),

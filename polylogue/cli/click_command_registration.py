@@ -104,6 +104,7 @@ _SHORT_HELP: dict[str, str] = {
     "schema": "Inspect and audit provider schemas.",
     "status": "Show daemon and archive status.",
     "tags": "Manage conversation tags.",
+    "user_state": "Manage durable reader user state.",
 }
 
 _COMMAND_NAMES: dict[str, str] = {
@@ -146,6 +147,7 @@ ROOT_COMMANDS: tuple[click.Command, ...] = (
     _L("resume"),
     _L("insights"),
     _L("tags"),
+    _L("user_state"),
     _L("schema"),
     _L("diagnostics"),
     _L("maintenance"),
