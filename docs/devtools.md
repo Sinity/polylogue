@@ -105,7 +105,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools lab-scenario` | Run verification-lab showcase scenario sets and baseline checks. |
 | `devtools obligation-diff` | Diff proof obligations between two git refs to surface affected assurance domains. |
 | `devtools pipeline-probe` | Run typed pipeline probes against synthetic, staged, or archive-subset inputs. |
-| `devtools proof-pack` | Domain-grouped affected coverage report for vibecode confidence. |
+| `devtools proof-pack` | Domain-grouped verification impact report for changed paths. |
 | `devtools query-memory-budget` | Measure query-memory envelopes on generated fixtures. |
 | `devtools regression-capture` | Capture pipeline-probe summaries as durable local regression cases. |
 | `devtools run-validation-lanes` | Run named validation lanes. |

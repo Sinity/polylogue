@@ -677,13 +677,13 @@ def _cost_tier_counts(report: Any, catalog: VerificationCatalog) -> dict[str, in
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Diff-shaped proof-pack report for PR confidence.")
+    parser = argparse.ArgumentParser(description="Diff-shaped verification impact report for PR review.")
     parser.add_argument("--base-ref", default="origin/master", help="Base git ref for changed-path discovery.")
     parser.add_argument("--head-ref", default="HEAD", help="Head git ref for changed-path discovery.")
     parser.add_argument("--path", action="append", dest="paths", default=None, help="Changed file path (repeatable).")
     parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON.")
     parser.add_argument("--markdown", action="store_true", help="Emit PR-comment-ready Markdown.")
-    parser.add_argument("--check", action="store_true", help="Exit non-zero when proof-pack blocking policy fails.")
+    parser.add_argument("--check", action="store_true", help="Exit non-zero when report blocking policy fails.")
     parser.add_argument(
         "--slop",
         action="store_true",
@@ -747,12 +747,12 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def render_markdown(report: dict[str, Any]) -> str:
-    """Render a taxonomy-aware Proof Pack as PR-comment-ready markdown."""
+    """Render a taxonomy-aware report as PR-comment-ready markdown."""
     refs = report["refs"]
     context = str(report.get("_context", ""))
     changed_paths_count = len(report.get("changed_paths", []))
     lines = [
-        "## Polylogue Proof Pack",
+        "## Polylogue Verification Impact",
         "",
         f"**Refs:** `{refs['base_ref']}..{refs['head_ref']}`",
         f"**Changed paths:** {changed_paths_count}",
@@ -824,7 +824,7 @@ def render_markdown(report: dict[str, Any]) -> str:
         lines.extend(["", "</details>"])
 
     # Catalog quality summary
-    lines.extend(["", "### Catalog Quality"])
+    lines.extend(["", "### Catalog Checks"])
     oracle_mix = report.get("oracle_mix", {})
     cost_tier = report.get("cost_tier", {})
     catalog_headline = report.get("catalog_headline", {})
@@ -885,10 +885,10 @@ def _append_gate_lines(lines: list[str], gates: list[dict[str, Any]], *, empty_t
 
 
 def _print_human_report(report: dict[str, Any]) -> None:
-    """Print a taxonomy-aware human-readable proof-pack report."""
+    """Print a taxonomy-aware human-readable verification report."""
     headline = report["catalog_headline"]
     print(
-        f"Proof catalog: {headline['claim_count']} claims, "
+        f"Verification catalog: {headline['claim_count']} claims, "
         f"{headline['obligation_count']} obligations, {headline['subject_count']} subjects"
     )
     print(f"Refs: {report['refs']['base_ref']}..{report['refs']['head_ref']}")

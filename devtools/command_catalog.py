@@ -358,12 +358,10 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     CommandSpec(
         "proof-pack",
         "verification",
-        "Domain-grouped affected coverage report for vibecode confidence.",
+        "Domain-grouped verification impact report for changed paths.",
         "devtools.proof_pack",
         use_when=(
-            "Get a domain-aware confidence answer about what a change affects, "
-            "instead of an undifferentiated obligation count. Maps changed paths "
-            "to impacted assurance domains with oracle-classified claim counts."
+            "Review what a change affects by domain and choose focused gates without reading a raw obligation diff."
         ),
         examples=(
             "devtools proof-pack --base-ref origin/master --head-ref HEAD",

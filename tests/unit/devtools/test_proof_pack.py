@@ -44,7 +44,7 @@ def test_proof_pack_markdown_is_pr_comment_ready() -> None:
 
     rendered = render_markdown(report)
 
-    assert "## Polylogue Proof Pack" in rendered
+    assert "## Polylogue Verification Impact" in rendered
     assert "### Required Gates (run now)" in rendered
     assert "### Always-On PR Gates" in rendered
     assert "### Confidence Gates (optional)" in rendered
