@@ -5,6 +5,9 @@ from typing import TYPE_CHECKING, TypeAlias
 from unittest.mock import MagicMock
 
 import pytest
+
+pytest.importorskip("textual", reason="Textual not installed")
+
 from textual.pilot import Pilot
 from textual.widgets import DataTable, Input, TabbedContent, Tree
 
@@ -19,7 +22,6 @@ if TYPE_CHECKING:
     from tests.infra.storage_records import ConversationBuilder
 
 pytestmark = pytest.mark.tui
-_skip = pytest.mark.skipif(False, reason="Textual not installed")
 
 
 # ---------------------------------------------------------------------------
@@ -76,7 +78,6 @@ async def _wait_workers(pilot: Pilot[None], *, selector: str | None = None, reje
 # ===========================================================================
 
 
-@_skip
 @pytest.mark.asyncio
 async def test_dashboard_stats_populated(
     storage_repository: ConversationRepository, conversation_builder: ConversationBuilderFactory
@@ -95,7 +96,6 @@ async def test_dashboard_stats_populated(
         assert msgs.value == "3"
 
 
-@_skip
 @pytest.mark.asyncio
 async def test_dashboard_provider_bars(
     storage_repository: ConversationRepository, conversation_builder: ConversationBuilderFactory
@@ -121,7 +121,6 @@ async def test_dashboard_provider_bars(
         assert "1" in claude_bar[0]
 
 
-@_skip
 @pytest.mark.asyncio
 async def test_dashboard_empty_db(storage_repository: ConversationRepository) -> None:
     """Empty DB → graceful '0' display, no errors."""
@@ -140,7 +139,6 @@ async def test_dashboard_empty_db(storage_repository: ConversationRepository) ->
 # ===========================================================================
 
 
-@_skip
 @pytest.mark.asyncio
 async def test_browser_tree_populated(
     storage_repository: ConversationRepository, conversation_builder: ConversationBuilderFactory
@@ -167,7 +165,6 @@ async def test_browser_tree_populated(
         assert len(chatgpt_node.children) >= 1
 
 
-@_skip
 @pytest.mark.asyncio
 async def test_browser_node_selection(
     storage_repository: ConversationRepository, conversation_builder: ConversationBuilderFactory
@@ -200,7 +197,6 @@ async def test_browser_node_selection(
             assert "Hello World" in viewer.source
 
 
-@_skip
 @pytest.mark.asyncio
 async def test_browser_empty_db(storage_repository: ConversationRepository) -> None:
     """Empty DB → direct empty-state leaf shown."""
@@ -229,7 +225,6 @@ async def test_browser_empty_db(storage_repository: ConversationRepository) -> N
 # ===========================================================================
 
 
-@_skip
 @pytest.mark.asyncio
 async def test_search_flow(
     storage_repository: ConversationRepository, conversation_builder: ConversationBuilderFactory
@@ -273,7 +268,6 @@ async def test_search_flow(
         assert "UniqueSearchTerm123" in viewer.source
 
 
-@_skip
 @pytest.mark.asyncio
 async def test_search_no_results(
     storage_repository: ConversationRepository, conversation_builder: ConversationBuilderFactory
@@ -304,7 +298,6 @@ async def test_search_no_results(
         assert table.row_count == 0
 
 
-@_skip
 @pytest.mark.asyncio
 async def test_search_empty_db(storage_repository: ConversationRepository) -> None:
     """Empty DB with FTS table → 0 results, no crash (messages_fts always exists)."""
@@ -330,7 +323,6 @@ async def test_search_empty_db(storage_repository: ConversationRepository) -> No
 # ===========================================================================
 
 
-@_skip
 @pytest.mark.asyncio
 async def test_keyboard_tab_switch(storage_repository: ConversationRepository) -> None:
     """Press Tab key → verify tab changes (basic navigation)."""
@@ -350,7 +342,6 @@ async def test_keyboard_tab_switch(storage_repository: ConversationRepository) -
         assert tabs.active == "search"
 
 
-@_skip
 @pytest.mark.asyncio
 async def test_dark_mode_toggle(storage_repository: ConversationRepository) -> None:
     """Press 'd' → assert dark mode toggles without crashing."""
@@ -365,7 +356,6 @@ async def test_dark_mode_toggle(storage_repository: ConversationRepository) -> N
         assert pilot.app.query_one(Dashboard)
 
 
-@_skip
 @pytest.mark.asyncio
 async def test_search_missing_index_shows_rebuild_hint(
     storage_repository: ConversationRepository, conversation_builder: ConversationBuilderFactory
@@ -407,7 +397,6 @@ def test_repository_bound_container_requires_injected_repo() -> None:
         screen._get_ops("DummyScreen")
 
 
-@_skip
 @pytest.mark.asyncio
 async def test_quit_action(storage_repository: ConversationRepository) -> None:
     """Press 'q' → app exits cleanly."""
@@ -423,7 +412,6 @@ async def test_quit_action(storage_repository: ConversationRepository) -> None:
 # ===========================================================================
 
 
-@_skip
 @pytest.mark.asyncio
 async def test_worker_failure_recovery(
     storage_repository: ConversationRepository, monkeypatch: pytest.MonkeyPatch
@@ -451,7 +439,6 @@ async def test_worker_failure_recovery(
 # ===========================================================================
 
 
-@_skip
 @pytest.mark.asyncio
 async def test_app_startup(storage_repository: ConversationRepository) -> None:
     """Test that the app starts and loads the dashboard."""

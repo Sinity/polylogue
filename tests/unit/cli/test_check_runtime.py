@@ -15,7 +15,6 @@ Validates readiness checks for the runtime environment, including:
 from __future__ import annotations
 
 import importlib
-import os
 import sqlite3
 from pathlib import Path
 
@@ -338,9 +337,10 @@ class TestRuntimeReadinessCheckResults:
 class TestRuntimeHealthReadOnlyPaths:
     """Tests for runtime readiness with read-only or inaccessible paths."""
 
-    @pytest.mark.skipif(os.name == "nt", reason="Unix-specific permission testing")
     def test_runtime_health_with_readonly_archive_root(self, tmp_path: Path) -> None:
         """Runtime health detects read-only archive_root."""
+        pytest.importorskip("pwd", reason="Unix-specific permission testing")
+
         archive_root = tmp_path / "archive"
         archive_root.mkdir(parents=True, exist_ok=True)
 
