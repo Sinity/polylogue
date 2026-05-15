@@ -95,6 +95,18 @@ work independently. Each worker gets an issue owner, owned files, avoided files,
 first verification command, and expected handoff note in
 `docs/plans/mk3-execution-log.md`.
 
+Use the lightest coordination mode that fits:
+
+- **Same-context helper** for read-only exploration, issue triage, test-output
+  classification, and narrowly scoped code review. The main agent keeps write
+  ownership and folds the findings into the current branch.
+- **Same-branch serialized worker** for small patches where the write set is
+  disjoint and the main agent can review immediately before the next worker
+  starts.
+- **Worktree worker** only when the task is long-running, risky, mechanically
+  large, or likely to need independent commits while the main branch keeps
+  moving.
+
 Good parallel lanes:
 
 - contract worker: TargetRef, reader payloads, query/status envelopes;
@@ -113,6 +125,14 @@ Serialize work when lanes touch the same shared file family:
   changes;
 - `docs/execution-plan.md` and generated docs;
 - any branch that is already waiting on CI for merge readiness.
+
+Before dispatching an autonomous wave, record in the execution log:
+
+- lane and issue owner;
+- coordination mode: same-context, same-branch serialized, or worktree;
+- exact owned and avoided files;
+- first verification command;
+- handoff artifact expected from the worker.
 
 ## Verification Economy
 

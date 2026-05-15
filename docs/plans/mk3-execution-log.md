@@ -27,6 +27,19 @@ waiting on another agent's next line of code. Each subagent should comment on
 its issue with scope before implementation and commit every successful
 milestone in its branch/worktree.
 
+Do not default to worktrees. Use the lightest coordination mode that preserves
+clarity:
+
+- **Same-context helper**: read-only research, issue-thread synthesis, test
+  failure classification, review of a proposed patch. The main agent owns all
+  writes.
+- **Same-branch serialized worker**: small implementation slice with disjoint
+  files, reviewed and committed by the main agent before another worker touches
+  adjacent files.
+- **Worktree worker**: long-running or mechanically large implementation that
+  needs independent commits, or any slice whose write set would block the main
+  checkout for too long.
+
 | Subagent lane | Best for | Owns | Avoids | First check |
 |---------------|----------|------|--------|-------------|
 | Contract worker | TargetRef, reader payloads, API envelopes | `polylogue/surfaces/`, `polylogue/daemon/http.py`, `polylogue/archive/query/`, daemon/API tests | Visual harness and CSS-heavy reader layout | `pytest tests/unit/daemon/ -q -k "api or reader or conversation"` |
@@ -43,6 +56,27 @@ Serialise work when two lanes must edit the same shared files:
 - storage DDL/schema bootstrap: topology, user-state, source/provenance lanes.
 - `docs/execution-plan.md`: one planning owner at a time.
 - generated docs: run render commands after all doc edits in a branch.
+
+## Autonomous Execution Launch Checklist
+
+Before starting an autonomous execution wave, write a short entry below with:
+
+- target wave and issue owner;
+- chosen coordination mode for each worker;
+- owned files and avoided files;
+- expected first commit or handoff artifact;
+- first focused test for each worker;
+- broad gate to run once the wave is assembled.
+
+Default launch shape:
+
+1. Same-context helper summarizes issue comments and existing code paths.
+2. Main agent chooses the first blocking implementation slice.
+3. Same-branch serialized workers handle small disjoint edits when useful.
+4. Worktree workers are reserved for topology/schema, verification tooling, or
+   packaging/deployment branches that can progress independently.
+5. Main agent integrates, runs focused checks, updates this log, then escalates
+   to `devtools verify --quick` and PR checks.
 
 ## Verification Economy
 
