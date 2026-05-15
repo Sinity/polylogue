@@ -969,6 +969,7 @@ def build_v9_to_v10_upgrade_plan(snapshot: SchemaSnapshot) -> SchemaExtensionPla
         statements.extend(s for s in _split_ddl_into_statements(_PROVIDER_META_PROMOTION_ATTACHMENT_DDL) if s)
     if snapshot.has_table("attachment_refs"):
         statements.extend(s for s in _split_ddl_into_statements(_PROVIDER_META_PROMOTION_ATTACHMENT_REF_DDL) if s)
+    if snapshot.has_table("attachments") and snapshot.has_table("attachment_refs"):
         statements.extend(s for s in _split_ddl_into_statements(_PROVIDER_META_PROMOTION_ATTACHMENT_INDEXES_DDL) if s)
     return SchemaExtensionPlan(statements=tuple(statements), scripts=())
 
@@ -991,20 +992,29 @@ def build_v10_to_v11_upgrade_plan(snapshot: SchemaSnapshot) -> SchemaExtensionPl
 def build_v11_to_v12_upgrade_plan(snapshot: SchemaSnapshot) -> SchemaExtensionPlan:
     """Add cost/token attribution columns to messages and session_profiles."""
 
-    stmts: list[str] = [
-        "ALTER TABLE messages ADD COLUMN input_tokens INTEGER NOT NULL DEFAULT 0",
-        "ALTER TABLE messages ADD COLUMN output_tokens INTEGER NOT NULL DEFAULT 0",
-        "ALTER TABLE messages ADD COLUMN cache_read_tokens INTEGER NOT NULL DEFAULT 0",
-        "ALTER TABLE messages ADD COLUMN cache_write_tokens INTEGER NOT NULL DEFAULT 0",
-        "ALTER TABLE messages ADD COLUMN model_name TEXT",
-        "ALTER TABLE session_profiles ADD COLUMN total_input_tokens INTEGER NOT NULL DEFAULT 0",
-        "ALTER TABLE session_profiles ADD COLUMN total_output_tokens INTEGER NOT NULL DEFAULT 0",
-        "ALTER TABLE session_profiles ADD COLUMN total_cache_read_tokens INTEGER NOT NULL DEFAULT 0",
-        "ALTER TABLE session_profiles ADD COLUMN total_cache_write_tokens INTEGER NOT NULL DEFAULT 0",
-        "ALTER TABLE session_profiles ADD COLUMN total_credit_cost REAL NOT NULL DEFAULT 0.0",
-        "ALTER TABLE session_profiles ADD COLUMN cost_provenance TEXT NOT NULL DEFAULT 'unknown'",
-        "ALTER TABLE session_profiles ADD COLUMN per_model_cost_json TEXT NOT NULL DEFAULT '{}'",
-    ]
+    stmts: list[str] = []
+    if snapshot.has_table("messages"):
+        stmts.extend(
+            [
+                "ALTER TABLE messages ADD COLUMN input_tokens INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE messages ADD COLUMN output_tokens INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE messages ADD COLUMN cache_read_tokens INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE messages ADD COLUMN cache_write_tokens INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE messages ADD COLUMN model_name TEXT",
+            ]
+        )
+    if snapshot.has_table("session_profiles"):
+        stmts.extend(
+            [
+                "ALTER TABLE session_profiles ADD COLUMN total_input_tokens INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE session_profiles ADD COLUMN total_output_tokens INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE session_profiles ADD COLUMN total_cache_read_tokens INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE session_profiles ADD COLUMN total_cache_write_tokens INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE session_profiles ADD COLUMN total_credit_cost REAL NOT NULL DEFAULT 0.0",
+                "ALTER TABLE session_profiles ADD COLUMN cost_provenance TEXT NOT NULL DEFAULT 'unknown'",
+                "ALTER TABLE session_profiles ADD COLUMN per_model_cost_json TEXT NOT NULL DEFAULT '{}'",
+            ]
+        )
 
     return SchemaExtensionPlan(
         statements=tuple(stmts),
