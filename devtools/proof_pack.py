@@ -32,6 +32,8 @@ from polylogue.proof.diffing import (
 )
 from polylogue.proof.models import EvidenceTaxonomy, RunnerBinding, SubjectRef
 
+_CONTRACT_EVIDENCE_DIR = Path(".cache/verification/evidence")
+
 # Taxonomy human-facing descriptions and actionability guidance.
 _TAXONOMY_DESCRIPTIONS: dict[EvidenceTaxonomy, str] = {
     "executable_behavior": "Pytest nodes, probes, smoke runs, or benchmark commands.",
@@ -236,6 +238,7 @@ def build_proof_pack(
         "manual_review_requirements": _manual_review_requirements(affected_claims),
         "stable_routed_checks": list(affected.obligation_diff.stable_affected),
         "artifact_source_groups": artifact_source_groups,
+        "contract_evidence_artifacts": _contract_evidence_summary(root),
         "known_gaps": known_gaps,
         "additional_known_gaps": additional_known_gaps,
         "oracle_mix": dict(Counter(claim.oracle for claim in affected_claims)),
@@ -388,6 +391,47 @@ def _manual_review_requirements(claims: list[Any]) -> list[dict[str, Any]]:
                 }
             )
     return requirements
+
+
+def _contract_evidence_summary(root: Path) -> dict[str, Any]:
+    evidence_dir = root / _CONTRACT_EVIDENCE_DIR
+    if not evidence_dir.exists():
+        return {
+            "artifact_dir": _CONTRACT_EVIDENCE_DIR.as_posix(),
+            "artifact_count": 0,
+            "by_surface": {},
+            "artifacts": [],
+        }
+
+    artifacts: list[dict[str, Any]] = []
+    by_surface: Counter[str] = Counter()
+    for path in sorted(evidence_dir.glob("*.json")):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        surface = str(payload.get("surface") or "unknown")
+        by_surface[surface] += 1
+        artifacts.append(
+            {
+                "path": path.relative_to(root).as_posix(),
+                "contract": str(payload.get("contract") or ""),
+                "surface": surface,
+                "test_nodeid": str(payload.get("test_nodeid") or ""),
+                "git_sha": str(payload.get("git_sha") or ""),
+                "dirty": bool(payload.get("dirty", False)),
+                "timestamp": str(payload.get("timestamp") or ""),
+            }
+        )
+
+    return {
+        "artifact_dir": _CONTRACT_EVIDENCE_DIR.as_posix(),
+        "artifact_count": len(artifacts),
+        "by_surface": dict(sorted(by_surface.items())),
+        "artifacts": artifacts[-20:],
+    }
 
 
 def _known_gaps(
@@ -809,6 +853,10 @@ def render_markdown(report: dict[str, Any]) -> str:
     artifact_source_groups = report.get("artifact_source_groups", {})
     _render_artifact_source_groups_markdown(lines, artifact_source_groups)
 
+    # Real pytest evidence artifacts
+    lines.extend(["", "### Contract Evidence Artifacts"])
+    _render_contract_evidence_markdown(lines, report.get("contract_evidence_artifacts", {}))
+
     # Manual review requirements
     manual_review_requirements = report.get("manual_review_requirements", [])
     if manual_review_requirements:
@@ -861,16 +909,45 @@ def _render_artifact_source_groups_markdown(lines: list[str], groups: dict[str, 
         lines.append("- no affected checks")
         return
 
+    rendered_any = False
     for taxonomy_name in _TAXONOMY_SORT_ORDER:
         group = groups.get(taxonomy_name)
         if not isinstance(group, dict) or group.get("check_count", 0) == 0:
             continue
+        rendered_any = True
         count = group["check_count"]
         description = str(group.get("description", ""))
         artifact_source = str(group.get("artifact_source", taxonomy_name))
         actionable = bool(group.get("actionable", False))
         label = "actionable" if actionable else "does not block"
         lines.append(f"- **{artifact_source}** ({label}): {count} check(s) -- {description}")
+    if not rendered_any:
+        lines.append("- no affected checks")
+
+
+def _render_contract_evidence_markdown(lines: list[str], summary: object) -> None:
+    if not isinstance(summary, dict):
+        lines.append("- none found")
+        return
+    artifact_count = int(summary.get("artifact_count") or 0)
+    artifact_dir = str(summary.get("artifact_dir") or _CONTRACT_EVIDENCE_DIR.as_posix())
+    if artifact_count == 0:
+        lines.append(f"- none found in `{artifact_dir}`")
+        return
+    lines.append(f"- {artifact_count} artifact(s) in `{artifact_dir}`")
+    by_surface = summary.get("by_surface")
+    if isinstance(by_surface, dict) and by_surface:
+        rendered = ", ".join(f"{surface}: {count}" for surface, count in sorted(by_surface.items()))
+        lines.append(f"- by surface: {rendered}")
+    artifacts = summary.get("artifacts")
+    if isinstance(artifacts, list) and artifacts:
+        for artifact in artifacts[:5]:
+            if not isinstance(artifact, dict):
+                continue
+            contract = str(artifact.get("contract") or "unknown")
+            nodeid = str(artifact.get("test_nodeid") or "unknown")
+            path = str(artifact.get("path") or "")
+            lines.append(f"- `{contract}` from `{nodeid}` -> `{path}`")
 
 
 def _checks_payload_merge(
@@ -946,6 +1023,9 @@ def _print_human_report(report: dict[str, Any]) -> None:
     print()
     print(f"Manual review requirements: {len(report.get('manual_review_requirements', []))}")
     print(f"Stable routed checks: {len(report.get('stable_routed_checks', []))}")
+    evidence = report.get("contract_evidence_artifacts", {})
+    if isinstance(evidence, dict):
+        print(f"Contract evidence artifacts: {evidence.get('artifact_count', 0)}")
     print(f"Known gaps: {len(report.get('known_gaps', []))}")
 
     check_result = report.get("check")
