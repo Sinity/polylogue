@@ -171,6 +171,43 @@ Resource rules:
 
 ## Execution Entries
 
+### 2026-05-15 - Verification suppressions reality scan
+
+Target:
+
+- #1062 suppression/exception discipline as a concrete source scan, not only
+  an empty registry expiry lint.
+
+Coordination:
+
+- Main-agent implementation; no subagent needed because the write set is
+  limited to `devtools verify-suppressions` and its unit tests.
+
+Outcome:
+
+- `devtools verify-suppressions` now discovers real source-level exception
+  mechanisms across `polylogue/`, `tests/`, and `devtools/`: `pytest.skip`,
+  `pytest.xfail`, `pytest.mark.skip/skipif/xfail`, `# noqa`,
+  `# type: ignore[...]`, and coverage ignores.
+- Discovery uses Python AST/tokenization rather than text grep so fixture
+  strings do not inflate the report.
+- `--enforce-discovered` blocks unregistered discovered exceptions; default
+  mode reports the current backlog so existing repo debt is visible without
+  hiding behind an empty `docs/plans/suppressions.yaml`.
+
+Observed baseline:
+
+- `devtools verify-suppressions --json`: 175 discovered source exceptions,
+  all currently unregistered; `blocking=False` without
+  `--enforce-discovered`.
+
+Verification:
+
+- `pytest -q tests/unit/devtools/test_verify_suppressions.py`
+- `ruff check devtools/verify_suppressions.py tests/unit/devtools/test_verify_suppressions.py`
+- `mypy --strict devtools/verify_suppressions.py tests/unit/devtools/test_verify_suppressions.py`
+- `devtools verify-suppressions --json`
+
 ### 2026-05-15 - MK3 design pack dissolved into tracker
 
 Outcome:
