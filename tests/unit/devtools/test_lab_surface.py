@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
@@ -117,6 +118,38 @@ def test_lab_scenario_live_archive_smoke_uses_active_archive() -> None:
     assert request.live is True
     assert request.fresh is False
     assert request.ingest is False
+
+
+def test_lab_scenario_reader_visual_smoke_runs_pytest(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    completed = subprocess.CompletedProcess(
+        args=["python", "-m", "pytest", "-q", "tests/visual"],
+        returncode=0,
+        stdout="4 passed\n",
+        stderr="",
+    )
+
+    with patch("devtools.lab_scenario.subprocess.run", return_value=completed) as mock_run:
+        result = lab_scenario.main(
+            [
+                "run",
+                "reader-visual-smoke",
+                "--report-dir",
+                str(tmp_path),
+                "--json",
+            ]
+        )
+
+    assert result == 0
+    command = mock_run.call_args.kwargs["args"] if "args" in mock_run.call_args.kwargs else mock_run.call_args.args[0]
+    assert command[-2:] == ["-q", "tests/visual"]
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["scenario"] == "reader-visual-smoke"
+    assert payload["exit_code"] == 0
+    report = json.loads((tmp_path / "reader-visual-smoke.json").read_text(encoding="utf-8"))
+    assert report["stdout"] == "4 passed\n"
 
 
 def test_lab_scenario_verify_baselines_delegates_to_baseline_runner(monkeypatch: pytest.MonkeyPatch) -> None:

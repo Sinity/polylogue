@@ -186,6 +186,26 @@ Verification:
 - `devtools verify --quick`
 - `devtools verify --affected --skip-slow`
 
+### 2026-05-15 - Reader visual lane lab-scenario wiring
+
+Target:
+
+- #865 operator-facing command for the new fast reader visual/DOM lane.
+
+Outcome:
+
+- Added `devtools lab-scenario run reader-visual-smoke` as the named command
+  wrapper around `pytest -q tests/visual`.
+- `devtools lab-scenario list --json` now distinguishes showcase scenarios
+  from the reader visual lane instead of pretending the visual lane has
+  showcase tier-0 baselines.
+- Added unit coverage for listing and command dispatch with report output.
+
+Verification:
+
+- `pytest -q tests/unit/devtools/test_lab_list_subcommands.py tests/unit/devtools/test_lab_surface.py -k "lab_scenario"`
+- `devtools lab-scenario run reader-visual-smoke --json`
+
 ### 2026-05-15 - Wave 1 reader query smoke closure
 
 Target:
