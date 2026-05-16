@@ -30,6 +30,7 @@ from polylogue.pipeline.services.ingest_batch._core import (
     _INGEST_RESULT_CHUNK_SIZE,
     _process_ingest_batch_sync,
 )
+from polylogue.pipeline.services.ingest_batch._models import _IngestBatchSummary
 from polylogue.sources.dispatch import _detect_provider_from_raw_bytes
 from polylogue.sources.live.batch_observability import (
     conversation_ids_for_source_path,
@@ -871,6 +872,7 @@ class LiveBatchProcessor:
             )
             raw_by_id[raw_id] = path
 
+        summary: _IngestBatchSummary | None = None
         if raw_records:
             self._persist_raw_records(raw_records)
             if heartbeat is not None:

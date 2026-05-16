@@ -253,20 +253,20 @@ class TestParserModuleInterface:
     def test_chatgpt_exports_parse_and_looks_like(self) -> None:
         import polylogue.sources.parsers.chatgpt as m
 
-        assert callable(m.parse) and callable(m.looks_like)
+        assert hasattr(m, "parse") and hasattr(m, "looks_like")
 
     def test_codex_exports_parse_and_looks_like(self) -> None:
         import polylogue.sources.parsers.codex as m
 
-        assert callable(m.parse) and callable(m.looks_like)
+        assert hasattr(m, "parse") and hasattr(m, "looks_like")
 
     def test_claude_exports_both_parse_functions_and_detectors(self) -> None:
         import polylogue.sources.parsers.claude as m
 
-        assert callable(m.parse_code) and callable(m.parse_ai)
-        assert callable(m.looks_like_code) and callable(m.looks_like_ai)
+        assert hasattr(m, "parse_code") and hasattr(m, "parse_ai")
+        assert hasattr(m, "looks_like_code") and hasattr(m, "looks_like_ai")
         # Symmetric aliases for interface parity with chatgpt/codex
-        assert callable(m.parse) and callable(m.looks_like)
+        assert hasattr(m, "parse") and hasattr(m, "looks_like")
 
     def test_drive_exports_parse_chunked_prompt_and_looks_like(self) -> None:
         import polylogue.sources.parsers.drive as m

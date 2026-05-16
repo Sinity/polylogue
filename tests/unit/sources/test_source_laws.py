@@ -130,7 +130,7 @@ def _parsed_message(
 ) -> ParsedMessage:
     return ParsedMessage(
         provider_message_id=provider_message_id,
-        role=Role.normalize(role) if isinstance(role, str) else role,
+        role=role if isinstance(role, Role) else Role.normalize(role),
         text=text,
     )
 

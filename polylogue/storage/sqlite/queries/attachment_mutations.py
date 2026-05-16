@@ -92,13 +92,13 @@ async def prune_attachments(
             """,
             (conversation_id, *keep_attachment_ids),
         )
-        refs_to_remove = await cursor.fetchall()
+        refs_to_remove = list(await cursor.fetchall())
     else:
         cursor = await conn.execute(
             "SELECT attachment_id FROM attachment_refs WHERE conversation_id = ?",
             (conversation_id,),
         )
-        refs_to_remove = await cursor.fetchall()
+        refs_to_remove = list(await cursor.fetchall())
 
     if not refs_to_remove:
         return

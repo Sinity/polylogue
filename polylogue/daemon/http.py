@@ -258,7 +258,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
     def _client_host(self) -> str:
         """Extract client IP from the request."""
         # The client_address is (host, port) from the underlying socket.
-        return self.client_address[0] if self.client_address else "127.0.0.1"
+        return str(self.client_address[0])
 
     def _check_auth(self) -> bool:
         """Validate the Authorization header against the daemon token.

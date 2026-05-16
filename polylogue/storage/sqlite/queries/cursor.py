@@ -15,7 +15,7 @@ async def get_known_source_cursors(
     result: dict[str, dict[str, object]] = {}
     cursor = await conn.execute("SELECT source_path, st_dev, st_ino, st_size, mtime_ns FROM source_file_cursor")
     while True:
-        rows = await cursor.fetchmany(1000)
+        rows = list(await cursor.fetchmany(1000))
         if not rows:
             break
         for row in rows:

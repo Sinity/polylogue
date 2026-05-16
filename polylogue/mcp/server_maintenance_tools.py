@@ -30,8 +30,8 @@ def register_maintenance_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             return hooks.json_payload(
                 MCPMutationStatusPayload(
                     status="ok" if success else "failed",
-                    index_exists=index_exists_value if isinstance(index_exists_value, bool) else False,
-                    indexed_messages=indexed_messages_value if isinstance(indexed_messages_value, int) else 0,
+                    index_exists=bool(index_exists_value),
+                    indexed_messages=int(indexed_messages_value),
                 ),
                 exclude_none=True,
             )

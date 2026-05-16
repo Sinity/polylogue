@@ -124,4 +124,4 @@ class Dashboard(RepositoryBoundContainer):
 
         for provider, count in sorted_providers[:10]:
             bar = ProviderBar(provider or "unknown", count, max_count)
-            bars_container.mount(bar)
+            _ = bars_container.mount(bar)

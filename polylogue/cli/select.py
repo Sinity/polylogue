@@ -7,7 +7,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from datetime import datetime
-from typing import TYPE_CHECKING, Literal, Protocol, cast
+from typing import TYPE_CHECKING, Literal, NoReturn, Protocol, cast
 
 import click
 
@@ -188,7 +188,7 @@ async def select_conversation_rows(env: AppEnv, request: RootModeRequest, *, lim
     )
 
 
-def _raise_select_query_error(exc: QuerySpecError | QueryPlanError) -> None:
+def _raise_select_query_error(exc: QuerySpecError | QueryPlanError) -> NoReturn:
     if isinstance(exc, QuerySpecError):
         if exc.field in {"since", "until"}:
             click.echo(f"Error: Cannot parse date: '{exc.value}'", err=True)

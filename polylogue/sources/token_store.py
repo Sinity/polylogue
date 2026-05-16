@@ -10,7 +10,7 @@ from __future__ import annotations
 from contextlib import suppress
 from importlib import import_module
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import Protocol, cast, runtime_checkable
 
 from polylogue.logging import get_logger
 
@@ -93,14 +93,10 @@ class KeyringTokenStore:
     @staticmethod
     def _try_import_keyring() -> KeyringModule | None:
         try:
-            candidate = import_module("keyring")
-            keyring = candidate if isinstance(candidate, KeyringModule) else None
-            if keyring is None:
-                return None
-
+            candidate = cast(KeyringModule, import_module("keyring"))
             # Test that keyring backend is functional
-            keyring.get_keyring()
-            return keyring
+            candidate.get_keyring()
+            return candidate
         except Exception:
             return None
 

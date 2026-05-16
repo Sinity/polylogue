@@ -240,7 +240,7 @@ class TestBranchRepositoryTraversal:
 
         assert parent is not None and str(parent.id) == ids["root"]
         assert {str(conv.id) for conv in children} == {ids["continuation"], ids["sidechain"]}
-        assert root is not None and str(root.id) == ids["root"]
+        assert str(root.id) == ids["root"]
         assert {str(conv.id) for conv in tree} == {
             ids["root"],
             ids["continuation"],

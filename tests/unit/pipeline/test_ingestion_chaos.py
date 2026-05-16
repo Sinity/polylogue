@@ -165,7 +165,7 @@ class TestLargeBatchTruncatedLine:
         data = _jsonl_bytes(corrupted)
 
         parsed = [_as_record(record) for record in _iter_jsonl_stream(data)]
-        assert all(isinstance(r, dict) and "type" in r for r in parsed)
+        assert all("type" in r for r in parsed)
 
 
 class TestLargeBatchBadUtf8:

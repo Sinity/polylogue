@@ -211,7 +211,7 @@ def run_in_pty(
         """Convert pyte history line (StaticDefaultDict of Char) to string."""
         if not isinstance(chardict, Mapping) or not chardict:
             return ""
-        max_col = max(chardict.keys()) if chardict else 0
+        max_col = max(chardict.keys())
         chars: list[str] = []
         for index in range(max_col + 1):
             char = chardict[index]

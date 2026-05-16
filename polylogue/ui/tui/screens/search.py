@@ -62,7 +62,7 @@ class Search(RepositoryBoundContainer):
 
     async def on_data_table_row_selected(self, message: DataTable.RowSelected) -> None:
         """Handle result selection."""
-        if not message.row_key:
+        if message.row_key.value is None:
             return
 
         conv_id = str(message.row_key.value)

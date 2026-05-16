@@ -256,10 +256,11 @@ async def output_stats_sql(
                 exit_code=2 if output_format == "json" else None,
             )
             return
-        stats = await repo.aggregate_message_stats()
 
     if has_filters:
         stats = await repo.aggregate_message_stats(conv_ids)
+    else:
+        stats = await repo.aggregate_message_stats()
 
     date_range = ""
     if stats["min_sort_key"] and stats["max_sort_key"]:
@@ -279,6 +280,8 @@ async def output_stats_sql(
         "date_range": None,
         "filtered": has_filters,
     }
+    pending_embedding_conversations = 0
+    stale_embedding_messages = 0
     if not has_filters:
         assert archive_stats is not None
         pending_embedding_conversations = getattr(archive_stats, "pending_embedding_conversations", 0)
@@ -320,7 +323,7 @@ async def output_stats_sql(
         out(f"Words: ~{stats['words_approx']:,}")
 
     providers = stats.get("providers")
-    if isinstance(providers, dict) and providers:
+    if providers:
         provider_parts = [f"{name} ({count:,})" for name, count in providers.items()]
         out(f"Providers: {', '.join(provider_parts)}")
 

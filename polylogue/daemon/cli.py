@@ -79,10 +79,10 @@ async def _ensure_fts_startup_readiness() -> None:
     gaps are repaired by conversation-scoped convergence; startup must not count
     all messages on every daemon restart.
     """
-    from polylogue.paths import archive_root, db_path
+    from polylogue.paths import db_path
     from polylogue.storage.sqlite.connection_profile import open_connection
 
-    db = db_path() or Path(archive_root()) / "polylogue.db"
+    db = db_path()
     if not db.exists():
         return
 
@@ -124,10 +124,10 @@ async def _ensure_fts_startup_readiness() -> None:
 
 async def _periodic_wal_checkpoint() -> None:
     """Run WAL checkpoint every 5 minutes to keep the WAL file bounded."""
-    from polylogue.paths import archive_root, db_path
+    from polylogue.paths import db_path
     from polylogue.storage.sqlite.connection_profile import open_connection
 
-    db = db_path() or Path(archive_root()) / "polylogue.db"
+    db = db_path()
     while True:
         await asyncio.sleep(300)  # 5 minutes
         if not db.exists():
@@ -145,10 +145,10 @@ async def _periodic_wal_checkpoint() -> None:
 
 async def _periodic_heartbeat() -> None:
     """Log daemon heartbeat with archive stats every 15 minutes."""
-    from polylogue.paths import archive_root, db_path
+    from polylogue.paths import db_path
     from polylogue.storage.sqlite.connection_profile import open_connection
 
-    db = db_path() or Path(archive_root()) / "polylogue.db"
+    db = db_path()
     while True:
         await asyncio.sleep(900)  # 15 minutes
         if not db.exists():
@@ -178,10 +178,10 @@ async def _periodic_db_optimize() -> None:
     that need it and never blocks reads.  It is NOT a VACUUM and does
     not rewrite the file.
     """
-    from polylogue.paths import archive_root, db_path
+    from polylogue.paths import db_path
     from polylogue.storage.sqlite.connection_profile import open_connection
 
-    db = db_path() or Path(archive_root()) / "polylogue.db"
+    db = db_path()
     while True:
         await asyncio.sleep(86_400)  # 24 hours
         if not db.exists():
@@ -206,10 +206,10 @@ async def _periodic_convergence_check(
     maintains these atomically via commit_archive_write_effects(),
     so gaps should be rare — this catches edge cases like crash recovery.
     """
-    from polylogue.paths import archive_root, db_path
+    from polylogue.paths import db_path
     from polylogue.storage.sqlite.connection_profile import open_connection
 
-    db = db_path() or Path(archive_root()) / "polylogue.db"
+    db = db_path()
     while True:
         await asyncio.sleep(600)  # 10 minutes
         if not db.exists():
@@ -505,9 +505,9 @@ async def run_daemon_services(
         # refresh derived state after successful writes.
         from polylogue.daemon.convergence import DaemonConverger
         from polylogue.daemon.convergence_stages import make_default_convergence_stages
-        from polylogue.paths import archive_root, db_path
+        from polylogue.paths import db_path
 
-        _db = db_path() or Path(archive_root()) / "polylogue.db"
+        _db = db_path()
 
         converger = DaemonConverger(
             stages=make_default_convergence_stages(_db),

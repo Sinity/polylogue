@@ -191,6 +191,7 @@ async def test_render_formats(
     convs = [c for c in convs if c.provider == "chatgpt"]
     assert len(convs) > 0
 
+    output = ""
     if format == "markdown":
         # Markdown formatting path uses ConversationFormatter directly.
         from polylogue.rendering.core import ConversationFormatter

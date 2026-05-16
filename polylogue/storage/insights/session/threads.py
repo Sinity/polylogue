@@ -253,7 +253,7 @@ async def iter_root_id_pages_async(
 ) -> AsyncIterator[list[str]]:
     cursor = await conn.execute(_ROOT_THREAD_IDS_SQL)
     while True:
-        rows = await cursor.fetchmany(size)
+        rows = list(await cursor.fetchmany(size))
         if not rows:
             break
         yield [str(row["conversation_id"]) for row in rows]

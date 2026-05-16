@@ -266,7 +266,7 @@ def extract_attribution(
                 languages.add(lang_name)
 
     normalized_repo_paths = normalize_repo_paths(repo_paths)
-    normalized_repo_names = {str(name).strip() for name in repo_names if isinstance(name, str) and name.strip()}
+    normalized_repo_names = {name.strip() for name in repo_names if name.strip()}
     normalized_repo_names.update(normalize_repo_names(repo_paths=normalized_repo_paths))
     return ConversationAttribution(
         repo_paths=normalized_repo_paths,

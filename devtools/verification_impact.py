@@ -342,7 +342,7 @@ def _domain_coverage(domains_data: dict[str, dict[str, Any]], catalog: Any) -> l
         obligations_by_domain[obligation.claim.assurance_domain] += 1
     coverage: list[dict[str, Any]] = []
     for domain, info in sorted(domains_data.items()):
-        info_dict = info if isinstance(info, dict) else {}
+        info_dict = info
         claims = claims_by_domain.get(domain, [])
         coverage.append(
             {
@@ -461,7 +461,7 @@ def _known_gaps(
 
     for domain in affected_domains:
         info = domains_data.get(domain, {})
-        raw_gaps = info.get("coverage_gaps", []) if isinstance(info, dict) else []
+        raw_gaps = info.get("coverage_gaps", [])
         for raw_gap in raw_gaps:
             gaps_by_domain[domain].append(str(raw_gap))
     gap_payloads = [

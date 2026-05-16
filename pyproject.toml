@@ -174,18 +174,31 @@ files = [
 ignore_missing_imports = true
 disallow_subclassing_any = false  # Pydantic BaseModel seen as Any (plugin incompatible with nix mypy 1.17)
 disallow_untyped_decorators = false  # Click decorators are inherently untyped
+# Tighten suppression discipline so the verify-suppressions scanner is a
+# backstop, not the primary enforcement mechanism (#1062 Pack B).
+enable_error_code = [
+    "ignore-without-code",       # forbid bare `# type: ignore`; require `[error-code]`
+    "redundant-self",            # flag unnecessary explicit Self annotations
+    "redundant-expr",            # flag always-true / always-false subexpressions
+    "possibly-undefined",        # flag names only defined on some branches
+    "truthy-bool",               # flag implicit-truthy use of non-bool types
+    "truthy-iterable",           # flag implicit-truthy use of iterables
+    "unused-awaitable",          # flag awaitables that are constructed but not awaited
+]
 
 [tool.ruff]
 line-length = 120
 target-version = "py310"
 cache-dir = ".cache/ruff"
+# Excludes are limited to vendored/build directories; every path below is
+# repository infrastructure, not production code. Audited under #1062 Pack B.
 exclude = [
-    ".git",
-    "__pycache__",
-    "build",
-    "dist",
-    ".venv",
-    "venv",
+    ".git",         # version control metadata
+    "__pycache__",  # bytecode caches
+    "build",        # setuptools build output
+    "dist",         # wheel/sdist artifacts
+    ".venv",        # devshell-managed virtual environment
+    "venv",         # legacy virtual environment fallback
 ]
 
 [tool.ruff.lint]
@@ -206,6 +219,9 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
+# Per-file ignores are documented justifications, not blanket exemptions.
+# Each entry carries the reason inline so the next reader can re-validate
+# whether the suppression is still load-bearing. Audited under #1062 Pack B.
 "tests/**" = [
     "E402",   # consolidated mega-files have mid-file section imports
     "N803",   # test parameter naming follows test conventions

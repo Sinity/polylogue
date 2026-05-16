@@ -875,7 +875,7 @@ def make_message(
         1 if (block_types & {ContentBlockType.TOOL_USE, ContentBlockType.TOOL_RESULT}) or role_value is Role.TOOL else 0
     )
     has_thinking = 1 if ContentBlockType.THINKING in block_types else 0
-    default_sort_key = _timestamp_sort_key(ts) if ts is not None else None
+    default_sort_key = _timestamp_sort_key(ts)
     default_content_hash = uuid4().hex[:16]
 
     payload: RecordPayload = {

@@ -543,7 +543,7 @@ class MCPReadinessCheckPayload(SurfacePayloadModel):
 
 def _extract_readiness_source(report: ReadinessReport) -> str | None:
     provenance = report.provenance
-    if provenance is None or provenance.source is None:
+    if provenance.source is None:
         return None
     return provenance.source
 

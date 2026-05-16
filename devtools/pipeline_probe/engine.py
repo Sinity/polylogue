@@ -702,8 +702,8 @@ async def run_probe(request: PipelineProbeRequest) -> ProbeSummary:
             "provenance": _build_probe_provenance(),
             "result": result_payload,
             "run_payload": run_payload,
-            "db_stats": _db_row_counts(db_path_val) if db_path_val is not None else {},
-            "raw_fanout": _db_raw_fanout(db_path_val) if db_path_val is not None else [],
+            "db_stats": _db_row_counts(db_path_val),
+            "raw_fanout": _db_raw_fanout(db_path_val),
         }
     elif probe_mode == PipelineProbeInputMode.SOURCE_SUBSET.value:
         source_paths = _paths(request.source_paths)
@@ -753,8 +753,8 @@ async def run_probe(request: PipelineProbeRequest) -> ProbeSummary:
             "provenance": _build_probe_provenance(source_inputs=source_inputs),
             "result": result_payload,
             "run_payload": run_payload,
-            "db_stats": _db_row_counts(db_path_val) if db_path_val is not None else {},
-            "raw_fanout": _db_raw_fanout(db_path_val) if db_path_val is not None else [],
+            "db_stats": _db_row_counts(db_path_val),
+            "raw_fanout": _db_raw_fanout(db_path_val),
         }
     else:
         sample_per_provider = request.sample_per_provider or 50
@@ -829,8 +829,8 @@ async def run_probe(request: PipelineProbeRequest) -> ProbeSummary:
             "provenance": _build_probe_provenance(manifest_path=manifest_path),
             "result": result_payload,
             "run_payload": run_payload,
-            "db_stats": _db_row_counts(db_path_val) if db_path_val is not None else {},
-            "raw_fanout": _db_raw_fanout(db_path_val) if db_path_val is not None else {},
+            "db_stats": _db_row_counts(db_path_val),
+            "raw_fanout": _db_raw_fanout(db_path_val),
         }
 
     return summary

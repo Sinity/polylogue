@@ -116,7 +116,7 @@ async def iter_raw_ids(
     )
     cursor = await conn.execute(sql, params)
     while True:
-        rows = await cursor.fetchmany(page_size)
+        rows = list(await cursor.fetchmany(page_size))
         if not rows:
             break
         for row in rows:
@@ -142,7 +142,7 @@ async def iter_raw_headers(
     )
     cursor = await conn.execute(sql, params)
     while True:
-        rows = await cursor.fetchmany(page_size)
+        rows = list(await cursor.fetchmany(page_size))
         if not rows:
             break
         for row in rows:
@@ -164,7 +164,7 @@ async def get_known_source_mtimes(conn: aiosqlite.Connection) -> dict[str, str]:
     result: dict[str, str] = {}
     cursor = await conn.execute("SELECT source_path, file_mtime FROM raw_conversations WHERE file_mtime IS NOT NULL")
     while True:
-        rows = await cursor.fetchmany(1000)
+        rows = list(await cursor.fetchmany(1000))
         if not rows:
             break
         for row in rows:
@@ -182,7 +182,7 @@ async def get_raw_conversations_batch(conn: aiosqlite.Connection, raw_ids: list[
     )
     records: list[RawConversationRecord] = []
     while True:
-        rows = await cursor.fetchmany(200)
+        rows = list(await cursor.fetchmany(200))
         if not rows:
             break
         records.extend(_row_to_raw_conversation(row) for row in rows)

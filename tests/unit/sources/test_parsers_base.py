@@ -245,7 +245,7 @@ def test_parse_code_variants(messages: list[object], expected: int | str, desc: 
     result = parse_code(messages, "fallback-id")
     if isinstance(expected, int):
         assert len(result.messages) == expected, f"Failed {desc}"
-    elif isinstance(expected, str) and result.messages:
+    elif result.messages:
         assert result.messages[0].role == expected, f"Failed {desc}"
 
 
