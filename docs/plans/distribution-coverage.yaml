@@ -22,7 +22,6 @@ artifacts:
     verification_command: devtools verify-distribution-surface
     ci_build: false
     ci_test: false
-    freshness_days: null
     notes: >
       pyproject.toml uses [build-system] with hatchling.
       The source-checkout distribution gate builds the wheel,
@@ -39,7 +38,6 @@ artifacts:
     verification_command: devtools verify-distribution-surface
     ci_build: false
     ci_test: false
-    freshness_days: null
     notes: >
       Source distribution embeds polylogue/_build_info.py. The
       distribution gate unpacks the sdist outside .git, rebuilds
@@ -54,7 +52,6 @@ artifacts:
     install_command: nix profile install
     ci_build: true
     ci_test: true
-    freshness_days: 1
     notes: >
       Nix flake check runs in CI (nix-build gate). nix flake
       check validates the derivation can build. Nix is the

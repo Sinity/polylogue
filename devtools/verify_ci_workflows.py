@@ -5,7 +5,19 @@ Checks each .github/workflows/*.yml file for:
 - polylogue CLI commands: must match the installed CLI surface
 - file/dir paths passed to ruff/mypy/pytest: must exist in the repo
 
+Also exposes an inventory of workflow facts that other manifest checks
+consume to cross-reference declared CI state against actual workflow YAML:
+
+- workflow_names: the ``name:`` of each workflow
+- job_names: the keys under ``jobs:`` for each workflow
+- run_commands: every ``run:`` script string concatenated across all steps
+- artifact_uploads: artifact ``name`` values uploaded via
+  ``actions/upload-artifact``
+- triggers: top-level ``on:`` keys (workflow_dispatch, pull_request, push, ...)
+
 Does NOT check remote CI state, GitHub secrets, or external service calls.
+Remote facts (branch protection, required checks, success rate, runner
+availability) are deliberately not invented here.
 """
 
 from __future__ import annotations
@@ -14,6 +26,7 @@ import argparse
 import re
 import shlex
 import sys
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
@@ -98,6 +111,113 @@ def _check_paths(
                 if not path.exists():
                     warnings.append(f"{workflow}:{job}/{step!r}: {label} references non-existent path {part!r}")
     return warnings
+
+
+@dataclass(frozen=True)
+class WorkflowFacts:
+    """Locally-knowable facts extracted from a single workflow YAML."""
+
+    path: Path
+    workflow_name: str
+    job_names: tuple[str, ...]
+    run_commands: tuple[str, ...]
+    artifact_uploads: tuple[str, ...]
+    triggers: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class WorkflowInventory:
+    """Aggregate facts across every workflow under .github/workflows/."""
+
+    workflows: tuple[WorkflowFacts, ...] = field(default_factory=tuple)
+
+    @property
+    def workflow_names(self) -> tuple[str, ...]:
+        return tuple(w.workflow_name for w in self.workflows if w.workflow_name)
+
+    @property
+    def all_job_names(self) -> tuple[str, ...]:
+        return tuple(name for w in self.workflows for name in w.job_names)
+
+    @property
+    def all_run_commands(self) -> tuple[str, ...]:
+        return tuple(run for w in self.workflows for run in w.run_commands)
+
+    @property
+    def all_artifact_uploads(self) -> tuple[str, ...]:
+        return tuple(name for w in self.workflows for name in w.artifact_uploads)
+
+
+def _extract_workflow_facts(path: Path, workflow: dict[str, object]) -> WorkflowFacts:
+    """Pull job names, run commands, artifact names, and triggers from one YAML."""
+    workflow_name = workflow.get("name") if isinstance(workflow.get("name"), str) else ""
+    triggers: list[str] = []
+    # PyYAML parses the bare key ``on`` as the boolean ``True`` (YAML 1.1
+    # norway-style problem), so the actual triggers section can live under
+    # either ``"on"`` or ``True``. We accept both.
+    # Cast workflow to a dynamic-key dict for the boolean-key lookup since the
+    # declared type only models string keys.
+    raw_workflow: dict[object, object] = dict(workflow.items())
+    on = raw_workflow.get("on") if "on" in raw_workflow else raw_workflow.get(True)
+    if isinstance(on, dict | list):
+        triggers.extend(str(k) for k in on)
+    elif isinstance(on, str):
+        triggers.append(on)
+
+    job_names: list[str] = []
+    run_commands: list[str] = []
+    artifact_uploads: list[str] = []
+    jobs = workflow.get("jobs")
+    if isinstance(jobs, dict):
+        for job_name, job in jobs.items():
+            job_names.append(str(job_name))
+            if not isinstance(job, dict):
+                continue
+            for step in job.get("steps", []):
+                if not isinstance(step, dict):
+                    continue
+                run = step.get("run")
+                if isinstance(run, str) and run.strip():
+                    run_commands.append(run)
+                uses = step.get("uses")
+                if isinstance(uses, str) and uses.startswith("actions/upload-artifact"):
+                    with_block = step.get("with")
+                    if isinstance(with_block, dict):
+                        artifact_name = with_block.get("name")
+                        if isinstance(artifact_name, str) and artifact_name.strip():
+                            artifact_uploads.append(artifact_name)
+
+    return WorkflowFacts(
+        path=path,
+        workflow_name=str(workflow_name) if workflow_name else "",
+        job_names=tuple(job_names),
+        run_commands=tuple(run_commands),
+        artifact_uploads=tuple(artifact_uploads),
+        triggers=tuple(triggers),
+    )
+
+
+def inventory_workflows(workflows_dir: Path | None = None) -> WorkflowInventory:
+    """Parse every ``.yml`` workflow under ``workflows_dir`` into facts.
+
+    Used by manifest checks that need to cross-reference declared CI
+    state (job names, command presence, artifact uploads, triggers)
+    against committed workflow YAML.
+    """
+    target = workflows_dir if workflows_dir is not None else WORKFLOWS_DIR
+    if not target.exists():
+        return WorkflowInventory()
+    facts: list[WorkflowFacts] = []
+    for path in sorted(target.glob("*.yml")):
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = yaml.safe_load(f)
+        except Exception:
+            continue
+        if not isinstance(data, dict):
+            continue
+        facts.append(_extract_workflow_facts(path, data))
+    return WorkflowInventory(workflows=tuple(facts))
 
 
 def check_workflow(path: Path, root: Path, known_commands: frozenset[str]) -> tuple[list[str], list[str]]:

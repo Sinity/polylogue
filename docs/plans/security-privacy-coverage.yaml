@@ -120,14 +120,22 @@ areas:
 
   dependency_audit:
     description: Dependency vulnerability auditing
-    implemented: false
-    controls: []
+    implemented: true
+    controls:
+      - pip_audit: >
+          .github/workflows/dep-audit.yml runs pip-audit against the
+          hash-pinned uv export of the locked dependency set, with
+          --strict (exit non-zero on any finding) and the OSV
+          vulnerability service (PyPA/GHSA coverage).
     test_coverage:
-      location: null
+      location: .github/workflows/dep-audit.yml
       hypothesis: false
     notes: >
-      No automated dependency vulnerability scanning (Dependabot,
-      pip-audit, etc.) configured in CI.
+      pip-audit runs in CI via the dep-audit workflow. Dependabot
+      delivers version-bump PRs (visible in the open PR backlog).
+      Dependency Review (PR-time delta scan) is intentionally
+      omitted until the GitHub Dependency Graph feature is enabled
+      on the repo; see the comment block in dep-audit.yml.
 
 coverage_gaps:
    - id: security.xss-prevention
@@ -139,15 +147,6 @@ coverage_gaps:
      review_after: "2026-08-01"
      issue: 590
      next_evidence: pytest -q tests/unit/security
-   - id: security.dependency-audit
-     area: dependency_audit
-     gap: No dependency vulnerability scanning in CI
-     owner: security-privacy
-     severity: major
-     declared_at: "2026-05-02"
-     review_after: "2026-08-01"
-     issue: 590
-     next_evidence: devtools verify --quick
    - id: security.file-permissions
      area: file_permissions
      gap: Crawl-source file permissions not verified
