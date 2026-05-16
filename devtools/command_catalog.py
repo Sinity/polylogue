@@ -552,6 +552,17 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools verify-layering", "devtools verify-layering --json"),
     ),
     CommandSpec(
+        "evidence-report",
+        "verification",
+        "Aggregate verification evidence into a structured status report.",
+        "devtools.evidence_report",
+        use_when="Review cached verify history, contract evidence, suppressions, witnesses, and benchmark campaigns without running tests.",
+        examples=(
+            "devtools evidence-report",
+            "devtools evidence-report --json",
+        ),
+    ),
+    CommandSpec(
         "witness-discover",
         "maintenance",
         "Save a failure-triggering input as a local witness in .local/witnesses/new/.",
