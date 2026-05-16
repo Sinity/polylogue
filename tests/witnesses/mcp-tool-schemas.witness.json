@@ -13,7 +13,7 @@
   "preserved_semantic_facts": [
     "the wire-visible MCP tool catalog (every registered tool name)",
     "each tool's published JSON Schema for its arguments",
-    "argument required/optional shape \u2014 drift here breaks existing clients silently"
+    "argument required/optional shape — drift here breaks existing clients silently"
   ],
   "minimization_status": "not_applicable",
   "privacy": {

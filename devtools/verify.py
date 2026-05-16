@@ -252,7 +252,10 @@ def build_verify_steps(
                 ("verify-test-ownership", _devtools_cmd("verify-test-ownership")),
                 ("verify-schema-roundtrip", _devtools_cmd("verify-schema-roundtrip", "--all")),
                 ("verify-cross-cuts", _devtools_cmd("verify-cross-cuts")),
-                ("verify-suppressions", _devtools_cmd("verify-suppressions")),
+                (
+                    "verify-suppressions",
+                    _devtools_cmd("verify-suppressions", "--enforce-kinds", "type_ignore,noqa,no_cover"),
+                ),
                 ("verify-manifests", _devtools_cmd("verify-manifests")),
                 ("verify-witness-lifecycle", _devtools_cmd("verify-witness-lifecycle")),
                 ("verify-lane-assertions", _devtools_cmd("verify-lane-assertions")),
