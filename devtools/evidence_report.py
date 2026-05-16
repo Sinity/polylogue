@@ -190,6 +190,15 @@ def main(argv: list[str] | None = None) -> int:
         if name not in latest_campaigns or mtime > latest_campaigns[name]:
             latest_campaigns[name] = mtime
 
+    # Compute blocking status from verify history
+    # Conservative criteria: only block when there is clear evidence of a broken baseline.
+    # Criterion A: last 2+ consecutive verify runs both failed (sustained breakage).
+    # Criterion B: there are stale contract evidence artifacts AND a recent verify failure.
+    recent_runs = verify_history[-2:] if len(verify_history) >= 2 else []
+    last_two_both_failed = len(recent_runs) == 2 and all(r.get("exit_code") != 0 for r in recent_runs)
+    any_recent_failure = any(r.get("exit_code") != 0 for r in verify_history[-5:]) if verify_history else False
+    blocking = last_two_both_failed or (bool(stale_artifacts) and any_recent_failure)
+
     # Report timestamp
     now = datetime.now(timezone.utc)
 
@@ -233,7 +242,7 @@ def main(argv: list[str] | None = None) -> int:
                     {"name": name, "latest_run": mtime.isoformat()} for name, mtime in sorted(latest_campaigns.items())
                 ],
             },
-            "blocking": False,
+            "blocking": blocking,
         }
         json.dump(output, sys.stdout, indent=2)
         sys.stdout.write("\n")
@@ -293,7 +302,7 @@ def main(argv: list[str] | None = None) -> int:
             print("  No local campaign runs found (run devtools benchmark-campaign run <name>)")
         print()
 
-        print("blocking=False")
+        print(f"blocking={blocking}")
 
     return 0
 
