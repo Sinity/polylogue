@@ -254,7 +254,7 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             poly = hooks.get_polylogue()
             summary = await poly.get_conversation_summary(id)
             if summary is None:
-                return hooks.error_json(f"Conversation not found: {id}")
+                return hooks.error_json(f"Conversation not found: {id}", code="not_found")
             stats = await poly.get_conversation_stats(id)
             return hooks.json_payload(
                 MCPConversationSummaryPayload.from_summary(
@@ -315,7 +315,7 @@ def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             poly = hooks.get_polylogue()
             summary = await poly.get_conversation_summary(id)
             if summary is None:
-                return hooks.error_json(f"Conversation not found: {id}")
+                return hooks.error_json(f"Conversation not found: {id}", code="not_found")
             stats = await poly.get_conversation_stats(id)
             return hooks.json_payload(
                 MCPConversationSummaryPayload.from_summary(
@@ -385,7 +385,7 @@ def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                     content_projection=projection,
                 )
             except ConversationNotFoundError:
-                return hooks.error_json(f"Conversation not found: {conversation_id}")
+                return hooks.error_json(f"Conversation not found: {conversation_id}", code="not_found")
 
             return hooks.json_payload(
                 MCPMessagesListPayload(
@@ -409,7 +409,7 @@ def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             ops = hooks.get_archive_ops()
             conv_check = await ops.get_conversation_summary(conversation_id)
             if conv_check is None:
-                return hooks.error_json(f"Conversation not found: {conversation_id}")
+                return hooks.error_json(f"Conversation not found: {conversation_id}", code="not_found")
             canonical_id = str(conv_check.id)
             artifacts, total = await ops.get_raw_artifacts_for_conversation(
                 canonical_id,
