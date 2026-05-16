@@ -739,6 +739,22 @@ DECLARED_CONTROL_PLANE_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         effects=("DbRead", "DbWrite"),
     ),
     OperationSpec(
+        name="benchmark.reader.api",
+        kind=OperationKind.BENCHMARK,
+        description="Measure reader HTTP API list/get/facets/context-pack/cost-rollup latencies.",
+        surfaces=("benchmark-campaign",),
+        previewable=True,
+        effects=("DbRead",),
+    ),
+    OperationSpec(
+        name="benchmark.daemon.convergence",
+        kind=OperationKind.BENCHMARK,
+        description="Measure daemon ingest convergence timing across synthetic scale tiers.",
+        surfaces=("benchmark-campaign",),
+        previewable=True,
+        effects=("DbRead", "DbWrite"),
+    ),
+    OperationSpec(
         name="index.message-fts-rebuild",
         kind=OperationKind.INDEXING,
         description="Benchmark full message FTS rebuild over a synthetic archive.",
