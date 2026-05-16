@@ -231,6 +231,8 @@ class MutationCampaignEntry(BaseModel):
     paths_to_mutate: list[str]
     tests: list[str]
     status: str = "active"
+    freshness_days: int | None = None
+    artifact_glob: str | None = None
 
     VALID_STATUSES: ClassVar[frozenset[str]] = frozenset({"active", "inactive", "draft", "archived"})
 
@@ -239,6 +241,13 @@ class MutationCampaignEntry(BaseModel):
     def _check_status(cls, v: str) -> str:
         if v not in cls.VALID_STATUSES:
             raise ValueError(f"status must be one of {sorted(cls.VALID_STATUSES)}, got {v!r}")
+        return v
+
+    @field_validator("freshness_days")
+    @classmethod
+    def _check_freshness(cls, v: int | None) -> int | None:
+        if v is not None and v <= 0:
+            raise ValueError(f"freshness_days must be positive, got {v!r}")
         return v
 
 
@@ -250,6 +259,8 @@ class BenchmarkCampaignEntry(BaseModel):
     description: str
     tests: list[str]
     status: str = "active"
+    freshness_days: int | None = None
+    artifact_glob: str | None = None
 
     VALID_STATUSES: ClassVar[frozenset[str]] = frozenset({"active", "inactive", "draft", "archived"})
 
@@ -258,6 +269,13 @@ class BenchmarkCampaignEntry(BaseModel):
     def _check_status(cls, v: str) -> str:
         if v not in cls.VALID_STATUSES:
             raise ValueError(f"status must be one of {sorted(cls.VALID_STATUSES)}, got {v!r}")
+        return v
+
+    @field_validator("freshness_days")
+    @classmethod
+    def _check_freshness(cls, v: int | None) -> int | None:
+        if v is not None and v <= 0:
+            raise ValueError(f"freshness_days must be positive, got {v!r}")
         return v
 
 
