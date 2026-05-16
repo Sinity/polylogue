@@ -191,15 +191,12 @@ def rebuild_fts_index_sync(conn: sqlite3.Connection) -> None:
     """Rebuild the full FTS index from persisted archive rows.
 
     The messages FTS table is configured with ``content='messages'`` (external
-    content). Empty it via the FTS5 'delete-all' control command; on certain
-    SQLite versions plain ``DELETE FROM messages_fts`` after a suspend/restore
-    trigger cycle raises ``database disk image is malformed`` because the FTS
-    integrity validator checks the content table state.
+    content). Use the FTS5 'rebuild' control command directly; SQLite rejects
+    'delete-all' for non-contentless tables.
     """
     ensure_fts_index_sync(conn)
-    conn.execute("INSERT INTO messages_fts(messages_fts) VALUES('delete-all')")
-    conn.execute("DELETE FROM action_events_fts")
     conn.execute(FTS_REBUILD_SQL)
+    conn.execute("DELETE FROM action_events_fts")
     conn.execute(ACTION_FTS_REBUILD_SQL)
 
 
@@ -212,7 +209,7 @@ async def rebuild_fts_index_async(
 ) -> None:
     """Rebuild the full FTS index from persisted archive rows."""
     await ensure_fts_index_async(conn)
-    await conn.execute("INSERT INTO messages_fts(messages_fts) VALUES('delete-all')")
+    await conn.execute(FTS_REBUILD_SQL)
     await conn.execute("DELETE FROM action_events_fts")
     if conversation_ids is not None:
         await repair_fts_index_async(
