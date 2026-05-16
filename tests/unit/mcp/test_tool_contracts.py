@@ -56,7 +56,6 @@ from tests.infra.mcp import (
     make_polylogue_mock,
     make_query_store_mock,
     make_simple_conversation,
-    make_tag_store_mock,
 )
 
 STATS_CONFIGS = [
@@ -1036,13 +1035,16 @@ class TestMutationTools:
         self,
         mcp_server: MCPServerUnderTest,
     ) -> None:
-        # The current bulk_tag implementation delegates to bulk_add_tags;
-        # the previous N×M add_tag fan-out was replaced when the bulk method
-        # landed. The applied_count is whatever bulk_add_tags returns.
-        with patch("polylogue.mcp.server._get_tag_store") as mock_get_tag_store:
-            mock_tag_store = make_tag_store_mock()
-            mock_tag_store.bulk_add_tags = AsyncMock(return_value=4)
-            mock_get_tag_store.return_value = mock_tag_store
+        # After #862 the MCP tool routes through ``poly.bulk_add_tags`` so
+        # validation and result shape are centralized in ArchiveMutations.
+        from polylogue.surfaces.payloads import BulkTagMutationResult
+
+        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+            mock_poly = make_polylogue_mock()
+            mock_poly.bulk_add_tags = AsyncMock(
+                return_value=BulkTagMutationResult(conversation_count=2, tag_count=2, applied_count=4, skipped_count=-2)
+            )
+            mock_get_polylogue.return_value = mock_poly
 
             result = invoke_surface(
                 mcp_server._tool_manager._tools["bulk_tag_conversations"].fn,
@@ -1055,7 +1057,7 @@ class TestMutationTools:
         assert parsed["conversation_count"] == 2
         assert parsed["tag_count"] == 2
         assert parsed["affected_count"] == 4
-        mock_tag_store.bulk_add_tags.assert_called_once_with(["conv-1", "conv-2"], ["review", "important"])
+        mock_poly.bulk_add_tags.assert_called_once_with(["conv-1", "conv-2"], ["review", "important"])
 
     def test_bulk_tag_conversations_rejects_empty_inputs(self, mcp_server: MCPServerUnderTest) -> None:
         result = invoke_surface(
@@ -1098,13 +1100,9 @@ class TestMutationTools:
         assert json.loads(result) == {"key": "value", "count": 42}
 
     def test_set_metadata_string_value(self, mcp_server: MCPServerUnderTest) -> None:
-        with (
-            patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue,
-            patch("polylogue.mcp.server._get_query_store") as mock_get_query_store,
-        ):
+        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
             mock_poly = make_polylogue_mock()
             mock_get_polylogue.return_value = mock_poly
-            mock_get_query_store.return_value = make_query_store_mock(resolved_id="test:conv-123")
 
             result = invoke_surface(
                 mcp_server._tool_manager._tools["set_metadata"].fn,
@@ -1117,13 +1115,9 @@ class TestMutationTools:
         mock_poly.update_metadata.assert_called_once_with("test:conv-123", "author", "john")
 
     def test_set_metadata_json_value(self, mcp_server: MCPServerUnderTest) -> None:
-        with (
-            patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue,
-            patch("polylogue.mcp.server._get_query_store") as mock_get_query_store,
-        ):
+        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
             mock_poly = make_polylogue_mock()
             mock_get_polylogue.return_value = mock_poly
-            mock_get_query_store.return_value = make_query_store_mock(resolved_id="test:conv-123")
 
             result = invoke_surface(
                 mcp_server._tool_manager._tools["set_metadata"].fn,
@@ -1172,14 +1166,9 @@ class TestMutationTools:
         assert "200" in parsed["error"]
 
     def test_delete_metadata_success(self, mcp_server: MCPServerUnderTest) -> None:
-        with (
-            patch("polylogue.mcp.server._get_query_store") as mock_get_query_store,
-            patch("polylogue.mcp.server._get_tag_store") as mock_get_tag_store,
-        ):
-            mock_get_query_store.return_value = make_query_store_mock(resolved_id="test:conv-123")
-            mock_tag_store = make_tag_store_mock()
-            mock_tag_store.delete_metadata = AsyncMock(return_value=True)
-            mock_get_tag_store.return_value = mock_tag_store
+        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+            mock_poly = make_polylogue_mock()
+            mock_get_polylogue.return_value = mock_poly
 
             result = invoke_surface(
                 mcp_server._tool_manager._tools["delete_metadata"].fn,
@@ -1189,13 +1178,13 @@ class TestMutationTools:
 
         parsed = json.loads(result)
         assert parsed["status"] == "ok"
-        assert parsed["key"] == "author"
-        mock_tag_store.delete_metadata.assert_awaited_once_with("test:conv-123", "author")
+        assert parsed["key"] == "k"  # default mock returns key="k"
+        mock_poly.delete_metadata.assert_awaited_once_with("test:conv-123", "author")
 
     def test_delete_requires_confirm(self, mcp_server: MCPServerUnderTest) -> None:
-        with patch("polylogue.mcp.server._get_query_store") as mock_get_query_store:
-            mock_query_store = make_query_store_mock()
-            mock_get_query_store.return_value = mock_query_store
+        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+            mock_poly = make_polylogue_mock()
+            mock_get_polylogue.return_value = mock_poly
 
             result = invoke_surface(
                 mcp_server._tool_manager._tools["delete_conversation"].fn,
@@ -1205,17 +1194,17 @@ class TestMutationTools:
 
         parsed = json.loads(result)
         assert "confirm=true" in parsed["error"]
-        mock_query_store.delete_conversation.assert_not_called()
+        mock_poly.delete_conversation.assert_not_called()
 
     def test_delete_with_confirm(self, mcp_server: MCPServerUnderTest) -> None:
-        with (
-            patch("polylogue.mcp.server_support._get_polylogue") as mock_get_polylogue,
-            patch("polylogue.mcp.server._get_query_store") as mock_get_query_store,
-        ):
+        from polylogue.surfaces.payloads import DeleteConversationResult
+
+        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
             mock_poly = make_polylogue_mock()
-            mock_poly.delete_conversation = AsyncMock(return_value=True)
+            mock_poly.delete_conversation = AsyncMock(
+                return_value=DeleteConversationResult(conversation_id="test:conv-123", outcome="deleted")
+            )
             mock_get_polylogue.return_value = mock_poly
-            mock_get_query_store.return_value = make_query_store_mock(resolved_id="test:conv-123")
 
             result = invoke_surface(
                 mcp_server._tool_manager._tools["delete_conversation"].fn,
@@ -1223,17 +1212,26 @@ class TestMutationTools:
                 confirm=True,
             )
 
-        assert json.loads(result)["status"] == "deleted"
+        parsed = json.loads(result)
+        assert parsed["status"] == "deleted"
+        assert parsed["conversation_id"] == "test:conv-123"
 
     def test_delete_not_found(self, mcp_server: MCPServerUnderTest) -> None:
-        # Two not-found shapes: resolve_id returns None (id never existed) vs.
-        # resolve_id succeeds but delete_conversation returns False (race).
-        # The current contract returns "conversation not found" error for the
-        # former and {status: "not_found"} for the latter; exercise the latter.
-        with patch("polylogue.mcp.server._get_query_store") as mock_get_query_store:
-            mock_query_store = make_query_store_mock(resolved_id="nonexistent")
-            mock_query_store.delete_conversation.return_value = False
-            mock_get_query_store.return_value = mock_query_store
+        # ``Polylogue.delete_conversation`` is idempotent: a missing
+        # conversation produces a typed not_found result rather than an
+        # error envelope.
+        from polylogue.surfaces.payloads import DeleteConversationResult
+
+        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+            mock_poly = make_polylogue_mock()
+            mock_poly.delete_conversation = AsyncMock(
+                return_value=DeleteConversationResult(
+                    conversation_id="nonexistent",
+                    outcome="not_found",
+                    detail="conversation_not_found",
+                )
+            )
+            mock_get_polylogue.return_value = mock_poly
 
             result = invoke_surface(
                 mcp_server._tool_manager._tools["delete_conversation"].fn,

@@ -52,6 +52,8 @@ def tags_command(
         if not conversation_id:
             raise click.UsageError("A conversation_id is required with --add-tag or --remove-tag")
 
+        # Resolve once for human-readable echo; the facade also resolves
+        # internally and raises ConversationNotFoundError on misses.
         resolved = _resolve_id(env, conversation_id)
         if resolved is None:
             raise click.ClickException(f"Conversation not found: {conversation_id}")

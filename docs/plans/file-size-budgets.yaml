@@ -65,6 +65,10 @@ exceptions:
     ceiling: 1200
     reason: "shared operation contracts for ingest/maintenance/mutation routes (#861, #862); split candidate: per-domain operation modules under operations/"
 
+  - path: polylogue/api/archive.py
+    ceiling: 1150
+    reason: "Polylogue facade — tag/metadata/delete delegates to ArchiveMutations + mark/saved-view/recall-pack/workspace surfaces (#862, #867); split candidate: per-domain mixin modules"
+
   - path: polylogue/daemon/status.py
     ceiling: 1150
     reason: "typed status payloads for failure samples, embedding readiness, tier/notify (#844, #898, #915); split candidate: payload modules per status section"

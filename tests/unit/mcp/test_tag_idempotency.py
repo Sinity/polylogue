@@ -14,7 +14,6 @@ from tests.infra.mcp import (
     invoke_surface,
     make_polylogue_mock,
     make_query_store_mock,
-    make_tag_store_mock,
 )
 
 _ADD_TAG_TOOL = "add_tag"
@@ -156,10 +155,14 @@ class TestBulkTagExcludesOutcome:
     """bulk_tag_conversations does not carry a per-tag outcome — it uses counts."""
 
     def test_bulk_tag_has_no_outcome_field(self, mcp_server: MCPServerUnderTest) -> None:
-        with patch("polylogue.mcp.server._get_tag_store") as mock_get_tag_store:
-            mock_tag_store = make_tag_store_mock()
-            mock_tag_store.bulk_add_tags = AsyncMock(return_value=3)
-            mock_get_tag_store.return_value = mock_tag_store
+        from polylogue.surfaces.payloads import BulkTagMutationResult
+
+        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+            mock_poly = make_polylogue_mock()
+            mock_poly.bulk_add_tags = AsyncMock(
+                return_value=BulkTagMutationResult(conversation_count=3, tag_count=1, applied_count=3, skipped_count=0)
+            )
+            mock_get_polylogue.return_value = mock_poly
 
             result = invoke_surface(
                 mcp_server._tool_manager._tools["bulk_tag_conversations"].fn,

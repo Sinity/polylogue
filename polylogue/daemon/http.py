@@ -955,21 +955,34 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
         op_id = f"reset-{scope}-{conv_id[:16] if conv_id else 'all'}"
 
-        def _do_reset() -> dict[str, object]:
-            poly = _get_or_create_polylogue()
+        async def _do_reset(poly: Polylogue) -> dict[str, object]:
             if scope == "conversation" and conv_id:
-                deleted = poly.delete_conversation(conv_id)
-                return {"deleted": deleted, "conversation_id": conv_id}
+                # ``Polylogue.delete_conversation`` returns the shared
+                # ``DeleteConversationResult`` envelope; route through it
+                # so the daemon doesn't duplicate the bool→status mapping.
+                delete_result = await poly.delete_conversation(conv_id)
+                return {
+                    "deleted": bool(delete_result),
+                    "conversation_id": delete_result.conversation_id,
+                    "detail": delete_result.detail,
+                }
             return {"ok": True}
 
-        result = self._sync_run(lambda p: _do_reset())
+        result = self._sync_run(_do_reset)
 
         emit_daemon_event("reset", operation_id=op_id, payload=result if isinstance(result, dict) else None)
 
-        deleted = result.get("deleted", False) if isinstance(result, dict) else False
+        deleted = bool(result.get("deleted", False)) if isinstance(result, dict) else False
+        detail = result.get("detail") if isinstance(result, dict) else None
         response = MutationResultPayload(
             status="deleted" if deleted else "ok",
-            detail=f"reset {scope}" if deleted else f"reset {scope} — no conversations matched",
+            detail=(
+                detail
+                if isinstance(detail, str) and detail
+                else f"reset {scope}"
+                if deleted
+                else f"reset {scope} — no conversations matched"
+            ),
         )
         self._send_json(HTTPStatus.OK, response.model_dump())
 

@@ -434,10 +434,16 @@ def _summary_group_key(spec: ConversationSummarySpec, dimension: str) -> str:
 @settings(max_examples=60, deadline=None)
 @given(case=query_mutation_case_strategy())
 def test_apply_modifiers_contract(case: QueryMutationCase) -> None:
+    from polylogue.surfaces.payloads import MetadataMutationResult, TagMutationResult
+
     repo = MagicMock()
-    repo.update_metadata = AsyncMock()
-    repo.add_tag = AsyncMock()
     env = _make_env(repo=repo)
+    # Mutations route through ``env.polylogue.mutations`` after #862;
+    # mock the facade-level boundary directly.
+    facade = MagicMock()
+    facade.mutations = MagicMock()
+    facade.mutations.set_metadata = AsyncMock(return_value=MetadataMutationResult(outcome="set", key="k"))
+    facade.mutations.add_tag = AsyncMock(return_value=TagMutationResult(outcome="added"))
     mock_confirm = _as_mock(env.ui.confirm)
     mock_print = _as_mock(env.ui.console.print)
     mock_confirm.return_value = case.confirm
@@ -449,7 +455,10 @@ def test_apply_modifiers_contract(case: QueryMutationCase) -> None:
         force=case.force,
     )
 
-    with patch("click.echo") as mock_echo:
+    with (
+        patch("click.echo") as mock_echo,
+        patch.object(type(env), "polylogue", new=property(lambda self: facade)),
+    ):
         mock_echo = _as_mock(mock_echo)
         asyncio.run(apply_modifiers(env, results, mutation, repo))
 
@@ -463,8 +472,8 @@ def test_apply_modifiers_contract(case: QueryMutationCase) -> None:
     expected_meta_calls = len(results) * len(case.set_meta) if should_apply else 0
     expected_tag_calls = len(results) * len(case.add_tags) if should_apply else 0
 
-    assert repo.update_metadata.await_count == expected_meta_calls
-    assert repo.add_tag.await_count == expected_tag_calls
+    assert facade.mutations.set_metadata.await_count == expected_meta_calls
+    assert facade.mutations.add_tag.await_count == expected_tag_calls
 
     if case.dry_run:
         printed = " ".join(call.args[0] for call in mock_print.call_args_list if call.args)
@@ -481,15 +490,31 @@ def test_apply_modifiers_contract(case: QueryMutationCase) -> None:
 @settings(max_examples=60, deadline=None)
 @given(case=query_delete_case_strategy())
 def test_delete_conversations_contract(case: QueryDeleteCase) -> None:
+    from polylogue.surfaces.payloads import DeleteConversationResult
+
     repo = MagicMock()
-    repo.delete_conversation = AsyncMock(side_effect=list(case.delete_results))
     env = _make_env(repo=repo)
+    facade = MagicMock()
+    facade.mutations = MagicMock()
+    facade.mutations.delete_conversation = AsyncMock(
+        side_effect=[
+            DeleteConversationResult(
+                conversation_id=f"conv-{i}",
+                outcome="deleted" if result else "not_found",
+                detail=None if result else "conversation_not_found",
+            )
+            for i, result in enumerate(case.delete_results)
+        ]
+    )
     mock_confirm = _as_mock(env.ui.confirm)
     mock_confirm.return_value = case.confirm
     results = [build_conversation_summary(spec) for spec in case.summaries]
     mutation = _mutation_spec(dry_run=case.dry_run, force=case.force, delete_matched=True)
 
-    with patch("click.echo") as mock_echo:
+    with (
+        patch("click.echo") as mock_echo,
+        patch.object(type(env), "polylogue", new=property(lambda self: facade)),
+    ):
         mock_echo = _as_mock(mock_echo)
         asyncio.run(delete_conversations(env, results, mutation, repo))
 
@@ -500,7 +525,7 @@ def test_delete_conversations_contract(case: QueryDeleteCase) -> None:
         mock_confirm.assert_not_called()
 
     should_delete = not case.dry_run and (case.force or case.confirm)
-    assert repo.delete_conversation.await_count == (len(results) if should_delete else 0)
+    assert facade.mutations.delete_conversation.await_count == (len(results) if should_delete else 0)
 
     echoed = [call.args[0] for call in mock_echo.call_args_list if call.args]
     provider_counts: dict[str, int] = {}

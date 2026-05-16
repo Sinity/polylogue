@@ -29,11 +29,17 @@ if TYPE_CHECKING:
     from polylogue.insights.readiness import InsightReadinessQuery, InsightReadinessReport
     from polylogue.insights.resume import ResumeBrief
     from polylogue.operations import ArchiveStats
+    from polylogue.operations.mutations import ArchiveMutations
     from polylogue.readiness import ReadinessReport
     from polylogue.storage.insights.session.runtime import SessionInsightCounts
     from polylogue.storage.repository import ConversationRepository
     from polylogue.storage.search.models import SearchResult
-    from polylogue.surfaces.payloads import TagMutationResult
+    from polylogue.surfaces.payloads import (
+        BulkTagMutationResult,
+        DeleteConversationResult,
+        MetadataMutationResult,
+        TagMutationResult,
+    )
 
     class _ArchiveOperationsSurface(Protocol):
         async def get_conversation(
@@ -497,81 +503,95 @@ class PolylogueArchiveMixin:
         """List all tags with conversation counts, optionally filtered by provider."""
         return await self.operations.list_tags(provider=provider)
 
-    async def delete_conversation(self, conversation_id: str) -> bool:
+    @property
+    def mutations(self) -> ArchiveMutations:
+        """Return the centralized mutation operations bound to this facade.
+
+        All tag/metadata/delete mutations exposed by this facade delegate
+        to :class:`polylogue.operations.mutations.ArchiveMutations`, so
+        validation, idempotency outcomes, and conversation-not-found
+        semantics are defined exactly once. CLI, MCP, and daemon
+        surfaces should call ``self.mutations`` directly instead of
+        re-implementing the same checks.
+        """
+        from polylogue.operations.mutations import ArchiveMutations
+
+        return ArchiveMutations(self.repository)
+
+    async def delete_conversation(self, conversation_id: str) -> DeleteConversationResult:
         """Permanently delete a conversation and all associated data.
 
-        Returns ``True`` if something was deleted, ``False`` if the conversation
-        was not found.
+        Returns a :class:`DeleteConversationResult` with
+        ``outcome="deleted"`` when at least one row was removed or
+        ``outcome="not_found"`` for an already-missing conversation.
+        Deleting a nonexistent conversation is idempotent (it does not
+        raise).
         """
-        deleted_count = await self.filter().id(conversation_id).delete()
-        return deleted_count > 0
+        return await self.mutations.delete_conversation(conversation_id)
 
     async def add_tag(self, conversation_id: str, tag: str) -> TagMutationResult:
         """Add a tag to a conversation.
 
-        Returns a ``TagMutationResult`` with:
-        - ``outcome="added"`` if the tag was newly added
-        - ``outcome="no_op"`` if the tag was already present
+        Raises :class:`ConversationNotFoundError` if the conversation
+        does not exist. Returns a :class:`TagMutationResult` with
+        ``outcome="added"`` if the tag was newly attached or
+        ``outcome="no_op"`` if it was already present.
         """
-        from polylogue.surfaces.payloads import TagMutationResult
-
-        resolved = await self.repository.resolve_id(conversation_id, strict=True)
-        if resolved is None:
-            raise ConversationNotFoundError(conversation_id)
-        from polylogue.storage.repository.archive.repository_writes import RepositoryWriteMixin
-
-        store: RepositoryWriteMixin = self.repository
-        was_added = await store.add_tag(str(resolved), tag)
-        return TagMutationResult(
-            outcome="added" if was_added else "no_op",
-            detail=None if was_added else "already_present",
-        )
+        return await self.mutations.add_tag(conversation_id, tag)
 
     async def remove_tag(self, conversation_id: str, tag: str) -> TagMutationResult:
         """Remove a tag from a conversation.
 
-        Returns a ``TagMutationResult`` with:
-        - ``outcome="removed"`` if the tag was removed
-        - ``outcome="not_present"`` if the tag was not present
+        Raises :class:`ConversationNotFoundError` if the conversation
+        does not exist. Returns a :class:`TagMutationResult` with
+        ``outcome="removed"`` if the tag was deleted or
+        ``outcome="not_present"`` if the tag wasn't on the conversation.
         """
-        from polylogue.surfaces.payloads import TagMutationResult
+        return await self.mutations.remove_tag(conversation_id, tag)
 
-        resolved = await self.repository.resolve_id(conversation_id, strict=True)
-        if resolved is None:
-            raise ConversationNotFoundError(conversation_id)
-        from polylogue.storage.repository.archive.repository_writes import RepositoryWriteMixin
+    async def bulk_add_tags(
+        self,
+        conversation_ids: list[str],
+        tags: list[str],
+    ) -> BulkTagMutationResult:
+        """Add each tag in ``tags`` to each id in ``conversation_ids``.
 
-        store: RepositoryWriteMixin = self.repository
-        was_removed = await store.remove_tag(str(resolved), tag)
-        return TagMutationResult(
-            outcome="removed" if was_removed else "not_present",
-            detail=None if was_removed else "tag_not_present",
-        )
+        Validates batch caps (≤100 conversations, ≤20 tags) and
+        delegates to the shared :class:`ArchiveMutations` boundary.
+        """
+        return await self.mutations.bulk_add_tags(conversation_ids, tags)
 
     async def get_metadata(self, conversation_id: str) -> dict[str, str]:
         """Return all metadata key-value pairs for a conversation."""
-        from polylogue.storage.repository.archive.repository_writes import RepositoryWriteMixin
+        return await self.mutations.get_metadata(conversation_id)
 
-        store: RepositoryWriteMixin = self.repository
-        result: dict[str, str] = {}
-        doc = await store.get_metadata(conversation_id)
-        for k, v in doc.items():
-            result[str(k)] = str(v) if not isinstance(v, str) else v
-        return result
-
-    async def update_metadata(self, conversation_id: str, key: str, value: str) -> bool:
+    async def update_metadata(
+        self,
+        conversation_id: str,
+        key: str,
+        value: str,
+    ) -> MetadataMutationResult:
         """Set a metadata key on a conversation.
 
-        Returns ``True`` if the value was changed, ``False`` if it was already set
-        to the same value.
+        Validates the key, resolves the conversation, and returns a
+        :class:`MetadataMutationResult` with ``outcome="set"`` when the
+        value changed or ``outcome="unchanged"`` when the stored value
+        already matched.
         """
-        resolved = await self.repository.resolve_id(conversation_id, strict=True)
-        if resolved is None:
-            raise ConversationNotFoundError(conversation_id)
-        from polylogue.storage.repository.archive.repository_writes import RepositoryWriteMixin
+        return await self.mutations.set_metadata(conversation_id, key, value)
 
-        store: RepositoryWriteMixin = self.repository
-        return await store.update_metadata(str(resolved), key, value)
+    async def delete_metadata(
+        self,
+        conversation_id: str,
+        key: str,
+    ) -> MetadataMutationResult:
+        """Delete a metadata key from a conversation.
+
+        Returns ``outcome="deleted"`` when the key was removed or
+        ``outcome="not_found"`` (detail ``key_not_found``) when the
+        conversation did not carry that key.
+        """
+        return await self.mutations.delete_metadata(conversation_id, key)
 
     # ------------------------------------------------------------------
     # Marks

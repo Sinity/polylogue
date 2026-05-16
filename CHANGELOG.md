@@ -89,6 +89,14 @@ documentation polish do not require an entry.
 
 ### Changed
 
+- Tag/metadata/delete mutations on the Python API, CLI, MCP, and daemon HTTP
+  surfaces now route through a single `ArchiveMutations` boundary. The
+  Python API methods `Polylogue.delete_conversation()`, `update_metadata()`,
+  and the new `bulk_add_tags()` / `delete_metadata()` now return typed
+  result envelopes (`DeleteConversationResult`, `MetadataMutationResult`,
+  `BulkTagMutationResult`) carrying explicit idempotency outcomes instead
+  of raw bools. MCP `delete_conversation` is idempotent on missing ids
+  (returns `status="not_found"` rather than an error envelope). (#862)
 - Live daemon convergence now drains watcher batches single-flight, records
   stale cursor-write counters, uses bounded tail hashes for same-size rewrite
   detection, and exposes recent source-path churn in the daemon workload probe.

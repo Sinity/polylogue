@@ -643,6 +643,64 @@ class MutationResultPayload(SurfacePayloadModel):
     applied_count: int | None = None
 
 
+MetadataMutationOutcome: TypeAlias = Literal["set", "unchanged", "deleted", "not_found"]
+"""Metadata mutation idempotency outcome exposed by all surfaces."""
+
+
+class MetadataMutationResult(SurfacePayloadModel):
+    """Shared mutation-result contract for user metadata set/delete.
+
+    ``set`` and ``deleted`` indicate the stored state changed; ``unchanged``
+    and ``not_found`` indicate the call was a successful idempotent no-op.
+    """
+
+    outcome: MetadataMutationOutcome
+    key: str
+    detail: str | None = None
+    """Machine-readable detail: ``value_unchanged`` or ``key_not_found``."""
+
+    def __bool__(self) -> bool:
+        return self.outcome in ("set", "deleted")
+
+
+DeleteConversationOutcome: TypeAlias = Literal["deleted", "not_found"]
+"""Conversation deletion outcome exposed by all surfaces."""
+
+
+class DeleteConversationResult(SurfacePayloadModel):
+    """Shared mutation-result contract for conversation deletion.
+
+    Idempotent: deleting an already-missing conversation returns
+    ``outcome="not_found"`` (detail ``conversation_not_found``) rather
+    than raising. ``removed_count`` may be ``None`` if the underlying
+    backend reports a bool instead of a row count.
+    """
+
+    conversation_id: str
+    outcome: DeleteConversationOutcome
+    detail: str | None = None
+    removed_count: int | None = None
+
+    def __bool__(self) -> bool:
+        return self.outcome == "deleted"
+
+
+class BulkTagMutationResult(SurfacePayloadModel):
+    """Shared mutation-result contract for ``bulk_add_tags``.
+
+    ``applied_count`` is the number of (conversation, tag) pairs the
+    underlying tag store reports as freshly attached. ``skipped_count``
+    is exposed as ``conversation_count - applied_count`` for backward
+    compatibility with the original MCP envelope; surfaces should treat
+    it as a count delta, not as a count of fully-skipped pairs.
+    """
+
+    conversation_count: int
+    tag_count: int
+    applied_count: int
+    skipped_count: int
+
+
 # ---------------------------------------------------------------------------
 # Payload builder helpers
 # ---------------------------------------------------------------------------
@@ -689,6 +747,11 @@ __all__ = [
     "MachineErrorEnvelope",
     "MachineSuccessEnvelope",
     "MachineSuccessPayload",
+    "BulkTagMutationResult",
+    "DeleteConversationOutcome",
+    "DeleteConversationResult",
+    "MetadataMutationOutcome",
+    "MetadataMutationResult",
     "MutationResultPayload",
     "QueryErrorPayload",
     "QueryMissDiagnosticsPayload",

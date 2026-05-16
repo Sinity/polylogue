@@ -65,16 +65,18 @@ async def apply_modifiers(
 ) -> None:
     """Apply metadata modifiers to matched conversations.
 
-    When the caller supplies a custom ``repo`` (test harnesses with
-    fictional summaries, batch tools that have already validated
-    existence), tag mutations are routed straight at the repo. With no
-    custom repo, mutations go through ``env.polylogue.add_tag`` so the
-    shared facade enforces idempotency and conversation-existence
-    checks. Mixing the two paths against summaries that are not in
-    the polylogue archive raises ``ConversationNotFoundError`` (#1012).
+    All tag/metadata mutations route through the shared
+    :class:`ArchiveMutations` boundary on the polylogue facade so
+    validation, idempotency, and conversation-existence checks behave
+    identically to MCP and the Python API.
+
+    The ``repo`` argument is accepted for backward compatibility but is
+    ignored; mixing repo and facade paths historically produced
+    inconsistent existence-check behavior (#1012). Test harnesses that
+    need a custom repository should construct an ``AppEnv`` whose
+    ``polylogue`` facade is backed by that repository instead.
     """
-    custom_repo = repo is not None
-    repo = repo or env.repository
+    del repo
     if not results:
         env.ui.console.print("No conversations matched.")
         return
@@ -108,6 +110,7 @@ async def apply_modifiers(
             env.ui.console.print("Aborted.")
             return
 
+    mutations = env.polylogue.mutations
     tags_added = 0
     meta_set = 0
 
@@ -115,18 +118,14 @@ async def apply_modifiers(
         if mutation.set_meta:
             for kv in mutation.set_meta:
                 key, value = kv[0], kv[1]
-                await repo.update_metadata(result_id(conv), key, value)
+                await mutations.set_metadata(result_id(conv), key, value)
                 meta_set += 1
 
         if mutation.add_tags:
             for tag in mutation.add_tags:
-                if custom_repo:
-                    await repo.add_tag(result_id(conv), tag)
+                result = await mutations.add_tag(result_id(conv), tag)
+                if result:
                     tags_added += 1
-                else:
-                    result = await env.polylogue.add_tag(result_id(conv), tag)
-                    if result:
-                        tags_added += 1
 
     reports: list[str] = []
     if tags_added:
@@ -144,10 +143,16 @@ async def delete_conversations(
     mutation: QueryMutationSpec,
     repo: ConversationQueryRuntimeStore | None = None,
 ) -> None:
-    """Delete matched conversations."""
+    """Delete matched conversations.
+
+    Routes through the shared :class:`ArchiveMutations` boundary on the
+    polylogue facade. The ``repo`` argument is accepted for backward
+    compatibility but is ignored — see :func:`apply_modifiers` for the
+    same reasoning.
+    """
     from collections import Counter
 
-    repo = repo or env.repository
+    del repo
     if not results:
         env.ui.console.print("No conversations matched.")
         return
@@ -196,9 +201,11 @@ async def delete_conversations(
             env.ui.console.print("Aborted.")
             return
 
+    mutations = env.polylogue.mutations
     deleted_count = 0
     for conv in results:
-        if await repo.delete_conversation(result_id(conv)):
+        result = await mutations.delete_conversation(result_id(conv))
+        if result:
             deleted_count += 1
 
     click.echo(f"Deleted {deleted_count} conversation(s)")

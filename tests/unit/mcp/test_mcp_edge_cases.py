@@ -108,12 +108,13 @@ class TestUnicodeHandling:
     @pytest.mark.asyncio
     async def test_unicode_tag(self, mcp_server: MCPServerUnderTest) -> None:
         """Unicode characters in tag names don't crash the server."""
-        from tests.infra.mcp import make_tag_store_mock
+        from polylogue.surfaces.payloads import TagMutationResult
+        from tests.infra.mcp import make_polylogue_mock
 
-        with patch("polylogue.mcp.server._get_tag_store") as mock_get_tag_store:
-            mock_tag_store = make_tag_store_mock()
-            mock_tag_store.add_tag = AsyncMock(return_value=True)
-            mock_get_tag_store.return_value = mock_tag_store
+        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+            mock_poly = make_polylogue_mock()
+            mock_poly.add_tag = AsyncMock(return_value=TagMutationResult(outcome="added"))
+            mock_get_polylogue.return_value = mock_poly
 
             # This should not crash even with emoji/CJK/RTL
             for tag in ["bug-fix", "重要", "مهم", "critical"]:

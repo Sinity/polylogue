@@ -184,13 +184,35 @@ def make_archive_ops_mock() -> MagicMock:
 
 def make_polylogue_mock() -> MagicMock:
     """Create a Polylogue facade mock matching the current MCP tool surface."""
+    from polylogue.surfaces.payloads import (
+        BulkTagMutationResult,
+        DeleteConversationResult,
+        MetadataMutationResult,
+        TagMutationResult,
+    )
+
     poly = MagicMock()
-    poly.add_tag = AsyncMock()
-    poly.remove_tag = AsyncMock()
+    poly.add_tag = AsyncMock(return_value=TagMutationResult(outcome="added"))
+    poly.remove_tag = AsyncMock(return_value=TagMutationResult(outcome="removed"))
+    poly.bulk_add_tags = AsyncMock(
+        return_value=BulkTagMutationResult(
+            conversation_count=0,
+            tag_count=0,
+            applied_count=0,
+            skipped_count=0,
+        )
+    )
     poly.list_tags = AsyncMock(return_value={})
     poly.get_metadata = AsyncMock(return_value={})
-    poly.update_metadata = AsyncMock()
-    poly.delete_conversation = AsyncMock(return_value=False)
+    poly.update_metadata = AsyncMock(return_value=MetadataMutationResult(outcome="set", key="k"))
+    poly.delete_metadata = AsyncMock(return_value=MetadataMutationResult(outcome="deleted", key="k"))
+    poly.delete_conversation = AsyncMock(
+        return_value=DeleteConversationResult(
+            conversation_id="x",
+            outcome="not_found",
+            detail="conversation_not_found",
+        )
+    )
     poly.list_marks = AsyncMock(return_value=[])
     poly.add_mark = AsyncMock(return_value=False)
     poly.remove_mark = AsyncMock(return_value=False)
