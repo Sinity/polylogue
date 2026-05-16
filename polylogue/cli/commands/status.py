@@ -42,16 +42,16 @@ def status_command(
     liveness, ingestion progress, FTS coverage, insight freshness, and
     component health. Read-only — does not modify state.
     """
-    req = Request(
-        f"{daemon_url}/api/status",
-        headers={"Accept": "application/json"},
-        method="GET",
-    )
-
     try:
+        req = Request(
+            f"{daemon_url}/api/status",
+            headers={"Accept": "application/json"},
+            method="GET",
+        )
         with urlopen(req, timeout=_FULL_TIMEOUT_S) as resp:
             result = json.loads(resp.read())
-    except OSError:
+    except (OSError, ValueError):
+        # ValueError covers malformed URLs (urllib raises before any I/O).
         if output_format == "json":
             _show_direct_json(env)
         else:
