@@ -401,6 +401,23 @@ class TestDeleteEndpointAuthAndOriginGate:
                 f"DELETE {path} returned {status.value} with valid token + no Origin"
             )
 
+    def test_valid_token_same_origin_passes_gates(self, path: str) -> None:
+        """Web-shell same-origin DELETE is admitted (loopback origin is trusted)."""
+        handler = _make_handler(
+            "DELETE",
+            path,
+            auth_header="Bearer secret",
+            origin="http://localhost:8766",
+        )
+        send_error, _ = _capture_responses(handler)
+        with patch("polylogue.daemon.user_state_http.dispatch_delete", return_value=True):
+            handler.do_DELETE()
+        for call in send_error.call_args_list:
+            status = call.args[0]
+            assert status not in (HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN), (
+                f"DELETE {path} returned {status.value} with valid token + same-origin"
+            )
+
 
 # ---------------------------------------------------------------------------
 # Ingest endpoint — arbitrary local paths are staged by clients, not copied
