@@ -381,6 +381,18 @@ After schema v10 promotion, the following classification applies to all `provide
 ### Raw-only (exist in raw_conversations, not needed in canonical tables)
 - `raw` — full wire payload, preserved in raw_conversations + blob store
 
+### Parser-side typed surface (in flight, #864)
+
+`ParsedConversation` now exposes typed `working_directories`, `git_branch`,
+and `git_repository_url` fields populated by the Claude Code, Codex, and
+Claude session-index parsers in addition to the legacy `provider_meta`
+entries. Storage writes, attribution
+(`polylogue/archive/conversation/attribution.py`), and insight rebuild
+(`polylogue/storage/insights/session/rebuild.py`) still read from
+`provider_meta` for these fields; switching those readers to the typed
+parser surface and the matching `ConversationRecord`/canonical columns is
+the next graduation step under #864.
+
 ### Deferred to owning issues
 - Model/token/cost/duration → #803
 - ChatGPT message-level metadata → promoted to content_block metadata (#842)

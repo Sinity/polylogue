@@ -281,6 +281,7 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedCo
         provider_events=provider_events,
         parent_conversation_provider_id=parent_session_id,
         branch_type=branch_type,
+        working_directories=sorted(cwds),
     )
 
 

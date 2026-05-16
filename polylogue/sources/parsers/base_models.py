@@ -121,6 +121,14 @@ class ParsedConversation(BaseModel):
     provider_events: list[ParsedProviderEvent] = Field(default_factory=list)
     parent_conversation_provider_id: str | None = None
     branch_type: BranchType | None = None
+    # Universal session-context semantics graduated out of provider_meta.
+    # Parsers populate both these typed fields and the corresponding provider_meta
+    # keys (`working_directories`, `gitBranch`, `git.repository_url`) until all
+    # downstream readers (storage write path, attribution, insight rebuild) read
+    # from the typed surface. See #864 and docs/plans/schema-inventory.md.
+    working_directories: list[str] = Field(default_factory=list)
+    git_branch: str | None = None
+    git_repository_url: str | None = None
 
     @field_validator("provider_name", mode="before")
     @classmethod
