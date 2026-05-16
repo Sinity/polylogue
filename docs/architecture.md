@@ -102,8 +102,42 @@ convergence stages.
 | Codex | Session envelope structure | `parsers/codex.py` |
 | Gemini | `chunkedPrompt.chunks` structure | `parsers/drive.py` |
 | Drive | Google Takeout format with OAuth | `parsers/drive.py` |
+| Antigravity | Brain artifact metadata (`*.metadata.json`) or language-server Markdown export envelope | `parsers/antigravity.py` |
 
-Six known providers plus `UNKNOWN`. `detect_provider()` calls each parser's `looks_like()` in order.
+`detect_provider()` calls each parser's `looks_like()` in order.
+
+## Antigravity Language-Server Export Path
+
+Antigravity persists its conversation transcripts as opaque non-protobuf
+`conversations/*.pb` and `implicit/*.pb` blobs that cannot be statically
+decoded. The installed Antigravity language server binary
+(`language_server_linux_x64`) exposes two endpoints over a local HTTP loopback
+port that together form the supported export surface:
+
+| Endpoint | Purpose |
+|----------|---------|
+| `/exa.language_server_pb.LanguageServerService/SearchConversations` | Returns cascade IDs, titles, workspace names, snippets, and `lastModifiedTime` for stored conversations. |
+| `/exa.language_server_pb.LanguageServerService/ConvertTrajectoryToMarkdown` | Returns a complete Markdown export for a given cascade ID — user inputs, planner responses, tool/command events. |
+
+The adapter lives in `polylogue/sources/parsers/antigravity.py`:
+
+- `AntigravityLanguageServerClient` spawns the binary with
+  `-standalone -persistent_mode -http_server_port=<port>` against the user's
+  Antigravity data root, waits until the search endpoint answers, and tears the
+  process down on close.
+- `discover_language_server()` resolves the binary in this order:
+  `POLYLOGUE_ANTIGRAVITY_LANGUAGE_SERVER` env var, `$PATH`, then the highest
+  matching `/nix/store/*-antigravity-*` extension bundle.
+- `iter_language_server_exports(root)` drives `SearchConversations` and
+  `ConvertTrajectoryToMarkdown` and yields `ParsedConversation` objects through
+  `parse_markdown_export()`.
+
+The ingest path is layered in `polylogue/sources/source_parsing.py`: when the
+source is `antigravity` and a `conversations/` subdirectory exists, the
+language-server export runs first; any `AntigravityExportError` (binary not
+found, connection failure, malformed response) is logged and the source falls
+back to the existing brain-artifact metadata walk. Both paths emit normalized
+`Provider.ANTIGRAVITY` conversations.
 
 ## Key Abstractions
 
