@@ -51,6 +51,9 @@ def test_store_records_commits_within_lock(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setattr(storage_helpers, "upsert_message", lambda *_: True)
     monkeypatch.setattr(storage_helpers, "upsert_attachment", lambda *_: True)
     monkeypatch.setattr(storage_helpers, "_prune_attachment_refs", lambda *_: None)
+    # The in-memory test connection has no schema, so suppress the stats
+    # upsert that store_records now performs to mirror production.
+    monkeypatch.setattr(storage_helpers, "_upsert_conversation_stats_sync", lambda *_, **__: None)
 
     result = storage_helpers.store_records(
         conversation=make_conversation("test:1", title="Test", content_hash="abc123"),
