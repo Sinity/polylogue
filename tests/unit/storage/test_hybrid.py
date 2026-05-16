@@ -8,7 +8,6 @@ Extracted from monolithic test_search_index.py.
 
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -521,27 +520,24 @@ class TestFTS5ProviderDirectFiltering:
         assert results == []
 
     def test_fts_search_special_characters(self, fts_provider: FTS5Provider) -> None:
-        """Special characters in query should not crash FTS."""
-        # Safe queries (valid FTS5 syntax)
-        safe_queries = [
+        """FTS5 special characters must be escaped, not surfaced as syntax errors."""
+        # Both safe queries and previously-problematic punctuation must round-trip
+        # through ``escape_fts5_query`` and never raise.
+        queries = [
             "test",
             "test AND query",
             "test OR query",
             'test "quoted phrase"',
             "test*",
+            "test?",
+            "?",
+            "foo.bar",
+            "../etc/passwd",
+            "/leading-slash",
         ]
-
-        for query in safe_queries:
+        for query in queries:
             results = fts_provider.search(query)
             assert isinstance(results, list)
-
-        # Known syntax errors in FTS5
-        # These would need escaping/quoting in production
-        syntax_error_queries = ["test?"]
-
-        for query in syntax_error_queries:
-            with pytest.raises(sqlite3.OperationalError):
-                fts_provider.search(query)
 
 
 class TestSearchProviderSourceFiltering:
