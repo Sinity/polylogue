@@ -21,6 +21,36 @@ files:
     target: polylogue/api/archive.py
     owner: stable
     cross_cut: { api: async }
+  - path: polylogue/api/contracts/__init__.py
+    loc: 42
+    target: polylogue/api/contracts/__init__.py
+    owner: stable
+    cross_cut: { api: async }
+  - path: polylogue/api/contracts/api_surface.py
+    loc: 86
+    target: polylogue/api/contracts/api_surface.py
+    owner: stable
+    cross_cut: { api: async }
+  - path: polylogue/api/contracts/assertions.py
+    loc: 54
+    target: polylogue/api/contracts/assertions.py
+    owner: stable
+    cross_cut: { api: async }
+  - path: polylogue/api/contracts/cli_surface.py
+    loc: 96
+    target: polylogue/api/contracts/cli_surface.py
+    owner: stable
+    cross_cut: { api: async }
+  - path: polylogue/api/contracts/mcp_surface.py
+    loc: 96
+    target: polylogue/api/contracts/mcp_surface.py
+    owner: stable
+    cross_cut: { api: async }
+  - path: polylogue/api/contracts/read_surface.py
+    loc: 158
+    target: polylogue/api/contracts/read_surface.py
+    owner: stable
+    cross_cut: { api: async }
   - path: polylogue/api/ingest.py
     loc: 81
     target: polylogue/api/ingest.py

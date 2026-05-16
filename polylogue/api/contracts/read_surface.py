@@ -1,0 +1,158 @@
+"""Typed read-surface Protocol family.
+
+Every read surface (CLI, MCP, daemon HTTP, Python API) is expected to expose
+the canonical archive read operations using the *same* request and response
+contracts:
+
+* Input: ``ConversationQuerySpec`` for query/search, or a documented
+  primitive (``provider``, ``conversation_id``, etc.) for the simpler reads.
+* Output: the shared ``polylogue.surfaces.payloads`` envelopes —
+  ``ConversationListResponse``, ``FacetsResponse``, ``ArchiveStats``,
+  ``DaemonStatus``, ``TagMutationResult``.
+
+The Protocols below are intentionally narrow.  They cover the read surface
+contract that #859 requires every adapter to share, not the full surface
+API (mutations, ingest, insights, etc.).  Surfaces are free to expose
+additional methods; conformance only requires the methods declared here.
+
+Protocol composition is preferred over a single fat ``ReadSurface``
+protocol because not every surface implements every capability.  A surface
+may declare conformance to ``ConversationListSurface`` without also
+implementing ``ConversationStatsSurface`` (for example, an MCP tool
+subset).  The composite ``ReadSurface`` is supplied for callers that need
+the full union.
+"""
+
+from __future__ import annotations
+
+from typing import Protocol, runtime_checkable
+
+from polylogue.archive.query.spec import ConversationQuerySpec
+from polylogue.daemon.status import DaemonStatus
+from polylogue.operations import ArchiveStats
+from polylogue.surfaces.payloads import (
+    ConversationListResponse,
+    FacetsResponse,
+    TagMutationResult,
+)
+
+
+@runtime_checkable
+class ConversationListSurface(Protocol):
+    """Canonical conversation list/query contract.
+
+    Implementations accept a :class:`ConversationQuerySpec` (the shared
+    input contract validated by ``QuerySpecError``) and return a typed
+    :class:`ConversationListResponse` envelope (the shared output contract
+    with explicit ``items``, ``total``, ``limit``, ``offset`` fields).
+    """
+
+    async def list_conversations(self, spec: ConversationQuerySpec) -> ConversationListResponse: ...
+
+
+@runtime_checkable
+class ConversationSearchSurface(Protocol):
+    """Canonical conversation search/hit contract.
+
+    Search routes through the same :class:`ConversationQuerySpec` as
+    listing — ``spec.contains_terms`` carries the FTS terms.  The
+    envelope is the same :class:`ConversationListResponse`; surfaces that
+    emit ranked search-hit-shaped rows wrap them into the canonical
+    envelope via ``ConversationSearchHitPayload.from_hit``.
+    """
+
+    async def search_conversations(self, spec: ConversationQuerySpec) -> ConversationListResponse: ...
+
+
+@runtime_checkable
+class ConversationTagsSurface(Protocol):
+    """Canonical tag listing contract.
+
+    ``list_tags`` returns ``{tag: conversation_count}`` for the optionally
+    provider-scoped archive.  The mapping shape is shared verbatim across
+    CLI, MCP, and Python API.
+    """
+
+    async def list_tags(self, *, provider: str | None = None) -> dict[str, int]: ...
+
+
+@runtime_checkable
+class ConversationStatsSurface(Protocol):
+    """Canonical archive-wide stats contract.
+
+    Returns the typed :class:`ArchiveStats` (counts, per-provider counts,
+    last-updated timestamps).  Every surface that exposes archive stats
+    consumes the same model.
+    """
+
+    async def archive_stats(self) -> ArchiveStats: ...
+
+
+@runtime_checkable
+class FacetsSurface(Protocol):
+    """Canonical facets contract.
+
+    Returns the typed :class:`FacetsResponse` envelope.  Facets are an
+    aggregation projection over the archive — providers, tags, repos,
+    cwd prefixes, message_types, action_types, has_flags, time range.
+    """
+
+    async def facets(self, spec: ConversationQuerySpec | None = None) -> FacetsResponse: ...
+
+
+@runtime_checkable
+class DaemonStatusSurface(Protocol):
+    """Canonical daemon status contract.
+
+    Returns the typed :class:`DaemonStatus` consumed by every status
+    surface (CLI ``polylogue status``, daemon HTTP ``/api/status``, MCP
+    ``readiness_check``, web reader header).  Surfaces that cannot
+    materialize a live status (e.g. a stateless CLI invocation when the
+    daemon is offline) still produce a ``DaemonStatus`` populated with
+    ``daemon_liveness=False`` rather than ``None``.
+    """
+
+    async def daemon_status(self) -> DaemonStatus: ...
+
+
+@runtime_checkable
+class TagMutationSurface(Protocol):
+    """Canonical tag mutation contract.
+
+    Mutation surfaces return the shared :class:`TagMutationResult` so the
+    ``added | no_op | removed | not_present`` outcome vocabulary is
+    centralized.  Surfaces that do not expose mutations (read-only MCP
+    role, daemon read role) simply do not implement this protocol.
+    """
+
+    async def add_tag(self, conversation_id: str, tag: str) -> TagMutationResult: ...
+
+    async def remove_tag(self, conversation_id: str, tag: str) -> TagMutationResult: ...
+
+
+@runtime_checkable
+class ReadSurface(
+    ConversationListSurface,
+    ConversationSearchSurface,
+    ConversationTagsSurface,
+    ConversationStatsSurface,
+    Protocol,
+):
+    """Composite read-surface contract.
+
+    A full read surface implements list, search, tags, and stats.
+    Additional capabilities (facets, status, mutations) are declared via
+    separate protocols above so partial conformance is expressible.
+    """
+
+
+__all__ = [
+    "ConversationListSurface",
+    "ConversationSearchSurface",
+    "ConversationStatsSurface",
+    "ConversationTagsSurface",
+    "DaemonStatusSurface",
+    "FacetsSurface",
+    "ReadSurface",
+    "TagMutationSurface",
+]
