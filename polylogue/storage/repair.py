@@ -810,6 +810,14 @@ def repair_session_insights(
                     else f"Would: rebuild session insights ({assessment.pending:,} pending items)",
                 )
 
+            if assessment.pending == 0 and _session_insight_status_ready(status):
+                return _repair_result(
+                    "session_insights",
+                    repaired_count=0,
+                    success=True,
+                    detail="Session insights already ready",
+                )
+
             rebuilt = rebuild_session_insights_sync(
                 conn,
                 progress_callback=progress_callback,
@@ -851,7 +859,7 @@ def repair_action_event_read_model(config: Config, dry_run: bool = False) -> Rep
         valid_action_event_source_ids_sync,
     )
     from polylogue.storage.action_events.status import action_event_read_model_status_sync
-    from polylogue.storage.fts.fts_lifecycle import repair_fts_index_sync
+    from polylogue.storage.fts.fts_lifecycle import rebuild_fts_index_sync, repair_fts_index_sync
     from polylogue.storage.sqlite.connection import connection_context
 
     try:
@@ -875,9 +883,12 @@ def repair_action_event_read_model(config: Config, dry_run: bool = False) -> Rep
             if candidate_ids:
                 repaired = rebuild_action_event_read_model_sync(conn, conversation_ids=candidate_ids)
             if not state.fts_ready:
-                repair_targets = candidate_ids or valid_action_event_source_ids_sync(conn)
-                if repair_targets:
-                    repair_fts_index_sync(conn, repair_targets)
+                if state.excess_fts_rows:
+                    rebuild_fts_index_sync(conn)
+                else:
+                    repair_targets = candidate_ids or valid_action_event_source_ids_sync(conn)
+                    if repair_targets:
+                        repair_fts_index_sync(conn, repair_targets)
             conn.commit()
             refreshed = action_event_read_model_status_sync(conn)
             return _repair_result(
