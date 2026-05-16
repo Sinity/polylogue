@@ -262,7 +262,16 @@ def build_verify_steps(
     steps.append(("proof-pack check", _devtools_cmd("proof-pack", "--check")))
 
     if not quick and not commit:
-        pytest_cmd = ["pytest", "-q", "--tb=short", "--ignore=tests/integration"]
+        _report_dir = Path(".cache/test-reports")
+        _report_dir.mkdir(parents=True, exist_ok=True)
+        pytest_cmd = [
+            "pytest",
+            "-q",
+            "--tb=short",
+            "--ignore=tests/integration",
+            "--durations=10",
+            f"--junitxml={_report_dir}/verify-latest.xml",
+        ]
         if skip_slow:
             pytest_cmd.extend(["-m", "not slow"])
         if seed_testmon:

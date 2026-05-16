@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import pytest
+
 if TYPE_CHECKING:
     from pytest import Item
 
@@ -18,4 +20,4 @@ def pytest_collection_modifyitems(items: list[Item]) -> None:
         callspec = getattr(item, "callspec", None)
         provider = callspec.params.get("provider") if callspec is not None else None
         if provider:
-            item.add_marker(f"xdist_group({provider})")
+            item.add_marker(pytest.mark.xdist_group(name=provider))
