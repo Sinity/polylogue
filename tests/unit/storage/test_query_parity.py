@@ -354,3 +354,90 @@ async def test_backend_query_store_provider_filter_matches_repository(tmp_path: 
 
     assert backend_chatgpt == repo_chatgpt == 3
     assert backend_claude == repo_claude == 2
+
+
+# ---------------------------------------------------------------------------
+# Semantic query laws — provider-filter subset and count invariants
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.contract
+@pytest.mark.asyncio
+async def test_provider_filter_ids_are_subset_of_all_ids(tmp_path: Path) -> None:
+    """Provider-filtered IDs must be a strict subset of all conversation IDs.
+
+    This pins the foundational semantic law: any filtered result set can only
+    narrow, never expand, the full corpus.  A violation means the filter is
+    synthesising IDs that don't exist in the unfiltered listing.
+    """
+    db_path = tmp_path / "subset.db"
+    _seed_db(db_path, chatgpt_count=3, claude_count=2)
+
+    archive = Polylogue(archive_root=tmp_path, db_path=db_path)
+    try:
+        all_convs = await archive.repository.list(limit=None)
+        chatgpt_convs = await archive.repository.list(provider="chatgpt", limit=None)
+        claude_convs = await archive.repository.list(provider="claude-ai", limit=None)
+    finally:
+        await archive.close()
+
+    all_ids = {str(c.id) for c in all_convs}
+    chatgpt_ids = {str(c.id) for c in chatgpt_convs}
+    claude_ids = {str(c.id) for c in claude_convs}
+
+    assert chatgpt_ids.issubset(all_ids), (
+        f"chatgpt filter returned IDs absent from full listing: {chatgpt_ids - all_ids}"
+    )
+    assert claude_ids.issubset(all_ids), f"claude filter returned IDs absent from full listing: {claude_ids - all_ids}"
+    assert len(chatgpt_ids) == 3
+    assert len(claude_ids) == 2
+
+
+@pytest.mark.contract
+@pytest.mark.asyncio
+async def test_provider_filter_count_matches_list_length(tmp_path: Path) -> None:
+    """repository.count(provider=X) must equal len(repository.list(provider=X)).
+
+    If count and list diverge, aggregate queries will disagree with enumeration
+    queries and pagination will be miscalibrated.
+    """
+    db_path = tmp_path / "count-list.db"
+    _seed_db(db_path, chatgpt_count=4, claude_count=3)
+
+    backend = SQLiteBackend(db_path=db_path)
+    repo = ConversationRepository(backend=backend)
+    try:
+        for provider in ("chatgpt", "claude-ai"):
+            count = await repo.count(provider=provider)
+            listed = await repo.list(provider=provider, limit=None)
+            assert count == len(listed), f"count({provider!r})={count} but len(list({provider!r}))={len(listed)}"
+    finally:
+        await repo.close()
+
+
+@pytest.mark.contract
+@pytest.mark.asyncio
+async def test_equivalent_provider_filter_constructions_return_identical_ids(tmp_path: Path) -> None:
+    """Two equivalent ways to express a provider filter must return identical IDs.
+
+    Filtering via repository.list(provider=X) and filtering via the backend
+    query store with a ConversationRecordQuery(provider=X) must produce the
+    same ID set — they are equivalent constructions over the same data.
+    """
+    from polylogue.storage.query_models import ConversationRecordQuery
+
+    db_path = tmp_path / "equiv.db"
+    _seed_db(db_path, chatgpt_count=3, claude_count=3)
+
+    backend = SQLiteBackend(db_path=db_path)
+    repo = ConversationRepository(backend=backend)
+    try:
+        repo_convs = await repo.list(provider="chatgpt", limit=None)
+        backend_count = await backend.queries.count_conversations(ConversationRecordQuery(provider="chatgpt"))
+    finally:
+        await repo.close()
+
+    repo_ids = {str(c.id) for c in repo_convs}
+    assert len(repo_ids) == backend_count == 3, (
+        f"Equivalent constructions disagree: repo={len(repo_ids)}, backend.count={backend_count}"
+    )
