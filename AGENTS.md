@@ -34,10 +34,11 @@ on push, but the default baseline must pass before the PR is opened.
 Do not treat CI as the first verification pass. Anticipate failures
 locally.
 
-### Proof Pack workflow
+### Verification Impact workflow
 
-Every PR gets a `Polylogue Proof Pack` comment. Treat it as a verification
-impact report, not as decorative CI output and not as a complete proof.
+Every PR gets a `Polylogue Verification Impact` comment. Treat it as a
+verification impact report, not as decorative CI output and not as a complete
+proof.
 
 Use it this way:
 
@@ -45,15 +46,14 @@ Use it this way:
   match the touched files, or state in the PR why a suggested gate is only an
   optional confidence gate for that change.
 - Use nonzero affected domains and claims to decide which focused tests or
-  proof-law suites to run. Ignore zero-claim domain noise unless the changed
-  files genuinely belong to that domain.
+  contract/property suites to run. Ignore zero-claim domain noise unless the
+  changed files genuinely belong to that domain.
 - Treat `Known Gaps` as actionable only when they are in a changed or directly
   affected domain. Broad repo-wide gap dumps should not block unrelated PRs, but
   recurring noise should be folded back into #594.
-- Treat any remaining proof-pack obligation language as transitional report
-  terminology; real verification closure comes from pytest, coverage,
-  benchmark, CI, static-check, and runtime evidence artifacts.
-- If the Proof Pack is noisy, misleading, or misses a relevant gate, comment on
+- Real verification closure comes from pytest, coverage, benchmark, CI,
+  static-check, and runtime evidence artifacts — not from catalog metadata.
+- If the report is noisy, misleading, or misses a relevant gate, comment on
   the PR or #594 with the concrete mismatch. Do not silently ignore it.
 
 ### PR body discipline
@@ -322,7 +322,7 @@ Add `devtools build-package` or `nix flake check` when touching packaging or
 Nix expressions. See [TESTING.md](TESTING.md) and [docs/devtools.md](docs/devtools.md)
 for details.
 
-Proof Pack: every PR gets a `Polylogue Proof Pack` comment. It's a verification
+Verification Impact: every PR gets a `Polylogue Verification Impact` comment. It's a verification
 impact report showing affected domains, required gates, and known gaps. Use it
 to choose focused verification — run the gates that match touched files, state
 in the PR why a suggested gate is only optional for that change.
@@ -576,8 +576,42 @@ convergence stages.
 | Codex | Session envelope structure | `parsers/codex.py` |
 | Gemini | `chunkedPrompt.chunks` structure | `parsers/drive.py` |
 | Drive | Google Takeout format with OAuth | `parsers/drive.py` |
+| Antigravity | Brain artifact metadata (`*.metadata.json`) or language-server Markdown export envelope | `parsers/antigravity.py` |
 
-Six known providers plus `UNKNOWN`. `detect_provider()` calls each parser's `looks_like()` in order.
+`detect_provider()` calls each parser's `looks_like()` in order.
+
+## Antigravity Language-Server Export Path
+
+Antigravity persists its conversation transcripts as opaque non-protobuf
+`conversations/*.pb` and `implicit/*.pb` blobs that cannot be statically
+decoded. The installed Antigravity language server binary
+(`language_server_linux_x64`) exposes two endpoints over a local HTTP loopback
+port that together form the supported export surface:
+
+| Endpoint | Purpose |
+|----------|---------|
+| `/exa.language_server_pb.LanguageServerService/SearchConversations` | Returns cascade IDs, titles, workspace names, snippets, and `lastModifiedTime` for stored conversations. |
+| `/exa.language_server_pb.LanguageServerService/ConvertTrajectoryToMarkdown` | Returns a complete Markdown export for a given cascade ID — user inputs, planner responses, tool/command events. |
+
+The adapter lives in `polylogue/sources/parsers/antigravity.py`:
+
+- `AntigravityLanguageServerClient` spawns the binary with
+  `-standalone -persistent_mode -http_server_port=<port>` against the user's
+  Antigravity data root, waits until the search endpoint answers, and tears the
+  process down on close.
+- `discover_language_server()` resolves the binary in this order:
+  `POLYLOGUE_ANTIGRAVITY_LANGUAGE_SERVER` env var, `$PATH`, then the highest
+  matching `/nix/store/*-antigravity-*` extension bundle.
+- `iter_language_server_exports(root)` drives `SearchConversations` and
+  `ConvertTrajectoryToMarkdown` and yields `ParsedConversation` objects through
+  `parse_markdown_export()`.
+
+The ingest path is layered in `polylogue/sources/source_parsing.py`: when the
+source is `antigravity` and a `conversations/` subdirectory exists, the
+language-server export runs first; any `AntigravityExportError` (binary not
+found, connection failure, malformed response) is logged and the source falls
+back to the existing brain-artifact metadata walk. Both paths emit normalized
+`Provider.ANTIGRAVITY` conversations.
 
 ## Key Abstractions
 
@@ -957,7 +991,7 @@ repo verification checks and evidence records, not end-user archive workflows.
 | Command | Role |
 | --- | --- |
 | `devtools render-verification-catalog` | Refresh or verify the catalog that anchors changed-path verification reports after changing subjects, claims, runners, or catalog rendering. Use --anti-vacuity to flag claims with gaps. |
-| `devtools affected-obligations` | Find the checks and inner-loop commands affected by local changes before escalating to full PR gates. Use --full for domain-grouped impact analysis. |
+| `devtools verification-impact` | Find the checks and inner-loop commands affected by local changes before escalating to full PR gates. Use --full for domain-grouped impact analysis. |
 | `devtools semantic-axis-evidence` | Produce comparative performance evidence that describes growth shape over semantic axes instead of machine-specific absolute budgets. |
 | `devtools lab-corpus` | Seed synthetic corpus files or complete demo workspaces for lab exercises. |
 | `devtools lab-scenario` | Run showcase exercise smoke scenarios and committed baseline checks outside the archive CLI. |
@@ -1008,10 +1042,10 @@ These are the commands worth remembering during normal repo work:
 
 | Command | Description |
 | --- | --- |
-| `devtools affected-obligations` | Route changed paths or refs to affected verification checks and focused commands; optionally emit full proof-pack impact report. |
 | `devtools artifact-graph` | Render the runtime artifact, operation, and scenario-coverage map. |
 | `devtools coverage-gate` | Run pytest with the repository coverage floor from pyproject.toml. |
 | `devtools daemon-workload-probe` | Inspect daemon ingest workload, convergence debt, and hot query plans. |
+| `devtools evidence-dashboard` | Render the pytest-first evidence dashboard or a changed-path trace. |
 | `devtools evidence-report` | Aggregate verification evidence into a structured status report. |
 | `devtools lab-corpus` | Generate verification-lab synthetic corpus fixtures and demo archives. |
 | `devtools lab-scenario` | Run verification-lab showcase scenario sets and baseline checks. |
@@ -1024,6 +1058,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools schema-generate` | Generate provider schema packages and optional evidence clusters. |
 | `devtools schema-promote` | Promote a schema evidence cluster into a registered package version. |
 | `devtools semantic-axis-evidence` | Generate verification-lab performance evidence across synthetic semantic scale tiers. |
+| `devtools verification-impact` | Route changed paths or refs to affected verification checks and focused commands; emit the full PR-confidence report with --full. |
 | `devtools verify` | Run the local verification baseline before pushing or creating a PR. |
 | `devtools verify-ci-workflows` | Verify CI workflow files reference locally-known devtools commands and existing paths. |
 | `devtools verify-cluster-cohesion` | Validate proposed clusters from the topology projection using the import graph. |
