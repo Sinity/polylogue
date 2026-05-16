@@ -29,7 +29,7 @@ Current registry snapshot:
 - covered runtime artifacts: `50`
 - covered runtime operations: `29`
 - covered maintenance targets: `3`
-- covered declared operation targets: `41`
+- covered declared operation targets: `43`
 - uncovered runtime paths: —
 - uncovered runtime artifacts: —
 - uncovered runtime operations: `mutate-add-tag`, `mutate-bulk-tag-conversations`, `mutate-delete-conversation`, `mutate-delete-metadata`, `mutate-remove-tag`, `mutate-set-metadata`

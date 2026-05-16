@@ -238,12 +238,18 @@ def test_benchmark_entry_exposes_tests_from_execution() -> None:
 def test_compile_benchmark_campaigns_indexes_by_name() -> None:
     campaigns = compile_benchmark_campaigns(BENCHMARK_SCENARIOS)
 
-    assert set(campaigns) == {"search-filters", "storage", "pipeline"}
+    assert set(campaigns) == {"search-filters", "storage", "pipeline", "reader-api", "daemon-convergence"}
     assert campaigns["search-filters"].tests == ("tests/benchmarks/test_search_filters.py",)
 
 
 def test_benchmark_scenario_index_tracks_authored_catalog() -> None:
-    assert set(BENCHMARK_SCENARIO_INDEX) == {"search-filters", "storage", "pipeline"}
+    assert set(BENCHMARK_SCENARIO_INDEX) == {
+        "search-filters",
+        "storage",
+        "pipeline",
+        "reader-api",
+        "daemon-convergence",
+    }
 
 
 def test_benchmark_entry_compiles_its_own_projection_entry() -> None:

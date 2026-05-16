@@ -8,10 +8,10 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 
 ## Snapshot
 
-- subjects: `551`
+- subjects: `559`
 - claims: `37`
 - runner bindings: `37`
-- proof obligations: `445`
+- proof obligations: `451`
 
 ## Quality Checks
 
@@ -47,8 +47,8 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `generated.scenario_family` | 9 |
 | `insight.surface` | 12 |
 | `maintenance.target` | 10 |
-| `operation.spec` | 47 |
-| `operation.spec.effect` | 128 |
+| `operation.spec` | 49 |
+| `operation.spec.effect` | 134 |
 | `provider.capability` | 3 |
 | `schema.annotation` | 110 |
 | `schema.roundtrip` | 1 |
@@ -286,18 +286,18 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `generated.scenario.semantic_claim_mapping` | 9 |
 | `insight.surface.registered` | 12 |
 | `maintenance.repair.crash_consistency` | 10 |
-| `operation.effect.atomic` | 17 |
+| `operation.effect.atomic` | 18 |
 | `operation.effect.confirmed_before_execute` | 1 |
 | `operation.effect.deterministic` | 8 |
 | `operation.effect.explicit_dry_run_evidence` | 1 |
-| `operation.effect.idempotent` | 17 |
+| `operation.effect.idempotent` | 18 |
 | `operation.effect.no_side_effect` | 8 |
-| `operation.effect.preview` | 17 |
+| `operation.effect.preview` | 18 |
 | `operation.effect.privacy_safe_evidence` | 1 |
 | `operation.effect.retry_bounded` | 1 |
-| `operation.effect.rollback_safe` | 17 |
+| `operation.effect.rollback_safe` | 18 |
 | `operation.effect.sampling_bounded` | 1 |
-| `operation.effect.snapshot_consistent` | 38 |
+| `operation.effect.snapshot_consistent` | 40 |
 | `operation.effect.timeout_bounded` | 1 |
 | `parser.quarantine.context_redaction` | 1 |
 | `provider.capability.identity_bridge` | 3 |
