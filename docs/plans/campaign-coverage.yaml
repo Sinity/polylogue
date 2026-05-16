@@ -275,3 +275,17 @@ benchmark_campaigns:
     tests:
       - tests/benchmarks/test_storage.py
     status: active
+
+  - name: reader-api
+    description: >
+      Reader HTTP API list/get/facets/context-pack/cost-rollup benchmark domain
+    tests:
+      - tests/benchmarks/test_reader_api.py
+    status: active
+
+  - name: daemon-convergence
+    description: >
+      Daemon ingest convergence at synthetic scale tiers — single-file and multi-session
+    tests:
+      - tests/benchmarks/test_daemon_convergence.py
+    status: active

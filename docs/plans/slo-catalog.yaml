@@ -57,3 +57,10 @@ surfaces:
     p50_ms: 300
     p95_ms: 800
     gate: "informational"
+
+  daemon_convergence_single_file:
+    description: "Daemon ingest convergence for a single 1000-message synthetic session"
+    benchmark_test: "tests/benchmarks/test_daemon_convergence.py::test_convergence_single_file_perf"
+    p50_ms: 30000
+    p95_ms: 60000
+    gate: "informational"
