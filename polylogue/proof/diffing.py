@@ -84,6 +84,21 @@ _DIFF_STATUSES: tuple[DiffStatus, ...] = (
     "stable_affected",
     "suppressed",
 )
+# Files whose changes define claim/subject/runner content — touching these
+# can invalidate any catalog-backed obligation, so they route to all obligations.
+# Infrastructure files (models, routing, rendering, utilities) get narrower routing.
+_PROOF_CATALOG_CLAIM_FILES: frozenset[str] = frozenset(
+    {
+        "polylogue/proof/catalog.py",
+        "polylogue/proof/subjects.py",
+        "polylogue/proof/runners.py",
+        "polylogue/proof/corpus.py",
+        "polylogue/proof/coverage_manifests.py",
+        "polylogue/proof/generated_scenarios.py",
+        "polylogue/proof/models.py",
+        "polylogue/proof/sources/effect_compiler.py",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -327,7 +342,7 @@ def route_affected_obligations(
     obligations_by_id = {obligation.id: obligation for obligation in proof_catalog.obligations}
     for change in change_subjects:
         selected_subject_ids = set(change.subject_ids)
-        if change.kind == "proof_catalog":
+        if change.kind == "proof_catalog" and change.path in _PROOF_CATALOG_CLAIM_FILES:
             selected_subject_ids.update(obligation.subject.id for obligation in proof_catalog.obligations)
         for subject_id in selected_subject_ids:
             for obligation in obligations_by_subject.get(subject_id, []):
@@ -768,8 +783,10 @@ def _suppressed_change_subjects(change_subjects: tuple[ChangeSubject, ...]) -> t
 
 
 def _obligation_reason(change: ChangeSubject, subject: SubjectRef) -> str:
-    if change.kind == "proof_catalog":
+    if change.kind == "proof_catalog" and change.path in _PROOF_CATALOG_CLAIM_FILES:
         return f"{change.path} changes the proof catalog compiler or runner vocabulary"
+    if change.kind == "proof_catalog":
+        return f"{change.path} changes proof catalog infrastructure (types/routing/rendering)"
     if subject.source_span is not None and _normalize_path(subject.source_span.path) == change.path:
         return f"{change.path} is the source span for subject {subject.id}"
     return f"{change.kind} change {change.path} selects subject {subject.id}"
