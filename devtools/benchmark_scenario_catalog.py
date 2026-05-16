@@ -42,6 +42,32 @@ BENCHMARK_SCENARIOS: tuple[BenchmarkCampaignEntry, ...] = (
         ),
         tags=("benchmark", "pipeline"),
     ),
+    BenchmarkCampaignEntry(
+        name="reader-api",
+        description="Reader HTTP API list/get/facets/context-pack/cost-rollup benchmark domain",
+        execution=pytest_execution("tests/benchmarks/test_reader_api.py"),
+        notes=(
+            "Covers reader read-path latency for list, get, facets, and context operations.",
+            "SLO catalog gates are defined in docs/plans/slo-catalog.yaml.",
+        ),
+        origin="authored.benchmark-domain",
+        artifact_targets=("reader_list_results", "reader_facets"),
+        operation_targets=("benchmark.reader.api",),
+        tags=("benchmark", "reader", "api"),
+    ),
+    BenchmarkCampaignEntry(
+        name="daemon-convergence",
+        description="Daemon ingest convergence at synthetic scale tiers — single-file and multi-session",
+        execution=pytest_execution("tests/benchmarks/test_daemon_convergence.py"),
+        notes=(
+            "Measures convergence stage timing at small/medium/large synthetic tiers.",
+            "Run with --benchmark-enable -p no:xdist -o 'addopts='",
+        ),
+        origin="authored.benchmark-domain",
+        artifact_targets=("daemon_convergence_timing",),
+        operation_targets=("benchmark.daemon.convergence",),
+        tags=("benchmark", "daemon", "convergence"),
+    ),
 )
 
 BENCHMARK_SCENARIO_INDEX: dict[str, BenchmarkCampaignEntry] = compile_benchmark_campaigns(BENCHMARK_SCENARIOS)

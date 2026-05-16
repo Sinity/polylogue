@@ -21,7 +21,7 @@ def test_obligation_diff_accepts_ref_flags_and_markdown(
     assert obligation_diff.main(["--base-ref", "origin/master", "--head-ref", "HEAD", "--markdown"]) == 0
 
     rendered = capsys.readouterr().out
-    assert "## Proof Obligations" in rendered
+    assert "## Affected Verification Checks" in rendered
     assert "`origin/master..HEAD`" in rendered
 
 

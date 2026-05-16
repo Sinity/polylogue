@@ -12,11 +12,11 @@ Current registry snapshot:
 - live lanes: `20`
 - composite lanes: `24`
 - mutation campaigns: `19`
-- benchmark campaigns: `3`
+- benchmark campaigns: `5`
 - synthetic benchmark campaigns: `7`
-- scenario projections: `245`
+- scenario projections: `247`
 - inferred corpus scenarios: `8`
-  - benchmark-campaign: `3`
+  - benchmark-campaign: `5`
   - exercise: `140`
   - inferred-corpus-scenario: `8`
   - mutation-campaign: `19`
@@ -236,7 +236,9 @@ Benchmark comparisons are manual.
 
 | Campaign | Tests | Warn | Fail | Description |
 | --- | --- | ---: | ---: | --- |
+| `daemon-convergence` | `tests/benchmarks/test_daemon_convergence.py` | 0.0% | 0.0% | Daemon ingest convergence at synthetic scale tiers — single-file and multi-session |
 | `pipeline` | `tests/benchmarks/test_pipeline.py` | 0.0% | 0.0% | Index rebuild/update, action-event repair, plus hashing/semantic helper benchmark domain |
+| `reader-api` | `tests/benchmarks/test_reader_api.py` | 0.0% | 0.0% | Reader HTTP API list/get/facets/context-pack/cost-rollup benchmark domain |
 | `search-filters` | `tests/benchmarks/test_search_filters.py` | 0.0% | 0.0% | FTS and ConversationFilter benchmark domain |
 | `storage` | `tests/benchmarks/test_storage.py` | 0.0% | 0.0% | Repository/backend list/get-many/save benchmark domain |
 
@@ -275,7 +277,9 @@ These are the authored scenario-bearing projections currently feeding runtime co
 
 | Source | Projection | Path Targets | Artifact Targets | Operation Targets | Maintenance Targets | Tags | Description |
 | --- | --- | --- | --- | --- | --- | --- | --- |
+| `benchmark-campaign` | `daemon-convergence` | — | `daemon_convergence_timing` | `benchmark.daemon.convergence` | — | `benchmark`<br>`daemon`<br>`convergence` | Daemon ingest convergence at synthetic scale tiers — single-file and multi-session |
 | `benchmark-campaign` | `pipeline` | — | `index_state`<br>`pipeline_helpers` | `benchmark.pipeline.index-and-helpers`<br>`benchmark.repair.action-events` | — | `benchmark`<br>`pipeline` | Index rebuild/update, action-event repair, plus hashing/semantic helper benchmark domain |
+| `benchmark-campaign` | `reader-api` | — | `reader_list_results`<br>`reader_facets` | `benchmark.reader.api` | — | `benchmark`<br>`reader`<br>`api` | Reader HTTP API list/get/facets/context-pack/cost-rollup benchmark domain |
 | `benchmark-campaign` | `search-filters` | — | `conversation_query_results`<br>`message_fts` | `query-conversations`<br>`benchmark.query.search-filters` | — | `benchmark`<br>`search`<br>`filters` | FTS and ConversationFilter benchmark domain |
 | `benchmark-campaign` | `storage` | — | `conversation_rows`<br>`message_rows`<br>`raw_rows` | `benchmark.storage.crud` | — | `benchmark`<br>`storage` | Repository/backend list/get-many/save benchmark domain |
 | `exercise` | `combined-filters` | — | — | — | — | — | Combined provider + date filter |
