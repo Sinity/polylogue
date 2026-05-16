@@ -190,13 +190,15 @@ enable_error_code = [
 line-length = 120
 target-version = "py310"
 cache-dir = ".cache/ruff"
+# Excludes are limited to vendored/build directories; every path below is
+# repository infrastructure, not production code. Audited under #1062 Pack B.
 exclude = [
-    ".git",
-    "__pycache__",
-    "build",
-    "dist",
-    ".venv",
-    "venv",
+    ".git",         # version control metadata
+    "__pycache__",  # bytecode caches
+    "build",        # setuptools build output
+    "dist",         # wheel/sdist artifacts
+    ".venv",        # devshell-managed virtual environment
+    "venv",         # legacy virtual environment fallback
 ]
 
 [tool.ruff.lint]
@@ -217,6 +219,9 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
+# Per-file ignores are documented justifications, not blanket exemptions.
+# Each entry carries the reason inline so the next reader can re-validate
+# whether the suppression is still load-bearing. Audited under #1062 Pack B.
 "tests/**" = [
     "E402",   # consolidated mega-files have mid-file section imports
     "N803",   # test parameter naming follows test conventions

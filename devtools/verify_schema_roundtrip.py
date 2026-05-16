@@ -14,14 +14,14 @@ from polylogue.schemas.runtime_registry import SCHEMA_DIR, SchemaRegistry
 try:
     import jsonschema
     from jsonschema import Draft202012Validator
-except ImportError:  # pragma: no cover
+except ImportError:  # pragma: no cover - defensive optional dep
     jsonschema = None
     Draft202012Validator = None
 
 try:
     from polylogue.schemas.synthetic import SyntheticCorpus
     from polylogue.schemas.synthetic.wire_formats import PROVIDER_WIRE_FORMATS
-except ImportError:  # pragma: no cover
+except ImportError:  # pragma: no cover - defensive optional dep
     SyntheticCorpus = None  # type: ignore[misc,assignment]
     PROVIDER_WIRE_FORMATS = {}
 
