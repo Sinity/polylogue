@@ -643,7 +643,7 @@ files:
     target: polylogue/cli/commands/export.py
     owner: stable
   - path: polylogue/cli/commands/ingest.py
-    loc: 74
+    loc: 99
     target: polylogue/cli/commands/ingest.py
     owner: stable
   - path: polylogue/cli/commands/insights.py
@@ -727,7 +727,7 @@ files:
     target: polylogue/cli/query_semantic.py
     owner: stable
   - path: polylogue/cli/query_stats.py
-    loc: 720
+    loc: 723
     target: polylogue/cli/query_stats.py
     owner: stable
   - path: polylogue/cli/query_verbs.py
@@ -971,7 +971,7 @@ files:
     target: polylogue/daemon/health.py
     owner: stable
   - path: polylogue/daemon/http.py
-    loc: 1069
+    loc: 1086
     target: polylogue/daemon/http.py
     owner: stable
   - path: polylogue/daemon/live_ingest_attempt_models.py
@@ -988,7 +988,7 @@ files:
     target: polylogue/daemon/notifications.py
     owner: stable
   - path: polylogue/daemon/status.py
-    loc: 1139
+    loc: 1140
     target: polylogue/daemon/status.py
     owner: stable
   - path: polylogue/daemon/user_state_http.py
@@ -1056,6 +1056,10 @@ files:
   - path: polylogue/insights/storage.py
     loc: 141
     target: polylogue/insights/storage.py
+    owner: stable
+  - path: polylogue/insights/topology.py
+    loc: 196
+    target: polylogue/insights/topology.py
     owner: stable
   - path: polylogue/logging.py
     loc: 172
@@ -1151,7 +1155,7 @@ files:
     target: polylogue/operations/import_contracts.py
     owner: stable
   - path: polylogue/operations/specs.py
-    loc: 805
+    loc: 821
     target: polylogue/operations/specs.py
     owner: stable
   - path: polylogue/paths/__init__.py
@@ -1253,7 +1257,7 @@ files:
     target: polylogue/pipeline/services/ingest_batch/__init__.py
     owner: stable
   - path: polylogue/pipeline/services/ingest_batch/_core.py
-    loc: 1474
+    loc: 1472
     target: polylogue/pipeline/services/ingest_batch/_core.py
     owner: stable
   - path: polylogue/pipeline/services/ingest_batch/_models.py
@@ -1323,11 +1327,11 @@ files:
     target: polylogue/pipeline/stage_specs.py
     owner: stable
   - path: polylogue/proof/__init__.py
-    loc: 187
+    loc: 137
     target: polylogue/proof/__init__.py
     owner: stable
   - path: polylogue/proof/catalog.py
-    loc: 1216
+    loc: 1121
     target: polylogue/proof/catalog.py
     owner: stable
   - path: polylogue/proof/corpus.py
@@ -1339,7 +1343,7 @@ files:
     target: polylogue/proof/coverage_manifests.py
     owner: stable
   - path: polylogue/proof/diffing.py
-    loc: 826
+    loc: 848
     target: polylogue/proof/diffing.py
     owner: stable
   - path: polylogue/proof/generated_scenarios.py
@@ -1355,7 +1359,7 @@ files:
     target: polylogue/proof/rendering.py
     owner: stable
   - path: polylogue/proof/runners.py
-    loc: 1350
+    loc: 514
     target: polylogue/proof/runners.py
     owner: stable
   - path: polylogue/proof/sources/__init__.py
@@ -1367,7 +1371,7 @@ files:
     target: polylogue/proof/sources/effect_compiler.py
     owner: stable
   - path: polylogue/proof/subjects.py
-    loc: 728
+    loc: 739
     target: polylogue/proof/subjects.py
     owner: stable
   - path: polylogue/proof/suppressions.py
@@ -1902,7 +1906,7 @@ files:
     target: polylogue/schemas/validation/artifacts.py
     owner: stable
   - path: polylogue/schemas/validation/corpus.py
-    loc: 365
+    loc: 370
     target: polylogue/schemas/validation/corpus.py
     owner: stable
   - path: polylogue/schemas/validation/models.py
@@ -2164,7 +2168,7 @@ files:
     target: polylogue/sources/live/__init__.py
     owner: stable
   - path: polylogue/sources/live/batch.py
-    loc: 1154
+    loc: 1156
     target: polylogue/sources/live/batch.py
     owner: stable
   - path: polylogue/sources/live/batch_observability.py
@@ -2341,7 +2345,7 @@ files:
     target: polylogue/sources/source_walk.py
     owner: stable
   - path: polylogue/sources/token_store.py
-    loc: 144
+    loc: 140
     target: polylogue/sources/token_store.py
     owner: stable
   - path: polylogue/storage/__init__.py
@@ -2436,7 +2440,7 @@ files:
     target: polylogue/storage/derived/__init__.py
     owner: stable
   - path: polylogue/storage/derived/derived_status.py
-    loc: 268
+    loc: 267
     target: polylogue/storage/derived/derived_status.py
     owner: stable
   - path: polylogue/storage/derived/insights.py
@@ -2476,7 +2480,7 @@ files:
     target: polylogue/storage/fts/__init__.py
     owner: stable
   - path: polylogue/storage/fts/fts_lifecycle.py
-    loc: 493
+    loc: 490
     target: polylogue/storage/fts/fts_lifecycle.py
     owner: stable
   - path: polylogue/storage/fts/sql.py
@@ -2523,7 +2527,7 @@ files:
     target: polylogue/storage/insights/session/profiles.py
     owner: stable
   - path: polylogue/storage/insights/session/rebuild.py
-    loc: 848
+    loc: 849
     target: polylogue/storage/insights/session/rebuild.py
     owner: stable
   - path: polylogue/storage/insights/session/records.py
@@ -2562,6 +2566,14 @@ files:
     loc: 106
     target: polylogue/storage/insights/timeline/records.py
     owner: stable
+  - path: polylogue/storage/insights/topology/__init__.py
+    loc: 26
+    target: polylogue/storage/insights/topology/__init__.py
+    owner: stable
+  - path: polylogue/storage/insights/topology/derivation.py
+    loc: 274
+    target: polylogue/storage/insights/topology/derivation.py
+    owner: stable
   - path: polylogue/storage/query_models.py
     loc: 256
     target: polylogue/storage/query_models.py
@@ -2586,7 +2598,7 @@ files:
     owner: storage-root
     reason: storage-root cross-cutting helper
   - path: polylogue/storage/repository/__init__.py
-    loc: 102
+    loc: 106
     target: polylogue/storage/repository/__init__.py
     owner: stable
   - path: polylogue/storage/repository/action/__init__.py
@@ -2660,6 +2672,11 @@ files:
   - path: polylogue/storage/repository/insight/timeline_reads.py
     loc: 162
     target: polylogue/storage/repository/insight/timeline_reads.py
+    owner: stable
+    cross_cut: { layer: read }
+  - path: polylogue/storage/repository/insight/topology_reads.py
+    loc: 35
+    target: polylogue/storage/repository/insight/topology_reads.py
     owner: stable
     cross_cut: { layer: read }
   - path: polylogue/storage/repository/raw/__init__.py
@@ -3121,7 +3138,7 @@ files:
     target: polylogue/verification/manifests/__init__.py
     owner: stable
   - path: polylogue/verification/manifests/models.py
-    loc: 816
+    loc: 833
     target: polylogue/verification/manifests/models.py
     owner: stable
   - path: polylogue/version.py

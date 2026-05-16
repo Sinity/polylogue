@@ -32,6 +32,9 @@ from polylogue.storage.repository.insight.thread_reads import (
 from polylogue.storage.repository.insight.timeline_reads import (
     RepositoryInsightTimelineReadMixin,
 )
+from polylogue.storage.repository.insight.topology_reads import (
+    RepositoryInsightTopologyReadMixin,
+)
 from polylogue.storage.repository.raw.repository_raw import RepositoryRawMixin
 from polylogue.storage.repository.vectors.repository_vectors import RepositoryVectorMixin
 
@@ -43,6 +46,7 @@ class ConversationRepository(
     RepositoryInsightTimelineReadMixin,
     RepositoryInsightThreadReadMixin,
     RepositoryInsightSummaryReadMixin,
+    RepositoryInsightTopologyReadMixin,
     RepositoryRawMixin,
     RepositoryWriteMixin,
     RepositoryVectorMixin,
