@@ -5,6 +5,7 @@ from __future__ import annotations
 import inspect
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from pathlib import Path
+from typing import Any, TypeVar
 
 import click
 
@@ -39,6 +40,29 @@ SELECTED_JSON_COMMAND_ARGS: Mapping[tuple[str, ...], tuple[str, ...]] = {
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SCHEMA_COMPOSITE_KEYWORDS = ("anyOf", "oneOf", "allOf")
+
+_T = TypeVar("_T")
+
+
+def _build_subjects(
+    kind: str,
+    items: Iterable[_T],
+    mapper: Callable[[_T], tuple[str, Any, SourceSpan | None]],
+) -> tuple[SubjectRef, ...]:
+    """Map *items* to SubjectRef instances and return them sorted by id.
+
+    *mapper* receives each item and returns ``(id, attrs, source_span)``.
+    """
+    subjects = [
+        SubjectRef(
+            kind=kind,  # type: ignore[arg-type]
+            id=item_id,
+            attrs=attrs,
+            source_span=source_span,
+        )
+        for item_id, attrs, source_span in (mapper(item) for item in items)
+    ]
+    return tuple(sorted(subjects, key=lambda s: s.id))
 
 
 def _repo_relative(path: Path) -> str:
@@ -146,52 +170,46 @@ def query_law_subjects() -> tuple[SubjectRef, ...]:
 
 def provider_capability_subjects() -> tuple[SubjectRef, ...]:
     """Compile typed provider capability metadata into proof subjects."""
-    subjects = [
-        SubjectRef(
-            kind="provider.capability",
-            id=f"provider.capability.{capability.provider.value}",
-            attrs=capability.to_payload(),
-            source_span=SourceSpan(
-                path="polylogue/archive/provider/capabilities.py",
-                symbol=capability.source_symbol,
-            ),
-        )
-        for capability in iter_provider_capabilities()
-    ]
-    return tuple(sorted(subjects, key=lambda subject: subject.id))
+    return _build_subjects(
+        "provider.capability",
+        iter_provider_capabilities(),
+        lambda cap: (
+            f"provider.capability.{cap.provider.value}",
+            cap.to_payload(),
+            SourceSpan(path="polylogue/archive/provider/capabilities.py", symbol=cap.source_symbol),
+        ),
+    )
 
 
 def operation_spec_subjects() -> tuple[SubjectRef, ...]:
     """Compile declared operation specifications into proof subjects."""
-    subjects = [
-        SubjectRef(
-            kind="operation.spec",
-            id=f"operation.spec.{operation.name}",
-            attrs=operation.to_dict(),
-            source_span=SourceSpan(path="polylogue/operations/specs.py", symbol=operation.name),
-        )
-        for operation in build_declared_operation_catalog().specs
-    ]
-    return tuple(sorted(subjects, key=lambda subject: subject.id))
+    return _build_subjects(
+        "operation.spec",
+        build_declared_operation_catalog().specs,
+        lambda op: (
+            f"operation.spec.{op.name}",
+            op.to_dict(),
+            SourceSpan(path="polylogue/operations/specs.py", symbol=op.name),
+        ),
+    )
 
 
 def insight_surface_subjects() -> tuple[SubjectRef, ...]:
     """Compile registered insight types into proof subjects."""
-    subjects = [
-        SubjectRef(
-            kind="insight.surface",
-            id=f"insight.surface.{name}",
-            attrs={
-                "name": name,
-                "display_name": pt.display_name,
-                "json_key": pt.json_key,
-                "cli_command_name": pt.resolved_cli_command_name,
+    return _build_subjects(
+        "insight.surface",
+        sorted(INSIGHT_REGISTRY.items()),
+        lambda item: (
+            f"insight.surface.{item[0]}",
+            {
+                "name": item[0],
+                "display_name": item[1].display_name,
+                "json_key": item[1].json_key,
+                "cli_command_name": item[1].resolved_cli_command_name,
             },
-            source_span=SourceSpan(path="polylogue/insights/registry.py", symbol=name),
-        )
-        for name, pt in sorted(INSIGHT_REGISTRY.items())
-    ]
-    return tuple(subjects)
+            SourceSpan(path="polylogue/insights/registry.py", symbol=item[0]),
+        ),
+    )
 
 
 def architecture_control_subjects() -> tuple[SubjectRef, ...]:
@@ -271,8 +289,8 @@ def artifact_path_subjects(graph: ArtifactGraph | None = None) -> tuple[SubjectR
     """Compile curated runtime artifact paths into structural proof subjects."""
     runtime_graph = graph or build_artifact_graph()
     nodes_by_name = runtime_graph.by_name()
-    subjects: list[SubjectRef] = []
-    for path in runtime_graph.paths:
+
+    def _map_path(path: Any) -> tuple[str, Any, SourceSpan | None]:
         path_nodes = tuple(nodes_by_name[name] for name in path.nodes if name in nodes_by_name)
         path_node_names = set(path.nodes)
         repair_targets = sorted({target for node in path_nodes for target in node.repair_targets})
@@ -304,15 +322,13 @@ def artifact_path_subjects(graph: ArtifactGraph | None = None) -> tuple[SubjectR
                 "external_dependencies": external_dependencies,
             }
         )
-        subjects.append(
-            SubjectRef(
-                kind="artifact.path",
-                id=f"artifact.path.{path.name}",
-                attrs=attrs,
-                source_span=SourceSpan(path="polylogue/artifacts/__init__.py", symbol=path.name),
-            )
+        return (
+            f"artifact.path.{path.name}",
+            attrs,
+            SourceSpan(path="polylogue/artifacts/__init__.py", symbol=path.name),
         )
-    return tuple(sorted(subjects, key=lambda subject: subject.id))
+
+    return _build_subjects("artifact.path", runtime_graph.paths, _map_path)
 
 
 def maintenance_target_subjects(
@@ -320,19 +336,14 @@ def maintenance_target_subjects(
 ) -> tuple[SubjectRef, ...]:
     """Compile maintenance targets into proof subjects for repair effect claims."""
     maintenance_catalog = catalog or build_maintenance_target_catalog()
-    return tuple(
-        sorted(
-            (
-                SubjectRef(
-                    kind="maintenance.target",
-                    id=f"maintenance.target.{target.name}",
-                    attrs=target.to_dict(),
-                    source_span=SourceSpan(path="polylogue/maintenance/targets.py", symbol=target.name),
-                )
-                for target in maintenance_catalog.specs
-            ),
-            key=lambda subject: subject.id,
-        )
+    return _build_subjects(
+        "maintenance.target",
+        maintenance_catalog.specs,
+        lambda t: (
+            f"maintenance.target.{t.name}",
+            t.to_dict(),
+            SourceSpan(path="polylogue/maintenance/targets.py", symbol=t.name),
+        ),
     )
 
 
