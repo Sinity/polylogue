@@ -528,9 +528,7 @@ def _write_conversation(
 
     # Attachments
     if not content_unchanged:
-        new_attachment_ids = {
-            attachment_id for attachment_id, *_rest in cdata.attachment_tuples if isinstance(attachment_id, str)
-        }
+        new_attachment_ids = {attachment_id for attachment_id, *_rest in cdata.attachment_tuples}
         affected_attachment_ids |= new_attachment_ids
         if cdata.attachment_tuples:
             conn.executemany(_ATTACHMENT_UPSERT_SQL, cdata.attachment_tuples)

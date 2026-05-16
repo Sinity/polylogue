@@ -374,7 +374,7 @@ def test_chatgpt_parse_synthetic_simple() -> None:
             tags=("synthetic", "test", "chatgpt-parser"),
         )
     )[0]
-    data = json.loads(raw) if isinstance(raw, bytes) else raw
+    data = json.loads(raw)
 
     result = chatgpt_parse(data, "simple-test")
 
@@ -398,7 +398,7 @@ def test_chatgpt_parse_synthetic_branching() -> None:
             tags=("synthetic", "test", "chatgpt-parser"),
         )
     )[0]
-    data = json.loads(raw) if isinstance(raw, bytes) else raw
+    data = json.loads(raw)
 
     result = chatgpt_parse(data, "branching-test")
 

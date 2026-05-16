@@ -47,7 +47,7 @@ class FieldStats:
             return None
         fmt, count = self.detected_formats.most_common(1)[0]
         if count / self.value_count >= 0.8:
-            return str(fmt) if fmt is not None else None
+            return str(fmt)
         return None
 
     @property

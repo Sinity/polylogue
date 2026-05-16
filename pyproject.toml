@@ -174,6 +174,17 @@ files = [
 ignore_missing_imports = true
 disallow_subclassing_any = false  # Pydantic BaseModel seen as Any (plugin incompatible with nix mypy 1.17)
 disallow_untyped_decorators = false  # Click decorators are inherently untyped
+# Tighten suppression discipline so the verify-suppressions scanner is a
+# backstop, not the primary enforcement mechanism (#1062 Pack B).
+enable_error_code = [
+    "ignore-without-code",       # forbid bare `# type: ignore`; require `[error-code]`
+    "redundant-self",            # flag unnecessary explicit Self annotations
+    "redundant-expr",            # flag always-true / always-false subexpressions
+    "possibly-undefined",        # flag names only defined on some branches
+    "truthy-bool",               # flag implicit-truthy use of non-bool types
+    "truthy-iterable",           # flag implicit-truthy use of iterables
+    "unused-awaitable",          # flag awaitables that are constructed but not awaited
+]
 
 [tool.ruff]
 line-length = 120

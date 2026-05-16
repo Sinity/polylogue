@@ -39,7 +39,7 @@ def _save_failure_witness(item: pytest.Item, call: pytest.CallInfo[Any]) -> None
     error_msg = ""
     if call.excinfo is not None:
         ex = call.excinfo
-        error_msg = f"{ex.type.__name__}: {ex.value}" if ex.value else str(ex.type)
+        error_msg = f"{ex.type.__name__}: {ex.value}"
 
     traceback_text = ""
     if call.excinfo is not None:

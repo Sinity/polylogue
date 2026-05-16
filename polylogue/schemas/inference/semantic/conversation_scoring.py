@@ -73,7 +73,7 @@ def score_title(path: str, fs: FieldStats, all_stats: dict[str, FieldStats]) -> 
         evidence["low_entropy"] = round(fs.approximate_entropy, 2)
 
     if fs.observed_values:
-        slash_count = sum(1 for value in fs.observed_values if isinstance(value, str) and "/" in value)
+        slash_count = sum(1 for value in fs.observed_values if "/" in value)
         slash_ratio = slash_count / len(fs.observed_values)
         if slash_ratio > 0.3:
             score *= 0.3

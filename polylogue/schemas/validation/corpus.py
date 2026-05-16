@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TypeAlias
 
-from polylogue.archive.raw_payload import build_raw_payload_envelope
+from polylogue.archive.raw_payload import RawPayloadEnvelope, build_raw_payload_envelope
 from polylogue.core.common import format_malformed_jsonl_error as _format_malformed_jsonl_error
 from polylogue.core.provider_identity import CORE_RUNTIME_PROVIDERS
 from polylogue.schemas.validator import SchemaValidator
@@ -237,6 +237,10 @@ def verify_raw_corpus(
 
             raw_source = blob_store.blob_path(raw_id)
 
+            envelope: RawPayloadEnvelope | None = None
+            payload: object = None
+            malformed_lines = 0
+            malformed_detail: str | None = None
             try:
                 envelope = build_raw_payload_envelope(
                     raw_source,
@@ -303,6 +307,7 @@ def verify_raw_corpus(
                 _report_progress(request.progress_callback)
                 continue
 
+            validator: SchemaValidator
             try:
                 validator = SchemaValidator.for_payload(
                     actual_provider,

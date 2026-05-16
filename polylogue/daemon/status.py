@@ -746,6 +746,7 @@ def _embedding_readiness_info() -> dict[str, object]:
     stale = 0
     failure = 0
     total = 0
+    total_conv = 0
     cost = 0.0
 
     try:

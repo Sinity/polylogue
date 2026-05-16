@@ -81,7 +81,7 @@ async def iter_conversation_ids(
     sql, params = conversation_id_query(source_names=source_names)
     cursor = await conn.execute(sql, params)
     while True:
-        rows = await cursor.fetchmany(page_size)
+        rows = list(await cursor.fetchmany(page_size))
         if not rows:
             break
         for row in rows:
@@ -149,7 +149,7 @@ async def list_tags(conn: aiosqlite.Connection, *, provider: str | None = None) 
         """,
         params,
     )
-    rows = await cursor.fetchall()
+    rows = list(await cursor.fetchall())
     if rows:
         return {row["tag_name"]: row["cnt"] for row in rows}
 
@@ -170,7 +170,7 @@ async def list_tags(conn: aiosqlite.Connection, *, provider: str | None = None) 
         """,
         json_params,
     )
-    rows = await cursor.fetchall()
+    rows = list(await cursor.fetchall())
     return {row["tag_name"]: row["cnt"] for row in rows}
 
 

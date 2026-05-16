@@ -116,7 +116,7 @@ def test_without_noise_idempotent(conv: Conversation) -> None:
 @settings(suppress_health_check=[HealthCheck.too_slow])
 def test_extract_thinking_never_empty_string(msg: Message) -> None:
     result = msg.extract_thinking()
-    assert result is None or (isinstance(result, str) and len(result.strip()) > 0)
+    assert result is None or len(result.strip()) > 0
 
 
 @given(message_model_strategy())

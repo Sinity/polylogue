@@ -182,7 +182,7 @@ async def iter_conversation_id_pages_async(
 ) -> AsyncIterator[list[str]]:
     cursor = await conn.execute(_ALL_CONVERSATION_IDS_SQL)
     while True:
-        rows = await cursor.fetchmany(page_size)
+        rows = list(await cursor.fetchmany(page_size))
         if not rows:
             break
         yield [str(row["conversation_id"]) for row in rows]
@@ -575,6 +575,7 @@ def rebuild_session_insights_sync(
     progress_total: int | None = None,
 ) -> SessionInsightCounts:
     conversation_chunks: Iterable[Sequence[str]]
+    previous_profile_groups: set[tuple[str, str]] = set()
     if conversation_ids is None:
         conn.execute("DELETE FROM session_work_events")
         conn.execute("DELETE FROM session_phases")

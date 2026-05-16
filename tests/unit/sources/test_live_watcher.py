@@ -50,7 +50,7 @@ class _FullIngestMock:
         if self.side_effect is not None:
             if isinstance(self.side_effect, BaseException):
                 raise self.side_effect
-            if isinstance(self.side_effect, type) and issubclass(self.side_effect, BaseException):
+            if isinstance(self.side_effect, type):
                 raise self.side_effect()
         return _FullIngestResult(
             succeeded=list(paths),

@@ -155,7 +155,7 @@ def _get_text(base_url: str, path: str, *, headers: dict[str, str] | None = None
         with urlopen(req, timeout=10) as resp:
             return resp.status, resp.headers.get("Content-Type", ""), resp.read().decode()
     except HTTPError as exc:
-        body = exc.read().decode() if exc.fp else ""
+        body = exc.read().decode()
         return exc.code, exc.headers.get("Content-Type", ""), body
 
 
@@ -175,7 +175,7 @@ def _request_json(
         with urlopen(req, timeout=10) as resp:
             return resp.status, json.loads(resp.read())
     except HTTPError as exc:
-        raw = exc.read().decode() if exc.fp else "{}"
+        raw = exc.read().decode()
         return exc.code, json.loads(raw)
 
 
@@ -986,7 +986,7 @@ def _get_json_ex(base_url: str, path: str) -> tuple[int, dict[str, object]]:
         with urlopen(req, timeout=5) as resp:
             return resp.status, json.loads(resp.read().decode())
     except HTTPError as e:
-        body = e.read().decode() if e.fp else ""
+        body = e.read().decode()
         try:
             return e.code, json.loads(body)
         except (json.JSONDecodeError, ValueError):

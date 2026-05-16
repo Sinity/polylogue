@@ -353,7 +353,7 @@ async def test_dark_mode_toggle(storage_repository: ConversationRepository) -> N
         await pilot.press("d")
         await pilot.pause()
         assert pilot.app.theme == "textual-dark"
-        assert pilot.app.query_one(Dashboard)
+        assert pilot.app.query_one(Dashboard) is not None
 
 
 @pytest.mark.asyncio
@@ -427,7 +427,7 @@ async def test_worker_failure_recovery(
         await _wait_workers(pilot)
 
         # App should still be running (Dashboard catches errors and notifies)
-        assert pilot.app.query_one(Dashboard)
+        assert pilot.app.query_one(Dashboard) is not None
 
         # Stat cards should still exist (may show "Loading...")
         stat = pilot.app.query_one("#stat-conversations", StatCard)
@@ -445,9 +445,9 @@ async def test_app_startup(storage_repository: ConversationRepository) -> None:
     app = _make_app(storage_repository)
 
     async with app.run_test() as pilot:
-        assert pilot.app.query_one(Dashboard)
-        assert pilot.app.query_one("#stat-conversations")
-        assert pilot.app.query_one("#stat-messages")
+        assert pilot.app.query_one(Dashboard) is not None
+        assert pilot.app.query_one("#stat-conversations") is not None
+        assert pilot.app.query_one("#stat-messages") is not None
 
         await _wait_workers(pilot, selector="#stat-conversations")
 

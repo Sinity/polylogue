@@ -94,7 +94,7 @@ def _verify_corpus_roundtrip_for_provider(
 
     Returns a list of failure messages (empty if all records validate).
     """
-    if SyntheticCorpus is None or jsonschema is None:
+    if SyntheticCorpus is None or jsonschema is None:  # type: ignore[redundant-expr]  # defensive: imports may fail
         return ["synthetic corpus or jsonschema not available (import failed)"]
     if provider not in PROVIDER_WIRE_FORMATS:
         return [f"no wire format configured for provider {provider!r}"]
@@ -119,7 +119,7 @@ def _verify_corpus_roundtrip_for_provider(
     parsed_records: list[dict[str, Any]] = []
     for raw_record in records:
         try:
-            raw_text = raw_record.decode("utf-8") if isinstance(raw_record, bytes) else str(raw_record)
+            raw_text = raw_record.decode("utf-8")
             if is_jsonl:
                 for line in raw_text.strip().splitlines():
                     line = line.strip()

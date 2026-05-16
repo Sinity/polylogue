@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -74,7 +74,7 @@ def analyze_coverage(summaries: Sequence[ConversationSummary]) -> ArchiveCoverag
 
         dt = summary.updated_at or summary.created_at
         if dt:
-            d = dt.date() if isinstance(dt, datetime) else dt
+            d = dt.date()
             provider_dates[provider].append(d)
             all_dates.add(d)
 

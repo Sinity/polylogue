@@ -260,7 +260,7 @@ def test_provider_looks_like_accepts_generated_payloads(case: ParserCase, data: 
 @settings(max_examples=50)
 def test_extract_messages_from_list_never_invents_messages(messages: list[JSONDocument]) -> None:
     result = extract_messages_from_list(messages)
-    expected = sum(1 for msg in messages if isinstance(msg, dict) and (msg.get("text") or msg.get("content")))
+    expected = sum(1 for msg in messages if msg.get("text") or msg.get("content"))
     assert len(result) <= expected
 
 
@@ -299,11 +299,7 @@ def test_claude_code_message_type_contract(msg: JSONDocument) -> None:
         # says "user" or "assistant".
         raw_content = message.get("content") if isinstance(message, dict) else None
         content_list = raw_content if isinstance(raw_content, list) else []
-        if any(
-            isinstance(block, dict) and block.get("type") == "tool_result"
-            for block in content_list
-            if isinstance(block, dict)
-        ):
+        if any(block.get("type") == "tool_result" for block in content_list if isinstance(block, dict)):
             assert parsed.role in {inner_role, "tool"}
         else:
             assert parsed.role == inner_role

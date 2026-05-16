@@ -377,5 +377,5 @@ def get_text(base_url: str, path: str) -> tuple[int, str, str]:
         with urlopen(req, timeout=10) as resp:
             return resp.status, resp.headers.get("Content-Type", ""), resp.read().decode()
     except HTTPError as exc:
-        body = exc.read().decode() if exc.fp else ""
+        body = exc.read().decode()
         return exc.code, exc.headers.get("Content-Type", ""), body

@@ -120,11 +120,10 @@ def _retrieval_metrics(
     return {
         "evidence_retrieval_rows": evidence_rows,
         "expected_evidence_retrieval_rows": expected_evidence_rows,
-        "evidence_retrieval_ready": True and bool(action_status["action_fts_ready"]),
+        "evidence_retrieval_ready": bool(action_status["action_fts_ready"]),
         "inference_retrieval_rows": inference_rows,
         "expected_inference_retrieval_rows": expected_inference_rows,
-        "inference_retrieval_ready": True
-        and session_status.work_event_inference_fts_ready
+        "inference_retrieval_ready": session_status.work_event_inference_fts_ready
         and session_status.phase_inference_rows_ready,
         "enrichment_retrieval_rows": int(metrics["profile_rows"]),
         "expected_enrichment_retrieval_rows": int(metrics["profile_rows"]),

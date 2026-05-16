@@ -58,7 +58,7 @@ def _get_archive_ops() -> ArchiveOperations:
     """Return canonical archive operations for MCP read surfaces."""
     services = _get_runtime_services()
     return ArchiveOperations(
-        config=services.config if services is not None else None,
+        config=services.config,
         repository=_get_repo(),
         backend=_get_backend(),
     )

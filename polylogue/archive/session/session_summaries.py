@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date
 
 from polylogue.archive.conversation.repo_identity import normalize_repo_names
 from polylogue.archive.session.session_profile import SessionProfile
@@ -65,7 +65,7 @@ def _profile_date(profile: SessionProfile) -> date | None:
     timestamp = profile.first_message_at or profile.created_at
     if timestamp is None:
         return None
-    return timestamp.date() if isinstance(timestamp, datetime) else timestamp
+    return timestamp.date()
 
 
 def summarize_day(

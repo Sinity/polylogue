@@ -392,7 +392,7 @@ def parse_raw_content(raw_content: bytes, provider: str) -> ParsedPayload:
     which may contain multiple JSON objects on separate lines. JSON providers
     (chatgpt) store a single JSON object.
     """
-    content = raw_content.decode("utf-8") if isinstance(raw_content, bytes) else raw_content
+    content = raw_content.decode("utf-8")
 
     if provider in ("claude-code", "codex", "gemini"):
         # Try single JSON first (e.g. one-line JSONL files)

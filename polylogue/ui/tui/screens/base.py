@@ -45,10 +45,10 @@ class RepositoryBoundContainer(Container):
 
         conv = await ops.get_conversation(conversation_id)
         if not conv:
-            viewer.update(f"Error: Could not load {conversation_id}")
+            await viewer.update(f"Error: Could not load {conversation_id}")
             return False
 
-        viewer.update(formatter(conv))
+        await viewer.update(formatter(conv))
         return True
 
 

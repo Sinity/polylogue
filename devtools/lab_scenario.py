@@ -96,6 +96,7 @@ def verify_showcase_baselines(*, update: bool) -> int:
     False so that the "no baselines" path fails in <1 ms instead of
     after running all tier-0 subprocesses (#1026).
     """
+    baselines: dict[str, str] = {}
     if not update:
         baselines = load_baselines()
         if not baselines:

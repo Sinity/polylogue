@@ -49,7 +49,7 @@ async def iter_conversation_id_pages_async(
 ) -> AsyncIterator[list[str]]:
     cursor = await conn.execute(_ALL_ACTION_EVENT_CONVERSATION_IDS_SQL)
     while True:
-        rows = await cursor.fetchmany(page_size)
+        rows = list(await cursor.fetchmany(page_size))
         if not rows:
             break
         yield [str(row["conversation_id"]) for row in rows]

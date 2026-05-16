@@ -74,7 +74,7 @@ def _extract_json(output: str) -> JsonObject:
 def _extract_result_json(output: str) -> JsonObject:
     """Extract JSON and unwrap the standard success envelope when present."""
     data = _extract_json(output)
-    if isinstance(data, dict) and data.get("status") == "ok" and "result" in data:
+    if data.get("status") == "ok" and "result" in data:
         result = data["result"]
         if isinstance(result, dict):
             return result
