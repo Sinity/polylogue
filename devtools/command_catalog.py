@@ -171,7 +171,8 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "devtools.affected_obligations",
         use_when="Find the checks and inner-loop commands affected by local changes before escalating to full PR gates.",
         examples=(
-            "devtools affected-obligations --base-ref master --head-ref HEAD",
+            "devtools affected-obligations --base-ref origin/master --head-ref HEAD",
+            "devtools affected-obligations --base-ref origin/master --head-ref HEAD --markdown",
             "devtools affected-obligations --path polylogue/sources/parsers/codex.py",
             "devtools affected-obligations --json --path docs/verification-catalog.md",
         ),
@@ -517,27 +518,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=(
             "devtools regression-capture --input probe.json --name parse-drift",
             "devtools pipeline-probe --json | devtools regression-capture --name parse-drift --tag live",
-        ),
-    ),
-    CommandSpec(
-        "inject-semantic-annotations",
-        "maintenance",
-        "Annotate baseline provider schemas with semantic-role metadata.",
-        "devtools.inject_semantic_annotations",
-    ),
-    CommandSpec(
-        "obligation-diff",
-        "verification",
-        "Diff catalog-backed verification checks between two git refs.",
-        "devtools.obligation_diff",
-        use_when=(
-            "Before opening a PR, check which assurance domains are affected by "
-            "the changes to guide reviewer attention and verification effort."
-        ),
-        examples=(
-            "devtools obligation-diff --base-ref origin/master --head-ref HEAD",
-            "devtools obligation-diff --base-ref origin/master --head-ref HEAD --json",
-            "devtools obligation-diff --base-ref origin/master --head-ref HEAD --markdown",
         ),
     ),
     CommandSpec(

@@ -11,12 +11,15 @@ from polylogue.proof.diffing import (
     changed_paths_between_refs,
     obligation_ids_for_ref,
     render_affected_obligations,
+    render_affected_obligations_markdown,
 )
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--base-ref", default="master", help="Base git ref for changed-path and obligation diffing.")
+    parser.add_argument(
+        "--base-ref", default="origin/master", help="Base git ref for changed-path and obligation diffing."
+    )
     parser.add_argument("--head-ref", default="HEAD", help="Head git ref for changed-path and obligation diffing.")
     parser.add_argument(
         "--path",
@@ -25,6 +28,7 @@ def main(argv: list[str] | None = None) -> int:
         help="Changed repo-relative path. Repeat to bypass git diff path discovery.",
     )
     parser.add_argument("--json", action="store_true", help="Emit a machine-readable affected-obligation report.")
+    parser.add_argument("--markdown", action="store_true", help="Emit a markdown-formatted affected-obligation report.")
     args = parser.parse_args(argv)
 
     explicit_paths = tuple(args.path)
@@ -47,6 +51,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     if args.json:
         json.dump(report.to_payload(), sys.stdout, indent=2, sort_keys=True)
+        sys.stdout.write("\n")
+        return 0
+    if args.markdown:
+        sys.stdout.write(render_affected_obligations_markdown(report))
         sys.stdout.write("\n")
         return 0
     sys.stdout.write(render_affected_obligations(report))

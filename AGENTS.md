@@ -1015,7 +1015,6 @@ These are the commands worth remembering during normal repo work:
 | `devtools evidence-report` | Aggregate verification evidence into a structured status report. |
 | `devtools lab-corpus` | Generate verification-lab synthetic corpus fixtures and demo archives. |
 | `devtools lab-scenario` | Run verification-lab showcase scenario sets and baseline checks. |
-| `devtools obligation-diff` | Diff catalog-backed verification checks between two git refs. |
 | `devtools pipeline-probe` | Run typed pipeline probes against synthetic, staged, or archive-subset inputs. |
 | `devtools proof-pack` | Domain-grouped verification impact report for changed paths. |
 | `devtools query-memory-budget` | Measure query-memory envelopes on generated fixtures. |
@@ -1056,7 +1055,6 @@ These are the commands worth remembering during normal repo work:
 | Command | Description |
 | --- | --- |
 | `devtools build-package` | Build the default Nix package with the out-link under .local/result. |
-| `devtools inject-semantic-annotations` | Annotate baseline provider schemas with semantic-role metadata. |
 | `devtools witness-discover` | Save a failure-triggering input as a local witness in .local/witnesses/new/. |
 | `devtools witness-minimize` | Apply minimization heuristics to a local witness — shrink, redact, set privacy classification. |
 | `devtools witness-promote` | Promote a minimized local witness to tests/witnesses/ for durable commit. |
