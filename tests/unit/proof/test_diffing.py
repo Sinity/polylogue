@@ -121,6 +121,9 @@ def test_schema_change_routes_to_roundtrip_obligation() -> None:
 
 
 def test_proof_report_tool_change_routes_to_catalog_obligations() -> None:
+    # devtools/proof_pack.py is a proof_catalog file but is NOT a claim-defining
+    # file (it's a devtools surface), so it should NOT expand to all obligations.
+    # It still gets the proof-specific inner-loop checks.
     catalog = build_verification_catalog()
 
     report = build_affected_obligation_report(
@@ -132,7 +135,8 @@ def test_proof_report_tool_change_routes_to_catalog_obligations() -> None:
 
     assert report.change_subjects[0].kind == "proof_catalog"
     assert report.obligation_diff.suppressed == ()
-    assert report.affected_obligations
+    # Infrastructure proof files do not fan out to all catalog obligations
+    assert report.affected_obligations == ()
     commands = [check.rendered_command for check in report.inner_loop_checks]
     assert "pytest tests/unit/proof" in commands
     assert "pytest tests/unit/devtools/test_proof_pack.py" in commands
@@ -140,6 +144,8 @@ def test_proof_report_tool_change_routes_to_catalog_obligations() -> None:
 
 
 def test_proof_pack_test_change_routes_to_catalog_obligations() -> None:
+    # tests/unit/devtools/test_proof_pack.py is classified as proof_catalog but is NOT
+    # in the claim-file set, so it should not expand to all obligations.
     catalog = build_verification_catalog()
 
     report = build_affected_obligation_report(
@@ -151,9 +157,28 @@ def test_proof_pack_test_change_routes_to_catalog_obligations() -> None:
 
     assert report.change_subjects[0].kind == "proof_catalog"
     assert report.obligation_diff.suppressed == ()
-    assert "devtools affected-obligations --full --check" in [
-        check.rendered_command for check in report.inner_loop_checks
-    ]
+    # Infrastructure proof files do not fan out to all catalog obligations
+    assert report.affected_obligations == ()
+    commands = [check.rendered_command for check in report.inner_loop_checks]
+    assert "pytest tests/unit/proof" in commands
+    assert "pytest tests/unit/devtools/test_proof_pack.py" in commands
+    assert "devtools affected-obligations --full --check" in commands
+
+
+def test_proof_catalog_claim_file_routes_to_all_obligations() -> None:
+    # catalog.py defines claim content — changes to it should still expand to all obligations.
+    catalog = build_verification_catalog()
+
+    report = build_affected_obligation_report(
+        ("polylogue/proof/catalog.py",),
+        catalog=catalog,
+        base_obligation_ids=(obligation.id for obligation in catalog.obligations),
+        head_obligation_ids=(obligation.id for obligation in catalog.obligations),
+    )
+
+    assert report.change_subjects[0].kind == "proof_catalog"
+    assert report.affected_obligations, "claim-defining file must expand to all catalog obligations"
+    assert len(report.affected_obligations) == len(catalog.obligations)
 
 
 def test_obligation_diff_buckets_new_dropped_stale_and_suppressed() -> None:
