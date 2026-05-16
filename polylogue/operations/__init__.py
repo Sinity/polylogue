@@ -4,6 +4,7 @@ from .archive import (
     ArchiveDebtInsight,
     ArchiveOperations,
     ArchiveStats,
+    CompletionAggregate,
     get_provider_counts,
     list_provider_analytics_insights,
 )
@@ -24,6 +25,7 @@ __all__ = [
     "ArchiveDebtInsight",
     "ArchiveOperations",
     "ArchiveStats",
+    "CompletionAggregate",
     "ImportOperation",
     "OperationCatalog",
     "OperationKind",

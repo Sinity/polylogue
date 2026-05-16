@@ -17,7 +17,7 @@ files:
     owner: stable
     cross_cut: { api: async }
   - path: polylogue/api/archive.py
-    loc: 1087
+    loc: 888
     target: polylogue/api/archive.py
     owner: stable
     cross_cut: { api: async }
@@ -903,7 +903,7 @@ files:
     target: polylogue/cli/shared/types.py
     owner: stable
   - path: polylogue/cli/shell_completion_values.py
-    loc: 391
+    loc: 323
     target: polylogue/cli/shell_completion_values.py
     owner: stable
   - path: polylogue/cli/verb_names.py
@@ -1202,16 +1202,24 @@ files:
     target: polylogue/mcp/server_tools.py
     owner: stable
   - path: polylogue/operations/__init__.py
-    loc: 37
+    loc: 39
     target: polylogue/operations/__init__.py
     owner: stable
   - path: polylogue/operations/archive.py
-    loc: 1144
+    loc: 1149
     target: polylogue/operations/archive.py
+    owner: stable
+  - path: polylogue/operations/completion_aggregates.py
+    loc: 124
+    target: polylogue/operations/completion_aggregates.py
     owner: stable
   - path: polylogue/operations/import_contracts.py
     loc: 144
     target: polylogue/operations/import_contracts.py
+    owner: stable
+  - path: polylogue/operations/mutations.py
+    loc: 310
+    target: polylogue/operations/mutations.py
     owner: stable
   - path: polylogue/operations/specs.py
     loc: 821

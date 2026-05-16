@@ -1,16 +1,15 @@
 """Shell-completion helpers for archive-backed CLI values.
 
-Conversation ID and tag completions route through
-``ArchiveOperations`` (async, bridged via ``asyncio.run``).
-Repo, CWD-prefix, and tool-name completions still use raw SQL on
-``session_profiles`` / ``action_events`` \u2014 those tables lack
-ArchiveOperations read methods (follow-up in #862 or a successor).
+All archive-backed completions route through ``ArchiveOperations`` —
+conversation ID, tag, repo-name, cwd-prefix, and tool-name aggregates
+are exposed as typed methods on the operation layer, so this surface
+no longer reaches into ``session_profiles`` / ``action_events`` via
+raw SQL (closes #860 inventory item).
 """
 
 from __future__ import annotations
 
 import asyncio
-import sqlite3
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Final
 
@@ -21,8 +20,8 @@ from polylogue.archive.message.types import MessageType
 from polylogue.archive.query.fields import CompletionSource
 from polylogue.archive.query.spec import QUERY_ACTION_TYPES, QUERY_RETRIEVAL_LANES, QUERY_SEQUENCE_ACTION_TYPES
 from polylogue.operations.archive import ArchiveOperations as _ArchiveOperations
+from polylogue.operations.archive import CompletionAggregate
 from polylogue.paths import db_path
-from polylogue.storage.sqlite.connection import open_read_connection
 
 Callback = Callable[[_ArchiveOperations], Awaitable[list[CompletionItem]]]
 
@@ -39,7 +38,6 @@ _PROVIDER_DESCRIPTIONS: Final[dict[str, str]] = {
 
 _MAX_ID_COMPLETIONS = 24
 _MAX_VALUE_COMPLETIONS = 32
-CompletionHelpBuilder = Callable[[sqlite3.Row], str]
 CompletionCallback = Callable[[click.Context, click.Parameter, str], list[CompletionItem]]
 
 
@@ -62,17 +60,6 @@ def _with_csv_prefix(items: list[CompletionItem], prefix: str) -> list[Completio
 
 def _db_exists() -> bool:
     return db_path().exists()
-
-
-def _fetch_rows(sql: str, params: tuple[object, ...]) -> list[sqlite3.Row]:
-    if not _db_exists():
-        return []
-    try:
-        with open_read_connection() as conn:
-            cursor = conn.execute(sql, params)
-            return list(cursor.fetchall())
-    except sqlite3.Error:
-        return []
 
 
 async def _with_operations(
@@ -98,17 +85,12 @@ def _run_completion(action: Callback) -> list[CompletionItem]:
         return []
 
 
-def _rows_to_completion_items(
-    rows: list[sqlite3.Row],
+def _aggregates_to_items(
+    aggregates: list[CompletionAggregate],
     *,
-    value_column: str,
-    help_builder: CompletionHelpBuilder | None = None,
+    unit: str,
 ) -> list[CompletionItem]:
-    items: list[CompletionItem] = []
-    for row in rows:
-        help_text = help_builder(row) if help_builder is not None else None
-        items.append(CompletionItem(str(row[value_column]), help=help_text))
-    return items
+    return [CompletionItem(agg.value, help=f"{agg.count} {unit}") for agg in aggregates]
 
 
 def _trim_help(value: str, *, limit: int = 72) -> str:
@@ -259,33 +241,16 @@ def complete_repo_values(
     param: click.Parameter,
     incomplete: str,
 ) -> list[CompletionItem]:
-    # NOTE: Raw SQL on session_profiles \u2014 no ArchiveOperations read
-    # method for repo-name aggregation yet.
     del ctx, param
     prefix, current = _split_csv_incomplete(incomplete)
-    rows = _fetch_rows(
-        """
-        SELECT
-            repo.value AS repo_name,
-            COUNT(*) AS cnt
-        FROM session_profiles AS sp,
-             json_each(COALESCE(sp.repo_names_json, '[]')) AS repo
-        WHERE (? = '' OR repo.value LIKE ?)
-        GROUP BY repo.value
-        ORDER BY cnt DESC, repo.value ASC
-        LIMIT ?
-        """,
-        (
-            current,
-            f"{current}%",
-            _MAX_VALUE_COMPLETIONS,
-        ),
-    )
-    items = _rows_to_completion_items(
-        rows,
-        value_column="repo_name",
-        help_builder=lambda row: f"{int(row['cnt'])} sessions",
-    )
+    if not _db_exists():
+        return []
+
+    async def _query(ops: _ArchiveOperations) -> list[CompletionItem]:
+        aggregates = await ops.list_session_repo_names(prefix=current, limit=_MAX_VALUE_COMPLETIONS)
+        return _aggregates_to_items(aggregates, unit="sessions")
+
+    items = _run_completion(_query)
     return _with_csv_prefix(items, prefix)
 
 
@@ -294,33 +259,16 @@ def complete_cwd_prefix_values(
     param: click.Parameter,
     incomplete: str,
 ) -> list[CompletionItem]:
-    # NOTE: Raw SQL on session_profiles \u2014 no ArchiveOperations read
-    # method for cwd-prefix aggregation yet.
     del ctx, param
     current = incomplete.strip()
-    rows = _fetch_rows(
-        """
-        SELECT
-            cwd.value AS cwd_path,
-            COUNT(*) AS cnt
-        FROM session_profiles AS sp,
-             json_each(COALESCE(json_extract(sp.evidence_payload_json, '$.cwd_paths'), '[]')) AS cwd
-        WHERE (? = '' OR cwd.value LIKE ?)
-        GROUP BY cwd.value
-        ORDER BY cnt DESC, cwd.value ASC
-        LIMIT ?
-        """,
-        (
-            current,
-            f"{current}%",
-            _MAX_VALUE_COMPLETIONS,
-        ),
-    )
-    return _rows_to_completion_items(
-        rows,
-        value_column="cwd_path",
-        help_builder=lambda row: f"{int(row['cnt'])} sessions",
-    )
+    if not _db_exists():
+        return []
+
+    async def _query(ops: _ArchiveOperations) -> list[CompletionItem]:
+        aggregates = await ops.list_session_cwd_prefixes(prefix=current, limit=_MAX_VALUE_COMPLETIONS)
+        return _aggregates_to_items(aggregates, unit="sessions")
+
+    return _run_completion(_query)
 
 
 def complete_tool_values(
@@ -328,32 +276,16 @@ def complete_tool_values(
     param: click.Parameter,
     incomplete: str,
 ) -> list[CompletionItem]:
-    # NOTE: Raw SQL on action_events \u2014 no ArchiveOperations read
-    # method for tool-name aggregation yet.
     del ctx, param
     current = incomplete.strip().lower()
-    rows = _fetch_rows(
-        """
-        SELECT
-            normalized_tool_name,
-            COUNT(*) AS cnt
-        FROM action_events
-        WHERE (? = '' OR normalized_tool_name LIKE ?)
-        GROUP BY normalized_tool_name
-        ORDER BY cnt DESC, normalized_tool_name ASC
-        LIMIT ?
-        """,
-        (
-            current,
-            f"{current}%",
-            _MAX_VALUE_COMPLETIONS,
-        ),
-    )
-    return _rows_to_completion_items(
-        rows,
-        value_column="normalized_tool_name",
-        help_builder=lambda row: f"{int(row['cnt'])} actions",
-    )
+    if not _db_exists():
+        return []
+
+    async def _query(ops: _ArchiveOperations) -> list[CompletionItem]:
+        aggregates = await ops.list_action_tool_names(prefix=current, limit=_MAX_VALUE_COMPLETIONS)
+        return _aggregates_to_items(aggregates, unit="actions")
+
+    return _run_completion(_query)
 
 
 COMPLETION_SOURCE_HANDLERS: Final[Mapping[CompletionSource, CompletionCallback]] = {

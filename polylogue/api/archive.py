@@ -5,7 +5,7 @@ from __future__ import annotations
 import builtins
 from collections.abc import Sequence
 from contextlib import suppress
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING
 
 from polylogue.archive.message.roles import MessageRoleFilter
 from polylogue.archive.semantic.content_projection import ContentProjectionSpec
@@ -28,139 +28,12 @@ if TYPE_CHECKING:
     from polylogue.insights.export_bundles import InsightExportBundleRequest, InsightExportBundleResult
     from polylogue.insights.readiness import InsightReadinessQuery, InsightReadinessReport
     from polylogue.insights.resume import ResumeBrief
-    from polylogue.operations import ArchiveStats
+    from polylogue.operations import ArchiveOperations, ArchiveStats
     from polylogue.readiness import ReadinessReport
     from polylogue.storage.insights.session.runtime import SessionInsightCounts
     from polylogue.storage.repository import ConversationRepository
     from polylogue.storage.search.models import SearchResult
     from polylogue.surfaces.payloads import TagMutationResult
-
-    class _ArchiveOperationsSurface(Protocol):
-        async def get_conversation(
-            self,
-            conversation_id: str,
-            *,
-            content_projection: ContentProjectionSpec | None = None,
-        ) -> Conversation | None: ...
-
-        async def get_conversation_summary(self, conversation_id: str) -> ConversationSummary | None: ...
-
-        async def get_messages_paginated(
-            self,
-            conversation_id: str,
-            *,
-            message_role: MessageRoleFilter = (),
-            message_type: MessageTypeName | None = None,
-            limit: int = 50,
-            offset: int = 0,
-            content_projection: ContentProjectionSpec | None = None,
-        ) -> tuple[list[Message], int]: ...
-
-        async def bulk_get_messages(
-            self,
-            conversation_ids: Sequence[str],
-            *,
-            since: str | None = None,
-            until: str | None = None,
-            message_role: MessageRoleFilter = (),
-            content_projection: ContentProjectionSpec | None = None,
-        ) -> dict[str, list[Message]]: ...
-
-        async def get_conversations(
-            self,
-            conversation_ids: list[str],
-            *,
-            content_projection: ContentProjectionSpec | None = None,
-        ) -> list[Conversation]: ...
-
-        async def list_conversations(
-            self,
-            *,
-            provider: str | None = None,
-            limit: int | None = None,
-            content_projection: ContentProjectionSpec | None = None,
-        ) -> list[Conversation]: ...
-
-        async def search(
-            self,
-            query: str,
-            *,
-            limit: int = 100,
-            source: str | None = None,
-            since: str | None = None,
-        ) -> SearchResult: ...
-
-        async def get_session_insight_status(self) -> SessionInsightStatusSnapshot: ...
-
-        async def get_session_profile_insight(
-            self,
-            conversation_id: str,
-            *,
-            tier: str = "merged",
-        ) -> SessionProfileInsight | None: ...
-
-        async def list_session_profile_insights(
-            self,
-            query: SessionProfileInsightQuery | None = None,
-        ) -> list[SessionProfileInsight]: ...
-
-        async def get_session_enrichment_insight(
-            self,
-            conversation_id: str,
-        ) -> SessionEnrichmentInsight | None: ...
-
-        async def list_session_enrichment_insights(
-            self,
-            query: SessionEnrichmentInsightQuery | None = None,
-        ) -> list[SessionEnrichmentInsight]: ...
-
-        async def summary_stats(self) -> ArchiveStats: ...
-
-        async def rebuild_session_insights(
-            self,
-            conversation_ids: Sequence[str] | None = None,
-        ) -> SessionInsightCounts: ...
-
-        async def build_resume_brief(
-            self,
-            session_id: str,
-            *,
-            related_limit: int = 6,
-        ) -> ResumeBrief | None: ...
-
-        async def get_insight_readiness_report(
-            self,
-            query: InsightReadinessQuery | None = None,
-        ) -> InsightReadinessReport: ...
-
-        async def export_insight_bundle(
-            self,
-            request: InsightExportBundleRequest,
-        ) -> InsightExportBundleResult: ...
-
-        async def neighbor_candidates(
-            self,
-            *,
-            conversation_id: str | None = None,
-            query: str | None = None,
-            provider: str | None = None,
-            limit: int = 10,
-            window_hours: int = 24,
-        ) -> list[ConversationNeighborCandidate]: ...
-
-        async def get_session_tree(self, conversation_id: str) -> list[Conversation]: ...
-
-        async def list_tags(self, *, provider: str | None = None) -> dict[str, int]: ...
-
-        async def get_conversation_stats(self, conversation_id: str) -> dict[str, int]: ...
-
-        async def get_raw_artifacts_for_conversation(
-            self,
-            conversation_id: str,
-            *,
-            limit: int = 50,
-            offset: int = 0,
-        ) -> tuple[list[object], int]: ...
 
 
 class ConversationNotFoundError(PolylogueError):
@@ -176,7 +49,7 @@ class PolylogueArchiveMixin:
         def config(self) -> Config: ...
 
         @property
-        def operations(self) -> _ArchiveOperationsSurface: ...
+        def operations(self) -> ArchiveOperations: ...
 
         @property
         def repository(self) -> ConversationRepository: ...
@@ -518,10 +391,7 @@ class PolylogueArchiveMixin:
         resolved = await self.repository.resolve_id(conversation_id, strict=True)
         if resolved is None:
             raise ConversationNotFoundError(conversation_id)
-        from polylogue.storage.repository.archive.repository_writes import RepositoryWriteMixin
-
-        store: RepositoryWriteMixin = self.repository
-        was_added = await store.add_tag(str(resolved), tag)
+        was_added = await self.operations.add_tag(str(resolved), tag)
         return TagMutationResult(
             outcome="added" if was_added else "no_op",
             detail=None if was_added else "already_present",
@@ -539,10 +409,7 @@ class PolylogueArchiveMixin:
         resolved = await self.repository.resolve_id(conversation_id, strict=True)
         if resolved is None:
             raise ConversationNotFoundError(conversation_id)
-        from polylogue.storage.repository.archive.repository_writes import RepositoryWriteMixin
-
-        store: RepositoryWriteMixin = self.repository
-        was_removed = await store.remove_tag(str(resolved), tag)
+        was_removed = await self.operations.remove_tag(str(resolved), tag)
         return TagMutationResult(
             outcome="removed" if was_removed else "not_present",
             detail=None if was_removed else "tag_not_present",
@@ -550,11 +417,8 @@ class PolylogueArchiveMixin:
 
     async def get_metadata(self, conversation_id: str) -> dict[str, str]:
         """Return all metadata key-value pairs for a conversation."""
-        from polylogue.storage.repository.archive.repository_writes import RepositoryWriteMixin
-
-        store: RepositoryWriteMixin = self.repository
         result: dict[str, str] = {}
-        doc = await store.get_metadata(conversation_id)
+        doc = await self.operations.get_metadata(conversation_id)
         for k, v in doc.items():
             result[str(k)] = str(v) if not isinstance(v, str) else v
         return result
@@ -568,10 +432,7 @@ class PolylogueArchiveMixin:
         resolved = await self.repository.resolve_id(conversation_id, strict=True)
         if resolved is None:
             raise ConversationNotFoundError(conversation_id)
-        from polylogue.storage.repository.archive.repository_writes import RepositoryWriteMixin
-
-        store: RepositoryWriteMixin = self.repository
-        return await store.update_metadata(str(resolved), key, value)
+        return await self.operations.update_metadata(str(resolved), key, value)
 
     # ------------------------------------------------------------------
     # Marks
@@ -631,10 +492,7 @@ class PolylogueArchiveMixin:
             target_id=target_id,
             message_id=message_id,
         )
-        from polylogue.storage.repository.archive.repository_writes import RepositoryWriteMixin
-
-        store: RepositoryWriteMixin = self.repository
-        return await store.add_mark(
+        return await self.operations.add_mark(
             str(target["conversation_id"]),
             mark_type,
             target_type=str(target["target_type"]),
@@ -658,10 +516,7 @@ class PolylogueArchiveMixin:
             target_id=target_id,
             message_id=message_id,
         )
-        from polylogue.storage.repository.archive.repository_writes import RepositoryWriteMixin
-
-        store: RepositoryWriteMixin = self.repository
-        return await store.remove_mark(str(target["target_type"]), str(target["target_id"]), mark_type)
+        return await self.operations.remove_mark(str(target["target_type"]), str(target["target_id"]), mark_type)
 
     async def list_marks(
         self,
@@ -673,10 +528,7 @@ class PolylogueArchiveMixin:
         message_id: str | None = None,
     ) -> list[dict[str, str]]:
         """List marks, optionally filtered by type, target, conversation, or message."""
-        from polylogue.storage.repository.archive.repository_writes import RepositoryWriteMixin
-
-        store: RepositoryWriteMixin = self.repository
-        return await store.list_marks(
+        return await self.operations.list_marks(
             mark_type=mark_type,
             conversation_id=conversation_id,
             target_type=target_type,
@@ -705,10 +557,7 @@ class PolylogueArchiveMixin:
             target_id=target_id,
             message_id=message_id,
         )
-        from polylogue.storage.repository.archive.repository_writes import RepositoryWriteMixin
-
-        store: RepositoryWriteMixin = self.repository
-        return await store.save_annotation(
+        return await self.operations.save_annotation(
             annotation_id=annotation_id,
             target_type=str(target["target_type"]),
             target_id=str(target["target_id"]),
@@ -719,10 +568,7 @@ class PolylogueArchiveMixin:
 
     async def get_annotation(self, annotation_id: str) -> dict[str, str] | None:
         """Get an annotation by ID."""
-        from polylogue.storage.repository.archive.repository_writes import RepositoryWriteMixin
-
-        store: RepositoryWriteMixin = self.repository
-        return await store.get_annotation(annotation_id)
+        return await self.operations.get_annotation(annotation_id)
 
     async def list_annotations(
         self,
@@ -733,10 +579,7 @@ class PolylogueArchiveMixin:
         message_id: str | None = None,
     ) -> list[dict[str, str]]:
         """List annotations, optionally filtered by target, conversation, or message."""
-        from polylogue.storage.repository.archive.repository_writes import RepositoryWriteMixin
-
-        store: RepositoryWriteMixin = self.repository
-        return await store.list_annotations(
+        return await self.operations.list_annotations(
             conversation_id=conversation_id,
             target_type=target_type,
             target_id=target_id,
@@ -745,10 +588,7 @@ class PolylogueArchiveMixin:
 
     async def delete_annotation(self, annotation_id: str) -> bool:
         """Delete an annotation. Returns ``True`` if deleted."""
-        from polylogue.storage.repository.archive.repository_writes import RepositoryWriteMixin
-
-        store: RepositoryWriteMixin = self.repository
-        return await store.delete_annotation(annotation_id)
+        return await self.operations.delete_annotation(annotation_id)
 
     # ------------------------------------------------------------------
     # Saved views
@@ -756,38 +596,23 @@ class PolylogueArchiveMixin:
 
     async def save_view(self, view_id: str, name: str, query_json: str) -> bool:
         """Save a named query view. Returns ``True`` if newly created."""
-        from polylogue.storage.repository.archive.repository_writes import RepositoryWriteMixin
-
-        store: RepositoryWriteMixin = self.repository
-        return await store.save_view(view_id, name, query_json)
+        return await self.operations.save_view(view_id, name, query_json)
 
     async def get_view(self, view_id: str) -> dict[str, str] | None:
         """Get a saved view by ID."""
-        from polylogue.storage.repository.archive.repository_writes import RepositoryWriteMixin
-
-        store: RepositoryWriteMixin = self.repository
-        return await store.get_view(view_id)
+        return await self.operations.get_view(view_id)
 
     async def get_view_by_name(self, name: str) -> dict[str, str] | None:
         """Get a saved view by name."""
-        from polylogue.storage.repository.archive.repository_writes import RepositoryWriteMixin
-
-        store: RepositoryWriteMixin = self.repository
-        return await store.get_view_by_name(name)
+        return await self.operations.get_view_by_name(name)
 
     async def list_views(self) -> list[dict[str, str]]:
         """List all saved views."""
-        from polylogue.storage.repository.archive.repository_writes import RepositoryWriteMixin
-
-        store: RepositoryWriteMixin = self.repository
-        return await store.list_views()
+        return await self.operations.list_views()
 
     async def delete_view(self, view_id: str) -> bool:
         """Delete a saved view. Returns ``True`` if deleted."""
-        from polylogue.storage.repository.archive.repository_writes import RepositoryWriteMixin
-
-        store: RepositoryWriteMixin = self.repository
-        return await store.delete_view(view_id)
+        return await self.operations.delete_view(view_id)
 
     # ------------------------------------------------------------------
     # Recall packs
@@ -971,31 +796,19 @@ class PolylogueArchiveMixin:
             payload=payload,
         )
         conversation_ids_json = json.dumps(resolved_conversation_ids, sort_keys=True)
-        from polylogue.storage.repository.archive.repository_writes import RepositoryWriteMixin
-
-        store: RepositoryWriteMixin = self.repository
-        return await store.save_recall_pack(pack_id, label, conversation_ids_json, normalized_payload_json)
+        return await self.operations.save_recall_pack(pack_id, label, conversation_ids_json, normalized_payload_json)
 
     async def get_recall_pack(self, pack_id: str) -> dict[str, str] | None:
         """Get a recall pack by ID."""
-        from polylogue.storage.repository.archive.repository_writes import RepositoryWriteMixin
-
-        store: RepositoryWriteMixin = self.repository
-        return await store.get_recall_pack(pack_id)
+        return await self.operations.get_recall_pack(pack_id)
 
     async def list_recall_packs(self) -> list[dict[str, str]]:
         """List all recall packs."""
-        from polylogue.storage.repository.archive.repository_writes import RepositoryWriteMixin
-
-        store: RepositoryWriteMixin = self.repository
-        return await store.list_recall_packs()
+        return await self.operations.list_recall_packs()
 
     async def delete_recall_pack(self, pack_id: str) -> bool:
         """Delete a recall pack. Returns ``True`` if deleted."""
-        from polylogue.storage.repository.archive.repository_writes import RepositoryWriteMixin
-
-        store: RepositoryWriteMixin = self.repository
-        return await store.delete_recall_pack(pack_id)
+        return await self.operations.delete_recall_pack(pack_id)
 
     # ------------------------------------------------------------------
     # Reader workspaces
@@ -1053,10 +866,7 @@ class PolylogueArchiveMixin:
             raise ValueError("active_target_json must encode an object")
         normalized_active_json = await self._build_workspace_active_target(active_target)
 
-        from polylogue.storage.repository.archive.repository_writes import RepositoryWriteMixin
-
-        store: RepositoryWriteMixin = self.repository
-        return await store.save_workspace(
+        return await self.operations.save_workspace(
             workspace_id=workspace_id,
             name=name,
             mode=mode,
@@ -1067,21 +877,12 @@ class PolylogueArchiveMixin:
 
     async def get_workspace(self, workspace_id: str) -> dict[str, str] | None:
         """Get a durable reader workspace by ID."""
-        from polylogue.storage.repository.archive.repository_writes import RepositoryWriteMixin
-
-        store: RepositoryWriteMixin = self.repository
-        return await store.get_workspace(workspace_id)
+        return await self.operations.get_workspace(workspace_id)
 
     async def list_workspaces(self) -> list[dict[str, str]]:
         """List durable reader workspaces."""
-        from polylogue.storage.repository.archive.repository_writes import RepositoryWriteMixin
-
-        store: RepositoryWriteMixin = self.repository
-        return await store.list_workspaces()
+        return await self.operations.list_workspaces()
 
     async def delete_workspace(self, workspace_id: str) -> bool:
         """Delete a durable reader workspace. Returns ``True`` if deleted."""
-        from polylogue.storage.repository.archive.repository_writes import RepositoryWriteMixin
-
-        store: RepositoryWriteMixin = self.repository
-        return await store.delete_workspace(workspace_id)
+        return await self.operations.delete_workspace(workspace_id)

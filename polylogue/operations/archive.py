@@ -66,6 +66,8 @@ from polylogue.insights.readiness import (
 )
 from polylogue.insights.resume import ResumeBrief, ResumeOperations, build_resume_brief
 from polylogue.maintenance.targets import build_maintenance_target_catalog
+from polylogue.operations.completion_aggregates import ArchiveCompletionMixin, CompletionAggregate
+from polylogue.operations.mutations import ArchiveMutationsMixin
 from polylogue.services import RuntimeServices, build_runtime_services
 from polylogue.storage.hydrators import message_from_record
 from polylogue.storage.insights.session.runtime import (
@@ -1044,9 +1046,11 @@ class ArchiveResumeMixin:
 class ArchiveOperations(
     ArchiveSearchMixin,
     ArchiveStatsMixin,
+    ArchiveCompletionMixin,
     ArchiveInsightMixin,
     ArchiveMaintenanceMixin,
     ArchiveResumeMixin,
+    ArchiveMutationsMixin,
 ):
     """Canonical archive-level operations over configured runtime dependencies."""
 
@@ -1139,6 +1143,7 @@ __all__ = [
     "ArchiveDebtInsight",
     "ArchiveOperations",
     "ArchiveStats",
+    "CompletionAggregate",
     "get_provider_counts",
     "list_provider_analytics_insights",
 ]
