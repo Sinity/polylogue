@@ -95,6 +95,8 @@ _PROOF_CATALOG_CLAIM_FILES: frozenset[str] = frozenset(
         "polylogue/proof/corpus.py",
         "polylogue/proof/coverage_manifests.py",
         "polylogue/proof/generated_scenarios.py",
+        "polylogue/proof/models.py",
+        "polylogue/proof/sources/effect_compiler.py",
     }
 )
 
