@@ -919,6 +919,58 @@ created it.
   verification ([#818](https://github.com/Sinity/polylogue/issues/818))
   — independent of the lease design audited above.
 
+## Daemon Convergence Evidence
+
+`devtools daemon-workload-probe` produces a stable, JSON-serializable
+snapshot of daemon-relevant state read directly from the archive SQLite
+database. The probe is read-only and does not talk to the running daemon.
+
+For #845-style before/after convergence proofs:
+
+```bash
+devtools daemon-workload-probe --json > before.json
+# ...run convergence work (e.g. polylogued runs, ingest, debt drain)...
+devtools daemon-workload-probe --json > after.json
+devtools daemon-workload-probe --compare before.json after.json
+devtools daemon-workload-probe --compare before.json after.json --json > diff.json
+```
+
+The report has a stable top-level shape carrying its `report_version`,
+`captured_at`, and structured sections that compare diffs arithmetically:
+
+- `attempt_counts` — total/running/completed/failed `live_ingest_attempt`
+  rows plus `stale_cursor_writes` and overlapping running source paths.
+- `recent_attempts` — most recent attempts with read amplification,
+  parse/convergence timings, and source-path bundles.
+- `convergence_stage_timings` — min/max/sum/mean parse/convergence/read-
+  amplification stats over completed attempts.
+- `boundary_table_counts` — row counts for the daemon-relevant tables
+  (`raw_conversations`, `conversations`, `messages`, `content_blocks`,
+  `blob_links`, `messages_fts_docsize`, `action_events`,
+  `action_events_fts_docsize`, `message_embeddings`, `session_profile`,
+  `live_ingest_attempt`, `live_convergence_debt`, `pending_blob_refs`).
+  Missing tables surface as `-1` rather than crashing the probe.
+- `blob_lease_state` — pending lease count, distinct lease operations,
+  oldest `acquired_at`. See the lease/GC concurrency model above.
+- `gc_state` — high-water `gc_generations` row, `last_completed_at`,
+  total generation count.
+- `fts_trigger_state` — the six expected FTS sync triggers
+  (`messages_fts_a{i,d,u}`, `action_events_fts_a{i,d,u}`) with
+  `present`, `missing`, and `all_present` fields. A missing trigger means
+  FTS index drift risk (suspended during bulk operations and not
+  restored, for example).
+- `daemon_resource_signal` — RSS / cgroup memory / worker-progress fields
+  pulled from the most recent `live_ingest_attempt` row (these are the
+  only daemon-RSS signals readable without IPC).
+- `source_path_churn`, `convergence_debt`, `query_plans` — pre-existing
+  read amplification, debt-by-stage, and hot-query EXPLAIN evidence.
+
+The compare mode refuses incompatible `report_version` inputs loudly and
+requires both inputs to be `ok: True`.  Numeric fields produce
+`{before, after, delta}` triples; the FTS trigger section reports
+`regressed` (newly missing) and `restored` separately so trigger drift is
+attributable to a specific convergence cycle.
+
 ## Debugging Landmarks
 
 Cross-check adjacent surfaces after changes:

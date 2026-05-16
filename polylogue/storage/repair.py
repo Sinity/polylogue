@@ -20,6 +20,11 @@ from polylogue.maintenance.targets import (
 from polylogue.protocols import ProgressCallback
 from polylogue.storage.action_events.artifacts import ActionEventArtifactState
 from polylogue.storage.insights.session.runtime import SessionInsightReadyFlag, SessionInsightStatusSnapshot
+from polylogue.storage.message_type_backfill import (
+    BackfillResult,
+    count_messages_by_type_sync,
+    count_unclassified_message_type_sync,
+)
 
 logger = get_logger(__name__)
 _MAINTENANCE_TARGET_CATALOG = build_maintenance_target_catalog()
@@ -74,24 +79,6 @@ class _SessionInsightRepairAssessment:
     @property
     def pending(self) -> int:
         return self.row_debt + self.fts_debt
-
-
-# ---------------------------------------------------------------------------
-# Unclassified message_type count
-# ---------------------------------------------------------------------------
-
-
-def count_unclassified_message_type_sync(conn: sqlite3.Connection) -> int:
-    """Count messages whose ``message_type`` is still the default ``message``
-    and whose text could carry context or protocol markers.
-
-    This is the preview count for the #839 message_type backfill.
-    """
-    return int(
-        conn.execute(
-            "SELECT COUNT(*) FROM messages WHERE message_type = 'message'  AND text IS NOT NULL AND text != ''"
-        ).fetchone()[0]
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -452,9 +439,9 @@ def collect_archive_debt_statuses_sync(
         "message_type_backfill": _archive_debt_status(
             "message_type_backfill",
             issue_count=_unclassified,
-            detail="No unclassified messages"
+            detail="No messages need context/protocol classification"
             if _unclassified == 0
-            else f"{_unclassified:,} candidate messages to classify",
+            else f"{_unclassified:,} messages would be classified as context or protocol",
         ),
     }
     if include_expensive:
@@ -1037,102 +1024,39 @@ def repair_wal_checkpoint(config: Config, dry_run: bool = False) -> RepairResult
         )
 
 
-def preview_message_type_backfill(*, count: int) -> RepairResult:
-    """Preview handler for the #839 message_type backfill."""
-    return _repair_result(
-        "message_type_backfill",
-        repaired_count=count,
-        success=True,
-        detail=(f"Would: {count:,} candidate messages to classify" if count else "No unclassified messages"),
+def _to_repair_result(result: BackfillResult) -> RepairResult:
+    """Adapt a ``BackfillResult`` to the shared ``RepairResult`` shape."""
+    return RepairResult(
+        name=result.name,
+        category=result.category,
+        destructive=result.destructive,
+        repaired_count=result.repaired_count,
+        success=result.success,
+        detail=result.detail,
     )
 
 
-def repair_message_type_backfill(config: Config, dry_run: bool = False) -> RepairResult:
-    """Backfill ``message_type`` for pre-#839 rows using ``classify_text_message_type``.
+def preview_message_type_backfill(*, count: int) -> RepairResult:
+    """Preview handler for the #839 message_type backfill.
 
-    Iterates messages whose ``message_type`` is still the default ``message``,
-    applies the same classification logic used for new-ingest materialization,
-    and updates to ``context`` or ``protocol`` where markers match.
-
-    Idempotent: rows already classified are skipped by the WHERE clause.
+    Thin shim over ``message_type_backfill.preview_backfill`` so the
+    repair orchestrator's preview dispatch keeps working.
     """
-    from polylogue.archive.message.artifacts import classify_text_message_type
-    from polylogue.storage.sqlite.connection import connection_context
+    from polylogue.storage.message_type_backfill import preview_backfill
 
-    try:
-        with connection_context(None) as conn:
-            if dry_run:
-                count = count_unclassified_message_type_sync(conn)
-                return preview_message_type_backfill(count=count)
+    return _to_repair_result(preview_backfill(count=count))
 
-            updated = 0
-            batch_size = 1000
-            offset = 0
 
-            while True:
-                rows = conn.execute(
-                    "SELECT rowid, message_id, text FROM messages"
-                    " WHERE message_type = 'message'"
-                    "  AND text IS NOT NULL AND text != ''"
-                    " ORDER BY rowid"
-                    " LIMIT ? OFFSET ?",
-                    (batch_size, offset),
-                ).fetchall()
+def repair_message_type_backfill(config: Config, dry_run: bool = False) -> RepairResult:
+    """Backfill ``message_type`` for pre-#839 rows.
 
-                if not rows:
-                    break
+    Delegates to ``storage.message_type_backfill.run_backfill``; the
+    implementation lives there to keep this module under its file-size
+    budget (see ``docs/plans/file-size-budgets.yaml``).
+    """
+    from polylogue.storage.message_type_backfill import run_backfill
 
-                context_ids: list[int] = []
-                protocol_ids: list[int] = []
-
-                for row in rows:
-                    rowid_val, _message_id, text = row
-                    mt = classify_text_message_type(text)
-                    if mt is not None:
-                        from polylogue.archive.message.types import MessageType
-
-                        if mt == MessageType.CONTEXT:
-                            context_ids.append(rowid_val)
-                        elif mt == MessageType.PROTOCOL:
-                            protocol_ids.append(rowid_val)
-
-                if context_ids:
-                    placeholders = ",".join("?" * len(context_ids))
-                    conn.execute(
-                        f"UPDATE messages SET message_type = 'context' WHERE rowid IN ({placeholders})",
-                        context_ids,
-                    )
-                    updated += conn.total_changes
-
-                if protocol_ids:
-                    placeholders = ",".join("?" * len(protocol_ids))
-                    conn.execute(
-                        f"UPDATE messages SET message_type = 'protocol' WHERE rowid IN ({placeholders})",
-                        protocol_ids,
-                    )
-                    updated += conn.total_changes
-
-                offset += batch_size
-
-            conn.commit()
-            logger.info(
-                "message_type_backfill_complete",
-                updated=updated,
-            )
-            return _repair_result(
-                "message_type_backfill",
-                repaired_count=updated,
-                success=True,
-                detail=f"Classified {updated:,} messages as context or protocol",
-            )
-    except Exception as exc:
-        logger.exception("message_type_backfill_failed", error=str(exc))
-        return _repair_result(
-            "message_type_backfill",
-            repaired_count=0,
-            success=False,
-            detail=f"Backfill failed: {exc}",
-        )
+    return _to_repair_result(run_backfill(config, dry_run=dry_run))
 
 
 _PREVIEW_HANDLERS: dict[str, Callable[..., RepairResult]] = {
@@ -1263,6 +1187,7 @@ __all__ = [
     "count_orphaned_blobs_sync",
     "count_orphaned_content_blocks_sync",
     "count_orphaned_messages_sync",
+    "count_messages_by_type_sync",
     "count_unclassified_message_type_sync",
     "dangling_fts_repair_count",
     "preview_action_event_read_model",
