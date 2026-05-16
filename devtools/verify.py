@@ -127,6 +127,8 @@ def _format_completion_notification(
 HISTORY_PATH = Path(".cache/verify-history.jsonl")
 TESTMON_DATA = Path(".testmondata")
 TESTMON_SEED_STAMP = Path(".cache/testmon/seed.json")
+PYTEST_REPORT_DIR = Path(".cache/verify")
+PYTEST_REPORT_PATH = PYTEST_REPORT_DIR / "last-pytest.json"
 TESTMON_GLOBAL_INVALIDATORS = (
     ".python-version",
     "conftest.py",
@@ -188,7 +190,11 @@ _PYTEST_COUNT_RE = re.compile(
 
 
 def _parse_pytest_test_count(output: str) -> int | None:
-    """Return the total executed-test count from pytest's terminal summary."""
+    """Return the total executed-test count from pytest's terminal summary.
+
+    Used only as a fallback when the structured JSON report is missing or
+    unreadable. The primary path is `_read_pytest_report()`.
+    """
     if "no tests ran" in output:
         return 0
     counts = [int(match.group("count")) for match in _PYTEST_COUNT_RE.finditer(output)]
@@ -197,17 +203,64 @@ def _parse_pytest_test_count(output: str) -> int | None:
     return sum(counts)
 
 
+def _read_pytest_report(path: Path = PYTEST_REPORT_PATH) -> dict[str, Any] | None:
+    """Load the structured pytest-json-report artifact, or None if absent/bad."""
+    try:
+        raw = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(raw, dict):
+        return None
+    return raw
+
+
+def _pytest_metadata_from_report(report: dict[str, Any]) -> dict[str, Any]:
+    """Project a pytest-json-report dict into verify-step metadata."""
+    summary = report.get("summary")
+    metadata: dict[str, Any] = {"report_path": str(PYTEST_REPORT_PATH)}
+    if isinstance(summary, dict):
+        # `total` is collected count; sum the executed outcomes for the
+        # number we previously scraped from the terminal.
+        outcome_keys = ("passed", "failed", "error", "skipped", "xfailed", "xpassed")
+        executed = sum(int(summary.get(k, 0) or 0) for k in outcome_keys)
+        metadata["count"] = executed
+        for key in ("passed", "failed", "error", "skipped", "xfailed", "xpassed", "total"):
+            value = summary.get(key)
+            if isinstance(value, int):
+                metadata[key] = value
+    duration = report.get("duration")
+    if isinstance(duration, (int, float)):
+        metadata["pytest_duration_s"] = round(float(duration), 2)
+    return metadata
+
+
+def _clear_pytest_report() -> None:
+    """Remove a stale report before a pytest step runs."""
+    with contextlib.suppress(FileNotFoundError):
+        PYTEST_REPORT_PATH.unlink()
+
+
 def _run(label: str, cmd: list[str], *, cwd: str | None = None) -> tuple[int, float, dict[str, Any]]:
     t0 = time.monotonic()
     sys.stderr.write(f"  {label} ... ")
     sys.stderr.flush()
+    if label.startswith("pytest"):
+        _clear_pytest_report()
     result = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
     elapsed = time.monotonic() - t0
     metadata: dict[str, Any] = {}
     if label.startswith("pytest"):
-        test_count = _parse_pytest_test_count(result.stdout + "\n" + result.stderr)
-        if test_count is not None:
-            metadata["count"] = test_count
+        report = _read_pytest_report()
+        if report is not None:
+            metadata.update(_pytest_metadata_from_report(report))
+        else:
+            # Fallback: terminal scraping when the structured report is
+            # missing (pytest crashed before writing it, or the plugin is
+            # disabled in some lab profile).
+            fallback = _parse_pytest_test_count(result.stdout + "\n" + result.stderr)
+            if fallback is not None:
+                metadata["count"] = fallback
+            metadata["report_path"] = None
     if result.returncode == 0:
         sys.stderr.write(f"ok ({elapsed:.1f}s)\n")
     else:
@@ -268,6 +321,7 @@ def build_verify_steps(
     if not quick and not commit:
         _report_dir = Path(".cache/test-reports")
         _report_dir.mkdir(parents=True, exist_ok=True)
+        PYTEST_REPORT_DIR.mkdir(parents=True, exist_ok=True)
         pytest_cmd = [
             "pytest",
             "-q",
@@ -275,17 +329,20 @@ def build_verify_steps(
             "--ignore=tests/integration",
             "--durations=10",
             f"--junitxml={_report_dir}/verify-latest.xml",
+            "--json-report",
+            "--json-report-omit=collectors,log,streams,warnings",
+            f"--json-report-file={PYTEST_REPORT_PATH}",
         ]
         if skip_slow:
             pytest_cmd.extend(["-m", "not slow"])
         if seed_testmon:
-            pytest_cmd.extend(["--testmon", "--testmon-noselect", *_pytest_worker_args(default="8")])
+            pytest_cmd.extend(["--testmon", "--testmon-noselect", *_pytest_worker_args(default="16")])
             steps.append(("pytest seed-testmon", pytest_cmd))
         elif full_pytest:
-            pytest_cmd.extend(_pytest_worker_args(default="8"))
+            pytest_cmd.extend(_pytest_worker_args(default="16"))
             steps.append(("pytest full", pytest_cmd))
         elif testmon_global:
-            pytest_cmd.extend(["--testmon", "--testmon-noselect", *_pytest_worker_args(default="8")])
+            pytest_cmd.extend(["--testmon", "--testmon-noselect", *_pytest_worker_args(default="16")])
             steps.append(("pytest testmon-global", pytest_cmd))
         else:
             pytest_cmd.extend(["--testmon", "-n", "0"])
