@@ -1,0 +1,151 @@
+"""Regression tests pinning the messages_fts external-content invariants (#817).
+
+These guard the post-#944 conversion of ``messages_fts`` to FTS5
+external-content mode (``content='messages', content_rowid='rowid'``). The
+conversion is what makes the FTS index keep only tokens + docsize rather than
+a full second copy of every message body; an earlier attempt at the same
+change was reverted because deletes were not propagating through the
+external-content link. These tests pin all three load-bearing facts:
+
+* the DDL still carries the external-content options,
+* on synthetic data the index pages stay well under the source table size,
+* DELETE on ``messages`` removes the row from FTS via the AD trigger.
+"""
+
+from __future__ import annotations
+
+import sqlite3
+from pathlib import Path
+
+
+def test_messages_fts_is_contentless_external_content(tmp_path: Path) -> None:
+    """``messages_fts`` must use ``content='messages'`` so it does not duplicate text (#817).
+
+    Earlier schemas stored a full second copy of every message body inside the
+    FTS index, which on a production archive translated to several gigabytes of
+    redundant content. The conversion to external-content FTS5
+    (``content='messages', content_rowid='rowid'``) is the load-bearing fix.
+    This test pins the DDL so a future schema edit that drops the option (or
+    flips back to standalone FTS5) fails loudly.
+    """
+    from polylogue.storage.fts.fts_lifecycle import ensure_fts_index_sync
+    from polylogue.storage.sqlite.schema_ddl import SCHEMA_DDL
+
+    conn = sqlite3.connect(str(tmp_path / "fts_contentless.db"))
+    try:
+        conn.executescript(SCHEMA_DDL)
+        ensure_fts_index_sync(conn)
+        row = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='messages_fts'").fetchone()
+        assert row is not None
+        ddl = row[0].lower()
+        assert "content='messages'" in ddl or "content=messages" in ddl, ddl
+        assert "content_rowid='rowid'" in ddl or "content_rowid=rowid" in ddl, ddl
+    finally:
+        conn.close()
+
+
+def test_messages_fts_storage_does_not_duplicate_message_bodies(tmp_path: Path) -> None:
+    """External-content FTS must not store its own copy of message text (#817).
+
+    Synthesises 2000 large messages (~5 KB each, ~10 MB total in ``messages``)
+    and asserts ``messages_fts*`` pages combined stay well under the message
+    table size. With external-content FTS the index keeps only a docsize
+    table plus tokenized posting lists — typically <25% of the source. A
+    regression to standalone FTS5 would push the ratio above 1.0 (full
+    duplicate copy) and the assertion would fail.
+    """
+    from polylogue.storage.sqlite.schema_ddl import SCHEMA_DDL
+
+    db = tmp_path / "fts_bloat.db"
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.executescript(SCHEMA_DDL)
+        conn.execute(
+            "INSERT INTO conversations(conversation_id, provider_name, provider_conversation_id, version) "
+            "VALUES('c1','test','pc1',1)"
+        )
+        body = "lorem ipsum dolor sit amet consectetur adipiscing elit " * 100
+        for i in range(2000):
+            conn.execute(
+                "INSERT INTO messages(message_id, conversation_id, role, text, provider_name, version) "
+                "VALUES(?,?,?,?,?,1)",
+                (f"m{i}", "c1", "user", body, "test"),
+            )
+        conn.commit()
+        conn.execute("VACUUM")
+
+        def _table_bytes(name_prefix: str) -> int:
+            cursor = conn.execute(
+                "SELECT COALESCE(SUM(pgsize),0) FROM dbstat WHERE name LIKE ?",
+                (f"{name_prefix}%",),
+            )
+            row = cursor.fetchone()
+            return int(row[0]) if row and row[0] is not None else 0
+
+        messages_bytes = _table_bytes("messages")
+        # Subtract messages_fts* contribution captured by the prefix wildcard.
+        fts_bytes = _table_bytes("messages_fts")
+        source_bytes = messages_bytes - fts_bytes
+        assert source_bytes > 0, "messages table should have measurable storage"
+        ratio = fts_bytes / source_bytes
+        # External-content FTS keeps tokens + docsize, not full text. The
+        # observed ratio on this fixture is ~0.2; we allow generous headroom
+        # so unrelated SQLite version changes don't false-trip, while
+        # catching any regression to a full standalone FTS5 (ratio >= 1).
+        assert ratio < 0.5, (
+            f"messages_fts pages ({fts_bytes}) should be well under messages pages "
+            f"({source_bytes}); ratio={ratio:.2f} suggests FTS bloat regression"
+        )
+    finally:
+        conn.close()
+
+
+def test_messages_fts_deletion_consistency_with_external_content(tmp_path: Path) -> None:
+    """DELETE on ``messages`` must remove the row from FTS via the AD trigger (#817).
+
+    An earlier attempt to convert ``messages_fts`` to external content was
+    reverted because rows kept matching after their source was deleted. The
+    fix is the ``messages_fts_ad`` trigger that issues the FTS5 ``'delete'``
+    command with the original ``text`` payload. This test guards against
+    regressing that trigger (or losing the rowid-aligned source-table linkage).
+    """
+    from polylogue.storage.sqlite.schema_ddl import SCHEMA_DDL
+
+    conn = sqlite3.connect(str(tmp_path / "fts_delete.db"))
+    try:
+        conn.executescript(SCHEMA_DDL)
+        conn.execute(
+            "INSERT INTO conversations(conversation_id, provider_name, provider_conversation_id, version) "
+            "VALUES('c1','test','pc1',1)"
+        )
+        conn.execute(
+            "INSERT INTO messages(message_id, conversation_id, role, text, provider_name, version) "
+            "VALUES('m1','c1','user','unique_token_alpha here','test',1)"
+        )
+        conn.execute(
+            "INSERT INTO messages(message_id, conversation_id, role, text, provider_name, version) "
+            "VALUES('m2','c1','user','unique_token_beta here','test',1)"
+        )
+        conn.commit()
+        assert (
+            conn.execute("SELECT COUNT(*) FROM messages_fts WHERE messages_fts MATCH 'unique_token_alpha'").fetchone()[
+                0
+            ]
+            == 1
+        )
+
+        conn.execute("DELETE FROM messages WHERE message_id='m1'")
+        conn.commit()
+
+        # m1 must no longer be findable.
+        alpha_hits = conn.execute(
+            "SELECT COUNT(*) FROM messages_fts WHERE messages_fts MATCH 'unique_token_alpha'"
+        ).fetchone()[0]
+        assert alpha_hits == 0, "FTS still finds deleted message (external-content delete regression)"
+        # m2 must still be findable.
+        beta_hits = conn.execute(
+            "SELECT COUNT(*) FROM messages_fts WHERE messages_fts MATCH 'unique_token_beta'"
+        ).fetchone()[0]
+        assert beta_hits == 1
+    finally:
+        conn.close()
