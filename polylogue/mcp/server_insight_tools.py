@@ -80,7 +80,7 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 tier=tier,
             )
             if insight is None:
-                return hooks.error_json("Conversation not found", conversation_id=conversation_id)
+                return hooks.error_json("Conversation not found", code="not_found", conversation_id=conversation_id)
             return hooks.json_payload(insight, exclude_none=True)
 
         return await hooks.async_safe_call("session_profile", run)

@@ -77,7 +77,7 @@ def register_maintenance_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             poly = hooks.get_polylogue()
             conv = await poly.get_conversation(id, content_projection=projection)
             if conv is None:
-                return hooks.error_json(f"Conversation not found: {id}")
+                return hooks.error_json(f"Conversation not found: {id}", code="not_found")
             fmt = normalize_conversation_output_format(format)
             return format_conversation(conv, fmt, None, content_projection=projection)
 
