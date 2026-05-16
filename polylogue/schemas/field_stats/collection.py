@@ -58,6 +58,7 @@ def _collect_field_stats(
 
         stats.present_count += 1
         stats.value_count += 1
+        stats.documents_present.add(sample_idx)
 
         if isinstance(value, Mapping):
             if path not in dict_key_sets:

@@ -94,10 +94,9 @@ def annotate_schema(
 
     field_stats = stats.get(path)
     if field_stats:
-        if "[*]" not in path:
-            freq = field_stats.frequency
-            if 0.0 < freq < 0.95:
-                schema_node["x-polylogue-frequency"] = round(freq, 3)
+        freq = field_stats.document_frequency
+        if 0.0 < freq < 0.95:
+            schema_node["x-polylogue-frequency"] = round(freq, 3)
 
         fmt = field_stats.dominant_format
         if fmt:

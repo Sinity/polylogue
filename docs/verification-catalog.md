@@ -8,10 +8,10 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 
 ## Snapshot
 
-- subjects: `557`
+- subjects: `577`
 - claims: `37`
 - runner bindings: `37`
-- proof obligations: `449`
+- proof obligations: `469`
 
 ## Quality Checks
 
@@ -50,7 +50,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `operation.spec` | 49 |
 | `operation.spec.effect` | 134 |
 | `provider.capability` | 3 |
-| `schema.annotation` | 110 |
+| `schema.annotation` | 130 |
 | `schema.roundtrip` | 1 |
 | `trace.operation` | 1 |
 | `workflow.claim` | 2 |
@@ -119,6 +119,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | --- | --- | --- | ---: | --- |
 | `antigravity` | `conversation_document` | `x-polylogue-values` | 1 | `antigravity:v1:conversation_document:x-polylogue-values:$.artifactType` |
 | `chatgpt` | `conversation_document` | `x-polylogue-foreign-keys` | 7 | `chatgpt:v1:conversation_document:x-polylogue-foreign-keys:0:$.mapping.*.id:$.mapping` |
+| `claude-ai` | `conversation_document` | `x-polylogue-values` | 20 | `claude-ai:v1:conversation_document:x-polylogue-values:$.chat_messages[*].attachments[*].file_type` |
 | `claude-code` | `conversation_record_stream` | `x-polylogue-values` | 42 | `claude-code:v1:conversation_record_stream:x-polylogue-values:$.data.command` |
 | `codex` | `conversation_record_stream` | `x-polylogue-values` | 32 | `codex:v1:conversation_record_stream:x-polylogue-values:$.payload.agent_nickname` |
 | `gemini` | `conversation_document` | `x-polylogue-values` | 14 | `gemini:v1:conversation_document:x-polylogue-values:$.chunkedPrompt.chunks[*].finishReason` |
@@ -304,5 +305,5 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `provider.capability.partial_coverage_declared` | 3 |
 | `schema.foreign_key.resolves` | 8 |
 | `schema.roundtrip.inference_validation` | 1 |
-| `schema.values.value_closure` | 102 |
+| `schema.values.value_closure` | 122 |
 | `trace.operation.surface_equivalence` | 1 |
