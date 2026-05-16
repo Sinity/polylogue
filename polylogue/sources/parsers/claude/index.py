@@ -174,14 +174,15 @@ def enrich_conversation_from_index(
         }
     )
 
-    return conv.model_copy(
-        update={
-            "title": title,
-            "created_at": index_entry.created or conv.created_at,
-            "updated_at": index_entry.modified or conv.updated_at,
-            "provider_meta": provider_meta,
-        }
-    )
+    update: dict[str, object] = {
+        "title": title,
+        "created_at": index_entry.created or conv.created_at,
+        "updated_at": index_entry.modified or conv.updated_at,
+        "provider_meta": provider_meta,
+    }
+    if index_entry.git_branch and not conv.git_branch:
+        update["git_branch"] = index_entry.git_branch
+    return conv.model_copy(update=update)
 
 
 __all__ = [

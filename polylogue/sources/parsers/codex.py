@@ -453,6 +453,16 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedConvers
             conv_meta["working_directories"] = sorted(working_directories)
     updated_at_pair = _newer_timestamp_pair(session_timestamp_pair, latest_message_timestamp)
 
+    git_branch_typed: str | None = None
+    git_repo_url_typed: str | None = None
+    if session_git is not None:
+        branch_val = session_git.get("branch")
+        if isinstance(branch_val, str) and branch_val.strip():
+            git_branch_typed = branch_val.strip()
+        repo_val = session_git.get("repository_url")
+        if isinstance(repo_val, str) and repo_val.strip():
+            git_repo_url_typed = repo_val.strip()
+
     return ParsedConversation(
         provider_name=Provider.CODEX,
         provider_conversation_id=session_id,
@@ -464,6 +474,9 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedConvers
         provider_events=provider_events,
         parent_conversation_provider_id=parent_id,
         branch_type=branch_type,
+        working_directories=sorted(working_directories),
+        git_branch=git_branch_typed,
+        git_repository_url=git_repo_url_typed,
     )
 
 
