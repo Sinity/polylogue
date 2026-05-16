@@ -336,13 +336,13 @@ def build_verify_steps(
         if skip_slow:
             pytest_cmd.extend(["-m", "not slow"])
         if seed_testmon:
-            pytest_cmd.extend(["--testmon", "--testmon-noselect", *_pytest_worker_args(default="8")])
+            pytest_cmd.extend(["--testmon", "--testmon-noselect", *_pytest_worker_args(default="16")])
             steps.append(("pytest seed-testmon", pytest_cmd))
         elif full_pytest:
-            pytest_cmd.extend(_pytest_worker_args(default="8"))
+            pytest_cmd.extend(_pytest_worker_args(default="16"))
             steps.append(("pytest full", pytest_cmd))
         elif testmon_global:
-            pytest_cmd.extend(["--testmon", "--testmon-noselect", *_pytest_worker_args(default="8")])
+            pytest_cmd.extend(["--testmon", "--testmon-noselect", *_pytest_worker_args(default="16")])
             steps.append(("pytest testmon-global", pytest_cmd))
         else:
             pytest_cmd.extend(["--testmon", "-n", "0"])

@@ -83,7 +83,7 @@ def test_seed_testmon_runs_full_collection_without_selection(monkeypatch: pytest
     assert "--testmon" in command
     assert "--testmon-noselect" in command
     assert "-n" in command
-    assert "8" in command
+    assert command[command.index("-n") + 1] == "16"
 
 
 def test_full_verify_includes_full_pytest_without_testmon(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -94,7 +94,7 @@ def test_full_verify_includes_full_pytest_without_testmon(monkeypatch: pytest.Mo
     assert label == "pytest full"
     assert "--testmon" not in command
     assert "-n" in command
-    assert "8" in command
+    assert command[command.index("-n") + 1] == "16"
 
 
 def test_seed_testmon_worker_count_can_be_overridden(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -116,7 +116,7 @@ def test_global_testmon_invalidator_runs_full_collection(monkeypatch: pytest.Mon
     assert label == "pytest testmon-global"
     assert "--testmon" in command
     assert "--testmon-noselect" in command
-    assert command[command.index("-n") + 1] == "8"
+    assert command[command.index("-n") + 1] == "16"
 
 
 def test_skip_slow_keeps_testmon_selection_forced() -> None:
