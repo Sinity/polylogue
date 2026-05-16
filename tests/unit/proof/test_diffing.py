@@ -40,17 +40,12 @@ def test_schema_change_routes_to_schema_annotation_obligations() -> None:
     assert all(item.claim_id.startswith("schema.") for item in affected)
 
 
-def test_command_change_routes_to_cli_obligations() -> None:
+def test_command_change_is_classified() -> None:
     catalog = build_verification_catalog()
 
     changes = classify_changed_paths(("polylogue/cli/command_inventory.py",), catalog=catalog)
-    affected = route_affected_obligations(changes, catalog=catalog)
 
     assert changes[0].kind == "command"
-    assert {"cli.command.help", "cli.command.no_traceback", "cli.command.plain_mode"}.issubset(
-        {item.claim_id for item in affected}
-    )
-    assert "cli.command.json_envelope" in {item.claim_id for item in affected}
 
 
 def test_generated_surface_change_routes_to_workflow_claim() -> None:

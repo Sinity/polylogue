@@ -24,9 +24,6 @@ from click.testing import CliRunner
 from polylogue.cli.click_app import cli
 from polylogue.core.json import JSONDocument
 from polylogue.core.outcomes import OutcomeCheck, OutcomeStatus
-from polylogue.proof.catalog import build_verification_catalog
-from polylogue.proof.models import ProofObligation
-from polylogue.proof.runners import run_cli_visual_evidence
 from polylogue.scenarios import polylogue_execution
 from polylogue.schemas.audit.models import AuditReport
 from polylogue.schemas.validation.models import ArtifactProofReport, ProviderArtifactProof
@@ -58,16 +55,6 @@ def _result_payload(data: JSONDocument) -> JSONDocument:
 def _has_ansi(text: str) -> bool:
     """Return True if text contains ANSI escape codes."""
     return bool(_ANSI_RE.search(text))
-
-
-def _plain_mode_obligation(args: list[str]) -> ProofObligation:
-    command_path = tuple(arg for arg in args if arg not in {"--plain", "--help"})
-    subject_id = "polylogue" if not command_path else f"polylogue {' '.join(command_path)}"
-    catalog = build_verification_catalog()
-    for obligation in catalog.obligations:
-        if obligation.claim.id == "cli.command.plain_mode" and obligation.subject.id == subject_id:
-            return obligation
-    raise AssertionError(f"missing plain-mode obligation for {args!r}")
 
 
 # ---------------------------------------------------------------------------
@@ -217,30 +204,75 @@ class TestFrozenClockShowcaseReport:
 # ---------------------------------------------------------------------------
 
 
+_PLAIN_COMMANDS: tuple[tuple[str, ...], ...] = (
+    (),  # root
+    ("auth",),
+    ("backup",),
+    ("bulk-export",),
+    ("completions",),
+    ("config",),
+    ("context-pack",),
+    ("cost",),
+    ("count",),
+    ("dashboard",),
+    ("delete",),
+    ("diagnostics",),
+    ("diagnostics", "pace"),
+    ("diagnostics", "tools"),
+    ("diagnostics", "turns"),
+    ("doctor",),
+    ("export",),
+    ("ingest",),
+    ("insights",),
+    ("insights", "analytics"),
+    ("insights", "cost-rollups"),
+    ("insights", "costs"),
+    ("insights", "day-summaries"),
+    ("insights", "debt"),
+    ("insights", "enrichments"),
+    ("insights", "export"),
+    ("insights", "phases"),
+    ("insights", "profiles"),
+    ("insights", "status"),
+    ("insights", "tags"),
+    ("insights", "threads"),
+    ("insights", "week-summaries"),
+    ("insights", "work-events"),
+    ("list",),
+    ("maintenance",),
+    ("maintenance", "plan"),
+    ("maintenance", "run"),
+    ("messages",),
+    ("neighbors",),
+    ("open",),
+    ("raw",),
+    ("reset",),
+    ("resume",),
+    ("schema",),
+    ("schema", "compare"),
+    ("schema", "explain"),
+    ("schema", "list"),
+    ("select",),
+    ("show",),
+    ("stats",),
+    ("status",),
+    ("tags",),
+    ("user-state",),
+)
+_PLAIN_CMD_IDS = [" ".join(args) if args else "root" for args in _PLAIN_COMMANDS]
+
+
+@pytest.mark.contract
 class TestPlainModeNoAnsi:
-    """POLYLOGUE_FORCE_PLAIN=1 must produce zero ANSI escape codes."""
+    """POLYLOGUE_FORCE_PLAIN=1 must produce zero ANSI escape codes for every command."""
 
-    COMMANDS: list[list[str]] = [
-        ["--plain", "doctor"],
-        ["--plain", "--help"],
-        ["--plain", "doctor", "--help"],
-        ["--plain", "tags", "--help"],
-        ["--plain", "status", "--help"],
-    ]
-
-    @pytest.mark.parametrize(
-        "args",
-        COMMANDS,
-        ids=[" ".join(c) for c in COMMANDS],
-    )
-    def test_no_ansi_in_plain_mode(self: object, args: list[str]) -> None:
-        """Output with --plain should never contain ANSI escape sequences."""
+    @pytest.mark.parametrize("cmd_args", _PLAIN_COMMANDS, ids=_PLAIN_CMD_IDS)
+    def test_no_ansi_in_plain_mode(self: object, cmd_args: tuple[str, ...]) -> None:
+        """--plain <cmd> --help output must never contain ANSI escape sequences."""
+        args = ["--plain", *cmd_args, "--help"] if cmd_args else ["--plain", "--help"]
         runner = CliRunner(env={"POLYLOGUE_FORCE_PLAIN": "1"})
         result = runner.invoke(cli, args, catch_exceptions=True)
-        # Commands may fail (e.g., no workspace) but output must be ANSI-free
-        assert not _has_ansi(result.output), f"ANSI codes found in output for {args!r}:\n{result.output[:200]}"
-        evidence = run_cli_visual_evidence(_plain_mode_obligation(args), args=args)
-        assert evidence.status is OutcomeStatus.OK
+        assert not _has_ansi(result.output), f"ANSI codes found for {args!r}:\n{result.output[:200]}"
 
 
 # ---------------------------------------------------------------------------

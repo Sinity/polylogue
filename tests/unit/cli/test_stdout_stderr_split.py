@@ -32,40 +32,84 @@ def _looks_like_json(text: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
+_ALL_COMMANDS: tuple[tuple[str, ...], ...] = (
+    (),  # polylogue root
+    ("auth",),
+    ("backup",),
+    ("bulk-export",),
+    ("completions",),
+    ("config",),
+    ("context-pack",),
+    ("cost",),
+    ("count",),
+    ("dashboard",),
+    ("delete",),
+    ("diagnostics",),
+    ("diagnostics", "pace"),
+    ("diagnostics", "tools"),
+    ("diagnostics", "turns"),
+    ("doctor",),
+    ("export",),
+    ("ingest",),
+    ("insights",),
+    ("insights", "analytics"),
+    ("insights", "cost-rollups"),
+    ("insights", "costs"),
+    ("insights", "day-summaries"),
+    ("insights", "debt"),
+    ("insights", "enrichments"),
+    ("insights", "export"),
+    ("insights", "phases"),
+    ("insights", "profiles"),
+    ("insights", "status"),
+    ("insights", "tags"),
+    ("insights", "threads"),
+    ("insights", "week-summaries"),
+    ("insights", "work-events"),
+    ("list",),
+    ("maintenance",),
+    ("maintenance", "plan"),
+    ("maintenance", "run"),
+    ("messages",),
+    ("neighbors",),
+    ("open",),
+    ("raw",),
+    ("reset",),
+    ("resume",),
+    ("schema",),
+    ("schema", "compare"),
+    ("schema", "explain"),
+    ("schema", "list"),
+    ("select",),
+    ("show",),
+    ("stats",),
+    ("status",),
+    ("tags",),
+    ("user-state",),
+)
+
+_CMD_IDS = [" ".join(args) if args else "root" for args in _ALL_COMMANDS]
+
+
 @pytest.mark.contract
 class TestHelpExitCodeAndContent:
-    """--help exits 0 with non-empty output and no traceback."""
-
-    def test_root_help_exit_zero(self) -> None:
-        result = CliRunner().invoke(cli, ["--help"])
-        assert result.exit_code == 0, f"--help failed: {result.output!r}"
-        assert result.output.strip()
-
-    def test_root_help_no_traceback(self) -> None:
-        result = CliRunner().invoke(cli, ["--help"])
-        assert TRACEBACK_SENTINEL not in result.output
+    """--help exits 0 with non-empty output and no traceback (covers cli.command.help claim)."""
 
     def test_version_exit_zero(self) -> None:
         result = CliRunner().invoke(cli, ["--version"])
         assert result.exit_code == 0, f"--version failed: {result.output!r}"
         assert result.output.strip()
 
-    @pytest.mark.parametrize(
-        "cmd",
-        [
-            "doctor",
-            "reset",
-            "auth",
-            "completions",
-            "tags",
-            "schema",
-        ],
-    )
-    def test_subcommand_help_exit_zero(self, cmd: str) -> None:
-        result = CliRunner().invoke(cli, [cmd, "--help"])
-        assert result.exit_code == 0, f"{cmd} --help failed: {result.output!r}"
-        assert result.output.strip()
-        assert TRACEBACK_SENTINEL not in result.output
+    @pytest.mark.parametrize("cmd_args", _ALL_COMMANDS, ids=_CMD_IDS)
+    def test_help_exits_zero_with_usage(self, cmd_args: tuple[str, ...]) -> None:
+        """Every command: --help exits 0, shows Usage:, no traceback."""
+        args = [*cmd_args, "--help"]
+        result = CliRunner().invoke(cli, args)
+        label = " ".join(args)
+        assert result.exit_code == 0, f"{label} exited {result.exit_code}: {result.output!r}"
+        assert result.output.strip(), f"{label} produced empty output"
+        assert "Usage:" in result.output, f"{label} missing 'Usage:' in output"
+        assert TRACEBACK_SENTINEL not in result.output, f"{label} leaked traceback"
 
 
 # ---------------------------------------------------------------------------
