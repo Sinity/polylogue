@@ -84,6 +84,20 @@ settings.register_profile(
     suppress_health_check=[HealthCheck.differing_executors],
     database=_HYPOTHESIS_DB,
 )
+# "verify" profile: fast bounded-example pass for routine devtools verify cycles.
+# Use HYPOTHESIS_PROFILE=verify to cut hypothesis runtime ~8× while retaining
+# regression detection on the most recent counterexamples in the database.
+settings.register_profile(
+    "verify",
+    max_examples=10,
+    deadline=5000,
+    suppress_health_check=[
+        HealthCheck.too_slow,
+        HealthCheck.filter_too_much,
+        HealthCheck.differing_executors,
+    ],
+    database=_HYPOTHESIS_DB,
+)
 settings.load_profile(os.environ.get("HYPOTHESIS_PROFILE", "default"))
 
 

@@ -12,6 +12,7 @@ pure output formatting, independent of path caching).
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
@@ -65,34 +66,34 @@ class TestEmitSuccess:
 # ---------------------------------------------------------------------------
 
 
-def _invoke_json_command(args: list[str], monkeypatch: pytest.MonkeyPatch) -> JSONDocument | None:
-    """Invoke a CLI command with --format json flag, return parsed output or None on skip.
+def _invoke_json_command(args: list[str], monkeypatch: pytest.MonkeyPatch) -> JSONDocument:
+    """Invoke a CLI command with --format json flag, return parsed output.
 
-    Returns None (and calls pytest.skip) if the command fails due to DB errors
-    or other environment issues that make the test non-applicable.
+    Requires workspace_env to already be active (env vars set via monkeypatch)
+    so the command runs against a fresh, deterministic empty archive.
+    Raises AssertionError (pytest.fail) on non-zero exit instead of skipping.
     """
     monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
     runner = CliRunner()
     result = runner.invoke(cli, args, catch_exceptions=True)
     if result.exit_code != 0:
-        # Check for known environment issues that should cause skip
-        if result.exception and "DatabaseError" in type(result.exception).__name__:
-            pytest.skip(f"DB schema mismatch: {result.exception}")
-        if result.exception and "OperationalError" in type(result.exception).__name__:
-            pytest.skip(f"DB operational error: {result.exception}")
-        if result.exception:
-            pytest.skip(f"{args[0]} --format json raised {type(result.exception).__name__}: {result.exception}")
-        pytest.skip(f"{args[0]} --format json failed (exit {result.exit_code})")
-    return extract_json_object(result.output, context=f"{args[0]} output")
+        exc_info = f" ({type(result.exception).__name__}: {result.exception})" if result.exception else ""
+        pytest.fail(f"{' '.join(args)} exited {result.exit_code}{exc_info}\nOutput: {result.output!r}")
+    doc = extract_json_object(result.output, context=f"{args[0]} output")
+    assert doc is not None, f"No JSON object found in {args[0]} output: {result.output!r}"
+    return doc
 
 
 class TestCheckJsonEnvelope:
     """check --format json wraps output in success envelope."""
 
-    def test_check_json_has_status_ok(self: object, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_check_json_has_status_ok(
+        self: object,
+        monkeypatch: pytest.MonkeyPatch,
+        workspace_env: dict[str, Path],  # deterministic empty archive, no skip
+    ) -> None:
         """polylogue check --format json output has status: ok."""
         parsed = _invoke_json_command(["doctor", "--format", "json"], monkeypatch)
-        assert parsed is not None
         assert parsed["status"] == "ok"
         assert "result" in parsed
 
@@ -100,10 +101,13 @@ class TestCheckJsonEnvelope:
 class TestTagsJsonEnvelope:
     """tags --format json wraps output in success envelope."""
 
-    def test_tags_json_has_status_ok(self: object, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_tags_json_has_status_ok(
+        self: object,
+        monkeypatch: pytest.MonkeyPatch,
+        workspace_env: dict[str, Path],  # deterministic empty archive, no skip
+    ) -> None:
         """polylogue tags --format json output has status: ok."""
         parsed = _invoke_json_command(["tags", "--format", "json"], monkeypatch)
-        assert parsed is not None
         assert parsed["status"] == "ok"
         assert "result" in parsed
         assert "tags" in envelope_result(parsed, context="tags envelope")
@@ -125,10 +129,10 @@ class TestQueryShapedJsonMatrix:
         args: list[str],
         result_key: str,
         monkeypatch: pytest.MonkeyPatch,
+        workspace_env: dict[str, Path],  # deterministic empty archive, no skip
         record_contract_evidence: ContractEvidenceRecorder,
     ) -> None:
         parsed = _invoke_json_command(args, monkeypatch)
-        assert parsed is not None
         assert parsed["status"] == "ok"
         assert result_key in envelope_result(parsed, context="format json envelope")
         record_contract_evidence.record(
@@ -147,9 +151,13 @@ class TestQueryShapedJsonMatrix:
             ["schema", "list", "--format", "json"],
         ],
     )
-    def test_json_alias_uses_success_envelope(self, args: list[str], monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_json_alias_uses_success_envelope(
+        self,
+        args: list[str],
+        monkeypatch: pytest.MonkeyPatch,
+        workspace_env: dict[str, Path],  # deterministic empty archive, no skip
+    ) -> None:
         parsed = _invoke_json_command(args, monkeypatch)
-        assert parsed is not None
         assert parsed["status"] == "ok"
         assert "result" in parsed
 

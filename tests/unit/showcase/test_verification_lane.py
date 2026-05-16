@@ -164,3 +164,17 @@ class TestVerifyShowcaseBaselinesControlFlow:
         monkeypatch.setattr(mod, "run_tier_0", lambda: {"cmd-a": "fresh output\n"})
         assert mod.verify_showcase_baselines(update=True) == 0
         assert (baseline_dir / "cmd-a.txt").read_text() == "fresh output\n"
+
+    def test_main_returns_1_when_no_baselines_and_no_update(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """verify_showcase_baselines returns 1 when no baselines exist and update=False.
+
+        This is the pure-logic unit path: run_tier_0 is mocked so no subprocesses
+        are spawned.  The E2E subprocess path belongs in the slow/lab lane.
+        """
+        import devtools.lab_scenario as mod
+
+        monkeypatch.setattr(mod, "BASELINE_DIR", tmp_path / "nonexistent_baselines")
+        monkeypatch.setattr(mod, "run_tier_0", lambda: {"help-main": "Usage: polylogue\n"})
+        assert mod.verify_showcase_baselines(update=False) == 1
