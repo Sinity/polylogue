@@ -153,3 +153,21 @@ suppressions:
     issue: "#1062"
     paths:
       - "devtools/**"
+
+  # ---------------------------------------------------------------------------
+  # Operations: defensive exception catch in archive stats
+  # ---------------------------------------------------------------------------
+  # The try/except Exception catch in archive.py:get_archive_stats() guards
+  # against unexpected get_last_sync_timestamp() failures by logging a warning.
+  # The failure branch is not exercised by tests because it requires mocking
+  # an unexpected backend error in an otherwise stable code path.
+  - id: operations-defensive-no-cover
+    reason: >
+      Defensive exception catch in archive.py:get_archive_stats(). The
+      logger.warning fallback for unexpected get_last_sync_timestamp() failures
+      is not tested — simulating it requires mocking an otherwise-stable path.
+      Reviewed 2026-05-16.
+    expires_at: "2027-01-01"
+    issue: "#1062"
+    paths:
+      - "polylogue/operations/archive.py"
