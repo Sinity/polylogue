@@ -257,6 +257,7 @@ def build_verify_steps(
                     _devtools_cmd("verify-suppressions", "--enforce-kinds", "type_ignore,noqa,no_cover"),
                 ),
                 ("verify-manifests", _devtools_cmd("verify-manifests")),
+                ("verify-ci-workflows", _devtools_cmd("verify-ci-workflows")),
                 ("verify-witness-lifecycle", _devtools_cmd("verify-witness-lifecycle")),
                 ("verify-lane-assertions", _devtools_cmd("verify-lane-assertions")),
             ]

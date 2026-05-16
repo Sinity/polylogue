@@ -356,6 +356,17 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools verify-manifests",),
     ),
     CommandSpec(
+        "verify-ci-workflows",
+        "verification",
+        "Verify CI workflow files reference locally-known devtools commands and existing paths.",
+        "devtools.verify_ci_workflows",
+        use_when=(
+            "Catch CI workflow files that reference unregistered devtools commands or "
+            "non-existent paths. Checks only locally verifiable facts — not remote CI state."
+        ),
+        examples=("devtools verify-ci-workflows", "devtools verify-ci-workflows --json"),
+    ),
+    CommandSpec(
         "proof-pack",
         "verification",
         "Domain-grouped verification impact report for changed paths.",

@@ -34,3 +34,12 @@ shared:
 
   - path: tests/unit/pipeline/test_no_cli_imports.py
     reason: structural test — verifies pipeline module isolation from CLI surface; import-free by design
+
+  - path: tests/unit/mcp/test_user_state_tools.py
+    reason: contract test via tests.infra.mcp mock layer — no direct production import by design
+
+  - path: tests/unit/smoke/test_installed_scripts.py
+    reason: entry-point smoke test via subprocess — verifies installed scripts, not module imports
+
+  - path: tests/unit/storage/test_tag_contracts.py
+    reason: contract test via tests.infra.archive_scenarios — indirectly covers storage via fixtures

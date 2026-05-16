@@ -475,6 +475,37 @@ def _coverage_gap_slug(value: str) -> str:
     return "".join(char if char.isalnum() else "-" for char in value.lower()).strip("-") or "unnamed"
 
 
+def check_test_coverage_domains(plans_dir: Path) -> list[str]:
+    """Validate test-coverage-domains.yaml covering_tests paths exist."""
+    errors: list[str] = []
+    path = plans_dir / "test-coverage-domains.yaml"
+    if not path.exists():
+        return errors
+    try:
+        data = load_manifest(path)
+    except ValueError as exc:
+        return [str(exc)]
+
+    repo_root = plans_dir.parent.parent
+    domains = data.get("domains", [])
+    if not isinstance(domains, list):
+        return errors
+    for domain in domains:
+        if not isinstance(domain, dict):
+            continue
+        name = domain.get("domain", "<unknown>")
+        covering = domain.get("covering_tests", [])
+        if not isinstance(covering, list):
+            continue
+        for test_path in covering:
+            full = repo_root / test_path
+            if not full.exists():
+                errors.append(
+                    f"test-coverage-domains.yaml: domain {name!r}: covering_tests path does not exist: {test_path!r}"
+                )
+    return errors
+
+
 def check_pydantic_models(plans_dir: Path) -> list[str]:
     """Validate every YAML manifest against its Pydantic model schema."""
     errors: list[str] = []
@@ -508,6 +539,7 @@ def main(argv: list[str] | None = None) -> int:
         check_coverage_references,
         check_coverage_status_claims,
         check_campaign_coverage_catalog,
+        check_test_coverage_domains,
     ):
         try:
             all_errors.extend(check(plans_dir))
