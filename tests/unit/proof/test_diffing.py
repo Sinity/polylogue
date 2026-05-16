@@ -151,7 +151,9 @@ def test_proof_pack_test_change_routes_to_catalog_obligations() -> None:
 
     assert report.change_subjects[0].kind == "proof_catalog"
     assert report.obligation_diff.suppressed == ()
-    assert "devtools proof-pack --check" in [check.rendered_command for check in report.inner_loop_checks]
+    assert "devtools affected-obligations --full --check" in [
+        check.rendered_command for check in report.inner_loop_checks
+    ]
 
 
 def test_obligation_diff_buckets_new_dropped_stale_and_suppressed() -> None:

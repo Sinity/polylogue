@@ -10,14 +10,11 @@ assertions, manual review requirements, and advisory noise.
 
 from __future__ import annotations
 
-import argparse
 import json
-import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
-from devtools import repo_root as _get_root
 from polylogue.core.outcomes import OutcomeStatus
 from polylogue.proof.catalog import (
     VerificationCatalog,
@@ -733,76 +730,6 @@ def _cost_tier_counts(report: Any, catalog: VerificationCatalog) -> dict[str, in
     return dict(counts)
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Diff-shaped verification impact report for PR review.")
-    parser.add_argument("--base-ref", default="origin/master", help="Base git ref for changed-path discovery.")
-    parser.add_argument("--head-ref", default="HEAD", help="Head git ref for changed-path discovery.")
-    parser.add_argument("--path", action="append", dest="paths", default=None, help="Changed file path (repeatable).")
-    parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON.")
-    parser.add_argument("--markdown", action="store_true", help="Emit PR-comment-ready Markdown.")
-    parser.add_argument("--check", action="store_true", help="Exit non-zero when report blocking policy fails.")
-    parser.add_argument(
-        "--anti-vacuity",
-        action="store_true",
-        help="Emit anti-vacuity report (claims lacking breakers, runners, subjects, or with stale evidence).",
-    )
-    parser.add_argument(
-        "--discover-subjects",
-        action="store_true",
-        help="Discover and print subjects from Click introspection (CLI commands with --format json).",
-    )
-    args = parser.parse_args(argv)
-
-    root = _get_root()
-
-    if args.anti_vacuity:
-        catalog = build_verification_catalog()
-        dashboard = build_anti_vacuity_report(catalog)
-        if args.json:
-            json.dump(dashboard, sys.stdout, indent=2, sort_keys=True)
-            sys.stdout.write("\n")
-        elif args.markdown:
-            sys.stdout.write(render_anti_vacuity_markdown(dashboard))
-            sys.stdout.write("\n")
-        else:
-            _print_anti_vacuity_report(dashboard)
-        return 1 if dashboard["flagged_count"] > 0 and args.check else 0
-
-    if args.discover_subjects:
-        subjects = discover_click_json_subjects()
-        if args.json:
-            payload = [s.to_payload() for s in subjects]
-            json.dump(payload, sys.stdout, indent=2, sort_keys=True)
-        else:
-            print(f"Discovered {len(subjects)} JSON-capable CLI subjects:")
-            for s in subjects:
-                print(f"  {s.id:50} {str(s.attrs.get('help', ''))[:60]}")
-        return 0
-
-    report = build_proof_pack(
-        root,
-        base_ref=args.base_ref,
-        head_ref=args.head_ref,
-        changed_paths=args.paths,
-    )
-    check_result = evaluate_check_policy(report)
-    if args.check:
-        report["check"] = check_result
-
-    if args.json:
-        json.dump(report, sys.stdout, indent=2, sort_keys=True)
-        sys.stdout.write("\n")
-    elif args.markdown:
-        sys.stdout.write(render_markdown(report))
-        sys.stdout.write("\n")
-    else:
-        _print_human_report(report)
-
-    if args.check and check_result["status"] != "ok":
-        return 1
-    return 0
-
-
 def render_markdown(report: dict[str, Any]) -> str:
     """Render a taxonomy-aware report as PR-comment-ready markdown."""
     refs = report["refs"]
@@ -1035,7 +962,3 @@ def _print_human_report(report: dict[str, Any]) -> None:
             print(f"  blocking: {error}")
         for warning in check_result.get("warnings", []) or []:
             print(f"  warning: {warning}")
-
-
-if __name__ == "__main__":
-    sys.exit(main())
