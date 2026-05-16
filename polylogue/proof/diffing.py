@@ -694,7 +694,10 @@ def _checks_for_change(kind: ChangeKind, *, path: str) -> tuple[RecommendedCheck
         return (
             _check(("devtools", "verify-manifests"), "assurance coverage manifest changed"),
             _check(("devtools", "render-verification-catalog", "--check"), "coverage manifests feed check inventory"),
-            _check(("devtools", "proof-pack", "--path", path, "--markdown"), "coverage changes feed known-gap report"),
+            _check(
+                ("devtools", "affected-obligations", "--full", "--path", path, "--markdown"),
+                "coverage changes feed known-gap report",
+            ),
         )
     if kind == "schema_roundtrip":
         return (
@@ -706,7 +709,9 @@ def _checks_for_change(kind: ChangeKind, *, path: str) -> tuple[RecommendedCheck
             _check(("pytest", "tests/unit/proof"), "verification catalog implementation changed"),
             _check(("pytest", "tests/unit/devtools/test_proof_pack.py"), "verification impact report changed"),
             _check(("pytest", "tests/unit/devtools/test_render_verification_catalog.py"), "catalog renderer changed"),
-            _check(("devtools", "proof-pack", "--check"), "verification report policy gate changed"),
+            _check(
+                ("devtools", "affected-obligations", "--full", "--check"), "verification report policy gate changed"
+            ),
             _check(("devtools", "render-verification-catalog", "--check"), "verification catalog must stay current"),
         )
     if kind == "operation.spec":

@@ -131,15 +131,16 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     CommandSpec(
         "render-verification-catalog",
         "generated surfaces",
-        "Render the verification-lab catalog from check registries.",
+        "Render the verification-lab catalog from check registries; optionally emit anti-vacuity report.",
         "devtools.render_verification_catalog",
         use_when=(
             "Refresh or verify the catalog that anchors changed-path verification reports after "
-            "changing subjects, claims, runners, or catalog rendering."
+            "changing subjects, claims, runners, or catalog rendering. Use --anti-vacuity to flag claims with gaps."
         ),
         examples=(
             "devtools render-verification-catalog",
             "devtools render-verification-catalog --check",
+            "devtools render-verification-catalog --anti-vacuity",
             "devtools render-verification-catalog --json",
         ),
     ),
@@ -167,12 +168,13 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     CommandSpec(
         "affected-obligations",
         "verification",
-        "Route changed paths or refs to affected verification checks and focused commands.",
+        "Route changed paths or refs to affected verification checks and focused commands; optionally emit full proof-pack impact report.",
         "devtools.affected_obligations",
-        use_when="Find the checks and inner-loop commands affected by local changes before escalating to full PR gates.",
+        use_when="Find the checks and inner-loop commands affected by local changes before escalating to full PR gates. Use --full for domain-grouped impact analysis.",
         examples=(
             "devtools affected-obligations --base-ref origin/master --head-ref HEAD",
             "devtools affected-obligations --base-ref origin/master --head-ref HEAD --markdown",
+            "devtools affected-obligations --full --markdown",
             "devtools affected-obligations --path polylogue/sources/parsers/codex.py",
             "devtools affected-obligations --json --path docs/verification-catalog.md",
         ),
@@ -366,21 +368,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "non-existent paths. Checks only locally verifiable facts — not remote CI state."
         ),
         examples=("devtools verify-ci-workflows", "devtools verify-ci-workflows --json"),
-    ),
-    CommandSpec(
-        "proof-pack",
-        "verification",
-        "Domain-grouped verification impact report for changed paths.",
-        "devtools.proof_pack",
-        use_when=(
-            "Review what a change affects by domain and choose focused gates without reading raw catalog routing."
-        ),
-        examples=(
-            "devtools proof-pack --base-ref origin/master --head-ref HEAD",
-            "devtools proof-pack --base-ref origin/master --head-ref HEAD --markdown",
-            "devtools proof-pack --path polylogue/proof/catalog.py --check",
-            "devtools proof-pack --json --path polylogue/daemon/",
-        ),
     ),
     CommandSpec(
         "verify-cross-cuts",

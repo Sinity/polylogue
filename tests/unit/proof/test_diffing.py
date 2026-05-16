@@ -136,7 +136,7 @@ def test_proof_report_tool_change_routes_to_catalog_obligations() -> None:
     commands = [check.rendered_command for check in report.inner_loop_checks]
     assert "pytest tests/unit/proof" in commands
     assert "pytest tests/unit/devtools/test_proof_pack.py" in commands
-    assert "devtools proof-pack --check" in commands
+    assert "devtools affected-obligations --full --check" in commands
 
 
 def test_proof_pack_test_change_routes_to_catalog_obligations() -> None:
