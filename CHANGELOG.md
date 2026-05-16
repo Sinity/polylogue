@@ -14,6 +14,12 @@ documentation polish do not require an entry.
 
 ### Security
 
+- FTS5 query escaping now treats `.`, `/`, and `?` as special characters so
+  search inputs containing path-like or single-character-wildcard
+  punctuation are quoted rather than surfaced to SQLite as syntax errors.
+  Previously, inputs such as `../etc/passwd`, `foo.bar`, or `test?` from
+  CLI/MCP search raised `sqlite3.OperationalError` and leaked the underlying
+  FTS5 grammar to callers.
 - Webhook delivery now connects to the IP validated against the SSRF
   denylist rather than re-resolving the hostname, closing a DNS-rebinding
   TOCTOU window. Hostname is preserved for SNI/cert verification.

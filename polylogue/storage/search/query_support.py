@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from datetime import datetime, timezone
 
-_FTS5_SPECIAL = re.compile(r"""['":*^(){}\[\]|&!+\-\\;%=$,<>@#`~]""")
+_FTS5_SPECIAL = re.compile(r"""['":*^(){}\[\]|&!+\-\\;%=$,<>@#`~./?]""")
 _FTS5_OPERATORS = {"AND", "OR", "NOT", "NEAR"}
 _ASTERISK_ONLY = re.compile(r"^\*+$")
 
