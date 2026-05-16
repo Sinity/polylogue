@@ -61,6 +61,14 @@ _IGNORED_RELATIVE_PATH_PREFIXES = (
 )
 
 
+def _lexical_expanduser(value: str) -> str:
+    if value == "~":
+        return str(Path.home())
+    if value.startswith("~/"):
+        return f"{Path.home()}{value[1:]}"
+    return value
+
+
 def _is_ignored_absolute_path(path: PurePosixPath) -> bool:
     parts = tuple(part for part in path.parts if part != "/")
     if not parts:
@@ -117,18 +125,16 @@ def _clean_attributed_path(path: str) -> str | None:
         if _is_ignored_repo_relative_path(PurePosixPath(candidate)):
             return None
         return candidate
-    expanded_path = Path(candidate).expanduser()
-    expanded = str(expanded_path)
-    resolved = str(expanded_path.resolve(strict=False))
-    repo_root = _repo_root_from_path(resolved)
+    expanded = _lexical_expanduser(candidate)
+    repo_root = _repo_root_from_path(expanded)
     if repo_root is not None:
         try:
-            repo_relative = PurePosixPath(Path(resolved).relative_to(repo_root).as_posix())
+            repo_relative = PurePosixPath(PurePosixPath(expanded).relative_to(PurePosixPath(repo_root)).as_posix())
         except ValueError:
             repo_relative = None
         if repo_relative is not None and _is_ignored_repo_relative_path(repo_relative):
             return None
-        return resolved
+        return expanded
 
     pure_path = PurePosixPath(expanded)
     if _is_ignored_absolute_path(pure_path):

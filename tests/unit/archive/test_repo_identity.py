@@ -66,6 +66,44 @@ def test_repo_identity_normalization_filters_noise(tmp_path: Path) -> None:
     ) == (str(polylogue_repo), str(sinnix_repo))
 
 
+def test_attribution_does_not_probe_archived_automount_paths(monkeypatch: pytest.MonkeyPatch) -> None:
+    original_resolve = Path.resolve
+
+    def fail_on_automount(self: Path, strict: bool = False) -> Path:
+        if str(self).startswith("/mnt/"):
+            raise AssertionError(f"attempted to resolve archived automount path: {self}")
+        return original_resolve(self, strict=strict)
+
+    monkeypatch.setattr(Path, "resolve", fail_on_automount)
+    action = ActionEvent(
+        event_id="evt-automount-path",
+        message_id="msg-automount-path",
+        timestamp=datetime(2026, 5, 16, 12, 0, tzinfo=timezone.utc),
+        sequence_index=0,
+        kind=ToolCategory.FILE_READ,
+        tool_name="Read",
+        tool_id=None,
+        provider=Provider.CLAUDE_CODE,
+        affected_paths=("/mnt/pendrv/chatlog/claude_code/project/src/main.py",),
+        cwd_path="/mnt/pendrv/chatlog/claude_code/project",
+        branch_names=(),
+        command=None,
+        query=None,
+        url=None,
+        output_text=None,
+        search_text="automount path",
+        raw={},
+    )
+
+    attribution = extract_attribution_from_action_events([action])
+
+    assert attribution.file_paths_touched == ("/mnt/pendrv/chatlog/claude_code/project/src/main.py",)
+    assert attribution.cwd_paths == ("/mnt/pendrv/chatlog/claude_code/project",)
+    assert attribution.repo_paths == ()
+    assert attribution.repo_names == ()
+    assert attribution.languages_detected == ("python",)
+
+
 def test_repo_identity_normalization_canonicalizes_absolute_parent_traversal(tmp_path: Path) -> None:
     sinnix_repo = _make_repo(tmp_path, "sinnix")
     noisy_repo_path = f"/../../{sinnix_repo.relative_to(Path('/'))}"

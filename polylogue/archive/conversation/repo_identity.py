@@ -5,12 +5,18 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable
 from functools import lru_cache
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from urllib.parse import urlparse
 
 _PATH_DELIMITERS = {"#", "`", '"', "\\", ":", "(", ")", "\n", "\r", "\t", " ", "<", ">", ",", ";", "'"}
 _REPO_SLUG_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:\.git)?$")
 _PLAIN_REPO_NAME_RE = re.compile(r"^[a-z0-9_.-]+$")
+_NON_PROBING_ABSOLUTE_PREFIXES = (
+    PurePosixPath("/mnt"),
+    PurePosixPath("/media"),
+    PurePosixPath("/run/media"),
+    PurePosixPath("/neo-outer-realm"),
+)
 
 
 def _extract_local_path_candidate(value: str) -> str | None:
@@ -27,6 +33,22 @@ def _extract_local_path_candidate(value: str) -> str | None:
         chars.append(char)
     candidate = "".join(chars).strip()
     return candidate or None
+
+
+def _lexical_expanduser(value: str) -> str:
+    if value == "~":
+        return str(Path.home())
+    if value.startswith("~/"):
+        return f"{Path.home()}{value[1:]}"
+    return value
+
+
+def _is_non_probing_absolute_path(value: str) -> bool:
+    expanded = _lexical_expanduser(value)
+    pure = PurePosixPath(expanded)
+    return pure.is_absolute() and any(
+        pure == prefix or prefix in pure.parents for prefix in _NON_PROBING_ABSOLUTE_PREFIXES
+    )
 
 
 def _iter_repo_root_candidates(path: Path) -> tuple[Path, ...]:
@@ -98,6 +120,8 @@ def normalize_repo_path(value: object) -> str | None:
         return None
     path_candidate = _extract_local_path_candidate(raw)
     if path_candidate is None:
+        return None
+    if _is_non_probing_absolute_path(path_candidate):
         return None
     git_root = _find_git_root(Path(path_candidate).expanduser().resolve(strict=False))
     return str(git_root) if git_root is not None else None
