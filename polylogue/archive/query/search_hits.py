@@ -18,7 +18,18 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True, slots=True)
 class ConversationSearchHit:
-    """A conversation summary plus evidence explaining why it matched."""
+    """A conversation summary plus evidence explaining why it matched.
+
+    ``score_kind`` declares how to interpret ``score``:
+
+    - ``"bm25"`` — SQLite FTS5 BM25 (lower magnitude is a better match;
+      values are typically negative; never compare across queries).
+    - ``"rrf"`` — Reciprocal Rank Fusion (higher is better; bounded by
+      ``sum(1/(k+1))`` across lanes).
+    - ``"vector_distance"`` — vector cosine distance (lower is closer).
+    - ``None`` — no rank-derived score, e.g. action or attachment lanes
+      that surface evidence without a numeric score.
+    """
 
     summary: ConversationSummary
     rank: int
@@ -29,6 +40,7 @@ class ConversationSearchHit:
     score: float | None = None
     matched_terms: tuple[str, ...] = ()
     score_components: dict[str, float] = field(default_factory=dict)
+    score_kind: str | None = None
 
     @property
     def conversation_id(self) -> str:
@@ -87,6 +99,7 @@ def conversation_search_hit_from_conversation(
     score: float | None = None,
     matched_terms: tuple[str, ...] = (),
     score_components: dict[str, float] | None = None,
+    score_kind: str | None = None,
 ) -> ConversationSearchHit:
     terms = search_terms(query_terms)
     matching_message = next(
@@ -108,6 +121,7 @@ def conversation_search_hit_from_conversation(
         score=score,
         matched_terms=matched_terms,
         score_components=score_components or {},
+        score_kind=score_kind or default_score_kind(retrieval_lane),
     )
 
 
@@ -122,6 +136,7 @@ def conversation_search_hit_from_summary(
     score: float | None = None,
     matched_terms: tuple[str, ...] = (),
     score_components: dict[str, float] | None = None,
+    score_kind: str | None = None,
 ) -> ConversationSearchHit:
     return ConversationSearchHit(
         summary=summary,
@@ -133,7 +148,53 @@ def conversation_search_hit_from_summary(
         score=score,
         matched_terms=matched_terms,
         score_components=score_components or {},
+        score_kind=score_kind or default_score_kind(retrieval_lane),
     )
+
+
+_HYBRID_RRF_K = 60
+
+
+def _hybrid_score_components(
+    lane_info: dict[str, int | None],
+) -> tuple[dict[str, float], float | None]:
+    """Expand a per-lane rank map into RRF-explanation components.
+
+    Returns ``(score_components, fused_score)`` where ``score_components``
+    contains ``<lane>_rank`` and ``<lane>_rrf`` entries for every lane that
+    contributed, and ``fused_score`` is the sum of those RRF contributions
+    (``None`` when no lane contributed). The constant ``k=60`` matches
+    :func:`polylogue.storage.search_providers.hybrid.reciprocal_rank_fusion`.
+    """
+    components: dict[str, float] = {}
+    fused = 0.0
+    any_lane = False
+    for lane_name, lane_rank_val in lane_info.items():
+        if lane_rank_val is None:
+            continue
+        any_lane = True
+        lane_rank = int(lane_rank_val)
+        components[f"{lane_name}_rank"] = float(lane_rank)
+        contribution = 1.0 / (_HYBRID_RRF_K + lane_rank)
+        components[f"{lane_name}_rrf"] = contribution
+        fused += contribution
+    return components, (fused if any_lane else None)
+
+
+def default_score_kind(retrieval_lane: str) -> str | None:
+    """Map a retrieval lane to the natural ``score`` interpretation.
+
+    Lanes that do not produce a single numeric score (``actions``,
+    ``attachment``) return ``None`` so consumers know not to render or
+    compare a numeric score for those evidence types.
+    """
+    if retrieval_lane in {"dialogue", "auto"}:
+        return "bm25"
+    if retrieval_lane == "hybrid":
+        return "rrf"
+    if retrieval_lane == "semantic":
+        return "vector_distance"
+    return None
 
 
 def plan_has_search_hit_evidence(plan: ConversationQueryPlan) -> bool:
@@ -190,16 +251,15 @@ async def search_hits_for_plan(
         for rank, conversation in enumerate(conversations, start=1):
             conv_id = str(conversation.id)
             lane_info = lane_ranks.get(conv_id, {})
-            score_components: dict[str, float] = {}
-            for lane_name, lane_rank_val in lane_info.items():
-                if lane_rank_val is not None:
-                    score_components[f"{lane_name}_rank"] = float(lane_rank_val)
+            score_components, fused_score = _hybrid_score_components(lane_info)
             hits.append(
                 conversation_search_hit_from_conversation(
                     conversation,
                     query_terms=query_terms,
                     rank=rank,
                     retrieval_lane="hybrid",
+                    score=fused_score,
+                    score_kind="rrf" if fused_score is not None else None,
                     score_components=score_components,
                     matched_terms=terms,
                 )
@@ -227,6 +287,7 @@ __all__ = [
     "build_search_snippet",
     "conversation_search_hit_from_conversation",
     "conversation_search_hit_from_summary",
+    "default_score_kind",
     "plan_has_search_hit_evidence",
     "search_hit_surface",
     "search_hits_for_plan",

@@ -1,0 +1,164 @@
+"""Contract pin for ranked-search per-hit explanation payload (#873).
+
+The ranked-search envelope is the shared evidence carrier across CLI JSON,
+MCP, API, and daemon. These tests pin the field set of
+``ConversationSearchMatchPayload`` and the ``score_kind`` interpretation,
+and record bounded contract evidence so downstream consumers can see what
+the surface promises.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
+from polylogue.archive.conversation.models import ConversationSummary
+from polylogue.archive.query.search_hits import (
+    ConversationSearchHit,
+    conversation_search_hit_from_summary,
+    default_score_kind,
+)
+from polylogue.surfaces.payloads import (
+    ConversationSearchHitPayload,
+    ConversationSearchMatchPayload,
+)
+from polylogue.types import ConversationId, Provider
+from tests.infra.contract_evidence import ContractEvidenceRecorder
+
+
+def _summary() -> ConversationSummary:
+    return ConversationSummary(
+        id=ConversationId("chatgpt:explain"),
+        provider=Provider.CHATGPT,
+        title="Explain me",
+        created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
+
+
+def _dialogue_hit() -> ConversationSearchHit:
+    return conversation_search_hit_from_summary(
+        _summary(),
+        rank=1,
+        retrieval_lane="dialogue",
+        match_surface="message",
+        message_id="m1",
+        snippet="…matched [needle]…",
+        score=-7.42,
+        matched_terms=("needle",),
+        score_components={},
+    )
+
+
+def _hybrid_hit() -> ConversationSearchHit:
+    components = {
+        "text_rank": 1.0,
+        "text_rrf": 1.0 / 61,
+        "vector_rank": 2.0,
+        "vector_rrf": 1.0 / 62,
+    }
+    return conversation_search_hit_from_summary(
+        _summary(),
+        rank=1,
+        retrieval_lane="hybrid",
+        match_surface="hybrid",
+        message_id="m1",
+        snippet="…matched [needle]…",
+        score=components["text_rrf"] + components["vector_rrf"],
+        matched_terms=("needle",),
+        score_components=components,
+    )
+
+
+def test_default_score_kind_per_lane_is_documented() -> None:
+    assert default_score_kind("dialogue") == "bm25"
+    assert default_score_kind("auto") == "bm25"
+    assert default_score_kind("hybrid") == "rrf"
+    assert default_score_kind("semantic") == "vector_distance"
+    # Lanes without a numeric score (attachment, actions) return None so
+    # consumers do not render a score column for them.
+    assert default_score_kind("attachment") is None
+    assert default_score_kind("actions") is None
+
+
+def test_dialogue_hit_carries_bm25_score_kind() -> None:
+    hit = _dialogue_hit()
+    assert hit.score_kind == "bm25"
+    payload = ConversationSearchHitPayload.from_search_hit(hit)
+    assert payload.match.score_kind == "bm25"
+    assert payload.match.score == -7.42
+    assert payload.match.matched_terms == ("needle",)
+    assert payload.match.retrieval_lane == "dialogue"
+    assert payload.match.match_surface == "message"
+
+
+def test_hybrid_hit_carries_rrf_score_and_per_lane_components() -> None:
+    hit = _hybrid_hit()
+    payload = ConversationSearchHitPayload.from_search_hit(hit)
+    assert payload.match.score_kind == "rrf"
+    assert payload.match.score is not None and payload.match.score > 0
+    # Per-lane RRF explanation is preserved end-to-end.
+    assert "text_rank" in payload.match.score_components
+    assert "text_rrf" in payload.match.score_components
+    assert "vector_rank" in payload.match.score_components
+    assert "vector_rrf" in payload.match.score_components
+    # Fused score equals the sum of lane RRF contributions.
+    expected = payload.match.score_components["text_rrf"] + payload.match.score_components["vector_rrf"]
+    assert abs(payload.match.score - expected) < 1e-12
+
+
+def test_match_payload_required_field_set_is_stable() -> None:
+    """The ``match`` payload's declared fields must include the why-this-matched
+    evidence required by #873 — drop a field and this test fails loudly."""
+    declared = set(ConversationSearchMatchPayload.model_fields)
+    required = {
+        "rank",
+        "retrieval_lane",
+        "match_surface",
+        "message_id",
+        "snippet",
+        "score",
+        "score_kind",
+        "matched_terms",
+        "score_components",
+    }
+    missing = required - declared
+    assert not missing, f"ConversationSearchMatchPayload lost required fields: {missing}"
+
+
+def test_explanation_shape_contract_evidence(
+    record_contract_evidence: ContractEvidenceRecorder,
+) -> None:
+    """Record bounded evidence of the ranked-hit explanation shape so the
+    cross-surface contract is auditable from the verification dashboard."""
+    from polylogue.core.json import JSONValue, require_json_document
+
+    payloads: list[JSONValue] = [
+        require_json_document(
+            ConversationSearchHitPayload.from_search_hit(_dialogue_hit()).model_dump(mode="json"),
+            context="dialogue hit",
+        ),
+        require_json_document(
+            ConversationSearchHitPayload.from_search_hit(_hybrid_hit()).model_dump(mode="json"),
+            context="hybrid hit",
+        ),
+    ]
+    record_contract_evidence.record(
+        "search.ranked_hit.explanation",
+        surface="api",
+        request={"query": "needle", "limit": 2, "retrieval_lane": "hybrid"},
+        result={"hits": payloads},
+        facts={
+            "score_kinds": ["bm25", "rrf", "vector_distance", "none"],
+            "required_fields": [
+                "rank",
+                "retrieval_lane",
+                "match_surface",
+                "message_id",
+                "snippet",
+                "score",
+                "score_kind",
+                "matched_terms",
+                "score_components",
+            ],
+            "tie_break": "ascending item_id within equal fused score",
+        },
+    )

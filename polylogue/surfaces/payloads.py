@@ -388,7 +388,19 @@ class ConversationListRowPayload(SurfacePayloadModel):
 
 
 class ConversationSearchMatchPayload(SurfacePayloadModel):
-    """Evidence explaining why a conversation appeared in search results."""
+    """Evidence explaining why a conversation appeared in search results.
+
+    ``score_kind`` describes the meaning of ``score`` so consumers don't
+    have to guess at ordering or comparability:
+
+    - ``"bm25"`` — SQLite FTS5 raw BM25 (lower magnitude = better match;
+      values typically negative; never comparable across queries).
+    - ``"rrf"`` — Reciprocal Rank Fusion (higher = stronger consensus;
+      ``score_components`` carries per-lane ``*_rank`` and ``*_rrf``
+      contributions).
+    - ``"vector_distance"`` — semantic distance (lower = closer).
+    - ``None`` — no numeric score (e.g. attachment-identity lane).
+    """
 
     rank: int
     retrieval_lane: str
@@ -399,6 +411,7 @@ class ConversationSearchMatchPayload(SurfacePayloadModel):
     message_id: str | None = None
     snippet: str | None = None
     score: float | None = None
+    score_kind: str | None = None
     matched_terms: tuple[str, ...] = ()
     score_components: dict[str, float] = Field(default_factory=dict)
 
@@ -439,6 +452,7 @@ class ConversationSearchHitPayload(SurfacePayloadModel):
                 message_id=hit.message_id,
                 snippet=hit.snippet,
                 score=hit.score,
+                score_kind=hit.score_kind,
                 matched_terms=hit.matched_terms,
                 score_components=hit.score_components,
             ),
