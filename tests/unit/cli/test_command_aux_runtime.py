@@ -1,12 +1,7 @@
 from __future__ import annotations
 
-import sqlite3
-from collections.abc import Iterator
-from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from types import SimpleNamespace
-from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import click
@@ -33,19 +28,6 @@ from polylogue.types import ConversationId, Provider
 
 def _ctx_param() -> tuple[click.Context, click.Parameter]:
     return click.Context(click.Command("polylogue")), click.Option(["--value"])
-
-
-@contextmanager
-def _connection(rows: list[dict[str, object]]) -> Iterator[object]:
-    cursor = SimpleNamespace(fetchall=lambda: rows)
-    conn = SimpleNamespace(execute=lambda sql, params: cursor)
-    yield conn
-
-
-@contextmanager
-def _broken_connection() -> Iterator[object]:
-    raise sqlite3.OperationalError("boom")
-    yield
 
 
 def _candidate(*, message_id: str | None = "message-1") -> ConversationNeighborCandidate:
@@ -90,31 +72,11 @@ def test_shell_completion_helpers_cover_csv_prefix_rows_and_trimming(tmp_path: P
         db.write_text("", encoding="utf-8")
         assert shell_completion_values._db_exists() is True
 
-    rows: list[dict[str, object]] = [{"value": "alpha", "help": "example help"}]
-    items = shell_completion_values._rows_to_completion_items(
-        cast(list[sqlite3.Row], rows),
-        value_column="value",
-        help_builder=lambda row: str(row["help"]),
-    )
-    assert [(item.value, item.help) for item in items] == [("alpha", "example help")]
+    from polylogue.operations.archive import CompletionAggregate
 
-
-def test_fetch_rows_handles_missing_db_errors_and_success() -> None:
-    with patch("polylogue.cli.shell_completion_values._db_exists", return_value=False):
-        assert shell_completion_values._fetch_rows("SELECT 1", ()) == []
-
-    with (
-        patch("polylogue.cli.shell_completion_values._db_exists", return_value=True),
-        patch("polylogue.cli.shell_completion_values.open_read_connection", _broken_connection),
-    ):
-        assert shell_completion_values._fetch_rows("SELECT 1", ()) == []
-
-    rows: list[dict[str, object]] = [{"conversation_id": "conv-1"}]
-    with (
-        patch("polylogue.cli.shell_completion_values._db_exists", return_value=True),
-        patch("polylogue.cli.shell_completion_values.open_read_connection", lambda: _connection(rows)),
-    ):
-        assert shell_completion_values._fetch_rows("SELECT 1", ("x",)) == rows
+    aggregates = [CompletionAggregate("alpha", 7)]
+    items = shell_completion_values._aggregates_to_items(aggregates, unit="actions")
+    assert [(item.value, item.help) for item in items] == [("alpha", "7 actions")]
 
 
 def test_completion_functions_cover_provider_conversation_tag_tool_and_open_targets() -> None:
@@ -127,14 +89,10 @@ def test_completion_functions_cover_provider_conversation_tag_tool_and_open_targ
     message_type_items = shell_completion_values.complete_message_type_values(ctx, param, "m")
     retrieval_lane_items = shell_completion_values.complete_retrieval_lane_values(ctx, param, "h")
 
-    repo_rows = [{"repo_name": "polylogue", "cnt": 4}]
-    cwd_rows = [{"cwd_path": "/realm/project/polylogue", "cnt": 2}]
-    tool_rows = [{"normalized_tool_name": "read_file", "cnt": 7}]
-
-    # complete_conversation_ids and complete_tag_values go through
-    # ArchiveOperations now (not _fetch_rows), so we route them through a
-    # mocked _with_operations runner.
+    # All archive-backed completions go through ArchiveOperations now;
+    # mock the per-aggregate methods on a shared ops stub.
     from polylogue.archive.conversation.models import Conversation
+    from polylogue.operations.archive import CompletionAggregate
 
     mock_conv = MagicMock(spec=Conversation)
     mock_conv.id = "conv-1"
@@ -143,16 +101,15 @@ def test_completion_functions_cover_provider_conversation_tag_tool_and_open_targ
     mock_ops = MagicMock(
         list_conversations=AsyncMock(return_value=[mock_conv]),
         list_tags=AsyncMock(return_value={"review": 3}),
+        list_session_repo_names=AsyncMock(return_value=[CompletionAggregate("polylogue", 4)]),
+        list_session_cwd_prefixes=AsyncMock(return_value=[CompletionAggregate("/realm/project/polylogue", 2)]),
+        list_action_tool_names=AsyncMock(return_value=[CompletionAggregate("read_file", 7)]),
     )
 
     async def _with_operations_stub(action):  # type: ignore[no-untyped-def]
         return await action(mock_ops)
 
     with (
-        patch(
-            "polylogue.cli.shell_completion_values._fetch_rows",
-            side_effect=[repo_rows, cwd_rows, tool_rows],
-        ),
         patch(
             "polylogue.cli.shell_completion_values._with_operations",
             new=_with_operations_stub,
