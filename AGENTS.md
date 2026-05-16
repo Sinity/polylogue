@@ -580,6 +580,53 @@ convergence stages.
 
 `detect_provider()` calls each parser's `looks_like()` in order.
 
+## Dual Vocabulary Period: Provider and Source
+
+The codebase is in a transition between two overlapping vocabularies
+for conversation origins:
+
+- **`Provider`** (`polylogue/types.py`): the legacy enum carried by
+  every public surface — `provider_name` storage column, CLI
+  `--provider` filter, MCP `provider` parameter, daemon facet labels.
+  Mixes lab identity (OpenAI, Anthropic, Google), product/runtime
+  identity (Claude Code, Codex), and source-family identity
+  (claude-code-session vs claude-ai-export) into one token. See the
+  vocabulary table in `polylogue/core/provider_identity.py` for the
+  detailed conflation surface.
+- **`Source`** (`polylogue/core/sources.py`): the source-centered
+  replacement. A `Source` is an immutable dataclass with three fields
+  — `family` (e.g. `claude-code-session`), `runtime_root` (e.g.
+  `~/.claude/projects`), and `originating_lab` (e.g. `anthropic`).
+  Every `Provider` has a canonical `Source` via
+  `provider_to_source(Provider) -> Source`; `source_to_provider`
+  performs the reverse lookup.
+
+This PR introduces only the typed `Source` surface alongside the
+existing `Provider` enum. **It does not rename any storage column,
+CLI flag, MCP parameter, or public field**: those renames are
+deliberately staged into later PRs so each one can land with a
+focused review and migration plan. The two vocabularies coexist for
+the duration of the transition.
+
+Planned migration sequencing (each is a separate later PR under
+#1022):
+
+1. CLI/MCP/API surfaces gain `source` parameter aliases that accept
+   source-family tokens; the existing `provider` parameter stays as a
+   compatibility alias.
+2. Internal callers switch from `Provider` to `Source` at boundaries
+   where lab identity and runtime identity need to be distinguished
+   (e.g. analytics, cost rollups, source-discovery).
+3. Storage column `provider_name` either stays as a physical-schema
+   compatibility artifact (documented as legacy) or is renamed via an
+   explicit schema-version transition.
+4. Provider-wire schemas under `schemas/providers/` are retained as
+   lab/provider-scope artifacts — they describe raw export shapes and
+   stay keyed by lab/product, not by source family.
+
+Anti-goal: a half-renamed surface where some flags say `provider` and
+others say `source`. Each surface flips wholesale or not at all.
+
 ## Antigravity Language-Server Export Path
 
 Antigravity persists its conversation transcripts as opaque non-protobuf
@@ -623,7 +670,8 @@ back to the existing brain-artifact metadata walk. Both paths emit normalized
 | `ConversationFilter` | `archive/filter/filters.py` | Fluent filter chain used by CLI, MCP, and facade. |
 | `Session Insights` | `storage/insights/session/` | Materialized read models: profiles, work events, phases, threads, aggregates. |
 | `ContentHash` | `pipeline/ids.py` | SHA-256 over NFC-normalized conversation payload. Title, timestamps, messages, attachments are hashed. User metadata (tags, summaries) is excluded — editable metadata doesn't trigger re-import. |
-| `Provider` enum | `types.py` | 6 known providers + UNKNOWN. All provider identity flows through this enum. |
+| `Provider` enum | `types.py` | Legacy source identifier — 9 known providers + UNKNOWN. Public surfaces still flow through this enum during the dual-vocabulary period. |
+| `Source` dataclass | `core/sources.py` | Source-centered identity (`family`, `runtime_root`, `originating_lab`). Parallel to `Provider`; see "Dual Vocabulary Period" above. |
 
 ## Artifact Taxonomy
 
@@ -919,6 +967,58 @@ created it.
   verification ([#818](https://github.com/Sinity/polylogue/issues/818))
   — independent of the lease design audited above.
 
+## Daemon Convergence Evidence
+
+`devtools daemon-workload-probe` produces a stable, JSON-serializable
+snapshot of daemon-relevant state read directly from the archive SQLite
+database. The probe is read-only and does not talk to the running daemon.
+
+For #845-style before/after convergence proofs:
+
+```bash
+devtools daemon-workload-probe --json > before.json
+# ...run convergence work (e.g. polylogued runs, ingest, debt drain)...
+devtools daemon-workload-probe --json > after.json
+devtools daemon-workload-probe --compare before.json after.json
+devtools daemon-workload-probe --compare before.json after.json --json > diff.json
+```
+
+The report has a stable top-level shape carrying its `report_version`,
+`captured_at`, and structured sections that compare diffs arithmetically:
+
+- `attempt_counts` — total/running/completed/failed `live_ingest_attempt`
+  rows plus `stale_cursor_writes` and overlapping running source paths.
+- `recent_attempts` — most recent attempts with read amplification,
+  parse/convergence timings, and source-path bundles.
+- `convergence_stage_timings` — min/max/sum/mean parse/convergence/read-
+  amplification stats over completed attempts.
+- `boundary_table_counts` — row counts for the daemon-relevant tables
+  (`raw_conversations`, `conversations`, `messages`, `content_blocks`,
+  `blob_links`, `messages_fts_docsize`, `action_events`,
+  `action_events_fts_docsize`, `message_embeddings`, `session_profile`,
+  `live_ingest_attempt`, `live_convergence_debt`, `pending_blob_refs`).
+  Missing tables surface as `-1` rather than crashing the probe.
+- `blob_lease_state` — pending lease count, distinct lease operations,
+  oldest `acquired_at`. See the lease/GC concurrency model above.
+- `gc_state` — high-water `gc_generations` row, `last_completed_at`,
+  total generation count.
+- `fts_trigger_state` — the six expected FTS sync triggers
+  (`messages_fts_a{i,d,u}`, `action_events_fts_a{i,d,u}`) with
+  `present`, `missing`, and `all_present` fields. A missing trigger means
+  FTS index drift risk (suspended during bulk operations and not
+  restored, for example).
+- `daemon_resource_signal` — RSS / cgroup memory / worker-progress fields
+  pulled from the most recent `live_ingest_attempt` row (these are the
+  only daemon-RSS signals readable without IPC).
+- `source_path_churn`, `convergence_debt`, `query_plans` — pre-existing
+  read amplification, debt-by-stage, and hot-query EXPLAIN evidence.
+
+The compare mode refuses incompatible `report_version` inputs loudly and
+requires both inputs to be `ok: True`.  Numeric fields produce
+`{before, after, delta}` triples; the FTS trigger section reports
+`regressed` (newly missing) and `restored` separately so trigger drift is
+attributable to a specific convergence cycle.
+
 ## Debugging Landmarks
 
 Cross-check adjacent surfaces after changes:
@@ -1045,7 +1145,6 @@ These are the commands worth remembering during normal repo work:
 | `devtools artifact-graph` | Render the runtime artifact, operation, and scenario-coverage map. |
 | `devtools coverage-gate` | Run pytest with the repository coverage floor from pyproject.toml. |
 | `devtools daemon-workload-probe` | Inspect daemon ingest workload, convergence debt, and hot query plans. |
-| `devtools evidence-dashboard` | Render the pytest-first evidence dashboard or a changed-path trace. |
 | `devtools evidence-report` | Aggregate verification evidence into a structured status report. |
 | `devtools lab-corpus` | Generate verification-lab synthetic corpus fixtures and demo archives. |
 | `devtools lab-scenario` | Run verification-lab showcase scenario sets and baseline checks. |
