@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sqlite3
@@ -59,7 +60,13 @@ def pytest_configure(config: pytest.Config) -> None:
 
     shm = Path("/dev/shm")
     if shm.is_dir() and (_stat.S_ISVTX & shm.stat().st_mode) and config.option.basetemp is None:
-        config.option.basetemp = str(shm / "pytest-polylogue")
+        # Use a per-checkout suffix so parallel worktrees/agents do not
+        # collide on basetemp cleanup — pytest prunes old basetemps on
+        # startup, which would wipe a peer run's xdist worker dirs and
+        # cause spurious FileNotFoundError under setup (#1026).
+        rootdir = str(config.rootpath)
+        suffix = hashlib.sha1(rootdir.encode("utf-8"), usedforsecurity=False).hexdigest()[:8]
+        config.option.basetemp = str(shm / f"pytest-polylogue-{suffix}")
         sys.stderr.write(f"pytest: basetemp → {config.option.basetemp} (tmpfs, #1026)\n")
 
 
@@ -564,7 +571,10 @@ def seeded_db(tmp_path_factory: pytest.TempPathFactory, worker_id: str) -> Path:
     # isn't available (macOS, CI without tmpfs).
     shm = Path("/dev/shm")
     if shm.is_dir() and (_stat.S_ISVTX & shm.stat().st_mode):
-        shared_root = shm / "pytest-polylogue-seeded"
+        suffix = hashlib.sha1(str(tmp_path_factory.getbasetemp()).encode("utf-8"), usedforsecurity=False).hexdigest()[
+            :8
+        ]
+        shared_root = shm / f"pytest-polylogue-seeded-{suffix}"
     else:
         shared_root = tmp_path_factory.getbasetemp() / "seeded-shared"
     shared_root.mkdir(parents=True, exist_ok=True)
