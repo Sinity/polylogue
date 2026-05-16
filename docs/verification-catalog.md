@@ -8,10 +8,10 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 
 ## Snapshot
 
-- subjects: `559`
+- subjects: `556`
 - claims: `37`
 - runner bindings: `37`
-- proof obligations: `451`
+- proof obligations: `448`
 
 ## Quality Checks
 
@@ -37,8 +37,8 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `architecture.witness` | 1 |
 | `archive.query_law` | 1 |
 | `artifact.path` | 25 |
-| `assurance.coverage_gap` | 22 |
-| `assurance.coverage_item` | 105 |
+| `assurance.coverage_gap` | 21 |
+| `assurance.coverage_item` | 103 |
 | `assurance.coverage_manifest` | 9 |
 | `cli.command` | 53 |
 | `cli.json_command` | 5 |
@@ -158,7 +158,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `distribution` | `assurance.coverage_item` | 8 |
 | `distribution` | `assurance.coverage_manifest` | 1 |
 | `docs_media` | `assurance.coverage_gap` | 3 |
-| `docs_media` | `assurance.coverage_item` | 17 |
+| `docs_media` | `assurance.coverage_item` | 15 |
 | `docs_media` | `assurance.coverage_manifest` | 1 |
 | `migration_safety` | `assurance.coverage_gap` | 1 |
 | `mutation_coverage` | `assurance.coverage_item` | 19 |
@@ -168,7 +168,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `pipeline_correctness` | `assurance.coverage_item` | 1 |
 | `provider_coverage` | `assurance.coverage_item` | 1 |
 | `scenario_coverage` | `assurance.coverage_manifest` | 1 |
-| `security_privacy` | `assurance.coverage_gap` | 5 |
+| `security_privacy` | `assurance.coverage_gap` | 4 |
 | `security_privacy` | `assurance.coverage_item` | 6 |
 | `security_privacy` | `assurance.coverage_manifest` | 1 |
 | `spec_accuracy` | `assurance.coverage_item` | 11 |
@@ -276,8 +276,8 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `architecture.witness.lifecycle_enforced` | 1 |
 | `archive.query.provider_filter_consistency` | 1 |
 | `artifact.path.dependency_closure` | 9 |
-| `assurance.coverage.gap_has_closure_path` | 22 |
-| `assurance.coverage.item_declared` | 105 |
+| `assurance.coverage.gap_has_closure_path` | 21 |
+| `assurance.coverage.item_declared` | 103 |
 | `assurance.coverage.manifest_structured` | 9 |
 | `diagnostic.observable_trace_mapping` | 1 |
 | `error.machine_user_context` | 2 |

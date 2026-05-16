@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from pytest import MonkeyPatch
 
 from devtools import verify_manifests
+from devtools.verify_ci_workflows import WorkflowFacts, WorkflowInventory
 
 
 def test_coverage_gap_manifest_records_require_closure_path(tmp_path: Path) -> None:
@@ -360,6 +361,118 @@ benchmark_campaigns:
         f"{plans / 'campaign-coverage.yaml'}: benchmark_campaigns missing catalog campaign 'storage'",
         f"{plans / 'campaign-coverage.yaml'}: benchmark_campaigns declares unknown campaign 'storage-scale'",
     ]
+
+
+def _stub_inventory(
+    *runs: str,
+    jobs: tuple[str, ...] = (),
+    artifacts: tuple[str, ...] = (),
+) -> WorkflowInventory:
+    facts = WorkflowFacts(
+        path=Path("/fake/wf.yml"),
+        workflow_name="Test",
+        job_names=jobs,
+        run_commands=tuple(runs),
+        artifact_uploads=artifacts,
+        triggers=("workflow_dispatch",),
+    )
+    return WorkflowInventory(workflows=(facts,))
+
+
+def test_distribution_ci_claims_accept_real_workflow(tmp_path: Path) -> None:
+    plans = tmp_path
+    (plans / "distribution-coverage.yaml").write_text(
+        """artifacts:
+  nix_package:
+    build_command: nix build
+    ci_build: true
+    ci_test: true
+""",
+        encoding="utf-8",
+    )
+
+    errors = verify_manifests.check_distribution_ci_claims(
+        plans,
+        inventory=_stub_inventory("nix build .#polylogue", "nix flake check"),
+    )
+    assert errors == []
+
+
+def test_distribution_ci_claims_rejects_unbacked_ci_build(tmp_path: Path) -> None:
+    plans = tmp_path
+    (plans / "distribution-coverage.yaml").write_text(
+        """artifacts:
+  wheel:
+    build_command: uv build --wheel .
+    ci_build: true
+""",
+        encoding="utf-8",
+    )
+
+    errors = verify_manifests.check_distribution_ci_claims(
+        plans,
+        inventory=_stub_inventory("uv run pytest"),
+    )
+    assert errors == [
+        f"{plans / 'distribution-coverage.yaml'}: artifacts.wheel ci_build=true but "
+        "build_command 'uv build --wheel .' does not appear in any workflow run step"
+    ]
+
+
+def test_distribution_ci_claims_rejects_ci_build_without_build_command(tmp_path: Path) -> None:
+    plans = tmp_path
+    (plans / "distribution-coverage.yaml").write_text(
+        """artifacts:
+  wheel:
+    ci_build: true
+""",
+        encoding="utf-8",
+    )
+
+    errors = verify_manifests.check_distribution_ci_claims(
+        plans,
+        inventory=_stub_inventory("uv run pytest"),
+    )
+    assert errors == [
+        f"{plans / 'distribution-coverage.yaml'}: artifacts.wheel ci_build=true but build_command is missing"
+    ]
+
+
+def test_test_quality_ci_gate_accepts_real_workflow(tmp_path: Path) -> None:
+    plans = tmp_path
+    (plans / "test-quality-coverage.yaml").write_text(
+        """dimensions:
+  direct_coverage:
+    tool: pytest-cov
+    ci_gate: true
+""",
+        encoding="utf-8",
+    )
+
+    errors = verify_manifests.check_test_quality_ci_claims(
+        plans,
+        inventory=_stub_inventory("uv run devtools coverage-gate"),
+    )
+    assert errors == []
+
+
+def test_test_quality_ci_gate_rejects_unbacked_claim(tmp_path: Path) -> None:
+    plans = tmp_path
+    (plans / "test-quality-coverage.yaml").write_text(
+        """dimensions:
+  direct_coverage:
+    tool: pytest-cov
+    ci_gate: true
+""",
+        encoding="utf-8",
+    )
+
+    errors = verify_manifests.check_test_quality_ci_claims(
+        plans,
+        inventory=_stub_inventory("uv run ruff check"),
+    )
+    assert len(errors) == 1
+    assert "ci_gate=true but no workflow run step invokes" in errors[0]
 
 
 def test_assurance_domains_accept_documentation_inventory(tmp_path: Path) -> None:

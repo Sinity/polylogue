@@ -520,7 +520,16 @@ class SecurityPrivacyManifest(BaseModel):
 
 
 class DistributionArtifact(BaseModel):
-    """A single distribution artifact entry."""
+    """A single distribution artifact entry.
+
+    Only fields consumed by an executable check are retained
+    (#1064 Pack C). ``ci_build`` / ``ci_test`` / ``ci_present`` drive
+    ``verify_manifests.check_distribution_ci_claims`` against committed
+    workflow YAML; ``build_command`` / ``verification_command`` /
+    ``config_location`` resolve through ``check_coverage_references``.
+    The previous ``freshness_days`` field was removed because no check
+    consumed it.
+    """
 
     model_config = ConfigDict(extra="forbid")
     description: str | None = None
@@ -531,7 +540,6 @@ class DistributionArtifact(BaseModel):
     verification_command: str | None = None
     ci_build: bool = False
     ci_test: bool = False
-    freshness_days: int | None = None
     notes: str | None = None
     ci_present: bool = False
 
@@ -569,18 +577,22 @@ class DistributionCoverageManifest(BaseModel):
 
 
 class DocMediaSurface(BaseModel):
-    """A single documentation surface entry."""
+    """A single documentation surface entry.
+
+    Only fields consumed by an executable check are retained
+    (#1064 Pack C). ``path`` is verified against the filesystem and
+    ``generated_by`` / ``verified_by`` resolve against the devtools
+    command catalog via ``check_coverage_references``. The previous
+    ``related_paths``, ``sections``, ``freshness_days``, ``count``,
+    and ``providers`` fields were removed because no check consumed
+    them.
+    """
 
     model_config = ConfigDict(extra="forbid")
     path: str | None = None
-    related_paths: list[str] = Field(default_factory=list)
-    sections: list[str] = Field(default_factory=list)
-    freshness_days: int | None = None
     generated_by: str | None = None
     verified_by: str | None = None
     notes: str | None = None
-    count: int | None = None
-    providers: list[str] = Field(default_factory=list)
 
 
 class DocsMediaCoverageManifest(BaseModel):

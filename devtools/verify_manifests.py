@@ -18,6 +18,7 @@ import yaml
 from devtools import repo_root as _get_root
 from devtools.authored_scenario_catalog import get_authored_scenario_catalog
 from devtools.command_catalog import COMMANDS
+from devtools.verify_ci_workflows import WorkflowInventory, inventory_workflows
 from polylogue.verification.manifests.models import validate_manifest
 
 _COVERAGE_AXIS_KEYS = ("domain", "subject", "area", "dimension", "artifact", "platform", "concern")
@@ -595,6 +596,144 @@ def _coverage_gap_slug(value: str) -> str:
     return "".join(char if char.isalnum() else "-" for char in value.lower()).strip("-") or "unnamed"
 
 
+def _command_present_in_workflows(command: str, inventory: WorkflowInventory) -> bool:
+    """Return True if ``command`` (or its leading token) appears in any ``run:``.
+
+    Substring match is sufficient — manifests declare canonical CLI commands
+    such as ``devtools coverage-gate`` or ``uv build --wheel .`` and workflows
+    invoke them either directly or via ``uv run`` wrappers. We strip the
+    optional ``uv run`` prefix so the substring still resolves.
+    """
+    if not command or not command.strip():
+        return False
+    needle = command.strip()
+    for run in inventory.all_run_commands:
+        if needle in run:
+            return True
+    # Fall back to the first two tokens, e.g. "devtools coverage-gate".
+    try:
+        tokens = shlex.split(needle)
+    except ValueError:
+        return False
+    if len(tokens) >= 2:
+        bigram = f"{tokens[0]} {tokens[1]}"
+        for run in inventory.all_run_commands:
+            if bigram in run:
+                return True
+    return False
+
+
+def check_distribution_ci_claims(
+    plans_dir: Path,
+    inventory: WorkflowInventory | None = None,
+) -> list[str]:
+    """Verify ``ci_build``/``ci_test``/``ci_present`` claims against workflows.
+
+    ``distribution-coverage.yaml`` declares whether each artifact's build,
+    test, and presence is wired into CI. These are locally verifiable: the
+    declared ``build_command``/``verification_command`` must appear in some
+    workflow ``run:`` step, otherwise the manifest is lying about CI state.
+    """
+    errors: list[str] = []
+    path = plans_dir / "distribution-coverage.yaml"
+    if not path.exists():
+        return errors
+    try:
+        data = load_manifest(path)
+    except ValueError as exc:
+        return [str(exc)]
+
+    wf = inventory if inventory is not None else inventory_workflows(plans_dir.parent.parent / ".github" / "workflows")
+
+    artifacts = data.get("artifacts")
+    if not isinstance(artifacts, dict):
+        return errors
+
+    for artifact_name, artifact in artifacts.items():
+        if not isinstance(artifact, dict):
+            continue
+        label = f"{path}: artifacts.{artifact_name}"
+
+        if artifact.get("ci_build") is True:
+            build_command = artifact.get("build_command")
+            if not isinstance(build_command, str) or not build_command.strip():
+                errors.append(f"{label} ci_build=true but build_command is missing")
+            elif not _command_present_in_workflows(build_command, wf):
+                errors.append(
+                    f"{label} ci_build=true but build_command {build_command!r} "
+                    "does not appear in any workflow run step"
+                )
+
+        if artifact.get("ci_test") is True:
+            verification_command = artifact.get("verification_command")
+            if isinstance(verification_command, str) and verification_command.strip():
+                if not _command_present_in_workflows(verification_command, wf):
+                    errors.append(
+                        f"{label} ci_test=true but verification_command "
+                        f"{verification_command!r} does not appear in any workflow run step"
+                    )
+            else:
+                # ci_test without a verification_command must at least show the
+                # build_command in CI (nix flake check counts as the verification).
+                build_command = artifact.get("build_command")
+                if (
+                    isinstance(build_command, str)
+                    and build_command.strip()
+                    and not _command_present_in_workflows(build_command, wf)
+                ):
+                    errors.append(
+                        f"{label} ci_test=true but neither verification_command nor "
+                        f"build_command {build_command!r} appears in any workflow run step"
+                    )
+
+    return errors
+
+
+def check_test_quality_ci_claims(
+    plans_dir: Path,
+    inventory: WorkflowInventory | None = None,
+) -> list[str]:
+    """Verify ``ci_gate: true`` in test-quality-coverage.yaml is real.
+
+    If a dimension claims ``ci_gate: true``, then either the declared
+    ``tool`` invocation or the canonical devtools gate command must appear
+    in some workflow ``run:`` step. Otherwise the manifest is claiming a
+    CI gate that does not exist.
+    """
+    errors: list[str] = []
+    path = plans_dir / "test-quality-coverage.yaml"
+    if not path.exists():
+        return errors
+    try:
+        data = load_manifest(path)
+    except ValueError as exc:
+        return [str(exc)]
+
+    wf = inventory if inventory is not None else inventory_workflows(plans_dir.parent.parent / ".github" / "workflows")
+
+    dimensions = data.get("dimensions")
+    if not isinstance(dimensions, dict):
+        return errors
+
+    for dim_name, dim in dimensions.items():
+        if not isinstance(dim, dict):
+            continue
+        if dim.get("ci_gate") is not True:
+            continue
+        label = f"{path}: dimensions.{dim_name}"
+        tool = dim.get("tool") if isinstance(dim.get("tool"), str) else ""
+        # Probe candidates: the tool string (e.g. "pytest-cov"), and the
+        # canonical devtools gate for known tools.
+        candidates: list[str] = []
+        if tool:
+            candidates.append(tool)
+        if tool in {"pytest-cov", "coverage"}:
+            candidates.append("devtools coverage-gate")
+        if not any(_command_present_in_workflows(candidate, wf) for candidate in candidates):
+            errors.append(f"{label} ci_gate=true but no workflow run step invokes any of {candidates!r}")
+    return errors
+
+
 def check_test_coverage_domains(plans_dir: Path) -> list[str]:
     """Validate test-coverage-domains.yaml covering_tests paths exist."""
     errors: list[str] = []
@@ -660,6 +799,8 @@ def main(argv: list[str] | None = None) -> int:
         check_coverage_status_claims,
         check_campaign_coverage_catalog,
         check_test_coverage_domains,
+        check_distribution_ci_claims,
+        check_test_quality_ci_claims,
     ):
         try:
             all_errors.extend(check(plans_dir))

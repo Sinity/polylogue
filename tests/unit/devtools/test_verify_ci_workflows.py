@@ -7,7 +7,13 @@ from pathlib import Path
 
 import pytest
 
-from devtools.verify_ci_workflows import _devtools_command_names, check_workflow, main
+from devtools.verify_ci_workflows import (
+    WorkflowInventory,
+    _devtools_command_names,
+    check_workflow,
+    inventory_workflows,
+    main,
+)
 
 
 class TestDevtoolsCommandNames:
@@ -109,6 +115,56 @@ class TestCheckWorkflow:
         )
         _, warnings = check_workflow(path, tmp_path, _devtools_command_names())
         assert any("totally_nonexistent_dir" in w for w in warnings)
+
+
+class TestInventoryWorkflows:
+    def _write(self, dir_: Path, name: str, content: str) -> None:
+        (dir_ / name).write_text(textwrap.dedent(content))
+
+    def test_extracts_workflow_name_jobs_runs_and_uploads(self, tmp_path: Path) -> None:
+        wf_dir = tmp_path / "workflows"
+        wf_dir.mkdir()
+        self._write(
+            wf_dir,
+            "ci.yml",
+            """
+            name: CI
+            on:
+              workflow_dispatch:
+              pull_request:
+            jobs:
+              lint:
+                steps:
+                  - run: uv run ruff check polylogue/
+              test:
+                steps:
+                  - run: uv run devtools coverage-gate
+                  - uses: actions/upload-artifact@v7
+                    with:
+                      name: coverage-report
+                      path: coverage.xml
+            """,
+        )
+        inv = inventory_workflows(wf_dir)
+        assert isinstance(inv, WorkflowInventory)
+        assert inv.workflow_names == ("CI",)
+        assert set(inv.all_job_names) == {"lint", "test"}
+        runs = inv.all_run_commands
+        assert any("ruff check polylogue/" in r for r in runs)
+        assert any("devtools coverage-gate" in r for r in runs)
+        assert inv.all_artifact_uploads == ("coverage-report",)
+        assert set(inv.workflows[0].triggers) == {"workflow_dispatch", "pull_request"}
+
+    def test_missing_dir_returns_empty(self, tmp_path: Path) -> None:
+        inv = inventory_workflows(tmp_path / "nonexistent")
+        assert inv == WorkflowInventory()
+
+    def test_malformed_yaml_is_skipped(self, tmp_path: Path) -> None:
+        wf_dir = tmp_path / "workflows"
+        wf_dir.mkdir()
+        (wf_dir / "bad.yml").write_text(": bad yaml: [unclosed")
+        inv = inventory_workflows(wf_dir)
+        assert inv.workflows == ()
 
 
 class TestMain:
