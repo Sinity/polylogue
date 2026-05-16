@@ -530,6 +530,22 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "evidence-dashboard",
+        "verification",
+        "Render the pytest-first evidence dashboard or a changed-path trace.",
+        "devtools.evidence_dashboard",
+        use_when=(
+            "Inspect pytest health, contract-evidence inventory, coverage, SLO "
+            "catalog, static-gate status, witnesses, and campaign freshness, or "
+            "trace which evidence artifacts cover the changed paths in a PR."
+        ),
+        examples=(
+            "devtools evidence-dashboard --json",
+            "devtools evidence-dashboard --markdown",
+            "devtools evidence-dashboard trace --base origin/master --head HEAD --markdown",
+        ),
+    ),
+    CommandSpec(
         "witness-discover",
         "maintenance",
         "Save a failure-triggering input as a local witness in .local/witnesses/new/.",
