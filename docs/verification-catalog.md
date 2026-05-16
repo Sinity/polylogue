@@ -9,9 +9,9 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 ## Snapshot
 
 - subjects: `550`
-- claims: `41`
-- runner bindings: `41`
-- proof obligations: `608`
+- claims: `40`
+- runner bindings: `40`
+- proof obligations: `603`
 
 ## Quality Checks
 
@@ -188,7 +188,6 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `cli.command.help` | `serious` | `cli.help.regression`<br>`command.inventory.omission` | A hidden or broken command makes the help runner fail for that command. |
 | `cli.command.no_traceback` | `serious` | `cli.traceback.leak`<br>`operator-facing-error-regression` | A command callback or Click wiring error leaks traceback text into evidence. |
 | `cli.command.plain_mode` | `serious` | `cli.plain-mode.regression`<br>`terminal-rendering-regression` | A rich-only output path breaks the plain-mode runner comparison. |
-| `cli.command.json_envelope` | `serious` | `cli.json-envelope.regression`<br>`machine-contract.invalid-json` | A selected JSON command that emits invalid JSON or a missing success envelope breaks the claim. |
 | `archive.query.provider_filter_consistency` | `serious` | `query.provider-filter.drift`<br>`archive-count.semantic-mismatch` | A provider result outside all results, mismatched count, or divergent equivalent construction is a counterexample. |
 | `provider.capability.identity_bridge` | `serious` | `provider.identity.loss`<br>`normalization.native-fact-drop` | A provider without native/canonical identity mappings can silently drop provider-native facts. |
 | `provider.capability.partial_coverage_declared` | `serious` | `provider.capability.implicit-gap`<br>`provider-semantics.untracked-partial-support` | A provider with absent or partial facets but no explicit gap record hides verification scope. |
@@ -234,7 +233,6 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `cli-help-contract:cli.command.help` | `cli.command.help` | `smoke` | `static` | commands=`polylogue`; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
 | `cli-help-contract:cli.command.no_traceback` | `cli.command.no_traceback` | `smoke` | `static` | commands=`polylogue`; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
 | `cli-plain-contract:cli.command.plain_mode` | `cli.command.plain_mode` | `structural` | `static` | commands=`polylogue`; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
-| `cli-json-envelope-contract:cli.command.json_envelope` | `cli.command.json_envelope` | `structural` | `unit` | commands=`polylogue`; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
 | `semantic-query-law-contract:archive.query.provider_filter_consistency` | `archive.query.provider_filter_consistency` | `semantic` | `unit` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
 | `provider-capability-static-contract:provider.capability.identity_bridge` | `provider.capability.identity_bridge` | `structural` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
 | `provider-capability-static-contract:provider.capability.partial_coverage_declared` | `provider.capability.partial_coverage_declared` | `structural` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
@@ -288,7 +286,6 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `assurance.coverage.item_declared` | 104 |
 | `assurance.coverage.manifest_structured` | 9 |
 | `cli.command.help` | 53 |
-| `cli.command.json_envelope` | 5 |
 | `cli.command.no_traceback` | 53 |
 | `cli.command.plain_mode` | 53 |
 | `diagnostic.observable_trace_mapping` | 1 |

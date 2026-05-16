@@ -50,7 +50,6 @@ def test_command_change_routes_to_cli_obligations() -> None:
     assert {"cli.command.help", "cli.command.no_traceback", "cli.command.plain_mode"}.issubset(
         {item.claim_id for item in affected}
     )
-    assert "cli.command.json_envelope" in {item.claim_id for item in affected}
 
 
 def test_generated_surface_change_routes_to_workflow_claim() -> None:

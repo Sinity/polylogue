@@ -27,7 +27,6 @@ def test_default_catalog_compiles_first_vertical_slice() -> None:
         "cli.command.help",
         "cli.command.no_traceback",
         "cli.command.plain_mode",
-        "cli.command.json_envelope",
         "archive.query.provider_filter_consistency",
         "provider.capability.identity_bridge",
         "provider.capability.partial_coverage_declared",

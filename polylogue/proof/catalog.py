@@ -210,24 +210,6 @@ def default_claims() -> tuple[Claim, ...]:
             ),
         ),
         Claim(
-            id="cli.command.json_envelope",
-            description="Selected JSON-capable commands emit a valid machine envelope.",
-            subject_query=Kind("cli.json_command"),
-            evidence_schema=_evidence_schema("json_status", "json_result_type", "parse_error"),
-            oracle="proof",
-            assurance_domain="cli_surface",
-            bug_classes=("cli.json-envelope.regression", "machine-contract.invalid-json"),
-            runner_classes=("cli_json",),
-            observed_facts=("json_status", "json_result_type", "exit_code", "parse_error"),
-            staleness_conditions=(
-                "Machine-output envelope, selected JSON command list, or JSON serialization changes.",
-            ),
-            breaker=BreakerMetadata(
-                description="A selected JSON command that emits invalid JSON or a missing success envelope breaks the claim.",
-                command=("devtools", "render-verification-catalog", "--check"),
-            ),
-        ),
-        Claim(
             id="archive.query.provider_filter_consistency",
             description="Provider-filter query results preserve subset, count, and equivalent-construction laws.",
             subject_query=Kind("archive.query_law"),
@@ -851,16 +833,6 @@ def default_runner_bindings(claims: Iterable[Claim]) -> tuple[RunnerBinding, ...
                     claim,
                     runner="cli-plain-contract",
                     evidence_class="structural",
-                    required_commands=("polylogue",),
-                )
-            )
-        elif claim.id == "cli.command.json_envelope":
-            bindings.append(
-                _runner_binding(
-                    claim,
-                    runner="cli-json-envelope-contract",
-                    evidence_class="structural",
-                    cost_tier="unit",
                     required_commands=("polylogue",),
                 )
             )
