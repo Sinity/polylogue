@@ -110,12 +110,14 @@ async def replace_session_tag_rollup_rows(
                 materialized_at,
                 source_updated_at,
                 source_sort_key,
+                input_high_water_mark,
+                input_row_count,
                 conversation_count,
                 explicit_count,
                 auto_count,
                 repo_breakdown_json,
                 search_text
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [session_tag_rollup_insert_values(record) for record in records],
         )
@@ -145,6 +147,8 @@ async def replace_day_session_summaries(
                 materialized_at,
                 source_updated_at,
                 source_sort_key,
+                input_high_water_mark,
+                input_row_count,
                 conversation_count,
                 total_cost_usd,
                 total_duration_ms,
@@ -155,7 +159,7 @@ async def replace_day_session_summaries(
                 repos_active_json,
                 payload_json,
                 search_text
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [day_session_summary_insert_values(record) for record in records],
         )

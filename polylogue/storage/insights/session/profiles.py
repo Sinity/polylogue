@@ -230,12 +230,15 @@ def build_session_profile_record(
     enrichment = session_enrichment_payload(profile, analysis)
     evidence_search_text = profile_evidence_search_text(profile)
     inference_search_text = profile_inference_search_text(profile)
+    source_updated_at = profile.updated_at.isoformat() if profile.updated_at else None
     return SessionProfileRecord(
         conversation_id=ConversationId(profile.conversation_id),
         materializer_version=SESSION_INSIGHT_MATERIALIZER_VERSION,
         materialized_at=built_at,
-        source_updated_at=profile.updated_at.isoformat() if profile.updated_at else None,
+        source_updated_at=source_updated_at,
         source_sort_key=profile.updated_at.timestamp() if profile.updated_at else None,
+        input_high_water_mark=source_updated_at,
+        input_row_count=profile.message_count,
         provider_name=profile.provider,
         title=profile.title,
         first_message_at=profile.first_message_at.isoformat() if profile.first_message_at else None,

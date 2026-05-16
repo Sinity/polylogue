@@ -16,6 +16,8 @@ class SessionTagRollupRecord(BaseModel):
     materialized_at: str
     source_updated_at: str | None = None
     source_sort_key: float | None = None
+    input_high_water_mark: str | None = None
+    input_row_count: int = 0
     conversation_count: int = 0
     explicit_count: int = 0
     auto_count: int = 0
@@ -37,6 +39,8 @@ class DaySessionSummaryRecord(BaseModel):
     materialized_at: str
     source_updated_at: str | None = None
     source_sort_key: float | None = None
+    input_high_water_mark: str | None = None
+    input_row_count: int = 0
     conversation_count: int = 0
     total_cost_usd: float = 0.0
     total_duration_ms: int = 0

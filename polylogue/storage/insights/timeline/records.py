@@ -25,6 +25,8 @@ class SessionWorkEventRecord(BaseModel):
     materialized_at: str
     source_updated_at: str | None = None
     source_sort_key: float | None = None
+    input_high_water_mark: str | None = None
+    input_row_count: int = 0
     provider_name: str
     event_index: int
     kind: str
@@ -68,6 +70,8 @@ class SessionPhaseRecord(BaseModel):
     materialized_at: str
     source_updated_at: str | None = None
     source_sort_key: float | None = None
+    input_high_water_mark: str | None = None
+    input_row_count: int = 0
     provider_name: str
     phase_index: int
     kind: str
