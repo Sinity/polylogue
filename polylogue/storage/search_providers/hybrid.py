@@ -48,7 +48,16 @@ def reciprocal_rank_fusion(
     *result_lists: list[tuple[str, float]],
     k: int = 60,
 ) -> list[tuple[str, float]]:
-    """Combine multiple ranked result lists using Reciprocal Rank Fusion."""
+    """Combine multiple ranked result lists using Reciprocal Rank Fusion.
+
+    Result lists are interpreted positionally: the i-th element is
+    treated as rank ``i+1``. The fused output is sorted by descending
+    fused score with a deterministic ascending ``item_id`` secondary key
+    for ties — so two items that earn the same fused score always come
+    out in the same order, regardless of which lane discovered them
+    first or how Python's dict happens to iterate. This makes cursor and
+    offset pagination over tied scores stable across runs.
+    """
     scores: dict[str, float] = {}
 
     for result_list in result_lists:
@@ -60,7 +69,9 @@ def reciprocal_rank_fusion(
             rrf_score = 1.0 / (k + rank)
             scores[item_id] = scores.get(item_id, 0.0) + rrf_score
 
-    return sorted(scores.items(), key=lambda x: x[1], reverse=True)
+    # Primary: descending fused score. Secondary: ascending item_id so tied
+    # scores produce a stable, permutation-invariant ordering.
+    return sorted(scores.items(), key=lambda x: (-x[1], x[0]))
 
 
 class HybridSearchProvider:

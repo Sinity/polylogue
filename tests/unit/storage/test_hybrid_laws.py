@@ -468,3 +468,63 @@ def test_create_hybrid_provider_returns_provider_when_vector_available() -> None
         result = create_hybrid_provider()
     assert isinstance(result, HybridSearchProvider)
     assert result.vector_provider is mock_vec
+
+
+# ---------------------------------------------------------------------------
+# Stable tie-break / pagination determinism laws (#873)
+# ---------------------------------------------------------------------------
+
+
+@given(st.lists(st.text(min_size=1, max_size=12), min_size=2, max_size=20, unique=True))
+def test_rrf_tied_scores_sorted_lexicographically(items: list[str]) -> None:
+    """When every item earns the same fused score, ties break lexicographically
+    by item_id so pagination is deterministic.
+
+    To produce identical fused scores per item we pair every item with itself
+    at rank 1 in its own single-item lane — each item ends up with a single
+    contribution of 1/(60+1)."""
+    lanes = [[(item, 0.0)] for item in items]
+    fused = reciprocal_rank_fusion(*lanes)
+    ids = [item_id for item_id, _ in fused]
+    # Every item earns exactly the same score (1/61) ⇒ ordering collapses to
+    # ascending item_id.
+    assert ids == sorted(items)
+
+
+def test_rrf_pagination_stable_across_lane_order_when_scores_tie() -> None:
+    """Swapping lane order must not reorder tied results."""
+    lane_a = [("alpha", 0.0), ("bravo", 0.0), ("charlie", 0.0)]
+    lane_b = [("alpha", 0.0), ("bravo", 0.0), ("charlie", 0.0)]
+    fused_ab = reciprocal_rank_fusion(lane_a, lane_b)
+    fused_ba = reciprocal_rank_fusion(lane_b, lane_a)
+    assert fused_ab == fused_ba
+    # And the order is the deterministic lexicographic tie-break.
+    assert [item_id for item_id, _ in fused_ab] == ["alpha", "bravo", "charlie"]
+
+
+def test_rrf_pagination_windows_match_full_sort_when_scores_tie() -> None:
+    """Paginating tied results by sequential slicing must match a full
+    fused sort: page1 + page2 == fused[:page1_size + page2_size]."""
+    lane_a = [(f"id-{i:02d}", 0.0) for i in range(10)]
+    lane_b = list(reversed(lane_a))  # reverse-rank in lane B → all tied
+    fused = reciprocal_rank_fusion(lane_a, lane_b)
+    page_size = 4
+    page1 = fused[:page_size]
+    page2 = fused[page_size : page_size * 2]
+    assert page1 + page2 == fused[: page_size * 2]
+    # And the page boundaries are stable under lane swap.
+    fused_swapped = reciprocal_rank_fusion(lane_b, lane_a)
+    assert fused_swapped[:page_size] == page1
+    assert fused_swapped[page_size : page_size * 2] == page2
+
+
+@given(
+    st.lists(st.text(min_size=1, max_size=8), min_size=1, max_size=15, unique=True),
+)
+def test_rrf_strict_order_no_id_collisions(items: list[str]) -> None:
+    """The fused list never returns two entries with the same item_id."""
+    lane_a = [(item, 0.0) for item in items]
+    lane_b = [(item, 0.0) for item in reversed(items)]
+    fused = reciprocal_rank_fusion(lane_a, lane_b)
+    ids = [item_id for item_id, _ in fused]
+    assert len(ids) == len(set(ids))

@@ -44,6 +44,10 @@ class ConversationSearchEvidenceHit:
     lane_rank: int | None = None
     lane_contribution: float | None = None
     raw_score: float | None = None
+    # Identifies the meaning of ``score``: ``"bm25"`` (lower is better),
+    # ``"rrf"`` (higher is better), ``"vector_distance"`` (lower is closer),
+    # or ``None`` when no ranking applied.
+    score_kind: str | None = None
 
 
 @dataclass(frozen=True)
