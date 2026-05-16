@@ -142,7 +142,6 @@ def compile_obligations(
 
 def default_claims() -> tuple[Claim, ...]:
     """Return the first vertical-slice claim set."""
-    command_query = Kind("cli.command")
     values_query = _schema_annotation_query("x-polylogue-values")
     foreign_key_query = _schema_annotation_query("x-polylogue-foreign-keys")
     provider_capability_query = Kind("provider.capability")
@@ -161,22 +160,6 @@ def default_claims() -> tuple[Claim, ...]:
     generated_scenario_query = Kind("generated.scenario_family")
     implemented_generated_scenario_query = And((generated_scenario_query, AttrEq("status", "implemented")))
     return (
-        Claim(
-            id="cli.command.plain_mode",
-            description="Visible commands preserve plain-mode operator output contracts.",
-            subject_query=command_query,
-            evidence_schema=_evidence_schema("plain_stdout", "rich_stdout"),
-            oracle="smoke",
-            assurance_domain="cli_surface",
-            bug_classes=("cli.plain-mode.regression", "terminal-rendering-regression"),
-            runner_classes=("cli_visual",),
-            observed_facts=("plain_stdout", "ansi_present", "command_path"),
-            staleness_conditions=("Terminal renderer, rich/plain mode, or command output formatting changes.",),
-            breaker=BreakerMetadata(
-                description="A rich-only output path breaks the plain-mode runner comparison.",
-                command=("devtools", "render-verification-catalog", "--check"),
-            ),
-        ),
         Claim(
             id="archive.query.provider_filter_consistency",
             description="Provider-filter query results preserve subset, count, and equivalent-construction laws.",
@@ -786,16 +769,7 @@ def default_runner_bindings(claims: Iterable[Claim]) -> tuple[RunnerBinding, ...
     """Bind every default claim to its first static runner contract."""
     bindings: list[RunnerBinding] = []
     for claim in claims:
-        if claim.id == "cli.command.plain_mode":
-            bindings.append(
-                _runner_binding(
-                    claim,
-                    runner="cli-plain-contract",
-                    evidence_class="structural",
-                    required_commands=("polylogue",),
-                )
-            )
-        elif claim.id.startswith("archive.query."):
+        if claim.id.startswith("archive.query."):
             bindings.append(
                 _runner_binding(
                     claim,

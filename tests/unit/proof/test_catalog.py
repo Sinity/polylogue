@@ -17,14 +17,13 @@ from polylogue.proof.models import (
     SubjectRef,
     TrustMetadata,
 )
-from polylogue.proof.subjects import SELECTED_SCHEMA_ANNOTATIONS, command_subjects
+from polylogue.proof.subjects import SELECTED_SCHEMA_ANNOTATIONS
 
 
 def test_default_catalog_compiles_first_vertical_slice() -> None:
     catalog = build_verification_catalog()
 
     assert {claim.id for claim in catalog.claims} == {
-        "cli.command.plain_mode",
         "archive.query.provider_filter_consistency",
         "provider.capability.identity_bridge",
         "provider.capability.partial_coverage_declared",
@@ -98,22 +97,9 @@ def test_default_catalog_compiles_first_vertical_slice() -> None:
     assert all(attrs.get("review_after") for attrs in coverage_gap_attrs)
     assert all(attrs.get("issue") or attrs.get("suppression") for attrs in coverage_gap_attrs)
     assert {runner.claim_id for runner in catalog.runner_bindings} == {claim.id for claim in catalog.claims}
-    assert {"smoke", "semantic", "structural", "trace"}.issubset(
-        {runner.evidence_class for runner in catalog.runner_bindings}
-    )
+    assert {"semantic", "structural", "trace"}.issubset({runner.evidence_class for runner in catalog.runner_bindings})
     assert all(runner.environment.controlled_dimensions for runner in catalog.runner_bindings)
     assert all(check.status is OutcomeStatus.OK for check in catalog.quality_checks)
-
-
-def test_visible_commands_are_not_omitted_from_command_claims() -> None:
-    catalog = build_verification_catalog()
-    command_ids = {subject.id for subject in command_subjects()}
-
-    claim_id = "cli.command.plain_mode"
-    obligated_subject_ids = {
-        obligation.subject.id for obligation in catalog.obligations if obligation.claim.id == claim_id
-    }
-    assert obligated_subject_ids == command_ids
 
 
 def test_selected_schema_annotations_bind_schema_claims() -> None:

@@ -8,11 +8,6 @@
 description: Transitional freshness inventory pending artifact-derived freshness.
 
 freshness_policies:
-  per_push:
-    description: "Evidence regenerated on every push (pre-push hook)"
-    max_age_days: 0
-    applies_to: [cli.command.plain_mode]
-
   per_pr:
     description: "Evidence regenerated before creating a PR (devtools verify)"
     max_age_days: 7

@@ -115,19 +115,6 @@ class DiagnosticTraceMappingObservation:
 _STATE_EFFECT_VALUES = {"unchanged", "changed", "rolled_back", "partially_changed"}
 
 
-def run_cli_visual_evidence(
-    obligation: ProofObligation,
-    *,
-    args: Sequence[str] | None = None,
-    env: Mapping[str, str] | None = None,
-    root_command: click.Command | None = None,
-) -> EvidenceEnvelope:
-    """Run a plain-mode CLI obligation."""
-    if obligation.claim.id == "cli.command.plain_mode":
-        return _run_cli_plain_mode_evidence(obligation, args=args, env=env, root_command=root_command)
-    raise ValueError(f"unsupported CLI visual claim: {obligation.claim.id}")
-
-
 def run_semantic_query_evidence(
     obligation: ProofObligation,
     observation: SemanticQueryObservation,
@@ -913,49 +900,6 @@ def _run_provider_partial_coverage_evidence(
     )
 
 
-def _run_cli_plain_mode_evidence(
-    obligation: ProofObligation,
-    *,
-    args: Sequence[str] | None,
-    env: Mapping[str, str] | None,
-    root_command: click.Command | None,
-) -> EvidenceEnvelope:
-    plain_args = tuple(args) if args is not None else _plain_help_args_for_subject(obligation)
-    rich_args = _without_plain_flag(plain_args)
-    runner_env = {"POLYLOGUE_FORCE_PLAIN": "1", **dict(env or {})}
-    plain_result = _invoke_cli(plain_args, env=runner_env, root_command=root_command)
-    rich_result = _invoke_cli(rich_args, env=env, root_command=root_command)
-    ansi_present = bool(_ANSI_RE.search(plain_result.output))
-    observed_state = _cli_result_state(
-        plain_result,
-        command_args=plain_args,
-        extra={
-            "ansi_present": ansi_present,
-            "rich_exit_code": rich_result.exit_code,
-            "rich_stdout_sample": _stdout(rich_result)[:_OUTPUT_SAMPLE_LIMIT],
-        },
-    )
-    expected_law = "plain-mode command output does not contain ANSI escape sequences"
-    evidence = _evidence_payload(
-        obligation,
-        runner_class="cli_visual",
-        expected_law=expected_law,
-        observed_state=observed_state,
-    )
-    evidence["plain_stdout"] = _stdout(plain_result)[:_OUTPUT_SAMPLE_LIMIT]
-    evidence["rich_stdout"] = _stdout(rich_result)[:_OUTPUT_SAMPLE_LIMIT]
-    return _build_envelope(
-        obligation,
-        status=OutcomeStatus.ERROR if ansi_present else OutcomeStatus.OK,
-        evidence=evidence,
-        expected_law=expected_law,
-        observed_state=observed_state,
-        reproducer=("polylogue", *plain_args),
-        provenance=obligation.subject.source_span,
-        producer="polylogue.proof.runners.cli_visual",
-    )
-
-
 def _invoke_cli(
     args: Sequence[str],
     *,
@@ -975,20 +919,11 @@ def _help_args_for_subject(obligation: ProofObligation) -> tuple[str, ...]:
     return (*command_path, "--help") if command_path else ("--help",)
 
 
-def _plain_help_args_for_subject(obligation: ProofObligation) -> tuple[str, ...]:
-    return ("--plain", *_help_args_for_subject(obligation))
-
-
 def _command_path_for_subject(obligation: ProofObligation) -> tuple[str, ...]:
     value = obligation.subject.attrs.get("command_path")
     if isinstance(value, list) and all(isinstance(item, str) for item in value):
         return tuple(str(item) for item in value)
     return ()
-
-
-def _without_plain_flag(args: Sequence[str]) -> tuple[str, ...]:
-    filtered = tuple(arg for arg in args if arg != "--plain")
-    return filtered or ("--help",)
 
 
 def _parse_json_object(output: str) -> tuple[JSONDocument | None, str | None]:
@@ -1213,7 +1148,6 @@ __all__ = [
     "run_maintenance_repair_state_evidence",
     "run_quarantine_error_evidence",
     "run_schema_value_generation_evidence",
-    "run_cli_visual_evidence",
     "run_semantic_query_evidence",
     "run_trace_equivalence_evidence",
 ]

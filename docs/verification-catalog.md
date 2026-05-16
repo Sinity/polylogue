@@ -8,10 +8,10 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 
 ## Snapshot
 
-- subjects: `550`
-- claims: `38`
-- runner bindings: `38`
-- proof obligations: `497`
+- subjects: `549`
+- claims: `37`
+- runner bindings: `37`
+- proof obligations: `443`
 
 ## Quality Checks
 
@@ -38,7 +38,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `archive.query_law` | 1 |
 | `artifact.path` | 25 |
 | `assurance.coverage_gap` | 22 |
-| `assurance.coverage_item` | 104 |
+| `assurance.coverage_item` | 103 |
 | `assurance.coverage_manifest` | 9 |
 | `cli.command` | 53 |
 | `cli.json_command` | 5 |
@@ -171,7 +171,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `security_privacy` | `assurance.coverage_gap` | 5 |
 | `security_privacy` | `assurance.coverage_item` | 6 |
 | `security_privacy` | `assurance.coverage_manifest` | 1 |
-| `spec_accuracy` | `assurance.coverage_item` | 12 |
+| `spec_accuracy` | `assurance.coverage_item` | 11 |
 | `spec_accuracy` | `assurance.coverage_manifest` | 2 |
 | `spec_completeness` | `assurance.coverage_item` | 27 |
 | `spec_completeness` | `assurance.coverage_manifest` | 1 |
@@ -185,7 +185,6 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 
 | Claim | Severity | Bug Classes | Breaker / Exception |
 | --- | --- | --- | --- |
-| `cli.command.plain_mode` | `serious` | `cli.plain-mode.regression`<br>`terminal-rendering-regression` | A rich-only output path breaks the plain-mode runner comparison. |
 | `archive.query.provider_filter_consistency` | `serious` | `query.provider-filter.drift`<br>`archive-count.semantic-mismatch` | A provider result outside all results, mismatched count, or divergent equivalent construction is a counterexample. |
 | `provider.capability.identity_bridge` | `serious` | `provider.identity.loss`<br>`normalization.native-fact-drop` | A provider without native/canonical identity mappings can silently drop provider-native facts. |
 | `provider.capability.partial_coverage_declared` | `serious` | `provider.capability.implicit-gap`<br>`provider-semantics.untracked-partial-support` | A provider with absent or partial facets but no explicit gap record hides verification scope. |
@@ -228,7 +227,6 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 
 | Runner Binding | Claim | Evidence | Cost | Environment | Trust |
 | --- | --- | --- | --- | --- | --- |
-| `cli-plain-contract:cli.command.plain_mode` | `cli.command.plain_mode` | `structural` | `static` | commands=`polylogue`; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
 | `semantic-query-law-contract:archive.query.provider_filter_consistency` | `archive.query.provider_filter_consistency` | `semantic` | `unit` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
 | `provider-capability-static-contract:provider.capability.identity_bridge` | `provider.capability.identity_bridge` | `structural` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
 | `provider-capability-static-contract:provider.capability.partial_coverage_declared` | `provider.capability.partial_coverage_declared` | `structural` | `static` | commands=—; controlled_dims=`9`; uncontrolled_dims=`0`; network=`none`; live_archive=`False` | `authored` by `polylogue.proof.catalog` at `2026-04-22T00:00:00+00:00` |
@@ -279,9 +277,8 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `archive.query.provider_filter_consistency` | 1 |
 | `artifact.path.dependency_closure` | 9 |
 | `assurance.coverage.gap_has_closure_path` | 22 |
-| `assurance.coverage.item_declared` | 104 |
+| `assurance.coverage.item_declared` | 103 |
 | `assurance.coverage.manifest_structured` | 9 |
-| `cli.command.plain_mode` | 53 |
 | `diagnostic.observable_trace_mapping` | 1 |
 | `error.machine_user_context` | 2 |
 | `generated.scenario.family_registered` | 9 |
