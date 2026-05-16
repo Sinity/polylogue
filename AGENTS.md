@@ -580,6 +580,53 @@ convergence stages.
 
 `detect_provider()` calls each parser's `looks_like()` in order.
 
+## Dual Vocabulary Period: Provider and Source
+
+The codebase is in a transition between two overlapping vocabularies
+for conversation origins:
+
+- **`Provider`** (`polylogue/types.py`): the legacy enum carried by
+  every public surface — `provider_name` storage column, CLI
+  `--provider` filter, MCP `provider` parameter, daemon facet labels.
+  Mixes lab identity (OpenAI, Anthropic, Google), product/runtime
+  identity (Claude Code, Codex), and source-family identity
+  (claude-code-session vs claude-ai-export) into one token. See the
+  vocabulary table in `polylogue/core/provider_identity.py` for the
+  detailed conflation surface.
+- **`Source`** (`polylogue/core/sources.py`): the source-centered
+  replacement. A `Source` is an immutable dataclass with three fields
+  — `family` (e.g. `claude-code-session`), `runtime_root` (e.g.
+  `~/.claude/projects`), and `originating_lab` (e.g. `anthropic`).
+  Every `Provider` has a canonical `Source` via
+  `provider_to_source(Provider) -> Source`; `source_to_provider`
+  performs the reverse lookup.
+
+This PR introduces only the typed `Source` surface alongside the
+existing `Provider` enum. **It does not rename any storage column,
+CLI flag, MCP parameter, or public field**: those renames are
+deliberately staged into later PRs so each one can land with a
+focused review and migration plan. The two vocabularies coexist for
+the duration of the transition.
+
+Planned migration sequencing (each is a separate later PR under
+#1022):
+
+1. CLI/MCP/API surfaces gain `source` parameter aliases that accept
+   source-family tokens; the existing `provider` parameter stays as a
+   compatibility alias.
+2. Internal callers switch from `Provider` to `Source` at boundaries
+   where lab identity and runtime identity need to be distinguished
+   (e.g. analytics, cost rollups, source-discovery).
+3. Storage column `provider_name` either stays as a physical-schema
+   compatibility artifact (documented as legacy) or is renamed via an
+   explicit schema-version transition.
+4. Provider-wire schemas under `schemas/providers/` are retained as
+   lab/provider-scope artifacts — they describe raw export shapes and
+   stay keyed by lab/product, not by source family.
+
+Anti-goal: a half-renamed surface where some flags say `provider` and
+others say `source`. Each surface flips wholesale or not at all.
+
 ## Antigravity Language-Server Export Path
 
 Antigravity persists its conversation transcripts as opaque non-protobuf
@@ -623,7 +670,8 @@ back to the existing brain-artifact metadata walk. Both paths emit normalized
 | `ConversationFilter` | `archive/filter/filters.py` | Fluent filter chain used by CLI, MCP, and facade. |
 | `Session Insights` | `storage/insights/session/` | Materialized read models: profiles, work events, phases, threads, aggregates. |
 | `ContentHash` | `pipeline/ids.py` | SHA-256 over NFC-normalized conversation payload. Title, timestamps, messages, attachments are hashed. User metadata (tags, summaries) is excluded — editable metadata doesn't trigger re-import. |
-| `Provider` enum | `types.py` | 6 known providers + UNKNOWN. All provider identity flows through this enum. |
+| `Provider` enum | `types.py` | Legacy source identifier — 9 known providers + UNKNOWN. Public surfaces still flow through this enum during the dual-vocabulary period. |
+| `Source` dataclass | `core/sources.py` | Source-centered identity (`family`, `runtime_root`, `originating_lab`). Parallel to `Provider`; see "Dual Vocabulary Period" above. |
 
 ## Artifact Taxonomy
 
@@ -1097,7 +1145,6 @@ These are the commands worth remembering during normal repo work:
 | `devtools artifact-graph` | Render the runtime artifact, operation, and scenario-coverage map. |
 | `devtools coverage-gate` | Run pytest with the repository coverage floor from pyproject.toml. |
 | `devtools daemon-workload-probe` | Inspect daemon ingest workload, convergence debt, and hot query plans. |
-| `devtools evidence-dashboard` | Render the pytest-first evidence dashboard or a changed-path trace. |
 | `devtools evidence-report` | Aggregate verification evidence into a structured status report. |
 | `devtools lab-corpus` | Generate verification-lab synthetic corpus fixtures and demo archives. |
 | `devtools lab-scenario` | Run verification-lab showcase scenario sets and baseline checks. |

@@ -146,7 +146,7 @@ files:
     owner: archive-conversation
     reason: archive-domain semantics
   - path: polylogue/archive/conversation/attribution.py
-    loc: 278
+    loc: 284
     target: polylogue/archive/conversation/attribution.py
     owner: archive-conversation
     reason: archive-domain semantics
@@ -171,7 +171,7 @@ files:
     owner: archive-conversation
     reason: archive-domain semantics
   - path: polylogue/archive/conversation/repo_identity.py
-    loc: 156
+    loc: 180
     target: polylogue/archive/conversation/repo_identity.py
     owner: archive-conversation
     reason: archive-domain semantics
@@ -953,6 +953,11 @@ files:
   - path: polylogue/core/security.py
     loc: 63
     target: polylogue/core/security.py
+    owner: core-primitive
+    reason: core primitive
+  - path: polylogue/core/sources.py
+    loc: 194
+    target: polylogue/core/sources.py
     owner: core-primitive
     reason: core primitive
   - path: polylogue/core/timestamps.py
@@ -2632,7 +2637,7 @@ files:
     target: polylogue/storage/raw/models.py
     owner: stable
   - path: polylogue/storage/repair.py
-    loc: 1281
+    loc: 1292
     target: polylogue/storage/repair.py
     owner: storage-root
     reason: storage-root cross-cutting helper
