@@ -352,7 +352,7 @@ class Claim:
 
     Every claim declares an Oracle classification (how evidence is produced)
     and an AssuranceDomain (which confidence area the claim supports). Together
-    they let the proof-pack surface answer \"what confidence does this change
+    they let the verification-impact surface answer \"what confidence does this change
     affect?\" with oracle-aware quality rather than an undifferentiated count.
     """
 

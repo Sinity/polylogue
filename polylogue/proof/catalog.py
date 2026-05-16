@@ -478,7 +478,7 @@ def _coverage_manifest_claims() -> tuple[Claim, ...]:
             observed_facts=("manifest_id", "assurance_domain", "sections", "coverage_gap_count"),
             staleness_conditions=("Coverage manifests, assurance domains, or proof subject discovery changes.",),
             breaker=BreakerMetadata(
-                description="A coverage manifest that is not represented in the proof catalog stops proof-pack routing.",
+                description="A coverage manifest that is not represented in the verification catalog stops changed-path routing.",
                 command=("devtools", "render-verification-catalog", "--check"),
             ),
         ),
@@ -505,7 +505,7 @@ def _coverage_manifest_claims() -> tuple[Claim, ...]:
             observed_facts=("manifest_id", "section", "name", "status", "has_automated_gate"),
             staleness_conditions=("Coverage item schema, manifest sections, or source-path routing changes.",),
             breaker=BreakerMetadata(
-                description="An item without routable coverage metadata cannot contribute to affected proof packs.",
+                description="An item without routable coverage metadata cannot contribute to verification impact reports.",
                 command=("devtools", "verify-manifests"),
             ),
         ),
@@ -522,10 +522,10 @@ def _coverage_manifest_claims() -> tuple[Claim, ...]:
             observation_source="same_source_manifest",
             independence_level="cross_checked",
             assurance_domain="spec_completeness",
-            bug_classes=("coverage-gap.owner-missing", "proof-pack.known-gap-omission"),
+            bug_classes=("coverage-gap.owner-missing", "verification-impact.known-gap-omission"),
             runner_classes=("coverage_manifest_static",),
             observed_facts=("manifest_id", "axis", "gap", "owner", "next_evidence"),
-            staleness_conditions=("Coverage gap manifests or proof-pack known-gap rendering changes.",),
+            staleness_conditions=("Coverage gap manifests or verification-impact known-gap rendering changes.",),
             breaker=BreakerMetadata(
                 description="A known coverage gap without an owner and next evidence path cannot drive closure.",
                 command=("devtools", "verify-manifests"),

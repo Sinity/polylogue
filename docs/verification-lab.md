@@ -15,7 +15,7 @@ Selected vertical slices:
 | Slice | Command | Role |
 | --- | --- | --- |
 | Catalog | `devtools render-verification-catalog` | Render and check the verification catalog generated from subjects, claims, runners, and routed checks. |
-| Routing | `devtools affected-obligations` | Map changed paths or refs to affected verification checks and focused commands. |
+| Routing | `devtools verification-impact` | Map changed paths or refs to affected verification checks and focused commands. |
 | Evidence | `devtools semantic-axis-evidence` | Produce comparative performance evidence across semantic scale tiers. |
 | Corpus | `devtools lab-corpus` | Generate raw synthetic corpus fixtures or seed complete demo archive workspaces for lab runs. |
 | Scenarios | `devtools lab-scenario` | Run showcase exercise scenario sets and committed showcase baseline checks outside the archive CLI. |
@@ -41,7 +41,7 @@ hypothetical future taxonomy. The catalog at
 
 That means the first lab surface can be explicit without moving command
 implementations. `devtools render-verification-catalog` is the catalog slice,
-`devtools affected-obligations` is the routing slice, and
+`devtools verification-impact` is the routing slice, and
 `devtools semantic-axis-evidence` is the first comparative evidence slice.
 `devtools lab-corpus` and `devtools lab-scenario` carry synthetic/demo and
 showcase exercise work that used to overload `polylogue audit`.

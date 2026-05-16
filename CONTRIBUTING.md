@@ -229,7 +229,7 @@ Add `devtools build-package` or `nix flake check` when touching packaging or
 Nix expressions. See [TESTING.md](TESTING.md) and [docs/devtools.md](docs/devtools.md)
 for details.
 
-Proof Pack: every PR gets a `Polylogue Proof Pack` comment. It's a verification
+Verification Impact: every PR gets a `Polylogue Verification Impact` comment. It's a verification
 impact report showing affected domains, required gates, and known gaps. Use it
 to choose focused verification — run the gates that match touched files, state
 in the PR why a suggested gate is only optional for that change.

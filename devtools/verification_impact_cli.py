@@ -1,4 +1,4 @@
-"""Render proof obligations affected by changed paths or refs."""
+"""Render verification checks affected by changed paths or refs."""
 
 from __future__ import annotations
 
@@ -18,21 +18,23 @@ from polylogue.proof.diffing import (
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--base-ref", default="origin/master", help="Base git ref for changed-path and obligation diffing."
+        "--base-ref", default="origin/master", help="Base git ref for changed-path and verification check diffing."
     )
-    parser.add_argument("--head-ref", default="HEAD", help="Head git ref for changed-path and obligation diffing.")
+    parser.add_argument(
+        "--head-ref", default="HEAD", help="Head git ref for changed-path and verification check diffing."
+    )
     parser.add_argument(
         "--path",
         action="append",
         default=[],
         help="Changed repo-relative path. Repeat to bypass git diff path discovery.",
     )
-    parser.add_argument("--json", action="store_true", help="Emit a machine-readable affected-obligation report.")
-    parser.add_argument("--markdown", action="store_true", help="Emit a markdown-formatted affected-obligation report.")
+    parser.add_argument("--json", action="store_true", help="Emit a machine-readable affected-check report.")
+    parser.add_argument("--markdown", action="store_true", help="Emit a markdown-formatted affected-check report.")
     parser.add_argument(
         "--full",
         action="store_true",
-        help="Emit full proof-pack impact report with domain grouping, artifact taxonomy, and gate classification.",
+        help="Emit the full verification-impact report with domain grouping, artifact taxonomy, and gate classification.",
     )
     parser.add_argument(
         "--check",
@@ -43,15 +45,15 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.full:
         from devtools import repo_root as _get_root
-        from devtools.proof_pack import (
+        from devtools.verification_impact import (
             _print_human_report,
-            build_proof_pack,
+            build_verification_impact_report,
             evaluate_check_policy,
             render_markdown,
         )
 
         root = _get_root()
-        full_report = build_proof_pack(
+        full_report = build_verification_impact_report(
             root,
             base_ref=args.base_ref,
             head_ref=args.head_ref,

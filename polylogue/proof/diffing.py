@@ -607,10 +607,10 @@ def _classify_path(path: str) -> ChangeKind:
     ):
         return "generated_surface"
     if path.startswith("polylogue/proof/") or path in {
-        "devtools/affected_obligations.py",
-        "devtools/obligation_diff.py",
-        "devtools/proof_pack.py",
-        "tests/unit/devtools/test_proof_pack.py",
+        "devtools/verification_impact_cli.py",
+        "devtools/verification_impact.py",
+        "tests/unit/devtools/test_verification_impact.py",
+        "tests/unit/devtools/test_verification_impact_cli.py",
     }:
         return "proof_catalog"
     if path == "polylogue/operations/specs.py":
@@ -666,7 +666,7 @@ def _checks_for_change(kind: ChangeKind, *, path: str) -> tuple[RecommendedCheck
                 ("devtools", "pipeline-probe", "--provider", _provider_for_parser_path(path) or "unknown"),
                 "parser pipeline probe",
             ),
-            _check(("devtools", "affected-obligations", "--path", path), "refresh focused changed-path routing"),
+            _check(("devtools", "verification-impact", "--path", path), "refresh focused changed-path routing"),
         )
     if kind == "schema.annotation":
         return (
@@ -693,7 +693,7 @@ def _checks_for_change(kind: ChangeKind, *, path: str) -> tuple[RecommendedCheck
     if kind == "architecture":
         checks = [
             _check(("devtools", "verify-manifests"), "structural manifest changed"),
-            _check(("devtools", "affected-obligations", "--path", path), "refresh structural changed-path routing"),
+            _check(("devtools", "verification-impact", "--path", path), "refresh structural changed-path routing"),
         ]
         for subject_id in _ARCHITECTURE_PATH_SUBJECTS.get(path, ()):
             if subject_id == "architecture.topology.projection":
@@ -710,7 +710,7 @@ def _checks_for_change(kind: ChangeKind, *, path: str) -> tuple[RecommendedCheck
             _check(("devtools", "verify-manifests"), "assurance coverage manifest changed"),
             _check(("devtools", "render-verification-catalog", "--check"), "coverage manifests feed check inventory"),
             _check(
-                ("devtools", "affected-obligations", "--full", "--path", path, "--markdown"),
+                ("devtools", "verification-impact", "--full", "--path", path, "--markdown"),
                 "coverage changes feed known-gap report",
             ),
         )
@@ -722,11 +722,9 @@ def _checks_for_change(kind: ChangeKind, *, path: str) -> tuple[RecommendedCheck
     if kind == "proof_catalog":
         return (
             _check(("pytest", "tests/unit/proof"), "verification catalog implementation changed"),
-            _check(("pytest", "tests/unit/devtools/test_proof_pack.py"), "verification impact report changed"),
+            _check(("pytest", "tests/unit/devtools/test_verification_impact.py"), "verification impact report changed"),
             _check(("pytest", "tests/unit/devtools/test_render_verification_catalog.py"), "catalog renderer changed"),
-            _check(
-                ("devtools", "affected-obligations", "--full", "--check"), "verification report policy gate changed"
-            ),
+            _check(("devtools", "verification-impact", "--full", "--check"), "verification report policy gate changed"),
             _check(("devtools", "render-verification-catalog", "--check"), "verification catalog must stay current"),
         )
     if kind == "operation.spec":
