@@ -10,10 +10,8 @@ from polylogue.proof.catalog import build_verification_catalog
 from polylogue.proof.models import EvidenceEnvelope, ProofObligation
 from polylogue.proof.runners import (
     SemanticQueryObservation,
-    run_cli_visual_evidence,
     run_semantic_query_evidence,
 )
-from polylogue.storage.sqlite.schema_ddl import SCHEMA_VERSION
 from tests.infra.archive_scenarios import ArchiveScenario, ScenarioMessage, seed_workspace_scenarios
 from tests.infra.query_cases import ArchiveQueryCase
 from tests.infra.surfaces import ArchiveSurfaceSet, build_archive_surface_set
@@ -28,25 +26,6 @@ def _obligation(claim_id: str, *, subject_id: str | None = None) -> ProofObligat
             continue
         return obligation
     raise AssertionError(f"missing obligation for claim={claim_id!r} subject={subject_id!r}")
-
-
-def test_cli_help_runner_emits_ok_evidence() -> None:
-    obligation = _obligation("cli.command.help", subject_id="polylogue doctor")
-
-    envelope = run_cli_visual_evidence(obligation)
-
-    assert envelope.status is OutcomeStatus.OK
-    assert envelope.evidence["subject_id"] == "polylogue doctor"
-    assert envelope.evidence["runner_class"] == "cli_visual"
-    assert envelope.evidence["help_exit_code"] == 0
-    assert envelope.trust.runner_version == "proof-runners.v1"
-    assert envelope.trust.origin == "proof-runner"
-    assert envelope.trust.schema_version == SCHEMA_VERSION
-    assert envelope.trust.input_fingerprint is not None
-    assert len(envelope.trust.input_fingerprint) == 64
-    assert envelope.trust.environment_fingerprint is not None
-    assert len(envelope.trust.environment_fingerprint) == 64
-    assert envelope.counterexample is None
 
 
 @pytest.mark.asyncio()

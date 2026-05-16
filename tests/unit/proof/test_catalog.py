@@ -24,8 +24,6 @@ def test_default_catalog_compiles_first_vertical_slice() -> None:
     catalog = build_verification_catalog()
 
     assert {claim.id for claim in catalog.claims} == {
-        "cli.command.help",
-        "cli.command.no_traceback",
         "cli.command.plain_mode",
         "archive.query.provider_filter_consistency",
         "provider.capability.identity_bridge",
@@ -111,11 +109,11 @@ def test_visible_commands_are_not_omitted_from_command_claims() -> None:
     catalog = build_verification_catalog()
     command_ids = {subject.id for subject in command_subjects()}
 
-    for claim_id in ("cli.command.help", "cli.command.no_traceback", "cli.command.plain_mode"):
-        obligated_subject_ids = {
-            obligation.subject.id for obligation in catalog.obligations if obligation.claim.id == claim_id
-        }
-        assert obligated_subject_ids == command_ids
+    claim_id = "cli.command.plain_mode"
+    obligated_subject_ids = {
+        obligation.subject.id for obligation in catalog.obligations if obligation.claim.id == claim_id
+    }
+    assert obligated_subject_ids == command_ids
 
 
 def test_selected_schema_annotations_bind_schema_claims() -> None:

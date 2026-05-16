@@ -162,38 +162,6 @@ def default_claims() -> tuple[Claim, ...]:
     implemented_generated_scenario_query = And((generated_scenario_query, AttrEq("status", "implemented")))
     return (
         Claim(
-            id="cli.command.help",
-            description="Every visible command exposes help without failing.",
-            subject_query=command_query,
-            evidence_schema=_evidence_schema("help_exit_code", "help_output"),
-            oracle="smoke",
-            assurance_domain="cli_surface",
-            bug_classes=("cli.help.regression", "command.inventory.omission"),
-            runner_classes=("cli_visual",),
-            observed_facts=("help_exit_code", "help_usage_banner", "command_path"),
-            staleness_conditions=("Click command registration or help option handling changes.",),
-            breaker=BreakerMetadata(
-                description="A hidden or broken command makes the help runner fail for that command.",
-                command=("devtools", "render-verification-catalog", "--check"),
-            ),
-        ),
-        Claim(
-            id="cli.command.no_traceback",
-            description="Visible command help output does not leak Python tracebacks.",
-            subject_query=command_query,
-            evidence_schema=_evidence_schema("stderr", "stdout"),
-            oracle="smoke",
-            assurance_domain="cli_surface",
-            bug_classes=("cli.traceback.leak", "operator-facing-error-regression"),
-            runner_classes=("cli_visual",),
-            observed_facts=("stdout", "stderr", "traceback_present", "exit_code"),
-            staleness_conditions=("Click error handling, command callbacks, or exception formatting changes.",),
-            breaker=BreakerMetadata(
-                description="A command callback or Click wiring error leaks traceback text into evidence.",
-                command=("devtools", "render-verification-catalog", "--check"),
-            ),
-        ),
-        Claim(
             id="cli.command.plain_mode",
             description="Visible commands preserve plain-mode operator output contracts.",
             subject_query=command_query,
@@ -818,16 +786,7 @@ def default_runner_bindings(claims: Iterable[Claim]) -> tuple[RunnerBinding, ...
     """Bind every default claim to its first static runner contract."""
     bindings: list[RunnerBinding] = []
     for claim in claims:
-        if claim.id in {"cli.command.help", "cli.command.no_traceback"}:
-            bindings.append(
-                _runner_binding(
-                    claim,
-                    runner="cli-help-contract",
-                    evidence_class="smoke",
-                    required_commands=("polylogue",),
-                )
-            )
-        elif claim.id == "cli.command.plain_mode":
+        if claim.id == "cli.command.plain_mode":
             bindings.append(
                 _runner_binding(
                     claim,

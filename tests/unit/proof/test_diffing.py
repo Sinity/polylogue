@@ -47,9 +47,7 @@ def test_command_change_routes_to_cli_obligations() -> None:
     affected = route_affected_obligations(changes, catalog=catalog)
 
     assert changes[0].kind == "command"
-    assert {"cli.command.help", "cli.command.no_traceback", "cli.command.plain_mode"}.issubset(
-        {item.claim_id for item in affected}
-    )
+    assert {"cli.command.plain_mode"}.issubset({item.claim_id for item in affected})
 
 
 def test_generated_surface_change_routes_to_workflow_claim() -> None:

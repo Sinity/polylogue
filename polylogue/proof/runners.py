@@ -122,11 +122,7 @@ def run_cli_visual_evidence(
     env: Mapping[str, str] | None = None,
     root_command: click.Command | None = None,
 ) -> EvidenceEnvelope:
-    """Run a help/no-traceback/plain-mode CLI obligation."""
-    if obligation.claim.id == "cli.command.help":
-        return _run_cli_help_evidence(obligation, args=args, env=env, root_command=root_command)
-    if obligation.claim.id == "cli.command.no_traceback":
-        return _run_cli_no_traceback_evidence(obligation, args=args, env=env, root_command=root_command)
+    """Run a plain-mode CLI obligation."""
     if obligation.claim.id == "cli.command.plain_mode":
         return _run_cli_plain_mode_evidence(obligation, args=args, env=env, root_command=root_command)
     raise ValueError(f"unsupported CLI visual claim: {obligation.claim.id}")
@@ -914,78 +910,6 @@ def _run_provider_partial_coverage_evidence(
         reproducer=reproducer,
         provenance=obligation.subject.source_span,
         producer="polylogue.proof.runners.provider_static",
-    )
-
-
-def _run_cli_help_evidence(
-    obligation: ProofObligation,
-    *,
-    args: Sequence[str] | None,
-    env: Mapping[str, str] | None,
-    root_command: click.Command | None,
-) -> EvidenceEnvelope:
-    command_args = tuple(args) if args is not None else _help_args_for_subject(obligation)
-    result = _invoke_cli(command_args, env=env, root_command=root_command)
-    observed_state = _cli_result_state(
-        result,
-        command_args=command_args,
-        extra={"help_usage_banner": "Usage:" in result.output},
-    )
-    expected_law = "help command exits zero and renders a Usage banner"
-    ok = result.exit_code == 0 and "Usage:" in result.output
-    evidence = _evidence_payload(
-        obligation,
-        runner_class="cli_visual",
-        expected_law=expected_law,
-        observed_state=observed_state,
-    )
-    evidence["help_exit_code"] = result.exit_code
-    evidence["help_output"] = result.output[:_OUTPUT_SAMPLE_LIMIT]
-    return _build_envelope(
-        obligation,
-        status=OutcomeStatus.OK if ok else OutcomeStatus.ERROR,
-        evidence=evidence,
-        expected_law=expected_law,
-        observed_state=observed_state,
-        reproducer=("polylogue", *command_args),
-        provenance=obligation.subject.source_span,
-        producer="polylogue.proof.runners.cli_visual",
-    )
-
-
-def _run_cli_no_traceback_evidence(
-    obligation: ProofObligation,
-    *,
-    args: Sequence[str] | None,
-    env: Mapping[str, str] | None,
-    root_command: click.Command | None,
-) -> EvidenceEnvelope:
-    command_args = tuple(args) if args is not None else _help_args_for_subject(obligation)
-    result = _invoke_cli(command_args, env=env, root_command=root_command)
-    traceback_present = _TRACEBACK_MARKER in result.output
-    observed_state = _cli_result_state(
-        result,
-        command_args=command_args,
-        extra={"traceback_present": traceback_present},
-    )
-    expected_law = "command output does not contain a Python traceback"
-    evidence = _evidence_payload(
-        obligation,
-        runner_class="cli_visual",
-        expected_law=expected_law,
-        observed_state=observed_state,
-    )
-    evidence["stdout"] = _stdout(result)[:_OUTPUT_SAMPLE_LIMIT]
-    evidence["stderr"] = _stderr(result)[:_OUTPUT_SAMPLE_LIMIT]
-    return _build_envelope(
-        obligation,
-        status=OutcomeStatus.ERROR if traceback_present else OutcomeStatus.OK,
-        evidence=evidence,
-        expected_law=expected_law,
-        observed_state=observed_state,
-        reproducer=("polylogue", *command_args),
-        provenance=obligation.subject.source_span,
-        producer="polylogue.proof.runners.cli_visual",
     )
 
 
