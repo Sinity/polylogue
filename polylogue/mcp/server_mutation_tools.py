@@ -33,7 +33,7 @@ async def _resolve_or_error(hooks: ServerCallbacks, conversation_id: str) -> tup
     """Resolve a conversation ID, returning the canonical ID or an error JSON."""
     resolved = await hooks.get_query_store().resolve_id(conversation_id, strict=True)
     if not resolved:
-        return None, hooks.error_json("conversation not found", code="not_found", conversation_id=conversation_id)
+        return None, hooks.error_json("Conversation not found", code="not_found", conversation_id=conversation_id)
     return resolved, None
 
 

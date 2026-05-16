@@ -271,6 +271,52 @@ class TestToolErrorEnvelopes:
             facts={"is_error": body["is_error"], "code": body.get("code")},
         )
 
+    def test_get_conversation_summary_missing_returns_not_found_envelope(
+        self,
+        mcp_server: MCPServerUnderTest,
+        record_contract_evidence: ContractEvidenceRecorder,
+    ) -> None:
+        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+            mock_poly = make_polylogue_mock()
+            mock_poly.get_conversation_summary = AsyncMock(return_value=None)
+            mock_get_polylogue.return_value = mock_poly
+
+            result = invoke_surface(
+                mcp_server._tool_manager._tools["get_conversation_summary"].fn,
+                id="missing",
+            )
+
+        body = _structured_error(result)
+        assert body.get("code") == "not_found", f"expected code='not_found', got {body!r}"
+        record_contract_evidence.record(
+            "mcp.tool.get_conversation_summary.not_found",
+            surface="mcp",
+            facts={"is_error": body["is_error"], "code": body.get("code")},
+        )
+
+    def test_session_profile_missing_returns_not_found_envelope(
+        self,
+        mcp_server: MCPServerUnderTest,
+        record_contract_evidence: ContractEvidenceRecorder,
+    ) -> None:
+        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+            mock_poly = make_polylogue_mock()
+            mock_poly.get_session_profile_insight = AsyncMock(return_value=None)
+            mock_get_polylogue.return_value = mock_poly
+
+            result = invoke_surface(
+                mcp_server._tool_manager._tools["session_profile"].fn,
+                conversation_id="missing",
+            )
+
+        body = _structured_error(result)
+        assert body.get("code") == "not_found", f"expected code='not_found', got {body!r}"
+        record_contract_evidence.record(
+            "mcp.tool.session_profile.not_found",
+            surface="mcp",
+            facts={"is_error": body["is_error"], "code": body.get("code")},
+        )
+
     def test_bulk_tag_validation_returns_structured_error(
         self,
         mcp_server: MCPServerUnderTest,
