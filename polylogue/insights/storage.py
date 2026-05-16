@@ -36,7 +36,7 @@ from polylogue.storage.sqlite.schema_ddl_insight_timelines import (
 
 logger = logging.getLogger(__name__)
 
-INSIGHT_SCHEMA_VERSION = 1
+INSIGHT_SCHEMA_VERSION = 2
 
 # Full schema for insights.db
 INSIGHT_DDL = (

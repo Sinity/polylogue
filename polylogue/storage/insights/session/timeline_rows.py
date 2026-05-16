@@ -133,6 +133,7 @@ def build_session_work_event_records(
     built_at = materialized_at or now_iso()
     source_updated_at = profile.updated_at.isoformat() if profile.updated_at else None
     source_sort_key = profile.updated_at.timestamp() if profile.updated_at else None
+    input_row_count = len(profile.work_events)
     records: list[SessionWorkEventRecord] = []
     for index, event in enumerate(profile.work_events):
         summary = event_summary(event)
@@ -149,6 +150,8 @@ def build_session_work_event_records(
                 materialized_at=built_at,
                 source_updated_at=source_updated_at,
                 source_sort_key=source_sort_key,
+                input_high_water_mark=source_updated_at,
+                input_row_count=input_row_count,
                 provider_name=profile.provider,
                 event_index=index,
                 kind=event.kind.value,
@@ -274,6 +277,7 @@ def build_session_phase_records(
     built_at = materialized_at or now_iso()
     source_updated_at = profile.updated_at.isoformat() if profile.updated_at else None
     source_sort_key = profile.updated_at.timestamp() if profile.updated_at else None
+    input_row_count = len(profile.phases)
     records: list[SessionPhaseRecord] = []
     for index, phase in enumerate(profile.phases):
         start_time = phase.start_time.isoformat() if phase.start_time else None
@@ -289,6 +293,8 @@ def build_session_phase_records(
                 materialized_at=built_at,
                 source_updated_at=source_updated_at,
                 source_sort_key=source_sort_key,
+                input_high_water_mark=source_updated_at,
+                input_row_count=input_row_count,
                 provider_name=profile.provider,
                 phase_index=index,
                 kind="phase",

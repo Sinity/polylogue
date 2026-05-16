@@ -73,14 +73,17 @@ def build_session_tag_rollup_records(
     rows: list[SessionTagRollupRecord] = []
     for (provider_name, bucket_day_text, tag), bucket in sorted(grouped.items()):
         search_text = " \n".join(part for part in (tag, provider_name, *sorted(bucket.repos.keys())) if part)
+        hwm = max(bucket.source_updated_at) if bucket.source_updated_at else None
         rows.append(
             SessionTagRollupRecord(
                 tag=tag,
                 bucket_day=bucket_day_text,
                 provider_name=provider_name,
                 materialized_at=built_at,
-                source_updated_at=max(bucket.source_updated_at) if bucket.source_updated_at else None,
+                source_updated_at=hwm,
                 source_sort_key=max(bucket.source_sort_key) if bucket.source_sort_key else None,
+                input_high_water_mark=hwm,
+                input_row_count=bucket.conversation_count,
                 conversation_count=bucket.conversation_count,
                 explicit_count=bucket.explicit_count,
                 auto_count=bucket.auto_count,

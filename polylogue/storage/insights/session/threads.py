@@ -114,11 +114,15 @@ def build_work_thread_record(
 ) -> WorkThreadRecord:
     built_at = materialized_at or now_iso()
     payload = _thread_payload(thread)
+    source_updated_at = thread.end_time.isoformat() if thread.end_time else None
     return WorkThreadRecord(
         thread_id=thread.thread_id,
         root_id=ConversationId(thread.root_id),
         materializer_version=SESSION_INSIGHT_MATERIALIZER_VERSION,
         materialized_at=built_at,
+        source_updated_at=source_updated_at,
+        input_high_water_mark=source_updated_at,
+        input_row_count=len(thread.session_ids),
         start_time=thread.start_time.isoformat() if thread.start_time else None,
         end_time=thread.end_time.isoformat() if thread.end_time else None,
         dominant_repo=thread.dominant_repo,

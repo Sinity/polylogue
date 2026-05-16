@@ -70,13 +70,16 @@ def build_day_session_summary_records(
             )
             if part
         )
+        hwm = max(source_updates) if source_updates else None
         rows.append(
             DaySessionSummaryRecord(
                 day=bucket_day.isoformat(),
                 provider_name=provider_name,
                 materialized_at=built_at,
-                source_updated_at=max(source_updates) if source_updates else None,
+                source_updated_at=hwm,
                 source_sort_key=max(source_sorts) if source_sorts else None,
+                input_high_water_mark=hwm,
+                input_row_count=summary.session_count,
                 conversation_count=summary.session_count,
                 total_cost_usd=summary.total_cost_usd,
                 total_duration_ms=summary.total_duration_ms,

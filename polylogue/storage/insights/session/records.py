@@ -26,6 +26,8 @@ class SessionProfileRecord(BaseModel):
     materialized_at: str
     source_updated_at: str | None = None
     source_sort_key: float | None = None
+    input_high_water_mark: str | None = None
+    input_row_count: int = 0
     provider_name: str
     title: str | None = None
     first_message_at: str | None = None
@@ -97,6 +99,9 @@ class WorkThreadRecord(BaseModel):
     root_id: ConversationId
     materializer_version: int = SESSION_INSIGHT_MATERIALIZER_VERSION
     materialized_at: str
+    source_updated_at: str | None = None
+    input_high_water_mark: str | None = None
+    input_row_count: int = 0
     start_time: str | None = None
     end_time: str | None = None
     dominant_repo: str | None = None
