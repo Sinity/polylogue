@@ -595,10 +595,51 @@ def store_records(
             else:
                 counts["skipped_attachments"] += 1
         _prune_attachment_refs(db_conn, conversation.conversation_id, seen_ref_ids)
+        # Mirror the production write path's stats projection so that
+        # surfaces relying on conversation_stats (the stats-join pushdown
+        # filters: min_messages/max_messages/min_words/has_tool_use/…)
+        # see the same precomputed values as production ingest.  Without
+        # this, the test builders produced rows but no stats, and any
+        # parity test exercising those filters would observe an empty
+        # result set on every surface.
+        _upsert_conversation_stats_sync(db_conn, conversation=conversation, messages=messages)
         # Commit inside lock to ensure atomic transaction boundaries
         db_conn.commit()
 
     return counts
+
+
+def _upsert_conversation_stats_sync(
+    conn: sqlite3.Connection,
+    *,
+    conversation: ConversationRecord,
+    messages: list[MessageRecord],
+) -> None:
+    """Sync mirror of ``upsert_conversation_stats`` for test seeding.
+
+    Production routes stats through the async backend; the test
+    ``ConversationBuilder`` uses a sync sqlite3 connection, so we share
+    the same SQL statement constant but execute it synchronously here.
+    """
+    from polylogue.core.common import SQL_STATS_UPSERT
+
+    message_count = len(messages)
+    word_count = sum(m.word_count for m in messages)
+    tool_use_count = sum(1 for m in messages if m.has_tool_use)
+    thinking_count = sum(1 for m in messages if m.has_thinking)
+    paste_count = sum(1 for m in messages if m.has_paste)
+    conn.execute(
+        SQL_STATS_UPSERT,
+        (
+            conversation.conversation_id,
+            conversation.provider_name,
+            message_count,
+            word_count,
+            tool_use_count,
+            thinking_count,
+            paste_count,
+        ),
+    )
 
 
 # =============================================================================
