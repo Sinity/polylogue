@@ -257,7 +257,10 @@ async def output_stats_sql(
             )
             return
 
-    stats = await repo.aggregate_message_stats(conv_ids if has_filters else None)
+    if has_filters:
+        stats = await repo.aggregate_message_stats(conv_ids)
+    else:
+        stats = await repo.aggregate_message_stats()
 
     date_range = ""
     if stats["min_sort_key"] and stats["max_sort_key"]:
