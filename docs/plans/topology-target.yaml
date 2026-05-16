@@ -22,7 +22,7 @@ files:
     owner: stable
     cross_cut: { api: async }
   - path: polylogue/api/contracts/__init__.py
-    loc: 42
+    loc: 56
     target: polylogue/api/contracts/__init__.py
     owner: stable
     cross_cut: { api: async }
@@ -31,6 +31,11 @@ files:
     target: polylogue/api/contracts/api_surface.py
     owner: stable
     cross_cut: { api: async }
+  - path: polylogue/api/contracts/api_write_surface.py
+    loc: 122
+    target: polylogue/api/contracts/api_write_surface.py
+    owner: stable
+    cross_cut: { api: async, layer: write }
   - path: polylogue/api/contracts/assertions.py
     loc: 54
     target: polylogue/api/contracts/assertions.py
@@ -41,14 +46,29 @@ files:
     target: polylogue/api/contracts/cli_surface.py
     owner: stable
     cross_cut: { api: async }
+  - path: polylogue/api/contracts/cli_write_surface.py
+    loc: 139
+    target: polylogue/api/contracts/cli_write_surface.py
+    owner: stable
+    cross_cut: { api: async, layer: write }
   - path: polylogue/api/contracts/mcp_surface.py
     loc: 96
     target: polylogue/api/contracts/mcp_surface.py
     owner: stable
     cross_cut: { api: async }
+  - path: polylogue/api/contracts/mcp_write_surface.py
+    loc: 134
+    target: polylogue/api/contracts/mcp_write_surface.py
+    owner: stable
+    cross_cut: { api: async, layer: write }
   - path: polylogue/api/contracts/read_surface.py
     loc: 158
     target: polylogue/api/contracts/read_surface.py
+    owner: stable
+    cross_cut: { api: async }
+  - path: polylogue/api/contracts/write_surface.py
+    loc: 165
+    target: polylogue/api/contracts/write_surface.py
     owner: stable
     cross_cut: { api: async }
   - path: polylogue/api/ingest.py

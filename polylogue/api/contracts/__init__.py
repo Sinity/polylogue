@@ -30,13 +30,27 @@ from polylogue.api.contracts.read_surface import (
     DaemonStatusSurface,
     ReadSurface,
 )
+from polylogue.api.contracts.write_surface import (
+    ConversationDeleteSurface,
+    IndexMaintenanceSurface,
+    IngestSurface,
+    MaintenanceSurface,
+    TagMutationSurface,
+    WriteSurface,
+)
 
 __all__ = [
+    "ConversationDeleteSurface",
     "ConversationListSurface",
     "ConversationSearchSurface",
     "ConversationStatsSurface",
     "ConversationTagsSurface",
     "DaemonStatusSurface",
+    "IndexMaintenanceSurface",
+    "IngestSurface",
+    "MaintenanceSurface",
     "ReadSurface",
+    "TagMutationSurface",
+    "WriteSurface",
     "assert_implements",
 ]
