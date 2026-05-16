@@ -58,6 +58,23 @@ ENDPOINTS_POST = [
     "/api/ingest",
     "/api/maintenance/plan",
     "/api/maintenance/run",
+    # User-state write routes — delegated via dispatch_post, still gated by
+    # _check_auth and _check_cross_origin at the do_POST level.
+    "/api/user/marks",
+    "/api/user/annotations",
+    "/api/user/saved-views",
+    "/api/user/recall-packs",
+    "/api/user/workspaces",
+]
+
+ENDPOINTS_DELETE = [
+    # User-state delete routes — gated by _check_auth and _check_cross_origin
+    # at the do_DELETE level.
+    "/api/user/marks",
+    "/api/user/annotations/some-id",
+    "/api/user/saved-views/some-id",
+    "/api/user/recall-packs/some-id",
+    "/api/user/workspaces/some-id",
 ]
 
 
@@ -289,6 +306,7 @@ class TestPostEndpointAuthAndOriginGate:
             patch.object(handler, "_handle_ingest"),
             patch.object(handler, "_handle_maintenance_plan"),
             patch.object(handler, "_handle_maintenance_run"),
+            patch("polylogue.daemon.user_state_http.dispatch_post", return_value=True),
         ):
             handler.do_POST()
         for call in send_error.call_args_list:
@@ -311,6 +329,7 @@ class TestPostEndpointAuthAndOriginGate:
             patch.object(handler, "_handle_ingest"),
             patch.object(handler, "_handle_maintenance_plan"),
             patch.object(handler, "_handle_maintenance_run"),
+            patch("polylogue.daemon.user_state_http.dispatch_post", return_value=True),
         ):
             handler.do_POST()
         for call in send_error.call_args_list:
@@ -336,6 +355,68 @@ class TestPostEndpointAuthAndOriginGate:
         send_error, _ = _capture_responses(handler)
         handler.do_POST()
         send_error.assert_called_once_with(HTTPStatus.FORBIDDEN, "cross_origin_denied")
+
+
+@pytest.mark.parametrize("path", ENDPOINTS_DELETE)
+class TestDeleteEndpointAuthAndOriginGate:
+    """Every DELETE endpoint refuses unauthenticated and cross-origin requests.
+
+    ``do_DELETE`` calls ``_check_auth`` then ``_check_cross_origin`` before
+    routing. This matrix confirms the gates are applied to every delete route.
+    """
+
+    def test_missing_token_returns_401(self, path: str) -> None:
+        handler = _make_handler("DELETE", path)
+        send_error, _ = _capture_responses(handler)
+        handler.do_DELETE()
+        send_error.assert_called_once_with(HTTPStatus.UNAUTHORIZED, "unauthorized")
+
+    def test_invalid_token_returns_401(self, path: str) -> None:
+        handler = _make_handler("DELETE", path, auth_header="Bearer wrong")
+        send_error, _ = _capture_responses(handler)
+        handler.do_DELETE()
+        send_error.assert_called_once_with(HTTPStatus.UNAUTHORIZED, "unauthorized")
+
+    def test_valid_token_cross_origin_returns_403(self, path: str) -> None:
+        """Hostile-origin browser DELETE is refused even with a valid token."""
+        handler = _make_handler(
+            "DELETE",
+            path,
+            auth_header="Bearer secret",
+            origin="https://evil.example.com",
+        )
+        send_error, _ = _capture_responses(handler)
+        handler.do_DELETE()
+        send_error.assert_called_once_with(HTTPStatus.FORBIDDEN, "cross_origin_denied")
+
+    def test_valid_token_no_origin_passes_gates(self, path: str) -> None:
+        """Auth + origin gates admit a curl/hook-style request (no Origin)."""
+        handler = _make_handler("DELETE", path, auth_header="Bearer secret")
+        send_error, _ = _capture_responses(handler)
+        with patch("polylogue.daemon.user_state_http.dispatch_delete", return_value=True):
+            handler.do_DELETE()
+        for call in send_error.call_args_list:
+            status = call.args[0]
+            assert status not in (HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN), (
+                f"DELETE {path} returned {status.value} with valid token + no Origin"
+            )
+
+    def test_valid_token_same_origin_passes_gates(self, path: str) -> None:
+        """Web-shell same-origin DELETE is admitted (loopback origin is trusted)."""
+        handler = _make_handler(
+            "DELETE",
+            path,
+            auth_header="Bearer secret",
+            origin="http://localhost:8766",
+        )
+        send_error, _ = _capture_responses(handler)
+        with patch("polylogue.daemon.user_state_http.dispatch_delete", return_value=True):
+            handler.do_DELETE()
+        for call in send_error.call_args_list:
+            status = call.args[0]
+            assert status not in (HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN), (
+                f"DELETE {path} returned {status.value} with valid token + same-origin"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -395,6 +476,226 @@ class TestIngestEndpointInboxBoundary:
         send_error.assert_called_once_with(HTTPStatus.BAD_REQUEST, "path_not_found")
         send_json.assert_not_called()
         emit_event.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "traversal_path",
+        [
+            "../../../etc/passwd",
+            "../../etc/passwd",
+            "../evil",
+            "/etc/passwd",
+            "/tmp/evil.jsonl",
+            "inbox/../../../etc/passwd",
+            "a/b/c/session.jsonl",
+        ],
+    )
+    def test_traversal_attempt_cannot_escape_inbox(
+        self,
+        traversal_path: str,
+        workspace_env: dict[str, Path],
+        tmp_path: Path,
+    ) -> None:
+        """Path traversal attempts via ``..`` or embedded ``/`` cannot escape inbox.
+
+        ``_staged_inbox_source`` uses ``PurePath(raw).name`` which strips all
+        directory components before matching against inbox entries. The resolved
+        candidate is then re-checked with ``relative_to(inbox_root)`` to catch
+        symlink escapes. A file with the extracted basename that lives outside the
+        inbox must produce ``path_not_found``; one that happens to match an inbox
+        entry may only be returned if the resolved path is inside inbox_root.
+        """
+        inbox = workspace_env["archive_root"] / "inbox"
+        inbox.mkdir(parents=True, exist_ok=True)
+
+        # Put a file with the traversal's extracted basename OUTSIDE the inbox.
+        from pathlib import PurePath
+
+        basename = PurePath(traversal_path).name
+        if basename and basename not in {".", ".."}:
+            outside = tmp_path / basename
+            outside.write_text('{"type":"session"}\n')
+
+        body = json.dumps({"path": traversal_path}).encode("utf-8")
+        handler = _make_handler("POST", "/api/ingest", auth_header="Bearer secret", body=body)
+        send_error, send_json = _capture_responses(handler)
+
+        with (
+            patch("polylogue.paths.archive_root", return_value=workspace_env["archive_root"]),
+            patch("polylogue.daemon.http.emit_daemon_event") as emit_event,
+        ):
+            handler.do_POST()
+
+        # Must be rejected — the file is outside inbox, regardless of the
+        # path shape the client sent.
+        assert send_error.called, f"traversal path {traversal_path!r} was not rejected"
+        send_json.assert_not_called()
+        emit_event.assert_not_called()
+
+    def test_traversal_basename_matches_inbox_entry_is_accepted(
+        self,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        """When the basename extracted from a traversal path matches a real inbox entry
+        AND the inbox entry is inside inbox_root, the daemon schedules it normally.
+
+        This confirms the name-extraction is sanitizing the input, not just
+        blocking it — clients can refer to inbox files via absolute or relative
+        paths as long as the file is actually in the inbox.
+        """
+        inbox = workspace_env["archive_root"] / "inbox"
+        inbox.mkdir(parents=True, exist_ok=True)
+        staged = inbox / "session.jsonl"
+        staged.write_text('{"type":"session"}\n')
+
+        # Client sends a dotdot path whose basename is "session.jsonl"
+        body = json.dumps({"path": "../inbox/session.jsonl"}).encode("utf-8")
+        handler = _make_handler("POST", "/api/ingest", auth_header="Bearer secret", body=body)
+        send_error, send_json = _capture_responses(handler)
+
+        with (
+            patch("polylogue.paths.archive_root", return_value=workspace_env["archive_root"]),
+            patch("polylogue.daemon.http.emit_daemon_event"),
+        ):
+            handler.do_POST()
+
+        # Name was sanitized → matched the real inbox entry → accepted
+        send_error.assert_not_called()
+        assert send_json.call_args.args[0] == HTTPStatus.ACCEPTED
+        payload = send_json.call_args.args[1]
+        assert payload["path"] == str(staged.resolve())
+
+    def test_symlink_escape_is_rejected(
+        self,
+        workspace_env: dict[str, Path],
+        tmp_path: Path,
+    ) -> None:
+        """A symlink inside the inbox pointing outside cannot be followed.
+
+        ``_staged_inbox_source`` calls ``resolved.relative_to(inbox_root)``
+        after resolving, which raises ValueError when the target escapes.
+        """
+        inbox = workspace_env["archive_root"] / "inbox"
+        inbox.mkdir(parents=True, exist_ok=True)
+        real_file = tmp_path / "real_secret.jsonl"
+        real_file.write_text('{"type":"session"}\n')
+        link = inbox / "escape_link.jsonl"
+        link.symlink_to(real_file)
+
+        body = json.dumps({"path": "escape_link.jsonl"}).encode("utf-8")
+        handler = _make_handler("POST", "/api/ingest", auth_header="Bearer secret", body=body)
+        send_error, send_json = _capture_responses(handler)
+
+        with (
+            patch("polylogue.paths.archive_root", return_value=workspace_env["archive_root"]),
+            patch("polylogue.daemon.http.emit_daemon_event"),
+        ):
+            handler.do_POST()
+
+        send_error.assert_called_once_with(HTTPStatus.BAD_REQUEST, "invalid_path")
+        send_json.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# JSON serialization robustness — _json_bytes must not silently drop data
+# ---------------------------------------------------------------------------
+
+
+class TestJsonSerializationRobustness:
+    """``_json_bytes`` is the final serialization barrier before the wire.
+
+    ``orjson`` rejects non-serializable types (e.g., ``set``, custom objects
+    with no ``__json__``).  The ``daemon_safe_handler`` decorator catches
+    unhandled exceptions and returns 500, so the client always gets a
+    well-formed error response instead of a hung or partial stream.
+
+    These tests confirm that:
+    1. Normal dicts with string/int/list/None values round-trip cleanly.
+    2. ``orjson.JSONEncodeError`` from ``_json_bytes`` is not silently swallowed
+       — the caller (``_send_json``) will propagate it to the decorator.
+    3. The full handler chain (decorator → handler → ``_send_json``) returns
+       a 500 JSON error when a handler builds an unserializable payload.
+    """
+
+    def test_normal_payload_round_trips(self) -> None:
+        from polylogue.daemon.http import _json_bytes
+
+        payload: dict[str, object] = {
+            "id": "abc",
+            "title": "My conversation",
+            "count": 42,
+            "tags": ["a", "b"],
+            "nested": {"ok": True, "value": None},
+        }
+        raw = _json_bytes(payload)
+        import json as _json
+
+        assert _json.loads(raw) == payload
+
+    def test_set_raises_type_error(self) -> None:
+        """Sets are not JSON-serializable. ``orjson`` raises TypeError,
+        not silently truncates or returns partial output."""
+        from polylogue.daemon.http import _json_bytes
+
+        with pytest.raises(TypeError):
+            _json_bytes({"tags": {1, 2, 3}})
+
+    def test_custom_object_raises_type_error(self) -> None:
+        """Custom objects with no JSON protocol raise TypeError,
+        not return ``null`` or ``{}``."""
+        from polylogue.daemon.http import _json_bytes
+
+        class _Unserializable:
+            pass
+
+        with pytest.raises(TypeError):
+            _json_bytes({"obj": _Unserializable()})
+
+    def test_handler_returns_500_on_unserializable_response(self) -> None:
+        """When a route handler calls ``_send_json`` with unserializable data the
+        ``daemon_safe_handler`` decorator catches the resulting error and replies
+        with a well-formed 500 JSON response rather than crashing silently.
+
+        This is the end-to-end path: route handler builds bad payload →
+        ``_send_json`` calls ``_json_bytes`` → orjson raises →
+        ``daemon_safe_handler`` catches → returns 500 error JSON.
+
+        The test injects a ``_send_json`` mock that raises on the first call
+        (simulating orjson failure) and records on the second (simulating the
+        decorator's error-response call), confirming the contract holds.
+        """
+        from typing import Any
+
+        from polylogue.daemon.http import daemon_safe_handler
+
+        handler = _make_handler("GET", "/api/status", auth_header="Bearer secret")
+        recorded: list[tuple[HTTPStatus, object]] = []
+        call_count = 0
+
+        def _mock_send_json(status: HTTPStatus, payload: object) -> None:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                # First call: simulate orjson raising on unserializable data
+                # (orjson raises TypeError for non-serializable Python types).
+                raise TypeError("Type is not JSON serializable: set")
+            # Subsequent calls: record (these come from the decorator's fallback).
+            recorded.append((status, payload))
+
+        handler._send_json = _mock_send_json  # type: ignore[method-assign]
+
+        @daemon_safe_handler
+        def _bad_handler(self: Any) -> None:
+            # Calls _send_json once with a bad payload; the mock will raise.
+            self._send_json(HTTPStatus.OK, {"tags": {1, 2, 3}})
+
+        _bad_handler(handler)
+
+        # The decorator must have caught the error and fired a 500 response.
+        assert recorded, "no fallback response was sent after orjson error"
+        final_status, final_payload = recorded[-1]
+        assert final_status == HTTPStatus.INTERNAL_SERVER_ERROR
+        assert isinstance(final_payload, dict)
+        assert final_payload.get("error") == "internal_error"
 
 
 # ---------------------------------------------------------------------------
