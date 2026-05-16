@@ -111,6 +111,7 @@ class Suppression(BaseModel):
     id: str
     reason: str
     expires_at: str  # ISO-8601 date string
+    issue: str | None = None
     paths: list[str] = Field(default_factory=list)
     claims: list[str] = Field(default_factory=list)
 

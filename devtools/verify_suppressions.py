@@ -57,13 +57,21 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Block on discovered source suppressions not covered by registry paths.",
     )
+    p.add_argument(
+        "--enforce-kinds",
+        default="",
+        help="Comma-separated suppression kinds to enforce registration for (e.g. type_ignore,noqa).",
+    )
     args = p.parse_args(argv)
+
+    enforce_kinds: frozenset[str] = frozenset(k.strip() for k in args.enforce_kinds.split(",") if k.strip())
 
     suppressions = load_suppressions(registry=args.yaml)
     errors = validate_suppressions(suppressions)
     discovered = discover_source_suppressions(args.scan_root, suppressions=suppressions)
     unregistered = [item for item in discovered if not item.registered]
-    blocking = bool(errors) or (args.enforce_discovered and bool(unregistered))
+    unregistered_enforced = [item for item in unregistered if item.kind in enforce_kinds] if enforce_kinds else []
+    blocking = bool(errors) or (args.enforce_discovered and bool(unregistered)) or bool(unregistered_enforced)
 
     if args.json:
         json.dump(
@@ -74,6 +82,8 @@ def main(argv: list[str] | None = None) -> int:
                 "discovered_total": len(discovered),
                 "discovered_by_kind": dict(Counter(item.kind for item in discovered)),
                 "unregistered_total": len(unregistered),
+                "unregistered_enforced_total": len(unregistered_enforced),
+                "enforce_kinds": sorted(enforce_kinds),
                 "unregistered": [item.to_payload() for item in unregistered],
             },
             sys.stdout,
@@ -90,7 +100,13 @@ def main(argv: list[str] | None = None) -> int:
             print(f"discovered source suppressions: {len(discovered)}")
             for kind, count in sorted(Counter(item.kind for item in discovered).items()):
                 print(f"    {kind}: {count}")
-        if unregistered:
+        if unregistered_enforced:
+            print(f"[BLOCK] unregistered {sorted(enforce_kinds)} suppressions: {len(unregistered_enforced)}")
+            for item in unregistered_enforced[:20]:
+                print(f"    {item.path}:{item.line}: {item.kind}: {item.text}")
+            if len(unregistered_enforced) > 20:
+                print(f"    ... {len(unregistered_enforced) - 20} more")
+        elif unregistered:
             label = "[BLOCK]" if args.enforce_discovered else "[warn]"
             print(f"{label} unregistered source suppressions: {len(unregistered)}")
             for item in unregistered[:20]:
