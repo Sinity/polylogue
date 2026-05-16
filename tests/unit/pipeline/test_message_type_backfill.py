@@ -7,6 +7,10 @@ from pathlib import Path
 import pytest
 
 from polylogue.config import Config
+from polylogue.storage.message_type_backfill import (
+    count_messages_by_type_sync,
+    count_unclassified_message_type_sync,
+)
 from polylogue.storage.repair import repair_message_type_backfill
 from polylogue.storage.sqlite.connection import connection_context
 from tests.infra.storage_records import ConversationBuilder
@@ -208,3 +212,88 @@ class TestMessageTypeBackfill:
                 "SELECT COUNT(*) FROM messages WHERE message_type IN ('context', 'protocol')"
             ).fetchone()[0]
             assert count == 1, f"Only the pre-existing 'context' row should exist, found {count}"
+
+    def test_before_after_artifact_class_counts(
+        self, workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """#839 AC #6: before/after counts move from default ``message`` into
+        ``context`` and ``protocol`` exactly by the rows the classifier
+        matches, with the backfill ``repaired_count`` matching the diff.
+
+        Pre-fix the repair would over-report because it summed
+        ``conn.total_changes`` (cumulative across the connection) on each
+        UPDATE batch instead of the per-statement ``rowcount``.
+        """
+        db_path = Path(workspace_env["archive_root"]) / "polylogue.db"
+        _make_db_with_messages(db_path)
+
+        cfg = _make_config(workspace_env, db_path)
+        monkeypatch.setattr("polylogue.paths.db_path", lambda: db_path)
+
+        with connection_context(db_path) as conn:
+            before = count_messages_by_type_sync(conn)
+            preview = count_unclassified_message_type_sync(conn)
+        # Fixture has 3 context-marker rows + 2 protocol-marker rows + 2
+        # plain dialogue + 1 already-classified ``context``.
+        assert before == {"message": 7, "context": 1}
+        # Preview now counts only classifier-positive candidates, not
+        # every default ``message`` row.
+        assert preview == 5
+
+        result = repair_message_type_backfill(cfg, dry_run=False)
+        assert result.success, result.detail
+        assert result.repaired_count == 5, (
+            f"repaired_count should equal classifier-positive rows, got {result.repaired_count}"
+        )
+
+        with connection_context(db_path) as conn:
+            after = count_messages_by_type_sync(conn)
+        assert after == {"message": 2, "context": 4, "protocol": 2}
+        assert after["context"] - before["context"] == 3
+        assert after.get("protocol", 0) - before.get("protocol", 0) == 2
+        assert before["message"] - after["message"] == 5
+
+    def test_user_role_with_non_prose_semantic_type(
+        self, workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """#839 AC #5: provider role ``user`` but stored semantic type is
+        not ordinary user prose. After backfill, these rows are flagged
+        as context/protocol by the persisted ``message_type`` and the
+        Message runtime helpers (``is_context_dump``/``is_protocol_artifact``)
+        agree, even though ``role == 'user'`` would otherwise look like
+        plain dialogue.
+        """
+        from polylogue.archive.message.model_runtime import MessageRuntimeMixin
+        from polylogue.archive.message.types import MessageType
+
+        db_path = Path(workspace_env["archive_root"]) / "polylogue.db"
+        _make_db_with_messages(db_path)
+        cfg = _make_config(workspace_env, db_path)
+        monkeypatch.setattr("polylogue.paths.db_path", lambda: db_path)
+
+        repair_message_type_backfill(cfg, dry_run=False)
+
+        with connection_context(db_path) as conn:
+            rows = conn.execute(
+                "SELECT message_id, role, message_type FROM messages "
+                "WHERE message_id IN ('ctx-1', 'proto-1', 'plain-1')"
+            ).fetchall()
+        by_id = {row[0]: (row[1], row[2]) for row in rows}
+        assert by_id["ctx-1"] == ("user", "context")
+        assert by_id["proto-1"] == ("user", "protocol")
+        assert by_id["plain-1"] == ("user", "message")
+
+        # The runtime mixin reads from persisted message_type only.
+        class _MsgStub(MessageRuntimeMixin):
+            def __init__(self, mt: MessageType) -> None:
+                self.message_type = mt
+
+        ctx_msg = _MsgStub(MessageType.CONTEXT)
+        proto_msg = _MsgStub(MessageType.PROTOCOL)
+        plain_msg = _MsgStub(MessageType.MESSAGE)
+        assert ctx_msg.is_context_dump is True
+        assert ctx_msg.is_protocol_artifact is False
+        assert proto_msg.is_protocol_artifact is True
+        assert proto_msg.is_context_dump is False
+        assert plain_msg.is_context_dump is False
+        assert plain_msg.is_protocol_artifact is False

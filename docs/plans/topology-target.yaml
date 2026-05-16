@@ -2527,6 +2527,11 @@ files:
     target: polylogue/storage/index.py
     owner: storage-root
     reason: storage-root cross-cutting helper
+  - path: polylogue/storage/message_type_backfill.py
+    loc: 222
+    target: polylogue/storage/message_type_backfill.py
+    owner: storage-root
+    reason: "#839 backfill split out of repair.py per file-size-budgets.yaml"
   - path: polylogue/storage/insights/__init__.py
     loc: 0
     target: polylogue/storage/insights/__init__.py
