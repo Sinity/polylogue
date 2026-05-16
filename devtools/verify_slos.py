@@ -25,6 +25,8 @@ from devtools.benchmark_results import parse_pytest_benchmark_stats
 ROOT = _get_root()
 SLO_CATALOG = ROOT / "docs" / "plans" / "slo-catalog.yaml"
 SLO_GATES = frozenset({"required", "informational"})
+SLO_TIERS = frozenset({"cheap-local", "lab"})
+DEFAULT_TIER = "cheap-local"
 
 
 # ---------------------------------------------------------------------------
@@ -78,10 +80,23 @@ def _coerce_slo_value(value: str) -> str | int:
 # ---------------------------------------------------------------------------
 
 
-def _collect_benchmark_tests(surfaces: dict[str, dict[str, object]]) -> set[str]:
-    """Collect unique benchmark test node IDs from the SLO catalog."""
+def _collect_benchmark_tests(
+    surfaces: dict[str, dict[str, object]],
+    *,
+    active_tiers: frozenset[str] | None = None,
+) -> set[str]:
+    """Collect unique benchmark test node IDs from the SLO catalog.
+
+    When ``active_tiers`` is provided, only collect tests whose surface tier
+    appears in the set. Surfaces with an invalid tier are skipped (the caller
+    surfaces the catalog error separately).
+    """
     tests: set[str] = set()
-    for _surface_name, config in surfaces.items():
+    for surface_name, config in surfaces.items():
+        if active_tiers is not None:
+            tier, tier_error = _surface_tier(surface_name, config)
+            if tier_error is not None or tier not in active_tiers:
+                continue
         test = config.get("benchmark_test")
         if isinstance(test, str) and test.strip():
             tests.add(test.strip())
@@ -94,6 +109,14 @@ def _surface_gate(surface_name: str, config: dict[str, object]) -> tuple[str | N
     if isinstance(raw_gate, str) and raw_gate in SLO_GATES:
         return raw_gate, None
     return None, f"{surface_name}: invalid gate {raw_gate!r}; expected one of {sorted(SLO_GATES)!r}"
+
+
+def _surface_tier(surface_name: str, config: dict[str, object]) -> tuple[str | None, str | None]:
+    """Return the surface tier, or a catalog error message when invalid."""
+    raw_tier = config.get("tier", DEFAULT_TIER)
+    if isinstance(raw_tier, str) and raw_tier in SLO_TIERS:
+        return raw_tier, None
+    return None, f"{surface_name}: invalid tier {raw_tier!r}; expected one of {sorted(SLO_TIERS)!r}"
 
 
 def _run_benchmarks(test_ids: set[str]) -> dict[str, dict[str, float]]:
@@ -171,6 +194,30 @@ def _estimate_p95(entry_stats: dict[str, float]) -> float:
 # ---------------------------------------------------------------------------
 
 
+def _resolve_active_tiers(
+    *, tier: str | None, include_lab: bool, all_tiers: bool
+) -> tuple[frozenset[str] | None, str | None]:
+    """Resolve which tiers to evaluate from CLI flags.
+
+    Returns ``(tiers, error)``. ``tiers`` is ``None`` when no filter applies
+    (legacy/all-tiers mode), otherwise a frozenset of allowed tier names.
+    ``error`` is a user-facing message when flags are inconsistent.
+    """
+    if all_tiers and (tier is not None or include_lab):
+        return None, "--all-tiers is incompatible with --tier <name> / --include-lab"
+    if all_tiers:
+        return frozenset(SLO_TIERS), None
+    if tier is not None:
+        if tier not in SLO_TIERS:
+            return None, f"--tier {tier!r}: expected one of {sorted(SLO_TIERS)!r}"
+        if include_lab and tier == "cheap-local":
+            return frozenset({"cheap-local", "lab"}), None
+        return frozenset({tier}), None
+    if include_lab:
+        return frozenset({"cheap-local", "lab"}), None
+    return frozenset({DEFAULT_TIER}), None
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--yaml", type=Path, default=SLO_CATALOG)
@@ -180,14 +227,37 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Skip running benchmarks (use with --json to see catalog only)",
     )
+    parser.add_argument(
+        "--tier",
+        choices=sorted(SLO_TIERS),
+        default=None,
+        help="Run only surfaces declared in this tier (default: cheap-local).",
+    )
+    parser.add_argument(
+        "--include-lab",
+        action="store_true",
+        help="Run cheap-local plus lab tier (used by `devtools verify --lab`).",
+    )
+    parser.add_argument(
+        "--all-tiers",
+        action="store_true",
+        help="Run every surface regardless of tier.",
+    )
     args = parser.parse_args(argv)
+
+    active_tiers, tier_error = _resolve_active_tiers(
+        tier=args.tier, include_lab=args.include_lab, all_tiers=args.all_tiers
+    )
+    if tier_error is not None:
+        print(f"verify-slos: {tier_error}", file=sys.stderr)
+        return 2
 
     # 1. Parse SLO catalog
     catalog_text = args.yaml.read_text()
     surfaces = _parse_slo_catalog(catalog_text)
 
-    # 2. Collect benchmark tests
-    test_ids = _collect_benchmark_tests(surfaces)
+    # 2. Collect benchmark tests filtered by active tier
+    test_ids = _collect_benchmark_tests(surfaces, active_tiers=active_tiers)
 
     # 3. Run benchmarks
     benchmark_stats = _run_benchmarks(test_ids) if not args.skip_benchmarks else {}
@@ -198,6 +268,7 @@ def main(argv: list[str] | None = None) -> int:
     missing_required: list[dict[str, object]] = []
     passed: list[dict[str, object]] = []
     uncovered_informational: list[dict[str, object]] = []
+    skipped_tier: list[dict[str, object]] = []
 
     for surface_name, config in surfaces.items():
         gate, gate_error = _surface_gate(surface_name, config)
@@ -205,6 +276,23 @@ def main(argv: list[str] | None = None) -> int:
             catalog_errors.append(gate_error)
             continue
         assert gate is not None
+
+        tier, tier_catalog_error = _surface_tier(surface_name, config)
+        if tier_catalog_error is not None:
+            catalog_errors.append(tier_catalog_error)
+            continue
+        assert tier is not None
+
+        if active_tiers is not None and tier not in active_tiers:
+            skipped_tier.append(
+                {
+                    "surface": surface_name,
+                    "gate": gate,
+                    "tier": tier,
+                    "reason": f"tier {tier!r} not in active tiers {sorted(active_tiers)!r}",
+                }
+            )
+            continue
 
         target_p50 = config.get("p50_ms")
         target_p95 = config.get("p95_ms")
@@ -224,6 +312,7 @@ def main(argv: list[str] | None = None) -> int:
             missing_result: dict[str, object] = {
                 "surface": surface_name,
                 "gate": gate,
+                "tier": tier,
                 "benchmark_test": benchmark_test,
                 "reason": "no benchmark result for this test",
             }
@@ -244,6 +333,7 @@ def main(argv: list[str] | None = None) -> int:
         result: dict[str, object] = {
             "surface": surface_name,
             "gate": gate,
+            "tier": tier,
             "description": config.get("description", ""),
             "benchmark_test": benchmark_test,
             "target_p50_ms": target_p50,
@@ -267,11 +357,13 @@ def main(argv: list[str] | None = None) -> int:
         json.dump(
             {
                 "blocking": blocking,
+                "active_tiers": sorted(active_tiers) if active_tiers is not None else None,
                 "catalog_errors": catalog_errors,
                 "violations": violations,
                 "missing_required": missing_required,
                 "passed": passed,
                 "uncovered_informational": uncovered_informational,
+                "skipped_tier": skipped_tier,
             },
             sys.stdout,
             indent=2,
@@ -317,6 +409,14 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"  {u['surface']}: {u['reason']}")
             print()
 
+        if skipped_tier:
+            print(f"Skipped (tier filter) ({len(skipped_tier)} surfaces):")
+            for s in skipped_tier:
+                print(f"  {s['surface']} [tier={s['tier']}]")
+            print()
+
+        if active_tiers is not None:
+            print(f"active_tiers={sorted(active_tiers)}")
         print(f"blocking={blocking}")
 
     return 1 if blocking else 0

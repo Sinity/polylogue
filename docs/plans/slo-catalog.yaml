@@ -15,11 +15,20 @@
 #       p50_ms:         <int milliseconds, median budget>
 #       p95_ms:         <int milliseconds, p95 budget — estimated mean+1.645*stddev>
 #       gate:           "required" | "informational"
+#       tier:           "cheap-local" | "lab"
 #
-# verify_slos exits non-zero when any required surface exceeds its declared
-# budget or fails to produce a benchmark result. Informational rows are visible
-# but non-blocking placeholders for deferred read paths whose benchmark fixtures
-# or product paths do not yet exist.
+# verify_slos exits non-zero when any required surface (in the active tier set)
+# exceeds its declared budget or fails to produce a benchmark result.
+# Informational rows are visible but non-blocking placeholders for deferred read
+# paths whose benchmark fixtures or product paths do not yet exist.
+#
+# Tiering separates execution cost:
+#   * cheap-local — runnable in `devtools verify` defaults. Small fixtures, low
+#     repetition counts, total run under a few seconds. Always enforced.
+#   * lab — heavier benchmarks runnable via `devtools verify --lab` or
+#     `devtools verify-slos --include-lab` (or explicit
+#     `devtools benchmark-campaign run <name>`). Skipped in the default loop
+#     so commit-frequency verification stays fast.
 
 surfaces:
 
@@ -29,6 +38,7 @@ surfaces:
     p50_ms: 100
     p95_ms: 250
     gate: "required"
+    tier: "cheap-local"
 
   reader:
     description: "Reader list endpoint over the 5k synthetic archive"
@@ -36,6 +46,7 @@ surfaces:
     p50_ms: 300
     p95_ms: 750
     gate: "required"
+    tier: "cheap-local"
 
   facets:
     description: "Facets endpoint aggregating provider/tag counts over the 5k synthetic archive"
@@ -43,6 +54,7 @@ surfaces:
     p50_ms: 200
     p95_ms: 500
     gate: "required"
+    tier: "cheap-local"
 
   context:
     description: "Context-pack assembly placeholder (deferred until #838 lands)"
@@ -50,6 +62,7 @@ surfaces:
     p50_ms: 500
     p95_ms: 1500
     gate: "informational"
+    tier: "cheap-local"
 
   cost:
     description: "Cost rollup placeholder (deferred until #803/#870 land)"
@@ -57,6 +70,7 @@ surfaces:
     p50_ms: 300
     p95_ms: 800
     gate: "informational"
+    tier: "cheap-local"
 
   daemon_convergence_single_file:
     description: "Daemon ingest convergence for a single 1000-message synthetic session"
@@ -64,3 +78,4 @@ surfaces:
     p50_ms: 30000
     p95_ms: 60000
     gate: "informational"
+    tier: "lab"

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import shlex
 import sys
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -296,6 +296,124 @@ def check_campaign_coverage_catalog(plans_dir: Path) -> list[str]:
             },
         )
     )
+    errors.extend(_check_campaign_test_paths(path, data, plans_dir))
+    return errors
+
+
+def _check_campaign_test_paths(
+    path: Path,
+    data: dict[str, object],
+    plans_dir: Path,
+) -> list[str]:
+    """Verify every active campaign declares non-empty tests/paths that exist on disk.
+
+    This closes the manifest-only loophole where a row can carry a name and a
+    description but route nowhere executable.
+    """
+    repo_root = _repo_root_for_plans(plans_dir)
+    errors: list[str] = []
+    for section in ("mutation_campaigns", "benchmark_campaigns"):
+        value = data.get(section)
+        if not isinstance(value, list):
+            continue
+        for index, item in enumerate(value):
+            if not isinstance(item, dict):
+                continue
+            name = item.get("name")
+            label_name = f"{name!r}" if isinstance(name, str) and name.strip() else f"index {index}"
+            status = item.get("status", "active")
+            if status != "active":
+                continue
+            tests = item.get("tests")
+            if not isinstance(tests, list) or not tests:
+                errors.append(
+                    f"{path}: {section} campaign {label_name} declares no tests; "
+                    "active campaigns must point at executable test paths"
+                )
+            else:
+                for test_index, test_path in enumerate(tests):
+                    if not isinstance(test_path, str) or not test_path.strip():
+                        errors.append(
+                            f"{path}: {section} campaign {label_name} tests[{test_index}] must be a non-empty string"
+                        )
+                        continue
+                    candidate = _manifest_path_token(test_path)
+                    if candidate and not _manifest_path_exists(repo_root, candidate):
+                        errors.append(
+                            f"{path}: {section} campaign {label_name} tests[{test_index}] "
+                            f"path does not exist: {candidate!r}"
+                        )
+            if section == "mutation_campaigns":
+                paths_to_mutate = item.get("paths_to_mutate")
+                if not isinstance(paths_to_mutate, list) or not paths_to_mutate:
+                    errors.append(
+                        f"{path}: {section} campaign {label_name} declares no paths_to_mutate; "
+                        "active mutation campaigns must target executable source paths"
+                    )
+            errors.extend(_check_campaign_freshness(path, section, label_name, item, repo_root))
+    return errors
+
+
+def _check_campaign_freshness(
+    path: Path,
+    section: str,
+    label_name: str,
+    item: dict[object, object],
+    repo_root: Path,
+) -> list[str]:
+    """Enforce ``freshness_days`` / ``artifact_glob`` when declared.
+
+    Absent fields stay silent so rows opt in gradually. When declared, the most
+    recent matching artifact must exist, be non-empty, and (if
+    ``freshness_days`` is set) be newer than the declared window. Without an
+    explicit ``artifact_glob``, benchmark campaigns default to
+    ``.local/benchmark-campaigns/*-<name>.json`` — the path written by
+    ``devtools benchmark-campaign run``.
+    """
+    errors: list[str] = []
+    freshness_days = item.get("freshness_days")
+    artifact_glob = item.get("artifact_glob")
+    name = item.get("name")
+    if not isinstance(name, str) or not name.strip():
+        return errors
+
+    fresh_declared = isinstance(freshness_days, int) and freshness_days > 0
+    glob_declared = isinstance(artifact_glob, str) and bool(artifact_glob.strip())
+    if not fresh_declared and not glob_declared:
+        return errors
+
+    if glob_declared:
+        assert isinstance(artifact_glob, str)
+        glob = artifact_glob.strip()
+    elif section == "benchmark_campaigns":
+        glob = f".local/benchmark-campaigns/*-{name}.json"
+    else:
+        errors.append(
+            f"{path}: {section} campaign {label_name} declares freshness_days without "
+            "an artifact_glob; only benchmark_campaigns have a default artifact location"
+        )
+        return errors
+
+    matches = sorted(repo_root.glob(glob))
+    if not matches:
+        errors.append(
+            f"{path}: {section} campaign {label_name} declares artifact glob {glob!r} but no matching artifacts exist"
+        )
+        return errors
+
+    newest = max(matches, key=lambda p: p.stat().st_mtime)
+    if newest.stat().st_size == 0:
+        errors.append(f"{path}: {section} campaign {label_name} newest artifact {newest.name!r} is empty")
+
+    if fresh_declared:
+        assert isinstance(freshness_days, int)
+        age = datetime.now(UTC) - datetime.fromtimestamp(newest.stat().st_mtime, tz=UTC)
+        if age > timedelta(days=freshness_days):
+            errors.append(
+                f"{path}: {section} campaign {label_name} newest artifact {newest.name!r} is "
+                f"{age.days}d old, exceeding freshness_days={freshness_days}"
+            )
+
     return errors
 
 
@@ -340,6 +458,8 @@ def _manifest_named_entries(
     value: object,
     errors: list[str],
 ) -> dict[str, dict[object, object]] | None:
+    if value is None:
+        return {}
     if not isinstance(value, list):
         errors.append(f"{path}: {section!r} must be a list")
         return None

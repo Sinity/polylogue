@@ -295,7 +295,7 @@ def build_verify_steps(
 
     if lab:
         steps.append(("lab scenario", _devtools_cmd("lab-scenario", "run", "archive-smoke", "--tier", "0")))
-        steps.append(("verify-slos", _devtools_cmd("verify-slos")))
+        steps.append(("verify-slos", _devtools_cmd("verify-slos", "--include-lab")))
     return steps
 
 

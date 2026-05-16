@@ -229,11 +229,29 @@ def test_coverage_status_claims_reject_missing_item_with_realized_evidence(tmp_p
     ]
 
 
+def _seed_paths(plans: Path, *relative_paths: str) -> None:
+    """Create empty stand-ins for paths the manifest references.
+
+    ``check_campaign_coverage_catalog`` now requires every active campaign's
+    declared tests (and mutation paths_to_mutate) to exist on disk.
+    """
+    for rel in relative_paths:
+        target = plans / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.touch(exist_ok=True)
+
+
 def test_campaign_coverage_catalog_accepts_authored_catalog(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
 ) -> None:
     plans = tmp_path
+    _seed_paths(
+        plans,
+        "polylogue/archive/filter/filters.py",
+        "tests/unit/core/test_filters_props.py",
+        "tests/benchmarks/test_storage.py",
+    )
     monkeypatch.setattr(
         verify_manifests,
         "get_authored_scenario_catalog",
@@ -283,6 +301,15 @@ def test_campaign_coverage_catalog_rejects_stale_manifest(
     monkeypatch: MonkeyPatch,
 ) -> None:
     plans = tmp_path
+    # Seed the manifest-declared (old) paths so this test exercises only the
+    # mismatch-vs-authored-catalog assertions; path-existence checks are
+    # covered separately below.
+    _seed_paths(
+        plans,
+        "polylogue/archive/filter/old_filters.py",
+        "tests/unit/core/test_filters_props.py",
+        "tests/benchmarks/test_storage.py",
+    )
     monkeypatch.setattr(
         verify_manifests,
         "get_authored_scenario_catalog",
@@ -349,3 +376,281 @@ domains:
     )
 
     assert verify_manifests.check_assurance_domains(plans) == []
+
+
+# ---------------------------------------------------------------------------
+# Pack C: campaign test-path and freshness/artifact existence enforcement
+# ---------------------------------------------------------------------------
+
+
+def test_campaign_coverage_rejects_missing_test_path(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """A campaign that points at a nonexistent test path must fail."""
+    plans = tmp_path
+    # Seed the mutation source but not the test path.
+    _seed_paths(plans, "polylogue/archive/filter/filters.py")
+    monkeypatch.setattr(
+        verify_manifests,
+        "get_authored_scenario_catalog",
+        lambda: SimpleNamespace(
+            mutation_campaigns=(),
+            benchmark_campaigns=(
+                SimpleNamespace(
+                    name="storage",
+                    description="Storage benchmarks",
+                    tests=("tests/benchmarks/test_storage.py",),
+                ),
+            ),
+        ),
+    )
+    (plans / "campaign-coverage.yaml").write_text(
+        """mutation_campaigns: []
+benchmark_campaigns:
+  - name: storage
+    description: Storage benchmarks
+    tests:
+      - tests/benchmarks/test_storage.py
+    status: active
+""",
+        encoding="utf-8",
+    )
+
+    errors = verify_manifests.check_campaign_coverage_catalog(plans)
+    assert errors == [
+        f"{plans / 'campaign-coverage.yaml'}: benchmark_campaigns campaign 'storage' "
+        "tests[0] path does not exist: 'tests/benchmarks/test_storage.py'"
+    ]
+
+
+def test_campaign_coverage_rejects_empty_tests_list(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """An active campaign with an empty tests list cannot pass."""
+    plans = tmp_path
+    monkeypatch.setattr(
+        verify_manifests,
+        "get_authored_scenario_catalog",
+        lambda: SimpleNamespace(
+            mutation_campaigns=(),
+            benchmark_campaigns=(SimpleNamespace(name="storage", description="d", tests=()),),
+        ),
+    )
+    (plans / "campaign-coverage.yaml").write_text(
+        """mutation_campaigns: []
+benchmark_campaigns:
+  - name: storage
+    description: d
+    tests: []
+    status: active
+""",
+        encoding="utf-8",
+    )
+
+    errors = verify_manifests.check_campaign_coverage_catalog(plans)
+    assert any("declares no tests" in err for err in errors), errors
+
+
+def test_campaign_coverage_freshness_passes_for_recent_artifact(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """A campaign with freshness_days passes when a recent artifact exists."""
+    plans = tmp_path
+    _seed_paths(plans, "tests/benchmarks/test_storage.py")
+    artifact_dir = plans / ".local" / "benchmark-campaigns"
+    artifact_dir.mkdir(parents=True)
+    artifact_path = artifact_dir / "2026-05-16-storage.json"
+    artifact_path.write_text('{"benchmarks": []}', encoding="utf-8")  # non-empty
+    monkeypatch.setattr(
+        verify_manifests,
+        "get_authored_scenario_catalog",
+        lambda: SimpleNamespace(
+            mutation_campaigns=(),
+            benchmark_campaigns=(
+                SimpleNamespace(
+                    name="storage",
+                    description="Storage benchmarks",
+                    tests=("tests/benchmarks/test_storage.py",),
+                ),
+            ),
+        ),
+    )
+    (plans / "campaign-coverage.yaml").write_text(
+        """mutation_campaigns: []
+benchmark_campaigns:
+  - name: storage
+    description: Storage benchmarks
+    tests:
+      - tests/benchmarks/test_storage.py
+    status: active
+    freshness_days: 30
+""",
+        encoding="utf-8",
+    )
+
+    assert verify_manifests.check_campaign_coverage_catalog(plans) == []
+
+
+def test_campaign_coverage_freshness_fails_when_artifact_missing(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """freshness_days without a matching artifact must fail loudly."""
+    plans = tmp_path
+    _seed_paths(plans, "tests/benchmarks/test_storage.py")
+    monkeypatch.setattr(
+        verify_manifests,
+        "get_authored_scenario_catalog",
+        lambda: SimpleNamespace(
+            mutation_campaigns=(),
+            benchmark_campaigns=(
+                SimpleNamespace(
+                    name="storage",
+                    description="Storage benchmarks",
+                    tests=("tests/benchmarks/test_storage.py",),
+                ),
+            ),
+        ),
+    )
+    (plans / "campaign-coverage.yaml").write_text(
+        """mutation_campaigns: []
+benchmark_campaigns:
+  - name: storage
+    description: Storage benchmarks
+    tests:
+      - tests/benchmarks/test_storage.py
+    status: active
+    freshness_days: 7
+""",
+        encoding="utf-8",
+    )
+
+    errors = verify_manifests.check_campaign_coverage_catalog(plans)
+    assert any("no matching artifacts exist" in err for err in errors), errors
+
+
+def test_campaign_coverage_freshness_fails_when_artifact_is_stale(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """An artifact older than freshness_days must trip the staleness check."""
+    import os
+    import time
+
+    plans = tmp_path
+    _seed_paths(plans, "tests/benchmarks/test_storage.py")
+    artifact_dir = plans / ".local" / "benchmark-campaigns"
+    artifact_dir.mkdir(parents=True)
+    artifact_path = artifact_dir / "2020-01-01-storage.json"
+    artifact_path.write_text('{"benchmarks": []}', encoding="utf-8")
+    old_ts = time.time() - 365 * 86400
+    os.utime(artifact_path, (old_ts, old_ts))
+
+    monkeypatch.setattr(
+        verify_manifests,
+        "get_authored_scenario_catalog",
+        lambda: SimpleNamespace(
+            mutation_campaigns=(),
+            benchmark_campaigns=(
+                SimpleNamespace(
+                    name="storage",
+                    description="Storage benchmarks",
+                    tests=("tests/benchmarks/test_storage.py",),
+                ),
+            ),
+        ),
+    )
+    (plans / "campaign-coverage.yaml").write_text(
+        """mutation_campaigns: []
+benchmark_campaigns:
+  - name: storage
+    description: Storage benchmarks
+    tests:
+      - tests/benchmarks/test_storage.py
+    status: active
+    freshness_days: 30
+""",
+        encoding="utf-8",
+    )
+
+    errors = verify_manifests.check_campaign_coverage_catalog(plans)
+    assert any("exceeding freshness_days=30" in err for err in errors), errors
+
+
+def test_campaign_coverage_artifact_glob_must_resolve(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """An explicit artifact_glob must match at least one non-empty artifact."""
+    plans = tmp_path
+    _seed_paths(plans, "tests/benchmarks/test_storage.py")
+    monkeypatch.setattr(
+        verify_manifests,
+        "get_authored_scenario_catalog",
+        lambda: SimpleNamespace(
+            mutation_campaigns=(),
+            benchmark_campaigns=(
+                SimpleNamespace(
+                    name="storage",
+                    description="Storage benchmarks",
+                    tests=("tests/benchmarks/test_storage.py",),
+                ),
+            ),
+        ),
+    )
+    (plans / "campaign-coverage.yaml").write_text(
+        """mutation_campaigns: []
+benchmark_campaigns:
+  - name: storage
+    description: Storage benchmarks
+    tests:
+      - tests/benchmarks/test_storage.py
+    status: active
+    artifact_glob: ".local/never-existed/*.json"
+""",
+        encoding="utf-8",
+    )
+
+    errors = verify_manifests.check_campaign_coverage_catalog(plans)
+    assert any("no matching artifacts exist" in err for err in errors), errors
+
+
+def test_campaign_coverage_inactive_status_skips_path_check(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """Inactive campaigns are intentionally exempt from path enforcement."""
+    plans = tmp_path
+    # Note: no seeded paths — they don't exist.
+    monkeypatch.setattr(
+        verify_manifests,
+        "get_authored_scenario_catalog",
+        lambda: SimpleNamespace(
+            mutation_campaigns=(),
+            benchmark_campaigns=(
+                SimpleNamespace(
+                    name="storage",
+                    description="Storage benchmarks",
+                    tests=("tests/benchmarks/test_storage.py",),
+                ),
+            ),
+        ),
+    )
+    (plans / "campaign-coverage.yaml").write_text(
+        """mutation_campaigns: []
+benchmark_campaigns:
+  - name: storage
+    description: Storage benchmarks
+    tests:
+      - tests/benchmarks/test_storage.py
+    status: archived
+""",
+        encoding="utf-8",
+    )
+
+    errors = verify_manifests.check_campaign_coverage_catalog(plans)
+    path_errors = [e for e in errors if "path does not exist" in e]
+    assert path_errors == []

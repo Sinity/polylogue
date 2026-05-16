@@ -29,6 +29,7 @@ from devtools import verify_slos
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 CATALOG_PATH = REPO_ROOT / "docs" / "plans" / "slo-catalog.yaml"
+BENCH_FIXTURE_DIR = REPO_ROOT / "tests" / "data" / "pytest-benchmark"
 
 REQUIRED_SURFACES = ("query", "reader", "facets", "context", "cost")
 
@@ -170,6 +171,7 @@ surfaces:
         {
             "surface": "reader",
             "gate": "required",
+            "tier": "cheap-local",
             "benchmark_test": "tests/benchmarks/test_reader_api.py::test_missing_required",
             "reason": "no benchmark result for this test",
         }
@@ -208,6 +210,7 @@ surfaces:
         {
             "surface": "cost",
             "gate": "informational",
+            "tier": "cheap-local",
             "benchmark_test": "tests/benchmarks/test_reader_api.py::test_missing_informational",
             "reason": "no benchmark result for this test",
         }
@@ -299,3 +302,226 @@ surfaces:
     assert rc != 0
     assert payload["blocking"] is True
     assert payload["catalog_errors"] == ["reader: required surface must declare benchmark_test (string)"]
+
+
+# ---------------------------------------------------------------------------
+# Tier filtering (Pack B)
+# ---------------------------------------------------------------------------
+
+
+def test_catalog_required_surfaces_are_cheap_local_tier() -> None:
+    """All ``gate: required`` rows must live in the cheap-local tier.
+
+    Promoting a row to ``required`` while leaving it in the ``lab`` tier would
+    create a gate that ``devtools verify`` (default loop) cannot reach but that
+    still blocks PRs once anyone runs the lab loop. Required-but-lab is a
+    contradiction the catalog must forbid by convention.
+    """
+    surfaces = verify_slos._parse_slo_catalog(CATALOG_PATH.read_text())
+    offenders: list[str] = []
+    for name, config in surfaces.items():
+        gate = config.get("gate", "required")
+        tier = config.get("tier", verify_slos.DEFAULT_TIER)
+        if gate == "required" and tier != "cheap-local":
+            offenders.append(f"{name} (tier={tier!r})")
+    assert not offenders, (
+        "required SLO rows must be in the cheap-local tier so the default "
+        f"verify loop can run them; offenders: {offenders}"
+    )
+
+
+def test_lab_tier_surface_skipped_by_default(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Lab-tier rows are skipped (and reported) unless --include-lab is set."""
+    catalog = _write_slo_catalog(
+        tmp_path,
+        """
+surfaces:
+  daemon_lab:
+    description: "Lab-only convergence"
+    benchmark_test: "tests/benchmarks/test_daemon_convergence.py::test_lab_node"
+    p50_ms: 30000
+    p95_ms: 60000
+    gate: "required"
+    tier: "lab"
+""",
+    )
+    captured_ids: dict[str, set[str]] = {"ids": set()}
+
+    def fake_run(ids: set[str]) -> dict[str, dict[str, float]]:
+        captured_ids["ids"] = ids
+        return {}
+
+    monkeypatch.setattr(verify_slos, "_run_benchmarks", fake_run)
+
+    buffer = io.StringIO()
+    with redirect_stdout(buffer):
+        rc = verify_slos.main(["--yaml", str(catalog), "--json"])
+
+    payload = json.loads(buffer.getvalue())
+    assert rc == 0, payload  # lab row is filtered out, so nothing blocks
+    assert payload["active_tiers"] == ["cheap-local"]
+    assert payload["skipped_tier"] == [
+        {
+            "surface": "daemon_lab",
+            "gate": "required",
+            "tier": "lab",
+            "reason": "tier 'lab' not in active tiers ['cheap-local']",
+        }
+    ]
+    assert payload["missing_required"] == []
+    # No tests collected for execution because lab tier was filtered.
+    assert captured_ids["ids"] == set()
+
+
+def test_lab_tier_surface_runs_with_include_lab(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``--include-lab`` adds lab-tier rows to the execution and gating set."""
+    catalog = _write_slo_catalog(
+        tmp_path,
+        """
+surfaces:
+  daemon_lab:
+    description: "Lab-only convergence"
+    benchmark_test: "tests/benchmarks/test_daemon_convergence.py::test_lab_node"
+    p50_ms: 30000
+    p95_ms: 60000
+    gate: "required"
+    tier: "lab"
+""",
+    )
+    captured_ids: dict[str, set[str]] = {"ids": set()}
+
+    def fake_run(ids: set[str]) -> dict[str, dict[str, float]]:
+        captured_ids["ids"] = ids
+        return {}
+
+    monkeypatch.setattr(verify_slos, "_run_benchmarks", fake_run)
+
+    buffer = io.StringIO()
+    with redirect_stdout(buffer):
+        rc = verify_slos.main(["--yaml", str(catalog), "--json", "--include-lab"])
+
+    payload = json.loads(buffer.getvalue())
+    assert rc != 0, payload  # lab row is now active and its artifact is missing
+    assert set(payload["active_tiers"]) == {"cheap-local", "lab"}
+    assert payload["skipped_tier"] == []
+    assert payload["missing_required"] and payload["missing_required"][0]["surface"] == "daemon_lab"
+    assert captured_ids["ids"] == {"tests/benchmarks/test_daemon_convergence.py::test_lab_node"}
+
+
+def test_invalid_tier_is_catalog_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unknown tier values must fail the catalog rather than being guessed."""
+    catalog = _write_slo_catalog(
+        tmp_path,
+        """
+surfaces:
+  query:
+    description: "Search endpoint"
+    benchmark_test: "tests/benchmarks/test_search_filters.py::test_bench_query"
+    p50_ms: 100
+    p95_ms: 200
+    gate: "required"
+    tier: "ci-nightly"
+""",
+    )
+    monkeypatch.setattr(verify_slos, "_run_benchmarks", lambda _ids: {})
+
+    buffer = io.StringIO()
+    with redirect_stdout(buffer):
+        rc = verify_slos.main(["--yaml", str(catalog), "--json", "--all-tiers"])
+
+    payload = json.loads(buffer.getvalue())
+    assert rc != 0
+    assert payload["blocking"] is True
+    assert payload["catalog_errors"] == ["query: invalid tier 'ci-nightly'; expected one of ['cheap-local', 'lab']"]
+
+
+# ---------------------------------------------------------------------------
+# Real pytest-benchmark JSON fixture parsing (Pack B)
+# ---------------------------------------------------------------------------
+
+
+def test_real_pytest_benchmark_json_fixture_parses() -> None:
+    """A committed pytest-benchmark JSON artifact parses through the shared loader.
+
+    Pack B requires at least one real pytest-benchmark artifact to flow through
+    the parser, not just hand-built stats dicts. The fixture was captured from
+    an actual pytest-benchmark run and lives under tests/data/pytest-benchmark/.
+    """
+    fixture = BENCH_FIXTURE_DIR / "reader-status.json"
+    assert fixture.exists(), f"missing benchmark fixture: {fixture}"
+
+    payload = json.loads(fixture.read_text())
+    from devtools.benchmark_results import parse_pytest_benchmark_stats
+
+    stats = parse_pytest_benchmark_stats(payload)
+    assert len(stats) >= 1
+    by_name = {entry.fullname: entry for entry in stats}
+    target = "tests/benchmarks/test_reader_api.py::test_bench_reader_status"
+    assert target in by_name
+    entry = by_name[target]
+    assert entry.mean > 0
+    assert entry.median > 0
+    assert entry.rounds >= 1
+
+
+def test_verify_slos_scores_against_real_pytest_benchmark_fixture(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A real pytest-benchmark JSON drives the SLO scoring path end to end.
+
+    This replaces the stub-only path: we feed the parser the same artifact
+    shape pytest-benchmark writes, then assert verify_slos translates seconds
+    to milliseconds, applies the budget, and reports pass.
+    """
+    fixture_payload = json.loads((BENCH_FIXTURE_DIR / "reader-status.json").read_text())
+    from devtools.benchmark_results import parse_pytest_benchmark_stats
+
+    parsed_stats = {
+        entry.fullname: {
+            "mean": entry.mean,
+            "median": entry.median,
+            "min": entry.minimum,
+            "max": entry.maximum,
+            "stddev": entry.stddev,
+            "rounds": entry.rounds,
+        }
+        for entry in parse_pytest_benchmark_stats(fixture_payload)
+    }
+    assert parsed_stats, "fixture must yield at least one parsed stat"
+
+    catalog = _write_slo_catalog(
+        tmp_path,
+        """
+surfaces:
+  reader_status:
+    description: "Reader status placeholder"
+    benchmark_test: "tests/benchmarks/test_reader_api.py::test_bench_reader_status"
+    p50_ms: 50
+    p95_ms: 100
+    gate: "required"
+    tier: "cheap-local"
+""",
+    )
+    monkeypatch.setattr(verify_slos, "_run_benchmarks", lambda _ids: parsed_stats)
+
+    buffer = io.StringIO()
+    with redirect_stdout(buffer):
+        rc = verify_slos.main(["--yaml", str(catalog), "--json"])
+
+    payload = json.loads(buffer.getvalue())
+    assert rc == 0, payload
+    assert payload["passed"], "expected the real-fixture surface to pass"
+    measured = payload["passed"][0]
+    # fixture median is 0.0011s = 1.1ms; budget is 50ms.
+    assert measured["actual_p50_ms"] < measured["target_p50_ms"]
+    assert measured["actual_p95_ms"] < measured["target_p95_ms"]
