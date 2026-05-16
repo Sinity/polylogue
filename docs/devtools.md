@@ -115,6 +115,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools schema-promote` | Promote a schema evidence cluster into a registered package version. |
 | `devtools semantic-axis-evidence` | Generate verification-lab performance evidence across synthetic semantic scale tiers. |
 | `devtools verify` | Run the local verification baseline before pushing or creating a PR. |
+| `devtools verify-ci-workflows` | Verify CI workflow files reference locally-known devtools commands and existing paths. |
 | `devtools verify-cluster-cohesion` | Validate proposed clusters from the topology projection using the import graph. |
 | `devtools verify-cross-cuts` | Verify cross-cut tags in the topology projection match module-name conventions. |
 | `devtools verify-distribution-surface` | Verify wheel/sdist installed artifacts expose only supported runtime entrypoints. |

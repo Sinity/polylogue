@@ -254,6 +254,7 @@ def build_verify_steps(
                 ("verify-cross-cuts", _devtools_cmd("verify-cross-cuts")),
                 ("verify-suppressions", _devtools_cmd("verify-suppressions")),
                 ("verify-manifests", _devtools_cmd("verify-manifests")),
+                ("verify-ci-workflows", _devtools_cmd("verify-ci-workflows")),
                 ("verify-witness-lifecycle", _devtools_cmd("verify-witness-lifecycle")),
                 ("verify-lane-assertions", _devtools_cmd("verify-lane-assertions")),
             ]
