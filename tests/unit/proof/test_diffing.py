@@ -121,13 +121,13 @@ def test_schema_change_routes_to_roundtrip_obligation() -> None:
 
 
 def test_proof_report_tool_change_routes_to_catalog_obligations() -> None:
-    # devtools/proof_pack.py is a proof_catalog file but is NOT a claim-defining
+    # devtools/verification_impact.py is a proof_catalog file but is NOT a claim-defining
     # file (it's a devtools surface), so it should NOT expand to all obligations.
     # It still gets the proof-specific inner-loop checks.
     catalog = build_verification_catalog()
 
     report = build_affected_obligation_report(
-        ("devtools/proof_pack.py",),
+        ("devtools/verification_impact.py",),
         catalog=catalog,
         base_obligation_ids=(obligation.id for obligation in catalog.obligations),
         head_obligation_ids=(obligation.id for obligation in catalog.obligations),
@@ -139,17 +139,17 @@ def test_proof_report_tool_change_routes_to_catalog_obligations() -> None:
     assert report.affected_obligations == ()
     commands = [check.rendered_command for check in report.inner_loop_checks]
     assert "pytest tests/unit/proof" in commands
-    assert "pytest tests/unit/devtools/test_proof_pack.py" in commands
-    assert "devtools affected-obligations --full --check" in commands
+    assert "pytest tests/unit/devtools/test_verification_impact.py" in commands
+    assert "devtools verification-impact --full --check" in commands
 
 
 def test_proof_pack_test_change_routes_to_catalog_obligations() -> None:
-    # tests/unit/devtools/test_proof_pack.py is classified as proof_catalog but is NOT
+    # tests/unit/devtools/test_verification_impact.py is classified as proof_catalog but is NOT
     # in the claim-file set, so it should not expand to all obligations.
     catalog = build_verification_catalog()
 
     report = build_affected_obligation_report(
-        ("tests/unit/devtools/test_proof_pack.py",),
+        ("tests/unit/devtools/test_verification_impact.py",),
         catalog=catalog,
         base_obligation_ids=(obligation.id for obligation in catalog.obligations),
         head_obligation_ids=(obligation.id for obligation in catalog.obligations),
@@ -161,8 +161,8 @@ def test_proof_pack_test_change_routes_to_catalog_obligations() -> None:
     assert report.affected_obligations == ()
     commands = [check.rendered_command for check in report.inner_loop_checks]
     assert "pytest tests/unit/proof" in commands
-    assert "pytest tests/unit/devtools/test_proof_pack.py" in commands
-    assert "devtools affected-obligations --full --check" in commands
+    assert "pytest tests/unit/devtools/test_verification_impact.py" in commands
+    assert "devtools verification-impact --full --check" in commands
 
 
 def test_proof_catalog_claim_file_routes_to_all_obligations() -> None:

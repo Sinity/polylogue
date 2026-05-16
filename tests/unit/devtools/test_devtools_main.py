@@ -15,7 +15,7 @@ def test_list_commands_json_includes_generated_surface(capsys: pytest.CaptureFix
     commands = {entry["name"] for entry in payload["commands"]}
     assert payload["surfaces"]["verification_lab"] == [
         "render-verification-catalog",
-        "affected-obligations",
+        "verification-impact",
         "semantic-axis-evidence",
         "lab-corpus",
         "lab-scenario",

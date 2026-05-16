@@ -158,14 +158,14 @@ def _build_artifact_source_groups(
     return payload
 
 
-def build_proof_pack(
+def build_verification_impact_report(
     root: Path,
     *,
     base_ref: str = "origin/master",
     head_ref: str = "HEAD",
     changed_paths: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Build a diff-shaped proof-pack report with evidence taxonomy."""
+    """Build a diff-shaped verification impact report with evidence taxonomy."""
     catalog = build_verification_catalog()
     domains_data = _load_assurance_domains(root)
     paths = tuple(sorted(dict.fromkeys(changed_paths or changed_paths_between_refs(base_ref, head_ref))))
@@ -253,7 +253,7 @@ def build_proof_pack(
 
 
 def evaluate_check_policy(report: dict[str, Any]) -> dict[str, Any]:
-    """Evaluate proof-pack blocking policy over an already-built report."""
+    """Evaluate verification-impact blocking policy over an already-built report."""
     errors: list[str] = []
     warnings: list[str] = []
     for check in report.get("catalog_quality_checks", []):

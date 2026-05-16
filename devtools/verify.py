@@ -4,7 +4,7 @@ Runs the checks that CI will enforce, locally and fast. Exit 0 means
 the branch is ready to push; non-zero means fix before pushing.
 
 Tiers:
-  --commit   Pre-commit tier: ruff format + check + mypy + affected-obligations check (~3s warm).
+  --commit   Pre-commit tier: ruff format + check + mypy + verification-impact check (~3s warm).
   --quick    Pre-push tier: all non-pytest gates (~15s warm).
   (default)  Baseline with pytest-testmon affected tests.
   --seed-testmon
@@ -263,7 +263,7 @@ def build_verify_steps(
             ]
         )
 
-    steps.append(("affected-obligations check", _devtools_cmd("affected-obligations", "--full", "--check")))
+    steps.append(("verification-impact check", _devtools_cmd("verification-impact", "--full", "--check")))
 
     if not quick and not commit:
         _report_dir = Path(".cache/test-reports")
@@ -455,7 +455,7 @@ def main(argv: list[str] | None = None) -> int:
         "--full", action="store_true", help="Alias for --all: run full non-integration pytest diagnostic."
     )
     parser.add_argument(
-        "--commit", action="store_true", help="Pre-commit tier: format + lint + mypy + affected-obligations check only."
+        "--commit", action="store_true", help="Pre-commit tier: format + lint + mypy + verification-impact check only."
     )
     parser.add_argument(
         "--skip-slow", action="store_true", help="Exclude @pytest.mark.slow tests from the pytest step."

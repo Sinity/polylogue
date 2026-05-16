@@ -268,12 +268,12 @@ domains:
   - domain: verification_reports
     production_modules:
       - polylogue/proof/
-      - devtools/proof_pack.py
-      - devtools/affected_obligations.py
-      - devtools/obligation_diff.py
+      - devtools/verification_impact.py
+      - devtools/verification_impact_cli.py
     covering_tests:
       - tests/unit/proof/test_generated_scenario_obligations.py
-      - tests/unit/devtools/test_proof_pack.py
+      - tests/unit/devtools/test_verification_impact.py
+      - tests/unit/devtools/test_verification_impact_cli.py
       - tests/infra/test_contract_evidence.py
     notes: >
       transitional — old proof/report tests exist, and contract-evidence

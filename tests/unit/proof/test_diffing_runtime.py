@@ -58,10 +58,16 @@ def test_build_affected_obligation_report_handles_unclassified_and_suppressed_ch
 
 
 def test_route_affected_obligations_expands_proof_catalog_changes_to_all_subjects() -> None:
+    """proof_catalog claim files fan out to every catalog obligation.
+
+    Infrastructure files such as polylogue/proof/diffing.py do not — they only
+    receive the proof-specific inner-loop checks. PR #1079 narrowed the
+    fan-out to claim-defining files (catalog.py, subjects.py, runners.py, ...).
+    """
     catalog = build_verification_catalog()
     change = ChangeSubject(
-        id="proof_catalog:polylogue/proof/diffing.py",
-        path="polylogue/proof/diffing.py",
+        id="proof_catalog:polylogue/proof/catalog.py",
+        path="polylogue/proof/catalog.py",
         kind="proof_catalog",
         reason="proof changed",
     )
@@ -175,7 +181,7 @@ def test_internal_diffing_helpers_cover_classification_and_reason_paths() -> Non
     assert _obligation_reason(
         ChangeSubject(id="proof", path="polylogue/proof/diffing.py", kind="proof_catalog", reason="proof"),
         catalog.subjects[0],
-    ).endswith("compiler or runner vocabulary")
+    ).endswith("proof catalog infrastructure (types/routing/rendering)")
     assert (
         _obligation_reason(
             ChangeSubject(id="command", path="polylogue/cli/click_app.py", kind="command", reason="command"),

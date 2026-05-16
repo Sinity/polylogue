@@ -5,12 +5,16 @@ from pathlib import Path
 
 import pytest
 
-from devtools import proof_pack
-from devtools.proof_pack import build_proof_pack, evaluate_check_policy, render_markdown
+from devtools import verification_impact
+from devtools.verification_impact import (
+    build_verification_impact_report,
+    evaluate_check_policy,
+    render_markdown,
+)
 
 
-def test_proof_pack_reports_diff_shaped_fields() -> None:
-    report = build_proof_pack(
+def test_verification_impact_reports_diff_shaped_fields() -> None:
+    report = build_verification_impact_report(
         Path.cwd(),
         base_ref="origin/master",
         head_ref="HEAD",
@@ -36,8 +40,8 @@ def test_proof_pack_reports_diff_shaped_fields() -> None:
     assert "_context" in report
 
 
-def test_proof_pack_markdown_is_pr_comment_ready() -> None:
-    report = build_proof_pack(
+def test_verification_impact_markdown_is_pr_comment_ready() -> None:
+    report = build_verification_impact_report(
         Path.cwd(),
         base_ref="origin/master",
         head_ref="HEAD",
@@ -55,8 +59,8 @@ def test_proof_pack_markdown_is_pr_comment_ready() -> None:
     assert "### Contract Evidence Artifacts" in rendered
 
 
-def test_proof_pack_surfaces_manifest_known_gaps_for_affected_domains() -> None:
-    report = build_proof_pack(
+def test_verification_impact_surfaces_manifest_known_gaps_for_affected_domains() -> None:
+    report = build_verification_impact_report(
         Path.cwd(),
         base_ref="origin/master",
         head_ref="HEAD",
@@ -69,8 +73,8 @@ def test_proof_pack_surfaces_manifest_known_gaps_for_affected_domains() -> None:
     assert "docs_media" in gap_domains | additional_gap_domains
 
 
-def test_proof_pack_markdown_has_artifact_source_section() -> None:
-    report = build_proof_pack(
+def test_verification_impact_markdown_has_artifact_source_section() -> None:
+    report = build_verification_impact_report(
         Path.cwd(),
         base_ref="origin/master",
         head_ref="HEAD",
@@ -85,8 +89,8 @@ def test_proof_pack_markdown_has_artifact_source_section() -> None:
     assert "metadata_or_docs" in rendered
 
 
-def test_proof_pack_markdown_lists_manual_review_requirements() -> None:
-    report = build_proof_pack(
+def test_verification_impact_markdown_lists_manual_review_requirements() -> None:
+    report = build_verification_impact_report(
         Path.cwd(),
         base_ref="origin/master",
         head_ref="HEAD",
@@ -100,7 +104,7 @@ def test_proof_pack_markdown_lists_manual_review_requirements() -> None:
     assert "artifact `missing`" in rendered
 
 
-def test_proof_pack_summarizes_contract_evidence_artifacts(tmp_path: Path) -> None:
+def test_verification_impact_summarizes_contract_evidence_artifacts(tmp_path: Path) -> None:
     evidence_dir = tmp_path / ".cache" / "verification" / "evidence"
     evidence_dir.mkdir(parents=True)
     (evidence_dir / "cli-json.json").write_text(
@@ -118,7 +122,7 @@ def test_proof_pack_summarizes_contract_evidence_artifacts(tmp_path: Path) -> No
     )
     (evidence_dir / "bad.json").write_text("{", encoding="utf-8")
 
-    report = proof_pack.build_proof_pack(
+    report = verification_impact.build_verification_impact_report(
         tmp_path,
         base_ref="origin/master",
         head_ref="HEAD",
@@ -136,8 +140,8 @@ def test_proof_pack_summarizes_contract_evidence_artifacts(tmp_path: Path) -> No
     assert "cli.json.status" in rendered
 
 
-def test_proof_pack_check_policy_blocks_catalog_quality_errors() -> None:
-    report = build_proof_pack(
+def test_verification_impact_check_policy_blocks_catalog_quality_errors() -> None:
+    report = build_verification_impact_report(
         Path.cwd(),
         base_ref="origin/master",
         head_ref="HEAD",
@@ -160,8 +164,8 @@ def test_proof_pack_check_policy_blocks_catalog_quality_errors() -> None:
     assert "catalog.serious_claim_oracle_independence" in result["errors"][0]
 
 
-def test_proof_pack_check_policy_blocks_serious_judgment_cells() -> None:
-    report = build_proof_pack(
+def test_verification_impact_check_policy_blocks_serious_judgment_cells() -> None:
+    report = build_verification_impact_report(
         Path.cwd(),
         base_ref="origin/master",
         head_ref="HEAD",
@@ -188,8 +192,8 @@ def test_proof_pack_check_policy_blocks_serious_judgment_cells() -> None:
     assert "claim.needs.review" in result["errors"][0]
 
 
-def test_proof_pack_check_policy_allows_tracked_judgment_cells() -> None:
-    report = build_proof_pack(
+def test_verification_impact_check_policy_allows_tracked_judgment_cells() -> None:
+    report = build_verification_impact_report(
         Path.cwd(),
         base_ref="origin/master",
         head_ref="HEAD",
@@ -215,8 +219,8 @@ def test_proof_pack_check_policy_allows_tracked_judgment_cells() -> None:
     assert result["status"] == "ok"
 
 
-def test_proof_pack_check_policy_allows_completed_judgment_artifact() -> None:
-    report = build_proof_pack(
+def test_verification_impact_check_policy_allows_completed_judgment_artifact() -> None:
+    report = build_verification_impact_report(
         Path.cwd(),
         base_ref="origin/master",
         head_ref="HEAD",
@@ -242,10 +246,10 @@ def test_proof_pack_check_policy_allows_completed_judgment_artifact() -> None:
     assert result["status"] == "ok"
 
 
-def test_proof_pack_check_flag_returns_nonzero_on_policy_failure(monkeypatch: pytest.MonkeyPatch) -> None:
-    from devtools import affected_obligations
+def test_verification_impact_check_flag_returns_nonzero_on_policy_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    from devtools import verification_impact_cli
 
-    report = build_proof_pack(
+    report = build_verification_impact_report(
         Path.cwd(),
         base_ref="origin/master",
         head_ref="HEAD",
@@ -261,14 +265,14 @@ def test_proof_pack_check_flag_returns_nonzero_on_policy_failure(monkeypatch: py
             "breakdown": {},
         }
     ]
-    monkeypatch.setattr(proof_pack, "build_proof_pack", lambda *args, **kwargs: report)
+    monkeypatch.setattr(verification_impact, "build_verification_impact_report", lambda *args, **kwargs: report)
 
-    assert affected_obligations.main(["--full", "--path", "docs/plans/layering.yaml", "--check"]) == 1
+    assert verification_impact_cli.main(["--full", "--path", "docs/plans/layering.yaml", "--check"]) == 1
 
 
 def test_clean_tree_report_distinguishes_baseline() -> None:
     """A clean-tree report should mark clean_tree=True with a distinct context message."""
-    report = build_proof_pack(
+    report = build_verification_impact_report(
         Path.cwd(),
         base_ref="HEAD",
         head_ref="HEAD",
@@ -279,9 +283,9 @@ def test_clean_tree_report_distinguishes_baseline() -> None:
     assert "No changed paths" in str(report.get("_context", ""))
 
 
-def test_proof_pack_artifact_source_groups_are_present_in_report() -> None:
+def test_verification_impact_artifact_source_groups_are_present_in_report() -> None:
     """The report should include artifact-source groups with correct structure."""
-    report = build_proof_pack(
+    report = build_verification_impact_report(
         Path.cwd(),
         base_ref="origin/master",
         head_ref="HEAD",
@@ -311,9 +315,9 @@ def test_proof_pack_artifact_source_groups_are_present_in_report() -> None:
     assert groups["architectural_static"]["actionable"] is True
 
 
-def test_proof_pack_markdown_shows_artifact_source_labels() -> None:
+def test_verification_impact_markdown_shows_artifact_source_labels() -> None:
     """Markdown output should label actionable vs non-blocking artifact sources."""
-    report = build_proof_pack(
+    report = build_verification_impact_report(
         Path.cwd(),
         base_ref="origin/master",
         head_ref="HEAD",
@@ -327,8 +331,8 @@ def test_proof_pack_markdown_shows_artifact_source_labels() -> None:
     assert "### Known Gaps (tracking, not blocking)" in rendered
 
 
-def test_proof_pack_markdown_labels_empty_artifact_source_groups() -> None:
-    report = build_proof_pack(
+def test_verification_impact_markdown_labels_empty_artifact_source_groups() -> None:
+    report = build_verification_impact_report(
         Path.cwd(),
         base_ref="origin/master",
         head_ref="HEAD",

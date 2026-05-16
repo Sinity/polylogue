@@ -49,7 +49,7 @@ def main(argv: list[str] | None = None) -> int:
     catalog = build_verification_catalog()
 
     if args.anti_vacuity:
-        from devtools.proof_pack import (
+        from devtools.verification_impact import (
             _print_anti_vacuity_report,
             build_anti_vacuity_report,
             render_anti_vacuity_markdown,

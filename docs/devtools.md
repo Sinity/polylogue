@@ -46,7 +46,7 @@ repo verification checks and evidence records, not end-user archive workflows.
 | Command | Role |
 | --- | --- |
 | `devtools render-verification-catalog` | Refresh or verify the catalog that anchors changed-path verification reports after changing subjects, claims, runners, or catalog rendering. Use --anti-vacuity to flag claims with gaps. |
-| `devtools affected-obligations` | Find the checks and inner-loop commands affected by local changes before escalating to full PR gates. Use --full for domain-grouped impact analysis. |
+| `devtools verification-impact` | Find the checks and inner-loop commands affected by local changes before escalating to full PR gates. Use --full for domain-grouped impact analysis. |
 | `devtools semantic-axis-evidence` | Produce comparative performance evidence that describes growth shape over semantic axes instead of machine-specific absolute budgets. |
 | `devtools lab-corpus` | Seed synthetic corpus files or complete demo workspaces for lab exercises. |
 | `devtools lab-scenario` | Run showcase exercise smoke scenarios and committed baseline checks outside the archive CLI. |
@@ -97,7 +97,6 @@ These are the commands worth remembering during normal repo work:
 
 | Command | Description |
 | --- | --- |
-| `devtools affected-obligations` | Route changed paths or refs to affected verification checks and focused commands; optionally emit full proof-pack impact report. |
 | `devtools artifact-graph` | Render the runtime artifact, operation, and scenario-coverage map. |
 | `devtools coverage-gate` | Run pytest with the repository coverage floor from pyproject.toml. |
 | `devtools daemon-workload-probe` | Inspect daemon ingest workload, convergence debt, and hot query plans. |
@@ -113,6 +112,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools schema-generate` | Generate provider schema packages and optional evidence clusters. |
 | `devtools schema-promote` | Promote a schema evidence cluster into a registered package version. |
 | `devtools semantic-axis-evidence` | Generate verification-lab performance evidence across synthetic semantic scale tiers. |
+| `devtools verification-impact` | Route changed paths or refs to affected verification checks and focused commands; emit the full PR-confidence report with --full. |
 | `devtools verify` | Run the local verification baseline before pushing or creating a PR. |
 | `devtools verify-ci-workflows` | Verify CI workflow files reference locally-known devtools commands and existing paths. |
 | `devtools verify-cluster-cohesion` | Validate proposed clusters from the topology projection using the import graph. |

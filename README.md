@@ -165,7 +165,7 @@ See [docs/devtools.md](docs/devtools.md) for the full command catalog.
 
 ```bash
 devtools render-verification-catalog --check
-devtools affected-obligations --path polylogue/cli/query.py
+devtools verification-impact --path polylogue/cli/query.py
 devtools lab-corpus representative-generate -p chatgpt -n 3
 ```
 

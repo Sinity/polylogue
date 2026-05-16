@@ -155,7 +155,7 @@ def _validate_yaml_and_catch(path: Path) -> list[str]:
 
 def test_anti_vacuity_report_detects_missing_breakers() -> None:
     """The anti-vacuity report must flag claims without breakers."""
-    from devtools.proof_pack import build_anti_vacuity_report
+    from devtools.verification_impact import build_anti_vacuity_report
 
     catalog = build_verification_catalog()
     dashboard = build_anti_vacuity_report(catalog)
@@ -175,7 +175,7 @@ def test_anti_vacuity_report_detects_missing_breakers() -> None:
 
 def test_anti_vacuity_report_by_reason_breaks_down() -> None:
     """Each reason in by_reason must be a non-negative integer."""
-    from devtools.proof_pack import build_anti_vacuity_report
+    from devtools.verification_impact import build_anti_vacuity_report
 
     catalog = build_verification_catalog()
     dashboard = build_anti_vacuity_report(catalog)
@@ -189,7 +189,7 @@ def test_anti_vacuity_report_by_reason_breaks_down() -> None:
 
 def test_anti_vacuity_report_json_serializable() -> None:
     """Anti-vacuity report output must be JSON-serializable."""
-    from devtools.proof_pack import build_anti_vacuity_report
+    from devtools.verification_impact import build_anti_vacuity_report
 
     catalog = build_verification_catalog()
     dashboard = build_anti_vacuity_report(catalog)
@@ -199,7 +199,7 @@ def test_anti_vacuity_report_json_serializable() -> None:
 
 def test_anti_vacuity_report_rows_have_required_fields() -> None:
     """Each anti-vacuity row must carry claim_id, severity, and all reason flags."""
-    from devtools.proof_pack import build_anti_vacuity_report
+    from devtools.verification_impact import build_anti_vacuity_report
 
     catalog = build_verification_catalog()
     dashboard = build_anti_vacuity_report(catalog)
@@ -275,7 +275,11 @@ def test_manifests_integration_passes(tmp_path: Path) -> None:
 
 def test_anti_vacuity_report_renders_without_error() -> None:
     """The anti-vacuity markdown renderer must handle any dashboard structure."""
-    from devtools.proof_pack import _print_anti_vacuity_report, build_anti_vacuity_report, render_anti_vacuity_markdown
+    from devtools.verification_impact import (
+        _print_anti_vacuity_report,
+        build_anti_vacuity_report,
+        render_anti_vacuity_markdown,
+    )
 
     catalog = build_verification_catalog()
     dashboard = build_anti_vacuity_report(catalog)

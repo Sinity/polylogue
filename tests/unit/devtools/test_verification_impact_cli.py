@@ -4,14 +4,14 @@ import json
 
 import pytest
 
-from devtools import affected_obligations
+from devtools import verification_impact_cli
 
 
 def test_main_json_routes_explicit_paths_without_git_diff(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    assert affected_obligations.main(["--json", "--path", "docs/verification-catalog.md"]) == 0
+    assert verification_impact_cli.main(["--json", "--path", "docs/verification-catalog.md"]) == 0
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["changed_paths"] == ["docs/verification-catalog.md"]
@@ -28,13 +28,13 @@ def test_main_human_discovers_paths_from_refs(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     monkeypatch.setattr(
-        affected_obligations,
+        verification_impact_cli,
         "changed_paths_between_refs",
         lambda base_ref, head_ref: ("polylogue/sources/parsers/codex.py",),
     )
-    monkeypatch.setattr(affected_obligations, "obligation_ids_for_ref", lambda ref: ())
+    monkeypatch.setattr(verification_impact_cli, "obligation_ids_for_ref", lambda ref: ())
 
-    assert affected_obligations.main(["--base-ref", "origin/master", "--head-ref", "HEAD"]) == 0
+    assert verification_impact_cli.main(["--base-ref", "origin/master", "--head-ref", "HEAD"]) == 0
 
     rendered = capsys.readouterr().out
     assert "Refs: origin/master..HEAD" in rendered
@@ -47,13 +47,13 @@ def test_main_markdown_renders_affected_obligations(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     monkeypatch.setattr(
-        affected_obligations,
+        verification_impact_cli,
         "changed_paths_between_refs",
         lambda base_ref, head_ref: ("docs/plans/layering.yaml",),
     )
-    monkeypatch.setattr(affected_obligations, "obligation_ids_for_ref", lambda ref: ())
+    monkeypatch.setattr(verification_impact_cli, "obligation_ids_for_ref", lambda ref: ())
 
-    assert affected_obligations.main(["--base-ref", "origin/master", "--head-ref", "HEAD", "--markdown"]) == 0
+    assert verification_impact_cli.main(["--base-ref", "origin/master", "--head-ref", "HEAD", "--markdown"]) == 0
 
     rendered = capsys.readouterr().out
     assert "## Affected Verification Checks" in rendered
