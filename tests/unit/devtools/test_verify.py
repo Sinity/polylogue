@@ -36,6 +36,7 @@ def test_quick_verify_omits_pytest() -> None:
         "verify-cross-cuts",
         "verify-suppressions",
         "verify-manifests",
+        "verify-ci-workflows",
         "verify-witness-lifecycle",
         "verify-lane-assertions",
         "affected-obligations check",

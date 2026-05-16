@@ -326,3 +326,64 @@ async def test_validation_flow_persists_decode_quarantine_state(tmp_path: Path) 
             assert state.needs_parse_backlog() is False
     finally:
         await backend.close()
+
+
+# ---------------------------------------------------------------------------
+# Quarantine privacy — error diagnostics must not leak payload content
+# ---------------------------------------------------------------------------
+
+
+def test_quarantine_error_does_not_leak_payload_text(tmp_path: Path) -> None:
+    """parse_error must contain only structural context, never private payload text.
+
+    The error message surfaces to operators and may be logged or displayed.
+    It must describe the *structural* problem (line number, column, type of
+    failure) without echoing the actual message content from the conversation.
+    """
+    private_content = "PRIVATE_CONVERSATION_SECRET_XYZZY_DO_NOT_LOG"
+    good_a = (
+        f'{{"parentUuid":null,"type":"user",'
+        f'"message":{{"role":"user","content":"{private_content}"}},'
+        f'"uuid":"m1","timestamp":"2025-01-01T00:00:00Z"}}'
+    ).encode()
+    bad = (
+        b'{"parentUuid":null '  # missing comma — structural malformation
+        b'"type":"user",'
+        b'"message":{"role":"user","content":"also-private"},'
+        b'"uuid":"m2","timestamp":"2025-01-01T00:00:01Z"}'
+    )
+    good_b = (
+        b'{"parentUuid":"m1","type":"assistant",'
+        b'"message":{"role":"assistant","content":[{"type":"text","text":"hi"}]},'
+        b'"uuid":"m3","timestamp":"2025-01-01T00:00:02Z"}'
+    )
+    content = good_a + b"\n" + bad + b"\n" + good_b + b"\n"
+
+    record = _make_raw_record(content, "claude-code", "/exports/claude-code.jsonl")
+    result = ingest_record(record, str(tmp_path / "archive"), "strict")
+
+    assert result.error is not None, "malformed JSONL must produce an error"
+    assert result.parse_error is not None
+
+    assert private_content not in result.error, f"Private payload content leaked into error: {result.error!r}"
+    assert private_content not in result.parse_error, (
+        f"Private payload content leaked into parse_error: {result.parse_error!r}"
+    )
+    assert "also-private" not in result.error
+    assert "also-private" not in result.parse_error
+
+    # The error must contain structural context, not be a bare/empty string
+    assert "Malformed JSONL" in result.error or "line" in result.error, (
+        f"Error lacks structural context: {result.error!r}"
+    )
+
+
+def test_zero_length_quarantine_error_contains_only_structural_description(tmp_path: Path) -> None:
+    """The zero-length error must be a fixed structural description with no payload content."""
+    record = _make_raw_record(b"", "codex", "/exports/session.jsonl")
+    result = ingest_record(record, str(tmp_path / "archive"), "strict")
+
+    assert result.error is not None
+    assert "zero-length" in result.error or "empty" in result.error
+    # No dynamic content — the error must be identical for all providers
+    assert result.error == result.parse_error

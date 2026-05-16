@@ -243,6 +243,8 @@ def test_proof_pack_check_policy_allows_completed_judgment_artifact() -> None:
 
 
 def test_proof_pack_check_flag_returns_nonzero_on_policy_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    from devtools import affected_obligations
+
     report = build_proof_pack(
         Path.cwd(),
         base_ref="origin/master",
@@ -261,7 +263,7 @@ def test_proof_pack_check_flag_returns_nonzero_on_policy_failure(monkeypatch: py
     ]
     monkeypatch.setattr(proof_pack, "build_proof_pack", lambda *args, **kwargs: report)
 
-    assert proof_pack.main(["--path", "docs/plans/layering.yaml", "--check"]) == 1
+    assert affected_obligations.main(["--full", "--path", "docs/plans/layering.yaml", "--check"]) == 1
 
 
 def test_clean_tree_report_distinguishes_baseline() -> None:
