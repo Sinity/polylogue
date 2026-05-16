@@ -344,7 +344,7 @@ def _static_gates(root: Path, *, now: datetime) -> dict[str, Any]:
     # appearance in history.
     if history_entries:
         for entry in reversed(history_entries):
-            steps = entry.get("steps", []) if isinstance(entry, dict) else []
+            steps = entry.get("steps", [])
             for step in steps:
                 if not isinstance(step, dict):
                     continue
