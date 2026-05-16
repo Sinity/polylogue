@@ -182,7 +182,16 @@ def _seed_diverse_archive(db_path: Path) -> None:
 
 
 def _apply_params(filter_obj: Any, params: FilterParams) -> Any:
-    """Apply FilterParams to a ConversationFilter instance."""
+    """Apply FilterParams to a ConversationFilter instance.
+
+    Numeric thresholds (``min_messages``, ``max_messages``, ``min_words``) and
+    temporal bounds (``since``, ``until``) on the builder replace prior values
+    instead of intersecting. The monotonicity law (more constraints → fewer
+    results) only holds when overlapping bounds are composed as a strict
+    tightening. We do that explicitly here by reading the current plan and
+    keeping the more restrictive value.
+    """
+    plan = filter_obj._plan
     if params.provider is not None:
         filter_obj = filter_obj.provider(params.provider)
     if params.has_tool_use:
@@ -190,15 +199,25 @@ def _apply_params(filter_obj: Any, params: FilterParams) -> Any:
     if params.has_thinking:
         filter_obj = filter_obj.has_thinking()
     if params.min_messages is not None:
-        filter_obj = filter_obj.min_messages(params.min_messages)
+        current = plan.min_messages
+        tightened = params.min_messages if current is None else max(current, params.min_messages)
+        filter_obj = filter_obj.min_messages(tightened)
     if params.max_messages is not None:
-        filter_obj = filter_obj.max_messages(params.max_messages)
+        current = plan.max_messages
+        tightened = params.max_messages if current is None else min(current, params.max_messages)
+        filter_obj = filter_obj.max_messages(tightened)
     if params.min_words is not None:
-        filter_obj = filter_obj.min_words(params.min_words)
+        current = plan.min_words
+        tightened = params.min_words if current is None else max(current, params.min_words)
+        filter_obj = filter_obj.min_words(tightened)
     if params.since is not None:
-        filter_obj = filter_obj.since(params.since)
+        current = plan.since
+        tightened = params.since if current is None else max(current, params.since)
+        filter_obj = filter_obj.since(tightened)
     if params.until is not None:
-        filter_obj = filter_obj.until(params.until)
+        current = plan.until
+        tightened = params.until if current is None else min(current, params.until)
+        filter_obj = filter_obj.until(tightened)
     return filter_obj
 
 
