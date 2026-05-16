@@ -36,10 +36,28 @@ class FieldStats:
     object_key_counts: list[int] = field(default_factory=list)
     max_depth_seen: int = 0
     ref_target: str | None = None
+    documents_present: set[int] = field(default_factory=set)
 
     @property
     def frequency(self) -> float:
         return self.present_count / self.total_samples if self.total_samples else 0.0
+
+    @property
+    def document_frequency(self) -> float:
+        """Fraction of input documents where this path appears at least once.
+
+        Unlike `frequency`, this denominator-stable metric works correctly for
+        paths that recurse through arrays or dynamic-key dicts: each document
+        contributes at most once regardless of how many array items or dynamic
+        keys carry the path. Suitable for the `x-polylogue-frequency` schema
+        annotation.
+        """
+        if not self.total_samples:
+            return 0.0
+        documents_seen = (
+            len(self.documents_present) if self.documents_present else min(self.present_count, self.total_samples)
+        )
+        return documents_seen / self.total_samples
 
     @property
     def dominant_format(self) -> str | None:

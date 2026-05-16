@@ -138,6 +138,38 @@ class TestFieldStatsProperties:
         stats = FieldStats(path="$.x", total_samples=0, present_count=0)
         assert stats.frequency == 0.0
 
+    def test_document_frequency_tracks_distinct_documents(self) -> None:
+        # Path observed twice in 1 doc, once in 2 other docs across a corpus of 10:
+        # raw frequency = 4/10, but document_frequency = 3/10.
+        stats = FieldStats(
+            path="$.items[*].name",
+            total_samples=10,
+            present_count=4,
+            documents_present={0, 1, 2},
+        )
+        assert stats.document_frequency == pytest.approx(0.3)
+
+    def test_document_frequency_handles_array_paths(self) -> None:
+        """Array-iterated paths report per-document presence, not per-item visits."""
+        from polylogue.schemas.field_stats.collection import _collect_field_stats
+
+        samples = [
+            {"items": [{"a": 1, "b": 2}, {"a": 3}, {"a": 4, "b": 5}]},
+            {"items": [{"a": 6}]},
+            {"items": [{"a": 7, "b": 8}]},
+        ]
+        stats = _collect_field_stats(samples)
+        # `b` appears in 2/3 documents (5 array items don't matter)
+        assert stats["$.items[*].b"].document_frequency == pytest.approx(2 / 3)
+        # raw frequency is per-visit and exceeds 1.0 for array fan-out
+        assert stats["$.items[*].a"].frequency > 1.0
+        # but document_frequency is bounded to [0, 1]
+        assert stats["$.items[*].a"].document_frequency == pytest.approx(1.0)
+
+    def test_document_frequency_no_samples(self) -> None:
+        stats = FieldStats(path="$.x", total_samples=0)
+        assert stats.document_frequency == 0.0
+
     def test_dominant_format_clear_winner(self) -> None:
         stats = FieldStats(
             path="$.x",
