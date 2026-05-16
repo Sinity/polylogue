@@ -60,6 +60,7 @@ dev = [
   "pytest-xdist>=3.5.0",  # Parallel test execution
   "pytest-randomly>=3.0",  # Detect order-dependent tests; adds --randomly-seed
   "pytest-testmon>=2.1.3",  # Per-test affected selection via dependency database
+  "pytest-json-report>=1.5.0",  # Structured JSON report for verify pipeline + dashboard (#1026, #998)
   "pytest-benchmark>=5.0",  # Microbenchmark suite (run with --benchmark-enable -p no:xdist)
   "coverage[toml]>=7.6",
   "hypothesis>=6.152.7",

@@ -8,9 +8,12 @@ from unittest.mock import patch
 import pytest
 
 from devtools.verify import (
+    PYTEST_REPORT_PATH,
     _format_completion_notification,
     _is_testmon_global_invalidator,
     _parse_pytest_test_count,
+    _pytest_metadata_from_report,
+    _read_pytest_report,
     _run,
     _stop_after_failed_step,
     _testmon_preflight,
@@ -52,6 +55,23 @@ def test_default_verify_uses_pytest_testmon() -> None:
     assert "--testmon-noselect" not in command
     assert "-n" in command
     assert "0" in command
+
+
+def test_pytest_step_requests_structured_json_report() -> None:
+    """Every pytest invocation must emit the report consumed by verify and dashboards (#1026)."""
+    for kwargs in (
+        {"seed_testmon": True},
+        {"full_pytest": True},
+        {"testmon_global": True},
+        {},  # default testmon
+    ):
+        steps = build_verify_steps(quick=False, lab=False, skip_slow=False, **kwargs)
+        label, command = steps[-1]
+        assert label.startswith("pytest"), label
+        assert "--json-report" in command, f"{label}: {command}"
+        assert any(arg.startswith("--json-report-file=") for arg in command), label
+        expected_target = f"--json-report-file={PYTEST_REPORT_PATH}"
+        assert expected_target in command, f"{label}: {command}"
 
 
 def test_seed_testmon_runs_full_collection_without_selection(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -179,7 +199,8 @@ def test_parse_pytest_test_count_handles_no_tests() -> None:
     assert _parse_pytest_test_count("no tests ran in 0.02s\n") == 0
 
 
-def test_run_records_pytest_count_metadata() -> None:
+def test_run_records_pytest_count_metadata_from_terminal_fallback() -> None:
+    """When the JSON report is missing, _run falls back to terminal scraping."""
     completed = subprocess.CompletedProcess(
         args=["pytest"],
         returncode=0,
@@ -187,11 +208,72 @@ def test_run_records_pytest_count_metadata() -> None:
         stderr="",
     )
 
-    with patch("devtools.verify.subprocess.run", return_value=completed):
+    with (
+        patch("devtools.verify.subprocess.run", return_value=completed),
+        patch("devtools.verify._read_pytest_report", return_value=None),
+    ):
         rc, _elapsed, metadata = _run("pytest affected", ["pytest"])
 
     assert rc == 0
-    assert metadata == {"count": 4}
+    assert metadata["count"] == 4
+    assert metadata["report_path"] is None
+
+
+def test_run_reads_structured_pytest_report() -> None:
+    """The structured pytest report is the primary metadata source (#1026, #998)."""
+    completed = subprocess.CompletedProcess(
+        args=["pytest"],
+        returncode=0,
+        stdout="",
+        stderr="",
+    )
+    report = {
+        "summary": {"passed": 10, "failed": 1, "skipped": 2, "total": 13},
+        "duration": 4.56,
+    }
+
+    with (
+        patch("devtools.verify.subprocess.run", return_value=completed),
+        patch("devtools.verify._read_pytest_report", return_value=report),
+    ):
+        rc, _elapsed, metadata = _run("pytest testmon", ["pytest"])
+
+    assert rc == 0
+    assert metadata["count"] == 13  # passed+failed+skipped
+    assert metadata["passed"] == 10
+    assert metadata["failed"] == 1
+    assert metadata["skipped"] == 2
+    assert metadata["total"] == 13
+    assert metadata["pytest_duration_s"] == 4.56
+    assert metadata["report_path"] == str(PYTEST_REPORT_PATH)
+
+
+def test_pytest_metadata_handles_empty_summary() -> None:
+    """Robustness: a malformed/empty report still yields a metadata dict."""
+    assert _pytest_metadata_from_report({}) == {"report_path": str(PYTEST_REPORT_PATH)}
+
+
+def test_read_pytest_report_returns_none_for_missing_file(tmp_path: Path) -> None:
+    assert _read_pytest_report(tmp_path / "missing.json") is None
+
+
+def test_read_pytest_report_returns_none_for_invalid_json(tmp_path: Path) -> None:
+    bad = tmp_path / "bad.json"
+    bad.write_text("not json")
+    assert _read_pytest_report(bad) is None
+
+
+def test_read_pytest_report_returns_none_for_non_object(tmp_path: Path) -> None:
+    bad = tmp_path / "list.json"
+    bad.write_text("[1, 2, 3]")
+    assert _read_pytest_report(bad) is None
+
+
+def test_read_pytest_report_parses_valid_payload(tmp_path: Path) -> None:
+    path = tmp_path / "ok.json"
+    path.write_text('{"summary": {"passed": 3}, "duration": 1.0}')
+    parsed = _read_pytest_report(path)
+    assert parsed == {"summary": {"passed": 3}, "duration": 1.0}
 
 
 def test_verify_continues_after_failed_cheap_step(capsys: pytest.CaptureFixture[str]) -> None:
