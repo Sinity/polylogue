@@ -200,7 +200,7 @@ class RepositorySurface:
     async def query_count(self, query_case: ArchiveQueryCase) -> int:
         if query_case.has_extended_filters or query_case.search_text is not None:
             spec = _query_case_to_spec(query_case)
-            return await spec.count(self._repository)
+            return int(await spec.count(self._repository))
         if query_case.provider is not None:
             return await self._repository.count(provider=query_case.provider)
         return len(await self.query_ids(query_case))
@@ -368,7 +368,7 @@ class MCPSurface:
         self._server = build_server(role="admin")
 
     def _tool(self, name: str) -> Any:
-        return self._server._tool_manager._tools[name].fn  # type: ignore[attr-defined]
+        return self._server._tool_manager._tools[name].fn
 
     async def conversation_facts(self, scenario: ArchiveScenario) -> ConversationFacts:
         raise NotImplementedError("MCPSurface only supports query-level projections")
