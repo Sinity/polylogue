@@ -11,12 +11,15 @@ from polylogue.proof.diffing import (
     changed_paths_between_refs,
     obligation_ids_for_ref,
     render_affected_obligations,
+    render_affected_obligations_markdown,
 )
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--base-ref", default="master", help="Base git ref for changed-path and obligation diffing.")
+    parser.add_argument(
+        "--base-ref", default="origin/master", help="Base git ref for changed-path and obligation diffing."
+    )
     parser.add_argument("--head-ref", default="HEAD", help="Head git ref for changed-path and obligation diffing.")
     parser.add_argument(
         "--path",
@@ -25,7 +28,47 @@ def main(argv: list[str] | None = None) -> int:
         help="Changed repo-relative path. Repeat to bypass git diff path discovery.",
     )
     parser.add_argument("--json", action="store_true", help="Emit a machine-readable affected-obligation report.")
+    parser.add_argument("--markdown", action="store_true", help="Emit a markdown-formatted affected-obligation report.")
+    parser.add_argument(
+        "--full",
+        action="store_true",
+        help="Emit full proof-pack impact report with domain grouping, artifact taxonomy, and gate classification.",
+    )
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="Exit non-zero when blocking policy fails (only with --full).",
+    )
     args = parser.parse_args(argv)
+
+    if args.full:
+        from devtools import repo_root as _get_root
+        from devtools.proof_pack import (
+            _print_human_report,
+            build_proof_pack,
+            evaluate_check_policy,
+            render_markdown,
+        )
+
+        root = _get_root()
+        full_report = build_proof_pack(
+            root,
+            base_ref=args.base_ref,
+            head_ref=args.head_ref,
+            changed_paths=args.path or None,
+        )
+        check_result = evaluate_check_policy(full_report)
+        if args.check:
+            full_report["check"] = check_result
+        if args.json:
+            json.dump(full_report, sys.stdout, indent=2, sort_keys=True)
+            sys.stdout.write("\n")
+        elif args.markdown:
+            sys.stdout.write(render_markdown(full_report))
+            sys.stdout.write("\n")
+        else:
+            _print_human_report(full_report)
+        return 1 if args.check and check_result["status"] != "ok" else 0
 
     explicit_paths = tuple(args.path)
     base_ids: tuple[str, ...] | None
@@ -47,6 +90,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     if args.json:
         json.dump(report.to_payload(), sys.stdout, indent=2, sort_keys=True)
+        sys.stdout.write("\n")
+        return 0
+    if args.markdown:
+        sys.stdout.write(render_affected_obligations_markdown(report))
         sys.stdout.write("\n")
         return 0
     sys.stdout.write(render_affected_obligations(report))

@@ -45,8 +45,8 @@ repo verification checks and evidence records, not end-user archive workflows.
 
 | Command | Role |
 | --- | --- |
-| `devtools render-verification-catalog` | Refresh or verify the catalog that anchors changed-path verification reports after changing subjects, claims, runners, or catalog rendering. |
-| `devtools affected-obligations` | Find the checks and inner-loop commands affected by local changes before escalating to full PR gates. |
+| `devtools render-verification-catalog` | Refresh or verify the catalog that anchors changed-path verification reports after changing subjects, claims, runners, or catalog rendering. Use --anti-vacuity to flag claims with gaps. |
+| `devtools affected-obligations` | Find the checks and inner-loop commands affected by local changes before escalating to full PR gates. Use --full for domain-grouped impact analysis. |
 | `devtools semantic-axis-evidence` | Produce comparative performance evidence that describes growth shape over semantic axes instead of machine-specific absolute budgets. |
 | `devtools lab-corpus` | Seed synthetic corpus files or complete demo workspaces for lab exercises. |
 | `devtools lab-scenario` | Run showcase exercise smoke scenarios and committed baseline checks outside the archive CLI. |
@@ -91,22 +91,20 @@ These are the commands worth remembering during normal repo work:
 | `devtools render-quality-reference` | Render docs/test-quality-workflows.md from live validation, mutation, and benchmark registries. |
 | `devtools render-readme-media` | Generate README media assets (architecture diagrams, flowcharts) under docs/media/. |
 | `devtools render-topology-status` | Render docs/topology-status.md from the topology projection and realized tree. |
-| `devtools render-verification-catalog` | Render the verification-lab catalog from check registries. |
+| `devtools render-verification-catalog` | Render the verification-lab catalog from check registries; optionally emit anti-vacuity report. |
 
 ### Verification
 
 | Command | Description |
 | --- | --- |
-| `devtools affected-obligations` | Route changed paths or refs to affected verification checks and focused commands. |
+| `devtools affected-obligations` | Route changed paths or refs to affected verification checks and focused commands; optionally emit full proof-pack impact report. |
 | `devtools artifact-graph` | Render the runtime artifact, operation, and scenario-coverage map. |
 | `devtools coverage-gate` | Run pytest with the repository coverage floor from pyproject.toml. |
 | `devtools daemon-workload-probe` | Inspect daemon ingest workload, convergence debt, and hot query plans. |
 | `devtools evidence-report` | Aggregate verification evidence into a structured status report. |
 | `devtools lab-corpus` | Generate verification-lab synthetic corpus fixtures and demo archives. |
 | `devtools lab-scenario` | Run verification-lab showcase scenario sets and baseline checks. |
-| `devtools obligation-diff` | Diff catalog-backed verification checks between two git refs. |
 | `devtools pipeline-probe` | Run typed pipeline probes against synthetic, staged, or archive-subset inputs. |
-| `devtools proof-pack` | Domain-grouped verification impact report for changed paths. |
 | `devtools query-memory-budget` | Measure query-memory envelopes on generated fixtures. |
 | `devtools regression-capture` | Capture pipeline-probe summaries as durable local regression cases. |
 | `devtools run-validation-lanes` | Run named validation lanes. |
@@ -145,7 +143,6 @@ These are the commands worth remembering during normal repo work:
 | Command | Description |
 | --- | --- |
 | `devtools build-package` | Build the default Nix package with the out-link under .local/result. |
-| `devtools inject-semantic-annotations` | Annotate baseline provider schemas with semantic-role metadata. |
 | `devtools witness-discover` | Save a failure-triggering input as a local witness in .local/witnesses/new/. |
 | `devtools witness-minimize` | Apply minimization heuristics to a local witness — shrink, redact, set privacy classification. |
 | `devtools witness-promote` | Promote a minimized local witness to tests/witnesses/ for durable commit. |

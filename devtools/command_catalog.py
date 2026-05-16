@@ -131,15 +131,16 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     CommandSpec(
         "render-verification-catalog",
         "generated surfaces",
-        "Render the verification-lab catalog from check registries.",
+        "Render the verification-lab catalog from check registries; optionally emit anti-vacuity report.",
         "devtools.render_verification_catalog",
         use_when=(
             "Refresh or verify the catalog that anchors changed-path verification reports after "
-            "changing subjects, claims, runners, or catalog rendering."
+            "changing subjects, claims, runners, or catalog rendering. Use --anti-vacuity to flag claims with gaps."
         ),
         examples=(
             "devtools render-verification-catalog",
             "devtools render-verification-catalog --check",
+            "devtools render-verification-catalog --anti-vacuity",
             "devtools render-verification-catalog --json",
         ),
     ),
@@ -167,11 +168,13 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     CommandSpec(
         "affected-obligations",
         "verification",
-        "Route changed paths or refs to affected verification checks and focused commands.",
+        "Route changed paths or refs to affected verification checks and focused commands; optionally emit full proof-pack impact report.",
         "devtools.affected_obligations",
-        use_when="Find the checks and inner-loop commands affected by local changes before escalating to full PR gates.",
+        use_when="Find the checks and inner-loop commands affected by local changes before escalating to full PR gates. Use --full for domain-grouped impact analysis.",
         examples=(
-            "devtools affected-obligations --base-ref master --head-ref HEAD",
+            "devtools affected-obligations --base-ref origin/master --head-ref HEAD",
+            "devtools affected-obligations --base-ref origin/master --head-ref HEAD --markdown",
+            "devtools affected-obligations --full --markdown",
             "devtools affected-obligations --path polylogue/sources/parsers/codex.py",
             "devtools affected-obligations --json --path docs/verification-catalog.md",
         ),
@@ -367,21 +370,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools verify-ci-workflows", "devtools verify-ci-workflows --json"),
     ),
     CommandSpec(
-        "proof-pack",
-        "verification",
-        "Domain-grouped verification impact report for changed paths.",
-        "devtools.proof_pack",
-        use_when=(
-            "Review what a change affects by domain and choose focused gates without reading raw catalog routing."
-        ),
-        examples=(
-            "devtools proof-pack --base-ref origin/master --head-ref HEAD",
-            "devtools proof-pack --base-ref origin/master --head-ref HEAD --markdown",
-            "devtools proof-pack --path polylogue/proof/catalog.py --check",
-            "devtools proof-pack --json --path polylogue/daemon/",
-        ),
-    ),
-    CommandSpec(
         "verify-cross-cuts",
         "verification",
         "Verify cross-cut tags in the topology projection match module-name conventions.",
@@ -517,27 +505,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=(
             "devtools regression-capture --input probe.json --name parse-drift",
             "devtools pipeline-probe --json | devtools regression-capture --name parse-drift --tag live",
-        ),
-    ),
-    CommandSpec(
-        "inject-semantic-annotations",
-        "maintenance",
-        "Annotate baseline provider schemas with semantic-role metadata.",
-        "devtools.inject_semantic_annotations",
-    ),
-    CommandSpec(
-        "obligation-diff",
-        "verification",
-        "Diff catalog-backed verification checks between two git refs.",
-        "devtools.obligation_diff",
-        use_when=(
-            "Before opening a PR, check which assurance domains are affected by "
-            "the changes to guide reviewer attention and verification effort."
-        ),
-        examples=(
-            "devtools obligation-diff --base-ref origin/master --head-ref HEAD",
-            "devtools obligation-diff --base-ref origin/master --head-ref HEAD --json",
-            "devtools obligation-diff --base-ref origin/master --head-ref HEAD --markdown",
         ),
     ),
     CommandSpec(

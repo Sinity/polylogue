@@ -40,3 +40,21 @@ def test_main_human_discovers_paths_from_refs(
     assert "Refs: origin/master..HEAD" in rendered
     assert "parser:polylogue/sources/parsers/codex.py" in rendered
     assert "provider.capability.codex" in rendered
+
+
+def test_main_markdown_renders_affected_obligations(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(
+        affected_obligations,
+        "changed_paths_between_refs",
+        lambda base_ref, head_ref: ("docs/plans/layering.yaml",),
+    )
+    monkeypatch.setattr(affected_obligations, "obligation_ids_for_ref", lambda ref: ())
+
+    assert affected_obligations.main(["--base-ref", "origin/master", "--head-ref", "HEAD", "--markdown"]) == 0
+
+    rendered = capsys.readouterr().out
+    assert "## Affected Verification Checks" in rendered
+    assert "`origin/master..HEAD`" in rendered

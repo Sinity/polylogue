@@ -39,9 +39,33 @@ def main(argv: list[str] | None = None) -> int:
         help="Exit non-zero when the catalog is out of sync or self-quality checks fail.",
     )
     parser.add_argument("--json", action="store_true", help="Emit the full catalog payload as JSON.")
+    parser.add_argument(
+        "--anti-vacuity",
+        action="store_true",
+        help="Emit anti-vacuity report: claims lacking breakers, runners, subjects, or with stale evidence.",
+    )
     args = parser.parse_args(argv)
 
     catalog = build_verification_catalog()
+
+    if args.anti_vacuity:
+        from devtools.proof_pack import (
+            _print_anti_vacuity_report,
+            build_anti_vacuity_report,
+            render_anti_vacuity_markdown,
+        )
+
+        dashboard = build_anti_vacuity_report(catalog)
+        if args.json:
+            json.dump(dashboard, sys.stdout, indent=2, sort_keys=True)
+            sys.stdout.write("\n")
+        elif args.output == "-":
+            sys.stdout.write(render_anti_vacuity_markdown(dashboard))
+            sys.stdout.write("\n")
+        else:
+            _print_anti_vacuity_report(dashboard)
+        return 1 if dashboard["flagged_count"] > 0 and args.check else 0
+
     if args.json:
         json.dump(catalog.to_payload(), sys.stdout, indent=2, sort_keys=True)
         sys.stdout.write("\n")
