@@ -264,10 +264,16 @@ def _invoke_raw_json_command(args: list[str], monkeypatch: pytest.MonkeyPatch) -
 
     Unlike _invoke_json_command, this does NOT assert success — callers
     decide what to assert.  Used for both success and error path tests.
+
+    Re-raises non-SystemExit exceptions so that command crashes are not
+    silently swallowed by catch_exceptions=True and turned into false-passing
+    negative-path tests.
     """
     monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
     runner = CliRunner()
     result = runner.invoke(cli, args, catch_exceptions=True)
+    if result.exception is not None and not isinstance(result.exception, SystemExit):
+        raise result.exception
     return result.exit_code, result.output
 
 
