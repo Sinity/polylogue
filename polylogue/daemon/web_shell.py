@@ -75,6 +75,14 @@ html, body { height: 100%; background: var(--bg); color: var(--text);
 .chip.q-unresolved { border-color: var(--err); color: var(--err); background: var(--err-bg); }
 .chip.q-unavailable { border-color: var(--text-dim); color: var(--text-dim); background: var(--panel-subtle); }
 .chip.q-redacted { border-color: var(--text-dim); color: var(--text-dim); background: var(--panel-subtle); font-style: italic; }
+/* Insights browser readiness vocabulary (#1120): ready / partial (reuses warn
+   palette above) / missing. q-partial is already defined for cost panels. */
+.chip.q-ready { border-color: var(--ok); color: var(--ok); background: var(--ok-bg); }
+.chip.q-missing { border-color: var(--text-dim); color: var(--text-dim); background: var(--panel-subtle); }
+.insight-section-header { cursor: pointer; user-select: none; }
+.insight-section-header .insight-toggle { display: inline-block; width: 10px; color: var(--text-dim); }
+.inspector-field .value.muted { color: var(--text-dim); font-style: italic; }
+.muted { color: var(--text-dim); }
 
 #sidebar { grid-column: 1; grid-row: 2; display: flex; flex-direction: column;
   background: var(--panel); border-right: 1px solid var(--border); overflow: hidden; }
@@ -253,6 +261,7 @@ __WORKSPACE_HTML__
       <button class="active" data-tab="info">Info</button>
       <button data-tab="cost">Cost</button>
       <button data-tab="lineage">Lineage</button>
+      <button data-tab="insights">Insights</button>
       <button data-tab="raw">Raw</button>
       <button data-tab="notes">Notes</button>
     </div>
@@ -312,7 +321,15 @@ var state = {
   // Per-conversation lineage envelope (#1121). Loaded lazily when the
   // Lineage inspector tab is opened. ``undefined`` means "not loaded
   // yet"; ``{error}`` means "fetch failed".
-  lineage: undefined
+  lineage: undefined,
+  // Insights browser cache (#1120). Keyed by conversation_id; populated
+  // on demand when the Insights inspector tab is opened. Holds the
+  // ``GET /api/insights/sessions/{id}`` envelope: ``{kinds: {profile,
+  // timeline, phases, threads}, include, conversation_id, provider}``.
+  insightsPanels: {},
+  // Per-conversation collapsed-section toggles for the Insights tab.
+  // Keyed as ``"<conversation_id>:<kind>"``; default = expanded.
+  insightsCollapsed: {}
 };
 
 function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
@@ -711,8 +728,174 @@ function renderInspector() {
   if (tab === 'info') renderInspectorInfo(el, c);
   else if (tab === 'cost') renderInspectorCost(el, c);
   else if (tab === 'lineage') renderInspectorLineage(el, c);
+  else if (tab === 'insights') renderInspectorInsights(el, c);
   else if (tab === 'raw') renderInspectorRaw(el, c);
   else if (tab === 'notes') renderInspectorNotes(el, c);
+}
+
+// --- Insights browser (#1120) -------------------------------------------
+// Loads /api/insights/sessions/{id} on demand and caches per-conversation
+// in state.insightsPanels. Each kind (profile/timeline/phases/threads)
+// surfaces a readiness chip driven by the daemon-served q-* vocabulary
+// (q-ready / q-partial / q-missing). The panel never goes blank — a
+// kind with no materialized row is rendered with an explicit q-missing
+// chip and a "no rows recorded" body.
+async function loadInsightsPanel(id) {
+  try {
+    var data = await fetchJSON('/api/insights/sessions/' + encodeURIComponent(id));
+    state.insightsPanels[id] = data;
+  } catch(e) {
+    state.insightsPanels[id] = {error: String(e)};
+  }
+  if (state.selected && state.selected.id === id && state.inspectorTab === 'insights') {
+    renderInspector();
+  }
+}
+
+function insightSectionKey(convId, kind) { return convId + ':' + kind; }
+
+function toggleInsightSection(kind) {
+  if (!state.selected) return;
+  var k = insightSectionKey(state.selected.id, kind);
+  state.insightsCollapsed[k] = !state.insightsCollapsed[k];
+  renderInspector();
+}
+
+function readinessChip(tag) {
+  var label = (tag || 'q-missing').replace('q-', '');
+  return '<span class="chip ' + esc(tag || 'q-missing') + '" title="readiness: ' + esc(tag || 'q-missing') + '">' + esc(label) + '</span>';
+}
+
+function insightSectionHeader(convId, kind, title, tag, count) {
+  var collapsed = state.insightsCollapsed[insightSectionKey(convId, kind)];
+  var arrow = collapsed ? '+' : '&minus;';
+  var meta = (count != null) ? ' <span class="muted">(' + esc(String(count)) + ')</span>' : '';
+  return '<h4 class="insight-section-header" onclick="toggleInsightSection(\'' + escAttr(kind) + '\')">'
+    + '<span class="insight-toggle">' + arrow + '</span> '
+    + esc(title) + ' ' + readinessChip(tag) + meta + '</h4>';
+}
+
+function renderInsightProfile(convId, body) {
+  if (!body) body = {readiness_tag: 'q-missing', materialized: false, profile: null};
+  var tag = body.readiness_tag || 'q-missing';
+  var html = insightSectionHeader(convId, 'profile', 'Profile', tag, null);
+  if (state.insightsCollapsed[insightSectionKey(convId, 'profile')]) return html;
+  var prof = body.profile;
+  if (!prof) {
+    html += '<div class="inspector-field"><span class="value muted">No session profile materialized.</span></div>';
+    return html;
+  }
+  var fields = [
+    ['Messages', prof.message_count],
+    ['Substantive', prof.substantive_count],
+    ['Tool uses', prof.tool_use_count],
+    ['Thinking', prof.thinking_count],
+    ['Words', prof.word_count],
+    ['Duration (ms)', prof.total_duration_ms],
+    ['Wall (ms)', prof.wall_duration_ms],
+    ['Tags', (prof.tags || []).join(', ')],
+    ['Auto-tags', (prof.auto_tags || []).join(', ')]
+  ];
+  fields.forEach(function(row) {
+    var v = (row[1] == null || row[1] === '') ? '\u2014' : row[1];
+    html += '<div class="inspector-field"><span class="label">' + esc(row[0]) + '</span>'
+      + '<span class="value">' + esc(String(v)) + '</span></div>';
+  });
+  return html;
+}
+
+function renderInsightTimeline(convId, body) {
+  if (!body) body = {readiness_tag: 'q-missing', count: 0, events: []};
+  var tag = body.readiness_tag || 'q-missing';
+  var count = body.count || (body.events ? body.events.length : 0);
+  var html = insightSectionHeader(convId, 'timeline', 'Work events', tag, count);
+  if (state.insightsCollapsed[insightSectionKey(convId, 'timeline')]) return html;
+  var events = body.events || [];
+  if (!events.length) {
+    html += '<div class="inspector-field"><span class="value muted">No work events recorded.</span></div>';
+    return html;
+  }
+  events.slice(0, 50).forEach(function(ev) {
+    var inf = ev.inference || {};
+    var kind = inf.kind || inf.event_type || 'event';
+    var summary = inf.summary || inf.label || '';
+    html += '<div class="inspector-field"><span class="label">#' + esc(String(ev.event_index)) + ' '
+      + esc(kind) + '</span><span class="value">' + esc(summary) + '</span></div>';
+  });
+  if (events.length > 50) {
+    html += '<div class="inspector-field"><span class="value muted">+' + (events.length - 50) + ' more</span></div>';
+  }
+  return html;
+}
+
+function renderInsightPhases(convId, body) {
+  if (!body) body = {readiness_tag: 'q-missing', count: 0, phases: []};
+  var tag = body.readiness_tag || 'q-missing';
+  var count = body.count || (body.phases ? body.phases.length : 0);
+  var html = insightSectionHeader(convId, 'phases', 'Phases', tag, count);
+  if (state.insightsCollapsed[insightSectionKey(convId, 'phases')]) return html;
+  var phases = body.phases || [];
+  if (!phases.length) {
+    html += '<div class="inspector-field"><span class="value muted">No phases recorded.</span></div>';
+    return html;
+  }
+  phases.forEach(function(ph) {
+    var inf = ph.inference || {};
+    var label = inf.label || inf.phase_type || ('phase ' + ph.phase_index);
+    var summary = inf.summary || '';
+    html += '<div class="inspector-field"><span class="label">#' + esc(String(ph.phase_index)) + ' '
+      + esc(label) + '</span><span class="value">' + esc(summary) + '</span></div>';
+  });
+  return html;
+}
+
+function renderInsightThreads(convId, body) {
+  if (!body) body = {readiness_tag: 'q-missing', count: 0, threads: []};
+  var tag = body.readiness_tag || 'q-missing';
+  var count = body.count || (body.threads ? body.threads.length : 0);
+  var html = insightSectionHeader(convId, 'threads', 'Work threads', tag, count);
+  if (state.insightsCollapsed[insightSectionKey(convId, 'threads')]) return html;
+  var threads = body.threads || [];
+  if (!threads.length) {
+    html += '<div class="inspector-field"><span class="value muted">No work-thread membership recorded.</span></div>';
+    return html;
+  }
+  threads.forEach(function(th) {
+    var t = th.thread || {};
+    var sessionCount = (t.session_ids || []).length || t.session_count || 0;
+    var meta = (th.dominant_repo ? th.dominant_repo + ' \u00b7 ' : '')
+      + sessionCount + ' sessions';
+    html += '<div class="inspector-field"><span class="label">' + esc(th.thread_id.slice(0, 8)) + '</span>'
+      + '<span class="value">' + esc(meta) + '</span></div>';
+  });
+  return html;
+}
+
+function renderInspectorInsights(el, c) {
+  var data = state.insightsPanels[c.id];
+  if (data === undefined) {
+    el.innerHTML = '<div class="inspector-empty">Loading insights...</div>';
+    loadInsightsPanel(c.id);
+    return;
+  }
+  if (data && data.error) {
+    el.innerHTML = '<div class="inspector-empty">Insights surface unavailable</div>';
+    return;
+  }
+  var kinds = data.kinds || {};
+  var html = '<div class="inspector-section">'
+    + renderInsightProfile(c.id, kinds.profile)
+    + '</div>'
+    + '<div class="inspector-section">'
+    + renderInsightTimeline(c.id, kinds.timeline)
+    + '</div>'
+    + '<div class="inspector-section">'
+    + renderInsightPhases(c.id, kinds.phases)
+    + '</div>'
+    + '<div class="inspector-section">'
+    + renderInsightThreads(c.id, kinds.threads)
+    + '</div>';
+  el.innerHTML = html;
 }
 
 // --- Cost panel (#1122) --------------------------------------------------
