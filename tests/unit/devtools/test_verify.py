@@ -35,6 +35,7 @@ def test_quick_verify_omits_pytest() -> None:
         "verify-layering",
         "verify-file-budgets",
         "verify-test-ownership",
+        "verify-closure-matrix",
         "verify-schema-roundtrip",
         "verify-cross-cuts",
         "verify-suppressions",
@@ -124,8 +125,39 @@ def test_skip_slow_keeps_testmon_selection_forced() -> None:
 
     label, command = steps[-1]
     assert label == "pytest testmon"
-    assert command[command.index("-m") + 1] == "not slow"
+    # Scale-tier policy (#1183): the default verify gate filters out
+    # ``scale_medium``/``scale_large``; ``--skip-slow`` composes with that
+    # filter via ``and`` rather than replacing it.
+    marker_expr = command[command.index("-m") + 1]
+    assert "not slow" in marker_expr
+    assert "not scale_medium" in marker_expr
+    assert "not scale_large" in marker_expr
     assert "--testmon-forceselect" in command
+
+
+def test_default_verify_excludes_medium_and_large_scale_markers() -> None:
+    """Default verify pytest step deselects the medium/large scale tiers (#1183)."""
+    steps = build_verify_steps(quick=False, lab=False, skip_slow=False)
+
+    label, command = steps[-1]
+    assert label == "pytest testmon"
+    marker_expr = command[command.index("-m") + 1]
+    assert "not scale_medium" in marker_expr
+    assert "not scale_large" in marker_expr
+    # ``scale_small`` is *not* excluded — it runs in the default gate.
+    assert "scale_small" not in marker_expr
+
+
+def test_lab_verify_includes_medium_scale_marker() -> None:
+    """``--lab`` lets ``scale_medium`` into the pytest step but still gates ``scale_large`` (#1183)."""
+    steps = build_verify_steps(quick=False, lab=True, skip_slow=False)
+
+    pytest_step = next((label, command) for label, command in steps if label.startswith("pytest"))
+    label, command = pytest_step
+    marker_expr = command[command.index("-m") + 1]
+    assert "not scale_large" in marker_expr
+    assert "not scale_medium" not in marker_expr
+    assert "scale_small" not in marker_expr
 
 
 def test_global_testmon_invalidators_cover_harness_and_config() -> None:

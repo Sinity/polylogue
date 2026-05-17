@@ -31,6 +31,7 @@ from tests.infra.builders import make_conv, make_msg
 pytest_plugins = (
     "tests.infra.contract_evidence",
     "tests.infra.corpus_fixtures",
+    "tests.infra.scale_fixtures",
     "tests.conftest_witness",
 )
 
@@ -57,6 +58,18 @@ def pytest_configure(config: pytest.Config) -> None:
     sets it; regular directories on btrfs/ext4/xfs never do.
     """
     config.addinivalue_line("markers", "scale(level): parametric scale marker (small/medium/large/stretch)")
+    # Tiered scale markers (issue #1183); definitions also live in
+    # pyproject.toml `markers` so xfail_strict + filterwarnings agree.
+    config.addinivalue_line(
+        "markers", "scale_small: small-tier scale fixture (~100 convs / ~1k msgs); default verify gate (#1183)"
+    )
+    config.addinivalue_line(
+        "markers", "scale_medium: medium-tier scale fixture (~1k convs / ~10k msgs); verify --lab gate (#1183)"
+    )
+    config.addinivalue_line(
+        "markers",
+        "scale_large: large-tier scale fixture (~10k convs / ~100k msgs); nightly CI / campaigns only (#1183)",
+    )
 
     shm = Path("/dev/shm")
     if shm.is_dir() and (_stat.S_ISVTX & shm.stat().st_mode) and config.option.basetemp is None:
