@@ -179,6 +179,26 @@ async def list_tags(conn: aiosqlite.Connection, *, provider: str | None = None) 
 # ---------------------------------------------------------------------------
 
 
+def user_state_identity_key(
+    *,
+    target_type: str,
+    conversation_id: str,
+    message_id: str | None,
+) -> str:
+    """Return the stable identity key used to repoint marks/annotations.
+
+    Matches ``TargetRefPayload`` (``polylogue/surfaces/payloads.py``) so that
+    surface-level and storage-level identity tokens are wire-compatible. The
+    underlying provider IDs are deterministic across reimport, so identity_key
+    survives reset+reingest of the same logical conversation (#1114).
+    """
+    if target_type == "message":
+        if not message_id:
+            raise ValueError("message_id is required for target_type='message'")
+        return f"message:{conversation_id}:{message_id}"
+    return f"conversation:{conversation_id}"
+
+
 async def add_mark(
     conn: aiosqlite.Connection,
     *,
@@ -190,19 +210,25 @@ async def add_mark(
     message_id: str | None = None,
 ) -> bool:
     """Add a mark to a target. Returns True if newly inserted."""
+    identity_key = user_state_identity_key(
+        target_type=target_type,
+        conversation_id=conversation_id,
+        message_id=message_id,
+    )
     cursor = await conn.execute(
         """
         INSERT OR IGNORE INTO user_marks (
             target_type,
             target_id,
+            identity_key,
             conversation_id,
             message_id,
             mark_type,
             created_at
         )
-        VALUES (?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
-        (target_type, target_id, conversation_id, message_id, mark_type, created_at),
+        (target_type, target_id, identity_key, conversation_id, message_id, mark_type, created_at),
     )
     await conn.commit()
     return cursor.rowcount > 0
@@ -264,6 +290,88 @@ async def list_marks(
     ]
 
 
+async def repoint_user_state_by_identity(
+    conn: aiosqlite.Connection,
+    conversation_id: str,
+) -> tuple[int, int]:
+    """Rebind orphan marks/annotations to a (re-)imported conversation.
+
+    Implements the read side of #1114: identity_key survives conversation row
+    deletion (FK cascade is ``SET NULL``), and once a logically identical
+    conversation is re-imported its ``conversation_id``/``message_id`` are
+    deterministic, so we can restore the resolved pointers by matching the
+    stored identity_key against the current archive state.
+
+    Returns ``(marks_repointed, annotations_repointed)``.
+    """
+    conv_key = f"conversation:{conversation_id}"
+    msg_key_prefix = f"message:{conversation_id}:"
+
+    # Conversation-target rebinds (target_type='conversation').
+    cursor = await conn.execute(
+        """
+        UPDATE user_marks
+        SET conversation_id = ?
+        WHERE identity_key = ?
+          AND target_type = 'conversation'
+          AND (conversation_id IS NULL OR conversation_id != ?)
+        """,
+        (conversation_id, conv_key, conversation_id),
+    )
+    marks_conv = cursor.rowcount or 0
+    cursor = await conn.execute(
+        """
+        UPDATE user_annotations
+        SET conversation_id = ?
+        WHERE identity_key = ?
+          AND target_type = 'conversation'
+          AND (conversation_id IS NULL OR conversation_id != ?)
+        """,
+        (conversation_id, conv_key, conversation_id),
+    )
+    ann_conv = cursor.rowcount or 0
+
+    # Message-target rebinds: only repoint rows whose message_id is still a
+    # member of the freshly written conversation. Messages that disappeared
+    # from the reimported conversation stay orphaned (NULL conversation_id /
+    # message_id) so callers can distinguish "rebound" from "orphaned by
+    # message drift" without scanning the full annotation table.
+    cursor = await conn.execute(
+        """
+        UPDATE user_marks
+        SET conversation_id = ?, message_id = target_id
+        WHERE identity_key LIKE ?
+          AND target_type = 'message'
+          AND EXISTS (
+              SELECT 1 FROM messages m
+              WHERE m.message_id = user_marks.target_id
+                AND m.conversation_id = ?
+          )
+          AND (conversation_id IS NULL OR message_id IS NULL)
+        """,
+        (conversation_id, f"{msg_key_prefix}%", conversation_id),
+    )
+    marks_msg = cursor.rowcount or 0
+    cursor = await conn.execute(
+        """
+        UPDATE user_annotations
+        SET conversation_id = ?, message_id = target_id
+        WHERE identity_key LIKE ?
+          AND target_type = 'message'
+          AND EXISTS (
+              SELECT 1 FROM messages m
+              WHERE m.message_id = user_annotations.target_id
+                AND m.conversation_id = ?
+          )
+          AND (conversation_id IS NULL OR message_id IS NULL)
+        """,
+        (conversation_id, f"{msg_key_prefix}%", conversation_id),
+    )
+    ann_msg = cursor.rowcount or 0
+
+    return marks_conv + marks_msg, ann_conv + ann_msg
+
+
 # ---------------------------------------------------------------------------
 # User annotations
 # ---------------------------------------------------------------------------
@@ -281,6 +389,11 @@ async def save_annotation(
     message_id: str | None = None,
 ) -> bool:
     """Insert or update an annotation. Returns True if inserted."""
+    identity_key = user_state_identity_key(
+        target_type=target_type,
+        conversation_id=conversation_id,
+        message_id=message_id,
+    )
     cursor = await conn.execute("SELECT 1 FROM user_annotations WHERE annotation_id = ?", (annotation_id,))
     exists = await cursor.fetchone() is not None
     await conn.execute(
@@ -289,22 +402,24 @@ async def save_annotation(
             annotation_id,
             target_type,
             target_id,
+            identity_key,
             conversation_id,
             message_id,
             note_text,
             created_at,
             updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(annotation_id) DO UPDATE SET
             target_type = excluded.target_type,
             target_id = excluded.target_id,
+            identity_key = excluded.identity_key,
             conversation_id = excluded.conversation_id,
             message_id = excluded.message_id,
             note_text = excluded.note_text,
             updated_at = excluded.updated_at
         """,
-        (annotation_id, target_type, target_id, conversation_id, message_id, note_text, now, now),
+        (annotation_id, target_type, target_id, identity_key, conversation_id, message_id, note_text, now, now),
     )
     await conn.commit()
     return not exists
@@ -642,6 +757,7 @@ __all__ = [
     "list_views",
     "list_workspaces",
     "remove_mark",
+    "repoint_user_state_by_identity",
     "save_annotation",
     "resolve_id",
     "save_recall_pack",
@@ -649,4 +765,5 @@ __all__ = [
     "save_workspace",
     "set_metadata",
     "update_metadata_raw",
+    "user_state_identity_key",
 ]

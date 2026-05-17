@@ -96,6 +96,9 @@ class SchemaBootstrapDecision:
         "upgrade_v11_to_v12",
         "upgrade_v12_to_v13",
         "upgrade_v13_to_v14",
+        "upgrade_v14_to_v15",
+        "upgrade_v15_to_v16",
+        "upgrade_v16_to_v17",
         "version_mismatch",
     ]
     extension_plan: SchemaExtensionPlan | None = None
@@ -1024,7 +1027,12 @@ def build_v11_to_v12_upgrade_plan(snapshot: SchemaSnapshot) -> SchemaExtensionPl
 
 
 def build_v12_to_v13_upgrade_plan(snapshot: SchemaSnapshot) -> SchemaExtensionPlan:
-    """Promote user marks to target-aware rows and add annotations."""
+    """Promote user marks to target-aware rows and add annotations.
+
+    Includes identity_key (#1114) in the INSERT shape since the canonical
+    ``USER_MARKS_DDL`` carries identity_key NOT NULL from v16 onward; v15->v16
+    will simply observe the column already present and skip its rebuild step.
+    """
 
     from polylogue.storage.sqlite.schema_ddl_archive import USER_ANNOTATIONS_DDL, USER_MARKS_DDL
 
@@ -1038,6 +1046,7 @@ def build_v12_to_v13_upgrade_plan(snapshot: SchemaSnapshot) -> SchemaExtensionPl
                 INSERT OR IGNORE INTO user_marks (
                     target_type,
                     target_id,
+                    identity_key,
                     conversation_id,
                     message_id,
                     mark_type,
@@ -1046,6 +1055,7 @@ def build_v12_to_v13_upgrade_plan(snapshot: SchemaSnapshot) -> SchemaExtensionPl
                 SELECT
                     'conversation',
                     conversation_id,
+                    'conversation:' || conversation_id,
                     conversation_id,
                     NULL,
                     mark_type,
@@ -1073,6 +1083,175 @@ def build_v13_to_v14_upgrade_plan(snapshot: SchemaSnapshot) -> SchemaExtensionPl
     if not snapshot.has_table("reader_workspaces"):
         statements = _split_ddl_into_statements(READER_WORKSPACES_DDL)
     return SchemaExtensionPlan(statements=statements, scripts=())
+
+
+def build_v14_to_v15_upgrade_plan(snapshot: SchemaSnapshot) -> SchemaExtensionPlan:
+    """Add user_corrections table for the learning-feedback loop (#1131)."""
+
+    from polylogue.storage.sqlite.schema_ddl_archive import USER_CORRECTIONS_DDL
+
+    statements: tuple[str, ...] = ()
+    if not snapshot.has_table("user_corrections"):
+        statements = _split_ddl_into_statements(USER_CORRECTIONS_DDL)
+    return SchemaExtensionPlan(statements=statements, scripts=())
+
+
+# ---------------------------------------------------------------------------
+# v16 -> v17: identity-preserving marks/annotations across reimport (#1114)
+# ---------------------------------------------------------------------------
+# v16 (#1113) cascade-deleted marks/annotations whenever the parent conversation
+# row was removed, which violated the #867 acceptance criterion that user
+# metadata survive reimport. v17 rebuilds both tables so that:
+#   - identity_key (the stable surface token: ``conversation:{cid}`` or
+#     ``message:{cid}:{mid}``) becomes a first-class column,
+#   - FK cascades become ``ON DELETE SET NULL`` so rows survive hard delete,
+#   - the legacy CHECK constraints that tied target_id to conversation_id are
+#     dropped (target_id is now the stable identity, conversation_id is a
+#     resolved pointer that may be NULL between delete and reimport).
+# The expanded target_type CHECK list shipped in #1113 (eight kinds) is
+# preserved. Rebuild is in-place via the SQLite copy-and-swap pattern.
+_V16_TO_V17_USER_MARKS_REBUILD_SQL = """
+        CREATE TABLE user_marks_v17 (
+            target_type     TEXT NOT NULL CHECK (target_type IN (
+                'conversation', 'message', 'session', 'work_event',
+                'thread', 'content_block', 'attachment', 'paste_span'
+            )),
+            target_id       TEXT NOT NULL,
+            identity_key    TEXT NOT NULL,
+            conversation_id TEXT REFERENCES conversations(conversation_id) ON DELETE SET NULL,
+            message_id      TEXT REFERENCES messages(message_id) ON DELETE SET NULL,
+            mark_type       TEXT NOT NULL CHECK (mark_type IN ('star', 'pin', 'archive')),
+            created_at      TEXT NOT NULL,
+            PRIMARY KEY (target_type, target_id, mark_type)
+        )
+"""
+
+_V16_TO_V17_USER_MARKS_BACKFILL_SQL = """
+        INSERT INTO user_marks_v17 (
+            target_type, target_id, identity_key, conversation_id, message_id, mark_type, created_at
+        )
+        SELECT
+            target_type,
+            target_id,
+            CASE
+                WHEN target_type = 'message'
+                    THEN 'message:' || conversation_id || ':' || target_id
+                WHEN target_type = 'conversation'
+                    THEN 'conversation:' || conversation_id
+                ELSE target_type || ':' || conversation_id || ':' || target_id
+            END AS identity_key,
+            conversation_id,
+            message_id,
+            mark_type,
+            created_at
+        FROM user_marks
+"""
+
+_V16_TO_V17_USER_ANNOTATIONS_REBUILD_SQL = """
+        CREATE TABLE user_annotations_v17 (
+            annotation_id   TEXT PRIMARY KEY,
+            target_type     TEXT NOT NULL CHECK (target_type IN (
+                'conversation', 'message', 'session', 'work_event',
+                'thread', 'content_block', 'attachment', 'paste_span'
+            )),
+            target_id       TEXT NOT NULL,
+            identity_key    TEXT NOT NULL,
+            conversation_id TEXT REFERENCES conversations(conversation_id) ON DELETE SET NULL,
+            message_id      TEXT REFERENCES messages(message_id) ON DELETE SET NULL,
+            note_text       TEXT NOT NULL,
+            created_at      TEXT NOT NULL,
+            updated_at      TEXT NOT NULL
+        )
+"""
+
+_V16_TO_V17_USER_ANNOTATIONS_BACKFILL_SQL = """
+        INSERT INTO user_annotations_v17 (
+            annotation_id, target_type, target_id, identity_key,
+            conversation_id, message_id, note_text, created_at, updated_at
+        )
+        SELECT
+            annotation_id,
+            target_type,
+            target_id,
+            CASE
+                WHEN target_type = 'message'
+                    THEN 'message:' || conversation_id || ':' || target_id
+                WHEN target_type = 'conversation'
+                    THEN 'conversation:' || conversation_id
+                ELSE target_type || ':' || conversation_id || ':' || target_id
+            END AS identity_key,
+            conversation_id,
+            message_id,
+            note_text,
+            created_at,
+            updated_at
+        FROM user_annotations
+"""
+
+
+def build_v16_to_v17_upgrade_plan(snapshot: SchemaSnapshot) -> SchemaExtensionPlan:
+    """Rebuild user_marks/user_annotations with identity_key and SET NULL FKs (#1114)."""
+
+    from polylogue.storage.sqlite.schema_ddl_archive import USER_ANNOTATIONS_DDL, USER_MARKS_DDL
+
+    statements: list[str] = []
+
+    has_marks = snapshot.has_table("user_marks")
+    marks_columns = snapshot.columns("user_marks") if has_marks else frozenset()
+    marks_needs_rebuild = has_marks and "identity_key" not in marks_columns
+    if marks_needs_rebuild:
+        statements.extend(
+            [
+                _V16_TO_V17_USER_MARKS_REBUILD_SQL,
+                _V16_TO_V17_USER_MARKS_BACKFILL_SQL,
+                "DROP TABLE user_marks",
+                "ALTER TABLE user_marks_v17 RENAME TO user_marks",
+                "CREATE INDEX IF NOT EXISTS idx_user_marks_type ON user_marks(mark_type)",
+                "CREATE INDEX IF NOT EXISTS idx_user_marks_conversation ON user_marks(conversation_id)",
+                "CREATE INDEX IF NOT EXISTS idx_user_marks_message ON user_marks(message_id)",
+                "CREATE INDEX IF NOT EXISTS idx_user_marks_identity_key ON user_marks(identity_key)",
+            ]
+        )
+    elif not has_marks:
+        statements.extend(_split_ddl_into_statements(USER_MARKS_DDL))
+
+    has_ann = snapshot.has_table("user_annotations")
+    ann_columns = snapshot.columns("user_annotations") if has_ann else frozenset()
+    ann_needs_rebuild = has_ann and "identity_key" not in ann_columns
+    if ann_needs_rebuild:
+        statements.extend(
+            [
+                _V16_TO_V17_USER_ANNOTATIONS_REBUILD_SQL,
+                _V16_TO_V17_USER_ANNOTATIONS_BACKFILL_SQL,
+                "DROP TABLE user_annotations",
+                "ALTER TABLE user_annotations_v17 RENAME TO user_annotations",
+                "CREATE INDEX IF NOT EXISTS idx_user_annotations_target ON user_annotations(target_type, target_id)",
+                "CREATE INDEX IF NOT EXISTS idx_user_annotations_conversation ON user_annotations(conversation_id)",
+                "CREATE INDEX IF NOT EXISTS idx_user_annotations_message ON user_annotations(message_id)",
+                "CREATE INDEX IF NOT EXISTS idx_user_annotations_identity_key ON user_annotations(identity_key)",
+            ]
+        )
+    elif not has_ann:
+        statements.extend(_split_ddl_into_statements(USER_ANNOTATIONS_DDL))
+
+    return SchemaExtensionPlan(statements=tuple(statements), scripts=())
+
+
+def build_v15_to_v16_upgrade_plan(snapshot: SchemaSnapshot) -> SchemaExtensionPlan:
+    """Expand user_state target_type CHECK to admit insight kinds (#1113).
+
+    v16 was a fresh-first bump in #1113 (no upgrade chain was added there).
+    This plan exists so the v15 -> current chain can land an archive at v16
+    via the same in-place table rebuild that v16 -> v17 uses; the resulting
+    intermediate state is then carried into v17 by build_v16_to_v17_upgrade_plan
+    chained from _upgrade_tail_statements.
+    """
+
+    # Re-uses the v16->v17 rebuild because the target schema (expanded CHECK,
+    # identity_key column, SET NULL FKs) is reached as part of the same
+    # operation. Returning an empty plan would leave v15 archives stuck at the
+    # v15 CHECK shape, which #1113 explicitly tightened.
+    return build_v16_to_v17_upgrade_plan(snapshot)
 
 
 _DETECTION_WARNINGS_COLUMN_DDL = "ALTER TABLE raw_conversations ADD COLUMN detection_warnings TEXT"
@@ -1105,13 +1284,21 @@ def _upgrade_tail_statements(snapshot: SchemaSnapshot, *, from_version: int) -> 
         statements = (*statements, *build_v12_to_v13_upgrade_plan(snapshot).statements)
     if from_version < 14 <= SCHEMA_VERSION:
         statements = (*statements, *build_v13_to_v14_upgrade_plan(snapshot).statements)
+    if from_version < 15 <= SCHEMA_VERSION:
+        statements = (*statements, *build_v14_to_v15_upgrade_plan(snapshot).statements)
+    if from_version < 16 <= SCHEMA_VERSION:
+        statements = (*statements, *build_v15_to_v16_upgrade_plan(snapshot).statements)
+    # v15->v16 already rebuilds the user-state tables to the v17 shape, so
+    # skip a redundant rebuild when chaining through the v15 entry point.
+    if from_version >= 16 and from_version < 17 <= SCHEMA_VERSION:
+        statements = (*statements, *build_v16_to_v17_upgrade_plan(snapshot).statements)
     return statements
 
 
 def _has_version_upgrade_path(snapshot: SchemaSnapshot) -> bool:
     """Return True when a version-specific upgrade path exists for this snapshot."""
     v = snapshot.current_version
-    return (v == 2 and snapshot.has_table("messages")) or v in (3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13)
+    return (v == 2 and snapshot.has_table("messages")) or v in (3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16)
 
 
 def decide_schema_bootstrap(snapshot: SchemaSnapshot) -> SchemaBootstrapDecision:
@@ -1244,9 +1431,40 @@ def decide_schema_bootstrap(snapshot: SchemaSnapshot) -> SchemaBootstrapDecision
         )
 
     if snapshot.current_version == 13 and SCHEMA_VERSION >= 14:
+        plan = build_v13_to_v14_upgrade_plan(snapshot)
+        extra_stmts = _upgrade_tail_statements(snapshot, from_version=14)
+        if extra_stmts:
+            plan = SchemaExtensionPlan(statements=(*plan.statements, *extra_stmts), scripts=())
         return SchemaBootstrapDecision(
             action="upgrade_v13_to_v14",
-            extension_plan=build_v13_to_v14_upgrade_plan(snapshot),
+            extension_plan=plan,
+            current_version=snapshot.current_version,
+        )
+
+    if snapshot.current_version == 14 and SCHEMA_VERSION >= 15:
+        plan = build_v14_to_v15_upgrade_plan(snapshot)
+        extra_stmts = _upgrade_tail_statements(snapshot, from_version=15)
+        if extra_stmts:
+            plan = SchemaExtensionPlan(statements=(*plan.statements, *extra_stmts), scripts=())
+        return SchemaBootstrapDecision(
+            action="upgrade_v14_to_v15",
+            extension_plan=plan,
+            current_version=snapshot.current_version,
+        )
+
+    if snapshot.current_version == 15 and SCHEMA_VERSION >= 16:
+        # v15 -> v16 rebuilds user-state tables. When chaining onward to v17 the
+        # rebuild already lands the v17 shape, so do not append v16->v17.
+        return SchemaBootstrapDecision(
+            action="upgrade_v15_to_v16",
+            extension_plan=build_v15_to_v16_upgrade_plan(snapshot),
+            current_version=snapshot.current_version,
+        )
+
+    if snapshot.current_version == 16 and SCHEMA_VERSION >= 17:
+        return SchemaBootstrapDecision(
+            action="upgrade_v16_to_v17",
+            extension_plan=build_v16_to_v17_upgrade_plan(snapshot),
             current_version=snapshot.current_version,
         )
 
@@ -1403,6 +1621,9 @@ __all__ = [
     "build_v11_to_v12_upgrade_plan",
     "build_v12_to_v13_upgrade_plan",
     "build_v13_to_v14_upgrade_plan",
+    "build_v14_to_v15_upgrade_plan",
+    "build_v15_to_v16_upgrade_plan",
+    "build_v16_to_v17_upgrade_plan",
     "capture_schema_snapshot",
     "capture_schema_snapshot_async",
     "decide_schema_bootstrap",

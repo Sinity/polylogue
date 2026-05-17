@@ -237,17 +237,33 @@ def seed_reader_archive(
                 )
         conn.execute(
             """
-            INSERT INTO user_marks(target_type, target_id, conversation_id, message_id, mark_type, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO user_marks(target_type, target_id, identity_key, conversation_id, message_id, mark_type, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            ("conversation", "reader-c1", "reader-c1", None, "star", "2026-05-15T00:00:00+00:00"),
+            (
+                "conversation",
+                "reader-c1",
+                "conversation:reader-c1",
+                "reader-c1",
+                None,
+                "star",
+                "2026-05-15T00:00:00+00:00",
+            ),
         )
         conn.execute(
             """
-            INSERT INTO user_marks(target_type, target_id, conversation_id, message_id, mark_type, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO user_marks(target_type, target_id, identity_key, conversation_id, message_id, mark_type, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            ("conversation", "reader-c1", "reader-c1", None, "pin", "2026-05-15T00:01:00+00:00"),
+            (
+                "conversation",
+                "reader-c1",
+                "conversation:reader-c1",
+                "reader-c1",
+                None,
+                "pin",
+                "2026-05-15T00:01:00+00:00",
+            ),
         )
         conn.execute(
             "INSERT INTO saved_views(view_id, name, query_json, created_at) VALUES (?, ?, ?, ?)",
@@ -261,15 +277,16 @@ def seed_reader_archive(
         conn.execute(
             """
             INSERT INTO user_annotations(
-                annotation_id, target_type, target_id, conversation_id, message_id,
-                note_text, created_at, updated_at
+                annotation_id, target_type, target_id, identity_key,
+                conversation_id, message_id, note_text, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 "reader-ann-c1",
                 "conversation",
                 "reader-c1",
+                "conversation:reader-c1",
                 "reader-c1",
                 None,
                 "This conversation anchors the MK3 reader evidence.",
