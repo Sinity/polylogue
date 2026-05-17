@@ -175,10 +175,26 @@ class PolylogueConfig:
     """
 
     _data: dict[str, object] = field(default_factory=dict)
+    _layers: dict[str, str] = field(default_factory=dict)
 
     @property
     def raw(self) -> dict[str, object]:
         return self._data
+
+    @property
+    def layers(self) -> dict[str, str]:
+        """Map of config-key -> originating layer name.
+
+        Layer names: ``default``, ``site``, ``user``, ``env``, ``cli``.
+        Only keys that have been resolved through the loader appear here;
+        keys present only in ``raw`` from external construction may be
+        absent.
+        """
+        return dict(self._layers)
+
+    def layer_of(self, key: str) -> str:
+        """Return the layer name that supplied ``key`` (default: ``default``)."""
+        return self._layers.get(key, "default")
 
     @property
     def archive_root(self) -> str:
@@ -301,14 +317,39 @@ class PolylogueConfig:
         return self._data.get(key, default)
 
 
-def _config_file_path() -> Path | None:
-    """Resolve the polylogue.toml path.
+#: Default site-wide configuration path. Overridable through the
+#: ``POLYLOGUE_SITE_CONFIG`` env var (primarily for tests and packaging).
+DEFAULT_SITE_CONFIG_PATH = Path("/etc/polylogue/polylogue.toml")
 
-    Returns the first existing path from:
-      1. ``POLYLOGUE_CONFIG`` env var
+
+def _site_config_path() -> Path | None:
+    """Resolve the site-wide ``polylogue.toml`` (layer 2).
+
+    Resolution order:
+      1. ``POLYLOGUE_SITE_CONFIG`` env var (explicit override; ``""`` disables)
+      2. ``/etc/polylogue/polylogue.toml`` if it exists
+
+    Returns ``None`` when no site config is available.
+    """
+    override = os.environ.get("POLYLOGUE_SITE_CONFIG")
+    if override is not None:
+        if not override:
+            return None
+        p = Path(override)
+        return p if p.is_file() else None
+
+    return DEFAULT_SITE_CONFIG_PATH if DEFAULT_SITE_CONFIG_PATH.is_file() else None
+
+
+def _user_config_path() -> Path | None:
+    """Resolve the user-scoped ``polylogue.toml`` (layer 3).
+
+    Resolution order:
+      1. ``POLYLOGUE_CONFIG`` env var (explicit override)
       2. ``{XDG_CONFIG_HOME}/polylogue/polylogue.toml``
-      3. ``{project_root}/polylogue.toml``
-    Returns None if no file exists.
+      3. ``{cwd}/polylogue.toml`` (project-local fallback)
+
+    Returns ``None`` when no user config is found.
     """
     override = os.environ.get("POLYLOGUE_CONFIG")
     if override:
@@ -326,17 +367,25 @@ def _config_file_path() -> Path | None:
     return None
 
 
-def load_polylogue_config(
-    *,
-    config_path: Path | None = None,
-    cli_overrides: dict[str, object] | None = None,
-) -> PolylogueConfig:
-    """Load resolved Polylogue config with four-layer precedence.
+def _config_file_path() -> Path | None:
+    """Back-compat alias for :func:`_user_config_path`.
 
-    Returns a typed ``PolylogueConfig`` with attribute access for
-    known keys and ``.get()`` / ``.raw`` for everything else.
+    Retained because earlier tests reference it indirectly via the loader's
+    behavior; new callers should pick the explicit user/site helper.
     """
-    cfg: dict[str, object] = {
+    return _user_config_path()
+
+
+def _default_config_values() -> dict[str, object]:
+    """Built-in defaults (layer 1).
+
+    Pure function — does not touch the filesystem, env, or CLI state.
+    The one exception is ``archive_root``, which derives from XDG paths
+    via :func:`archive_root`; that resolution is itself env-driven but
+    represents the documented built-in default for an unconfigured
+    install.
+    """
+    return {
         "archive_root": str(archive_root()),
         "daemon_url": "http://127.0.0.1:8766",
         "daemon_host": "127.0.0.1",
@@ -371,26 +420,111 @@ def load_polylogue_config(
         "source_roots": (),
     }
 
-    # Layer 2: TOML file
-    path = config_path or _config_file_path()
-    if path is not None:
-        try:
-            with open(path, "rb") as fh:
-                toml_data = tomllib.load(fh)
-            _merge_toml(cfg, toml_data)
-        except (OSError, tomllib.TOMLDecodeError):
-            pass
 
-    # Layer 3: Environment variables
+def _apply_toml_layer(
+    cfg: dict[str, object],
+    layers: dict[str, str],
+    path: Path,
+    layer_name: str,
+) -> None:
+    """Load ``path`` as TOML and merge it into ``cfg``, recording layer source.
+
+    Errors (missing file race, malformed TOML) are swallowed silently so a
+    broken site config cannot brick a user's CLI. Surface diagnostics live
+    in ``polylogue config --show-layers`` via :func:`describe_config_layers`.
+    """
+    try:
+        with open(path, "rb") as fh:
+            toml_data = tomllib.load(fh)
+    except (OSError, tomllib.TOMLDecodeError):
+        return
+
+    before = dict(cfg)
+    _merge_toml(cfg, toml_data)
+    for key, value in cfg.items():
+        if before.get(key, _MISSING) != value:
+            layers[key] = layer_name
+
+
+_MISSING = object()
+
+
+def load_polylogue_config(
+    *,
+    config_path: Path | None = None,
+    site_config_path: Path | None = None,
+    cli_overrides: dict[str, object] | None = None,
+) -> PolylogueConfig:
+    """Load resolved Polylogue config with four-layer precedence.
+
+    Precedence (low → high), per #829:
+
+      1. Built-in defaults (:func:`_default_config_values`).
+      2. Site config: ``/etc/polylogue/polylogue.toml`` (overridable via
+         ``POLYLOGUE_SITE_CONFIG`` env var or the ``site_config_path``
+         keyword).
+      3. User config: ``$XDG_CONFIG_HOME/polylogue/polylogue.toml`` or a
+         ``polylogue.toml`` in the current working directory; overridable
+         via ``POLYLOGUE_CONFIG`` env var or the ``config_path`` keyword.
+      4. ``POLYLOGUE_*`` environment variables.
+      5. CLI overrides (highest precedence).
+
+    Returns a typed :class:`PolylogueConfig` with attribute access for
+    known keys plus ``layer_of()`` / ``layers`` for provenance.
+    """
+    cfg = _default_config_values()
+    layers: dict[str, str] = dict.fromkeys(cfg, "default")
+
+    # Layer 2: site TOML.
+    site_path = site_config_path if site_config_path is not None else _site_config_path()
+    if site_path is not None and site_path.is_file():
+        _apply_toml_layer(cfg, layers, site_path, "site")
+
+    # Layer 3: user TOML.
+    user_path = config_path if config_path is not None else _user_config_path()
+    if user_path is not None and user_path.is_file():
+        _apply_toml_layer(cfg, layers, user_path, "user")
+
+    # Layer 4: environment variables.
+    before_env = dict(cfg)
     _apply_env_overrides(cfg)
+    for key, value in cfg.items():
+        if before_env.get(key, _MISSING) != value:
+            layers[key] = "env"
 
-    # Layer 4: CLI overrides
+    # Layer 5: CLI overrides (highest precedence).
     if cli_overrides:
         for key, value in cli_overrides.items():
             if value is not None:
                 cfg[key] = value
+                layers[key] = "cli"
 
-    return PolylogueConfig(_data=cfg)
+    return PolylogueConfig(_data=cfg, _layers=layers)
+
+
+def describe_config_layers(
+    *,
+    config_path: Path | None = None,
+    site_config_path: Path | None = None,
+) -> dict[str, object]:
+    """Return a structured description of the active config layer paths.
+
+    Used by ``polylogue config --show-layers`` to report which physical
+    files (if any) supplied the site and user layers. The shape is a
+    plain dict so it can be JSON-serialized verbatim.
+    """
+    site = site_config_path if site_config_path is not None else _site_config_path()
+    user = config_path if config_path is not None else _user_config_path()
+    return {
+        "site": {
+            "path": str(site) if site is not None else None,
+            "exists": bool(site is not None and site.is_file()),
+        },
+        "user": {
+            "path": str(user) if user is not None else None,
+            "exists": bool(user is not None and user.is_file()),
+        },
+    }
 
 
 def _merge_toml(cfg: dict[str, object], toml_data: dict[str, object]) -> None:
@@ -594,10 +728,12 @@ def format_config_toml(cfg: dict[str, object]) -> str:
 __all__ = [
     "Config",
     "ConfigError",
+    "DEFAULT_SITE_CONFIG_PATH",
     "DriveConfig",
     "IndexConfig",
     "PolylogueConfig",
     "Source",
+    "describe_config_layers",
     "format_config_toml",
     "get_config",
     "get_drive_config",

@@ -566,6 +566,181 @@ class TestPolylogueConfigFormatTOML:
         assert 'roots = ["/a", "/b"]' in formatted
 
 
+class TestPolylogueConfigLayerPrecedence:
+    """Five-layer precedence (default → site → user → env → cli) per #829."""
+
+    def _disable_site(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Empty POLYLOGUE_SITE_CONFIG disables site discovery so tests do not
+        # accidentally read /etc/polylogue/polylogue.toml from the host.
+        monkeypatch.setenv("POLYLOGUE_SITE_CONFIG", "")
+
+    def test_default_layer_marks_unset_keys(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        from polylogue.config import load_polylogue_config
+
+        self._disable_site(monkeypatch)
+        cfg = load_polylogue_config()
+        assert cfg.layer_of("api_port") == "default"
+        assert cfg.layer_of("embedding_model") == "default"
+
+    def test_site_layer_supplies_value(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        from polylogue.config import load_polylogue_config
+
+        self._disable_site(monkeypatch)
+        site = tmp_path / "site.toml"
+        site.write_text("[daemon.api]\nport = 8001\n", encoding="utf-8")
+        cfg = load_polylogue_config(site_config_path=site)
+        assert cfg.api_port == 8001
+        assert cfg.layer_of("api_port") == "site"
+
+    def test_user_overrides_site(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        from polylogue.config import load_polylogue_config
+
+        self._disable_site(monkeypatch)
+        site = tmp_path / "site.toml"
+        site.write_text("[daemon.api]\nport = 8001\n", encoding="utf-8")
+        user = tmp_path / "user.toml"
+        user.write_text("[daemon.api]\nport = 8002\n", encoding="utf-8")
+        cfg = load_polylogue_config(site_config_path=site, config_path=user)
+        assert cfg.api_port == 8002
+        assert cfg.layer_of("api_port") == "user"
+
+    def test_env_overrides_user(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        from polylogue.config import load_polylogue_config
+
+        self._disable_site(monkeypatch)
+        user = tmp_path / "user.toml"
+        user.write_text("[daemon.api]\nport = 8002\n", encoding="utf-8")
+        monkeypatch.setenv("POLYLOGUE_API_PORT", "8003")
+        cfg = load_polylogue_config(config_path=user)
+        assert cfg.api_port == 8003
+        assert cfg.layer_of("api_port") == "env"
+
+    def test_cli_overrides_env(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        from polylogue.config import load_polylogue_config
+
+        self._disable_site(monkeypatch)
+        monkeypatch.setenv("POLYLOGUE_API_PORT", "8003")
+        cfg = load_polylogue_config(cli_overrides={"api_port": 8004})
+        assert cfg.api_port == 8004
+        assert cfg.layer_of("api_port") == "cli"
+
+    def test_layers_map_lists_every_default_key(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        from polylogue.config import load_polylogue_config
+
+        self._disable_site(monkeypatch)
+        cfg = load_polylogue_config()
+        for key in cfg.raw:
+            assert key in cfg.layers, f"missing layer source for {key}"
+
+    def test_missing_site_file_falls_through_to_default(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        from polylogue.config import load_polylogue_config
+
+        self._disable_site(monkeypatch)
+        missing = tmp_path / "nonexistent.toml"
+        cfg = load_polylogue_config(site_config_path=missing)
+        assert cfg.layer_of("api_port") == "default"
+
+    def test_malformed_toml_does_not_crash(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        from polylogue.config import load_polylogue_config
+
+        self._disable_site(monkeypatch)
+        bad = tmp_path / "bad.toml"
+        bad.write_text("this is not valid toml = = = [\n", encoding="utf-8")
+        cfg = load_polylogue_config(config_path=bad)
+        # Falls back to defaults silently rather than blowing up the CLI.
+        assert cfg.api_port == 8766
+        assert cfg.layer_of("api_port") == "default"
+
+
+class TestDescribeConfigLayers:
+    """``describe_config_layers`` reports site/user paths and existence."""
+
+    def test_describe_with_no_files(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        from polylogue.config import describe_config_layers
+
+        monkeypatch.setenv("POLYLOGUE_SITE_CONFIG", "")
+        monkeypatch.delenv("POLYLOGUE_CONFIG", raising=False)
+        report = describe_config_layers()
+        assert report["site"] == {"path": None, "exists": False}
+
+    def test_describe_with_files_present(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        from polylogue.config import describe_config_layers
+
+        site = tmp_path / "site.toml"
+        site.write_text("", encoding="utf-8")
+        user = tmp_path / "user.toml"
+        user.write_text("", encoding="utf-8")
+        monkeypatch.setenv("POLYLOGUE_SITE_CONFIG", str(site))
+        monkeypatch.setenv("POLYLOGUE_CONFIG", str(user))
+        report = describe_config_layers()
+        site_info = report["site"]
+        user_info = report["user"]
+        assert isinstance(site_info, dict)
+        assert isinstance(user_info, dict)
+        assert site_info["path"] == str(site)
+        assert site_info["exists"] is True
+        assert user_info["path"] == str(user)
+        assert user_info["exists"] is True
+
+    def test_empty_site_env_var_disables_default_path(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        from polylogue.config import describe_config_layers
+
+        monkeypatch.setenv("POLYLOGUE_SITE_CONFIG", "")
+        report = describe_config_layers()
+        assert report["site"] == {"path": None, "exists": False}
+
+
 # =============================================================================
 # Merged from test_logging.py (2024-03-15)
 # =============================================================================
