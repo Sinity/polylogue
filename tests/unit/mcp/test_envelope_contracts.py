@@ -96,6 +96,8 @@ TOOL_CONTRACT: dict[str, ToolKind] = {
     "update_index": "operation_result",
     "export_conversation": "operation_result",
     "export_query_results": "operation_result",
+    "maintenance_preview": "operation_result",
+    "maintenance_execute": "operation_result",
     # ------- insight registry tools -------
     "session_profiles": ("envelope", frozenset({"items", "total"})),
     "session_enrichments": ("envelope", frozenset({"items", "total"})),

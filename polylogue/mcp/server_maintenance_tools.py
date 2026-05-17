@@ -20,6 +20,61 @@ if TYPE_CHECKING:
 
 def register_maintenance_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     @mcp.tool()
+    async def maintenance_preview(targets: list[str] | None = None) -> str:
+        """Dry-run summary of maintenance backfill targets.
+
+        Returns the shared :class:`MaintenanceOperationEnvelope` so the
+        result shape is byte-for-byte identical to the CLI ``polylogue
+        maintenance plan --output-format json`` and the daemon HTTP
+        ``POST /api/maintenance/plan`` responses.
+        """
+
+        async def run() -> str:
+            from polylogue.config import Config
+            from polylogue.maintenance.envelope import envelope_from_operation
+            from polylogue.maintenance.planner import preview_backfill
+            from polylogue.paths import archive_root, render_root
+
+            config = Config(
+                archive_root=archive_root(),
+                render_root=render_root(),
+                sources=[],
+            )
+            resolved = tuple(targets or ())
+            result = preview_backfill(config, targets=resolved)
+            envelope = envelope_from_operation(result, origin="mcp", mode="preview")
+            return hooks.json_payload(envelope)
+
+        return await hooks.async_safe_call("maintenance_preview", run)
+
+    @mcp.tool()
+    async def maintenance_execute(targets: list[str] | None = None, dry_run: bool = False) -> str:
+        """Run (or dry-run) maintenance backfill targets.
+
+        Returns the shared :class:`MaintenanceOperationEnvelope` with
+        ``mode="execute"``. Per-target failures are isolated and
+        reported through the bounded ``failure_samples`` envelope.
+        """
+
+        async def run() -> str:
+            from polylogue.config import Config
+            from polylogue.maintenance.envelope import envelope_from_operation
+            from polylogue.maintenance.planner import execute_backfill
+            from polylogue.paths import archive_root, render_root
+
+            config = Config(
+                archive_root=archive_root(),
+                render_root=render_root(),
+                sources=[],
+            )
+            resolved = tuple(targets or ())
+            result = execute_backfill(config, targets=resolved, dry_run=dry_run)
+            envelope = envelope_from_operation(result, origin="mcp", mode="execute")
+            return hooks.json_payload(envelope)
+
+        return await hooks.async_safe_call("maintenance_execute", run)
+
+    @mcp.tool()
     async def rebuild_index() -> str:
         async def run() -> str:
             ops = hooks.get_archive_ops()

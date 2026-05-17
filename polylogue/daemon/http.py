@@ -1069,6 +1069,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         targets: tuple[str, ...] = tuple(str(t) for t in raw_targets)
 
         from polylogue.config import Config
+        from polylogue.maintenance.envelope import envelope_from_operation
         from polylogue.maintenance.planner import preview_backfill
         from polylogue.paths import archive_root, render_root
 
@@ -1078,7 +1079,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             sources=[],
         )
         result = preview_backfill(config, targets=targets)
-        self._send_json(HTTPStatus.OK, result.to_dict())
+        envelope = envelope_from_operation(result, origin="daemon", mode="preview")
+        self._send_json(HTTPStatus.OK, envelope.to_dict())
 
     @daemon_safe_handler
     def _handle_maintenance_run(self) -> None:
@@ -1097,6 +1099,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         dry_run: bool = bool(body.get("dry_run", False))
 
         from polylogue.config import Config
+        from polylogue.maintenance.envelope import envelope_from_operation
         from polylogue.maintenance.planner import execute_backfill
         from polylogue.paths import archive_root, render_root
 
@@ -1106,7 +1109,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             sources=[],
         )
         result = execute_backfill(config, targets=targets, dry_run=dry_run)
-        self._send_json(HTTPStatus.OK, result.to_dict())
+        envelope = envelope_from_operation(result, origin="daemon", mode="execute")
+        self._send_json(HTTPStatus.OK, envelope.to_dict())
 
 
 class DaemonAPIHTTPServer(ThreadingHTTPServer):
