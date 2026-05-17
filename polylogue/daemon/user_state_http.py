@@ -8,6 +8,7 @@ from http import HTTPStatus
 from typing import Any, cast
 
 from polylogue.archive.query.spec import ConversationQuerySpec
+from polylogue.core.user_state_targets import TARGET_KIND_NAMES
 
 
 def _read_json_body(handler: Any) -> dict[str, object] | None:
@@ -193,6 +194,9 @@ def handle_create_mark(handler: Any) -> None:
     if not conversation_id or mark_type not in {"star", "pin", "archive"}:
         handler._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
         return
+    if target_type not in TARGET_KIND_NAMES:
+        handler._send_error(HTTPStatus.BAD_REQUEST, "invalid_target_type")
+        return
 
     async def _create(poly: Any) -> dict[str, object]:
         created = await poly.add_mark(
@@ -288,6 +292,9 @@ def handle_save_annotation(handler: Any) -> None:
     note_text = str(body.get("note_text") or "")
     if not conversation_id or not note_text.strip():
         handler._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
+        return
+    if target_type not in TARGET_KIND_NAMES:
+        handler._send_error(HTTPStatus.BAD_REQUEST, "invalid_target_type")
         return
     resolved_target_id = target_id or message_id or conversation_id
     annotation_id = str(body.get("annotation_id") or _default_annotation_id(target_type, resolved_target_id, note_text))

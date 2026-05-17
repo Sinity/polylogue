@@ -475,6 +475,9 @@ class PolylogueArchiveMixin:
         target_id: str | None = None,
         message_id: str | None = None,
     ) -> dict[str, str | None]:
+        from polylogue.api.user_state_resolver import resolve_insight_target
+        from polylogue.core.user_state_targets import TARGET_KIND_NAMES
+
         resolved = await self.repository.resolve_id(conversation_id, strict=True)
         if resolved is None:
             raise ConversationNotFoundError(conversation_id)
@@ -486,19 +489,35 @@ class PolylogueArchiveMixin:
                 "conversation_id": resolved_conversation_id,
                 "message_id": None,
             }
-        if target_type != "message":
-            raise ValueError("target_type must be one of: conversation, message")
-        resolved_message_id = message_id or target_id
-        if not resolved_message_id:
-            raise ValueError("message target requires message_id or target_id")
-        messages = await self.repository.get_messages(resolved_conversation_id)
-        if not any(str(message.message_id) == resolved_message_id for message in messages):
-            raise ValueError(f"message {resolved_message_id!r} is not in conversation {resolved_conversation_id!r}")
+        if target_type == "message":
+            resolved_message_id = message_id or target_id
+            if not resolved_message_id:
+                raise ValueError("message target requires message_id or target_id")
+            messages = await self.repository.get_messages(resolved_conversation_id)
+            if not any(str(message.message_id) == resolved_message_id for message in messages):
+                raise ValueError(f"message {resolved_message_id!r} is not in conversation {resolved_conversation_id!r}")
+            return {
+                "target_type": "message",
+                "target_id": resolved_message_id,
+                "conversation_id": resolved_conversation_id,
+                "message_id": resolved_message_id,
+            }
+        if target_type not in TARGET_KIND_NAMES:
+            raise ValueError(f"target_type must be one of: {', '.join(TARGET_KIND_NAMES)}")
+        resolved_target = await resolve_insight_target(
+            self.repository,
+            target_type=target_type,
+            target_id=target_id,
+            conversation_id=resolved_conversation_id,
+            message_id=message_id,
+        )
+        # Strip the identity_key — the storage layer doesn't carry it,
+        # the recall-pack/workspace resolver re-derives it.
         return {
-            "target_type": "message",
-            "target_id": resolved_message_id,
-            "conversation_id": resolved_conversation_id,
-            "message_id": resolved_message_id,
+            "target_type": resolved_target["target_type"],
+            "target_id": resolved_target["target_id"],
+            "conversation_id": resolved_target["conversation_id"],
+            "message_id": resolved_target.get("message_id"),
         }
 
     async def add_mark(
@@ -769,11 +788,77 @@ class PolylogueArchiveMixin:
                 "identity_key": f"mark:{row['target_type']}:{row['target_id']}:{row['mark_type']}",
             }
 
+        from polylogue.core.user_state_targets import TARGET_KIND_NAMES
+
+        if item_type in TARGET_KIND_NAMES:
+            return await self._resolve_recall_pack_insight_item(item, item_type)
+
         return {
             "target_type": item_type,
             "target_id": str(item.get("target_id") or item.get("id") or ""),
             "status": "unsupported",
             "disabled_reason": "unsupported_target_type",
+        }
+
+    async def _resolve_recall_pack_insight_item(
+        self,
+        item: dict[str, object],
+        item_type: str,
+    ) -> dict[str, object]:
+        """Resolve a recall-pack item for a non-conversation/message kind (#1113)."""
+
+        conversation_id = str(item.get("conversation_id") or "")
+        target_id = str(item.get("target_id") or item.get("id") or "")
+        message_id_raw = item.get("message_id")
+        message_id: str | None = str(message_id_raw) if message_id_raw else None
+
+        # session targets default target_id to the conversation_id when omitted.
+        if item_type == "session" and not target_id and conversation_id:
+            target_id = conversation_id
+
+        if not conversation_id:
+            return {
+                "target_type": item_type,
+                "target_id": target_id,
+                "conversation_id": None,
+                "message_id": message_id,
+                "status": "missing",
+                "disabled_reason": "conversation_id_required",
+            }
+        try:
+            resolved = await self._resolve_user_state_target(
+                conversation_id,
+                target_type=item_type,
+                target_id=target_id or None,
+                message_id=message_id,
+            )
+        except (ConversationNotFoundError, ValueError) as exc:
+            return {
+                "target_type": item_type,
+                "target_id": target_id,
+                "conversation_id": conversation_id or None,
+                "message_id": message_id,
+                "status": "missing",
+                "disabled_reason": str(exc) or f"{item_type}_not_found",
+            }
+        from polylogue.core.user_state_targets import identity_key
+
+        resolved_target_id = str(resolved["target_id"])
+        resolved_conversation_id = str(resolved["conversation_id"])
+        resolved_message_id_raw = resolved.get("message_id")
+        resolved_message_id: str | None = str(resolved_message_id_raw) if resolved_message_id_raw else None
+        return {
+            "target_type": item_type,
+            "target_id": resolved_target_id,
+            "conversation_id": resolved_conversation_id,
+            "message_id": resolved_message_id,
+            "status": "resolved",
+            "identity_key": identity_key(
+                item_type,
+                conversation_id=resolved_conversation_id,
+                target_id=resolved_target_id,
+                message_id=resolved_message_id,
+            ),
         }
 
     async def _build_recall_pack_payload(

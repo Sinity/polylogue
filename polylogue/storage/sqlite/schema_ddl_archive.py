@@ -335,7 +335,10 @@ BLOB_LEASE_DDL = """
 
 USER_MARKS_DDL = """
         CREATE TABLE IF NOT EXISTS user_marks (
-            target_type     TEXT NOT NULL CHECK (target_type IN ('conversation', 'message')),
+            target_type     TEXT NOT NULL CHECK (target_type IN (
+                'conversation', 'message', 'session', 'work_event',
+                'thread', 'content_block', 'attachment', 'paste_span'
+            )),
             target_id       TEXT NOT NULL,
             conversation_id TEXT NOT NULL REFERENCES conversations(conversation_id) ON DELETE CASCADE,
             message_id      TEXT REFERENCES messages(message_id) ON DELETE CASCADE,
@@ -346,6 +349,10 @@ USER_MARKS_DDL = """
                 (target_type = 'conversation' AND target_id = conversation_id AND message_id IS NULL)
                 OR
                 (target_type = 'message' AND message_id IS NOT NULL AND target_id = message_id)
+                OR
+                (target_type = 'content_block' AND message_id IS NOT NULL)
+                OR
+                (target_type IN ('session', 'work_event', 'thread', 'attachment', 'paste_span'))
             )
         );
 
@@ -362,7 +369,10 @@ USER_MARKS_DDL = """
 USER_ANNOTATIONS_DDL = """
         CREATE TABLE IF NOT EXISTS user_annotations (
             annotation_id   TEXT PRIMARY KEY,
-            target_type     TEXT NOT NULL CHECK (target_type IN ('conversation', 'message')),
+            target_type     TEXT NOT NULL CHECK (target_type IN (
+                'conversation', 'message', 'session', 'work_event',
+                'thread', 'content_block', 'attachment', 'paste_span'
+            )),
             target_id       TEXT NOT NULL,
             conversation_id TEXT NOT NULL REFERENCES conversations(conversation_id) ON DELETE CASCADE,
             message_id      TEXT REFERENCES messages(message_id) ON DELETE CASCADE,
@@ -373,6 +383,10 @@ USER_ANNOTATIONS_DDL = """
                 (target_type = 'conversation' AND target_id = conversation_id AND message_id IS NULL)
                 OR
                 (target_type = 'message' AND message_id IS NOT NULL AND target_id = message_id)
+                OR
+                (target_type = 'content_block' AND message_id IS NOT NULL)
+                OR
+                (target_type IN ('session', 'work_event', 'thread', 'attachment', 'paste_span'))
             )
         );
 
