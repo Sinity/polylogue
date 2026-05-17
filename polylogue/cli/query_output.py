@@ -64,7 +64,76 @@ def _display_date(value: datetime | None, date_format: str = "%Y-%m-%d") -> str:
 
 
 def _ellipsize(value: str, max_width: int) -> str:
+    if max_width <= 3:
+        return value[:max_width]
     return (value[: max_width - 3] + "...") if len(value) > max_width else value
+
+
+class _LayoutBreakpoints:
+    """Terminal-width breakpoints for graceful narrow rendering.
+
+    Listed widest-first. The first breakpoint whose ``min_width`` fits the
+    current terminal wins. Below the narrowest breakpoint we drop to a single
+    "id/title" line per row so output stays legible at ~40 columns.
+
+    Pinned at 80 / 60 / 40 so the contract is observable in tests without
+    depending on host terminal size.
+    """
+
+    WIDE_MIN = 80
+    MID_MIN = 60
+    NARROW_MIN = 40
+
+
+def _terminal_width(env: AppEnv) -> int:
+    """Return the rendering terminal width, falling back to 80 columns."""
+    width = getattr(env.ui.console, "width", None)
+    if isinstance(width, int) and width > 0:
+        return width
+    return 80
+
+
+def _summary_list_layout(width: int) -> tuple[str, ...]:
+    """Pick a column set for the conversation-list table at ``width`` columns.
+
+    ``width`` is the rendered terminal width. The selection is deterministic
+    and pinned by ``test_narrow_terminal_layout``; do not reorder columns
+    without updating that contract.
+    """
+    if width >= _LayoutBreakpoints.WIDE_MIN:
+        return ("id", "date", "provider", "title", "msgs")
+    if width >= _LayoutBreakpoints.MID_MIN:
+        # Drop the wide ID column; titles get more room.
+        return ("date", "provider", "title", "msgs")
+    if width >= _LayoutBreakpoints.NARROW_MIN:
+        # Drop provider too; date + title + msgs survives at 40 cols.
+        return ("date", "title", "msgs")
+    # Below the narrowest breakpoint we go single-column.
+    return ("title",)
+
+
+def _search_hit_layout(width: int) -> tuple[str, ...]:
+    """Pick a column set for the search-hit table at ``width`` columns."""
+    if width >= _LayoutBreakpoints.WIDE_MIN:
+        return ("id", "date", "provider", "title", "msgs", "match")
+    if width >= _LayoutBreakpoints.MID_MIN:
+        # Drop ID column; keep match snippet for context.
+        return ("date", "provider", "title", "match")
+    if width >= _LayoutBreakpoints.NARROW_MIN:
+        # Drop provider and date; keep title + match snippet.
+        return ("title", "match")
+    return ("title",)
+
+
+def _title_budget(width: int) -> int:
+    """Title truncation budget for the rendered terminal width."""
+    if width >= _LayoutBreakpoints.WIDE_MIN:
+        return 63
+    if width >= _LayoutBreakpoints.MID_MIN:
+        return max(30, width - 24)
+    if width >= _LayoutBreakpoints.NARROW_MIN:
+        return max(18, width - 18)
+    return max(12, width - 2)
 
 
 def _conversation_list_line(conv: Conversation) -> str:
@@ -427,27 +496,53 @@ async def output_search_hits(
 
     from polylogue.ui.theme import provider_color
 
+    width = _terminal_width(env)
+    columns = _search_hit_layout(width)
+    title_budget = _title_budget(width)
+    snippet_budget = max(20, min(80, width - 24))
+
     table = Table(show_header=True, header_style="bold", box=None, pad_edge=False, show_edge=False)
-    table.add_column("ID", style="dim", max_width=24, no_wrap=True)
-    table.add_column("Date", style="dim")
-    table.add_column("Provider")
-    table.add_column("Title", ratio=1)
-    table.add_column("Msgs", justify="right")
-    table.add_column("Match", ratio=1)
+    for column in columns:
+        if column == "id":
+            table.add_column("ID", style="dim", max_width=24, no_wrap=True)
+        elif column == "date":
+            table.add_column("Date", style="dim")
+        elif column == "provider":
+            table.add_column("Provider")
+        elif column == "title":
+            table.add_column("Title", ratio=1)
+        elif column == "msgs":
+            table.add_column("Msgs", justify="right")
+        elif column == "match":
+            table.add_column("Match", ratio=1)
 
     for hit in hits:
         summary = hit.summary
         date = _display_date(summary.display_date)
-        title = _ellipsize(summary.display_title or str(summary.id)[:20], 54)
+        title = _ellipsize(summary.display_title or str(summary.id)[:20], title_budget)
         count = msg_counts.get(hit.conversation_id, summary.message_count or 0)
         provider_text = Text(summary.provider, style=provider_color(summary.provider).hex)
-        snippet = _ellipsize(hit.snippet or "", 80)
+        snippet = _ellipsize(hit.snippet or "", snippet_budget)
         match = f"{hit.match_surface}/{hit.retrieval_lane}"
         if hit.message_id:
             match = f"{match} {hit.message_id}"
         if snippet:
             match = f"{match}: {snippet}"
-        table.add_row(str(summary.id)[:24], date, provider_text, title, str(count), match)
+        row: list[str | Text] = []
+        for column in columns:
+            if column == "id":
+                row.append(str(summary.id)[:24])
+            elif column == "date":
+                row.append(date)
+            elif column == "provider":
+                row.append(provider_text)
+            elif column == "title":
+                row.append(title)
+            elif column == "msgs":
+                row.append(str(count))
+            elif column == "match":
+                row.append(match)
+        table.add_row(*row)
 
     env.ui.console.print(table)
 
@@ -480,19 +575,41 @@ async def output_summary_list(
 
     from polylogue.ui.theme import provider_color
 
+    width = _terminal_width(env)
+    columns = _summary_list_layout(width)
+    title_budget = _title_budget(width)
+
     table = Table(show_header=True, header_style="bold", box=None, pad_edge=False, show_edge=False)
-    table.add_column("ID", style="dim", max_width=24, no_wrap=True)
-    table.add_column("Date", style="dim")
-    table.add_column("Provider")
-    table.add_column("Title", ratio=1)
-    table.add_column("Msgs", justify="right")
+    for column in columns:
+        if column == "id":
+            table.add_column("ID", style="dim", max_width=24, no_wrap=True)
+        elif column == "date":
+            table.add_column("Date", style="dim")
+        elif column == "provider":
+            table.add_column("Provider")
+        elif column == "title":
+            table.add_column("Title", ratio=1)
+        elif column == "msgs":
+            table.add_column("Msgs", justify="right")
 
     for summary in summaries:
         date = _display_date(summary.display_date)
-        title = _ellipsize(summary.display_title or str(summary.id)[:20], 63)
+        title = _ellipsize(summary.display_title or str(summary.id)[:20], title_budget)
         count = msg_counts.get(str(summary.id), 0)
         provider_text = Text(summary.provider, style=provider_color(summary.provider).hex)
-        table.add_row(str(summary.id)[:24], date, provider_text, title, str(count))
+        row: list[str | Text] = []
+        for column in columns:
+            if column == "id":
+                row.append(str(summary.id)[:24])
+            elif column == "date":
+                row.append(date)
+            elif column == "provider":
+                row.append(provider_text)
+            elif column == "title":
+                row.append(title)
+            elif column == "msgs":
+                row.append(str(count))
+        table.add_row(*row)
 
     env.ui.console.print(table)
 
