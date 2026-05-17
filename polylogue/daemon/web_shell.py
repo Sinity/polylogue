@@ -52,6 +52,22 @@ html, body { height: 100%; background: var(--bg); color: var(--text);
 #status-strip .chip.accent { border-color: var(--accent-soft); color: var(--accent); }
 #status-strip .spacer { flex: 1; }
 
+/* MK3 data-quality chip vocabulary (docs/design/mk3/docs/11-little-details.md).
+   These classes apply to any .chip and override its default muted look with
+   colors keyed to the named data state. Use them so the operator can tell at
+   a glance whether a value is canonical, derived, degraded, or missing. */
+.chip.q-canonical { border-color: var(--ok); color: var(--ok); background: var(--ok-bg); }
+.chip.q-explicit { border-color: var(--ok); color: var(--ok); background: var(--ok-bg); }
+.chip.q-inferred { border-color: var(--accent-soft); color: var(--accent); background: var(--accent-bg); }
+.chip.q-heuristic { border-color: var(--accent-soft); color: var(--accent); background: var(--panel-elevated); }
+.chip.q-repaired { border-color: var(--accent-soft); color: var(--accent); background: var(--accent-bg); }
+.chip.q-partial { border-color: var(--warn); color: var(--warn); background: var(--warn-bg); }
+.chip.q-stale { border-color: var(--warn); color: var(--warn); background: var(--warn-bg); }
+.chip.q-estimated { border-color: var(--warn); color: var(--warn); background: var(--panel-elevated); }
+.chip.q-unresolved { border-color: var(--err); color: var(--err); background: var(--err-bg); }
+.chip.q-unavailable { border-color: var(--text-dim); color: var(--text-dim); background: var(--panel-subtle); }
+.chip.q-redacted { border-color: var(--text-dim); color: var(--text-dim); background: var(--panel-subtle); font-style: italic; }
+
 #sidebar { grid-column: 1; grid-row: 2; display: flex; flex-direction: column;
   background: var(--panel); border-right: 1px solid var(--border); overflow: hidden; }
 #search-box { padding: 8px 10px; border-bottom: 1px solid var(--border); display: flex; gap: 6px; }
@@ -199,7 +215,8 @@ __WORKSPACE_CSS__
     <span class="chip" id="status-msgs">0 msgs</span>
     <span class="chip" id="status-db">--</span>
     <span class="spacer"></span>
-    <span class="chip accent" id="status-fts" title="FTS readiness">FTS: --</span>
+    <span class="chip" id="status-fts" title="FTS readiness">FTS: --</span>
+    <span class="chip" id="status-insights" title="Session insight freshness" style="display:none">insights: --</span>
     <span class="chip" id="status-ingest" style="display:none">live</span>
   </div>
   <div id="sidebar">
@@ -401,14 +418,47 @@ async function loadStatus() {
     var s = await fetchJSON('/api/status');
     document.getElementById('status-convs').textContent = (s.total_conversations || 0).toLocaleString() + ' convs';
     document.getElementById('status-msgs').textContent = (s.total_messages || 0).toLocaleString() + ' msgs';
-    var fts = s.fts_readiness || {};
-    document.getElementById('status-fts').textContent = 'FTS: ' + (fts.messages_ready ? 'ok' : '--');
+    renderFtsChip(s.fts_readiness || {});
+    renderInsightChip(s.insight_freshness || {});
     var ingestEl = document.getElementById('status-ingest');
     if (s.live && s.live.existing_source_count > 0) {
       ingestEl.style.display = '';
       ingestEl.textContent = 'live: ' + s.live.existing_source_count + ' srcs';
+      setChipQuality(ingestEl, 'canonical');
     } else { ingestEl.style.display = 'none'; }
   } catch(e) {}
+}
+
+// Apply an MK3 data-quality class to a chip element (canonical, partial, stale,
+// unavailable, etc.). Strips any prior q-* class so callers can freely flip.
+function setChipQuality(el, quality) {
+  if (!el) return;
+  el.className = el.className.split(' ').filter(function(c) { return c.indexOf('q-') !== 0; }).join(' ');
+  if (quality) el.classList.add('q-' + quality);
+}
+
+function renderFtsChip(fts) {
+  var el = document.getElementById('status-fts');
+  var msgReady = !!fts.messages_ready;
+  var actReady = !!fts.action_events_ready;
+  var label;
+  var quality;
+  if (msgReady && actReady) { label = 'FTS: ok'; quality = 'canonical'; }
+  else if (msgReady || actReady) { label = 'FTS: partial'; quality = 'partial'; }
+  else { label = 'FTS: unavailable'; quality = 'unavailable'; }
+  el.textContent = label;
+  setChipQuality(el, quality);
+}
+
+function renderInsightChip(freshness) {
+  var el = document.getElementById('status-insights');
+  var total = freshness.total_sessions || 0;
+  var withProfiles = freshness.sessions_with_profiles || 0;
+  if (total <= 0) { el.style.display = 'none'; return; }
+  el.style.display = '';
+  if (withProfiles >= total) { el.textContent = 'insights: ok'; setChipQuality(el, 'canonical'); }
+  else if (withProfiles > 0) { el.textContent = 'insights: ' + withProfiles + '/' + total; setChipQuality(el, 'partial'); }
+  else { el.textContent = 'insights: stale'; setChipQuality(el, 'stale'); }
 }
 
 function renderSidebarState(kind, msg) {
@@ -421,9 +471,20 @@ function renderConversations() {
   var el = document.getElementById('conv-list');
   var items = state.conversations;
   if (!items || !items.length) {
-    if (state.query || state.provider) renderSidebarState('noresults', 'No conversations match');
-    else if (state.total === 0) renderSidebarState('empty', 'No conversations in archive');
-    else renderSidebarState('noresults', 'No results');
+    // Distinguish empty archive from filtered-no-results so the operator
+    // knows whether to ingest or to clear filters. Preserve filter context
+    // in the empty-state message per MK3 state matrix.
+    if (state.query && state.provider) {
+      renderSidebarState('noresults', 'No results for query=' + state.query + ' provider=' + state.provider + '. Press Esc to clear.');
+    } else if (state.query) {
+      renderSidebarState('noresults', 'No results for query=' + state.query + '. Press Esc to clear.');
+    } else if (state.provider) {
+      renderSidebarState('noresults', 'No conversations from provider=' + state.provider + '. Press Esc to clear.');
+    } else if (state.total === 0) {
+      renderSidebarState('empty', 'No conversations in archive. Run `polylogued run` to ingest sources.');
+    } else {
+      renderSidebarState('noresults', 'No conversations on this page');
+    }
     return;
   }
   el.innerHTML = items.map(function(c) {
@@ -513,18 +574,42 @@ function renderMain() {
     + markButtonHtml(c.id, 'pin', 'P', 'Toggle pin')
     + markButtonHtml(c.id, 'archive', 'A', 'Toggle archive')
     + '</div></div><div class="conv-stats">';
-  if (c.provider) headerHtml += '<span>' + esc(c.provider) + '</span>';
+  // MK3 header chip order (docs/design/mk3/docs/11-little-details.md):
+  // 1. provider/source  2. live/stale  3. repo/cwd/branch  4. counts
+  // 5. cost/tokens  6. derived/insight  7. marks/tags
+  // 1. provider/source
+  if (c.provider) headerHtml += '<span class="chip q-canonical">' + esc(c.provider) + '</span>';
   if (c.model) headerHtml += '<span class="chip">' + esc(String(c.model)) + '</span>';
-  if (c.message_count !== undefined) headerHtml += '<span>' + c.message_count + ' messages</span>';
-  if (c.word_count) headerHtml += '<span>' + c.word_count.toLocaleString() + ' words</span>';
+  // 2. live/stale (placeholder — wired from session provenance once #1019 surfaces it on detail)
+  if (c.stale) headerHtml += '<span class="chip q-stale" title="Derived view is stale">stale</span>';
+  // 3. repo/cwd/branch
   if (c.repo) headerHtml += '<span class="chip repo" title="' + escAttr(c.repo) + '">' + esc(c.repo.split('/').pop() || c.repo) + '</span>';
   if (c.cwd_display) headerHtml += '<span class="chip" title="' + escAttr(c.cwd_display) + '">' + esc(c.cwd_display.split('/').pop() || c.cwd_display) + '</span>';
+  if (c.branch_type && c.branch_type !== 'main') {
+    headerHtml += '<span class="chip q-inferred" title="Branch type">' + esc(c.branch_type) + '</span>';
+  }
+  // 4. counts
+  if (c.message_count !== undefined) headerHtml += '<span>' + c.message_count + ' messages</span>';
+  if (c.word_count) headerHtml += '<span>' + c.word_count.toLocaleString() + ' words</span>';
   if (c.created_at) headerHtml += '<span>' + new Date(c.created_at).toLocaleDateString() + '</span>';
+  // 4b. content-shape flags
   if (c.flags) {
     if (c.flags.has_tool_use) headerHtml += '<span class="chip accent">tool use</span>';
     if (c.flags.has_thinking) headerHtml += '<span class="chip accent">thinking</span>';
     if (c.flags.has_paste) headerHtml += '<span class="chip accent">paste</span>';
   }
+  // 5. cost/tokens (surface when present; estimated → q-estimated quality)
+  if (c.cost_usd !== undefined && c.cost_usd !== null) {
+    var costCls = c.cost_estimated ? ' q-estimated' : '';
+    headerHtml += '<span class="chip' + costCls + '" title="Session cost (USD)">$' + Number(c.cost_usd).toFixed(2) + '</span>';
+  }
+  if (c.token_count) {
+    headerHtml += '<span class="chip">' + Number(c.token_count).toLocaleString() + ' tok</span>';
+  }
+  // 6. derived/insight availability — if session profile is missing show unavailable chip
+  if (c.insight_status === 'missing') headerHtml += '<span class="chip q-unavailable" title="Session insight not computed">no insights</span>';
+  else if (c.insight_status === 'stale') headerHtml += '<span class="chip q-stale" title="Session insight is stale">insights stale</span>';
+  // 7. marks/tags
   if (c.tags && c.tags.length) {
     c.tags.forEach(function(t) { headerHtml += '<span class="chip">' + esc(t) + '</span>'; });
   }

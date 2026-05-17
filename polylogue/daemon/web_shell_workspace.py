@@ -9,6 +9,10 @@ WORKSPACE_CSS = r"""
 #workspace-toolbar .mode-btn { background: var(--panel-elevated); border: 1px solid var(--border);
   color: var(--text-muted); padding: 3px 8px; border-radius: 3px; cursor: pointer; font-size: var(--small); }
 #workspace-toolbar .mode-btn.active { color: var(--accent); border-color: var(--accent-soft); background: var(--accent-bg); }
+#workspace-toolbar .mode-btn[disabled], #workspace-toolbar .workspace-action[disabled] {
+  opacity: 0.45; cursor: not-allowed; color: var(--text-dim); }
+#workspace-toolbar .mode-btn[disabled]:hover, #workspace-toolbar .workspace-action[disabled]:hover {
+  background: var(--panel-elevated); border-color: var(--border); }
 #workspace-toolbar .workspace-spacer { flex: 1; min-width: 12px; }
 #workspace-toolbar select { background: var(--panel-elevated); color: var(--text); border: 1px solid var(--border);
   border-radius: 3px; padding: 3px 6px; font-size: var(--small); max-width: 180px; }
@@ -134,12 +138,42 @@ function renderWorkspaceToolbar() {
   if (state.mode === 'stack' && state.stackPayload) count = state.stackPayload.degraded_count || 0;
   if (state.mode === 'compare' && state.comparePayload) count = state.comparePayload.degraded_count || 0;
   status.textContent = state.mode;
-  degraded.textContent = count ? (count + ' degraded') : '';
+  if (count) {
+    degraded.textContent = count + ' degraded';
+    degraded.classList.add('q-partial');
+  } else {
+    degraded.textContent = '';
+    degraded.classList.remove('q-partial');
+  }
   var current = select.value;
   select.innerHTML = '<option value="">Restore workspace</option>' + (state.workspaces || []).map(function(w) {
     return '<option value="' + escAttr(w.workspace_id) + '">' + esc(w.name || w.workspace_id) + '</option>';
   }).join('');
   select.value = current;
+  // Disabled-action tooltips per MK3 "disabled actions are part of the design"
+  // (docs/design/mk3/docs/11-little-details.md). Stack/Compare need 2+
+  // selectable conversations; recall pack and save need at least one target.
+  var stackBtn = document.querySelector('#workspace-mode-switcher .mode-btn[data-mode="stack"]');
+  var compareBtn = document.querySelector('#workspace-mode-switcher .mode-btn[data-mode="compare"]');
+  var saveBtn = document.getElementById('workspace-save-btn');
+  var recallBtn = document.getElementById('workspace-create-recall-pack-btn');
+  var available = selectedConversationIds();
+  if (stackBtn) {
+    if (available.length < 1) { stackBtn.setAttribute('disabled', 'true'); stackBtn.title = 'Stack needs a selected conversation or a non-empty list'; }
+    else { stackBtn.removeAttribute('disabled'); stackBtn.title = 'Open selected conversations as a stack workspace'; }
+  }
+  if (compareBtn) {
+    if (available.length < 2) { compareBtn.setAttribute('disabled', 'true'); compareBtn.title = 'Compare needs two conversations to align'; }
+    else { compareBtn.removeAttribute('disabled'); compareBtn.title = 'Open the first two selected conversations side-by-side'; }
+  }
+  if (saveBtn) {
+    if (available.length < 1) { saveBtn.setAttribute('disabled', 'true'); saveBtn.title = 'Save workspace needs at least one open conversation'; }
+    else { saveBtn.removeAttribute('disabled'); saveBtn.title = 'Persist current workspace layout'; }
+  }
+  if (recallBtn) {
+    if (available.length < 1) { recallBtn.setAttribute('disabled', 'true'); recallBtn.title = 'Recall pack needs at least one open conversation'; }
+    else { recallBtn.removeAttribute('disabled'); recallBtn.title = 'Bundle current conversations as a recall pack'; }
+  }
 }
 
 function conversationHeaderHtml(c) {

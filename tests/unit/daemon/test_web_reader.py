@@ -993,6 +993,101 @@ def _get_json_ex(base_url: str, path: str) -> tuple[int, dict[str, object]]:
             return e.code, {}
 
 
+class TestReaderInformability:
+    """MK3 informability surfaces (#956): explicit state language for
+    degraded/partial/stale/unavailable data, and a coherent data-quality
+    chip vocabulary the operator can rely on at a glance.
+
+    These tests assert *presence* of the chip-quality vocabulary, the
+    tri-state FTS render, the insight-freshness chip, and the
+    context-preserving sidebar empty states. They intentionally check
+    JS source rather than runtime DOM so the smoke remains fast and the
+    visual lane (Playwright/Lighthouse) can layer on top later (#952).
+    """
+
+    def test_data_quality_chip_vocabulary_is_defined(self, workspace_env: dict[str, Path]) -> None:
+        """The MK3 chip vocabulary (canonical/inferred/heuristic/explicit/
+        unresolved/repaired/stale/partial/estimated/unavailable/redacted)
+        from docs/design/mk3/docs/11-little-details.md must have CSS
+        classes the renderer can apply. Without these the rest of the
+        informability story is just text.
+        """
+        with _running_server(workspace_env) as (_, base_url):
+            _, _, body = _get_text(base_url, "/")
+        for quality in (
+            "q-canonical",
+            "q-inferred",
+            "q-heuristic",
+            "q-explicit",
+            "q-unresolved",
+            "q-repaired",
+            "q-stale",
+            "q-partial",
+            "q-estimated",
+            "q-unavailable",
+            "q-redacted",
+        ):
+            assert f".chip.{quality}" in body, f"web shell missing MK3 chip-quality class {quality!r}"
+
+    def test_fts_chip_renders_tri_state_not_binary(self, workspace_env: dict[str, Path]) -> None:
+        """``renderFtsChip`` must distinguish ok / partial / unavailable
+        rather than collapsing partial readiness into the ok bucket. The
+        prior code rendered ``messages_ready ? 'ok' : '--'`` which hides
+        action-event FTS drift entirely.
+        """
+        with _running_server(workspace_env) as (_, base_url):
+            _, _, body = _get_text(base_url, "/")
+        assert "function renderFtsChip(" in body
+        assert "'FTS: ok'" in body
+        assert "'FTS: partial'" in body
+        assert "'FTS: unavailable'" in body
+
+    def test_insight_freshness_chip_render_present(self, workspace_env: dict[str, Path]) -> None:
+        """Session insight freshness gets its own status-strip chip so
+        operators can tell whether session profiles are computed, partial,
+        or stale without opening the inspector."""
+        with _running_server(workspace_env) as (_, base_url):
+            _, _, body = _get_text(base_url, "/")
+        assert "function renderInsightChip(" in body
+        assert 'id="status-insights"' in body
+        assert "'insights: ok'" in body
+        assert "'insights: stale'" in body
+
+    def test_sidebar_empty_state_preserves_filter_context(self, workspace_env: dict[str, Path]) -> None:
+        """The empty/no-results branches must include filter context and
+        a concrete next action — the MK3 state matrix calls out that an
+        empty archive and a filtered no-results are different states."""
+        with _running_server(workspace_env) as (_, base_url):
+            _, _, body = _get_text(base_url, "/")
+        assert "No conversations in archive. Run `polylogued run`" in body
+        assert "No results for query=" in body
+        assert "No conversations from provider=" in body
+        assert "Press Esc to clear" in body
+
+    def test_workspace_actions_have_disabled_state_with_tooltips(self, workspace_env: dict[str, Path]) -> None:
+        """Stack/Compare/Save/Recall workspace buttons must expose a
+        disabled state with explanatory tooltips when context is
+        insufficient — disabled actions are part of the MK3 design."""
+        with _running_server(workspace_env) as (_, base_url):
+            _, _, body = _get_text(base_url, "/")
+        assert "Stack needs a selected conversation" in body
+        assert "Compare needs two conversations" in body
+        assert "Save workspace needs at least one open conversation" in body
+        assert "Recall pack needs at least one open conversation" in body
+
+    def test_conversation_header_chip_order_follows_mk3_spec(self, workspace_env: dict[str, Path]) -> None:
+        """MK3 specifies header chip order: provider, live/stale,
+        repo/cwd/branch, counts, cost/tokens, derived/insight, marks.
+        Pin the comment marker so a future reorder is a deliberate change
+        rather than accidental drift."""
+        with _running_server(workspace_env) as (_, base_url):
+            _, _, body = _get_text(base_url, "/")
+        assert "MK3 header chip order" in body
+        # The provider chip should be tagged canonical (it identifies the
+        # source-of-truth provider for the conversation), not just a neutral chip.
+        assert "'<span class=\"chip q-canonical\">' + esc(c.provider)" in body
+
+
 @pytest.mark.parametrize("path", ["/", "/api/conversations", "/api/facets", "/api/status", "/api/health"])
 def test_each_reader_route_responds_within_a_reasonable_budget(workspace_env: dict[str, Path], path: str) -> None:
     """Each reader-facing route returns within 10 s on a synthetic
